@@ -24,8 +24,8 @@ never a duplicated copy that drifts. The router re-exports
 :func:`handle_block_secret_file_print` into ``_HANDLERS``.
 The deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
 (back-imported lazily), so the self-rescue allowlist and the ``danger_gate_fail_open``
-kill-switch apply uniformly and the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny``
-deny writer stays in the router (the never-lockout contract).
+kill-switch apply uniformly and the deny is written only through the router's
+``emit_pretooluse_deny`` (the never-lockout contract).
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
@@ -84,8 +84,8 @@ def handle_block_secret_file_print(data: dict) -> bool:
     The deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
     (back-imported lazily), giving the always-allowed self-rescue commands and the
     master ``danger_gate_fail_open`` kill-switch for free (the never-lockout
-    contract); the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` writer
-    stays in the router.
+    contract); the deny is written only through the router's
+    ``emit_pretooluse_deny``.
     """
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
@@ -94,4 +94,4 @@ def handle_block_secret_file_print(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command or not _is_secret_print(command):
         return False
-    return _fail_open_or_deny(data, _CREDENTIAL_PRINT_BLOCK_MSG)
+    return _fail_open_or_deny(data, _CREDENTIAL_PRINT_BLOCK_MSG, gate_id="secret_file_print")

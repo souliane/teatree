@@ -1,12 +1,12 @@
 """Setup must not reconcile skills into a stale container's host-mounted agent home."""
 
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 _HOST_CLAUDE = "/host_mnt/home/person/.claude"  # privacy-scan:allow — fixture mount path
@@ -31,8 +31,10 @@ def test_setup_refuses_a_host_bound_agent_home(tmp_path: Path, mount: tuple[str,
     deploy = tmp_path / "checkout" / "deploy"
     deploy.mkdir(parents=True)
     wrapper = deploy / "t3"
-    shutil.copy2(WRAPPER, wrapper)
+    copy_wrapper(WRAPPER, wrapper)
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    (deploy / "install-host-pressure.zsh").write_text("#!/bin/zsh\nexit 0\n")
+    (deploy / "install-host-pressure.zsh").chmod(0o755)
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     docker = stub_dir / "docker"
@@ -85,6 +87,7 @@ def test_setup_refuses_when_a_selected_route_loses_its_container_id(tmp_path: Pa
     deploy = tmp_path / "checkout" / "deploy"
     deploy.mkdir(parents=True)
     wrapper = deploy / "t3"
+    copy_wrapper(WRAPPER, wrapper)
     source = WRAPPER.read_text()
     wrapper.write_text(
         source.replace(

@@ -11,7 +11,7 @@ with optional per-overlay overrides in ``[overlays.<name>]`` for
 environments that need to tune one overlay differently from the rest:
 
 * ``architectural_review_skill: str`` — which review skill to dispatch
-    (default ``"ac-reviewing-codebase"``).
+    (default ``"architectural-review"``).
 * ``architectural_review_cadence_hours: int`` — minimum age of the last
     COMPLETED review before re-firing (default 168 = 7 days).
 * ``architectural_review_after_merge_count: int`` — fire after this many
@@ -87,7 +87,7 @@ class ArchitecturalReviewScanner:
     """
 
     overlay_name: str
-    skill: str = "ac-reviewing-codebase"
+    skill: str = "architectural-review"
     cadence_hours: int = 168
     after_merge_count: int = 25
     name: str = "architectural_review"

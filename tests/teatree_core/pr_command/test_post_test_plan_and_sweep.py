@@ -6,11 +6,13 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import pr as pr_command
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core.conftest import CommandOverlay
 
 from ._shared import _MOCK_OVERLAY
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class TestPostTestPlan(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,13 +47,14 @@ class TestPostTestPlan(TestCase):
 
     def test_delegates_to_code_host(self) -> None:
         """post-test-plan posts a PR comment via the code host."""
+        allow_forge_repos("org/repo")
         host = MagicMock()
         host.list_pr_comments.return_value = []
         host.post_pr_comment.return_value = {"id": 55}
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = call_command("pr", "post-test-plan", "10", "--body", "All tests pass")
+            result = call_command("pr", "post-test-plan", "10", "--repo", "org/repo", "--body", "All tests pass")
 
         assert result == {"id": 55}
         host.post_pr_comment.assert_called_once()

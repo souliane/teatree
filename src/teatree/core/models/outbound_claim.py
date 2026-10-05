@@ -69,3 +69,15 @@ class OutboundClaim(models.Model):
     def __str__(self) -> str:
         status = "verified" if self.verified_at is not None else "drift" if self.drift_detected else "pending"
         return f"OutboundClaim[{self.kind}/{status}] {self.idempotency_key}"
+
+    def mark_verified(self) -> None:
+        """Close a claim the publisher itself proved by re-reading the artifact after the write."""
+        self.verified_at = timezone.now()
+        self.save(update_fields=["verified_at"])
+
+    def record_drift(self, reason: str) -> None:
+        """Close a claim whose publisher saw its own write not land and already told the operator so."""
+        self.drift_detected = True
+        self.drift_reason = reason
+        self.drift_alerted_at = timezone.now()
+        self.save(update_fields=["drift_detected", "drift_reason", "drift_alerted_at"])

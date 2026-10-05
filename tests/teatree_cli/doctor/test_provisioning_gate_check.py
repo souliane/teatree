@@ -130,10 +130,7 @@ class TestConfigDrivenEnumeration:
 class TestTheShippedManifestMandatesTheCompanionSkills:
     """Against the REAL apm.yml: the three companions FAIL when absent.
 
-    `architectural_review_skill` defaults to `ac-reviewing-codebase`, so a box
-    without it dispatches its periodic architectural review with no skill
-    guidance. The gate is what keeps that from being silent, and it only holds
-    while the skill is mandated and NOT carried in-tree.
+    The gate only holds while each companion is mandated and NOT carried in-tree.
     """
 
     @pytest.mark.parametrize("name", ["ac-reviewing-codebase", "ac-python", "ac-django"])
@@ -152,10 +149,7 @@ class TestTheShippedManifestMandatesTheCompanionSkills:
     def test_the_companion_skills_are_not_shipped_in_the_plugins_own_skills_tree(self) -> None:
         # A copy under `skills/` satisfies the mandate from the plugin-first
         # install path, so vendoring one silently turns the gate above green.
-        # `ac-reviewing-codebase` is deliberately absent from this list: teatree's own
-        # ArchitecturalReviewScanner names it as a default and resolves it against dirs
-        # that do not exist in CI or on a fresh box, so it must ship in-tree (#3353).
-        for name in ("ac-python", "ac-django"):
+        for name in ("ac-reviewing-codebase", "ac-python", "ac-django"):
             assert not (_TEATREE_ROOT / "skills" / name).exists(), name
 
 

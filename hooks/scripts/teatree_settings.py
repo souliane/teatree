@@ -1,6 +1,6 @@
 """Shared ``[teatree] <flag>`` boolean + integer setting readers for the hook leaves (#2746).
 
-Extracted from ``hook_router`` so a leaf gate (e.g. ``memory_recall``) can read its
+Extracted from ``hook_router`` so a leaf gate can read its
 own kill-switch WITHOUT importing ``hook_router`` — which would create a
 ``hook_router`` ↔ leaf import cycle (``hook_router`` imports the leaf's handler into
 its ``_HANDLERS`` chain). It imports nothing first-party at load: the DB read
@@ -73,9 +73,8 @@ def read_cold_setting_status(name: str) -> tuple[object | None, str]:
     ``teatree`` bootstraps for itself.
 
     The bootstrap is inlined rather than reusing ``managed_repo.teatree_src_on_path``
-    on purpose: this module is reachable with only the *scripts* dir on ``sys.path``
-    (``memory_recall`` inserts exactly that before importing us), where the
-    ``hooks.scripts.managed_repo`` import would not resolve — and the module contract
+    on purpose: this module is reachable with only the *scripts* dir on ``sys.path``,
+    where the ``hooks.scripts.managed_repo`` import would not resolve — and the module contract
     is to import nothing first-party at load.
 
     Fails open to ``None`` on ANY error — ``teatree`` still not importable, an
@@ -137,44 +136,6 @@ def teatree_bool_setting(name: str, *, default: bool = True) -> bool:
     return section_bool_setting("teatree", name, default=default)
 
 
-def _cold_db_raw(name: str) -> object | None:
-    """The stored GLOBAL-scope DB value for ``[teatree] <name>``, un-coerced.
-
-    Unlike :func:`_cold_db_bool` (which collapses a present-but-non-bool value to
-    ``None``), this returns the raw decoded value so a caller can tell a genuinely
-    ABSENT setting apart from one whose stored value is not a clean boolean. Fails
-    open to ``None`` on any error (see :func:`_cold_read`).
-    """
-    return read_cold_setting_status(name)[0]
-
-
-def teatree_bool_setting_loud(name: str, *, default: bool) -> bool:
-    """Read ``[teatree] <name>`` as a boolean, WARNING LOUDLY on an unknown value (#1564).
-
-    A gate toggle must be a clean boolean. When the stored DB value is PRESENT but
-    not a bool — a typo like ``"yes"``, ``"on"``, or ``2`` — the sibling readers
-    silently fall back to the default, so a mistyped kill-switch fails SILENTLY (the
-    operator thinks the gate is off; it is on). This reader instead emits one loud
-    stderr line naming the setting and the offending value, then returns *default* —
-    the misconfiguration is visible, not swallowed. An ABSENT setting is not
-    "unknown" and is silent.
-    """
-    db_raw = _cold_db_raw(name)
-    if db_raw is not None:
-        if isinstance(db_raw, bool):
-            return db_raw
-        _warn_unknown_setting(name, db_raw, default=default)
-    return default
-
-
-def _warn_unknown_setting(name: str, value: object, *, default: bool) -> None:
-    sys.stderr.write(
-        f"WARNING: [teatree] {name} = {value!r} is not a boolean — expected true/false. "
-        f"Falling back to the default ({str(default).lower()}). Fix the value with "
-        f"`t3 <overlay> config_setting set {name} <true|false>`.\n"
-    )
-
-
 def _cold_db_int(name: str) -> int | None:
     """The stored GLOBAL-scope DB int for ``[teatree] <name>``; ``None`` on absence/failure.
 
@@ -219,7 +180,7 @@ _AUTOLOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 def autoload_enabled() -> bool:
     """Whether teatree auto-engages a fresh session (#256). Default OFF, fail-closed.
 
-    The cold-hook reader the SessionStart / UserPromptSubmit hooks consult to decide
+    The cold-hook reader the SessionStart hook and the PreToolUse gates consult to decide
     default-off engagement. Env-first (``T3_AUTOLOAD`` truthy), else the DB-home
     ``autoload`` flag read via the Django-free ``_cold_db_bool``. Fails CLOSED (OFF)
     on a missing/broken DB, so a fresh install never auto-engages teatree until the

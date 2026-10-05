@@ -23,7 +23,13 @@ from tests.teatree_core.conftest import CommandOverlay
 
 
 def _ticket(**kw: object) -> Ticket:
-    return Ticket.objects.create(overlay="test", **kw)
+    ticket = Ticket.objects.create(overlay="test", **kw)
+    ticket.record_review_context(
+        work_item=ticket.issue_url or f"https://example.test/issues/{ticket.pk}",
+        documents=["referenced-specification.pdf"],
+        analysis="Compared the implementation with the referenced specification and ticket.",
+    )
+    return ticket
 
 
 class TestVisitPhaseIdentifierResolution(TestCase):
@@ -440,7 +446,7 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "same-agent"
         assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer"
-        session.check_gate("reviewing")  # no raise
+        session.check_gate_across_ticket("reviewing")  # no raise
 
     def test_cli_distinct_agents_also_pass(self) -> None:
         ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
@@ -452,7 +458,7 @@ class TestCliVisitPhaseRecordsAuditTrail(TestCase):
         session.refresh_from_db()
         assert session.phase_visits["coding"]["agent_id"] == "maker"
         assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer"
-        session.check_gate("reviewing")
+        session.check_gate_across_ticket("reviewing")
 
 
 class TestLoopPathRecordsVisitedPhase(TestCase):
@@ -513,19 +519,21 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
-    def test_legacy_raw_spellings_satisfy_gate_and_error_report_is_canonical(self) -> None:
-        # Legacy rows from pre-#782 paths (or any path that bypassed
-        # visit_phase) store raw short verbs. _check_phases normalizes
-        # so the gate passes when reviewing is present in legacy form.
+    def test_legacy_raw_spellings_do_not_satisfy_canonical_phase_gate(self) -> None:
+        # Legacy rows that bypassed visit_phase lack a canonical attestation.
+        # They cannot satisfy the always-on shipping gate.
         ticket = _ticket(state=Ticket.State.REVIEW_REQUESTED)
         session = Session.objects.create(ticket=ticket, agent_id="legacy")
         session.visited_phases = ["review", "test"]  # raw, non-canonical
         session.phase_visits = {}
         session.save(update_fields=["visited_phases", "phase_visits"])
 
-        assert _check_shipping_gate(ticket) is None
+        result = _check_shipping_gate(ticket)
+        assert result is not None
+        assert result["allowed"] is False
+        assert result["missing"] == ["testing", "reviewing"]
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_legacy_raw_testing_only_error_names_canonical_reviewing(self) -> None:
         # ONLY raw 'test' present — reviewing is genuinely missing.
@@ -543,13 +551,9 @@ class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
 
         assert result is not None
         assert result["allowed"] is False
-        # The gate's own message names only `reviewing` (the genuinely
-        # missing phase). The `missing` list MUST match — pre-#1118 it
-        # claimed `[testing, reviewing]` because the comparison was
-        # unnormalized.
-        assert result["missing"] == ["reviewing"], (
-            f"Error report must normalize phases before computing missing — got {result['missing']}"
-        )
+        # A raw legacy spelling no longer attests testing; both canonical
+        # phase names are reported as missing.
+        assert result["missing"] == ["testing", "reviewing"]
 
     def test_phases_split_across_sessions_with_in_review_state_gate_passes(self) -> None:
         # The production repro: an earliest blank session (the loop's

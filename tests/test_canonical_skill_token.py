@@ -97,7 +97,7 @@ class TestForeignNamespacePreserved:
 
 
 class TestNonOwnedStaysBare:
-    """A non-owned bare name (supplementary ``ac-*``) stays unqualified."""
+    """A non-owned bare name (an ``ac-*``) stays unqualified."""
 
     def test_ac_skill_stays_bare(self) -> None:
         assert _canonical_skill_token("ac-django", _OWNED, _NS) == "ac-django"

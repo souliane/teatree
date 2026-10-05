@@ -7,7 +7,6 @@ from django.contrib.auth import get_user_model, login
 from django.db import connections
 
 from teatree import request_cache
-from teatree.config import get_effective_settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -31,13 +30,12 @@ class LocalAdminAutoLoginMiddleware:
     is pure friction — a lost password locks the owner out of their own tool. An
     unauthenticated request under one of :data:`_AUTOLOGIN_PREFIXES` (``/admin/``
     or the ``teatree.dash`` dashboard at ``/dash/``, #3162) is logged in as the
-    first superuser when BOTH hold:
+    first superuser when:
 
-    * the ``admin_autologin_enabled`` setting is on (DB-home, default on), and
     * the request originates from loopback (``127.0.0.1`` / ``::1``).
 
     The loopback check is the hard security boundary — auto-login NEVER fires for
-    a non-loopback request, even with the flag on — so a non-loopback deployment
+    a non-loopback request — so a non-loopback deployment
     of the admin cannot silently open it. This is deliberately decoupled from
     ``DEBUG``: the admin now mounts and serves independent of ``DEBUG``, so the
     old ``DEBUG`` gate would have been meaningless. Place this after
@@ -52,7 +50,6 @@ class LocalAdminAutoLoginMiddleware:
             request.path.startswith(_AUTOLOGIN_PREFIXES)
             and not request.user.is_authenticated
             and request_is_loopback(request)
-            and get_effective_settings().admin_autologin_enabled
         ):
             superuser = get_user_model().objects.filter(is_superuser=True).first()
             if superuser is not None:

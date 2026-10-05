@@ -21,11 +21,9 @@ from teatree.core.models.consolidated_memory import BindingFeedbackError, Consol
 from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticItemVerdict, CriticVerdict, CriticVerdictError
-from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.directive import Directive, DirectiveError, DirectiveManager
-from teatree.core.models.directive_candidate import DirectiveCandidate, DirectiveCandidateError
 from teatree.core.models.directive_dispatch import DirectiveDispatch
 from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
@@ -133,6 +131,7 @@ from teatree.core.models.ticket_artifacts import (
     TicketArtifacts,
     WorktreeArtifact,
 )
+from teatree.core.models.ticket_sweep_run import SOURCE_INTERACTIVE, SOURCE_LOOP, TicketSweepRun, TicketSweepRunManager
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
@@ -145,6 +144,7 @@ from teatree.core.models.unclaimed_intake_candidate import (
 from teatree.core.models.unshipped_work_record import UnshippedWorkRecord
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX, UsageWindowState, UsageWindowStateQuerySet
 from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
+from teatree.core.models.worker_generation import WorkerGeneration
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
@@ -154,6 +154,8 @@ __all__ = [
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
     "SEAT_WINDOW",
+    "SOURCE_INTERACTIVE",
+    "SOURCE_LOOP",
     "STARVED_AFTER",
     "AgentRouteAvailability",
     "AnthropicActivePick",
@@ -185,8 +187,6 @@ __all__ = [
     "CriticItemVerdict",
     "CriticVerdict",
     "CriticVerdictError",
-    "DailyDigestMessage",
-    "DailyDigestThread",
     "DbApproval",
     "DbApprovalError",
     "DbAudit",
@@ -195,8 +195,6 @@ __all__ = [
     "DeferredQuestionError",
     "DeliveryClaim",
     "Directive",
-    "DirectiveCandidate",
-    "DirectiveCandidateError",
     "DirectiveDispatch",
     "DirectiveError",
     "DirectiveManager",
@@ -336,6 +334,8 @@ __all__ = [
     "Ticket",
     "TicketArtifacts",
     "TicketExtra",
+    "TicketSweepRun",
+    "TicketSweepRunManager",
     "TicketTransition",
     "TrajectoryToolCall",
     "TrustedIdentity",
@@ -349,6 +349,7 @@ __all__ = [
     "WaitingItem",
     "WaitingItemError",
     "WaitingItemManager",
+    "WorkerGeneration",
     "Worktree",
     "WorktreeArtifact",
     "WorktreeEnvOverride",

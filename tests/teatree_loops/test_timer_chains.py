@@ -237,6 +237,39 @@ class TestLoopTimerBody(django.test.TestCase):
             _fire("inbox")  # a second timeout must NOT spawn a second OPEN question
         assert DeferredQuestion.objects.filter(dedupe_marker=marker).count() == 1
 
+    def test_a_loop_killed_at_its_deadline_again_and_again_backs_off_exponentially(self) -> None:
+        # One tick that cannot finish held the only control lane for 300 s of every 360.
+        row = self._enable_inbox(last_run_at=timezone.now() - dt.timedelta(seconds=120))
+        deadline = timer_chains.compute_tick_deadline(row)
+        gaps: list[float] = []
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                timer_chains, "run_deadlined_tick", lambda name, *, deadline: {"timed_out": True, "returncode": None}
+            )
+            for _ in range(3):
+                before = timezone.now()
+                _fire("inbox")
+                (successor,) = timer_chains.pending_loop_timers("inbox")
+                gaps.append((successor.run_after - before).total_seconds())
+                successor.delete()
+
+        row.refresh_from_db()
+        assert row.consecutive_deadline_kills == 3
+        assert [round(gap / deadline) for gap in gaps] == [1, 2, 4]
+
+    def test_the_backoff_is_capped(self) -> None:
+        assert timer_chains.deadline_backoff_seconds(50, deadline=300.0) == timer_chains.MAX_DEADLINE_BACKOFF_SECONDS
+
+    def test_a_tick_that_completes_clears_the_kill_count(self) -> None:
+        self._enable_inbox(last_run_at=timezone.now() - dt.timedelta(seconds=120), consecutive_deadline_kills=4)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                timer_chains, "run_deadlined_tick", lambda name, *, deadline: {"timed_out": False, "returncode": 1}
+            )
+            _fire("inbox")
+
+        assert Loop.objects.get(name="inbox").consecutive_deadline_kills == 0
+
     def test_tick_timeout_escalation_dedups_only_open_questions(self) -> None:
         # F6.12: the escalation dedups only OPEN (unanswered) questions. Two timeouts
         # while the question is pending collapse to one row; but once the user ANSWERS

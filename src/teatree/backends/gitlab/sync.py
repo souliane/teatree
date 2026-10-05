@@ -23,7 +23,6 @@ from teatree.backends.gitlab.sync_prs import _PRContext, extract_repo_path, upse
 from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
 from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.intake.label_admission import LabelPolicy
-from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name
 from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
 
@@ -90,9 +89,6 @@ class GitLabSyncBackend(SyncBackend):
                 exclude_labels=tuple(overlay.config.exclude_labels),
             ),
         )
-
-        if overlay_name:
-            Ticket.objects.in_flight().filter(overlay="").update(overlay=overlay_name)
 
         fetch_issue_labels(client, result)
         self._sync_terminal_prs(client, username, result, last_sync=last_sync, sync_started_at=sync_started_at)

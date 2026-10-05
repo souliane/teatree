@@ -42,8 +42,10 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.cli.config import show as cli_config_show  # noqa: PLC0415
     from teatree.cli.doctor import app as cli_doctor_app  # noqa: PLC0415 — lazy: no Django bootstrap at module import
     from teatree.core.management.commands import (  # noqa: PLC0415
+        _worktree_adopt_command,
         checking,
         do,
+        dream,
         e2e,
         env,
         followup,
@@ -70,9 +72,12 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree retention scratch": retention.Command.scratch,
         "teatree tasks list": tasks.Command.list_tasks,
         "teatree followup sync": followup.Command.sync,
+        "teatree dream gap-coverage": dream.Command.gap_coverage_report,
         "teatree worktree status": worktree.Command.status,
         "teatree worktree diagnose": worktree.Command.diagnose,
+        "teatree worktree adopt": _worktree_adopt_command.WorktreeAdoptCommands.adopt,
         "teatree workspace branch-verdict": workspace.Command.branch_verdict,
+        "teatree workspace list-orphans": workspace.Command.list_orphans,
         "teatree workspace release-dead-rows": workspace.Command.release_dead_rows_cmd,
         "teatree workspace repair-branch-upstreams": workspace.Command.repair_branch_upstreams,
         "teatree workspace stamp-owners": workspace.Command.stamp_owners,
@@ -91,6 +96,9 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree ticket set-target-branch": ticket.Command.set_target_branch,
+        "teatree ticket sweep-begin": ticket.Command.sweep_begin,
+        "teatree ticket sweep-finish": ticket.Command.sweep_finish,
+        "teatree ticket sweep-trend": ticket.Command.sweep_trend,
         "teatree review record": review.Command.record,
         "teatree review record-evidence": review.Command.record_evidence,
         "teatree review status": review.Command.status,

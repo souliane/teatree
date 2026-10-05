@@ -40,6 +40,7 @@ from typing import Final
 
 from hooks.scripts.foreign_branch_push_argv import PushSpec, git_push_spec
 from hooks.scripts.foreign_branch_push_shell import (
+    SHELL_WRAPPERS,
     Heredoc,
     command_name,
     flatten_command,
@@ -50,7 +51,6 @@ from hooks.scripts.foreign_branch_push_shell import (
     shell_payload,
 )
 
-_SHELL_WRAPPERS: Final[frozenset[str]] = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 # Leaders whose operand is NOT a literal script — `eval` re-expands it, `ssh`
 # runs it elsewhere, `source` names a file — so parsing it is not parsing what runs.
 _SCRIPT_OPERAND_LEADERS: Final[frozenset[str]] = frozenset({"eval", "ssh", "source", "."})
@@ -58,7 +58,7 @@ _SCRIPT_OPERAND_LEADERS: Final[frozenset[str]] = frozenset({"eval", "ssh", "sour
 _TEXT_SINKS: Final[frozenset[str]] = frozenset({"echo", "printf"})
 # A heredoc reaching one of these is EXECUTED; fed to `cat`, `git commit -F -`,
 # `gh` or `python3` it is data, and data is outside this gate's perimeter.
-_HEREDOC_EXECUTORS: Final[frozenset[str]] = _SHELL_WRAPPERS | _SCRIPT_OPERAND_LEADERS
+_HEREDOC_EXECUTORS: Final[frozenset[str]] = SHELL_WRAPPERS | _SCRIPT_OPERAND_LEADERS
 _MAX_WRAPPER_DEPTH: Final[int] = 3
 
 
@@ -132,7 +132,7 @@ def _read_segment(
     name = command_name(leading[0])
     if name == "cd":
         return _joined(work_dir, leading[1]) if len(leading) > 1 else work_dir
-    if name in _SHELL_WRAPPERS and (payload := shell_payload(leading)):
+    if name in SHELL_WRAPPERS and (payload := shell_payload(leading)):
         _collect_pushes(payload, work_dir, into, depth=depth + 1)
     elif name == "git":
         _read_git_push(leading, work_dir, into)
@@ -151,7 +151,7 @@ def _unread_of(
     must not escalate it.
     """
     name = command_name(leading[0])
-    if name in _SHELL_WRAPPERS:
+    if name in SHELL_WRAPPERS:
         if names_git_push(segment):
             return Unread("shell-payload", name, force_near_push(" ".join(segment)))
         if _printed_script(preceding, work_dir, depth):
@@ -191,7 +191,7 @@ def _wraps_a_shell_script(segment: tuple[str, ...], work_dir: str, depth: int) -
 
 def _shell_index(tokens: tuple[str, ...]) -> int | None:
     """Where *tokens* names a shell, so the ``-c`` that is read is the SHELL's own."""
-    return next((index for index, word in enumerate(tokens) if command_name(word) in _SHELL_WRAPPERS), None)
+    return next((index for index, word in enumerate(tokens) if command_name(word) in SHELL_WRAPPERS), None)
 
 
 def _printed_script(preceding: tuple[str, ...], work_dir: str, depth: int) -> bool:
@@ -235,7 +235,7 @@ def _heredoc_executor(consumer: tuple[str, ...]) -> str:
         # A shell's own `-c` script displaces stdin as what IT runs, so
         # `bash -c 'cat > f' <<'EOF'` writes the body to a file. Not a general
         # rule: a payload that re-executes stdin (`sh -c 'sh'`) still runs it.
-        return "" if name in _SHELL_WRAPPERS and shell_payload(consumer, index) else name
+        return "" if name in SHELL_WRAPPERS and shell_payload(consumer, index) else name
     return ""
 
 

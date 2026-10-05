@@ -2,9 +2,8 @@
 
 The agent-facing read seam for the cold-tier recall mechanism: given a query, it scores
 the project's cold ``MEMORY_ARCHIVE.md`` index (the rules PR1/#2723 archived out of the
-session-loaded hot ``MEMORY.md``) and prints the top relevant entries. The same pure core
-the ``UserPromptSubmit`` hook uses (``teatree.loops.dream.recall``), exposed as a CLI for
-manual lookup and inspection.
+session-loaded hot ``MEMORY.md``) and prints the top relevant entries, through the pure
+core ``teatree.loops.dream.recall``.
 
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's ``call_command``;
 ``typer.Exit`` is the wrong primitive on that path (see /t3:internals "Management Command

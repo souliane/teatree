@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Iterable
 from datetime import datetime
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from django.apps import apps
 from django.db import models, transaction
@@ -24,8 +24,6 @@ class Session(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
     agent_id = models.CharField(max_length=255, blank=True)
-    repos_modified = models.JSONField(default=list, blank=True)
-    repos_tested = models.JSONField(default=list, blank=True)
 
     objects = SessionManager()
 
@@ -155,15 +153,6 @@ class Session(models.Model):
         except Exception:
             logger.exception("could not seed the %r rubric criterion for ticket %s", phase, ticket.pk)
 
-    def has_visited(self, phase: str) -> bool:
-        return phase in self._visited_phases()
-
-    def check_gate(self, target_phase: str, *, force: bool = False) -> None:
-        """Check this session's own phase records against the gate."""
-        if force:
-            return
-        self._check_phases(target_phase, self._visited_phases())
-
     def check_gate_across_ticket(self, target_phase: str) -> None:
         """Check the gate against the UNION of all the ticket's sessions.
 
@@ -183,48 +172,15 @@ class Session(models.Model):
     def _check_phases(self, target_phase: str, visited: list[str]) -> None:
         """Gate ``target_phase`` against the required canonical phases.
 
-        Both sides are normalized at this read boundary (#782):
-        ``visited`` may carry legacy raw spellings (rows written before
-        #782, or by a path that bypassed :meth:`visit_phase` such as
-        ``merge.execution``); ``_REQUIRED_PHASES`` is keyed canonically.
-        Normalizing membership here means a legacy ``review`` row still
-        satisfies the canonical ``reviewing`` requirement instead of the
-        gate falsely blocking shipping forever.
+        Stored phase visits are canonicalized at the write boundary and by
+        migration 0125. The target may still arrive as a short skill verb.
         """
-        canonical_visited = {normalize_phase(phase) for phase in visited}
         canonical_target = normalize_phase(target_phase)
-        missing = [phase for phase in self._REQUIRED_PHASES.get(canonical_target, []) if phase not in canonical_visited]
+        missing = [phase for phase in self._REQUIRED_PHASES.get(canonical_target, []) if phase not in visited]
         if missing:
             joined = ", ".join(missing)
             msg = f"{canonical_target} requires: {joined}"
             raise QualityGateError(msg)
-
-    def mark_repo_modified(self, repo: str) -> None:
-        self._append_repo("repos_modified", repo)
-
-    def mark_repo_tested(self, repo: str) -> None:
-        self._append_repo("repos_tested", repo)
-
-    def _append_repo(self, field: str, repo: str) -> None:
-        """Append ``repo`` to a JSON list column atomically.
-
-        Mirrors the locked-RMW shape of :meth:`visit_phase`: re-read the row
-        under ``select_for_update`` so a concurrent append on the same Session
-        row is serialised by the DB lock rather than lost.
-        """
-        with transaction.atomic():
-            locked = type(self).objects.select_for_update().get(pk=self.pk)
-            repos = cast("list[str]", getattr(locked, field) or [])
-            if repo in repos:
-                return
-            updated = [*repos, repo]
-            type(self).objects.filter(pk=self.pk).update(**{field: updated})
-            setattr(self, field, updated)
-
-    def untested_repos(self) -> list[str]:
-        modified = set(cast("list[str]", self.repos_modified or []))
-        tested = set(cast("list[str]", self.repos_tested or []))
-        return sorted(modified - tested)
 
     def close(self, *, at: datetime | None = None) -> bool:
         """Stamp ``ended_at`` once; ``True`` iff this call was the one that closed it.
@@ -252,9 +208,3 @@ class Session(models.Model):
         if self.tasks.filter(status__in=task_model.Status.active()).exists():  # ty: ignore[unresolved-attribute]
             return False
         return self.close(at=at)
-
-    def begin_manual_handoff(self) -> None:
-        self.close()
-
-    def _visited_phases(self) -> list[str]:
-        return cast("list[str]", self.visited_phases or [])

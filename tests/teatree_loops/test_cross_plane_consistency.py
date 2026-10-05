@@ -3,7 +3,7 @@
 After LOOP-PR-A the loop-run sites share ONE combined verdict
 (``teatree.loop.loop_state_db.loop_enabled`` = ``Loop.enabled`` AND not
 ``LoopState``-held). The surviving driving plane is the **fan-out**:
-``teatree.loops.loop_table.build_loop_table_jobs`` (the live loop-table fan-out,
+``teatree.loops.loop_table.admitted_loop_names`` (the live loop-table admission,
 composing ``Loop.enabled`` + the ``LoopState`` hold via ``loop_state_admits``) —
 the worker's timer chains admit through the SAME verdict. (PR-28 retired the
 #2650 cron-mirror registration plane, so it is no longer a plane to keep
@@ -36,7 +36,7 @@ from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loops.base import MiniLoop
-from teatree.loops.loop_table import build_loop_table_jobs
+from teatree.loops.loop_table import admitted_loop_names
 
 _REVIEW = "review"
 
@@ -64,10 +64,10 @@ def _ensure_loop(name: str, *, enabled: bool = True) -> None:
 
 
 def _master_runs(name: str, *, now: object) -> bool:
-    """True iff the loop-table fan-out emits *name*'s job (the live-tick verdict)."""
+    """True iff the loop-table admission emits *name*'s job (the live-tick verdict)."""
     with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini(name),)):
-        jobs = build_loop_table_jobs({}, now=now)
-    return f"job-{name}" in jobs
+        names = admitted_loop_names(now, only=name)
+    return name in names
 
 
 @django.test.override_settings(USE_TZ=True)

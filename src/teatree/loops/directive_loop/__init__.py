@@ -9,7 +9,7 @@ verify — is a later PR's; this package carries the intake arc through ``ADMITT
 
 The safety model is the outer loop's, carried whole: interpretation is headless,
 ratification is human, and ``Directive.admit`` RAISES without a consumed ratify
-question — there is no auto-admit path. ``directive_loop_enabled`` ships ON, so a
+question — there is no auto-admit path. A
 captured directive IS interpreted; capture itself stays explicit, because ambient
 directive detection is deleted (#105) and the CLI is the only producer.
 """

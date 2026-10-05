@@ -24,7 +24,7 @@ def snapshot_age_days(cfg: DjangoDbImportConfig, *, now: datetime | None = None)
     the snapshot was taken doubles as its own "last refreshed" timestamp, so
     no separate persisted marker is needed.
     """
-    dslr_cmd = _dslr.find_dslr_cmd(cfg.snapshot_tool, cfg.main_repo_path) if cfg.snapshot_tool else []
+    dslr_cmd = _dslr.find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
     if not dslr_cmd:
         return None
     env = _dslr.dslr_env(cfg.ref_db_name)

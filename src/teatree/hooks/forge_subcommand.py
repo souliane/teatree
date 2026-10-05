@@ -11,7 +11,8 @@ table, so the two gates can never drift on which invocation forms they recognise
 toward BLOCK: a leading ``NAME=val`` env run, a known argv wrapper, a path-qualified program
 word, shell grouping/compound keywords, and command substitutions are all descended through,
 so any plausible invocation fires. Only a heredoc body (stripped), a comment (dropped by the
-lexer), and a quoted-string operand (a non-command-position token) pass.
+lexer), and a quoted-string operand (a non-command-position token) pass. A substitution runs
+wherever bash expands one: unquoted, in double quotes, and in a heredoc whose delimiter is unquoted.
 
 Stdlib-only apart from the sibling lexer, so Lane B and the cold PreToolUse subprocess can
 both import it.
@@ -19,14 +20,18 @@ both import it.
 
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 
 from teatree.hooks._shell_lexer import split_commands, tokenize
 
-# A heredoc body span: ``<<['"]?DELIM['"]?\n … \nDELIM``. Stripped before lexing so a body
-# line that BEGINS with the subcommand phrase cannot land at a command position.
-_HEREDOC_BODY_RE = re.compile(r"(<<-?\s*['\"]?\w+['\"]?\s*\n).*?(\n\s*\w+\b)", re.DOTALL)
+# A heredoc head ending its line: ``<<['"]?DELIM['"]?\n`` (never a ``<<<`` here-string). Its body,
+# up to the line that is exactly DELIM (tabs first stripped for ``<<-``), is stripped before lexing so
+# a body line that BEGINS with the subcommand phrase cannot land at a command position.
+_HEREDOC_HEAD_RE = re.compile(r"(?<!<)<<(-)?[ \t]*(['\"]?)(\w+)\2[ \t]*\n")
+
+# Where a ``#`` opens a comment (at a word's start), and where a heredoc delimiter word ends.
+_WORD_BREAKS = frozenset(" \t\n;&|()<>")
 
 # A leading ``NAME=val`` env-assignment run (consumed before the program word).
 _ENV_ASSIGN_RE = re.compile(r"^\w+=")
@@ -40,7 +45,14 @@ _WRAPPER_VALUE_OPTIONS: dict[str, frozenset[str]] = {
     "exec": frozenset({"-a"}),
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
     "xargs": frozenset({"-n", "-L", "-I", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "setsid": frozenset(),
 }
+
+# Wrappers whose own operands come before the program (``timeout DURATION gh …``): how many.
+_WRAPPER_OPERANDS: dict[str, int] = {"timeout": 1}
 
 # Shell grouping / compound keywords that PRECEDE a command word in a segment.
 _COMPOUND_KEYWORDS: frozenset[str] = frozenset(
@@ -105,72 +117,171 @@ def basename(word: str) -> str:
 
 
 def strip_heredoc_bodies(command: str) -> str:
-    """Remove heredoc body content, keeping the redirect head and the delimiter line."""
-    return _HEREDOC_BODY_RE.sub(lambda m: m.group(1) + m.group(2), command)
+    """Remove heredoc body content, keeping the redirect head and the delimiter line.
 
-
-def command_substitution_bodies(command: str) -> list[str]:
-    """Return the inner text of every LIVE ``$(…)`` and backtick command substitution.
-
-    A subcommand invoked inside a substitution still executes, so each body is fed back
-    through the detector. ``$(`` spans are matched by paren balance (nested substitutions are
-    captured whole); backtick spans run to the next unescaped backtick. A span inside single
-    quotes is literal text bash never expands, so it is skipped.
+    A line opening more than one heredoc, and everything after it, is left to the lexer, which reads
+    their bodies in turn: stripping from the last head would remove the first one's delimiter line.
     """
-    bodies: list[str] = []
-    in_single = in_double = False
-    i = 0
-    while i < len(command):
-        char = command[i]
-        if char == "\\" and not in_single:
-            i += 2
-            continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif not in_single and (span := _substitution_span(command, i)) is not None:
-            bodies.append(span[0])
-            i = span[1]
-            continue
-        i += 1
-    return bodies
+    kept: list[str] = []
+    index = 0
+    while (head := _HEREDOC_HEAD_RE.search(command, index)) is not None:
+        delimiter_line = _delimiter_line(command, head.end(), head[3], strip_tabs=bool(head[1]))
+        if delimiter_line is None or command[command.rfind("\n", 0, head.start()) + 1 : head.end()].count("<<") > 1:
+            break
+        kept.append(command[index : head.end()])
+        index = delimiter_line
+    return "".join(kept) + command[index:]
 
 
-def _substitution_span(command: str, start: int) -> tuple[str, int] | None:
-    """``(body, index after the span)`` for a ``$(…)`` or backtick opening at *start*, else ``None``."""
-    n = len(command)
-    if command.startswith("$(", start):
-        end = _closing_paren(command, start + 2)
-        return command[start + 2 : end], min(end + 1, n)
-    if command[start] == "`":
-        j = start + 1
-        while j < n and command[j] != "`":
-            j += 2 if command[j] == "\\" else 1
-        return command[start + 1 : j], j + 1
+def _delimiter_line(text: str, index: int, delimiter: str, *, strip_tabs: bool) -> int | None:
+    """Where the line that ends a heredoc body starting at *index* begins; ``None`` when no line does."""
+    while index <= len(text):
+        newline = text.find("\n", index)
+        line = text[index : len(text) if newline < 0 else newline]
+        if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+            return index
+        if newline < 0:
+            return None
+        index = newline + 1
     return None
 
 
-def _closing_paren(command: str, start: int) -> int:
-    """The index of the ``)`` closing a ``$(`` whose body starts at *start* — quotes and escapes respected."""
-    depth = 1
+def command_substitution_bodies(command: str) -> list[str]:
+    """Return the inner text of every LIVE ``$(…)``, backtick and ``<(…)`` / ``>(…)`` substitution.
+
+    A subcommand invoked inside a substitution still executes, so each body is fed back through the
+    detector; a nested one is captured whole inside its outer body. The walk reads the text the way
+    bash does: single quotes, a ``#`` comment and the body of a heredoc whose delimiter is quoted
+    (``<<'EOF'``) are literal text bash never expands, so a span there is skipped — and an apostrophe
+    in one never shifts the quoting of what follows. An unquoted heredoc body expands ``$(…)`` and
+    backticks, while its quotes are plain characters.
+    """
+    bodies: list[str] = []
+    _live_text(command, 0, bodies, closing=False)
+    return bodies
+
+
+def _live_text(text: str, index: int, bodies: list[str], *, closing: bool) -> int:
+    """Walk shell text from *index*, adding each live substitution's body to *bodies*.
+
+    Inside a ``$(`` (*closing*), the walk returns the index of the ``)`` closing it, else ``len(text)``.
+    """
+    depth = 0
     in_single = in_double = False
-    j = start
-    while j < len(command):
-        char = command[j]
-        if char == "\\" and not in_single:
-            j += 2
+    heredocs: list[tuple[str, bool, bool]] = []
+    while index < len(text):
+        char = text[index]
+        if in_single:
+            in_single = char != "'"
+            index += 1
             continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif not (in_single or in_double) and char in "()":
+        if char == "\\":
+            index += 2
+            continue
+        span = _substitution_span(text, index, process=not in_double)
+        if span is not None:
+            bodies.append(span[0])
+            index = span[1]
+            continue
+        if char == '"' or in_double:
+            in_double = in_double != (char == '"')
+        elif char == "'":
+            in_single = True
+        elif (unexpanded_end := _past_unexpanded(text, index, heredocs, bodies)) is not None:
+            index = unexpanded_end
+            continue
+        elif closing and char in "()":
             depth += 1 if char == "(" else -1
-            if depth == 0:
-                return j
-        j += 1
-    return len(command)
+            if depth < 0:
+                return index
+        index += 1
+    return index
+
+
+def _past_unexpanded(text: str, index: int, heredocs: list[tuple[str, bool, bool]], bodies: list[str]) -> int | None:
+    """The index past a ``#`` comment, a heredoc head, or the heredoc bodies the newline at *index* starts.
+
+    ``None`` when none of them starts at *index*. A head is queued on *heredocs* until its line ends.
+    """
+    if text[index] == "#" and (index == 0 or text[index - 1] in _WORD_BREAKS):
+        return _line_end(text, index)
+    if (head := _heredoc_head(text, index)) is not None:
+        heredocs.append(head[0])
+        return head[1]
+    if text[index] == "\n" and heredocs:
+        end = _heredoc_bodies(text, index + 1, heredocs, bodies)
+        heredocs.clear()
+        return end
+    return None
+
+
+def _substitution_span(text: str, start: int, *, process: bool) -> tuple[str, int] | None:
+    """``(body, index after the span)`` for a substitution opening at *start*, else ``None``.
+
+    ``$(…)`` everywhere it is live; ``<(…)`` / ``>(…)`` only where *process* substitution applies.
+    """
+    if text.startswith("$(", start) or (process and text.startswith(("<(", ">("), start)):
+        end = _live_text(text, start + 2, [], closing=True)
+        return text[start + 2 : end], min(end + 1, len(text))
+    if text[start] == "`":
+        j = start + 1
+        while j < len(text) and text[j] != "`":
+            j += 2 if text[j] == "\\" else 1
+        return text[start + 1 : j], j + 1
+    return None
+
+
+def _line_end(text: str, index: int) -> int:
+    newline = text.find("\n", index)
+    return len(text) if newline < 0 else newline
+
+
+def _heredoc_head(text: str, index: int) -> tuple[tuple[str, bool, bool], int] | None:
+    """``((delimiter, strip_tabs, quoted), index after it)`` for a ``<<`` opening at *index*, else ``None``."""
+    if not text.startswith("<<", index) or text.startswith("<<<", index) or text[index - 1 : index] == "<":
+        return None
+    cursor = index + 2
+    strip_tabs = text.startswith("-", cursor)
+    cursor += strip_tabs
+    while text[cursor : cursor + 1] in {" ", "\t"}:
+        cursor += 1
+    delimiter: list[str] = []
+    quoted = False
+    while cursor < len(text) and text[cursor] not in _WORD_BREAKS:
+        if text[cursor] in "'\"":
+            close = text.find(text[cursor], cursor + 1)
+            close = len(text) if close < 0 else close
+            delimiter.append(text[cursor + 1 : close])
+            cursor, quoted = close + 1, True
+        else:
+            quoted = quoted or text[cursor] == "\\"
+            cursor += 2 if text[cursor] == "\\" else 1
+            delimiter.append(text[cursor - 1 : cursor])
+    return (("".join(delimiter), strip_tabs, quoted), cursor) if delimiter else None
+
+
+def _heredoc_bodies(text: str, index: int, heredocs: list[tuple[str, bool, bool]], bodies: list[str]) -> int:
+    """Read each pending heredoc body from *index*; an unquoted one's substitutions run. The index after them."""
+    for delimiter, strip_tabs, quoted in heredocs:
+        end = _delimiter_line(text, index, delimiter, strip_tabs=strip_tabs)
+        body = text[index : len(text) if end is None else end]
+        index = len(text) if end is None else min(_line_end(text, end) + 1, len(text))
+        if not quoted:
+            _expanded_body(body, bodies)
+    return index
+
+
+def _expanded_body(body: str, bodies: list[str]) -> None:
+    """Add the substitutions of an unquoted heredoc *body*: its quotes are plain text, a backslash still escapes."""
+    cursor = 0
+    while cursor < len(body):
+        if body[cursor] == "\\":
+            cursor += 2
+        elif (span := _substitution_span(body, cursor, process=False)) is not None:
+            bodies.append(span[0])
+            cursor = span[1]
+        else:
+            cursor += 1
 
 
 def program_words(segment_words: list[str]) -> list[str]:
@@ -185,7 +296,10 @@ def program_words(segment_words: list[str]) -> list[str]:
     index = 0
     while index < len(segment_words):
         word = segment_words[index]
-        if _ENV_ASSIGN_RE.match(word) or word in _COMPOUND_KEYWORDS:
+        if word in {"case", "function"}:
+            index = _past_head(segment_words, index)
+            continue
+        if _ENV_ASSIGN_RE.match(word) or word in _COMPOUND_KEYWORDS or word.endswith(")"):
             index += 1
             continue
         value_options = _WRAPPER_VALUE_OPTIONS.get(basename(word))
@@ -194,7 +308,19 @@ def program_words(segment_words: list[str]) -> list[str]:
         index, split_string = _skip_wrapper_options(segment_words, index + 1, value_options)
         if split_string is not None:
             return program_words(_split_command_string(split_string) + segment_words[index:])
+        index += _WRAPPER_OPERANDS.get(basename(word), 0)
     return segment_words[index:]
+
+
+def _past_head(words: list[str], index: int) -> int:
+    """The index past ``case WORD in`` or ``function NAME``.
+
+    A case arm's ``PATTERN)`` and a function's ``NAME()`` are then skipped as words ending in ``)``, so the
+    arm's or the body's command is the program.
+    """
+    if words[index] == "function":
+        return index + 2
+    return words.index("in", index) + 1 if "in" in words[index:] else len(words)
 
 
 def _skip_wrapper_options(words: list[str], index: int, value_options: frozenset[str]) -> tuple[int, str | None]:
@@ -235,15 +361,24 @@ def invokes_forge_subcommand(command: str, subwords: Mapping[str, tuple[str, ...
 
 def forge_subcommand_argvs(command: str, subwords: Mapping[str, tuple[str, ...]]) -> list[list[str]]:
     """The argv after the subcommand words, for every EXECUTED invocation of one of *subwords*."""
+    return [
+        words[1 + len(expected) :]
+        for words in forge_program_argvs(command, subwords.keys())
+        if tuple(words[1 : 1 + len(expected := subwords[basename(words[0])])]) == expected
+    ]
+
+
+def forge_program_argvs(command: str, programs: Collection[str]) -> list[list[str]]:
+    """The words from the program word on, for every EXECUTED command segment whose program is one of *programs*."""
     if not command:
         return []
     argvs = [
-        argv
+        words
         for segment in segment_word_lists(strip_heredoc_bodies(command))
-        if (argv := _segment_argv(list(segment), subwords)) is not None
+        if (words := program_words(list(segment))) and basename(words[0]) in programs
     ]
     for body in command_substitution_bodies(command):
-        argvs.extend(forge_subcommand_argvs(body, subwords))
+        argvs.extend(forge_program_argvs(body, programs))
     return argvs
 
 
@@ -310,17 +445,6 @@ def _split_option(word: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _segment_argv(segment_words: list[str], subwords: Mapping[str, tuple[str, ...]]) -> list[str] | None:
-    """The argv after the subcommand when this segment executes one of *subwords*' verbs, else ``None``."""
-    words = program_words(segment_words)
-    if not words:
-        return None
-    expected = subwords.get(basename(words[0]))
-    if expected is None or tuple(words[1 : 1 + len(expected)]) != expected:
-        return None
-    return words[1 + len(expected) :]
-
-
 __all__ = [
     "GLAB_GH_API_RE",
     "ApiCall",
@@ -328,6 +452,7 @@ __all__ = [
     "command_substitution_bodies",
     "effective_method_is_write",
     "forge_api_calls",
+    "forge_program_argvs",
     "forge_subcommand_argvs",
     "invokes_forge_subcommand",
     "program_words",

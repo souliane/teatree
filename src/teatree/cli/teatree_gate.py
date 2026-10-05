@@ -45,7 +45,6 @@ ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
 BRIEF_ANCHOR_GATE_KEY = "brief_anchor_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
-MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
 OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
@@ -56,7 +55,6 @@ GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
 FOREIGN_BRANCH_PUSH_GATE_KEY = "foreign_branch_push_gate_enabled"
 GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
 VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
-MERGED_DETECTION_GATE_KEY = "merged_detection_gate_enabled"
 ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
@@ -86,26 +84,6 @@ def _gate_key_is_enabled(key: str, *, default: bool = True) -> bool:
 def gate_is_enabled() -> bool:
     """Resolve the orchestrator heavy-Bash gate (``GATE_KEY``, default True)."""
     return _gate_key_is_enabled(GATE_KEY)
-
-
-def skill_loading_gate_is_enabled() -> bool:
-    """Resolve the skill-loading gate (``SKILL_GATE_KEY``, default True)."""
-    return _gate_key_is_enabled(SKILL_GATE_KEY)
-
-
-def config_overwrite_gate_is_enabled() -> bool:
-    """Resolve the read-before-overwrite config gate (``CONFIG_OVERWRITE_GATE_KEY``, default True)."""
-    return _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY)
-
-
-def completion_claim_gate_is_enabled() -> bool:
-    """Resolve the completion-claim Stop gate (``COMPLETION_CLAIM_GATE_KEY``, default True)."""
-    return _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY)
-
-
-def memory_recall_gate_is_enabled() -> bool:
-    """Resolve the cold-tier memory recall injector (``MEMORY_RECALL_GATE_KEY``, default True)."""
-    return _gate_key_is_enabled(MEMORY_RECALL_GATE_KEY)
 
 
 def danger_gate_fail_open_is_enabled() -> bool:
@@ -299,7 +277,7 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         gate_group,
         name="brief-anchor",
         key=BRIEF_ANCHOR_GATE_KEY,
-        label="Brief-anchor lint (a dispatch brief anchors its assertions or licenses overruling them)",
+        label="Brief-anchor refusal (a dispatch brief anchors its assertions or licenses overruling them)",
     )
 
     _register_keyed_gate(
@@ -307,13 +285,6 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="main-clone",
         key=MAIN_CLONE_GATE_KEY,
         label="Main-clone working-tree mutation gate",
-    )
-
-    _register_keyed_gate(
-        gate_group,
-        name="memory-recall",
-        key=MEMORY_RECALL_GATE_KEY,
-        label="Cold-tier memory recall injector",
     )
 
     _register_keyed_gate(
@@ -389,13 +360,6 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="delegation",
         key=ORCHESTRATOR_DELEGATION_GATE_KEY,
         label="Orchestrator delegation gate (an unbounded read belongs in a sub-agent)",
-    )
-
-    _register_keyed_gate(
-        gate_group,
-        name="merged-detect",
-        key=MERGED_DETECTION_GATE_KEY,
-        label="Hand-rolled merged-branch-detection advisory (WARN-only)",
     )
 
     overlay_app.add_typer(gate_group, name="gate")

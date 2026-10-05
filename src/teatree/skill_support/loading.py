@@ -3,7 +3,7 @@
 Two callers route through ``SkillLoadingPolicy``:
 
 * ``t3 agent`` CLI (interactive launch)
-* ``scripts/lib/skill_loader.py`` (UserPromptSubmit hook)
+* ``scripts/lib/skill_loader.py`` (SessionStart hook)
 
 Skill selection is fully explicit — slash commands, phase mapping, ticket
 status, the requires-dependency chain, and cwd/overlay context. There is no
@@ -128,7 +128,6 @@ class SkillSelectionResult:
     skills: list[str]
     lifecycle_skill: str = ""
     ask_user: bool = False
-    advisory_skills: tuple[str, ...] = ()
     #: SOFT companion suggestions of the resolved skills — surfaced, never loaded
     #: as a hard dependency (that is what ``requires`` → ``skills`` is for).
     companion_suggestions: tuple[str, ...] = ()
@@ -211,23 +210,19 @@ class SkillLoadingPolicy:
             ask_user=ask_user,
         )
 
-    # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def select_for_prompt_hook(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
+    def select_for_session_start(
         self,
         *,
         cwd: Path,
         overlay_skill_metadata: OverlaySkillMetadata,
         loaded_skills: set[str],
-        supplementary_skills: list[str] | None = None,
         skill_index: SkillIndex | None = None,
         companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
-        """Framework + overlay + cwd context skills for a prompt, no prose scan.
+        """Framework + overlay + cwd context skills for a starting session, no prose scan.
 
         Surfaces the cwd/overlay-detected skills (``ac-django`` for a Django
-        cwd, the overlay's own skill + companion skills for an overlay repo)
-        plus any advisory supplementary skills — never a free-text keyword
-        match on the prompt.
+        cwd, the overlay's own skill + companion skills for an overlay repo).
         """
         hard = self._base_detected_skills(
             cwd=cwd,
@@ -235,18 +230,12 @@ class SkillLoadingPolicy:
             overlay_active=False,
             companion_skills=companion_skills,
         )
-        hard_resolved = set(self._resolve_requires_chain(hard, skill_index or []))
-
-        ordered = [*hard, *(supplementary_skills or [])]
-        resolved = _dedupe(self._resolve_requires_chain(ordered, skill_index or []))
-        suggestions = [skill for skill in resolved if skill not in loaded_skills]
-        advisory = tuple(skill for skill in suggestions if skill not in hard_resolved)
+        resolved = _dedupe(self._resolve_requires_chain(hard, skill_index or []))
         companions = tuple(
             skill for skill in companion_suggestions(resolved, skill_index or []) if skill not in loaded_skills
         )
         return SkillSelectionResult(
-            skills=suggestions,
-            advisory_skills=advisory,
+            skills=[skill for skill in resolved if skill not in loaded_skills],
             companion_suggestions=companions,
         )
 
@@ -357,9 +346,8 @@ class SkillLoadingPolicy:
         gate must not fire.
 
         Scope is deliberately independent of the caller's lifecycle skill:
-        the ``UserPromptSubmit`` suggester resolves no lifecycle skill at all,
-        so gating on one made the remote-match branch dead there and the
-        overlay's own skill could never be surfaced on a prompt (BLUEPRINT
+        the SessionStart suggester resolves no lifecycle skill at all, so
+        gating on one would make the remote-match branch dead there (BLUEPRINT
         § 11.5).
         """
         if overlay_active:

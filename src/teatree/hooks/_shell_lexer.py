@@ -10,7 +10,7 @@ approach:
     BETWEEN tokens.
 - ``;``, ``|``, ``&``, ``&&``, ``||`` and ``\n`` are emitted as standalone
     metacharacter tokens regardless of surrounding whitespace, so
-    ``cmd "x";echo --quote-ok`` is split at the ``;`` even with no space, unless
+    ``cmd "x";echo done`` is split at the ``;`` even with no space, unless
     glued to a redirect (``2>&1``, ``>|out``) -- see :func:`_operator_is_redirect_glue`.
 - A bare ``(`` at a command boundary (not glued inside a token) is emitted as
     a subshell-open separator, so a publish wrapped in ``(gh …)`` becomes its own
@@ -241,7 +241,7 @@ def _heredoc_delimiter_from_glued_token(value: str) -> tuple[str, bool] | None:
     trailing) or a value with no heredoc-op prefix at all.
     """
     for op in _HEREDOC_OPS:
-        if value.startswith(op) and len(value) > len(op):
+        if value.startswith(op) and len(value) > len(op) and not value.startswith("<<<"):
             return value[len(op) :], op == "<<-"
     return None
 
@@ -273,9 +273,9 @@ class _LexerState:
             self.tokens.append(Token(value, TokenKind.WORD, raw=raw))
             self.current.clear()
             self.in_token = False
-            self._note_heredoc_word(value)
+            self._note_heredoc_word(value, raw)
 
-    def _note_heredoc_word(self, value: str) -> None:
+    def _note_heredoc_word(self, value: str, raw: str) -> None:
         """Queue a heredoc body for consumption if ``value`` opens or completes one.
 
         A heredoc redirect (``<<``/``<<-``) is tokenized as an ordinary WORD (this
@@ -284,17 +284,17 @@ class _LexerState:
         must be recognised across TWO shapes: space-separated (``<< 'EOF'`` —
         this word IS the bare operator, the delimiter is the NEXT flushed word) or
         glued (``<<EOF`` / ``<<-EOF`` / ``<<'EOF'`` — quote consumption never
-        flushes mid-token, so operator and delimiter fuse into one word).
+        flushes mid-token, so operator and delimiter fuse into one word). A quoted ``"<<EOF"`` is a word.
         """
         if self._await_heredoc_delim:
             self._await_heredoc_delim = False
             self.pending_heredocs.append((value, self._await_heredoc_strip_tabs))
             return
-        glued = _heredoc_delimiter_from_glued_token(value)
+        glued = _heredoc_delimiter_from_glued_token(value) if raw.startswith("<<") else None
         if glued is not None:
             self.pending_heredocs.append(glued)
             return
-        if value in _HEREDOC_OPS:
+        if value in _HEREDOC_OPS and raw == value:
             self._await_heredoc_delim = True
             self._await_heredoc_strip_tabs = value == "<<-"
 

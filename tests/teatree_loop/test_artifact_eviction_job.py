@@ -15,12 +15,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import UserSettings
+from teatree.core.cleanup.artifact_eviction import ArtifactEvictionPlan
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.artifact_eviction import ArtifactEvictionScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
+from teatree.loops.timer_chains import MIN_TICK_DEADLINE_SECONDS
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -217,3 +219,50 @@ class MarkerCouplingTests(TestCase):
         marker.refresh_from_db()
         assert marker.last_plan == ladder_plan, "the artifact sweep overwrote the ladder's plan"
         assert "resource=artifacts" in marker.last_artifact_plan, marker.last_artifact_plan
+
+
+class BoundedPassTests(TestCase):
+    """A sweep that cannot finish must still consume its cadence, never retry every tick (#98)."""
+
+    def test_the_attempt_is_stamped_before_the_survey_can_hang(self) -> None:
+        from teatree.loop import mechanical_artifacts  # noqa: PLC0415 — deferred
+
+        seen: list[object] = []
+
+        def survey(*_args: object, **_kwargs: object) -> ArtifactEvictionPlan:
+            seen.append(ResourcePressureMarker.load().last_artifact_sweep_at)
+            return ArtifactEvictionPlan(refusal="control")
+
+        with patch.object(mechanical_artifacts, "plan_artifact_eviction", side_effect=survey):
+            mechanical_artifacts.sweep_artifacts({"artifact_idle_days": 2.0})
+
+        assert seen, "control: the survey ran"
+        assert seen[0] is not None, "a survey killed at the tick deadline would leave nothing stamped"
+
+    def test_the_pass_runs_on_a_budget_well_inside_the_tick_deadline(self) -> None:
+        from teatree.loop import mechanical_artifacts  # noqa: PLC0415 — deferred
+
+        with patch.object(
+            mechanical_artifacts, "plan_artifact_eviction", return_value=ArtifactEvictionPlan(refusal="control")
+        ) as survey:
+            mechanical_artifacts.sweep_artifacts({"artifact_idle_days": 2.0})
+
+        budget = survey.call_args.kwargs["budget_seconds"]
+        assert 0 < budget <= MIN_TICK_DEADLINE_SECONDS / 2
+
+    def test_what_the_venue_excluded_is_recorded_in_the_plan(self) -> None:
+        from teatree.loop import mechanical_artifacts  # noqa: PLC0415 — deferred
+
+        excluded = (
+            "worktree row #85 at /Users/someone/fix: skipped — outside /home/teatree/workspace",
+            "worktree row #66 at /Users/someone/t3/x: resolved to /home/teatree/workspace/t3/x, the same directory",
+        )
+        with patch.object(
+            mechanical_artifacts, "plan_artifact_eviction", return_value=ArtifactEvictionPlan(excluded=excluded)
+        ):
+            mechanical_artifacts.sweep_artifacts({"artifact_idle_days": 2.0})
+
+        recorded = ResourcePressureMarker.load().last_artifact_plan
+        assert "worktree row #85" in recorded
+        assert "resolved to /home/teatree/workspace/t3/x" in recorded
+        assert "not this venue's" not in recorded, "a row resolved to a venue checkout IS this venue's"

@@ -20,7 +20,6 @@ from teatree.config.defaults_snapshot import (
     conservative_keys,
     default_category_keys,
     pinned_fail_closed_keys,
-    plan_fingerprint,
     plan_snapshot,
     render_toml,
 )
@@ -109,12 +108,6 @@ class TestNeverMovedThroughThisPath:
         assert _emitted(plan.toml)["autonomy"] == _shipped()["autonomy"]
         assert {d.key: d.reason for d in plan.declined}["autonomy"] == "safety-posture"
 
-    def test_dark_flag_live_override_is_declined(self) -> None:
-        plan = _plan({"outer_loop_enabled": True})
-        assert plan.changes == ()
-        assert _emitted(plan.toml)["outer_loop_enabled"] is False
-        assert {d.key: d.reason for d in plan.declined}["outer_loop_enabled"] == "feature-flag"
-
     def test_every_safety_and_dark_key_is_declined_even_when_the_live_box_moved_it(self) -> None:
         moved = dict.fromkeys(SAFETY_POSTURE_KEYS | frozenset(dark_flags()), "__moved__")
         plan = _plan(moved)
@@ -142,12 +135,12 @@ class TestNeverMovedThroughThisPath:
         assert {d.key: d.reason for d in plan.declined}["banned_terms_gate_enabled"] == "cold-hook-gate"
 
     def test_a_warm_gate_kill_switch_is_declined(self) -> None:
-        plan = _plan({"e2e_mandatory_gate_enabled": False, "require_human_approval_to_merge": False})
+        plan = _plan({"gate_relaxation_gate_enabled": False, "require_human_approval_to_merge": False})
         assert plan.changes == ()
         emitted, shipped = _emitted(plan.toml), _shipped()
-        assert emitted["e2e_mandatory_gate_enabled"] == shipped["e2e_mandatory_gate_enabled"]
+        assert emitted["gate_relaxation_gate_enabled"] == shipped["gate_relaxation_gate_enabled"]
         assert emitted["require_human_approval_to_merge"] == shipped["require_human_approval_to_merge"]
-        assert {d.key: d.reason for d in plan.declined}["e2e_mandatory_gate_enabled"] == "safety-gate"
+        assert {d.key: d.reason for d in plan.declined}["gate_relaxation_gate_enabled"] == "safety-gate"
 
     def test_every_key_the_mcp_surface_refuses_is_unmovable_here_too(self) -> None:
         # One idea on two surfaces: a key too dangerous for an agent to flip over MCP is
@@ -185,9 +178,9 @@ class TestNeverMovedThroughThisPath:
 
 class TestNonDefaultRowsAreReportedNeverEmitted:
     def test_secret_row_is_skipped_and_reported(self) -> None:
-        plan = _plan({"banned_terms": ["acme-bank"]})
-        assert "banned_terms" not in _emitted(plan.toml)
-        assert "banned_terms" in plan.skipped_secret
+        plan = _plan({"banned_term_registry": {"leak": ["acme-bank"]}})
+        assert "banned_term_registry" not in _emitted(plan.toml)
+        assert "banned_term_registry" in plan.skipped_secret
 
     def test_personal_row_is_skipped_and_reported(self) -> None:
         plan = _plan({"slack_user_id": "U123"})
@@ -293,22 +286,6 @@ class TestTheRenderedBlockIsNested:
 
     def test_nesting_the_block_moved_no_value(self) -> None:
         assert _emitted(render_toml(_shipped())) == _shipped()
-
-
-class TestFingerprintBindsAnApprovalToOneDiff:
-    def test_the_same_change_set_fingerprints_identically(self) -> None:
-        current = _shipped()["provision_ram_ceiling_percent"]
-        first, second = (_plan({"provision_ram_ceiling_percent": current - 10}) for _ in range(2))
-        assert plan_fingerprint(first.changes) == plan_fingerprint(second.changes)
-
-    def test_a_different_proposed_value_fingerprints_differently(self) -> None:
-        current = _shipped()["provision_ram_ceiling_percent"]
-        one = _plan({"provision_ram_ceiling_percent": current - 10})
-        other = _plan({"provision_ram_ceiling_percent": current - 20})
-        assert plan_fingerprint(one.changes) != plan_fingerprint(other.changes)
-
-    def test_an_empty_change_set_has_a_fingerprint_too(self) -> None:
-        assert plan_fingerprint(()) != ""
 
 
 class TestChangeTable:

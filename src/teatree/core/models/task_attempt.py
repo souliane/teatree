@@ -11,7 +11,8 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
-from teatree.core.telemetry.admission import record_lifecycle_transition
+from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
+from teatree.utils.session_ref import session_ref
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -389,12 +390,18 @@ class TaskAttempt(models.Model):
         ):
             transaction.on_commit(
                 partial(
-                    record_lifecycle_transition,
-                    kind="attempt.finished",
-                    entity_id=self.pk,
-                    ticket_id=self.task.ticket.pk,
-                    task_id=self.task.pk,
-                    cause=self.failure_kind or "success",
+                    record_lifecycle_event,
+                    LifecycleEvent(
+                        kind="attempt.finished",
+                        entity_id=self.pk,
+                        ticket_id=self.task.ticket.pk,
+                        task_id=self.task.pk,
+                        cause=self.failure_kind or "success",
+                        iteration=self.iteration,
+                        # A late error can leave the insert-time fingerprint blank.
+                        error_fingerprint=terminal_reason_fingerprint(self.error),
+                        session_ref=session_ref(self.agent_session_id),
+                    ),
                 ),
                 using=using,
             )

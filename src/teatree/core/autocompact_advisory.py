@@ -68,7 +68,7 @@ from dataclasses import dataclass
 # within the same family the previous generation is 200k
 # (``…-4-6`` entries) while the newer ones are native-1M, so a
 # family-substring match would fire falsely on a 200k model. Decoded
-# from the bundled harness catalog (Claude Code 2.1.265); a genuinely new
+# from the bundled harness catalog (Claude Code 2.1.284); a genuinely new
 # 1M-native id is a one-line addition here.
 #
 # The ``[1m]`` suffix selects the beta long-context header on a model
@@ -80,9 +80,9 @@ _KILL_SWITCH_MODELS: frozenset[str] = frozenset(
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-opus-5",
+        "claude-opus-5-5",
         "claude-sonnet-5",
-        "claude-fable-5",
-        "claude-fable-5-1",
+        "claude-sonnet-5-5",
         "claude-mythos-5",
         "claude-mythos-5-1",
     }

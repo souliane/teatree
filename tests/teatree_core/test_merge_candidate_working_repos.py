@@ -37,7 +37,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr, pr_slug_
 from teatree.core.models import MergeClear
 from teatree.core.overlay import OverlayBase, OverlayReview
 from tests._forge_stub import changed_files_stdout
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -114,6 +114,7 @@ def _working_repo_clear() -> MergeClear:
     origin), a workstream-shaped slug, and a ``pr_id`` whose number exists as
     an unrelated PR in the clone origin.
     """
+    record_owned_pr_for_test(slug=_WORKING_REPO_SLUG, pr_id=159, head_sha=_RIGHT_SHA)
     return MergeClear.objects.create(
         ticket=None,
         pr_id=159,

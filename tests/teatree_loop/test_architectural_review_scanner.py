@@ -86,7 +86,7 @@ class TestDefaultSkillResolvesToARealSkill:
 
 def _scanner(
     *,
-    skill: str = "ac-reviewing-codebase",
+    skill: str = "architectural-review",
     cadence_hours: int = 168,
     after_merge_count: int = 25,
 ) -> ArchitecturalReviewScanner:
@@ -185,7 +185,7 @@ class ArchitecturalReviewScannerTests(TestCase):
         signal = signals[0]
         assert signal.kind == "architectural_review.queued"
         assert signal.payload["overlay"] == OVERLAY
-        assert signal.payload["skill"] == "ac-reviewing-codebase"
+        assert signal.payload["skill"] == "architectural-review"
         assert signal.payload["phase"] == ARCHITECTURAL_REVIEW_PHASE
 
         task = _last_review_task()
@@ -417,7 +417,7 @@ class ArchitecturalReviewWiringTests(TestCase):
             scanner = _architectural_review_scanner_for(backend)
         assert scanner is not None
         assert scanner.overlay_name == "acme"
-        assert scanner.skill == "ac-reviewing-codebase"
+        assert scanner.skill == "architectural-review"
         assert scanner.cadence_hours == 168
         assert scanner.after_merge_count == 25
 

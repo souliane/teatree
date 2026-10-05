@@ -9,7 +9,7 @@ over its tools, and the server does the registering.
 The two declarations are the ones the built-in groups already answer for
 themselves: ``requires`` is the per-service fail-closed gate
 (``OverlayConfig.required_third_party_services``), and ``McpTool.seam`` is the
-overlay half of :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
+overlay seam declaration.
 """
 
 from collections.abc import Callable
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 class McpTool:
     """One tool an overlay contributes, with the gated seam a write of it wraps.
 
-    ``seam`` names that seam the way ``TOOL_SEAMS`` does — the core function the
+    ``seam`` names the core function the
     handler calls, and the gates it carries. It is blank for a read.
     """
 
@@ -72,5 +72,5 @@ class McpToolGroup:
 
     @property
     def seams(self) -> dict[str, str]:
-        """This group's ``TOOL_SEAMS`` contribution — every tool that names a seam."""
+        """Every tool in this group that names a seam."""
         return {tool.name: tool.seam for tool in self.tools if tool.seam.strip()}

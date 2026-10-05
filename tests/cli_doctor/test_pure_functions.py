@@ -7,7 +7,6 @@ only relocated under a focused package by concern.
 
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -62,23 +61,6 @@ class TestWriteDevSourcesMarker:
         assert "/old/path" not in content
 
 
-class TestRestoreSources:
-    def test_reverts_from_marker_via_git(self, tmp_path):
-        marker = tmp_path / ".t3-dev-sources"
-        marker.write_text("teatree=/repos/teatree\n")
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "test"\n')
-
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
-            DoctorService.restore_sources(tmp_path)
-
-        assert not marker.exists()
-        # (update-index + checkout) for pyproject.toml and uv.lock.
-        assert mock_run.call_count == 4
-
-    def test_noop_when_no_marker(self, tmp_path):
-        DoctorService.restore_sources(tmp_path)  # must not raise
-
-
 class TestResolveMainClone:
     """``_resolve_main_clone`` follows ``.git`` worktree pointer files.
 
@@ -109,51 +91,3 @@ class TestResolveMainClone:
         (worktree / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
         with patch.object(DoctorService, "find_teatree_repo", return_value=worktree):
             assert teatree_cli_doctor._resolve_main_clone() == worktree
-
-
-class TestCheckLegacyOverlayAlias:
-    """``t3 doctor`` warns (never rewrites) on a stale legacy alias entry.
-
-    souliane/teatree#1108: a bare ``teatree`` entry written by older
-    ``slack-bot`` runs maps to the canonical ``t3-teatree`` overlay. The
-    doctor surfaces it as a WARN with the rename; it must not mutate the
-    user's DB overlays registry. The registry is read via the pre-Django
-    ``cold_reader``, so the seed goes in a cold-readable DB.
-    """
-
-    def _run(self, tmp_path, monkeypatch, overlays: dict[str, dict]) -> str:
-        import io  # noqa: PLC0415
-        from contextlib import redirect_stdout  # noqa: PLC0415
-        from unittest.mock import MagicMock  # noqa: PLC0415
-
-        db = tmp_path / "config.sqlite3"
-        _seed_cold_registry(db, overlays)
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-
-        real_ep = MagicMock()
-        real_ep.name = "t3-teatree"
-        real_ep.value = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
-
-        out = io.StringIO()
-        with (
-            patch("importlib.metadata.entry_points", return_value=[real_ep]),
-            redirect_stdout(out),
-        ):
-            teatree_cli_doctor._check_legacy_overlay_alias()
-        return out.getvalue()
-
-    def test_warns_on_stale_bare_alias_entry(self, tmp_path, monkeypatch):
-        message = self._run(tmp_path, monkeypatch, {"teatree": {"mode": "auto"}})
-        assert "WARN" in message
-        assert "'teatree'" in message
-        assert "t3-teatree" in message
-
-    def test_silent_when_canonical_entry_used(self, tmp_path, monkeypatch):
-        message = self._run(tmp_path, monkeypatch, {"t3-teatree": {"mode": "auto"}})
-        assert message == ""
-
-    def test_silent_when_alias_entry_has_path(self, tmp_path, monkeypatch):
-        # A real path-backed overlay that merely happens to share a short
-        # name is a deliberate distinct overlay, not a stale alias.
-        message = self._run(tmp_path, monkeypatch, {"teatree": {"path": "/tmp/x"}})
-        assert message == ""

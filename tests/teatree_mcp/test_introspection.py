@@ -29,26 +29,26 @@ class TestQuestionList(TestCase):
 
 class TestConfigSettingGet(TestCase):
     def test_db_override_reports_db_source(self) -> None:
-        ConfigSetting.objects.set_value("factory_score_enabled", value=True)
+        ConfigSetting.objects.set_value("agent_max_turns", value=400)
 
-        row = introspection.config_setting_get(key="factory_score_enabled")
+        row = introspection.config_setting_get(key="agent_max_turns")
 
         assert row["known"] is True
-        assert row["value"] is True
+        assert row["value"] == 400
         assert row["source"] == "db"
         assert row["scope"] == "global"
 
     def test_absent_row_falls_through_to_file_env(self) -> None:
-        row = introspection.config_setting_get(key="factory_score_enabled")
+        row = introspection.config_setting_get(key="agent_max_turns")
 
         assert row["known"] is True
         assert row["source"] == "file/env"
-        assert isinstance(row["value"], bool)
+        assert isinstance(row["value"], int)
 
     def test_overlay_scope_row_reports_overlay_scope(self) -> None:
-        ConfigSetting.objects.set_value("factory_score_enabled", value=True, scope="t3-teatree")
+        ConfigSetting.objects.set_value("agent_max_turns", value=400, scope="t3-teatree")
 
-        row = introspection.config_setting_get(key="factory_score_enabled", overlay="t3-teatree")
+        row = introspection.config_setting_get(key="agent_max_turns", overlay="t3-teatree")
 
         assert row["source"] == "db"
         assert row["scope"] == "overlay:t3-teatree"
@@ -58,12 +58,12 @@ class TestConfigSettingGet(TestCase):
         # A COLD_SETTINGS key (set by the CLI, read by the cold-reader hooks)
         # must be known on the MCP surface too — it was reported known=False
         # because only two of the four key registries were consulted.
-        call_command("config_setting", "set", "internal_publish_namespaces", '["acme-internal"]')
+        call_command("config_setting", "set", "private_repos", '["gitlab.com/acme-internal"]')
 
-        row = introspection.config_setting_get(key="internal_publish_namespaces")
+        row = introspection.config_setting_get(key="private_repos")
 
         assert row["known"] is True
-        assert row["value"] == ["acme-internal"]
+        assert row["value"] == ["gitlab.com/acme-internal"]
         assert row["source"] == "db"
 
     def test_cold_hook_key_without_row_reports_its_code_default(self) -> None:
@@ -121,23 +121,6 @@ class TestGateStatus(TestCase):
         report = introspection.gate_status()
 
         assert report["review_gate"]["require_human_approval_to_merge"] is False
-
-    def test_dark_gates_surface_default_off_deep_merge_gates(self) -> None:
-        # Low finding: the deep merge gates ship DARK — gate_status names the off set
-        # so a fresh overlay can see which strong protections are not yet armed.
-        report = introspection.gate_status()
-
-        assert "require_merge_quality_verdict" in report["deep_merge_gates"]
-        # Default-off deep gate → appears in the dark set.
-        assert "require_merge_quality_verdict" in report["dark_gates"]
-
-    def test_dark_gates_drops_an_armed_gate(self) -> None:
-        call_command("config_setting", "set", "require_merge_quality_verdict", "true")
-
-        report = introspection.gate_status()
-
-        assert report["deep_merge_gates"]["require_merge_quality_verdict"] is True
-        assert "require_merge_quality_verdict" not in report["dark_gates"]
 
 
 class TestConfigSettingGetForCredentialPassKeys(TestCase):

@@ -52,11 +52,14 @@ class TestRidesTheOneSessionStartWrite:
     def test_merge_prepends_the_advisory_to_the_session_context(self, staged_home: Path) -> None:
         _write_settings(staged_home, [{"command": "t3-doctor-session-start.sh"}])
 
-        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
+        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
 
         assert merged.index("t3-doctor-session-start.sh") < merged.index("BASE DIRECTIVE")
 
     def test_merge_leaves_a_bounded_chain_unchanged(self, staged_home: Path) -> None:
         _write_settings(staged_home, [{"command": "gate.sh", "timeout": 10}])
 
-        assert router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup") == "BASE DIRECTIVE"
+        assert (
+            router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
+            == "BASE DIRECTIVE"
+        )

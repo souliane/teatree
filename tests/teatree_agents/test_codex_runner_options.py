@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
@@ -17,6 +18,7 @@ from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
+from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
 
 
 class TestCodexRunnerModelSelection(TestCase):
@@ -27,15 +29,16 @@ class TestCodexRunnerModelSelection(TestCase):
     def _task(self) -> Task:
         return Task.objects.create(ticket=self.ticket, session=Session.objects.create(ticket=self.ticket))
 
-    def _prepared_model(
+    def _prepared_options(
         self,
         *,
         harness_name: str,
         model: str | None,
         route_candidate_index: int | None,
-    ) -> str | None:
+        capabilities: HarnessCapabilities | None = None,
+    ) -> ClaudeAgentOptions:
         dispatch = DispatchHarness(
-            harness=SimpleNamespace(capabilities=HarnessCapabilities()),
+            harness=SimpleNamespace(capabilities=capabilities or HarnessCapabilities()),
             name=harness_name,
             provider=None,
             model=model,
@@ -53,7 +56,28 @@ class TestCodexRunnerModelSelection(TestCase):
                 handoff=None,
                 credential=DispatchCredential(),
             )
-        return prepared.options.model
+        return prepared.options
+
+    def _prepared_model(self, *, harness_name: str, model: str | None, route_candidate_index: int | None) -> str | None:
+        return self._prepared_options(
+            harness_name=harness_name, model=model, route_candidate_index=route_candidate_index
+        ).model
+
+    def test_a_harness_that_leaves_mcp_undeclared_still_gets_the_teatree_mcp_server(self) -> None:
+        options = self._prepared_options(harness_name="third_party", model=None, route_candidate_index=None)
+
+        assert isinstance(options.mcp_servers, dict)
+        assert "teatree" in options.mcp_servers
+
+    def test_a_harness_that_declares_no_mcp_gets_none(self) -> None:
+        options = self._prepared_options(
+            harness_name="third_party",
+            model=None,
+            route_candidate_index=None,
+            capabilities=HarnessCapabilities(mcp=False),
+        )
+
+        assert not options.mcp_servers
 
     def test_explicit_none_is_a_real_backend_default_override(self) -> None:
         options = _build_options(
@@ -70,6 +94,29 @@ class TestCodexRunnerModelSelection(TestCase):
 
     def test_direct_codex_uses_backend_default(self) -> None:
         assert self._prepared_model(harness_name="codex_app_server", model=None, route_candidate_index=None) is None
+
+    def test_worker_codex_has_no_mcp_while_host_codex_retains_it(self) -> None:
+        task = self._task()
+        for worker in (True, False):
+            with (
+                patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=worker),
+                patch("teatree.agents.codex_app_server_options.container_is_the_sandbox", return_value=worker),
+                patch("teatree.agents.prompt.build_task_prompt", return_value="prompt"),
+                patch("teatree.agents.prompt.build_system_context", return_value="context"),
+            ):
+                harness = codex_app_server_spec().factory(HarnessBuildContext(task=task, phase="coding"))
+                dispatch = DispatchHarness(harness=harness, name="codex_app_server", provider=None, model=None)
+                preflight = runner_mod._Preflight(stage_skills=[], dispatch=dispatch, skills=[])
+                prepared = runner_mod._prepare_run(
+                    task,
+                    preflight,
+                    phase="coding",
+                    handoff=None,
+                    credential=DispatchCredential(),
+                )
+                translated = CodexAppServerOptions.from_sdk_options(prepared.options)
+                assert ("mcp_servers" in translated.config) is not worker
+                assert (translated.config.get("plugins") == {CODEX_PLUGIN_ID: {"enabled": False}}) is worker
 
     def test_route_selected_harness_scopes_the_effort_vocabulary(self) -> None:
         task = self._task()

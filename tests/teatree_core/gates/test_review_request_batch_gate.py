@@ -32,7 +32,14 @@ from teatree.core.gates.review_request_batch_gate import (
     work_groups,
 )
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
-from teatree.core.models import ConfigSetting, DeferredQuestion, OnBehalfApproval, ReviewRequestPost
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    OnBehalfApproval,
+    ReviewEvidence,
+    ReviewRequestPost,
+    Ticket,
+)
 from teatree.types import RawAPIDict
 
 _GATE = "teatree.core.gates.review_request_batch_gate"
@@ -384,25 +391,16 @@ class TestReadOnlySurvey(TestCase):
         assert post_command_lines(surveyed[0]) == ()
 
 
-class TestTheGateShipsInert(TestCase):
-    """``require_work_group_batch`` is off by default, so nothing is read at all."""
-
-    def test_default_settings_refuse_nothing_and_touch_no_forge(self) -> None:
-        with patch(
-            f"{_GATE}.code_host_from_overlay",
-            side_effect=AssertionError("an unarmed gate must not reach the forge"),
-        ):
-            assert work_group_batch_refusal(_url(1)) is None
+class TestTheGateCanBeDisabled(TestCase):
+    """The batch gate always holds an unready group and releases a ready one."""
 
     def test_arming_it_returns_the_holding_verdict(self) -> None:
-        ConfigSetting.objects.set_value("require_work_group_batch", value=True)
         with _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})):
             refusal = work_group_batch_refusal(_url(1))
         assert refusal is not None
         assert refusal.blockers == (f"{_url(2)}: draft",)
 
     def test_arming_it_stays_silent_on_a_ready_group(self) -> None:
-        ConfigSetting.objects.set_value("require_work_group_batch", value=True)
         with _forge(_pair_sharing_a_ticket()):
             assert work_group_batch_refusal(_url(1)) is None
 
@@ -412,6 +410,15 @@ class _ChokepointCase(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        self.ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        self.ticket.record_anti_vacuity_attestation("a" * 40, "ACs checked against diff", [], no_new_tests=True)
+        ReviewEvidence.record(
+            ticket=self.ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha="a" * 40,
+        )
         self._tmp = Path(tempfile.mkdtemp())
         self._prev_data_dir = os.environ.get("T3_DATA_DIR")
         os.environ["T3_DATA_DIR"] = str(self._tmp)
@@ -424,10 +431,6 @@ class _ChokepointCase(TestCase):
         shutil.rmtree(self._tmp, ignore_errors=True)
         super().tearDown()
 
-    @staticmethod
-    def _arm() -> None:
-        ConfigSetting.objects.set_value("require_work_group_batch", value=True)
-
 
 class TestPostChokepoint(_ChokepointCase):
     """``review_request_post`` refuses a held batch BEFORE the dedup claim."""
@@ -437,7 +440,19 @@ class TestPostChokepoint(_ChokepointCase):
         code = 0
         with contextlib.redirect_stdout(buf):
             try:
-                call_command("review_request_post", "--mr-url", _url(1), "--approver", "souliane", "--title", "t")
+                call_command(
+                    "review_request_post",
+                    "--mr-url",
+                    _url(1),
+                    "--approver",
+                    "souliane",
+                    "--title",
+                    "t",
+                    "--ticket-id",
+                    str(self.ticket.pk),
+                    "--head-sha",
+                    "a" * 40,
+                )
             except SystemExit as exc:
                 code = int(exc.code) if isinstance(exc.code, int) else 1
         del backend
@@ -461,7 +476,6 @@ class TestPostChokepoint(_ChokepointCase):
             yield
 
     def test_armed_gate_refuses_and_leaves_no_claim_behind(self) -> None:
-        self._arm()
         backend = _Backend()
         with (
             _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})),
@@ -481,17 +495,7 @@ class TestPostChokepoint(_ChokepointCase):
         assert backend.posts == []
         assert ReviewRequestPost.objects.filter(mr_url=_url(1)).count() == 0
 
-    def test_control_inert_by_default_posts_the_same_held_group(self) -> None:
-        backend = _Backend()
-        with _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})), self._post_path(backend):
-            code, payload = self._run(backend)
-
-        assert code == 0, payload
-        assert payload["action"] == "post"
-        assert len(backend.posts) == 1
-
     def test_control_an_armed_gate_releases_a_ready_group(self) -> None:
-        self._arm()
         backend = _Backend()
         with _forge(_pair_sharing_a_ticket()), self._post_path(backend):
             code, payload = self._run(backend)
@@ -503,12 +507,10 @@ class TestPostChokepoint(_ChokepointCase):
 class TestCheckChokepoint(_ChokepointCase):
     """``review_request_check`` predicts the same verdict ``post`` would reach."""
 
-    @staticmethod
-    def _run() -> dict[str, object]:
+    def _run(self) -> dict[str, object]:
         return cast("dict[str, object]", call_command("review_request_check", "--mr-url", _url(1)))
 
     def test_armed_gate_refuses_and_takes_no_claim(self) -> None:
-        self._arm()
         with (
             _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})),
             patch(f"{_CHECK_CMD}.resolve_guard_target", return_value=_TARGET),
@@ -523,14 +525,3 @@ class TestCheckChokepoint(_ChokepointCase):
         assert result["reason"] == "work_group_not_ready"
         assert result["blockers"] == [f"{_url(2)}: draft"]
         assert ReviewRequestPost.objects.count() == 0
-
-    def test_control_inert_by_default_reaches_the_ordinary_decision(self) -> None:
-        with (
-            _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})),
-            patch(f"{_CHECK_CMD}._owner_authorship", return_value=True),
-            patch(f"{_CHECK_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CHECK_CMD}.peek_should_post_review_request", return_value=GuardDecision(action="post")),
-        ):
-            result = self._run()
-
-        assert result["action"] == "post"

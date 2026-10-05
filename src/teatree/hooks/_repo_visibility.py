@@ -1,12 +1,10 @@
 """Repo-visibility / privacy resolution for the publish-surface carve-out.
 
 Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
-the project's per-file LOC ceiling. This module owns the "is this repo
-private?" question and nothing about command classification:
+the project's per-file LOC ceiling. This module owns the forge probe and
+repo slug resolution; private-entry decisions live in
+:mod:`teatree.hooks._private_repo_entries`:
 
-- the DB-home ``private_repos`` slug-namespace allowlist (the reliable,
-    network-free, recommended mechanism), read from the canonical
-    ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`,
 - the cached ``gh``/``glab`` live-visibility probe (best-effort fallback; the
     binary is resolved against an augmented PATH so it works inside the
     restricted PreToolUse subprocess). The cache TTL is asymmetric by risk
@@ -15,22 +13,26 @@ private?" question and nothing about command classification:
     now-public surface.
 - the slug resolution from a repo ``cwd``.
 
-Detection is conservative and offline-first; an unknown/unresolvable repo is
+Detection is conservative; an unknown/unresolvable repo is
 treated as NOT private so a detection failure never weakens the gate.
 """
 
 import json
 import os
+import re
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, TypedDict
+from urllib.parse import urlsplit
 
-from teatree.config import cold_reader
-from teatree.hooks import git_config_offline
+from teatree.hooks import _private_repo_entries, git_config_offline
 from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path
-from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+from teatree.hooks._private_repo_entries import _private_repo_allowlist
+from teatree.hooks._ssh_alias import is_canonical_host, ssh_alias_hostname
+from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets, run_allowed_to_fail
 
 
 class _VisibilityEntry(TypedDict):
@@ -59,7 +61,7 @@ _NON_PUBLIC_TTL_S: Final[int] = 15 * 60
 
 # Sentinel + TTL for a NEGATIVE cache entry: a probe that RAN but could not
 # resolve visibility (tool absent, auth differs, slug unrecognised). Without it,
-# every unresolved slug re-probes at the full 5s budget PER segment on every
+# every unresolved slug re-probes at the full probe budget PER segment on every
 # publish, stacking toward the 30s hook ceiling. The negative entry is short-
 # lived (distinct from the 24h PUBLIC TTL) because an unresolvable repo may
 # become resolvable soon (auth fixed, tool installed).
@@ -68,7 +70,17 @@ _UNKNOWN_TTL_S: Final[int] = 5 * 60
 
 # Visibility probe budget -- a hook that hangs blocks the user, so the
 # network call gets a tight timeout and any failure falls back to "unknown".
-_PROBE_TIMEOUT_S: Final[int] = 5
+# Short first, so a stalled call is cut early; longer second, for a forge that is slow rather than stalled.
+_PROBE_ATTEMPT_TIMEOUTS_S: Final[tuple[float, ...]] = (3, 5)
+_GIT_REMOTE_TIMEOUT_S: Final[int] = 5
+# Worth asking again: a 5xx after `HTTP ` or `glab: `, a stalled or dropped connection, a host short of a resource.
+# Anything else, an unprefixed 5xx included, is the forge's answer: the gate refuses, the pre-push listing allows.
+_TRANSIENT_FAILURE: Final[re.Pattern[str]] = re.compile(
+    r"(?:HTTP |glab: )5\d\d\b"
+    r"|(?i:connection reset|temporar(?:ily unavailable|y failure)|i/o timeout|TLS handshake timeout"
+    r"|unexpected EOF|context deadline exceeded)"
+)
+_MAX_CAUSE_CHARS: Final[int] = 400
 
 # The PreToolUse hook subprocess inherits a restricted PATH, so a bare
 # ``gh``/``glab`` may not resolve even though it is installed. The probe
@@ -89,41 +101,23 @@ _PROBE_PATH_EXTRA: Final[tuple[str, ...]] = (
 # that is authenticated and would have answered.
 PROBE_ABSENT: Final[str] = "tool-absent"
 PROBE_UNRUNNABLE: Final[str] = "exec-failed"
+PROBE_SPAWN_REFUSED: Final[str] = "a process start the host refused (EAGAIN)"
 PROBE_TIMED_OUT: Final[str] = "timeout"
-PROBE_FAILED: Final[str] = "exit-nonzero"
+PROBE_NO_TIME: Final[str] = "no time left in the hook budget"
 
 
 @dataclass(frozen=True, slots=True)
 class ForgeProbe:
     """One forge-CLI invocation's stdout, or the CAUSE there is none.
 
-    ``unresolved`` is empty exactly when ``stdout`` is present; it carries one
-    of the ``PROBE_*`` tokens otherwise (the timeout one suffixed with the
-    budget it exceeded, so the observation names its own number).
+    ``unresolved`` is empty exactly when ``stdout`` is present. Otherwise it is
+    what each attempt observed, joined by ``, then ``: a ``PROBE_*`` token, a
+    timeout naming its seconds, or the CLI's exit code and stderr — never as
+    ``name=value``, which the refusal's credential scrub redacts.
     """
 
     stdout: str | None
     unresolved: str = ""
-
-
-def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
-    """Return the DB-home ``private_repos`` slug-namespace allowlist.
-
-    Each entry is matched as a case-insensitive path-segment prefix against the
-    repo's host-stripped ``owner/repo`` slug (see
-    :func:`slug_namespace_matches`), so a single organisation-namespace entry
-    covers every repo under that namespace. Entries may be written bare
-    (``owner/repo``) or host-qualified (``host/owner/repo`` -- the form a repo
-    URL carries); the match is host-qualification-symmetric, so either form
-    covers the commit surface (host-qualified cwd slug) and the pr-create
-    surface (bare ``--repo`` slug) alike. Reads the canonical ``ConfigSetting``
-    store via the Django-free :mod:`teatree.config.cold_reader`; *config_path*
-    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``), which is
-    how a test points it at a seeded temp DB. Set the list with
-    ``t3 <overlay> config_setting set private_repos '["owner/repo"]'``.
-    """
-    raw = cold_reader.list_setting("private_repos", default=[], db_path=config_path)
-    return [str(e).strip().lower() for e in raw if str(e).strip()]
 
 
 def slug_for_cwd(cwd: Path) -> str:
@@ -139,55 +133,44 @@ def slug_for_cwd(cwd: Path) -> str:
 
 
 def slug_for_remote_url(url: str) -> str:
-    """Return the canonical ``host/owner/repo`` slug for a git remote *url*, or ``""``.
+    """Normalize a remote to ``host/owner/repo`` without network access.
 
-    The full slug (including host) is used so an organisation-namespace allowlist
-    entry matches a GitLab remote and the host-keyed :func:`probe_visibility` routes
-    to the right forge tool. Host-STRIPPING a remote here would send every GitLab
-    remote to the GitHub probe, which can never confirm it.
-
-    Remote forms normalize to a canonical slug:
-
-    - ``https://host/owner/repo`` -> ``host/owner/repo`` (host kept),
-    - ``user@host:owner/repo`` (SCP-style SSH) -> ``host/owner/repo`` ONLY when
-        ``host`` is a CANONICAL hostname (it contains a dot, e.g.
-        ``git@gitlab.com:org/repo`` -> ``gitlab.com/org/repo``). When ``host`` is
-        a dotless SSH CONFIG ALIAS (``git@gh-acct:owner/repo``, the ``Host
-        gh-acct`` form from ``~/.ssh/config`` that maps to a real ``HostName``),
-        the ``user@<alias>`` prefix is DROPPED -> ``owner/repo``: the alias is a
-        LOCAL name with no canonical identity, so keeping it glued ``gh-acct`` in
-        as the leading slug segment, where the dot-keyed host-strip / visibility
-        probe could not recognise it and a private own-repo failed to downgrade
-        (#1415). A dotted alias (``github.com-acct``) is kept as the host
-        segment but the downstream :func:`_strip_host_prefix` / probe already
-        strip a dotted leading segment, so it resolves correctly either way.
-    - ``alias:owner/repo`` (SSH config ``Host alias``, no ``user@``) ->
-        ``owner/repo`` -- same rationale: a local alias with no canonical
-        identity is DROPPED. Keeping it (the old verbatim return) glued the alias
-        into the slug, and an alias whose name contained an allowlist entry then
-        tripped the substring matcher and falsely downgraded a PUBLIC repo
-        (#1953).
-
-    An empty/unparsable *url* yields ``""``, which fails SAFE -- the caller then
-    treats visibility as unresolved and the gate stays enforcing.
+    HTTP(S) and SSH URLs lose scheme, userinfo, port, trailing slash and ``.git``.
+    SCP-style paths lose a leading slash. A dotless SSH Host alias is resolved
+    through ``ssh -G`` (which reads Include, wildcard Host and Match); an unresolved alias returns ``""`` so visibility
+    remains UNKNOWN rather than assigning it the wrong forge host.
     """
     if not url:
         return ""
-    cleaned = url.strip().rstrip("/").removesuffix(".git")
+    cleaned = url.strip().rstrip("/").lower().removesuffix(".git")
     if "://" in cleaned:
-        return cleaned.split("://", 1)[1]
+        return _url_slug(cleaned)
     if ":" in cleaned and "/" not in cleaned.partition(":")[0]:
         host, _, path = cleaned.partition(":")
         real_host = host.rsplit("@", 1)[-1] if "@" in host else host
-        # A canonical hostname carries a dot (a TLD or a sub-domain); a dotless
-        # token is an SSH config Host ALIAS with no canonical identity, so drop
-        # it and keep only the canonical ``owner/repo`` key. This holds whether
-        # or not the remote carried a ``user@`` -- a ``user@gh-acct`` alias is no
-        # more canonical than a bare ``gh-acct`` one.
-        if _is_canonical_host(real_host):
-            return f"{real_host}/{path}"
-        return path
+        if is_canonical_host(real_host):
+            return f"{real_host.lower()}/{path.lstrip('/')}"
+        resolved = ssh_alias_hostname(real_host)
+        return f"{resolved}/{path.lstrip('/')}" if resolved else ""
     return cleaned
+
+
+def _url_slug(url: str) -> str:
+    """``host/owner/repo`` for a ``scheme://`` remote, userinfo and port dropped.
+
+    A URL with no network host (``file:///srv/repo``) keeps its old verbatim form, so
+    a local path is never turned into an ``owner/repo`` some forge would be asked about.
+    """
+    verbatim = url.split("://", 1)[1]
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return verbatim
+    if not host:
+        return verbatim
+    path = parts.path.strip("/")
+    return f"{host}/{path}" if path else host
 
 
 def _origin_remote_url(cwd: Path) -> str:
@@ -224,24 +207,11 @@ def _origin_url_via_git(cwd: Path) -> str:
             [binary, "-C", str(cwd), "remote", "get-url", "origin"],
             expected_codes=(0,),
             env=_probe_env(),
-            timeout=_PROBE_TIMEOUT_S,
+            timeout=_GIT_REMOTE_TIMEOUT_S,
         )
     except (CommandFailedError, OSError, TimeoutExpired):
         return ""
     return result.stdout.strip()
-
-
-def _is_canonical_host(host: str) -> bool:
-    """Return True iff ``host`` is a canonical hostname rather than an SSH alias.
-
-    A canonical hostname carries a dot (a registrable domain / sub-domain, e.g.
-    ``gitlab.com``, ``github.com``) or is the reserved ``localhost``. A dotless
-    token (``gh-acct``, ``work-github``) is an SSH config ``Host`` ALIAS -- a
-    local ``~/.ssh/config`` name with no canonical identity -- which must be
-    dropped from the slug so the dot-keyed host-strip / visibility probe key on
-    the real ``owner/repo`` instead of an unrecognisable alias segment (#1415).
-    """
-    return "." in host or host == "localhost"
 
 
 def _cache_root() -> Path:
@@ -332,33 +302,53 @@ def _probe_env() -> dict[str, str]:
     return {**os.environ, "PATH": _probe_search_path()}
 
 
-def run_forge_tool(tool: str, args: list[str]) -> ForgeProbe:
+def run_forge_tool(tool: str, args: list[str], *, budget: Callable[[float], float | None] | None = None) -> ForgeProbe:
     """Run ``tool`` with *args* against the augmented probe PATH.
 
     An absent :attr:`ForgeProbe.stdout` means the question went unasked, and
-    :attr:`ForgeProbe.unresolved` says WHICH way — the four outcomes are kept
-    apart because a caller that REFUSES on the answer has to name the cause it
-    observed instead of asserting one. Shared with the foreign-open-MR guard
+    :attr:`ForgeProbe.unresolved` says WHICH way — the outcomes are kept apart
+    because a caller that REFUSES on the answer has to name the cause it
+    observed instead of asserting one. Only a transient is asked again — a
+    timeout, a 5xx, a stalled or dropped connection, a process start the host
+    refused (EAGAIN): any other outcome is the forge's answer, and repeating it
+    would only repeat it. *budget* maps an attempt's timeout to what the caller
+    can still afford, ``None`` for nothing, so a hook starts no attempt its
+    ceiling would cancel. Shared with the foreign-open-MR guard
     (:mod:`teatree.hooks.foreign_mr_cli`) so both forge probes resolve their
     binary and their environment identically.
     """
     binary = _resolve_probe_tool(tool)
     if binary is None:
         return ForgeProbe(stdout=None, unresolved=PROBE_ABSENT)
-    try:
-        result = run_allowed_to_fail(
-            [binary, *args],
-            expected_codes=(0,),
-            env=_probe_env(),
-            timeout=_PROBE_TIMEOUT_S,
-        )
-    except TimeoutExpired:
-        return ForgeProbe(stdout=None, unresolved=f"{PROBE_TIMED_OUT}={_PROBE_TIMEOUT_S}s")
-    except CommandFailedError:
-        return ForgeProbe(stdout=None, unresolved=PROBE_FAILED)
-    except OSError:
-        return ForgeProbe(stdout=None, unresolved=PROBE_UNRUNNABLE)
-    return ForgeProbe(stdout=result.stdout)
+    observed: list[str] = []
+    for preferred in _PROBE_ATTEMPT_TIMEOUTS_S:
+        timeout = preferred if budget is None else budget(preferred)
+        if timeout is None:
+            observed.append(PROBE_NO_TIME)
+            break
+        try:
+            result = run_allowed_to_fail([binary, *args], expected_codes=(0,), env=_probe_env(), timeout=timeout)
+        except TimeoutExpired:
+            observed.append(f"{PROBE_TIMED_OUT} of {timeout:.3g}s")
+        except CommandFailedError as error:
+            observed.append(_exit_cause(error))
+            if not _TRANSIENT_FAILURE.search(error.stderr):
+                break
+        except BlockingIOError:
+            observed.append(PROBE_SPAWN_REFUSED)
+        except OSError:
+            observed.append(PROBE_UNRUNNABLE)
+            break
+        else:
+            return ForgeProbe(stdout=result.stdout)
+    return ForgeProbe(stdout=None, unresolved=", then ".join(observed))
+
+
+def _exit_cause(error: CommandFailedError) -> str:
+    stderr = redact_secrets("; ".join(line.strip() for line in error.stderr.splitlines() if line.strip()))
+    return (
+        f"exit {error.returncode}: {stderr[:_MAX_CAUSE_CHARS]}" if stderr else f"exit {error.returncode} with no stderr"
+    )
 
 
 def _probe_gh(repo_path: str) -> str | None:
@@ -429,8 +419,7 @@ def forge_qualified_slug(slug: str, forge: str) -> str:
     qualifying the slug UP to ``<host>/owner/repo`` routes the probe to the right
     tool. An already host-qualified slug, an unknown forge, or an empty slug is
     returned unchanged -- the host segment then governs the route, and the
-    allowlist match is host-qualification-symmetric so qualifying never changes
-    an allowlist verdict.
+    allowlist entries are host-qualified, so qualification is required before matching.
     """
     canonical_host = _FORGE_CANONICAL_HOST.get(forge)
     if not canonical_host or not slug:
@@ -452,7 +441,7 @@ def slug_visibility(slug: str) -> str | None:
 
     A negative (``None``) probe result is short-TTL cached under the
     :data:`_UNKNOWN_VERDICT` sentinel so an unresolvable slug is not re-probed at
-    the full 5s budget on every publish -- the read maps that sentinel back to
+    the full probe budget on every publish -- the read maps that sentinel back to
     ``None`` for callers.
     """
     cached = _read_visibility_cache(slug)
@@ -530,21 +519,11 @@ def slug_segment_depth(entry: str) -> int:
 
 
 def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the DB-home ``private_repos`` allowlist.
-
-    Each entry is matched against the slug's host-stripped ``owner/repo`` path
-    segments via :func:`slug_namespace_matches` -- a leading-segment-prefix
-    match, NOT a substring. An organisation-namespace entry (``acme-engineering``)
-    covers every repo under it (``acme-engineering/secret``, host-qualified or
-    bare) while an unrelated superset owner (``acme-engineering-fork``) and an
-    SSH-alias host carrying the entry as a substring no longer match.
-
-    The classifier is fail-safe for the leak direction: a True DOWNGRADES the
-    banned-terms gate (and makes a publish destination skip the leak scan), so an
-    over-match is the dangerous direction. A non-matching, ambiguous, or
-    host-root-only entry yields False, which keeps enforcement hard-blocking.
-    """
-    return any(slug_namespace_matches(entry, slug) for entry in _private_repo_allowlist(config_path))
+    """Match only valid host-qualified entries against a remote on segment boundaries."""
+    return any(
+        _private_repo_entries.private_repo_entry_matches(entry, slug, normalize=slug_for_remote_url)
+        for entry in _private_repo_allowlist(config_path)
+    )
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
@@ -574,4 +553,6 @@ def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
     term_tokens = tokens(term)
     if not term_tokens:
         return False
-    return any(_contains_run(tokens(entry), term_tokens) for entry in _private_repo_allowlist(config_path))
+    return any(
+        _contains_run(tokens(entry.partition("/")[2]), term_tokens) for entry in _private_repo_allowlist(config_path)
+    )

@@ -36,7 +36,7 @@ from teatree.loop.session_identity import current_session_id as loop_entry_point
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-_SESSION_ID_KEYS = {"CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"}
+_SESSION_ID_KEYS = {"CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"}
 
 
 def _no_session_env() -> dict[str, str]:
@@ -59,7 +59,7 @@ class TestSessionIdRegistryFallback:
         )
         with patch.dict(
             "os.environ",
-            {**_no_session_env(), "CLAUDE_SESSION_ID": "foo", "T3_LOOP_REGISTRY_DIR": str(tmp_path)},
+            {**_no_session_env(), "CLAUDE_CODE_SESSION_ID": "foo", "T3_LOOP_REGISTRY_DIR": str(tmp_path)},
             clear=True,
         ):
             assert current_session_id() == "foo"
@@ -112,13 +112,7 @@ class TestSessionIdRegistryFallback:
 class TestSessionIdEnvChain:
     """The accepted session-id env-var names + their precedence (#3554).
 
-    Claude Code stopped exporting ``CLAUDE_SESSION_ID`` and now exports
-    ``CLAUDE_CODE_SESSION_ID``; the resolver read only the old name, so
-    every session-identity consumer silently degraded to ``""`` inside a
-    live session (``handover create`` refused, ``loop whoami`` reported no
-    session, the hook marker lost its per-session key). These pin the new
-    name in the chain so a future upstream rename fails loudly here rather
-    than going dark at every call site.
+    Pin the current Claude Code name and its precedence over the loop override.
     """
 
     def test_claude_code_session_id_is_accepted(self) -> None:
@@ -132,14 +126,6 @@ class TestSessionIdEnvChain:
         ):
             assert session_id_from_env() == "cc-sess"
             assert current_session_id() == "cc-sess"
-
-    def test_legacy_name_takes_precedence_over_claude_code(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {**_no_session_env(), "CLAUDE_SESSION_ID": "legacy", "CLAUDE_CODE_SESSION_ID": "cc"},
-            clear=True,
-        ):
-            assert session_id_from_env() == "legacy"
 
     def test_claude_code_takes_precedence_over_loop_override(self) -> None:
         with patch.dict(

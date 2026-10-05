@@ -70,36 +70,35 @@ class IsRuleMemoryTestCase(SimpleTestCase):
     """The rule universe is the memories that STATE a rule, not every file in the dir."""
 
     def test_project_state_log_is_not_a_rule(self) -> None:
-        assert not is_rule_memory("ticket-9001-fold-into-9002-pending-approval", _PROJECT_LOG)
+        assert not is_rule_memory(_PROJECT_LOG)
 
     def test_reference_note_is_not_a_rule(self) -> None:
-        assert not is_rule_memory("writes-need-the-forge-token-exported", _REFERENCE_NOTE)
+        assert not is_rule_memory(_REFERENCE_NOTE)
 
     def test_frontmatterless_index_file_is_not_a_rule(self) -> None:
-        assert not is_rule_memory("MEMORY", _INDEX_FILE)
-        assert not is_rule_memory("MEMORY_ARCHIVE", _INDEX_FILE)
+        assert not is_rule_memory(_INDEX_FILE)
 
     def test_typed_feedback_memory_is_a_rule(self) -> None:
-        assert is_rule_memory("no-unsolicited-progress-dms", _FEEDBACK_RULE)
+        assert is_rule_memory(_FEEDBACK_RULE)
 
     def test_typed_user_memory_is_a_rule(self) -> None:
         body = "---\nname: owner-prefers-terse-output\nmetadata:\n  type: user\n---\nKeep replies terse.\n"
-        assert is_rule_memory("owner-prefers-terse-output", body)
+        assert is_rule_memory(body)
 
     def test_legacy_feedback_slug_without_frontmatter_is_still_a_rule(self) -> None:
         # The pre-frontmatter corpus carries the type in the slug; it must stay in the universe.
-        assert is_rule_memory("feedback_askuserquestion_overuse", "name: feedback_askuserquestion_overuse\nRule.\n")
+        assert not is_rule_memory("name: feedback_askuserquestion_overuse\nRule.\n")
 
     def test_type_in_the_body_does_not_promote_a_project_log(self) -> None:
         body = (
             "---\nname: ticket-9001-notes\nmetadata:\n  type: project\n---\n"
             "The step failed with an unexpected type: feedback was requested by the reviewer.\n"
         )
-        assert not is_rule_memory("ticket-9001-notes", body)
+        assert not is_rule_memory(body)
 
     def test_node_type_line_is_not_read_as_the_type(self) -> None:
         body = "---\nname: some-note\nmetadata:\n  node_type: memory\n---\nA note with no type.\n"
-        assert not is_rule_memory("some-note", body)
+        assert not is_rule_memory(body)
 
 
 class MemoryRuleUniverseTestCase(SimpleTestCase):

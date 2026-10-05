@@ -259,11 +259,11 @@ class TestDriverMain:
         assert driver.main(["only", "three", "args"]) == 2
 
     def test_registered_paths_cover_the_gitattributes_entries(self):
-        assert _DRIVEN_DOC in driver.registered_paths()
-        assert "evals/README.md" in driver.registered_paths()
+        assert _DRIVEN_DOC in driver._GENERATORS
+        assert "evals/README.md" in driver._GENERATORS
 
     def test_registered_paths_cover_the_management_commands_doc(self):
-        assert "docs/generated/management-commands.md" in driver.registered_paths()
+        assert "docs/generated/management-commands.md" in driver._GENERATORS
 
 
 class TestRegenerationAdvisory:
@@ -298,7 +298,7 @@ class TestVendoredLayout:
         mapped = driver.teatree_relative_path(f"{prefix}/{_DRIVEN_DOC}", repo_root=outer)
 
         assert mapped == _DRIVEN_DOC
-        assert mapped in driver.registered_paths()
+        assert mapped in driver._GENERATORS
 
     def test_path_outside_the_vendored_tree_is_untouched(self):
         outer, _prefix = self._outer_layout()

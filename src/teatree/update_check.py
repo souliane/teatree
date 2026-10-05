@@ -7,8 +7,7 @@ blocking startup.
 
 This module is config-free by design (no ``teatree.config`` import) to
 avoid a cycle. The public entry point ``check_for_updates`` lives on
-``teatree.config`` and reads the ``check_updates`` flag itself, then
-delegates here with ``check_updates`` already resolved.
+``teatree.config`` and delegates here.
 """
 
 import importlib.metadata
@@ -22,18 +21,12 @@ from teatree.paths import DATA_DIR
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 
-def run_update_check(*, check_updates: bool, force: bool = False) -> str | None:
+def run_update_check(*, force: bool = False) -> str | None:
     """Resolve a "new release available" notice; uses a 24h JSON cache.
 
-    *check_updates* is the user's opt-in flag (from
-    :class:`teatree.config.UserSettings`); the caller resolves it from
-    config and passes it in so this module stays config-free. *force*
-    bypasses both the opt-out and the cache (used by ``t3 config
-    check-update`` to refresh on demand).
+    *force* bypasses the cache (used by ``t3 config check-update`` to
+    refresh on demand).
     """
-    if not force and not check_updates:
-        return None
-
     cache_path = DATA_DIR / "update-check.json"
     ttl = 86_400  # 24h
 

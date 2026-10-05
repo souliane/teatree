@@ -25,10 +25,8 @@ observes what a fresh box does. That is
 ``tests/teatree_loops/test_preset_seed.py::TestTheSeededPosturesDecideTheOwnersVoice``,
 and the unseeded fail-closed half is ``tests/config/test_autonomy.py``.
 
-The conformance gate over retired vocabulary
-(``tests/conformance/test_retired_egress_control_is_not_instructed.py``) does not
-reach a claim like the one this paragraph replaced: it matches the retired dial's
-spellings, and a docstring can be false about the posture without naming one.
+The current default posture is pinned by
+``tests/teatree_loops/test_preset_seed.py`` and ``tests/config/test_autonomy.py``.
 """
 
 import logging

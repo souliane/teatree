@@ -58,7 +58,6 @@ from teatree.backends.slack.token_validation import (
     assert_user_token,
     resolve_user_token_or_degrade,
 )
-from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
 from teatree.backends.slack.web_ops import open_im_channel, read_ext_shared, read_permalink, run_auth_test
@@ -73,7 +72,6 @@ __all__ = [
     "SlackOp",
     "SlackVoiceMismatchError",
     "TokenSlotMismatchError",
-    "VoiceClassifierMode",
 ]
 
 
@@ -141,8 +139,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # at the ``_channel_token`` / ``_route_token`` funnels and in ``_post``).
         self._owner_dm_only = owner_dm_only
         self._http = SlackHttpClient()
-        # #1395 voice/token gate; factory overrides via set_voice_classifier_mode.
-        self._voice_gate = VoiceTokenGate(mode=VoiceClassifierMode.WARN, dm_channel_id=dm_channel_id)
+        # #1395 voice/token gate.
+        self._voice_gate = VoiceTokenGate(dm_channel_id=dm_channel_id)
         # The bot's own (user_id, bot_id) identity, resolved once via
         # ``auth.test``. The single bot-identity cache the backend reads for
         # the #1346 DM self-drop and the #2089 own-TTS-audio strip. ``False``
@@ -172,10 +170,6 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     @property
     def user_token(self) -> str:
         return self._user_token
-
-    def set_voice_classifier_mode(self, mode: VoiceClassifierMode) -> None:
-        """Override the voice/token classifier mode (#1395)."""
-        self._voice_gate.mode = mode
 
     def resolve_channel_token(self, channel: str) -> str:
         """The token an outbound post to *channel* would use (#1084).

@@ -21,7 +21,7 @@
   # ask without issuing it — the narrated-ask wire) with no AskUserQuestion.
   # Cap raised 2 -> 6 + per-scenario budget 4.0 (#107 cluster-5 remediation,
   # metered 2026-07-08): under the hooked lane the correct arc costs MORE than the
-  # bare-model 1-2 turns — the SessionStart/UserPromptSubmit hook chain injects
+  # bare-model 1-2 turns — the SessionStart hook chain injects
   # context the model reacts to (the observed clean trial spent a turn on an
   # orienting Bash probe), then the single ask, then the tool result, then the
   # terminal one-ask-then-stop disposition text. At cap 2 the run terminated ON

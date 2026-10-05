@@ -12,7 +12,7 @@ prek`` — the one install that carries no explicit ``--constraints`` — and ev
 
 The block is driven for real: extracted verbatim from the shipped entrypoint and run in a bash
 subprocess against a nested ``vendor/teatree`` layout, with ``uv`` stubbed so both the export
-branch and the comment-only fallback are exercised. The alignment is asserted BEFORE
+branch and the fatal export refusal are exercised. The alignment is asserted BEFORE
 ``ensure_uv_constraints`` is called, because that function has a single call site in the
 ``init`` role — a role that never calls it (worker, slack-listener, admin, and every exec'd
 ``t3 update``) must still inherit a value that resolves.
@@ -93,15 +93,12 @@ class TestTheAmbientConstraintFollowsTheRuntimeCloneDir:
             f"missing path, taking the init role down with it. Got: {result.stdout}{result.stderr}"
         )
 
-    def test_the_exported_path_resolves_after_the_comment_only_fallback(self, vendored: Path, tmp_path: Path) -> None:
-        # The fallback exists PRECISELY because uv errors on a missing constraints file, so it
-        # is the branch that must not leave the ambient value pointing somewhere else.
+    def test_a_failed_export_refuses_init_before_an_unchecked_install(self, vendored: Path, tmp_path: Path) -> None:
         _stub_uv(tmp_path / "bin", succeeds=False)
         result = _run(vendored, tmp_path / "bin", call_the_function=True)
-        assert "RESOLVES=YES" in result.stdout, (
-            "the comment-only fallback must also leave UV_CONSTRAINT naming a file that exists. "
-            f"Got: {result.stdout}{result.stderr}"
-        )
+        assert result.returncode == 1
+        assert "RESOLVES=" not in result.stdout
+        assert "dependency skew cannot be checked" in result.stderr
 
     def test_a_role_that_never_calls_the_function_still_inherits_a_resolving_path(
         self, vendored: Path, tmp_path: Path
@@ -125,3 +122,47 @@ class TestTheAmbientConstraintFollowsTheRuntimeCloneDir:
         _stub_uv(tmp_path / "bin", succeeds=True)
         _run(vendored, tmp_path / "bin", call_the_function=True)
         assert (vendored / "uv-constraints.txt").read_text(encoding="utf-8") == "pinned==1.0\n"
+
+
+def _stub_recording_uv(bin_dir: Path, argv_log: Path) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    uv = bin_dir / "uv"
+    uv.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >>{str(argv_log)!r}\n'
+        'while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { printf "pinned==1.0\\n" >"$2"; exit 0; }; shift; done\nexit 0\n',
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+
+
+def _export_argv(tmp_path: Path, clone_dir: Path, host_root: str) -> str:
+    argv_log = tmp_path / "uv.argv"
+    _stub_recording_uv(tmp_path / "bin", argv_log)
+    script = f"CLONE_DIR={clone_dir}\nHOST_ROOT={host_root}\n{_constraints_block()}\n{_FUNCTION}\n"
+    env = {"PATH": f"{tmp_path / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    subprocess.run([_BASH, "-c", script], capture_output=True, text=True, env=env, check=True)
+    return argv_log.read_text(encoding="utf-8")
+
+
+class TestAVendoredCoreIsBoundByTheWholeWorkspaceLock:
+    """The boot installs the fork's own package beside core, so its dependencies need the fork's pins too."""
+
+    def test_a_vendored_layout_exports_every_workspace_package_from_the_fork_root(
+        self, vendored: Path, tmp_path: Path
+    ) -> None:
+        fork_root = vendored.parent.parent
+
+        argv = _export_argv(tmp_path, vendored, str(fork_root)).split()
+
+        assert argv[argv.index("--directory") + 1] == str(fork_root)
+        assert "--all-packages" in argv
+        assert "--no-emit-workspace" in argv, "the workspace members are installed editable, never pinned"
+
+    def test_a_standalone_core_still_exports_its_own_lock(self, tmp_path: Path) -> None:
+        clone = tmp_path / "teatree"
+        clone.mkdir()
+
+        argv = _export_argv(tmp_path, clone, "").split()
+
+        assert argv[argv.index("--directory") + 1] == str(clone)
+        assert "--all-packages" not in argv

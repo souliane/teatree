@@ -5,8 +5,6 @@ Covers must-fire / must-NOT-fire directions for:
 2. Marker present -- injection points fire as before.
 3. handle_track_skill_usage sets marker for t3:interactive and for skills that
     require: [interactive] (closure expansion).
-4. Risk-6: mid-session teatree load triggers ownership claim from
-    handle_enforce_loop_on_prompt when the loop is not disabled.
 """
 
 import json
@@ -14,7 +12,6 @@ import os
 import shutil
 import sqlite3
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -28,19 +25,10 @@ from hooks.scripts.hook_router import (
     _teatree_active,
     _teatree_engaged,
     _write_loop_registry,
-    handle_enforce_loop_on_prompt,
-    handle_enforce_skill_loading,
     handle_session_start_bootstrap,
     handle_track_skill_usage,
-    handle_user_prompt_submit,
 )
 from hooks.scripts.teatree_settings import autoload_enabled
-
-_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from lib import skill_loader as skill_loader_mod  # noqa: E402
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -57,9 +45,9 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # A headless factory agent runs this suite with the Agent-SDK lane exported,
-    # which suppresses the standing directives (#4166) — an unpinned env would
-    # decide the delivery assertions below rather than the gating under test.
+    # A headless factory agent runs this suite with the Agent-SDK lane exported
+    # (``session_lane``) — an unpinned env would decide the delivery assertions
+    # below rather than the gating under test.
     monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     # Hermetic HOME: ``autoload_enabled`` is DB-home (the legacy file tier is
@@ -162,85 +150,6 @@ class TestSessionStartBootstrapGating:
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "t3 loops tick" in ctx
-
-
-# ── handle_enforce_loop_on_prompt gating ──────────────────────────────
-
-
-class TestEnforceLoopOnPromptGating:
-    def test_unengaged_session_emits_nothing(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # #256 default-OFF: no marker AND autoload off => not engaged, so neither
-        # the reactive-slot nag NOR the standing directives (#4166) reach it.
-        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-        handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
-        out = capsys.readouterr().out
-        assert out == ""
-
-    def test_autoload_engaged_session_gets_directives_but_no_reactive_slot(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # ``autoload`` is the owner's standing "teatree is on for every session"
-        # opt-in, so an unmarked session under it IS engaged and receives the
-        # standing directives (#4166) — but arming the loops still needs the
-        # marker, so it registers no reactive slot.
-        handle_enforce_loop_on_prompt({"session_id": "no-teatree"})
-        out = capsys.readouterr().out
-        assert "[standing-golden-rule]" in out
-        assert "reactive infra loops" not in out
-        # And nothing that would make the session wake itself: autoload alone
-        # engages, it does not arm (#256).
-        assert "/loop " not in out
-
-    def test_marked_session_emits_reactive_slot_registrations(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # PR-28: the owner registers ONLY the reactive infra `/loop`s (the worker owns
-        # the DB-loop cadence now). The seam is patched so this stays a DB-free gating test.
-        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
-
-        _mark_active("teatree-session")
-        monkeypatch.setattr(
-            loop_registrations,
-            "_reactive_slot_directives",
-            lambda: ["/loop 30m /self-improve", "/loop 5m /slack-answer"],
-        )
-        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
-        out = capsys.readouterr().out
-        assert out != ""
-        assert "reactive infra loops" in out
-        assert "/self-improve" in out
-
-    def test_worker_owns_cadence_emits_cron_decommission_once(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # PR-28: when the worker owns the cadence, the owner session emits a one-time
-        # CronDelete reminder for stale pre-flip native crons — once per session.
-        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
-
-        _mark_active("teatree-session")
-        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: True)
-        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
-        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
-        assert "CronDelete" in capsys.readouterr().out
-        # Second prompt: the marker suppresses the re-emit.
-        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
-        assert "CronDelete" not in capsys.readouterr().out
-
-    def test_marked_session_re_emit_is_suppressed_by_pending_marker(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Emit-once idempotency: a second prompt does not re-nag once the loop-pending
-        # marker exists (it also feeds the skill-load bootstrap exemption).
-        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
-
-        _mark_active("teatree-session")
-        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: ["/loop 30m /self-improve"])
-        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
-        capsys.readouterr()  # drain the first emission
-        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
-        assert capsys.readouterr().out == ""
 
 
 # ── handle_track_skill_usage sets marker ──────────────────────────────
@@ -449,57 +358,14 @@ class TestEngageIsTheSingleSeam:
         assert seen == ["skill-sess"]
 
 
-# ── Risk-6: mid-session ownership claim from prompt handler ───────────
-
-
-class TestRisk6MidSessionOwnershipClaim:
-    def test_marked_session_claims_ownership_when_no_live_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mark_active("mid-sess")
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-
-        handle_enforce_loop_on_prompt({"session_id": "mid-sess"})
-
-        owner = _read_loop_registry().get(_OWNER_LOOP)
-        assert owner is not None
-        assert owner["session_id"] == "mid-sess"
-
-    def test_env_loops_disabled_all_no_longer_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # ``T3_LOOPS_DISABLED`` is removed — it is INERT and no longer prunes the
-        # ownership claim. Loop pause/disable lives in the DB ``LoopState`` tier;
-        # the in-process ``T3_LOOP_DISOWN`` knob is the orthogonal mitigation
-        # (test_loop_disown_prevents_ownership_claim).
-        _mark_active("mid-sess-env-disabled")
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
-
-        handle_enforce_loop_on_prompt({"session_id": "mid-sess-env-disabled"})
-
-        owner = _read_loop_registry().get(_OWNER_LOOP)
-        assert owner is not None
-        assert owner["session_id"] == "mid-sess-env-disabled"
-
-    def test_loop_disown_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mark_active("mid-sess-disown")
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setenv("T3_LOOP_DISOWN", "1")
-
-        handle_enforce_loop_on_prompt({"session_id": "mid-sess-disown"})
-
-        assert _read_loop_registry() == {}
-
-    def test_fresh_session_without_marker_does_not_claim_from_prompt(self) -> None:
-        handle_enforce_loop_on_prompt({"session_id": "fresh-mid"})
-        assert _read_loop_registry() == {}
-
-
 # ── #256: session-start auto-load is opt-in (default OFF, colleague-friendly) ──
 
 
 class TestLoopAutoLoadOptInGate:
     """A teatree-marked session that did NOT enable autoload is silent (#256).
 
-    Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and the two
-    injection points it gates (bootstrap claim, prompt-time reactive-slot nag). The
+    Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and the
+    injection point it gates (the bootstrap claim). The
     marker is always present here, so the ONLY variable is the ``autoload`` opt-in —
     revert the ``_loop_auto_load_active`` gate at any call site and the matching
     ``*_silent`` assertion goes RED.
@@ -540,33 +406,6 @@ class TestLoopAutoLoadOptInGate:
         assert "t3 loops tick" in out
         assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "colleague"
 
-    # prompt-time cron nag ─────────────────────────────────────────────
-    def test_prompt_nag_silent_without_opt_in(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        handle_enforce_loop_on_prompt({"session_id": "colleague"})
-        out = capsys.readouterr().out
-        # The session engaged teatree (the marker) but never armed its loops, so
-        # it registers no reactive slot and claims no ownership. The zero-turn
-        # standing rule (#4166) is keyed on ENGAGEMENT rather than loop-arming, so
-        # it is deliberately still delivered — and the self-waking slots are not.
-        assert "reactive infra loops" not in out
-        assert "[standing-golden-rule]" in out
-        assert "/loop " not in out
-        assert _read_loop_registry() == {}
-
-    def test_prompt_nag_fires_with_opt_in(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
-
-        self._opt_in(monkeypatch)
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: ["/loop 30m /self-improve"])
-        handle_enforce_loop_on_prompt({"session_id": "colleague"})
-        assert "reactive infra loops" in capsys.readouterr().out
-
 
 # ── Statusline shell script gating ────────────────────────────────────
 
@@ -592,30 +431,6 @@ def _seed_autoload_db(path: Path, *, autoload: object) -> None:
             "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'autoload', ?)",
             (json.dumps(autoload),),
         )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _seed_config_db(path: Path, **rows: object) -> None:
-    """Build a ``teatree_config_setting`` sqlite carrying GLOBAL rows (JSON-encoded value).
-
-    Same migration shape as ``_seed_autoload_db`` but for arbitrary keys, so the bash
-    statusline gate readers (``_autoload_db_value`` / ``_statusline_engaged_render_db_value``)
-    resolve them the way the Django-written store does.
-    """
-    conn = sqlite3.connect(path)
-    try:
-        conn.execute(
-            "CREATE TABLE teatree_config_setting ("
-            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
-            "key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        for key, value in rows.items():
-            conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-                (key, json.dumps(value)),
-            )
         conn.commit()
     finally:
         conn.close()
@@ -663,16 +478,14 @@ class TestStatuslineGating:
         out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
         assert out != ""
 
-    def test_marker_present_but_auto_load_off_shows_hint(self, tmp_path: Path) -> None:
-        # The #256 colleague case: a session that loaded teatree (marker present)
-        # but never enabled autoload gets NO loop statusline — only a one-line
-        # how-to hint (#3233), never a blank bar (CC discards zero bytes).
+    def test_t3_engaged_marker_with_autoload_off_renders_full_bar(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.teatree-active").touch()
+        (state_dir / "teatree-sess.t3-engaged").touch()
+        (state_dir / "statusline.txt").write_text("full-bar-marker\n", encoding="utf-8")
         out = self._run_statusline("teatree-sess", state_dir, home=tmp_path / "fresh-home")
-        assert "autoload" in out
-        assert "model=" not in out
+        assert "full-bar-marker" in out
+        assert "autoload" not in out
 
     def test_marker_and_env_opt_in_produces_output(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -691,82 +504,6 @@ class TestStatuslineGating:
         _seed_autoload_db(db, autoload=True)
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
         assert out != ""
-
-    def test_engaged_render_flag_renders_with_marker_and_autoload_off(self, tmp_path: Path) -> None:
-        # #3502: the opt-in ``statusline_engaged_render`` flag renders the statusline
-        # in a hand-engaged session (marker present) even with autoload OFF — the
-        # hint line is gone, real output takes its place.
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.teatree-active").touch()
-        db = tmp_path / "db.sqlite3"
-        _seed_config_db(db, statusline_engaged_render=True)
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
-        assert "statusline off" not in out
-        assert out.strip() != ""
-
-    def test_engaged_render_flag_renders_for_t3_engaged_marker(self, tmp_path: Path) -> None:
-        # EITHER engage marker qualifies: a plain ``t3:`` skill load (``.t3-engaged``)
-        # is enough for the opt-in to render.
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.t3-engaged").touch()
-        db = tmp_path / "db.sqlite3"
-        _seed_config_db(db, statusline_engaged_render=True)
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
-        assert "statusline off" not in out
-        assert out.strip() != ""
-
-    def test_engaged_render_flag_off_still_shows_hint(self, tmp_path: Path) -> None:
-        # #256 colleague guarantee: marker present but the opt-in flag false -> the
-        # one-line hint, never the loop statusline.
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.teatree-active").touch()
-        db = tmp_path / "db.sqlite3"
-        _seed_config_db(db, statusline_engaged_render=False)
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
-        assert "statusline off" in out
-        assert "model=" not in out
-
-    def test_engaged_render_flag_without_marker_shows_hint(self, tmp_path: Path) -> None:
-        # The opt-in needs an explicitly engaged session: flag on but NO marker ->
-        # still the hint (an un-engaged session renders nothing).
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        db = tmp_path / "db.sqlite3"
-        _seed_config_db(db, statusline_engaged_render=True)
-        out = self._run_statusline("no-marker-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
-        assert "statusline off" in out
-
-    def test_engaged_render_non_bool_db_value_ignored(self, tmp_path: Path) -> None:
-        # Strict bool (mirrors ``autoload``): a JSON string ``"true"`` is not a real
-        # bool, so it does not enable the opt-in — the gate falls through to the hint.
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.teatree-active").touch()
-        db = tmp_path / "db.sqlite3"
-        _seed_config_db(db, statusline_engaged_render="true")
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
-        assert "statusline off" in out
-
-    def test_engaged_render_broken_db_fails_closed_to_an_honest_hint(self, tmp_path: Path) -> None:
-        # A corrupt/unreadable DB still fails CLOSED (opt-in OFF) and still never blanks
-        # the bar — both invariants below. What it must NOT do is name a cause it did not
-        # establish: this used to assert the "off (autoload disabled)" hint, and that
-        # wording was the #4041 defect, not the contract. The DB the read failed on may
-        # hold `autoload = True`, so the honest hint is UNKNOWN (see the shell-parity lane
-        # for the full unknown/off matrix).
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        (state_dir / "teatree-sess.teatree-active").touch()
-        garbage = tmp_path / "corrupt.sqlite3"
-        garbage.write_bytes(b"this is not a sqlite database at all")
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(garbage)})
-        assert out.strip() != "", "the bar must never be blank (#3233)"
-        assert "model=" not in out, "the opt-in must stay closed on a read it could not make"
-        assert "UNKNOWN" in out
-        assert "autoload disabled" not in out
 
 
 # ── #256: default-off teatree autoload + engagement seam ──────────────────
@@ -895,57 +632,6 @@ class TestAutoloadSessionStart:
         assert "run /t3:interactive" not in capsys.readouterr().out
 
 
-class TestDefaultOffUserPromptSubmit:
-    """#256: UserPromptSubmit suppresses the suggester + reminder + .pending write until engaged."""
-
-    @pytest.fixture(autouse=True)
-    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Drop the file fixture's autoload opt-in; the engaged tests re-enable it.
-        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-
-    @pytest.fixture(autouse=True)
-    def suggester_calls(self, monkeypatch: pytest.MonkeyPatch) -> list:
-        calls: list = []
-
-        def _stub(loader_input: dict) -> dict:
-            calls.append(loader_input)
-            return {"suggestions": ["code"], "advisory": [], "intent": "code"}
-
-        monkeypatch.setattr(skill_loader_mod, "suggest_skills", _stub)
-        return calls
-
-    def _pending(self, session_id: str) -> str | None:
-        path = router.STATE_DIR / f"{session_id}.pending"
-        return path.read_text(encoding="utf-8") if path.is_file() else None
-
-    def test_default_off_writes_empty_pending_prints_nothing_and_skips_suggester(
-        self, capsys: pytest.CaptureFixture[str], suggester_calls: list
-    ) -> None:
-        handle_user_prompt_submit({"session_id": "ups-off", "prompt": "fix the bug in foo.py and run ruff"})
-        assert capsys.readouterr().out == ""
-        # Empty .pending → the PreToolUse skill-loading gate never blocks (never-lockout).
-        assert self._pending("ups-off") == ""
-        # Anti-vacuous: the suggester that WOULD have produced output was never called.
-        assert suggester_calls == []
-
-    def test_engaged_via_autoload_runs_suggester(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, suggester_calls: list
-    ) -> None:
-        monkeypatch.setenv("T3_AUTOLOAD", "1")
-        handle_user_prompt_submit({"session_id": "ups-on", "prompt": "fix the bug"})
-        out = capsys.readouterr().out
-        assert "LOAD THESE SKILLS NOW" in out
-        assert suggester_calls != []
-
-    def test_engaged_via_t3_marker_runs_suggester(
-        self, capsys: pytest.CaptureFixture[str], suggester_calls: list
-    ) -> None:
-        (router.STATE_DIR / "ups-t3.t3-engaged").touch()
-        handle_user_prompt_submit({"session_id": "ups-t3", "prompt": "fix the bug"})
-        assert "LOAD THESE SKILLS NOW" in capsys.readouterr().out
-        assert suggester_calls != []
-
-
 class TestOption1T3EngagedMarker:
     """#256 Option-1: any ``t3:`` skill engages the SUGGESTER (``.t3-engaged``); loops stay off."""
 
@@ -991,30 +677,6 @@ class TestExplicitTeatreeEngages:
         )
         assert _is_marked_active("tt-explicit")
         assert _teatree_engaged("tt-explicit") is True
-
-
-class TestDefaultOffNeverLockout:
-    """#256: a default-off, not-engaged session never hard-blocks a .py Edit or a Bash command."""
-
-    @pytest.fixture(autouse=True)
-    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Drop the file fixture's autoload opt-in so the session stays not-engaged
-        # (the empty .pending is what keeps the gate from ever hard-blocking).
-        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-
-    def test_py_edit_not_blocked_after_default_off_prompt(self, tmp_path: Path) -> None:
-        handle_user_prompt_submit({"session_id": "ll-edit", "prompt": "fix the bug in foo.py and run ruff"})
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "ll-edit", "tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "work" / "x.py")}}
-        )
-        assert blocked is False
-
-    def test_bash_not_blocked_after_default_off_prompt(self) -> None:
-        handle_user_prompt_submit({"session_id": "ll-bash", "prompt": "run the test suite please"})
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "ll-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
-        )
-        assert blocked is False
 
 
 class TestMaybeEngageT3Normalization:

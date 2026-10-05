@@ -27,6 +27,7 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 
@@ -151,6 +152,7 @@ COLLEAGUE_SLACK_ID = "UC0LLEAGUE"
 
 class TestClassificationBehaviour(TestCase):
     def test_all_merged_broadcast_reacts_green_check_and_skips_dispatch(self) -> None:
+        allow_slack_channels(CHANNEL)
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"please review {MR_MERGED} and {MR_MERGED_2}", TS_A)]}
         states = {
@@ -490,6 +492,7 @@ class TestIdempotency(TestCase):
         assert scanner.scan() == []
 
     def test_pending_to_all_merged_reclassifies_and_reacts_green(self) -> None:
+        allow_slack_channels(CHANNEL)
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}
         pending_states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}
@@ -522,6 +525,7 @@ class TestIdempotency(TestCase):
 
 class TestConnectChannelHardFail(TestCase):
     def test_connect_channel_bot_restricted_hard_fails(self) -> None:
+        allow_slack_channels(CHANNEL)
         # The only reaction the scanner posts now is the all-merged
         # :white_check_mark: outcome reaction; a Connect-restricted channel
         # rejecting it must still hard-fail loudly (#1131).

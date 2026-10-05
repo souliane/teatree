@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
-from teatree.agents.subagent_ceiling import DEFAULT_SPAWN_CEILING, SPAWN_TOOL_MATCHER, SpawnCeiling, spawn_ceiling_hooks
+from teatree.agents.subagent_ceiling import SPAWN_TOOL_MATCHER, SpawnCeiling, spawn_ceiling_hooks
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import PreToolUseHookInput
@@ -139,11 +139,8 @@ class TestKillSwitch:
 
 class TestHookWiring:
     def test_the_hook_bundle_registers_the_delegation_matcher_on_pretooluse(self) -> None:
-        ceiling = SpawnCeiling(limit=DEFAULT_SPAWN_CEILING)
+        ceiling = SpawnCeiling(limit=20)
         hooks = spawn_ceiling_hooks(ceiling)
         matchers = hooks["PreToolUse"]
         assert [m.matcher for m in matchers] == [SPAWN_TOOL_MATCHER]
         assert matchers[0].hooks == [ceiling.pre_tool_use]
-
-    def test_the_shipped_default_is_the_vendor_named_parallel_agent_bound(self) -> None:
-        assert DEFAULT_SPAWN_CEILING == 20

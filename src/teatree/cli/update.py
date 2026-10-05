@@ -61,6 +61,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.generation import in_place_update_refusal
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
 from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
 from teatree.utils.django_bootstrap import ensure_django
@@ -552,6 +553,9 @@ def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
 
 def _run_update() -> None:
     """The actual update flow, factored out so the callback stays a thin shell."""
+    if refusal := in_place_update_refusal():
+        typer.echo(f"ERROR {refusal} — roll a new generation with `t3 deploy roll --to <sha>`.")
+        raise typer.Exit(code=1)
     repos = _collect_repos()
     if not repos:
         typer.echo("ERROR No teatree core or overlay repos found to update.")

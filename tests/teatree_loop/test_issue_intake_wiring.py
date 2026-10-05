@@ -32,6 +32,7 @@ from teatree.loop.scanner_factories import _issue_intake_scanner_for
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.loops.issue_implementer.loop import MINI_LOOP
 from tests.factories import ImplementedIssueMarkerFactory, TaskFactory, TicketFactory
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 _PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
@@ -173,22 +174,20 @@ class IssueIntakeGateTests(TestCase):
             assert _issue_intake_scanner_for(_backend()) is not None
         log.warning.assert_not_called()
 
-    def test_fleet_on_at_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
+    def test_full_budget_builds_a_heartbeat_only_scanner(self) -> None:
         # Fleet-safety Stage 2: the per-tick heartbeat must run at a full budget too,
         # or an in-flight claim expires and is stolen mid-dispatch.
         ImplementedIssueMarkerFactory(overlay="acme")  # budget full
         with (
             patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_max_concurrent=1)),
-            patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
             scanner = _issue_intake_scanner_for(_backend())
         assert isinstance(scanner, IssueIntakeScanner)
         assert scanner.can_claim is False
 
-    def test_fleet_on_with_budget_can_claim(self) -> None:
+    def test_with_budget_can_claim(self) -> None:
         with (
             patch(_PATCH_TARGET, return_value=_enabled()),
-            patch("teatree.core.fleet.wire.fleet_claim_enabled", return_value=True),
         ):
             scanner = _issue_intake_scanner_for(_backend())
         assert isinstance(scanner, IssueIntakeScanner)
@@ -325,6 +324,7 @@ class IssueIntakeMiniLoopTests(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        FleetClaimStub().install(self)
 
     def test_mini_loop_identity(self) -> None:
         assert MINI_LOOP.name == "issue_implementer"

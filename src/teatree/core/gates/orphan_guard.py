@@ -29,12 +29,14 @@ from django.db.models import QuerySet
 
 from teatree.config import clone_root
 from teatree.core.forge_pr_probe import find_open_pr_for_branch
+from teatree.core.forge_push import VERIFY_TIMEOUT_SECONDS
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, prefilter_branch_commits_by_subject
 from teatree.core.worktree.branch_landed import branch_content_landed_on_base, pr_from_branch_would_be_empty
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError
+from teatree.utils.git_run import git_env_non_interactive, run_with_status
+from teatree.utils.run import CommandFailedError, TimeoutExpired, redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,10 @@ class BranchStatus(StrEnum):
     ``BRANCH_MISSING`` identifies a stale worktree row whose local branch ref no
     longer exists. Workspace-wide scans report and skip it without hiding real
     git failures from the command boundary.
+
+    ``REMOTE_UNKNOWN`` is an orphan whose ``origin`` could not be read (refused
+    credential, timeout), so neither UNPUSHED nor PUSHED can be claimed; a push
+    can still land through a distinct ``pushurl``, so the PR stays owed.
     """
 
     SYNCED = "synced"
@@ -62,12 +68,13 @@ class BranchStatus(StrEnum):
     PR_UNKNOWN = "pr_unknown"
     UNPUSHED_ORPHAN = "unpushed_orphan"
     PUSHED_ORPHAN = "pushed_orphan"
+    REMOTE_UNKNOWN = "remote_unknown"
 
 
 #: ``PR_UNKNOWN`` is absent on purpose — an orphan claim asserts the forge holds no
 #: PR, which an unreadable forge cannot support. The obligation is not dropped: the
 #: pre-push gate owes a ``PendingPullRequest`` for that state instead.
-_ORPHAN_STATUSES = frozenset({BranchStatus.UNPUSHED_ORPHAN, BranchStatus.PUSHED_ORPHAN})
+_ORPHAN_STATUSES = frozenset({BranchStatus.UNPUSHED_ORPHAN, BranchStatus.PUSHED_ORPHAN, BranchStatus.REMOTE_UNKNOWN})
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,28 @@ def _origin_default_branch_target(repo: str) -> str:
         return f"origin/{git.default_branch(repo=repo)}"
     except (CommandFailedError, RuntimeError, ValueError):
         return "origin/main"
+
+
+def _orphan_status_on_origin(repo: str, branch: str) -> BranchStatus:
+    try:
+        result = run_with_status(
+            repo=repo,
+            args=["ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+            env=git_env_non_interactive(),
+            timeout=VERIFY_TIMEOUT_SECONDS,
+        )
+    except TimeoutExpired:
+        logger.warning("orphan scan: origin did not answer for %s in %s — reporting remote_unknown", branch, repo)
+        return BranchStatus.REMOTE_UNKNOWN
+    if result.returncode != 0:
+        logger.warning(
+            "orphan scan: could not read origin for %s in %s (%s) — reporting remote_unknown",
+            branch,
+            repo,
+            redact_secrets(result.stderr.strip()),
+        )
+        return BranchStatus.REMOTE_UNKNOWN
+    return BranchStatus.PUSHED_ORPHAN if result.stdout.strip() else BranchStatus.UNPUSHED_ORPHAN
 
 
 def _local_content_verdict(repo: str, branch: str, target: str, ahead: int) -> BranchReport | None:
@@ -157,9 +186,7 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
         logger.warning("orphan scan: could not read %s's open-PR state in %s — reporting pr_unknown", branch, repo)
         return BranchReport(repo=repo, branch=branch, status=BranchStatus.PR_UNKNOWN, ahead_count=ahead)
 
-    has_remote = bool(git.run(repo=repo, args=["ls-remote", "--heads", "origin", branch]))
-    status = BranchStatus.PUSHED_ORPHAN if has_remote else BranchStatus.UNPUSHED_ORPHAN
-    return BranchReport(repo=repo, branch=branch, status=status, ahead_count=ahead)
+    return BranchReport(repo=repo, branch=branch, status=_orphan_status_on_origin(repo, branch), ahead_count=ahead)
 
 
 def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchReport]:

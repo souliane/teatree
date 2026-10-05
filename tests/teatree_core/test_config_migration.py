@@ -61,12 +61,12 @@ class TestExportDbToToml(TestCase):
 
     def test_native_scalar_types_round_trip(self) -> None:
         # Each JSON-stored value decodes to its native TOML scalar, not a string.
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        ConfigSetting.objects.set_value("auto_update_require_green_main", value=False)
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 5)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready")
         ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
         teatree = _teatree(tomllib.loads(export_db_to_toml(scan_terms=()).toml))
-        assert teatree["adaptive_intake_concurrency_enabled"] is True
+        assert teatree["auto_update_require_green_main"] is False
         assert teatree["issue_implementer_max_concurrent"] == 5
         assert isinstance(teatree["issue_implementer_max_concurrent"], int)
         assert teatree["issue_implementer_label"] == "ready"
@@ -140,11 +140,11 @@ class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):
             assert key not in COLD_HOOK_SETTINGS
 
     def test_export_withholds_a_stored_brand_row(self) -> None:
-        ConfigSetting.objects.set_value("banned_terms", ["acmebrand"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": [], "prose_collider": ["acmebrand"]})
         ConfigSetting.objects.set_value("mode", "auto")
         dump = export_db_to_toml(scan_terms=()).toml
         assert "acmebrand" not in dump
-        assert "banned_terms" not in dump
+        assert "banned_term_registry" not in dump
         # The legitimate operational key still exports.
         assert _teatree(tomllib.loads(dump))["mode"] == "auto"
 
@@ -160,13 +160,13 @@ class TestExportSecretGuard(TestCase):
     """
 
     def test_private_key_is_withheld_by_default(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
         result = export_db_to_toml(scan_terms=())
         doc = tomllib.loads(result.toml)
         assert _teatree(doc)["mode"] == "auto"
-        assert "banned_brands" not in _teatree(doc)
-        assert [(r.key, r.reason) for r in result.redacted] == [("banned_brands", "private-key")]
+        assert "banned_term_registry" not in _teatree(doc)
+        assert [(r.key, r.reason) for r in result.redacted] == [("banned_term_registry", "private-key")]
 
     def test_value_carrying_a_banned_term_is_withheld_by_content_scan(self) -> None:
         ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"], scope="proj")
@@ -178,11 +178,11 @@ class TestExportSecretGuard(TestCase):
         assert result.redacted[0].reason == "banned-term:acmecorp"
 
     def test_include_private_exports_everything(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
         result = export_db_to_toml(include_private=True, scan_terms=("acmecorp", "acmebrand"))
         teatree = _teatree(tomllib.loads(result.toml))
-        assert teatree["banned_brands"] == ["acmebrand"]
+        assert teatree["banned_term_registry"] == {"leak": ["acmebrand"], "prose_collider": []}
         assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
         assert result.redacted == ()
 
@@ -212,8 +212,8 @@ class TestExportSecretGuard(TestCase):
 class TestExportScanTermsResolveFailsSafe(TestCase):
     """``export_db_to_toml(scan_terms=None)`` fails SAFE when the live config has no terms.
 
-    The DEFAULT machine state — no ``banned_terms`` configured and no
-    ``T3_BANNED_TERMS`` env — makes ``resolve_banned_terms`` raise
+    The DEFAULT machine state — no ``banned_term_registry`` configured and no
+    ``TEATREE_TERM_REGISTRY`` env — makes ``resolve_banned_terms`` raise
     ``BannedTermsUnsetError``. The export's live-resolve path (``scan_terms=None``,
     the production ``config_setting export`` caller) must degrade to an EMPTY
     scan-term list rather than propagate the raise. Every other export test passes
@@ -223,9 +223,9 @@ class TestExportScanTermsResolveFailsSafe(TestCase):
     def test_export_does_not_crash_when_config_lacks_banned_terms(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
         # Full env minus the two override vars so neither resolver short-circuits
-        # on an env value; with no banned_terms configured the live resolve must
+        # on an env value; with no banned_term_registry configured the live resolve must
         # degrade to an empty scan-term list rather than raise.
-        env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "TEATREE_BANNED_BRANDS"}}
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
         with mock.patch.dict(os.environ, env, clear=True):
             export = export_db_to_toml()  # scan_terms=None -> live resolve
         doc = tomllib.loads(export.toml)
@@ -263,7 +263,7 @@ class TestExportScanTermsRoutesThroughRegistry:
             {"leak": ["democorp"], "prose_collider": ["widget-margin"], "overlay": ["acme-internal"], "allow": ["ok"]},
         )
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         assert set(resolve_export_scan_terms()) == {"democorp", "widget-margin", "acme-internal"}
 
@@ -271,8 +271,8 @@ class TestExportScanTermsRoutesThroughRegistry:
 class TestImportTomlToDb(TestCase):
     """``import_toml_to_db`` — the precise inverse of ``export_db_to_toml`` (PR: phase 4).
 
-    Loads a ``config_setting export`` dump back into the store: retired aliases fold,
-    unknown/secret rows are rejected wholesale, every value is validated through the
+    Loads a ``config_setting export`` dump back into the store: unknown/secret rows
+    are rejected wholesale, every value is validated through the
     resolver's own parser, and a value equal to the shipped default writes no row.
     """
 
@@ -292,9 +292,11 @@ class TestImportTomlToDb(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_secret_key_is_rejected(self) -> None:
-        result = import_toml_to_db('[teatree]\nbanned_terms = ["synthetic"]\n', scan_terms=())
+        result = import_toml_to_db(
+            '[teatree]\nbanned_term_registry = { leak = ["synthetic"], prose_collider = [] }\n', scan_terms=()
+        )
         assert len(result.rejected) == 1
-        assert result.rejected[0].key == "banned_terms"
+        assert result.rejected[0].key == "banned_term_registry"
         assert "private-key" in result.rejected[0].reason
         assert ConfigSetting.objects.count() == 0
 
@@ -306,10 +308,12 @@ class TestImportTomlToDb(TestCase):
         assert result.rejected[0].reason == "secret (banned-term:acmecorp)"
 
     def test_removed_key_is_rejected_loudly(self) -> None:
-        result = import_toml_to_db('[teatree]\nbranch_prefix = "x"\n', scan_terms=())
-        assert len(result.rejected) == 1
-        assert result.rejected[0].key == "branch_prefix"
-        assert result.rejected[0].reason.startswith("removed")
+        for key in ("branch_prefix", "not_a_setting"):
+            with self.subTest(key=key):
+                result = import_toml_to_db(f'[teatree]\n{key} = "x"\n', scan_terms=())
+                assert [(row.key, row.reason) for row in result.rejected] == [(key, "unknown key")]
+                assert result.written == ()
+                assert ConfigSetting.objects.count() == 0
 
     def test_a_safety_posture_key_is_rejected_unless_the_caller_allows_it(self) -> None:
         result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=())
@@ -388,29 +392,32 @@ class TestImportTomlToDb(TestCase):
         assert result.written == ()
         assert ConfigSetting.objects.get_effective("mode") != "interactive"
 
-    def test_retired_alias_folds_onto_its_replacement(self) -> None:
-        # `speed` was renamed to `wip`; the stored value migrates onto the live key.
+    def test_old_setting_name_is_rejected_as_unknown(self) -> None:
         result = import_toml_to_db('[teatree]\nspeed = "slow"\n', scan_terms=())
-        assert result.rejected == ()
-        assert ("speed", "wip") in result.folded
-        assert [(r.scope, r.key) for r in result.written] == [("", "wip")]
-        assert ConfigSetting.objects.get_effective("wip") == "slow"
+        assert [(r.key, r.reason) for r in result.rejected] == [("speed", "unknown key; renamed to wip")]
+        assert result.written == ()
         assert ConfigSetting.objects.get_effective("speed") is None
+
+    def test_other_renamed_key_names_its_successor(self) -> None:
+        result = import_toml_to_db("[teatree]\nheadless_max_turns = 5\n", scan_terms=())
+        assert [(r.key, r.reason) for r in result.rejected] == [
+            ("headless_max_turns", "unknown key; renamed to agent_max_turns")
+        ]
 
     def test_invalid_value_is_rejected(self) -> None:
         # A quoted "false" for a bool-typed setting fails the strict parser (#258).
-        result = import_toml_to_db('[teatree]\nadaptive_intake_concurrency_enabled = "false"\n', scan_terms=())
+        result = import_toml_to_db('[teatree]\nauto_update_require_green_main = "false"\n', scan_terms=())
         assert len(result.rejected) == 1
         assert result.rejected[0].reason.startswith("invalid")
         assert ConfigSetting.objects.count() == 0
 
     def test_value_equal_to_effective_default_writes_no_row(self) -> None:
-        # adaptive_intake_concurrency_enabled's effective default is True (#3895), so a row
+        # auto_update_require_green_main's effective default is True (#3895), so a row
         # equal to it is redundant and skipped.
-        result = import_toml_to_db("[teatree]\nadaptive_intake_concurrency_enabled = true\n", scan_terms=())
+        result = import_toml_to_db("[teatree]\nauto_update_require_green_main = true\n", scan_terms=())
         assert result.rejected == ()
         assert result.written == ()
-        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "adaptive_intake_concurrency_enabled")]
+        assert [(r.scope, r.key) for r in result.skipped_default] == [("", "auto_update_require_green_main")]
         assert ConfigSetting.objects.count() == 0
 
     def test_import_of_the_shipped_default_value_writes_no_row(self) -> None:
@@ -481,7 +488,7 @@ class TestExportImportRoundTripIsByteStable(TestCase):
     """
 
     def _seed_representative_store(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
+        ConfigSetting.objects.set_value("auto_update_require_green_main", value=False)
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 9)
         ConfigSetting.objects.set_value("excluded_skills", ["zzz"])
         ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # Personal — included in a shared export
@@ -503,9 +510,9 @@ class TestExportImportRoundTripIsByteStable(TestCase):
 
     def test_secret_value_is_withheld_from_export_and_personal_is_kept(self) -> None:
         self._seed_representative_store()
-        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])  # Secret
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})  # Secret
         dump = export_db_to_toml(scan_terms=()).toml
-        assert "banned_brands" not in dump  # Secret withheld
+        assert "banned_term_registry" not in dump  # Secret withheld
         assert "/tmp/ws" in dump  # Personal kept
         # And the withheld Secret never round-trips back in.
         assert import_toml_to_db(dump, scan_terms=()).rejected == ()
@@ -695,7 +702,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
     """
 
     def _dump(self) -> str:
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+        ConfigSetting.objects.set_value("expected_required_contexts", value=["test (3.13)"])
         ConfigSetting.objects.set_value("architectural_review_skill", value="custom-review-skill")
         ConfigSetting.objects.set_value("autoload", value=True)
         return export_db_to_toml(include_private=True).toml
@@ -704,7 +711,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
         dump = self._dump()
         assert '[teatree.Gates.Quality."Merge & done"]' in dump
         assert '[teatree.Gates.Quality."Architectural review"]' in dump
-        assert dump.index('[teatree.Gates.Quality."Merge & done"]') < dump.index("require_merge_evidence")
+        assert dump.index('[teatree.Gates.Quality."Merge & done"]') < dump.index("expected_required_contexts")
 
     def test_a_shared_parent_level_is_a_path_prefix_not_a_repeated_section(self) -> None:
         dump = self._dump()
@@ -723,7 +730,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
         ConfigSetting.objects.all().delete()
         result = import_toml_to_db(dump, allow_safety_posture=True)
         assert not result.rejected, result.rejected
-        assert ConfigSetting.objects.get_effective("require_merge_evidence", scope="") is True
+        assert ConfigSetting.objects.get_effective("expected_required_contexts", scope="") == ["test (3.13)"]
         assert ConfigSetting.objects.get_effective("architectural_review_skill", scope="") == "custom-review-skill"
 
     def test_the_dump_is_a_deterministic_function_of_the_store(self) -> None:

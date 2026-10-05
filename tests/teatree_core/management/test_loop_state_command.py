@@ -1,4 +1,4 @@
-"""``manage.py loop_state`` — pause/resume/disable/enable a mini-loop (#1913).
+"""``manage.py loop_state`` — pause/resume/disable a mini-loop (#1913).
 
 Integration-first against the real DB via ``call_command``: each subcommand
 performs the atomic ``LoopState`` transition and the transition is idempotent
@@ -57,9 +57,9 @@ class TestLoopStateCommand(TestCase):
         _run("resume", "review")
         assert LoopState.objects.status_of("review") is LoopStatus.ENABLED
 
-    def test_enable_returns_to_enabled_from_disabled(self) -> None:
+    def test_resume_returns_to_enabled_from_disabled(self) -> None:
         _run("disable", "ship")
-        _run("enable", "ship")
+        _run("resume", "ship")
         assert LoopState.objects.status_of("ship") is LoopStatus.ENABLED
 
     def test_pause_is_idempotent(self) -> None:
@@ -117,7 +117,7 @@ class TestStatusSubcommandIsAReadNotAMutation(TestCase):
 
 
 class TestTheHoldVerbsMoveTheHoldPlaneAlone(TestCase):
-    """``pause``/``resume``/``disable``/``enable`` are HOLD-plane verbs, and only that.
+    """``pause``/``resume``/``disable`` are HOLD-plane verbs, and only that.
 
     ``Loop.enabled`` is the MANUAL override slot now, written solely through
     ``set_manual_override`` (which requires a reason). A hold verb that also wrote it
@@ -131,10 +131,10 @@ class TestTheHoldVerbsMoveTheHoldPlaneAlone(TestCase):
         assert LoopState.objects.status_of("ship") is LoopStatus.DISABLED
         assert Loop.objects.get(name="ship").enabled is None
 
-    def test_enable_clears_the_hold_without_touching_the_manual_layer(self) -> None:
+    def test_resume_clears_the_hold_without_touching_the_manual_layer(self) -> None:
         _loop("tickets")
         _run("disable", "tickets")
-        _run("enable", "tickets")
+        _run("resume", "tickets")
         assert LoopState.objects.status_of("tickets") is LoopStatus.ENABLED
         assert Loop.objects.get(name="tickets").enabled is None
 
@@ -151,14 +151,14 @@ class TestTheHoldVerbsMoveTheHoldPlaneAlone(TestCase):
         _loop("housekeeping")
         Loop.objects.set_manual_override("housekeeping", runs=False, reason="pinned by the test")
         _run("disable", "housekeeping")
-        _run("enable", "housekeeping")
+        _run("resume", "housekeeping")
         assert Loop.objects.get(name="housekeeping").enabled is False
 
 
 class TestUnknownLoopNameRefused(TestCase):
     """#3117: every verb refuses a name with no matching ``Loop`` row before touching ``LoopState``.
 
-    ``pause``/``resume``/``disable``/``enable``/``status`` on an unknown name used
+    ``pause``/``resume``/``disable``/``status`` on an unknown name used
     to write (or, for ``status``, silently resolve to) a ``LoopState`` row for a
     loop that does not exist — so a typo in a pause command reported success and
     paused nothing. Each verb now exits non-zero, names the unknown loop, points
@@ -187,10 +187,6 @@ class TestUnknownLoopNameRefused(TestCase):
 
     def test_disable_unknown_name_refused_no_row(self) -> None:
         self._refuse("disable")
-        assert not LoopState.objects.filter(name=self._BOGUS).exists()
-
-    def test_enable_unknown_name_refused_no_row(self) -> None:
-        self._refuse("enable")
         assert not LoopState.objects.filter(name=self._BOGUS).exists()
 
     def test_status_unknown_name_refused_never_prints_enabled(self) -> None:
@@ -267,7 +263,7 @@ class TestOverrideCommand(TestCase):
 class TestOverrideReconcilesTheTimerChain(TestCase):
     """The manual layer outranks the preset, so writing it changes chain membership now.
 
-    ``resume``/``disable``/``enable`` all reconcile at their chokepoint; ``override`` did
+    ``resume``/``disable`` all reconcile at their chokepoint; ``override`` did
     not, so a force-ON left a loop admitted with nothing driving it — and a force-OFF left
     a timer firing into a refusal — until the ~5-minute reconcile chain caught up (#4196).
     """

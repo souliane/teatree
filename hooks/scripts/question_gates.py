@@ -29,7 +29,9 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO
 
 DENIED_QUESTION_MARKER_PREFIX = "denied-q-"
 
@@ -337,6 +339,55 @@ _CLARIFY_REQUEST_RE = re.compile(
     r"|\bcan you explain\b",
     re.IGNORECASE,
 )
+
+
+_TAIL_BLOCK_BYTES = 64 * 1024
+
+
+def _parsed_entry(raw: bytes) -> dict | None:
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _reversed_entries(handle: BinaryIO) -> Iterator[dict]:
+    position = handle.seek(0, 2)
+    carried: list[bytes] = []
+    while position > 0:
+        step = min(_TAIL_BLOCK_BYTES, position)
+        position -= step
+        handle.seek(position)
+        block = handle.read(step)
+        first = block.find(b"\n")
+        if first < 0:
+            carried.append(block)
+            continue
+        lines = block[first + 1 :].split(b"\n")
+        lines[-1] += b"".join(reversed(carried))
+        carried = [block[:first]]
+        for raw in reversed(lines):
+            if raw.strip() and (entry := _parsed_entry(raw)) is not None:
+                yield entry
+    head = b"".join(reversed(carried))
+    if head.strip() and (entry := _parsed_entry(head)) is not None:
+        yield entry
+
+
+def iter_transcript_reversed(transcript_path: str) -> Iterator[dict]:
+    """Transcript entries newest-first, read backwards from EOF in fixed-size blocks.
+
+    A caller that stops at the first entry it needs pays for the turn, not the session.
+    An absent or unreadable transcript yields nothing.
+    """
+    if not transcript_path:
+        return
+    try:
+        with Path(transcript_path).open("rb") as handle:
+            yield from _reversed_entries(handle)
+    except OSError:
+        return
 
 
 def read_transcript_entries(transcript_path: str) -> list[dict]:

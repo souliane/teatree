@@ -18,14 +18,15 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.loader import get_code_host_for_repo
 from teatree.core.authoring_credential import (
     AmbiguousAuthoringCredentialError,
+    authoring_credential_for_remote,
     authoring_identity_for_remote,
     authorized_pr_host,
-    declared_distinct_author,
     gitlab_token_for_remote,
     reset_authoring_credential_cache,
     unapprovable_author_refusal,
     unresolvable_author_refusal,
 )
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.identity_wiring import AuthoringIdentity, unapprovable_author_fault
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.runners.base import RunnerResult
@@ -82,43 +83,6 @@ def _clear_cache() -> None:
     reset_authoring_credential_cache()
 
 
-class TestDeclaredDistinctAuthor:
-    """Which overlay — if any — declares a non-owner credential for a remote."""
-
-    def test_a_remote_nobody_declares_has_no_declared_author(self) -> None:
-        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=_PlainConfig())):
-            assert declared_distinct_author(PRODUCT) is None
-
-    def test_a_declared_remote_names_its_overlay_and_credential(self) -> None:
-        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=_PlainConfig(), product=_ScopedConfig())):
-            declared = declared_distinct_author(FACTORY)
-        assert declared is not None
-        assert declared.overlay == "product"
-        assert declared.token == BOT_TOKEN
-
-    def test_an_unresolvable_declaration_is_not_a_declared_author(self) -> None:
-        with patch(_ALL_OVERLAYS, return_value=_registry(product=_ScopedConfig(scoped=""))):
-            assert declared_distinct_author(FACTORY) is None
-
-    def test_two_overlays_declaring_the_same_credential_is_not_ambiguous(self) -> None:
-        registry = _registry(one=_ScopedConfig(), two=_ScopedConfig())
-        with patch(_ALL_OVERLAYS, return_value=registry):
-            declared = declared_distinct_author(FACTORY)
-        assert declared is not None
-        assert declared.token == BOT_TOKEN
-
-    def test_two_overlays_declaring_different_credentials_refuse_to_guess(self) -> None:
-        registry = _registry(one=_ScopedConfig(), two=_ScopedConfig(scoped="other-bot-token"))
-        with patch(_ALL_OVERLAYS, return_value=registry), pytest.raises(AmbiguousAuthoringCredentialError) as exc:
-            declared_distinct_author(FACTORY)
-        assert "one" in str(exc.value)
-        assert "two" in str(exc.value)
-
-    def test_an_empty_remote_declares_nothing(self) -> None:
-        with patch(_ALL_OVERLAYS, return_value=_registry(product=_ScopedConfig())):
-            assert declared_distinct_author("") is None
-
-
 class TestGitlabTokenForRemote:
     """The regression: the credential follows the REPO, not the ambient overlay."""
 
@@ -146,6 +110,87 @@ class TestGitlabTokenForRemote:
         registry = _registry(one=_ScopedConfig(), two=_ScopedConfig(scoped="other-bot-token"))
         with patch(_ALL_OVERLAYS, return_value=registry), pytest.raises(AmbiguousAuthoringCredentialError):
             gitlab_token_for_remote(_PlainConfig(), FACTORY)
+
+
+class TestAnUnreachableBotNeverFallsBackToTheOwner:
+    """A declared bot this venue cannot read is NO credential, never permission to use the owner's.
+
+    The owner authoring an MR on a bot-authored repo is the one outcome the declaration exists to
+    prevent: the forge then bars him from approving it. An ambient overlay that declares nothing
+    (a pre-push hook pinned to ``t3 teatree``) used to answer its own owner credential here.
+    """
+
+    def test_an_ambient_overlay_declaring_nothing_does_not_lend_the_owners_credential(self) -> None:
+        ambient = _PlainConfig()
+        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=ambient, product=_ScopedConfig(scoped=""))):
+            assert gitlab_token_for_remote(ambient, FACTORY) == ""
+
+    def test_the_declaring_overlay_as_ambient_reads_the_same(self) -> None:
+        declaring = _ScopedConfig(scoped="")
+        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=_PlainConfig(), product=declaring)):
+            assert gitlab_token_for_remote(declaring, FACTORY) == ""
+
+    def test_the_bot_present_still_authors_as_the_bot(self) -> None:
+        ambient = _PlainConfig()
+        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=ambient, product=_ScopedConfig())):
+            assert gitlab_token_for_remote(ambient, FACTORY) == BOT_TOKEN
+
+    def test_a_remote_nobody_declares_keeps_the_owner_though_another_remotes_bot_is_unreachable(self) -> None:
+        ambient = _PlainConfig()
+        with patch(_ALL_OVERLAYS, return_value=_registry(ambient=ambient, product=_ScopedConfig(scoped=""))):
+            assert gitlab_token_for_remote(ambient, PRODUCT) == OWNER_TOKEN
+
+    def test_the_end_to_end_host_is_refused_not_built_under_the_owner(self, tmp_path: Path) -> None:
+        ambient = _PlainConfig()
+        repo = _git_repo_with_origin(tmp_path / "factory", FACTORY)
+        with (
+            patch(_ALL_OVERLAYS, return_value=_registry(ambient=ambient, product=_ScopedConfig(scoped=""))),
+            pytest.raises(BackendResolutionError),
+        ):
+            get_code_host_for_repo(_overlay(ambient), repo)
+
+
+class TestAuthoringCredentialForRemote:
+    """The one rule behind every authoring token: the declared bot, else the caller's fallback."""
+
+    @pytest.mark.parametrize(
+        ("registry", "token"),
+        [
+            (_registry(product=_ScopedConfig()), BOT_TOKEN),
+            (_registry(product=_ScopedConfig(scoped="")), ""),
+        ],
+        ids=["declared-bot", "unreachable-bot"],
+    )
+    def test_the_fallback_is_never_read_for_a_declared_remote(
+        self, registry: dict[str, OverlayBase], token: str
+    ) -> None:
+        fallback = MagicMock(return_value=OWNER_TOKEN)
+        with patch(_ALL_OVERLAYS, return_value=registry):
+            assert authoring_credential_for_remote(FACTORY, fallback=fallback).token == token
+        fallback.assert_not_called()
+
+    def test_an_unreachable_bot_is_refused_by_name_with_its_remote_and_fix(self) -> None:
+        with patch(_ALL_OVERLAYS, return_value=_registry(product=_ScopedConfig(scoped=""))):
+            refusal = authoring_credential_for_remote(FACTORY, fallback=lambda: OWNER_TOKEN).refusal
+        assert FACTORY in refusal
+        assert "cannot approve" in refusal
+        assert "no MR is opened" in refusal
+        assert "Fix:" in refusal
+
+    @pytest.mark.parametrize("remote", [FACTORY, PRODUCT], ids=["resolvable-bot", "undeclared-remote"])
+    def test_a_credential_that_resolves_carries_no_refusal(self, remote: str) -> None:
+        with patch(_ALL_OVERLAYS, return_value=_registry(product=_ScopedConfig())):
+            assert authoring_credential_for_remote(remote, fallback=lambda: OWNER_TOKEN).refusal == ""
+
+    def test_an_undeclared_remote_takes_the_fallback_even_beside_an_unreachable_bot_elsewhere(self) -> None:
+        with patch(_ALL_OVERLAYS, return_value=_registry(product=_ScopedConfig(scoped=""))):
+            credential = authoring_credential_for_remote(PRODUCT, fallback=lambda: "routed-owner")
+        assert credential.token == "routed-owner"
+        assert credential.refusal == ""
+
+    def test_an_unreadable_registry_takes_the_fallback(self) -> None:
+        with patch(_ALL_OVERLAYS, side_effect=RuntimeError("no app registry")):
+            assert authoring_credential_for_remote(FACTORY, fallback=lambda: "routed-owner").token == "routed-owner"
 
 
 class TestAuthoringIdentityForRemote:
@@ -366,6 +411,34 @@ class TestShipResolvesItsHostThroughTheGate:
         ):
             ShipExecutor._resolve_host("/tmp/checkout")
         assert asked == ["/tmp/checkout"]
+
+
+class TestShipNamesTheDeclaredAuthorOnAResolutionError:
+    """``BackendResolutionError`` is the arm a GitLab remote really takes when its bot does not resolve."""
+
+    _FACTORY = "teatree.core.runners.ship.code_host_for_repo_from_overlay"
+    _GENERIC = "overlay has no gitlab credentials configured — cannot open a PR"
+
+    def _detail(self, registry: dict[str, OverlayBase]) -> str:
+        with (
+            patch(self._FACTORY, side_effect=BackendResolutionError(self._GENERIC)),
+            patch("teatree.core.authoring_credential.git.remote_url", return_value=FACTORY),
+            patch(_ALL_OVERLAYS, return_value=registry),
+            patch("teatree.core.authoring_credential.get_overlay", return_value=_overlay(_PlainConfig())),
+        ):
+            result = ShipExecutor._resolve_host("/tmp/checkout")
+        assert isinstance(result, RunnerResult)
+        return result.detail
+
+    def test_an_unreachable_declared_bot_is_named_instead_of_the_generic_text(self) -> None:
+        detail = self._detail(_registry(product=_ScopedConfig(scoped="")))
+
+        assert FACTORY in detail
+        assert "cannot approve" in detail
+        assert self._GENERIC not in detail
+
+    def test_a_failure_with_no_author_cause_keeps_its_own_text(self) -> None:
+        assert self._detail(_registry(product=_ScopedConfig())) == self._GENERIC
 
 
 class TestUnresolvableAuthorRefusal:

@@ -16,14 +16,8 @@ __all__ = ["overlay_scope_q"]
 def overlay_scope_q(overlay: str | None, *, prefix: str = "") -> Q:
     """The Task-overlay scope clause as a reusable ``Q`` — the single source of truth.
 
-    A ``Task`` has no overlay column of its own: its overlay is its ticket's OR
-    its session's, so the clause spans both relations and admits a legacy
-    pre-multi-overlay row — one where NEITHER relation names an overlay. Both
-    must be blank: a per-relation blank arm exposed one overlay's ticket task
-    to every other overlay through its unstamped session, which then claimed it.
-    A missing relation counts as blank (SQL ``NULL`` never equals ``''``), so a
-    ticket-less or session-less row stays in the legacy set instead of dropping
-    out of scope entirely. ``prefix`` reaches the ``ticket``/``session`` pair
+    A ``Task`` has no overlay column of its own: its overlay is its ticket's or
+    its session's, so the clause spans both relations. ``prefix`` reaches the ``ticket``/``session`` pair
     from a related model — ``"task__"`` scopes a ``TaskAttempt`` by its task's
     overlay. An empty/``None`` overlay yields a bare ``Q()`` that matches
     everything (``filter(Q())`` == ``all()``).
@@ -36,13 +30,11 @@ def overlay_scope_q(overlay: str | None, *, prefix: str = "") -> Q:
         return Q()
     ticket = f"{prefix}ticket__overlay"
     session = f"{prefix}session__overlay"
-    ticket_blank = Q(**{f"{prefix}ticket__isnull": True}) | Q(**{ticket: ""})
-    session_blank = Q(**{f"{prefix}session__isnull": True}) | Q(**{session: ""})
-    return Q(**{ticket: overlay}) | Q(**{session: overlay}) | (ticket_blank & session_blank)
+    return Q(**{ticket: overlay}) | Q(**{session: overlay})
 
 
 def for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
-    """Scope *qs* to *overlay*, including legacy empty-overlay rows.
+    """Scope *qs* to *overlay*.
 
     A module function rather than a mixin (composition over inheritance): the
     three overlay-scoped QuerySets call it from their own ``for_overlay`` method,
@@ -50,5 +42,5 @@ def for_overlay(qs: models.QuerySet, overlay: str | None) -> models.QuerySet:
     ``self.filter`` / ``self.all``.
     """
     if overlay:
-        return qs.filter(Q(overlay=overlay) | Q(overlay=""))
+        return qs.filter(overlay=overlay)
     return qs.all()

@@ -22,10 +22,8 @@ through Python ``subprocess`` inside the worker, and a PreToolUse hook sees only
 agent's own Bash tool calls, so the gate is structurally incapable of firing on its own
 detector or on the pytest run that exercises it.
 
-Never-lockout trio: the per-call ``[merge-detect-ok: <reason>]`` token, the
-``merged_detection_gate_enabled = false`` kill-switch
-(``t3 <overlay> gate merged-detect disable``), and a silent fail-open on any resolver
-error.
+The per-call ``[merge-detect-ok: <reason>]`` token silences a known legitimate
+probe. A resolver error also stays silent; this advisory never denies work.
 
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
 ``teatree`` is importable, so the module top imports only stdlib and dependency-free
@@ -37,7 +35,6 @@ import sys
 from typing import Final
 
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.teatree_settings import teatree_bool_setting
 
 # Alias both identities so the handler the router registers and a test patching a
 # helper here operate on ONE module object.
@@ -56,8 +53,7 @@ _ADVISORY: Final[str] = (
     "verdict, or `t3 <overlay> workspace emit` for the sweep. To verify ONE change landed, read "
     "the content rather than the sha: `git show origin/main:<path> | grep -n '<symbol>'` or "
     "`git log -1 -S'<symbol>' -- <path>`. If this probe is asking something "
-    "else, add `[merge-detect-ok: <reason>]` to the command; to silence the nudge entirely run "
-    "`t3 <overlay> gate merged-detect disable`.\n"
+    "else, add `[merge-detect-ok: <reason>]` to the command.\n"
 )
 
 
@@ -77,7 +73,7 @@ def _shape_to_nudge(data: dict) -> str | None:
 
     Silent for a non-Bash tool, a probe against a non-default target (a coder's own
     upstream, ``repro``'s two-sha ancestry proof), a ``[merge-detect-ok: <reason>]``
-    token, a disabled kill-switch, and any internal error.
+    token, and any internal error.
     """
     if data.get("tool_name") != "Bash":
         return None
@@ -86,8 +82,6 @@ def _shape_to_nudge(data: dict) -> str | None:
     if not isinstance(command, str) or not command:
         return None
     try:
-        if not teatree_bool_setting("merged_detection_gate_enabled", default=True):
-            return None
         if _MERGE_DETECT_OK_RE.search(command[:_TOKEN_SCAN_LIMIT]):
             return None
         with _teatree_src_on_path():

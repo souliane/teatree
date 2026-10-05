@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Print the hand-written LoC delta between two refs; advisory, so it always exits 0."""
 
 import argparse

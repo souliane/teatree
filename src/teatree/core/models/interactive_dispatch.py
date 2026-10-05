@@ -24,8 +24,7 @@ from django.utils import timezone
 
 #: How long a seat survives with no release. Covers a sub-agent's ordinary life, so the
 #: ceiling bounds a POPULATION rather than a dispatch rate; a stuck lane still clears
-#: within it, and the ``[admission-ok: …]`` escape and the ``admission_governor_enabled``
-#: kill-switch cover the interim.
+#: within it, and the ``[admission-ok: …]`` escape covers the interim.
 SEAT_WINDOW = dt.timedelta(minutes=30)
 
 

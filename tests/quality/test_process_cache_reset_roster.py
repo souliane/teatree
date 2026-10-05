@@ -26,10 +26,13 @@ import ast
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from teatree.config.seed_defaults import _cache as _seed_defaults_cache
 from teatree.config.seed_defaults import reset_seed_defaults_cache
 from teatree.core.backend_factory import _code_host_cache, _messaging_cache, reset_backend_caches
 from teatree.core.gates.pr_budget_forge import _forge_cache, reset_forge_pr_budget_cache
+from teatree.hooks import _ssh_alias
 from teatree.utils.throttled_log import _last_warned, reset_throttle
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "teatree"
@@ -154,6 +157,8 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # the sweep withholds a reap that test asserts it takes.
     "teatree.core.claim_liveness:_driving": "reset_driving_registry",
     "teatree.hooks.quote_scanner:_BLOCKLIST_CACHE": "reset_blocklist_cache",
+    "teatree.hooks._private_repo_entries:_WARNED_MALFORMED_PRIVATE": "reset_malformed_private_warnings",
+    "teatree.hooks._ssh_alias:_CACHE": "reset_ssh_alias_cache",
     "teatree.core.schema_readiness:_MEMO": "invalidate_schema_readiness",
     "teatree.core.process_freshness:_MEMO": "invalidate_process_freshness",
     "teatree.config.host_projection:_warned": "reset_advisory_memo",
@@ -168,6 +173,11 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # The once-per-process unlink of the degraded-read marker. Exhausted by an earlier test,
     # a later one's healthy read leaves a marker it asserts was cleared.
     "teatree.config.override_read_health:note_healthy_read": "_reset_declaration_caches",
+    # Opt-in env var + container marker, memoised per process; tests pin both venues in one interpreter.
+    "teatree.agents.codex_app_server_options:container_is_the_sandbox": "_reset_declaration_caches",
+    # One suite budget per run, shared by every runner and judge. Kept across tests, one
+    # test's spend would exhaust the cap a later test reads from the same env value.
+    "teatree.eval.cost_observation:suite_budget_from_env": "_reset_suite_budget",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
     # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
@@ -194,6 +204,9 @@ RESET_BY_CONFTEST: dict[str, str] = {
 #: Registries are populated once at import/app-ready and are stable for the whole
 #: process — resetting them mid-session would break resolution, not isolate a test.
 EXEMPT: dict[str, str] = {
+    "teatree.config.feature_flags:FEATURE_FLAGS": (
+        "import-time feature flag registry; entries are not accumulated from runtime inputs"
+    ),
     "teatree.core.telemetry.admission:_provider": (
         "the OTel TracerProvider and its processors are process-lifetime resources; tests replace the provider "
         "binding when exercising exporter variants and do not change OTLP endpoint configuration between calls"
@@ -212,7 +225,7 @@ EXEMPT: dict[str, str] = {
     ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
     "teatree.config.setting_taxonomy:taxonomy": (
-        "a view over import-populated registries (feature flags, gate evidence, retirements, cold + "
+        "a view over import-populated registries (feature flags, gate evidence, cold + "
         "registry key sets); nothing mutates them at runtime, so the memo cannot hold another test's state"
     ),
     "teatree.cli.overlay:OVERLAY_PROXY_COMMANDS": "import-populated command map; not mutated at runtime",
@@ -252,6 +265,36 @@ EXEMPT: dict[str, str] = {
         "baseline file still gets a fresh answer and resetting this would only re-walk an identical tree"
     ),
 }
+
+
+def _is_autouse_fixture(decorator: ast.expr) -> bool:
+    return (
+        isinstance(decorator, ast.Call)
+        and _decorator_name(decorator) == "fixture"
+        and any(
+            keyword.arg == "autouse" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True
+            for keyword in decorator.keywords
+        )
+    )
+
+
+def _called_name(call: ast.Call) -> str | None:
+    """``reset()`` / ``mod.reset()`` name the callee; ``memo.cache_clear()`` names the memo it clears."""
+    fn = call.func
+    if isinstance(fn, ast.Attribute) and fn.attr == "cache_clear" and isinstance(fn.value, ast.Name):
+        return fn.value.id
+    return _ctor_name(call)
+
+
+def autouse_fixture_calls(source: str) -> dict[str, frozenset[str]]:
+    """Each autouse fixture in *source* mapped to what its body actually CALLS — a mention is not a call."""
+    calls: dict[str, frozenset[str]] = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and any(_is_autouse_fixture(dec) for dec in node.decorator_list):
+            body = (sub for statement in node.body for sub in ast.walk(statement))
+            called = (_called_name(sub) for sub in body if isinstance(sub, ast.Call))
+            calls[node.name] = frozenset(name for name in called if name)
+    return calls
 
 
 class TestProcessCacheResetRoster:
@@ -314,6 +357,30 @@ class TestProcessCacheResetRoster:
                 "is not referenced in tests/conftest.py — wire an autouse fixture that calls it"
             )
 
+    def test_every_reset_runs_in_an_autouse_fixture_this_test_ran_under(self, request: pytest.FixtureRequest) -> None:
+        # The name appearing in conftest proves nothing — a comment or an unused import has it too.
+        # The reset has to be CALLED by an autouse fixture, and pytest has to have run that fixture here.
+        fixtures = autouse_fixture_calls(_CONFTEST.read_text(encoding="utf-8"))
+        for cache_id, reset in RESET_BY_CONFTEST.items():
+            runners = {name for name, called in fixtures.items() if name == reset or reset in called}
+            assert runners & set(request.fixturenames), (
+                f"{cache_id}: no autouse fixture active for this test calls {reset}() — "
+                f"candidates {sorted(runners) or 'none'}"
+            )
+
+    def test_control_a_mentioned_but_uncalled_reset_is_not_wired(self) -> None:
+        source = (
+            "import pytest\n"
+            "from teatree.hooks._ssh_alias import reset_ssh_alias_cache  # reset_ssh_alias_cache()\n"
+            "@pytest.fixture(autouse=True)\n"
+            "def _noop():\n"
+            "    yield\n"
+            "@pytest.fixture\n"
+            "def _not_autouse():\n"
+            "    reset_ssh_alias_cache()\n"
+        )
+        assert autouse_fixture_calls(source) == {"_noop": frozenset()}
+
     def test_reset_dispositions_actually_clear_their_container_cache(self) -> None:
         # Efficacy: for each plain-dict RESET cache, populate it and prove the
         # roster's reset callable empties it. (The two lru caches are covered by
@@ -324,6 +391,7 @@ class TestProcessCacheResetRoster:
             (_code_host_cache, "sentinel-overlay", reset_backend_caches),
             (_messaging_cache, "sentinel-overlay", reset_backend_caches),
             (_seed_defaults_cache, (Path("sentinel.toml"), 1), reset_seed_defaults_cache),
+            (_ssh_alias._CACHE, ("sentinel-alias", "/sentinel-home"), _ssh_alias.reset_ssh_alias_cache),
         ]
         for container, key, reset_fn in cases:
             container[key] = object()

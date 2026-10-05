@@ -37,13 +37,14 @@ the run is recorded as a ``usage_limit_reached`` skip: it did not run, it did no
 no retry envelope waits it out.
 """
 
+import dataclasses
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from http import HTTPStatus
 from typing import Any
 
 from claude_agent_sdk.types import EffortLevel
-from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -51,12 +52,15 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
+from pydantic_ai.usage import RequestUsage
 
 from teatree.config import get_effective_settings
+from teatree.core.cost import ModelPrice
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
+from teatree.eval.cost_observation import ConservativeSuiteBudget
 from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import COST_SOURCE_DERIVED, EvalRun, EvalSpec
 from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner
 from teatree.llm.credentials import AnthropicApiKeyCredential, Credential, CredentialError
 
@@ -89,6 +93,7 @@ class AnthropicApiRunner:
         caps: EvalDriveCaps | None = None,
         require_executed: bool = False,
         credential: Credential | None = None,
+        suite_budget: ConservativeSuiteBudget | None = None,
     ) -> None:
         self._model = model
         #: The bounds on the delegated drive. ``turn_cap`` folds an explicit
@@ -97,8 +102,17 @@ class AnthropicApiRunner:
         self._caps = caps or EvalDriveCaps()
         self._require_executed = require_executed
         self._credential = credential or AnthropicApiKeyCredential()
+        self._suite_budget = suite_budget
+
+    @property
+    def budget_exhausted(self) -> bool:
+        return self._suite_budget is not None and self._suite_budget.exhausted
 
     def run(self, spec: EvalSpec) -> EvalRun:
+        if self.budget_exhausted:
+            return dataclasses.replace(
+                EvalRun.skipped(spec.name, "coverage incomplete: suite budget exhausted"), coverage_incomplete=True
+            )
         # Resolve the abstract tier/phase to a concrete model id (a no-op when the
         # spec already carries a concrete ``model``); the resolved id names the
         # Anthropic API model and flows into the ledger label + report.
@@ -109,11 +123,26 @@ class AnthropicApiRunner:
         # Delegate the request loop + vocabulary mapping + watchdog to the pydantic_ai
         # lane, injecting the Anthropic model so its own model-resolution is
         # never reached; the turn cap bounds that loop.
-        delegate = PydanticAiRunner(model=UsageLimitStopModel(model), caps=self._caps)
+        metered = UsageLimitStopModel(model)
+        budgeted = None
+        if self._suite_budget is not None:
+            budgeted = BudgetedModel(metered, self._suite_budget, spec.model, self._caps.max_tokens)
+            metered = budgeted
+        delegate = PydanticAiRunner(model=metered, caps=self._caps)
         try:
-            return delegate.run(spec)
+            result = delegate.run(spec)
         except UsageLimitReachedError as stop:
             return EvalRun.skipped(spec.name, f"{USAGE_LIMIT_REACHED_REASON}: {stop}")
+        else:
+            if self.budget_exhausted:
+                spent = budgeted.spent_usd if budgeted is not None else 0.0
+                return dataclasses.replace(
+                    result,
+                    coverage_incomplete=True,
+                    cost_usd=max(result.cost_usd, spent),
+                    cost_source=COST_SOURCE_DERIVED if spent > result.cost_usd else result.cost_source,
+                )
+            return result
 
     def _resolve_model_or_skip(self, spec: EvalSpec) -> Model | None:
         """The injected model, else a real ``AnthropicModel``; ``None`` when the key is absent.
@@ -192,13 +221,73 @@ class UsageLimitStopModel(WrapperModel):
                 yield response_stream
 
 
-def _build_anthropic_model(spec: EvalSpec, api_key: str) -> Model:
+class BudgetedModel(WrapperModel):
+    """Refuse a request whose upper bound exceeds the suite cap; settle each answered one to its usage."""
+
+    def __init__(self, wrapped: Model, budget: ConservativeSuiteBudget, model_id: str, max_tokens: int) -> None:
+        super().__init__(wrapped)
+        self._budget = budget
+        self._model_id = model_id
+        self._max_tokens = max_tokens
+        self.spent_usd = 0.0
+
+    def _reserve(self, messages: list[ModelMessage], parameters: ModelRequestParameters) -> float:
+        reservation = self._budget.reserve(self._model_id, messages, parameters, self._max_tokens)
+        if reservation is None:
+            msg = "coverage incomplete: suite budget exhausted before request"
+            raise ModelAPIError(self._model_id, msg)
+        return reservation
+
+    def _settle(self, reservation: float, usage: RequestUsage) -> None:
+        price = ModelPrice.known_for(self._model_id)
+        cached = usage.cache_read_tokens + usage.cache_write_tokens
+        actual = (
+            reservation
+            if price is None
+            else price.cost(
+                input_tokens=usage.input_tokens - cached,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+            )
+        )
+        self._budget.settle(reservation, actual)
+        self.spent_usd += actual
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        reservation = self._reserve(messages, model_request_parameters)
+        response = await super().request(messages, model_settings, model_request_parameters)
+        self._settle(reservation, response.usage)
+        return response
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        reservation = self._reserve(messages, model_request_parameters)
+        async with super().request_stream(
+            messages, model_settings, model_request_parameters, run_context=run_context
+        ) as stream:
+            yield stream
+        self._settle(reservation, stream.usage)
+
+
+def _build_anthropic_model(spec: EvalSpec | str, api_key: str) -> Model:
     """Build the ``pydantic_ai`` Anthropic model that talks to the Messages API directly.
 
     ``teatree.eval.backends.make_runner`` imports this module lazily, so the eval CLI
     import chain stays ``anthropic``-free until an ``anthropic_api`` run is requested.
     """
-    model_name = parse_model_variant(spec.model).model
+    model_name = parse_model_variant(spec if isinstance(spec, str) else spec.model).model
     return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
 
 
@@ -207,6 +296,7 @@ def build_anthropic_api_eval_runner(
     max_turns_override: int | None = None,
     effort: EffortLevel | None = None,
     require_executed: bool = False,
+    suite_budget: ConservativeSuiteBudget | None = None,
 ) -> AnthropicApiRunner:
     """Build the ``anthropic_api`` eval runner with the eval-lane request-loop guardrail.
 
@@ -220,7 +310,7 @@ def build_anthropic_api_eval_runner(
     settings = get_effective_settings()
     turn_cap = max_turns_override if max_turns_override is not None else settings.pydantic_ai_request_limit
     caps = EvalDriveCaps(turn_cap=turn_cap, effort=effort, max_tokens=settings.pydantic_ai_max_tokens)
-    return AnthropicApiRunner(caps=caps, require_executed=require_executed)
+    return AnthropicApiRunner(caps=caps, require_executed=require_executed, suite_budget=suite_budget)
 
 
 __all__ = [

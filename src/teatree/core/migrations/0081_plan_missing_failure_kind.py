@@ -11,7 +11,7 @@ from django.db import migrations, models
 
 _UNCLASSIFIED = "unclassified"
 _PLAN_MISSING = "plan_missing"
-#: The refusal's greppable prefix, kept in step with ``plan_dispatch_gate.PLAN_MISSING_PREFIX``
+#: The refusal's greppable prefix, kept in step with ``plan_decision.PLAN_MISSING_PREFIX``
 #: by ``tests/teatree_core/modelkit/test_task_failure_taxonomy.py``.
 _PREFIX = "plan_missing: "
 

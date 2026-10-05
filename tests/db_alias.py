@@ -11,11 +11,17 @@ primitive from real threads — see its docstring.
 """
 
 import logging
+import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
+from django.core.management import call_command
 from django.db import connections
+from django.test import override_settings
+
+from tests._db_template import restore_from_template
 
 
 class RouteAllToAlias:
@@ -58,6 +64,17 @@ def register_sqlite_alias(
         "TIME_ZONE": None,
         "TEST": {},
     }
+
+
+def register_migrated_sqlite_alias(alias: str, db_file: Path, template: Path | None) -> None:
+    """Register ``alias`` at head: a copy of the session's from-zero ``template``, else a migrate from zero."""
+    register_sqlite_alias(alias, db_file)
+    if template is None:
+        with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
+            call_command("migrate", "--no-input", database=alias, verbosity=0)
+        return
+    with closing(sqlite3.connect(db_file)) as target:
+        restore_from_template(template, target)
 
 
 def teardown_sqlite_alias(alias: str) -> None:

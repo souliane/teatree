@@ -14,9 +14,6 @@ import pytest
 from teatree.cli.doctor import deploy_liveness
 from teatree.cli.doctor.deploy_liveness import DeployLiveness, DeployView, probe_deploy_liveness, resolve_deploy_view
 
-#: Stands in for the caller's own convergence budget (``quiescing_deploy_budget_seconds``).
-_RECORD_MAX_AGE = 4800.0
-
 _DEPLOY_CMDLINE = "/bin/bash\x00/srv/checkout/deploy/deploy.sh\x00"
 _OTHER_CMDLINE = "/usr/bin/python3\x00-m\x00teatree.worker\x00"
 _DIRECT_DEPLOY_CMDLINE = "/srv/checkout/deploy/deploy.sh\x00"
@@ -41,29 +38,33 @@ def _proc_root(tmp_path: Path, *cmdlines: str) -> Path:
     return root
 
 
-def _record(*, age_seconds: float) -> str:
-    return f"4242 {int(time.time() - age_seconds)}\n"
+def _record(*, beat_age: float, deadline_in: float = 3600) -> str:
+    now = time.time()
+    return f"4242 {int(now - beat_age)} {int(now + deadline_in)}\n"
 
 
 class TestALiveConvergenceIsNeverCalledGone:
     def test_a_fresh_in_progress_record_is_a_live_convergence(self, tmp_path: Path) -> None:
         view = DeployView(
-            lock=_lock(tmp_path, _record(age_seconds=30)),
+            lock=_lock(tmp_path, _record(beat_age=30)),
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE),
         )
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.LIVE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE
 
-    def test_a_running_deploy_outlives_its_own_stamp(self, tmp_path: Path) -> None:
-        # The record is stamped ONCE at the convergence's start, so a drain longer than
-        # the ceiling ages it out while deploy.sh is still very much alive. The process
-        # table is what keeps that stale stamp from reading as a dead deploy.
+    def test_a_convergence_whose_heartbeat_stalled_is_still_live_by_its_process(self, tmp_path: Path) -> None:
         view = DeployView(
-            lock=_lock(tmp_path, _record(age_seconds=_RECORD_MAX_AGE * 2)),
+            lock=_lock(tmp_path, _record(beat_age=600)),
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE, _DEPLOY_CMDLINE),
         )
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.LIVE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE
+
+    def test_a_beating_convergence_is_live_however_long_it_has_run(self, tmp_path: Path) -> None:
+        # No process table to fall back on (a Docker Desktop host): the heartbeat alone answers.
+        view = DeployView(lock=_lock(tmp_path, _record(beat_age=30, deadline_in=600)), proc_root=None)
+
+        assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE
 
 
 class TestOnlyAnActualInvocationReadsAsLive:
@@ -77,14 +78,14 @@ class TestOnlyAnActualInvocationReadsAsLive:
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE, _DECOY_CMDLINE),
         )
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.GONE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.GONE
 
     def test_a_directly_executed_script_is_live(self, tmp_path: Path) -> None:
         # No interpreter argv[0] — the script exec'd via its own shebang, argv[0] IS
         # the script path.
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=_proc_root(tmp_path, _DIRECT_DEPLOY_CMDLINE))
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.LIVE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.LIVE
 
 
 class TestDeadnessIsOnlyReportedWhenBothSignalsAnswer:
@@ -93,22 +94,30 @@ class TestDeadnessIsOnlyReportedWhenBothSignalsAnswer:
         # fingerprint of a convergence that has finished or died.
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=_proc_root(tmp_path, _OTHER_CMDLINE))
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.GONE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.GONE
 
-    def test_a_stamp_older_than_the_ceiling_with_no_deploy_process_is_gone(self, tmp_path: Path) -> None:
+    def test_a_stale_heartbeat_with_no_deploy_process_is_gone(self, tmp_path: Path) -> None:
         view = DeployView(
-            lock=_lock(tmp_path, _record(age_seconds=_RECORD_MAX_AGE + 60)),
+            lock=_lock(tmp_path, _record(beat_age=600)),
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE),
         )
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.GONE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.GONE
+
+    def test_a_record_past_its_own_deadline_with_no_deploy_process_is_gone(self, tmp_path: Path) -> None:
+        view = DeployView(
+            lock=_lock(tmp_path, _record(beat_age=5, deadline_in=-1)),
+            proc_root=_proc_root(tmp_path, _OTHER_CMDLINE),
+        )
+
+        assert probe_deploy_liveness(view=view) is DeployLiveness.GONE
 
 
 class TestWhatItCannotEstablishItRefuses:
     def test_an_unreachable_lock_is_unknown(self, tmp_path: Path) -> None:
         view = DeployView(lock=None, proc_root=_proc_root(tmp_path, _OTHER_CMDLINE))
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.UNKNOWN
+        assert probe_deploy_liveness(view=view) is DeployLiveness.UNKNOWN
 
     def test_a_record_shape_this_venue_cannot_date_is_unknown(self, tmp_path: Path) -> None:
         view = DeployView(
@@ -116,24 +125,24 @@ class TestWhatItCannotEstablishItRefuses:
             proc_root=_proc_root(tmp_path, _OTHER_CMDLINE),
         )
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.UNKNOWN
+        assert probe_deploy_liveness(view=view) is DeployLiveness.UNKNOWN
 
     def test_no_host_covering_process_table_is_unknown(self, tmp_path: Path) -> None:
         # The containerised doctor whose deployment mounts no /host-proc: its own /proc
         # lists this container's namespace, where a host deploy.sh reads as absent.
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=None)
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.UNKNOWN
+        assert probe_deploy_liveness(view=view) is DeployLiveness.UNKNOWN
 
     def test_a_process_table_listing_nothing_is_unknown(self, tmp_path: Path) -> None:
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=_proc_root(tmp_path))
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.UNKNOWN
+        assert probe_deploy_liveness(view=view) is DeployLiveness.UNKNOWN
 
     def test_an_unreadable_process_table_is_unknown(self, tmp_path: Path) -> None:
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=tmp_path / "absent-proc")
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.UNKNOWN
+        assert probe_deploy_liveness(view=view) is DeployLiveness.UNKNOWN
 
     def test_a_pid_that_will_not_say_what_it_runs_does_not_decide_the_verdict(self, tmp_path: Path) -> None:
         # A per-process read can be refused (another uid's process, or one exiting under
@@ -142,7 +151,7 @@ class TestWhatItCannotEstablishItRefuses:
         (root / "999").mkdir()
         view = DeployView(lock=_lock(tmp_path, ""), proc_root=root)
 
-        assert probe_deploy_liveness(record_max_age=_RECORD_MAX_AGE, view=view) is DeployLiveness.GONE
+        assert probe_deploy_liveness(view=view) is DeployLiveness.GONE
 
 
 class TestTheVenueResolution:

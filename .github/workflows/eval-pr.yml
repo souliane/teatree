@@ -70,11 +70,12 @@
 #   the flaky/confirmed escalation table) is appended to the PR's step summary.
 #
 # WHY --summary-md GOES TO $RUNNER_TEMP, NOT $GITHUB_STEP_SUMMARY DIRECTLY
-#   The eval runs in `--docker`, whose writable artifacts bind-mount is the
-#   transcript path's parent (`$RUNNER_TEMP`). `$GITHUB_STEP_SUMMARY` is a host
+#   The eval runs in `--docker`, whose only writable mount is a fresh staging dir
+#   the reports are copied out of, redacted, into the transcript path's parent
+#   (`$RUNNER_TEMP`). `$GITHUB_STEP_SUMMARY` is a host
 #   path NOT mounted into the container, so an in-container write to it would be
 #   lost. So the run writes the sanitized summary to `$RUNNER_TEMP/eval-summary.md`
-#   (which DOES land back on the host via the artifacts mount) and a following
+#   (which DOES land back on the host via the staging copy-out) and a following
 #   step appends that file to `$GITHUB_STEP_SUMMARY`.
 # ============================================================
 
@@ -169,6 +170,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -191,7 +195,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.283
+          npm install -g @anthropic-ai/claude-code@2.1.284
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -235,7 +239,10 @@ jobs:
       # the asserted CLI keep a no-coverage run from passing green; `--docker`
       # routes through the CI image (auth forwarded via docker `-e`). The
       # per-scenario transcript/summary files are accumulated into the shared
-      # report files under $RUNNER_TEMP (the writable artifacts bind-mount).
+      # report files under $RUNNER_TEMP (copied out of the docker staging mount). Each
+      # run streams through `python -m teatree.eval.artifact_redaction tee`, so the job
+      # log carries no credential value (`pipefail` keeps the exit code and reds a filter
+      # crash).
       - name: Metered behavioral eval — the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
@@ -272,7 +279,8 @@ jobs:
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || scenario_rc=$?
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
+                | uv run python -m teatree.eval.artifact_redaction tee || scenario_rc=$?
               [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
               if [ "$scenario_rc" -ne 0 ]; then
                 rc="$scenario_rc"
@@ -302,24 +310,47 @@ jobs:
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
-      # summary is the publish-safe dashboard; the transcript stays private.
+      # summary is the publish-safe dashboard; the transcript stays private. It runs
+      # before the in-place redaction pass, so it goes through the redacting filter
+      # with every credential this job holds.
       - name: Publish the sanitized summary to the PR step summary
         if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
         run: |
+          set -o pipefail
           if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
-            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/eval-summary.md" | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Defense in depth: one last in-place redaction pass over exactly the files
+      # the upload below publishes, holding every credential this job holds, so
+      # a file that reached them without the redacting writer still leaves redacted.
+      # It deletes any file it cannot prove clean on disk and then fails, and each
+      # upload below runs only when it succeeded (`steps.redact.outcome`).
+      - name: Redact the uploaded files in place
+        id: redact
+        if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+        run: >-
+          uv run python -m teatree.eval.artifact_redaction in-place
+          "$RUNNER_TEMP/eval-transcripts-*.html"
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
       # red run still publishes it. The path is a GLOB: the loop renders one report
       # per scenario (`eval-transcripts-<name>.html`), never an un-suffixed file.
       - name: Upload the per-trial transcript report (private)
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-pr-transcripts
           path: ${{ runner.temp }}/eval-transcripts-*.html
           if-no-files-found: warn
+          retention-days: 7
 
   # EVAL-GATE: the single always-reporting merge gate. A conditionally-skipped job
   # (the `eval` job skips when no scenario changed) is a fragile required check —

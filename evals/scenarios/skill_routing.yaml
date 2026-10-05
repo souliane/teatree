@@ -43,7 +43,7 @@
     skill set on `OverlayConfig.companion_skills`: you must work with
     `/t3-widget` (the overlay multi-repo workspace playbook) and `/backend-dev`
     (the Django/DRF dev skill) loaded alongside the coding phase skill. The
-    `UserPromptSubmit` loader did not fire, so self-load the right skills
+    skill loader did not fire, so self-load the right skills
     yourself per `/t3:rules` § "Invoke Skills Before ANY Response". Take the
     first actions you would take now, before touching any code.
   expect:
@@ -167,8 +167,8 @@
     repo `widget-product` (a Django/DRF service). The full skill set for this
     task is the overlay workspace skill `/t3-widget`, the project dev skill
     `/backend-dev`, AND the generic Django bible `/ac-django` it layers on —
-    all three before you touch a model. The `UserPromptSubmit` loader did not
-    fire; self-load them per `/t3:rules` § "Invoke Skills Before ANY Response".
+    all three before you touch a model. No skill loader fired;
+    self-load them per `/t3:rules` § "Invoke Skills Before ANY Response".
     Take the first actions you would take now, before editing any model.
   expect:
     - tool_call: Skill
@@ -323,7 +323,7 @@
     code is written. Load the architecture/planning skill `/architecture-design`
     and the overlay workspace skill `/t3-widget` (so the plan honours the
     overlay's repo boundaries) BEFORE you draft or write any plan file. The
-    `UserPromptSubmit` loader did not fire; self-load them per `/t3:rules`.
+    skill loader did not fire; self-load them per `/t3:rules`.
     Take the first actions you would take now, before writing a plan.
   expect:
     - tool_call: Skill

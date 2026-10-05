@@ -1,10 +1,7 @@
 """setup/SKILL.md must describe the current plugin-registration model.
 
-Registration moved from a ``~/.claude/plugins/t3`` symlink to a record in
-``installed_plugins.json`` (``installPath`` → main clone); ``t3 setup``
-actively removes the legacy symlink (``_cleanup_legacy_plugin``). A skill
-that still tells users to verify that symlink documents a path that no longer
-exists.
+The live plugin registration is an ``installed_plugins.json`` record whose
+``installPath`` names the main clone. The setup skill must describe it.
 """
 
 from pathlib import Path

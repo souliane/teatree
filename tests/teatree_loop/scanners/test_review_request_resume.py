@@ -36,6 +36,7 @@ from teatree.loop.scanners.review_request_resume import (
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 
@@ -154,8 +155,8 @@ class TestReviewRequestResumeScanner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        ConfigSetting.objects.set_value("review_resume_reply_enabled", value=True)
         self.enterContext(posture_permits_cm())
+        allow_slack_channels(_CHANNEL)
         self.post = _seed()
 
     def _scan(self, slack: _Slack, host: _Host) -> list[ScanSignal]:
@@ -425,6 +426,7 @@ class TestLosingTickPostsNothing(TestCase):
 
     def test_the_second_tick_neither_claims_nor_posts(self) -> None:
         self.enterContext(posture_permits_cm())
+        allow_slack_channels(_CHANNEL)
         _seed()
         first, second = ReviewRequestPost.objects.all()[0], ReviewRequestPost.objects.all()[0]
         slack = _Slack()
@@ -537,17 +539,3 @@ class TestConcurrentResumeClaim:
         assert outcomes.count(True) == 1, f"expected exactly one winner, got {outcomes!r}"
         assert outcomes.count(False) == 1, f"expected exactly one tick to stand down, got {outcomes!r}"
         assert resumed_at is not None
-
-
-class TestTheResumeReplyShipsOff(TestCase):
-    """A paused request waits silently until ``review_resume_reply_enabled`` opts the box in."""
-
-    def test_an_armed_row_posts_nothing_by_default(self) -> None:
-        self.enterContext(posture_permits_cm())
-        _seed()
-        slack = _Slack()
-
-        signals = ReviewRequestResumeScanner(messaging=slack, host=_Host(), overlay="overlay-a").scan()
-
-        assert signals == []
-        assert slack.posted == []

@@ -9,13 +9,12 @@ metadata parser, and the Django-side wiring — directly.
 from typing import cast
 
 import pytest
-from django.test import TestCase
 
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.fleet.wire import host_from_issue_url
 
-from ._git_origin import init_bare, init_client, init_with_origin
+from ._git_origin import git, init_bare, init_client, init_with_origin
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
 
@@ -122,7 +121,24 @@ class TestErrorPaths:
         a = init_client(tmp_path / "a", bare)
         b = init_client(tmp_path / "b", bare)
         fleet_claim.acquire(_KEY, repo=str(a), remote="origin", ttl_seconds=10.0, now=1000.0)
-        monkeypatch.setattr(fleet_claim, "_cas", lambda *_, **__: False)
+
+        def rival_steals_first(_scope, ref: str, **_kwargs) -> bool:
+            tree = git(bare, "hash-object", "-t", "tree", "-w", "/dev/null").strip()
+            rival = git(
+                bare,
+                "-c",
+                "user.name=rival",
+                "-c",
+                "user.email=rival@example.invalid",
+                "commit-tree",
+                tree,
+                "-m",
+                "rival claim",
+            ).strip()
+            git(bare, "update-ref", ref, rival)
+            return False
+
+        monkeypatch.setattr(fleet_claim, "_cas", rival_steals_first)
         assert fleet_claim.steal_if_expired(_KEY, repo=str(b), remote="origin", ttl_seconds=10.0, now=5000.0) is None
 
     def test_fetch_claim_raises_when_object_unfetchable(self, tmp_path, monkeypatch) -> None:
@@ -362,8 +378,3 @@ class TestWireFailSafe:
         # catches and treats it as not-held (refuse the outward write).
         client = init_client(tmp_path / "c", tmp_path / "absent.git")
         assert fleet_claim_wire.issue_claim_still_held(_KEY, "deadbeef" * 5, str(client)) is False
-
-
-class TestFleetClaimEnabledSetting(TestCase):
-    def test_default_is_off(self) -> None:
-        assert fleet_claim_wire.fleet_claim_enabled("acme") is False

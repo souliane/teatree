@@ -21,6 +21,7 @@ def _totals(scenarios: list[dict[str, object]]) -> dict[str, int]:
         "passed": sum(1 for s in scenarios if s.get("verdict") == "pass"),
         "failed": sum(1 for s in scenarios if s.get("verdict") == "fail"),
         "skipped": sum(1 for s in scenarios if s.get("verdict") == "skip"),
+        "incomplete": sum(1 for s in scenarios if s.get("verdict") == "incomplete"),
     }
 
 
@@ -71,6 +72,16 @@ class TestEvaluateGreenProof:
         )
         assert proof.is_green
         assert "1 PASS, 1 FLAKY" in proof.summary
+
+    def test_flaky_without_a_triage_class_is_unclassified_before_partitioning(self) -> None:
+        scenarios = [_red("a", "behavioral")]
+        scenarios[0].update(outcome="FLAKY", triage_class=None)
+
+        proof = evaluate_green_proof(
+            _payload(scenarios, _totals(scenarios)), expected=_expected(scenarios), expected_sha="sha"
+        )
+
+        assert [(red.name, red.triage_class) for red in proof.reds] == [("a", "unclassified")]
 
     def test_a_behavioral_red_is_not_green(self) -> None:
         scenarios = [_pass("a"), _red("b", "behavioral")]
@@ -150,6 +161,18 @@ class TestCatalogCoverage:
             expected_sha="sha",
         )
         assert not proof.is_green
+
+    def test_incomplete_rows_are_counted_without_becoming_green_or_catalog_mismatch(self) -> None:
+        scenarios = [_pass("a"), _red("b", "behavioral", verdict="incomplete")]
+        scenarios[1]["outcome"] = "UNVERIFIED"
+        proof = evaluate_green_proof(
+            _payload(scenarios, _totals(scenarios)), expected=_expected(scenarios), expected_sha="sha"
+        )
+
+        assert proof.covers_the_catalog
+        assert proof.incomplete == 1
+        assert not proof.is_green
+        assert proof.reds == ()
 
     def test_an_empty_sha_cannot_prove_a_checkout(self) -> None:
         payload = _payload([_pass("a")], {"total": 1, "passed": 1, "failed": 0, "skipped": 0})

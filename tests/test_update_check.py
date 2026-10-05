@@ -58,13 +58,13 @@ class TestOnlyANewerReleaseIsAnnounced:
         )
         _installed(monkeypatch, "0.4.0")
 
-        assert run_update_check(check_updates=True) is None
+        assert run_update_check() is None
         assert calls == []
 
     def test_a_newer_tag_is_announced(self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _installed(monkeypatch, "0.4.0")
         _served_tag(monkeypatch, "v0.5.0")
-        message = run_update_check(check_updates=True)
+        message = run_update_check()
         assert message is not None
         assert "v0.5.0" in message
 
@@ -72,23 +72,23 @@ class TestOnlyANewerReleaseIsAnnounced:
         # An installation ahead of the latest release must not be told to "upgrade" to it.
         _installed(monkeypatch, "0.5.0")
         _served_tag(monkeypatch, "v0.4.0")
-        assert run_update_check(check_updates=True) is None
+        assert run_update_check() is None
 
     def test_the_same_tag_is_not_announced(self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _installed(monkeypatch, "0.4.0")
         _served_tag(monkeypatch, "v0.4.0")
-        assert run_update_check(check_updates=True) is None
+        assert run_update_check() is None
 
     def test_an_unrankable_installed_version_is_not_announced(
         self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _installed(monkeypatch, "0.5.0.dev3")
         _served_tag(monkeypatch, "v0.4.0")
-        assert run_update_check(check_updates=True) is None
+        assert run_update_check() is None
 
     def test_the_up_to_date_verdict_is_cached(self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _installed(monkeypatch, "0.5.0")
         _served_tag(monkeypatch, "v0.4.0")
-        run_update_check(check_updates=True)
+        run_update_check()
         cached = json.loads((cache_dir / "update-check.json").read_text(encoding="utf-8"))
         assert cached["message"] == ""

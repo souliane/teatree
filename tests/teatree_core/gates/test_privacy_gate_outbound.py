@@ -29,7 +29,7 @@ REDACT = "SECRETCORP"
 
 
 @pytest.fixture
-def inject_rules(monkeypatch: pytest.MonkeyPatch):
+def inject_rules(monkeypatch: pytest.MonkeyPatch, configured_banned_term_registry: None):
     def _set(*, public: bool, redact: Sequence[str] = (), block: Sequence[str] = ()) -> None:
         monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: public)
         monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": (list(redact), list(block)))
@@ -114,8 +114,7 @@ class TestFullForgeUrlTarget:
         conn.executemany(
             "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
             [
-                ("internal_publish_namespaces", json.dumps(["internalcorp"])),
-                ("private_repos", json.dumps(["internalcorp"])),
+                ("private_repos", json.dumps(["gitlab.example/internalcorp"])),
             ],
         )
         conn.commit()

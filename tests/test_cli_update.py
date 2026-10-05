@@ -1170,3 +1170,19 @@ class TestStaleNoticeNeverCrashesUpdate:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestUpdateRefusesInAnImageGeneration:
+    def test_refuses_without_touching_any_repo(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("TEATREE_GENERATION", "9" * 40)
+        monkeypatch.setattr(
+            update_mod, "_collect_repos", lambda: pytest.fail("an image generation must not walk clones")
+        )
+
+        with pytest.raises(typer.Exit) as exc:
+            update_mod._run_update()
+
+        assert exc.value.exit_code == 1
+        assert "image generation 999999999999: code changes by roll, not in place" in capsys.readouterr().out

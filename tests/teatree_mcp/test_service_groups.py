@@ -12,8 +12,7 @@ from mcp.server.mcpserver import MCPServer
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server
-from teatree.mcp.server import _SERVICE_GROUPS
+from teatree.mcp.server import _SERVICE_GROUPS, build_server
 from teatree.mcp.services_forge import register_github, register_gitlab
 from teatree.mcp.services_notion import register as register_notion
 from teatree.mcp.services_sentry import register as register_sentry
@@ -37,9 +36,8 @@ _GITHUB_TOOLS = {
     "github_pr_commits",
     "github_repo_get",
     "github_issue_create",
-    "github_issue_comment",
+    "github_issue_note",
     "github_issue_close",
-    "github_issue_update",
 }
 _GITLAB_TOOLS = {n.replace("github_", "gitlab_") for n in _GITHUB_TOOLS}
 _SLACK_TOOLS = {
@@ -49,7 +47,15 @@ _SLACK_TOOLS = {
     "slack_permalink",
     "slack_react",
 }
-_NOTION_TOOLS = {"notion_page_status"}
+_NOTION_TOOLS = {
+    "notion_page_status",
+    "notion_replace",
+    "notion_create",
+    "notion_comment",
+    "notion_archive",
+    "notion_property_set",
+    "notion_discussions",
+}
 _SENTRY_TOOLS = {"sentry_top_issues", "sentry_issue_get", "sentry_issue_events", "sentry_projects"}
 _SHAREPOINT_TOOLS = {
     "sharepoint_list",

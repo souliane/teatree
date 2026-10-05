@@ -31,7 +31,7 @@ def _int_field(data: RawAPIDict, *names: str) -> int:
 
 
 def _is_draft(pr: RawAPIDict) -> bool:
-    return bool(pr.get("draft") or pr.get("work_in_progress"))
+    return bool(pr.get("draft"))
 
 
 def _repo_slug(pr: RawAPIDict) -> str:

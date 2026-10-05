@@ -21,3 +21,5 @@ API recipes for issue trackers, CI systems, and chat platforms. Each platform ha
 | [`references/x-twitter.md`](references/x-twitter.md) | X (Twitter) post reading via JSON mirror |
 
 Skills reference these via `See platforms/references/gitlab.md § <section>`.
+
+A repo whose MRs are authored under a non-owner credential gets its MR from `mcp__teatree__pr_create` or `t3 <overlay> pr create <ticket-id>`, never `glab mr create`, which writes as the owner and leaves the MR unapprovable; the recipe stays in `references/gitlab.md` § Create MR.

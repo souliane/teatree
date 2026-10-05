@@ -30,7 +30,6 @@ from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS
 _migration = importlib.import_module("teatree.core.migrations.0001_initial")
 _squashed_migration = importlib.import_module("teatree.core.migrations.0001_squashed_0030")
 
-_SOUND_ON = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.default_enabled)
 _COLLEAGUE_FACING = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.colleague_facing)
 _ISSUE_DISPOSITION_DESCRIPTION = (
     "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, "
@@ -53,13 +52,13 @@ class TestInlinedSeedMatchesCanonicalSeed:
                 spec.prompt_body,
                 spec.description,
                 spec.colleague_facing,
-                spec.default_enabled,
             )
             for spec in DEFAULT_LOOPS
         )
         issue_disposition = next(row for row in expected if row[0] == "issue_disposition")
         assert issue_disposition[4] == _ISSUE_DISPOSITION_DESCRIPTION
-        assert expected == _migration._DEFAULT_LOOPS == _squashed_migration._DEFAULT_LOOPS, (
+        assert expected == tuple(row[:6] for row in _migration._DEFAULT_LOOPS)
+        assert expected == tuple(row[:6] for row in _squashed_migration._DEFAULT_LOOPS), (
             "Default-loops dataset drifted. The canonical set lives in FIVE places that must "
             "stay in lock-step — edit all five:\n"
             "  1. src/teatree/loops/seed.py            (DEFAULT_LOOPS — the canonical source)\n"
@@ -72,25 +71,14 @@ class TestInlinedSeedMatchesCanonicalSeed:
     def test_inlined_arch_review_body_matches_the_canonical_body(self) -> None:
         assert _migration._ARCH_REVIEW_PROMPT_BODY == ARCH_REVIEW_PROMPT_BODY
 
-    def test_sound_default_on_set_is_the_eight_local_read_only_loops(self) -> None:
-        assert {
-            "inbox",
-            "dispatch",
-            "tickets",
-            "housekeeping",
-            "idle_stack_reaper",
-            "local_stack_queue",
-            "resource_pressure",
-            "db_backup",
-        } == _SOUND_ON
-
 
 # ``setUp`` reverse-migrates ``core`` to ``zero`` then re-applies the full graph
 # on the shared ``default`` connection — several seconds single-core that
 # exceeds the global 60s ``pytest-timeout`` under maximum ``-n auto --cov
-# --doctest-modules`` parallel contention. Scoped 240s bump for the
+# --doctest-modules`` parallel contention. Scoped bump for the
 # genuinely-slow migrations; the global 60s stays the hang-detector (#1189).
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 141 s, peak 290 s, 11 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     """A migrate from ``zero`` re-runs the seed ``RunPython`` and lands the loops."""
 
@@ -109,10 +97,7 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     def test_a_migrated_box_carries_no_manual_override_on_any_loop(self) -> None:
         # `Loop.enabled` is the MANUAL override slot, and a fresh box has taken no manual
         # decision — whether a loop runs is the active preset's answer. The shipped
-        # `default_enabled` set survives as the seed table's own opinion, pinned by
-        # `test_sound_default_on_set_is_the_eight_local_read_only_loops`.
         assert not Loop.objects.exclude(enabled=None).exists()
-        assert {spec.name for spec in DEFAULT_LOOPS if spec.default_enabled} == _SOUND_ON
 
     def test_seeds_colleague_facing_on_exactly_the_colleague_loops(self) -> None:
         facing = set(Loop.objects.filter(colleague_facing=True).values_list("name", flat=True))
@@ -141,5 +126,5 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
         arch = Loop.objects.select_related("prompt").get(name="arch_review")
         assert arch.script == ""
         assert arch.prompt_id is not None
-        assert "ac-reviewing-codebase" in arch.prompt.body
+        assert "/t3:architectural-review" in arch.prompt.body
         assert arch.prompt.description == arch.description

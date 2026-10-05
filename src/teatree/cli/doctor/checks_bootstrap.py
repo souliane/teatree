@@ -30,6 +30,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.core.public_identity import is_github_host
 from teatree.utils.git_remote import slug_from_remote
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -190,6 +191,15 @@ def _git_config_pairs(checkout: Path, pattern: str) -> list[tuple[str, str]]:
     return [(key, value.strip()) for key, _, value in (line.partition(" ") for line in result.stdout.splitlines())]
 
 
+def _has_github_credential_helper(helpers: list[tuple[str, str]]) -> bool:
+    """Whether a helper serves GitHub after git's own collection: in order, an empty value resets the list."""
+    has_helper = False
+    for key, value in helpers:
+        if key == "credential.helper" or is_github_host(_helper_host(key)):
+            has_helper = bool(value)
+    return has_helper
+
+
 def _check_github_remotes_are_https() -> bool:
     """FAIL when a checkout reaches GitHub over SSH instead of https + ``gh`` (#4447).
 
@@ -206,7 +216,6 @@ def _check_github_remotes_are_https() -> bool:
     and passes rather than aborting the doctor run.
     """
     from teatree.core.gates.git_checkouts import discover_checkouts  # noqa: PLC0415 — deferred (ORM)
-    from teatree.core.public_identity import is_github_host  # noqa: PLC0415 — deferred import
 
     try:
         checkouts = discover_checkouts()
@@ -246,7 +255,7 @@ def _check_github_remotes_are_https() -> bool:
             )
             ok = False
 
-        has_helper = any(key == "credential.helper" or is_github_host(_helper_host(key)) for key, _ in helpers)
+        has_helper = _has_github_credential_helper(helpers)
         serves_github_over_https = any(not _SSH_REMOTE_RE.match(url) and is_github_host(url) for _, url in remotes)
         if serves_github_over_https and not has_helper:
             helperless.append(checkout)

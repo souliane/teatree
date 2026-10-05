@@ -59,11 +59,6 @@ def read_credential_chain(host_kind: str) -> ReadCredentialChain:
     return _READ_CREDENTIAL_CHAINS.get(host_kind, _READ_CREDENTIAL_CHAINS["github"])
 
 
-def read_credential_env_vars(host_kind: str) -> tuple[str, ...]:
-    """The env vars *host_kind*'s merge-read transport authenticates from."""
-    return read_credential_chain(host_kind).env_vars
-
-
 def landed_merge_commit(query: "CodeHostQuery") -> str:
     """The commit a merge that ALREADY LANDED produced, or ``""`` (#4144).
 

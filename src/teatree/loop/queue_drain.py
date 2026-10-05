@@ -44,11 +44,7 @@ from django.db import transaction
 from django.db.utils import OperationalError
 from django.utils import timezone
 
-from teatree.core.admission_priority import (
-    ADMISSION_ORDER,
-    ADMISSION_RANK_ALIAS,  # noqa: F401 — public compatibility re-export
-    admission_priority_annotations,
-)
+from teatree.core.admission_priority import ADMISSION_ORDER, admission_priority_annotations
 from teatree.loops.enable_verdict import fleet_admits_work
 
 if TYPE_CHECKING:

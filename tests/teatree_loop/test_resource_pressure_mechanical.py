@@ -1,45 +1,16 @@
-"""Tests for ``free_resources`` — the resource-pressure freeing handler (#128).
-
-The handler is the only place that *acts* on a CRITICAL pressure signal. The
-safety-critical guarantees pinned here: allow-LIST cache purge (only listed
-dirs are removed, ``~/.claude/projects`` and ``~/.cache/prek`` analogues are
-never touched); dry-run / log-first (the plan is persisted before execution
-and recorded even when a destructive flag is off); worktree GC is flag-gated
-to clean + fully-pushed + stale worktrees only, never a dirty /
-ahead-of-upstream / active-session worktree; process kill is flag-gated to
-SIGTERM (never SIGKILL), allow-list only, never a session-ancestry pid, and
-fires nothing below 2 consecutive ticks; and best-effort throughout (a
-subprocess failure never crashes the tick).
-
-Real filesystem + real ``git`` under ``tmp_path`` for the worktree cases;
-``docker``/``ps``/``os.kill``/``uv cache prune`` (third-party + irreversible
-externals) are mocked. ``uv cache prune`` in particular MUST be mocked on every
-disk-path test: it reaches a real subprocess that walks the populated uv cache,
-which is fast on a fresh dev machine but exceeds the pytest-timeout when CI has
-warmed the cache (``setup-uv enable-cache``) — the real-subprocess timeouts that
-red'd the ``test-shuffle`` lane. The marker, allow-list logic, and plan
-persistence are exercised against the real ORM + real handler code.
-"""
+"""Tests for the safe resource-pressure freeing handler."""
 
 import os
-import signal
 import subprocess
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
-from django.utils import timezone
 
-from teatree.core.cleanup import process_table
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
-from teatree.core.retention.scratch import ScratchSweepPlan
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
-from teatree.loop.worktree_gc import GcSurvey
-from tests._process_table_venue import usable_process_table
-from tests._procfs import pinned_venue_proc
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -246,15 +217,12 @@ class DiskDockerReclaimTests(TestCase):
         assert "docker reclaimed 0B" not in plan
 
     def test_ram_ladder_does_not_invoke_disk_reclaim(self) -> None:
-        """The Docker disk reclaim belongs to the disk ladder, not the RAM ladder."""
-        from unittest.mock import patch  # noqa: PLC0415
-
         with (
             patch.object(mechanical_resources, "_idle_containers", return_value=[]),
             patch.object(mechanical_resources, "_docker_container_prune"),
             patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim,
         ):
-            free_resources({"resource": "ram", "allow_destructive_ram": False})
+            free_resources({"resource": "ram"})
         mock_reclaim.assert_not_called()
 
     def test_reclaim_uses_only_zero_dataloss_argv(self) -> None:
@@ -286,14 +254,6 @@ class DryRunFirstTests(TestCase):
         self.addCleanup(_rmtree_safe, str(self.tmp))
         self.uv_prune = _patch_uv_cache_prune(self)
 
-    def test_worktree_gc_off_records_skip_in_plan(self) -> None:
-        """The table is pinned usable so the FLAG is what skips — a blind table skips for its own reason."""
-        host_proc = usable_process_table(self.tmp / "host-proc", working_in=self.tmp / "elsewhere")
-        with patch.object(process_table, "_HOST_PROC_ROOT", host_proc):
-            free_resources({"resource": "disk", "disk_cache_allowlist": [], "allow_destructive_disk": False})
-        marker = ResourcePressureMarker.load()
-        assert "SKIP worktree GC (allow_destructive_disk=false)" in marker.last_plan
-
     def test_plan_persisted_before_execution(self) -> None:
         """Even if execution fails midway, the pre-execution plan is on the marker."""
         cache = self.tmp / "pre-commit"
@@ -308,11 +268,7 @@ class DryRunFirstTests(TestCase):
 
 
 class RamLadderTests(TestCase):
-    """Idle-container stop runs at L2; process kill is flag + consecutive gated."""
-
     def test_idle_containers_are_stopped(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
         calls: list[list[str]] = []
 
         def fake_docker(*args: str) -> str | None:
@@ -325,116 +281,71 @@ class RamLadderTests(TestCase):
             patch.object(mechanical_resources.shutil, "which", return_value="/usr/bin/docker"),
             patch.object(mechanical_resources, "_docker", side_effect=fake_docker),
         ):
-            free_resources({"resource": "ram", "allow_destructive_ram": False})
+            free_resources({"resource": "ram"})
         assert ["stop", "abc123"] in calls
         assert ["stop", "def456"] in calls
         assert ["container", "prune", "-f"] in calls
 
-    def test_no_process_kill_when_flag_off(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
 
+class DoneWorktreeSweepTests(TestCase):
+    def setUp(self) -> None:
+        self.uv_prune = _patch_uv_cache_prune(self)
+
+    def test_the_disk_ladder_runs_the_done_worktree_sweep(self) -> None:
         with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(mechanical_resources, "os") as mock_os,
+            patch.object(mechanical_resources, "reclaim_disk", return_value=_fake_reclaim_report()),
+            patch("teatree.core.worktree.worktree_done.reap_done_worktrees", return_value=["reaped one"]) as mock_reap,
         ):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        mock_reap.assert_called_once()
+        assert mock_reap.call_args.kwargs == {"dry_run": False}
+        assert "done-worktree sweep handled 1 worktree row(s)" in ResourcePressureMarker.load().last_plan
+
+
+class ReclaimStallTests(TestCase):
+    def setUp(self) -> None:
+        self.uv_prune = _patch_uv_cache_prune(self)
+        patcher = patch.object(mechanical_resources, "_reap_done_worktrees")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pass(self, *, reclaimed_gb: float = 0.0, free_gb: float = 0.2) -> None:
+        with patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=reclaimed_gb):
             free_resources(
                 {
-                    "resource": "ram",
-                    "allow_destructive_ram": False,
-                    "ram_kill_allowlist": ["Brave.*Renderer"],
-                    "consecutive_critical": 5,
+                    "resource": "disk",
+                    "disk_cache_allowlist": [],
+                    "free_gb": free_gb,
+                    "disk_warn_free_gb": 25.0,
+                    "disk_crit_free_gb": 10.0,
                 },
             )
-        mock_os.kill.assert_not_called()
 
-    def test_no_process_kill_below_two_consecutive_ticks(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+    def test_a_zero_yield_pass_below_the_floor_increments_the_streak_and_names_it_in_the_plan(self) -> None:
+        self._pass()
+        assert ResourcePressureMarker.load().zero_yield_passes == 1
 
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(mechanical_resources, "_list_processes", return_value=[(999, "Brave Renderer")]),
-            patch.object(mechanical_resources, "_session_pid_ancestry", return_value=set()),
-            patch.object(mechanical_resources.os, "kill") as mock_kill,
-        ):
-            free_resources(
-                {
-                    "resource": "ram",
-                    "allow_destructive_ram": True,
-                    "ram_kill_allowlist": ["Brave.*Renderer"],
-                    "consecutive_critical": 1,
-                },
-            )
-        mock_kill.assert_not_called()
+        self._pass()
+        self._pass()
 
-    def test_sigterm_sent_to_allowlisted_non_session_pid(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        marker = ResourcePressureMarker.load()
+        assert marker.zero_yield_passes == 3
+        assert "STALLED disk reclaim" in marker.last_plan
 
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(
-                mechanical_resources,
-                "_list_processes",
-                return_value=[(999, "Brave Helper (Renderer)"), (1000, "Finder")],
-            ),
-            patch.object(mechanical_resources, "_session_pid_ancestry", return_value={1234}),
-            patch.object(mechanical_resources.os, "kill") as mock_kill,
-        ):
-            free_resources(
-                {
-                    "resource": "ram",
-                    "allow_destructive_ram": True,
-                    "ram_kill_allowlist": ["Brave.*Renderer"],
-                    "consecutive_critical": 2,
-                },
-            )
-        mock_kill.assert_called_once_with(999, signal.SIGTERM)
+    def test_a_pass_that_frees_bytes_resets_the_streak(self) -> None:
+        self._pass()
+        self._pass()
 
-    def test_session_ancestry_pid_is_never_killed(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+        self._pass(reclaimed_gb=1.0)
 
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(
-                mechanical_resources,
-                "_list_processes",
-                return_value=[(999, "Brave Helper (Renderer)")],
-            ),
-            patch.object(mechanical_resources, "_session_pid_ancestry", return_value={999}),
-            patch.object(mechanical_resources.os, "kill") as mock_kill,
-        ):
-            free_resources(
-                {
-                    "resource": "ram",
-                    "allow_destructive_ram": True,
-                    "ram_kill_allowlist": ["Brave.*Renderer"],
-                    "consecutive_critical": 3,
-                },
-            )
-        mock_kill.assert_not_called()
+        marker = ResourcePressureMarker.load()
+        assert marker.zero_yield_passes == 0
+        assert "STALLED disk reclaim" not in marker.last_plan
 
-    def test_empty_kill_allowlist_kills_nothing(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
+    def test_a_zero_yield_pass_with_room_to_spare_is_not_a_stall(self) -> None:
+        self._pass(free_gb=200.0)
 
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(mechanical_resources, "_list_processes", return_value=[(999, "Brave Renderer")]),
-            patch.object(mechanical_resources, "_session_pid_ancestry", return_value=set()),
-            patch.object(mechanical_resources.os, "kill") as mock_kill,
-        ):
-            free_resources(
-                {
-                    "resource": "ram",
-                    "allow_destructive_ram": True,
-                    "ram_kill_allowlist": [],
-                    "consecutive_critical": 5,
-                },
-            )
-        mock_kill.assert_not_called()
+        assert ResourcePressureMarker.load().zero_yield_passes == 0
 
 
 class ResilienceTests(TestCase):
@@ -451,25 +362,6 @@ class ResilienceTests(TestCase):
             pytest.raises(RuntimeError, match="kaboom"),
         ):
             free_resources({"resource": "disk"})
-
-    def test_sigterm_oserror_is_swallowed(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune"),
-            patch.object(mechanical_resources, "_list_processes", return_value=[(999, "Brave Renderer")]),
-            patch.object(mechanical_resources, "_session_pid_ancestry", return_value=set()),
-            patch.object(mechanical_resources.os, "kill", side_effect=OSError),
-        ):
-            free_resources(
-                {
-                    "resource": "ram",
-                    "allow_destructive_ram": True,
-                    "ram_kill_allowlist": ["Brave.*Renderer"],
-                    "consecutive_critical": 2,
-                },
-            )  # must not raise
 
 
 class HelperTests(TestCase):
@@ -505,51 +397,6 @@ class HelperTests(TestCase):
             mechanical_resources._clean_stale_statusline()
         assert fresh.exists()
         assert not stale.exists()
-
-    def test_list_processes_parses_pid_and_name(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_ps", return_value="  101 claude\n  202 Brave Helper\nbad line\n"):
-            procs = mechanical_resources._list_processes()
-        assert (101, "claude") in procs
-        assert (202, "Brave Helper") in procs
-        assert len(procs) == 2
-
-    def test_list_processes_none_when_ps_unavailable(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_ps", return_value=None):
-            assert mechanical_resources._list_processes() == []
-
-    def test_parent_pid_parses_ppid(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_ps", return_value=" 42\n"):
-            assert mechanical_resources._parent_pid(99) == 42
-
-    def test_parent_pid_none_on_garbage(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_ps", return_value="not-a-number\n"):
-            assert mechanical_resources._parent_pid(99) is None
-        with patch.object(mechanical_resources, "_ps", return_value=None):
-            assert mechanical_resources._parent_pid(99) is None
-
-    def test_session_pid_ancestry_walks_chain(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        # current pid -> 500 -> 1 (stop). Returns {getpid, 500}.
-        chain = {os.getpid(): 500, 500: 1}
-        with patch.object(mechanical_resources, "_parent_pid", side_effect=chain.get):
-            ancestry = mechanical_resources._session_pid_ancestry()
-        assert os.getpid() in ancestry
-        assert 500 in ancestry
-
-    def test_ps_returns_none_without_binary(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.shutil, "which", return_value=None):
-            assert mechanical_resources._ps("-axo", "pid=") is None
 
     def test_docker_returns_none_without_binary(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -657,16 +504,6 @@ class HelperTests(TestCase):
         with patch.object(mechanical_resources, "_docker", return_value=None):
             assert mechanical_resources._idle_containers() == []
 
-    def test_session_ancestry_stops_when_parent_unknown(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources, "_parent_pid", return_value=None):
-            ancestry = mechanical_resources._session_pid_ancestry()
-        assert ancestry == {os.getpid()}
-
-    def test_kill_candidates_empty_with_no_patterns(self) -> None:
-        assert mechanical_resources._kill_candidate_pids({"ram_kill_allowlist": []}) == []
-
     def test_clean_stale_statusline_swallows_unlink_error(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
@@ -689,23 +526,6 @@ class HelperTests(TestCase):
             patch.object(mechanical_resources, "_run", return_value="abc\n") as mock_run,
         ):
             assert mechanical_resources._docker("ps") == "abc\n"
-        mock_run.assert_called_once()
-
-    def test_sigterm_logs_on_success(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with patch.object(mechanical_resources.os, "kill") as mock_kill:
-            mechanical_resources._sigterm(4242)
-        mock_kill.assert_called_once_with(4242, signal.SIGTERM)
-
-    def test_ps_invokes_run_when_binary_present(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        with (
-            patch.object(mechanical_resources.shutil, "which", return_value="/bin/ps"),
-            patch.object(mechanical_resources, "_run", return_value="101 claude\n") as mock_run,
-        ):
-            assert mechanical_resources._ps("-axo", "pid=,comm=") == "101 claude\n"
         mock_run.assert_called_once()
 
 
@@ -731,125 +551,6 @@ def _venue_blocked_reclaim_report() -> object:
     return ReclaimReport(steps=(), planned=(step,), dry_run=False, venue=venue)
 
 
-class ScratchSweepLadderTests(TestCase):
-    """The scratch lane runs in BOTH ladders — on a tmpfs /tmp its scratch IS RAM (#4165)."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(mkdtemp(prefix="rp_scratch_"))
-        self.addCleanup(_rmtree_safe, str(self.tmp))
-        self.stale = self.tmp / "t3db.sqlite3"
-        _write_file(self.stale, 2048)
-        old = timezone.now().timestamp() - 9 * 86400
-        os.utime(self.stale, (old, old))
-        self.uv_prune = _patch_uv_cache_prune(self)
-        # `_payload` arms allow_destructive_disk for the scratch lane; the worktree-GC
-        # and done-worktree lanes sharing the disk ladder would otherwise reach the real
-        # workspace. An empty survey leaves each of them nothing to remove.
-        inert = mechanical_resources.DiskSurvey(gc=GcSurvey())
-        for name, value in (("_reclaim_docker_disk", 0.0), ("_survey_disk", inert), ("_reap_done_worktrees", None)):
-            patcher = patch.object(mechanical_resources, name, return_value=value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self._pin_process_table()
-
-    def _pin_process_table(self) -> None:
-        """Both tables: the sweep's own VENUE proc, and the host-aware one the GC guards read."""
-        self.enterContext(pinned_venue_proc(holding=self.tmp / "held-elsewhere"))
-        host_proc = usable_process_table(Path(self.enterContext(TemporaryDirectory())), working_in=self.tmp / "away")
-        self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", host_proc))
-
-    def _payload(self, resource: str, **extra: object) -> dict[str, object]:
-        return {
-            "resource": resource,
-            "scratch_retention_days": 3,
-            "scratch_sweep_root": str(self.tmp),
-            "allow_destructive_disk": True,
-            **extra,
-        }
-
-    def test_disk_ladder_reclaims_the_stale_scratch(self) -> None:
-        free_resources(self._payload("disk"))
-
-        assert not self.stale.exists()
-        assert "SWEEP agent scratch under" in ResourcePressureMarker.load().last_plan
-
-    def test_ram_ladder_reclaims_the_stale_scratch_because_tmpfs_scratch_is_ram(self) -> None:
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
-        ):
-            free_resources(self._payload("ram"))
-
-        assert not self.stale.exists()
-
-    def test_a_zero_window_disables_the_lane_without_even_walking_the_root(self) -> None:
-        with patch.object(mechanical_resources, "sweep_scratch") as swept:
-            free_resources(self._payload("disk", scratch_retention_days=0))
-
-        swept.assert_not_called()
-        assert self.stale.exists()
-        assert "SKIP agent-scratch sweep" in ResourcePressureMarker.load().last_plan
-
-    def test_the_autonomous_sweep_needs_the_destructive_flag_and_says_why(self) -> None:
-        # An unattended recursive rmtree belongs behind the same flag the
-        # worktree-GC lane beside it is gated on; the window alone armed it.
-        with patch.object(mechanical_resources, "sweep_scratch") as swept:
-            free_resources(self._payload("disk", allow_destructive_disk=False))
-
-        swept.assert_not_called()
-        assert self.stale.exists()
-        assert "SKIP agent-scratch sweep (allow_destructive_disk=false)" in ResourcePressureMarker.load().last_plan
-
-    def test_the_ram_ladder_is_gated_on_the_same_flag(self) -> None:
-        with (
-            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
-            patch.object(mechanical_resources, "_docker_container_prune", return_value=None),
-            patch.object(mechanical_resources, "sweep_scratch") as swept,
-        ):
-            free_resources(self._payload("ram", allow_destructive_disk=False))
-
-        swept.assert_not_called()
-        assert self.stale.exists()
-
-    def test_a_refused_sweep_is_its_own_step_never_a_zero_gb_success_line(self) -> None:
-        refused = ScratchSweepPlan(
-            root=str(self.tmp),
-            retention_days=3,
-            entries=(),
-            probe_gap="open-file probe unsighted at /proc: 3 of 4 pid(s) unknowable",
-            refused=True,
-        )
-
-        with patch.object(mechanical_resources, "sweep_scratch", return_value=refused):
-            free_resources(self._payload("disk"))
-
-        plan = ResourcePressureMarker.load().last_plan
-        assert "REFUSED agent-scratch sweep" in plan
-        assert "reclaimed 0.00 GB" not in plan
-
-    def test_a_sweep_failure_is_swallowed_so_the_tick_survives(self) -> None:
-        with patch.object(mechanical_resources, "sweep_scratch", side_effect=RuntimeError("proc gone")):
-            free_resources(self._payload("disk"))
-
-        assert self.stale.exists()
-        assert ResourcePressureMarker.load().last_freed_at is not None
-
-    def test_the_reclaimed_bytes_land_in_the_plan_report(self) -> None:
-        lib = self.tmp / "wt4081venv" / "lib.so"
-        _write_file(lib, _GIB // 2)
-        old = timezone.now().timestamp() - 9 * 86400
-        # Age the nested file too, not just the top-level dir — the sweep's
-        # staleness check is tree-wide (#4165 review finding #1), so a fresh
-        # nested file would otherwise keep the whole tree off the candidate list.
-        os.utime(lib, (old, old))
-        os.utime(self.tmp / "wt4081venv", (old, old))
-
-        free_resources(self._payload("disk"))
-
-        plan = ResourcePressureMarker.load().last_plan
-        assert "reclaimed 0.50 GB" in plan
-
-
 def _patch_uv_cache_prune(case: TestCase) -> MagicMock:
     """No-op the real ``uv cache prune`` sink for a disk-path TestCase.
 
@@ -870,59 +571,3 @@ def _rmtree_safe(path: str) -> None:
     import shutil  # noqa: PLC0415
 
     shutil.rmtree(path, ignore_errors=True)
-
-
-class ReclaimStallTests(TestCase):
-    """A pass that returns nothing on a full disk is counted and named (#4644).
-
-    The disk ladder is the only actor on a CRITICAL disk signal, so a run of
-    passes that free nothing is the whole failure — and it looked exactly like a
-    healthy quiet box until the streak was recorded.
-    """
-
-    def setUp(self) -> None:
-        self.tmp = Path(mkdtemp(prefix="rp_stall_"))
-        self.addCleanup(_rmtree_safe, str(self.tmp))
-        self.uv_prune = _patch_uv_cache_prune(self)
-        empty = mechanical_resources.DiskSurvey(gc=GcSurvey())
-        patcher = patch.object(mechanical_resources, "_survey_disk", return_value=empty)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def _pass(self, *, reclaimed_gb: float = 0.0, free_gb: float = 0.2) -> None:
-        with patch.object(mechanical_resources, "_reclaim_docker_disk", return_value=reclaimed_gb):
-            free_resources(
-                {
-                    "resource": "disk",
-                    "disk_cache_allowlist": [],
-                    "free_gb": free_gb,
-                    "disk_warn_free_gb": 25.0,
-                    "disk_crit_free_gb": 10.0,
-                },
-            )
-
-    def test_a_zero_yield_pass_below_the_floor_increments_the_streak_and_names_it_in_the_plan(self) -> None:
-        self._pass()
-        assert ResourcePressureMarker.load().zero_yield_passes == 1
-
-        self._pass()
-        self._pass()
-
-        marker = ResourcePressureMarker.load()
-        assert marker.zero_yield_passes == 3
-        assert "STALLED disk reclaim" in marker.last_plan
-
-    def test_a_pass_that_frees_bytes_resets_the_streak(self) -> None:
-        self._pass()
-        self._pass()
-
-        self._pass(reclaimed_gb=1.0)
-
-        marker = ResourcePressureMarker.load()
-        assert marker.zero_yield_passes == 0
-        assert "STALLED disk reclaim" not in marker.last_plan
-
-    def test_a_zero_yield_pass_with_room_to_spare_is_not_a_stall(self) -> None:
-        self._pass(free_gb=200.0)
-
-        assert ResourcePressureMarker.load().zero_yield_passes == 0

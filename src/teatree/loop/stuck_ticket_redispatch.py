@@ -334,7 +334,7 @@ def _schedule_for_state(ticket: Ticket) -> Task:
     if state == Ticket.State.WORK_STARTED:
         return ticket.schedule_planning()
     if state == Ticket.State.PLAN_RECORDED:
-        return ticket.schedule_coding()
+        return ticket.schedule_planned_work()
     if state == Ticket.State.CODED:
         return ticket.schedule_testing()
     if state == Ticket.State.TESTED:

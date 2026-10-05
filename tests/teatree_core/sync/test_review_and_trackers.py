@@ -5,21 +5,27 @@ resolve_issue 404 handling, tracker-404 memoization and detect_e2e_test_plan.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.core.sync as sync_mod
 from teatree.backends.gitlab.api import ProjectInfo
 from teatree.backends.gitlab.sync_issues import fetch_issue_labels, resolve_issue
 from teatree.backends.gitlab.sync_prs import detect_e2e_test_plan
 from teatree.backends.slack.review_sync import fetch_review_permalinks
+from teatree.core.gates.review_request_guard import REVIEW_CHANNEL_LOOKBACK
 from teatree.core.models import Ticket
-from teatree.core.sync import _overlay_name, fetch_notion_statuses, push_notion_status, sync_followup
+from teatree.core.sync import _overlay_name, fetch_notion_statuses, sync_followup
 from teatree.types import RawAPIDict, SyncResult
 from tests.teatree_core.sync._overlays import SyncOverlay, _patch_overlay
+
+if TYPE_CHECKING:
+    from teatree.backends.slack import SlackReviewSearchRequest
 
 _PAGE_ID = "1a2b3c4d5e6f47a89b0c1d2e3f405162"
 _NOTION_URL = f"https://www.notion.so/team/My-Ticket-{_PAGE_ID}"
@@ -167,6 +173,27 @@ class TestFetchReviewPermalinks(TestCase):
         assert mr["review_permalink"] == "https://team.slack.com/archives/C123/p170000"
         assert mr["review_channel"] == "review-team"
 
+    def test_the_channel_read_is_bounded_by_the_review_lookback(self) -> None:
+        Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/504",
+            repos=["repo"],
+            state=Ticket.State.PR_OPENED,
+            extra={"prs": {"https://gitlab.com/org/repo/-/merge_requests/54": {"draft": False}}},
+        )
+        requests: list[SlackReviewSearchRequest] = []
+        self._monkeypatch.setattr(
+            "teatree.backends.slack.review_sync.search_review_permalinks",
+            lambda request: requests.append(request) or [],
+        )
+
+        with _patch_overlay(self._SLACK_OVERLAY):
+            fetch_review_permalinks(SyncResult())
+
+        expected_oldest = (timezone.now() - REVIEW_CHANNEL_LOOKBACK).timestamp()
+        assert requests
+        assert all(abs(float(request.oldest_ts) - expected_oldest) < 60 for request in requests)
+
     def test_skips_non_dict_prs_in_collection(self) -> None:
         """Tickets with a non-dict ``extra["prs"]`` are skipped during collection."""
         Ticket.objects.create(
@@ -294,47 +321,6 @@ class TestFetchNotionStatuses(TestCase):
 
         ticket.refresh_from_db()
         assert "notion_status" not in ticket.extra, "a dead page's status must not become the ticket's status"
-
-    def test_write_back_refuses_an_archived_page(self) -> None:
-        methods: list[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            methods.append(request.method)
-            return httpx.Response(200, json={"object": "page", "id": _PAGE_ID, "archived": True})
-
-        _patch_notion_transport(self._monkeypatch, handler)
-        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
-            assert push_notion_status(_PAGE_ID, "Merged") is False
-        assert "PATCH" not in methods
-
-    def test_update_page_status_gated_by_write_back_flag(self) -> None:
-        patches: list[str] = []
-
-        workspace = {"type": "workspace", "workspace": True}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            patches.append(request.method)
-            if request.url.path.startswith("/v1/blocks/"):
-                return httpx.Response(200, json={"object": "block", "id": _PAGE_ID, "parent": workspace})
-            return httpx.Response(200, json={"object": "page", "id": _PAGE_ID})
-
-        _patch_notion_transport(self._monkeypatch, handler)
-        self._monkeypatch.setattr(
-            "teatree.backends.notion.write_guard.notion_write_roots", lambda _overlay: ([_PAGE_ID], [])
-        )
-
-        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=False)):
-            assert push_notion_status(_PAGE_ID, "Merged") is False
-        assert patches == []
-
-        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
-            assert push_notion_status(_PAGE_ID, "Merged") is True
-        # The liveness probe reads the page and the write guard reads its parent before the mirror is written.
-        assert patches == ["GET", "GET", "PATCH"]
-
-    def test_push_notion_status_write_back_on_but_no_token_is_noop(self) -> None:
-        with _patch_overlay(SyncOverlay(notion_token="", notion_write_back=True)):
-            assert push_notion_status(_PAGE_ID, "Merged") is False
 
     def test_sync_followup_surfaces_notion_error_without_aborting(self) -> None:
         def _boom() -> None:

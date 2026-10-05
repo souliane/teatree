@@ -66,14 +66,14 @@ def _mr_endpoint(slug: str, pr_id: int) -> str:
 
 
 def _conflict_state(mr: RawAPIDict) -> MergeConflictState:
-    """Map GitLab's ``has_conflicts`` + ``merge_status`` pair onto the conflict axis.
+    """Map GitLab's current conflict fields onto the conflict axis.
 
     ``has_conflicts`` is the direct answer and is computed independently of why else a
     merge request may be unmergeable, so a draft or an unapproved merge request still
-    reports its real conflict state. ``merge_status`` supplies the *was it computed*
+    reports its real conflict state. ``detailed_merge_status`` supplies the *was it computed*
     half: GitLab reports ``checking``/``unchecked`` while the background job runs,
     during which ``has_conflicts`` is a default rather than a finding. Only
-    ``can_be_merged`` alongside a false ``has_conflicts`` is clean.
+    ``mergeable`` alongside a false ``has_conflicts`` is clean.
 
     Lives here, beside its one caller. It sat unused in
     :mod:`teatree.backends.forge_merge_rpc` — written for the ``glab``-binary RPC that
@@ -81,10 +81,10 @@ def _conflict_state(mr: RawAPIDict) -> MergeConflictState:
     nothing could see that GitLab's conflict axis had gone dark.
     """
     conflicts = mr.get("has_conflicts")
-    merge_status = str(mr.get("merge_status") or "").lower()
-    if conflicts is True or merge_status == "cannot_be_merged":
+    detailed_status = str(mr.get("detailed_merge_status") or "").lower()
+    if conflicts is True or detailed_status == "conflict":
         return MergeConflictState.CONFLICTED
-    if conflicts is False and merge_status == "can_be_merged":
+    if conflicts is False and detailed_status == "mergeable":
         return MergeConflictState.CLEAN
     return MergeConflictState.UNKNOWN
 
@@ -146,6 +146,8 @@ class GitLabApiMergeRpc:
             return PrMergeState(state="", merge_commit_oid="")
         state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
         oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
+        if state == "MERGED" and not oid:
+            oid = str(mr.get("sha") or "")
         return PrMergeState(state=state, merge_commit_oid=oid, conflict=_conflict_state(mr))
 
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:

@@ -1,52 +1,9 @@
-"""Affirmative-public visibility scope for the pre-publish leak gates (#1415/#1213).
+"""Classify publish targets for the pre-publish leak gates.
 
-The banned-terms (#1415) and quote-scanner (#1213) gates protect against
-leaking internal vocabulary / user quotes onto PUBLIC surfaces. A segment is
-skip-eligible ONLY when its target is PROVABLY non-public: an allowlisted-private
-slug, an internal-namespace slug, or a ``private``/``internal`` probe verdict. A
-target the gate cannot prove non-public -- an affirmatively-``public`` probe
-verdict, OR a RESOLVABLE ``owner/repo`` slug whose visibility probe could not be
-confirmed (a network/API error, an absent ``gh``/``glab``, an unrecognised
-answer) -- is scanned. The probe-error case FAILS CLOSED: it is never a silent
-skip (#3442). This reconciles the Python scope with its bash mirror
-(:file:`scripts/hooks/refuse-public-push-with-leak.sh`, whose undetermined-
-visibility branch scans anyway) and the fail-closed-always leak-gate doctrine in
-:file:`hooks/CLAUDE.md` -- both now agree that an unconfirmed visibility on a
-resolvable target scans, never skips. The offline ``private_repos`` allowlist
-remains the reliable, network-free way to declare a private repo so an
-own-private post to it still skips without a probe.
-
-**Owner decision, #3477: a GENUINELY-unresolvable publish destination is SCANNED,
-not allowed through.** An EMPTY slug, or one carrying an unexpanded ``$VAR``, used
-to classify ``NON_PUBLIC`` (skip-eligible) on the reasoning that there is no target
-to probe. But ``$OWNER`` expands at run time and can expand to a PUBLIC repo, and
-the sibling classifier :func:`publish_destination.is_public_destination` has always
-treated both as PUBLIC -- the two disagreed, and the disagreement was the fail-OPEN
-half. Both now resolve ``UNKNOWN`` -> scan. The cost is a scan on a command whose
-target cannot be read; the cost of the other choice is an unscanned public egress.
-Declare an own-private repo in ``private_repos`` to keep it skip-eligible offline.
-
-The visibility verdict is resolved from the command's OWN target (the
-``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the git remote of the
-dir bash would run THAT segment in -- every ``cd`` in the chain re-points it,
-:func:`_commit_repo_dir.segment_cwds`, else the ambient hook cwd), then classified into
-:class:`~teatree.hooks.leak_policy.Visibility`: an allowlisted-private slug, an internal-namespace slug,
-and a ``private``/``internal`` probe verdict resolve ``NON_PUBLIC``; a ``public``
-probe verdict on a non-allowlisted slug is ``PUBLIC``; a resolvable slug the
-probe cannot confirm is ``UNKNOWN`` (fail closed -> scan). The verdict is
-day-cached per-repo by :func:`_repo_visibility.slug_visibility`, so repeated gate
-evaluations never re-probe.
-
-:func:`gate_skips_for_visibility` is the composed predicate the gates call. It
-keeps the ALL-SEGMENTS anti-leak posture -- a ``$(...)``/transport construct, an
-unrecognised chained executable (``sh -c``/``make``/``./x.sh``), or a raw
-``api`` WRITE whose URL does not resolve are all NON-skippable, so an obscured
-PUBLIC post can never hide behind a leading non-public segment. A ``git commit``
-segment defers to the landing-repo carve-out and the #703 pre-push backstop and
-is never skipped here.
-
-This lives in its own module because :mod:`teatree.hooks.publish_destination`
-and :mod:`teatree.hooks._repo_visibility` are both at the per-file LOC cap.
+Only a PRIVATE/INTERNAL probe answer or a matching host-qualified
+``private_repos`` declaration with no PUBLIC probe answer can skip scanning.
+Unresolved destinations and UNKNOWN probe answers scan. Every command segment
+must be safe to skip before the whole command can skip.
 """
 
 import re
@@ -54,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _commit_carve_out, _commit_repo_dir, _repo_visibility
+from teatree.hooks import _commit_carve_out, _commit_repo_dir, _private_repo_entries, _repo_visibility
 from teatree.hooks._command_parser import is_publish_command
 from teatree.hooks._gh_glab_hiding import command_segments_with_raw, raw_has_live_substitution
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
@@ -64,7 +21,6 @@ from teatree.hooks.publish_destination import (
     Destination,
     _destination_from_api,
     _destination_from_words,
-    _internal_publish_namespaces,
     _segment_carries_substitution_or_transport,
     _segment_is_skip_inert,
 )
@@ -116,56 +72,29 @@ def _python_rest_segment_verdict(words: list[str], command: str, *, config_path:
 
 
 def destination_visibility(dest: Destination, *, config_path: Path | None = None) -> Visibility:
-    """Classify a RESOLVED ``dest`` into :class:`~teatree.hooks.leak_policy.Visibility`.
+    """Classify the target with the shared host-qualified private-repo rule.
 
-    ``NON_PUBLIC`` (skip-eligible) only when the target is PROVABLY non-public: an
-    ``internal_publish_namespaces`` match, a ``private_repos`` allowlist match, or
-    a ``private``/``internal`` (any non-``PUBLIC``, non-``None``) probe verdict.
-    ``PUBLIC`` only on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted
-    slug. ``UNKNOWN`` -- the fail-CLOSED case the gate must SCAN -- in the two
-    can't-tell cases:
-
-    * the slug IS probe-resolvable but the probe returns no verdict (``None`` --
-        a network/API error, an absent ``gh``/``glab``, an unrecognised answer)
-        (#3442); and
-    * the destination is GENUINELY unresolvable -- an EMPTY slug, or one carrying
-        an unexpanded ``$VAR`` whose run-time value could be a PUBLIC repo (#3477).
-        This case used to resolve ``NON_PUBLIC``, disagreeing with the sibling
-        classifier :func:`publish_destination.is_public_destination`, which has
-        always scanned it. The two now agree, fail-closed.
-
-    ``dest.forge`` qualifies a bare ``owner/repo`` slug up to its canonical host
-    so the host-keyed probe routes to the right tool.
+    A PUBLIC forge answer wins over a declaration. PRIVATE, INTERNAL, or a
+    declaration with no probe answer skips; an unresolved target scans.
     """
     slug = dest.slug.strip().lower()
     if not slug or "$" in slug:
         return Visibility.UNKNOWN
-    if any(_repo_visibility.slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
-        return Visibility.NON_PUBLIC
-    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return Visibility.NON_PUBLIC
-    probe_slug = _repo_visibility.forge_qualified_slug(slug, dest.forge)
-    verdict = _repo_visibility.slug_visibility(probe_slug)
+    probe_slug = _private_repo_entries.qualified_repo_slug(
+        slug,
+        dest.forge,
+        ops=_repo_visibility,
+    )
+    verdict = _private_repo_entries.private_repo_visibility(
+        probe_slug,
+        config_path,
+        ops=_repo_visibility,
+    )
     if verdict == _PUBLIC:
         return Visibility.PUBLIC
     if verdict is None:
         return Visibility.UNKNOWN
     return Visibility.NON_PUBLIC
-
-
-def is_affirmatively_public(dest: Destination | None, *, config_path: Path | None = None) -> bool:
-    """Return True iff ``dest`` resolves to an affirmatively-PUBLIC repo.
-
-    True ONLY on a confirmed-``PUBLIC`` probe verdict for a non-allowlisted slug
-    (:attr:`Visibility.PUBLIC`); every other case -- private/internal/allowlisted
-    (``NON_PUBLIC``) and a target the probe cannot confirm (``UNKNOWN``) -- is
-    False. Callers that must FAIL CLOSED on ``UNKNOWN`` (the leak-gate scope) use
-    :func:`destination_visibility` directly rather than this boolean, which cannot
-    distinguish ``UNKNOWN`` from ``NON_PUBLIC``.
-    """
-    if dest is None:
-        return False
-    return destination_visibility(dest, config_path=config_path) is Visibility.PUBLIC
 
 
 def _signal_probe_error_scan(slug: str) -> None:
@@ -273,7 +202,7 @@ def _construct_bearing_segment_verdict(
     A PROVABLY-private target has no public-leak surface, so a construct in the
     command must not force a scan-impossibility block on it (#1213/#1415: the
     ``-d "$(cat body.md)"`` / heredoc-writer shapes were hard-blocking every
-    private ``glab mr create``, forcing the QUOTE_OK/ALLOW_BANNED_TERM escapes).
+    private ``glab mr create``, prompting unnecessary escape attempts).
     The construct is dangerous only when it could carry a HIDDEN PUBLIC post, so
     the segment stays skip-eligible when ALL of:
 

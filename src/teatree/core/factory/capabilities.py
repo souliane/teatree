@@ -80,6 +80,19 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="machine handoff: record JSON on stdout, human confirmation on stderr",
     ),
     Capability("teatree followup sync", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree dream gap-coverage",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits each dream gap's ownership report; exits 1 on an orphan, a duplicate owner, a bad "
+        "fold link, a retired owner, a stranded memory row, or (with --ticket) an undispositioned gap",
+    ),
+    Capability(
+        "teatree worktree adopt",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="1 when the checkout is not adoptable or a row already records it",
+    ),
     Capability("teatree worktree status", json_output=True, exit_codes=("0",)),
     Capability("teatree worktree diagnose", json_output=True, exit_codes=("0",)),
     Capability(
@@ -114,6 +127,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0",),
         note="--json: per-branch landed-ness verdict, forge_merged beside the post-merge delta; read-only (#4070)",
+    ),
+    Capability(
+        "teatree workspace list-orphans",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: orphan branches (ahead of origin/main, no open PR) as a list, [] when none; read-only",
     ),
     Capability(
         "teatree workspace stamp-owners",
@@ -175,6 +194,24 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0",),
         note="--json emits the CLEARs consumed because their PR already settled; --dry-run to preview",
+    ),
+    Capability(
+        "teatree ticket sweep-begin",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the opened ticket-hygiene sweep run id; 1 when --source is not interactive/loop (#162)",
+    ),
+    Capability(
+        "teatree ticket sweep-finish",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the closed run with its measured changed-ticket count; 1 on an unknown or finished run",
+    ),
+    Capability(
+        "teatree ticket sweep-trend",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the recent changed-ticket counts, the zero streak and unfinished runs; read-only",
     ),
     Capability(
         "teatree ticket set-target-branch",

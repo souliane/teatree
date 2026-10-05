@@ -165,6 +165,14 @@ _OUTSIDE_HOLDER = ExecutionContext(pid_namespace="pid:[1]", hostname="box", role
 _IN_CONTAINER = ExecutionContext(pid_namespace="pid:[2]", hostname="box", role="worker")
 
 
+@pytest.fixture
+def readable_pid_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the procfs link these context tests require, including on macOS."""
+    link = tmp_path / "pid-namespace"
+    link.symlink_to("pid:[123]")
+    monkeypatch.setattr("teatree.utils.singleton._PID_NAMESPACE_LINK", link)
+
+
 class TestHolderRecord:
     def test_acquirer_records_its_execution_context_beside_the_pid(self, tmp_path: Path) -> None:
         path = tmp_path / "lock.pid"
@@ -198,12 +206,12 @@ class TestHolderRecord:
 
 
 class TestHolderVerdict:
-    def test_same_namespace_is_same_context(self, tmp_path: Path) -> None:
+    def test_same_namespace_is_same_context(self, tmp_path: Path, readable_pid_namespace: None) -> None:
         path = tmp_path / "lock.pid"
         with singleton("t", pid_path=path):
             assert holder_verdict(read_holder(path), current_context()) is HolderVerdict.SAME_CONTEXT
 
-    def test_different_namespace_is_foreign(self, tmp_path: Path) -> None:
+    def test_different_namespace_is_foreign(self, tmp_path: Path, readable_pid_namespace: None) -> None:
         path = tmp_path / "lock.pid"
         with singleton("t", pid_path=path):
             record = read_holder(path)
@@ -222,7 +230,9 @@ class TestHolderVerdict:
 
 
 class TestRefusalMessage:
-    def test_names_a_second_copy_of_this_service_when_the_pid_resolves_here(self, tmp_path: Path) -> None:
+    def test_names_a_second_copy_of_this_service_when_the_pid_resolves_here(
+        self, tmp_path: Path, readable_pid_namespace: None
+    ) -> None:
         path = tmp_path / "lock.pid"
         with (
             singleton("t", pid_path=path),

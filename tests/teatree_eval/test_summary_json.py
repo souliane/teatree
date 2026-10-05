@@ -173,7 +173,7 @@ class TestShape:
 
     def test_totals_count_each_verdict(self) -> None:
         totals = _render([_behavioral_red(), _errored_red(), _passing(), _skipped()])["totals"]
-        assert totals == {"total": 4, "passed": 1, "failed": 2, "skipped": 1}
+        assert totals == {"total": 4, "passed": 1, "failed": 2, "skipped": 1, "incomplete": 0}
 
     def test_each_scenario_carries_identity_and_discriminators(self) -> None:
         scenario = _render([_behavioral_red("alpha", lane="under_load")])["scenarios"][0]
@@ -266,6 +266,17 @@ class TestPassAtK:
         )
         assert payload["scenarios"][0]["verdict"] == "pass"
         assert payload["scenarios"][0]["triage_class"] is None
+
+    def test_cap_tainted_aggregate_is_unverified_even_with_a_pass(self) -> None:
+        passed = _passing("alpha")
+        partial = dataclasses.replace(passed, run=dataclasses.replace(passed.run, coverage_incomplete=True))
+        result = PassAtKResult(
+            spec_name="alpha", trials=1, passes=1, require="any", skipped=False, trial_results=(partial,)
+        )
+        payload = json.loads(render_summary_json([result], head_sha=_HEAD_SHA, generated_at="t"))
+        assert payload["scenarios"][0]["verdict"] == "incomplete"
+        assert payload["scenarios"][0]["outcome"] == "UNVERIFIED"
+        assert payload["totals"]["incomplete"] == 1
 
 
 class TestWriteSummaryJson:

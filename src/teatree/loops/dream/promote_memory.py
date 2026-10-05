@@ -38,30 +38,14 @@ from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
-from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
-from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
+from teatree.core.review.review_findings import find_bare_references
 from teatree.hooks import banned_terms_scanner
 from teatree.loops.dream.destination import classify_destination
-from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from teatree.loops.dream.batch_promote import PromotionBatch
-    from teatree.loops.dream.merge import BindingConflict
 
 logger = logging.getLogger(__name__)
-
-#: The standing umbrella issue that tracks every grounded dream gap as a reusable
-#: checkbox ledger — reused daily, never closed (#2663). A core gap rides this
-#: umbrella + a scheduled coding task instead of a fresh ``needs-triage`` issue.
-UMBRELLA_ISSUE_URL = "https://github.com/souliane/teatree/issues/2663"
-
-#: The dedup marker the binding-reconciliation filer embeds (and searches for) so a
-#: re-run never refiles a conflict that already has an open tracking issue — mirrors
-#: the review-findings fingerprint marker.
-_GAP_MARKER = "dream-memory-gap"
 
 
 class MemoryDisposition(Enum):
@@ -125,7 +109,7 @@ class TicketOutcome:
 
 def file_core_gap_tickets(
     *,
-    umbrella_url: str = UMBRELLA_ISSUE_URL,
+    umbrella_url: str,
     classifier: MemoryClassifier | None = None,
     dry_run: bool = False,
     batch: "PromotionBatch",
@@ -246,80 +230,6 @@ def _withholding_reason(rendered: str) -> str:
     return ""
 
 
-#: The dedup marker for a binding-reconciliation ticket — keyed on the conflicting
-#: PAIR's sorted file stems so a re-run never refiles a conflict already tracked.
-_RECONCILE_MARKER = "dream-binding-reconcile"
-
-
-def _conflict_key(conflict: "BindingConflict") -> str:
-    return "+".join(sorted((conflict.survivor_name, conflict.absorbed_name)))
-
-
-def file_binding_reconciliation_tickets(
-    host: CodeHostBackend, *, repo: str, conflicts: "Sequence[BindingConflict]", dry_run: bool = False
-) -> list[TicketOutcome]:
-    """File a deduped reconciliation ticket per conflicting-BINDING memory pair (#2723).
-
-    Two BINDING near-duplicates are never auto-merged (Decision-3); the merge phase
-    cross-links them and hands the pair here. A deduped ``dream-memory-gap`` issue is
-    filed against *repo* so a human reconciles the doctrine. Dedup-first on the pair's
-    sorted stems, banned-term / bare-reference withholding reused verbatim from the
-    core-gap filer. Under *dry_run* nothing is filed. Returns one outcome per pair.
-    """
-    outcomes: list[TicketOutcome] = []
-    for conflict in conflicts:
-        if dry_run:
-            continue
-        outcomes.append(_file_one_reconciliation(host, conflict, repo=repo))
-    return outcomes
-
-
-def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict", *, repo: str) -> TicketOutcome:
-    key = _conflict_key(conflict)
-    marker = f"{_RECONCILE_MARKER} {key}"
-    existing = _find_existing_marker_issue(host, repo=repo, marker=marker)
-    if existing:
-        return TicketOutcome(cluster_key=key, filed=False, ticket_url=existing, reason="reused open issue")
-
-    title = f"Conflicting BINDING memories need reconciliation: {neutralize_bare_references(key)}"
-    body = (
-        "Two BINDING memory files are near-duplicates but cannot be auto-merged — "
-        "binding doctrine that disagrees must be reconciled by a human, not silently "
-        "collapsed. The dream merge phase cross-linked them; please decide which rule "
-        "is canonical and retire or rewrite the other.\n\n"
-        f"**Files:** `{conflict.survivor_name}.md`, `{conflict.absorbed_name}.md`\n\n"
-        f"<!-- {marker} -->\n"
-    )
-    reason = _withholding_reason(f"{title}\n{body}")
-    if reason:
-        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=reason)
-
-    # Route through the shared forge-write seam (public-repo leak gate + #117
-    # send-proxy audit), the same path the MCP tools use — so this dream-loop
-    # write is no longer unscrubbed. A leak/blocked verdict withholds the issue.
-    try:
-        title = route_forge_write(forge="", repo=repo, text=title, action="dream_reconcile", target=repo)
-        body = route_forge_write(forge="", repo=repo, text=body, action="dream_reconcile", target=repo)
-    except OutboundBlockedError as exc:
-        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=str(exc))
-
-    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
-    return TicketOutcome(cluster_key=key, filed=True, ticket_url=_issue_url(raw), reason="filed new issue")
-
-
-def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str) -> str:
-    """Return the URL of an open issue already carrying *marker*, or ``""``."""
-    try:
-        matches = host.search_open_issues(repo=repo, query=marker)
-    except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
-        return ""
-    for raw in matches:
-        body = str(raw.get("body") or raw.get("description") or "")
-        if marker in body:
-            return _issue_url(raw)
-    return ""
-
-
 def retire_resolved_memories(
     host: CodeHostBackend, *, is_resolved: "Callable[[ConsolidatedMemory], bool] | None" = None
 ) -> list[ConsolidatedMemory]:
@@ -339,8 +249,7 @@ def retire_resolved_memories(
     forge hiccup must never retire a memory whose fix may not have landed.
 
     The *is_resolved* seam lets the umbrella reconcile path
-    (:func:`teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps`,
-    :func:`teatree.loops.dream.batch_promote.reconcile_batches`) retire off the gap-fix
+    (:func:`teatree.loops.dream.batch_promote.reconcile_batches`) retire off the gap-fix
     Ticket's authoritative MERGED state instead of a fragile forge re-read of a PR URL
     (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows retired
     this pass.
@@ -380,7 +289,7 @@ def delete_source_memory_files(row: ConsolidatedMemory) -> bool:
     """
     from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: stdlib-only, loaded at tick time
 
-    roots = discover_memory_dirs()
+    roots = discover_memory_dirs(writable_only=True)
     if not roots:
         return True
     all_confirmed = True
@@ -417,20 +326,11 @@ def _issue_is_closed(host: CodeHostBackend, issue_url: str) -> bool:
     return state in {"closed", "merged"}
 
 
-def _issue_url(raw: RawAPIDict) -> str:
-    for key in ("html_url", "web_url", "url"):
-        value = raw.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
 __all__ = [
     "MemoryClassifier",
     "MemoryDisposition",
     "TicketOutcome",
     "delete_source_memory_files",
-    "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
     "retire_resolved_memories",
     "triage_disposition",

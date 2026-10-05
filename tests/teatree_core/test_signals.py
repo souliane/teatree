@@ -14,7 +14,7 @@ from teatree.core.schema_readiness import invalidate_schema_readiness
 from tests.factories import waive_rubric
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
-from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.conftest import CommandOverlay, record_confirmed_merge_for_test
 
 
 class _FakeReactionPublisher:
@@ -234,7 +234,9 @@ class TestSlackReactionsOnTransition(TestCase):
 
     def _ticket(self) -> Ticket:
         # No PR data: the handler targets ``instance.pk`` and the publisher is faked.
-        return Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
+        return ticket
 
     def test_mark_merged_invokes_reactions(self) -> None:
         ticket = self._ticket()
@@ -355,6 +357,7 @@ class TestSlackReactionsReadPrExtra(TestCase):
             return True
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED, extra=extra)
+        record_confirmed_merge_for_test(ticket)
         with (
             posture_permits_cm(),
             patch.object(slack_reactions, "get_overlay", return_value=_Overlay()),
@@ -557,7 +560,9 @@ class TestTransitionReactionGated(TestCase):
 
     def _ticket(self) -> Ticket:
         # No PR data: the gate keys on ``ticket:<pk>`` and the publisher is faked.
-        return Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
+        return ticket
 
     def test_transition_reaction_blocked_when_gate_on_no_approval(self) -> None:
         ticket = self._ticket()
@@ -654,6 +659,7 @@ class TestTeardownThreadedByTransition(TestCase):
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         with (
             patch.object(tasks_mod, "execute_teardown") as teardown,
             self.captureOnCommitCallbacks(execute=True),
@@ -685,6 +691,8 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
     def _assert_enqueues_teardown_once(self, ticket: Ticket, transition_name: str) -> None:
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
+        if transition_name in {"mark_merged", "reconcile_merged"}:
+            record_confirmed_merge_for_test(ticket)
         with (
             patch.object(tasks_mod, "execute_teardown") as teardown,
             self.captureOnCommitCallbacks(execute=True),
@@ -700,6 +708,7 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
     def test_mark_delivered_from_retrospected_enqueues_teardown(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
         waive_rubric(ticket)  # the subject is the teardown enqueue, not the rubric gate
+        record_confirmed_merge_for_test(ticket)
         self._assert_enqueues_teardown_once(ticket, "mark_delivered")
 
     def test_mark_merged_enqueues_teardown(self) -> None:

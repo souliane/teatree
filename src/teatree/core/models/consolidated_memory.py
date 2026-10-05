@@ -57,10 +57,6 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         """Rows whose landed lesson + recorded durable home let an index line be pruned."""
         return self.filter(status__in=ConsolidatedMemory.Status.homed()).exclude(durable_destination="")
 
-    def verified_for_overlay(self, overlay: str) -> "models.QuerySet[ConsolidatedMemory]":
-        """VERIFIED rows for *overlay* — distilled rules with a real cited mistake."""
-        return self.filter(overlay=overlay, status=ConsolidatedMemory.Status.VERIFIED)
-
     def supersede_covered_by(self, row: "ConsolidatedMemory") -> list["ConsolidatedMemory"]:
         """Supersede every untriaged row whose members *row* wholly covers, returning them.
 
@@ -82,10 +78,6 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         for other in covered:
             other.supersede(row)
         return covered
-
-    def schema_count(self, overlay: str) -> int:
-        """Count of all consolidation rows recorded for *overlay*."""
-        return self.filter(overlay=overlay).count()
 
     def untriaged(self) -> "models.QuerySet[ConsolidatedMemory]":
         """Rows the Pass-2 promote pass has not yet classified (the queue to drain)."""
@@ -348,14 +340,3 @@ class ConsolidatedMemory(models.Model):
             if isinstance(member, Mapping) and isinstance(member.get("path"), str)
         )
         return frozenset(paths)
-
-    @property
-    def can_prune_index_line(self) -> bool:
-        """True iff this row's lesson has landed and its durable home is recorded.
-
-        The index pruner removes a MEMORY.md index line only once the rule has
-        landed (promoted or expired) AND its durable destination is recorded —
-        otherwise pruning the line would orphan the rule with no recoverable home.
-        A superseded rule has not landed; its replacement carries the lesson.
-        """
-        return self.status in self.Status.homed() and bool(self.durable_destination)

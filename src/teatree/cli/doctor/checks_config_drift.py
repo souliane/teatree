@@ -7,7 +7,7 @@ accurate, and silent about the default having changed since the row was written.
 The instance that motivated this: ``issue_implementer_label`` sat in the DB as the retired
 ``t3-batch`` while the shipped default had become ``t3-auto``. Reading the DB value made the
 config look correct, then like a misconfiguration, then like the owner misremembering — three
-wrong conclusions and about an hour, settled only by reading ``retired_settings.py`` and
+wrong conclusions and about an hour, settled only by reading the config history and
 BLUEPRINT. The value was readable the whole time; its DIVERGENCE from the shipped default was
 not. That is the #4041 shape at the config layer.
 

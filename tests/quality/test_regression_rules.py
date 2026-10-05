@@ -307,19 +307,34 @@ class TestAstGrepEngine:
 
 
 class TestAstGrepEngineBranches:
-    def test_prefers_uvx_pinned_runner(self) -> None:
-        with _patch_which("uvx", "ast-grep"):
+    def test_prefers_a_pinned_local_binary(self) -> None:
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}\n")
+        with (
+            _patch_which("uvx", "ast-grep"),
+            patch.object(regression_scan, "run_allowed_to_fail", return_value=version),
+        ):
+            assert regression_scan._astgrep_argv() == ["/bin/ast-grep"]
+
+    def test_uses_uvx_when_the_local_binary_has_a_different_version(self) -> None:
+        with (
+            _patch_which("uvx", "ast-grep"),
+            patch.object(
+                regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout="ast-grep 0.0.0")
+            ),
+        ):
             argv = regression_scan._astgrep_argv()
             assert argv[0] == "uvx"
             assert f"ast-grep-cli=={regression_scan.ASTGREP_PIN}" in argv
 
     def test_falls_back_to_system_ast_grep(self) -> None:
-        with _patch_which("ast-grep"):
-            assert regression_scan._astgrep_argv() == ["ast-grep"]
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
+        with _patch_which("ast-grep"), patch.object(regression_scan, "run_allowed_to_fail", return_value=version):
+            assert regression_scan._astgrep_argv() == ["/bin/ast-grep"]
 
     def test_falls_back_to_sg_binary(self) -> None:
-        with _patch_which("sg"):
-            assert regression_scan._astgrep_argv() == ["sg"]
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
+        with _patch_which("sg"), patch.object(regression_scan, "run_allowed_to_fail", return_value=version):
+            assert regression_scan._astgrep_argv() == ["/bin/sg"]
 
     def test_raises_when_no_engine_present(self) -> None:
         with _patch_which(), pytest.raises(AstGrepUnavailableError, match="neither"):
@@ -330,9 +345,10 @@ class TestAstGrepEngineBranches:
             assert astgrep_invocable() is False
 
     def test_invocable_reads_version_exit_code(self) -> None:
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
         with (
             _patch_which("ast-grep"),
-            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0)),
+            patch.object(regression_scan, "run_allowed_to_fail", return_value=version),
         ):
             assert astgrep_invocable() is True
 
@@ -341,9 +357,12 @@ class TestAstGrepEngineBranches:
         (tmp_path / "blocking" / "x.yml").write_text("id: x\nlanguage: python\nrule:\n  pattern: y\n", encoding="utf-8")
         (tmp_path / "sgconfig.yml").write_text("ruleDirs:\n  - blocking\n", encoding="utf-8")
         payload = '[{"ruleId": "x", "file": "a.py", "range": {"start": {"line": 7, "column": 0}}}]'
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
         with (
             _patch_which("ast-grep"),
-            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout=payload)),
+            patch.object(
+                regression_scan, "run_allowed_to_fail", side_effect=[version, _fake_completed(0, stdout=payload)]
+            ),
         ):
             findings = scan_findings(tmp_path / "blocking")
         assert findings == [{"check_id": "x", "path": "a.py", "start": {"line": 7}}]
@@ -352,9 +371,12 @@ class TestAstGrepEngineBranches:
         (tmp_path / "blocking").mkdir()
         (tmp_path / "blocking" / "x.yml").write_text("id: x\nlanguage: python\nrule:\n  pattern: y\n", encoding="utf-8")
         (tmp_path / "sgconfig.yml").write_text("ruleDirs:\n  - blocking\n", encoding="utf-8")
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
         with (
             _patch_which("ast-grep"),
-            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(2, stderr="boom")),
+            patch.object(
+                regression_scan, "run_allowed_to_fail", side_effect=[version, _fake_completed(2, stderr="boom")]
+            ),
             pytest.raises(AstGrepUnavailableError, match="no JSON output"),
         ):
             scan_findings(tmp_path / "blocking")
@@ -376,9 +398,12 @@ class TestScanFindingsPathScoping:
 
     def test_none_paths_scans_whole_tree_no_positional_files(self, tmp_path: Path) -> None:
         rules = self._rules_dir(tmp_path)
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
         with (
             _patch_which("ast-grep"),
-            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout="[]")) as run,
+            patch.object(
+                regression_scan, "run_allowed_to_fail", side_effect=[version, _fake_completed(0, stdout="[]")]
+            ) as run,
         ):
             scan_findings(rules)
         cmd = run.call_args.args[0]
@@ -387,9 +412,12 @@ class TestScanFindingsPathScoping:
     def test_scoped_paths_are_appended_as_positional_args(self, tmp_path: Path) -> None:
         rules = self._rules_dir(tmp_path)
         scope = [Path("src/teatree/core/session.py"), Path("tests/teatree_core/test_session.py")]
+        version = _fake_completed(0, stdout=f"ast-grep {regression_scan.ASTGREP_PIN}")
         with (
             _patch_which("ast-grep"),
-            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout="[]")) as run,
+            patch.object(
+                regression_scan, "run_allowed_to_fail", side_effect=[version, _fake_completed(0, stdout="[]")]
+            ) as run,
         ):
             scan_findings(rules, paths=scope)
         cmd = run.call_args.args[0]

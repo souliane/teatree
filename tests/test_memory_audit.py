@@ -1,10 +1,75 @@
 """Tests for teatree.memory_audit — scan memory files for promotable entries."""
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.memory_audit import _detect_guardrail_patterns, _parse_frontmatter, _suggest_skill, scan_memory_dir
+from teatree.memory_audit import (
+    _detect_guardrail_patterns,
+    _parse_frontmatter,
+    _suggest_skill,
+    discover_memory_dirs,
+    scan_memory_dir,
+    transcript_mount,
+)
+
+
+def test_transcript_mount_reads_the_live_bind_even_when_config_says_volume() -> None:
+    root = Path("/home/teatree/.claude/projects")
+    mountinfo = f"123 456 0:1 /srv/owner-sessions {root} rw - ext4 /dev/sda rw\n"
+    with (
+        patch.dict(os.environ, {"TEATREE_TRANSCRIPT_SOURCE": "teatree_claude_projects"}),
+        patch("teatree.memory_audit.Path.read_text", return_value=mountinfo),
+    ):
+        assert transcript_mount(root) == ("bind", "/srv/owner-sessions")
+
+
+def test_transcript_mount_without_config_or_mount_is_unknown() -> None:
+    root = Path("/home/teatree/.claude/projects")
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("teatree.memory_audit.Path.read_text", return_value=""),
+    ):
+        assert transcript_mount(root) == ("unknown", "")
+
+
+@pytest.mark.parametrize("volume_name", ["teatree_claude_projects", "teatree_teatree_claude_projects"])
+def test_transcript_mount_recognizes_the_factory_named_volume(volume_name: str) -> None:
+    root = Path("/home/teatree/.claude/projects")
+    volume_root = f"/var/lib/docker/volumes/{volume_name}/_data"
+    mountinfo = f"123 456 0:1 {volume_root} {root} rw - ext4 /dev/sda rw\n"
+    with (
+        patch.dict(os.environ, {"TEATREE_TRANSCRIPT_SOURCE": "teatree_claude_projects"}),
+        patch("teatree.memory_audit.Path.read_text", return_value=mountinfo),
+    ):
+        assert transcript_mount(root) == ("volume", volume_name)
+
+
+def test_discovery_rejects_memory_symlink_outside_factory_root(tmp_path: Path) -> None:
+    projects = tmp_path / ".claude" / "projects"
+    project = projects / "project"
+    project.mkdir(parents=True)
+    outside = tmp_path / "owner-memory"
+    outside.mkdir()
+    (project / "memory").symlink_to(outside, target_is_directory=True)
+    with (
+        patch.dict(os.environ, {"TEATREE_TRANSCRIPT_SOURCE": "teatree_claude_projects"}),
+        patch("teatree.memory_audit.Path.home", return_value=tmp_path),
+    ):
+        assert discover_memory_dirs(writable_only=True) == []
+
+
+def test_host_bound_memory_is_readable_but_not_a_dream_write_target(tmp_path: Path) -> None:
+    memory_dir = tmp_path / ".claude" / "projects" / "project" / "memory"
+    memory_dir.mkdir(parents=True)
+    with (
+        patch.dict(os.environ, {"TEATREE_TRANSCRIPT_SOURCE": "/srv/owner-sessions"}),
+        patch("teatree.memory_audit.Path.home", return_value=tmp_path),
+    ):
+        assert discover_memory_dirs() == [memory_dir]
+        assert discover_memory_dirs(writable_only=True) == []
 
 
 class TestParseFrontmatter:

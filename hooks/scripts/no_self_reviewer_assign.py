@@ -305,4 +305,4 @@ def handle_block_self_reviewer_assign(data: dict) -> bool:
     if reason:
         sys.stderr.write(f"NOTE: reviewer-assign gate skipped via [reviewer-ok: {reason}].\n")
         return False
-    return _fail_open_or_deny(data, _REASON)
+    return _fail_open_or_deny(data, _REASON, gate_id="no_self_reviewer_assign")

@@ -86,7 +86,10 @@ class PendingPrDrainScanner:
         """
         from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
-        from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: loaded at tick time
+        from teatree.core.models.pending_pull_request import (  # noqa: PLC0415 — deferred: loaded at tick time
+            PendingPullRequest,
+            settles_obligation,
+        )
 
         try:
             result = call_command("pr", "ensure-pr", repo=row.repo_path, branch=row.branch)
@@ -97,7 +100,7 @@ class PendingPrDrainScanner:
         if not isinstance(result, dict):
             row.record_failed_drain(error=f"ensure-pr returned {type(result).__name__}, not a result")
             return False
-        if result.get("owed") or result.get("error"):
+        if not settles_obligation(result):
             row.record_failed_drain(error=str(result.get("error") or result.get("skipped") or ""))
             return False
         PendingPullRequest.objects.discharge(repo_path=row.repo_path, branch=row.branch)

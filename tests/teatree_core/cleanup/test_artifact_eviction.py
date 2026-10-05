@@ -12,7 +12,10 @@ that table cannot answer. And an overlay-provisioned artifact is a SYMLINK at th
 main clone's, which every primitive this module uses reads straight through.
 """
 
+import dataclasses
 import os
+import tempfile
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from fnmatch import fnmatchcase
@@ -24,10 +27,9 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.cleanup import artifact_eviction, artifact_removal, process_table
+from teatree.core.cleanup import artifact_eviction, artifact_removal, artifact_sizing, process_table
 from teatree.core.cleanup.artifact_eviction import (
     _ARTIFACT_NAMES,
-    _MAX_EVICTIONS_PER_PASS,
     ArtifactCandidate,
     ArtifactEvictionPlan,
     EvictionOutcome,
@@ -35,13 +37,17 @@ from teatree.core.cleanup.artifact_eviction import (
     plan_artifact_eviction,
 )
 from teatree.core.cleanup.artifact_lock import artifact_source_lock
+from teatree.core.cleanup.artifact_removal import EVICTED_PREFIX
+from teatree.core.cleanup.artifact_sizing import MAX_EVICTIONS_PER_PASS
 from teatree.core.cleanup.checkout_registry import _NEVER_A_CHECKOUT, CheckoutRegistry
 from teatree.core.cleanup.reclaim_pressure import effective_idle_days
+from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 from tests._hook_env import HOOK_ENV_NAME
 from tests._process_table_venue import blinded_process_table, holding, this_process_in
 
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
+_POPULATION = "teatree.core.cleanup.venue_population"
 _LONG_AGO = 1_600_000_000  # comfortably beyond any idle threshold under test
 
 # Spelled out rather than read from the module: a coverage test driven by the very
@@ -111,7 +117,7 @@ class _EvictionFixture(TestCase):
         self.host_proc = tmp_path / "host-proc"
         self.host_proc.mkdir()
         self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", self.host_proc))
-        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(tmp_path,)))
+        self.enterContext(patch(f"{_POPULATION}.venue_checkout_roots", return_value=(tmp_path,)))
         self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=tmp_path / "nowhere"))
         self.this_process = this_process_in(self.host_proc)
 
@@ -328,8 +334,8 @@ class TestSymlinkSafety(_EvictionFixture):
 
         plan = self._plan()
         assert plan.candidates, "the control: it was planned for eviction"
-        refusal = OSError("Cannot call rmtree on a symbolic link")
-        with patch.object(artifact_removal.shutil, "rmtree", side_effect=refusal):
+        refusal = OSError("Cannot move a symbolic link aside")
+        with patch.object(artifact_removal.os, "rename", side_effect=refusal):
             outcome = evict_artifacts(plan)
 
         assert venv.exists()
@@ -482,7 +488,7 @@ class TestSharedSymlinkTargetSafety(_EvictionFixture):
         outcome = evict_artifacts(plan)
 
         assert shared.exists()
-        assert checkout in plan.checkouts
+        assert any(line.startswith(f"{shared}:") and "symlink resolves here" in line for line in plan.kept), plan.kept
         assert outcome.freed_bytes == 0
 
 
@@ -513,7 +519,7 @@ class TestNameSet(_EvictionFixture):
         assert plan.candidates == ()
 
     def test_the_per_pass_cap_grew_with_the_name_set(self) -> None:
-        assert _MAX_EVICTIONS_PER_PASS == 50
+        assert MAX_EVICTIONS_PER_PASS == 50
 
 
 class TestRebuildable(_EvictionFixture):
@@ -627,12 +633,12 @@ class TestSizingBound(_EvictionFixture):
 
     def test_only_a_bounded_prefix_is_sized(self) -> None:
         self._three_eligible_checkouts()
-        real = artifact_eviction._dir_size_bytes
+        real = artifact_sizing._dir_size_bytes
 
         with (
-            patch.object(artifact_eviction, "_MAX_SIZED_PER_PASS", 2),
-            patch.object(artifact_eviction, "_MAX_EVICTIONS_PER_PASS", 1),
-            patch.object(artifact_eviction, "_dir_size_bytes", side_effect=real) as sizing,
+            patch.object(artifact_sizing, "MAX_SIZED_PER_PASS", 2),
+            patch.object(artifact_sizing, "MAX_EVICTIONS_PER_PASS", 1),
+            patch.object(artifact_sizing, "_dir_size_bytes", side_effect=real) as sizing,
         ):
             plan = self._plan()
 
@@ -642,7 +648,7 @@ class TestSizingBound(_EvictionFixture):
     def test_what_the_bound_deferred_is_named_not_silently_dropped(self) -> None:
         self._three_eligible_checkouts()
 
-        with patch.object(artifact_eviction, "_MAX_SIZED_PER_PASS", 2):
+        with patch.object(artifact_sizing, "MAX_SIZED_PER_PASS", 2):
             plan = self._plan()
 
         assert any("sizing bound" in line for line in plan.deferred), plan.deferred
@@ -652,7 +658,7 @@ class TestSizingBound(_EvictionFixture):
         """One count for both reads as a guard firing, and invites raising the idle window."""
         self._three_eligible_checkouts()
 
-        with patch.object(artifact_eviction, "_MAX_SIZED_PER_PASS", 2):
+        with patch.object(artifact_sizing, "MAX_SIZED_PER_PASS", 2):
             plan = self._plan()
 
         assert plan.kept == (), "nothing was WITHHELD here — the remainder is only unmeasured"
@@ -661,7 +667,7 @@ class TestSizingBound(_EvictionFixture):
         """A prefix that moved each pass would churn: sized, deferred, re-sized, never evicted."""
         self._three_eligible_checkouts()
 
-        with patch.object(artifact_eviction, "_MAX_SIZED_PER_PASS", 2):
+        with patch.object(artifact_sizing, "MAX_SIZED_PER_PASS", 2):
             first = {candidate.artifact for candidate in self._plan().candidates}
             second = {candidate.artifact for candidate in self._plan().candidates}
 
@@ -837,7 +843,6 @@ class TestDeleteTimeIdentity(_EvictionFixture):
         displaced = checkout / "node_modules.displaced"
         sentinel = artifact / "replacement.txt"
         real_open = artifact_removal.os.open
-        real_rmtree = artifact_removal.shutil.rmtree
         swapped = False
 
         def _swap() -> None:
@@ -855,15 +860,7 @@ class TestDeleteTimeIdentity(_EvictionFixture):
                 _swap()
             return descriptor
 
-        def _rmtree(path: str | Path, *, dir_fd: int | None = None) -> None:
-            if Path(path) == artifact:
-                _swap()
-            real_rmtree(path, dir_fd=dir_fd)
-
-        with (
-            patch.object(artifact_removal.os, "open", side_effect=_open),
-            patch.object(artifact_removal.shutil, "rmtree", side_effect=_rmtree),
-        ):
+        with patch.object(artifact_removal.os, "open", side_effect=_open):
             outcome = evict_artifacts(plan)
 
         assert swapped
@@ -907,14 +904,11 @@ class TestEnumerationGap(_EvictionFixture):
     true while every guard read the candidate's own checkout. The structural guard reads
     the WHOLE population: an unreadable region hides links, and a shared target whose
     linking worktrees all sit in that region is deleted, dangling every link at once.
-    Gaps are not hypothetical here — ``checkout_scan_roots`` includes ``Path.home()``
-    unconditionally, and macOS TCC refuses ``~/Library`` subtrees on every pass
-    (measured: 25).
     """
 
     def _gap(self, *checkouts: Path) -> AbstractContextManager[object]:
         registry = CheckoutRegistry(frozenset(str(path) for path in checkouts), ("could not scan somewhere",))
-        return patch(f"{_REGISTRY}.scan_checkout_paths", return_value=registry)
+        return patch(f"{_POPULATION}.scan_checkout_paths", return_value=registry)
 
     def _linked_worktree(self, clone: Path, path: Path) -> Path:
         run_git(clone, "worktree", "add", "-q", "-b", path.name, str(path))
@@ -1001,8 +995,8 @@ class TestGuardIsPerDeletionNotPerBatch(_EvictionFixture):
         real_remove = artifact_eviction._remove_anchored_candidate
         removed: list[Path] = []
 
-        def _remove(candidate: ArtifactCandidate) -> str:
-            reason = real_remove(candidate)
+        def _remove(candidate: ArtifactCandidate, **kwargs: float | None) -> str:
+            reason = real_remove(candidate, **kwargs)
             if not reason:
                 removed.append(candidate.artifact)
             if len(removed) == 1:
@@ -1060,13 +1054,13 @@ class TestGuardIsPerDeletionNotPerBatch(_EvictionFixture):
                     (worktree / "node_modules").symlink_to(shared)
             writer_finished.set()
 
-        def _plant_then_remove(candidate: ArtifactCandidate) -> str:
+        def _plant_then_remove(candidate: ArtifactCandidate, **kwargs: float | None) -> str:
             writer = Thread(target=_plant_dependency)
             writers.append(writer)
             writer.start()
             assert writer_started.wait(timeout=1)
             writer_finished.wait(timeout=0.1)
-            return real_remove(candidate)
+            return real_remove(candidate, **kwargs)
 
         with patch.object(artifact_eviction, "_remove_anchored_candidate", side_effect=_plant_then_remove):
             outcome = evict_artifacts(plan)
@@ -1108,17 +1102,11 @@ class TestGuardIsPerDeletionNotPerBatch(_EvictionFixture):
         assert any(str(shared) in line for line in outcome.skipped)
 
     def test_an_enumeration_gap_opening_mid_batch_stops_remaining_deletes(self) -> None:
-        big, _later, small = self._two_candidates("later")
+        big, later, small = self._two_candidates("later")
         plan = self._plan()
-        registry = CheckoutRegistry(
-            frozenset(str(path) for path in plan.checkouts),
-            ("could not scan a new checkout root",),
-        )
 
         def _open_gap() -> None:
-            patcher = patch(f"{_REGISTRY}.scan_checkout_paths", return_value=registry)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            (later / ".nx").symlink_to(later / ".nx")
 
         outcome = self._evict_planting_after_the_first_delete(plan, _open_gap)
 
@@ -1136,7 +1124,7 @@ class TestCap(_EvictionFixture):
         _age(checkout)
         self._some_process_exists()
 
-        with patch.object(artifact_eviction, "_MAX_EVICTIONS_PER_PASS", 2):
+        with patch.object(artifact_sizing, "MAX_EVICTIONS_PER_PASS", 2):
             plan = self._plan()
 
         assert [candidate.artifact for candidate in plan.candidates] == [
@@ -1218,3 +1206,174 @@ class TestAMutePidCostsReclaimRatherThanTheWholePass(_EvictionFixture):
         assert not plan.refusal, "a mute pid narrows what is known; it does not refuse the pass"
         assert not artifact.exists()
         assert outcome.freed_bytes > 0
+
+
+class TestTheVenueBoundsThePopulation(TestCase):
+    """Only checkouts under the roots this venue provisions into are ever candidates (#98).
+
+    Inside the container a registered row's parent put the whole host workspace in scope,
+    where a host agent's working directory is invisible to the container's process table.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.venue = tmp_path / "venue"
+        self.outside = tmp_path / "outside"
+        host_proc = tmp_path / "host-proc"
+        host_proc.mkdir()
+        self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", host_proc))
+        this_process_in(host_proc)
+        (host_proc / "4242").mkdir()
+        (host_proc / "4242" / "cwd").symlink_to(tmp_path / "idle")
+        self.enterContext(patch(f"{_REGISTRY}.Path.home", return_value=tmp_path / "home"))
+        self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=tmp_path / "nowhere"))
+        self.enterContext(patch(f"{_POPULATION}.clone_root", return_value=self.venue))
+        self.enterContext(patch(f"{_POPULATION}.canonical_worktree_root", return_value=self.venue))
+
+    def test_a_registered_checkout_outside_the_venue_is_never_a_candidate(self) -> None:
+        ours = _artifact_in(make_git_repo(self.venue / "clone"))
+        host_checkout = make_git_repo(self.outside / "host-checkout")
+        theirs = _artifact_in(host_checkout)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
+        row = Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch="b", extra={"worktree_path": str(host_checkout)}
+        )
+
+        plan = plan_artifact_eviction(self.venue, idle_days=1)
+
+        assert [candidate.artifact for candidate in plan.candidates] == [ours]
+        assert theirs not in {candidate.artifact for candidate in plan.candidates}
+        assert any(f"#{row.pk}" in note and "skipped" in note for note in plan.excluded)
+
+
+class TestThePassBudget(_EvictionFixture):
+    """The pass ends inside its budget with what it did recorded, never by the tick's kill (#98)."""
+
+    def test_a_walk_the_budget_cuts_short_refuses_as_a_recorded_gap(self) -> None:
+        _artifact_in(make_git_repo(self.workspace / "clone"))
+        self._some_process_exists()
+
+        plan = plan_artifact_eviction(self.workspace, idle_days=1, budget_seconds=0)
+
+        assert plan.candidates == ()
+        assert "budget" in plan.refusal
+
+    def test_sizing_the_budget_cuts_short_is_deferred_not_kept(self) -> None:
+        checkout = make_git_repo(self.workspace / "clone")
+        first, second = _artifact_in(checkout, name=".nx"), _artifact_in(checkout, name=".angular")
+        self._some_process_exists()
+        clock = [0.0]
+
+        def size_and_spend_the_budget(_directory: Path) -> int:
+            clock[0] += 100
+            return 1
+
+        with (
+            patch("time.monotonic", lambda: clock[0]),
+            patch.object(artifact_sizing, "_dir_size_bytes", side_effect=size_and_spend_the_budget),
+        ):
+            plan = plan_artifact_eviction(self.workspace, idle_days=1, budget_seconds=50)
+
+        assert [candidate.artifact for candidate in plan.candidates] == [second]
+        assert any(str(first) in line and "budget" in line for line in plan.deferred)
+        assert plan.kept == ()
+
+    def test_a_spent_budget_stops_the_batch_before_any_removal(self) -> None:
+        artifact = _artifact_in(make_git_repo(self.workspace / "clone"))
+        self._some_process_exists()
+        plan = self._plan()
+        assert plan.candidates, "control: the artifact is a candidate with no budget"
+
+        with patch.object(artifact_eviction, "_remove_anchored_candidate") as remove:
+            outcome = evict_artifacts(dataclasses.replace(plan, deadline=time.monotonic() - 1))
+
+        remove.assert_not_called()
+        assert artifact.exists()
+        assert outcome.refusal.startswith("the pass's time budget ran out;"), outcome.refusal
+
+    def test_a_delete_the_budget_interrupts_is_moved_aside_and_finished_next_pass(self) -> None:
+        checkout = make_git_repo(self.workspace / "clone")
+        artifact = _artifact_in(checkout)
+        for index in range(5):
+            (artifact / f"blob-{index}").write_bytes(b"x" * 100)
+        _age(artifact, checkout)
+        self._some_process_exists()
+        plan = dataclasses.replace(self._plan(), deadline=1_000.0)
+        readings = iter([0.0] * 4)
+
+        with patch.object(artifact_removal.time, "monotonic", side_effect=lambda: next(readings, 2_000.0)):
+            outcome = evict_artifacts(plan)
+
+        (leftover,) = [entry for entry in checkout.iterdir() if entry.name.startswith(EVICTED_PREFIX)]
+        assert not artifact.exists(), "the artifact leaves its path whole, never half-deleted in place"
+        assert any("budget ran out mid-delete" in line for line in outcome.skipped), outcome.skipped
+
+        follow_up = self._plan()
+        assert follow_up.leftovers == (leftover,)
+        finished = evict_artifacts(follow_up)
+
+        assert not leftover.exists()
+        assert finished.freed_bytes > 0
+
+    def test_deletions_refresh_the_reading_without_re_walking_the_population(self) -> None:
+        first = _artifact_in(make_git_repo(self.workspace / "aaa"), size=9_000)
+        second = _artifact_in(make_git_repo(self.workspace / "bbb"), size=1_000)
+        self._some_process_exists()
+        plan = self._plan()
+
+        with (
+            patch(f"{_POPULATION}.scan_checkout_paths") as population_walk,
+            patch("teatree.core.cleanup.artifact_protection.scan_checkout_paths") as protection_walk,
+        ):
+            outcome = evict_artifacts(plan)
+
+        assert set(outcome.evicted) == {str(first), str(second)}
+        population_walk.assert_not_called()
+        protection_walk.assert_not_called()
+
+
+class TestProtectorsReachBeyondTheCandidates(_EvictionFixture):
+    """Narrowing what may be deleted must never narrow what protects it."""
+
+    def _kept_as_shared(self, plan: ArtifactEvictionPlan, artifact: Path) -> bool:
+        return any(line.startswith(f"{artifact}:") and "symlink resolves here" in line for line in plan.kept)
+
+    def test_a_nested_clones_link_protects_the_outer_checkouts_artifact(self) -> None:
+        outer = make_git_repo(self.workspace / "outer")
+        shared = _artifact_in(outer, name="node_modules")
+        nested = make_git_repo(outer / "scratch" / "inner")
+        (nested / "node_modules").symlink_to(shared)
+        self._some_process_exists()
+
+        plan = self._plan()
+        evict_artifacts(plan)
+
+        assert shared.exists()
+        assert self._kept_as_shared(plan, shared), plan.kept
+
+    def test_a_worktree_registered_outside_the_roots_protects_its_target(self) -> None:
+        clone = make_git_repo(self.workspace / "clone")
+        shared = _artifact_in(clone, name="node_modules")
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve() / "host-wt"
+        run_git(clone, "worktree", "add", "-q", "-b", "host-wt", str(elsewhere))
+        (elsewhere / "node_modules").symlink_to(shared)
+        self._some_process_exists()
+
+        plan = self._plan()
+        evict_artifacts(plan)
+
+        assert shared.exists()
+        assert self._kept_as_shared(plan, shared), plan.kept
+
+    def test_a_link_spelled_differently_from_the_candidate_still_protects_it(self) -> None:
+        clone = make_git_repo(self.workspace / "clone")
+        shared = _artifact_in(clone, name="node_modules")
+        other_spelling = self.workspace / "CLONE" / "node_modules"
+        if not other_spelling.exists():
+            pytest.skip("needs a case-insensitive filesystem to reach one directory under two spellings")
+        (make_git_repo(self.workspace / "wt") / "node_modules").symlink_to(other_spelling)
+        self._some_process_exists()
+
+        plan = self._plan()
+
+        assert self._kept_as_shared(plan, shared), plan.kept

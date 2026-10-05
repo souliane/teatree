@@ -390,3 +390,20 @@ class TestSelfDbMigrate:
 class TestReinstallResult:
     def test_default_error_is_empty(self) -> None:
         assert ReinstallResult(ok=True, reinstalled=True).error == ""
+
+
+class TestReinstallInAnImageGeneration:
+    def test_nothing_is_reinstalled_and_no_subprocess_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def _runner(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "", "")
+
+        monkeypatch.setenv("TEATREE_GENERATION", "f" * 40)
+        monkeypatch.setattr(self_update_mod.shutil, "which", _which_all)
+
+        result = reinstall_running_editable(runner=_runner)
+
+        assert result == ReinstallResult(ok=True, reinstalled=False)
+        assert calls == []

@@ -28,19 +28,15 @@ import hooks.scripts.hook_router as router
 
 # (reader function name, [teatree] key) — every [teatree]-table boolean flag reader.
 _FAIL_OPEN_READERS: tuple[tuple[str, str], ...] = (
-    ("_deny_circuit_breaker_enabled", "deny_circuit_breaker_enabled"),
     ("_skill_loading_gate_enabled", "skill_loading_gate_enabled"),
     ("_plan_edit_gate_enabled", "plan_edit_gate_enabled"),
-    ("_mcp_privacy_gate_enabled", "mcp_privacy_gate_enabled"),
     ("_self_dm_gate_enabled", "self_dm_gate_enabled"),
     ("_orchestrator_bash_gate_enabled", "orchestrator_bash_gate_enabled"),
     # #1733: flipped to default-ON (fail-open) once the Agent matcher was wired.
     ("_orchestrator_boundary_agent_gate_enabled", "orchestrator_boundary_agent_gate_enabled"),
 )
 
-_FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = (
-    ("_dispatch_quote_gate_on_task_create_enabled", "dispatch_quote_gate_on_task_create_enabled"),
-)
+_FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = ()
 
 
 @pytest.fixture

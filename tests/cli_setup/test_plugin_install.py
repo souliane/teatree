@@ -7,76 +7,11 @@ relocated under a focused package by concern.
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
+from teatree.cli.setup.apm import strip_apm_hooks
 from teatree.cli.setup.plugin_registrar import PluginRegistrar
-
-
-class TestRunApmInstall:
-    def test_returns_false_when_apm_not_found(self) -> None:
-        with patch("shutil.which", return_value=None):
-            assert ApmInstaller(Path("/fake")).install() is False
-
-    def test_returns_false_on_failure(self, tmp_path: Path) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/bin/apm"),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stdout = ""
-            mock_run.return_value.stderr = "some error"
-            assert ApmInstaller(tmp_path).install() is False
-
-    def test_returns_true_on_success(self, tmp_path: Path) -> None:
-        with (
-            patch("shutil.which", return_value="/usr/bin/apm"),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = "[*] All packages installed."
-            mock_run.return_value.stderr = ""
-            assert ApmInstaller(tmp_path).install() is True
-            mock_run.assert_called_once()
-            args = mock_run.call_args
-            assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
-
-    def test_failure_warning_surfaces_stdout_when_stderr_empty(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        apm_diagnostics = (
-            "-- Diagnostics --\n  [x] 1 package failed:\n    +- souliane/teatree -- Missing required directory: .apm/\n"
-        )
-        with (
-            patch("shutil.which", return_value="/usr/bin/apm"),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 1
-            mock_run.return_value.stdout = apm_diagnostics
-            mock_run.return_value.stderr = ""
-            assert ApmInstaller(tmp_path).install() is False
-        out = capsys.readouterr().out
-        assert "Missing required directory: .apm/" in out
-
-    def test_detects_failure_when_apm_exits_zero(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        apm_diagnostics = (
-            "-- Diagnostics --\n"
-            "  [x] 1 package failed:\n"
-            "    +- souliane/teatree -- Missing required directory: .apm/\n"
-            "[x] Installation failed with 1 error(s).\n"
-        )
-        with (
-            patch("shutil.which", return_value="/usr/bin/apm"),
-            patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value.returncode = 0
-            mock_run.return_value.stdout = apm_diagnostics
-            mock_run.return_value.stderr = ""
-            assert ApmInstaller(tmp_path).install() is False
-        out = capsys.readouterr().out
-        assert "Installation failed" in out
 
 
 class TestEnablePlugin:
@@ -147,36 +82,6 @@ class TestInstallClaudePlugin:
 
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         assert settings["enabledPlugins"]["t3@souliane"] is True
-
-    def test_removes_legacy_symlink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-        plugins_dir = tmp_path / ".claude" / "plugins"
-        plugins_dir.mkdir(parents=True)
-        link = plugins_dir / "t3"
-        old_target = tmp_path / "old-clone"
-        old_target.mkdir()
-        link.symlink_to(old_target)
-
-        repo = tmp_path / "teatree-clone"
-        repo.mkdir()
-        PluginRegistrar(repo).install()
-
-        assert not link.exists()
-
-    def test_removes_legacy_enabled_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        settings = claude_dir / "settings.json"
-        settings.write_text(json.dumps({"enabledPlugins": {"/some/path/t3": True}}))
-
-        repo = tmp_path / "teatree-clone"
-        repo.mkdir()
-        PluginRegistrar(repo).install()
-
-        data = json.loads(settings.read_text())
-        assert "/some/path/t3" not in data["enabledPlugins"]
-        assert data["enabledPlugins"]["t3@souliane"] is True
 
 
 class TestStripApmHooks:

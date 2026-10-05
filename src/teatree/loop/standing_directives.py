@@ -7,19 +7,23 @@ automated. A :class:`StandingDirective` is one standing instruction plus the
 cadence at which an attended session should be reminded of it.
 
 **This module is harness-neutral, and that is the acceptance test.** It owns the
-directive texts, the cadences, the scoping RULE and whether a slot needs the
-session to wake up; it knows nothing about slash commands, hooks, session
-markers, or any harness's session model. The delivery adapter is per-harness;
-another harness gets all three behaviours by reading ``t3 loop directives
---json`` and writing only its own adapter — zero teatree changes.
+directive texts, the cadences, the scoping RULE and which slots drive work; it knows
+nothing about slash commands, hooks, session markers, or any harness's session model. The
+delivery adapter is per-harness; another harness gets the same behaviour by
+reading ``t3 loop directives show --json`` and writing only its own adapter —
+zero teatree changes.
 
-**Cost follows the delivery shape, which is why ``wakes_session`` is per slot.**
-A directive that only needs to be in context when the agent next acts costs
-nothing to deliver on a turn that already exists; one that must drive work when
-nobody prompted costs a whole turn. Only the second kind is bounded by the
-floors, by the singleton scope, and by the self-pump brake below — the zero-turn
-kind is never suppressed, because a safety rule that costs nothing has no reason
-to be rationed.
+**Every directive rides a turn that already exists.** None of them wakes a
+session or asks it to arm anything recurring, so delivering one costs no turn.
+The slots that send the session to work are the ones the self-pump brake below
+drops while the active mode masks that loop off; the golden rule is never
+suppressed, because a safety rule that costs nothing has no reason to be rationed.
+
+**The hooks read a publication, never the store.** :func:`publish` writes the
+resolution to :mod:`teatree.standing_directives_cache`, called by
+``t3 loop directives disable|enable`` and every minute by the worker's
+``teatree.loops.standing_directives_publish`` chain, so an owner's edit and a mode
+change reach the Django-free hooks without a prompt ever waiting on the DB.
 
 Text resolution is data, not code: a compiled default per slot, overridable by a
 :class:`~teatree.core.models.Prompt` row named ``standing-directive:<slot_id>``
@@ -38,20 +42,11 @@ import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TypedDict
 
-from teatree.core.mode_resolution import resolve_active_mode
+from teatree import standing_directives_cache
+from teatree.standing_directives_cache import StandingDirectivePayload
 
-
-class StandingDirectivePayload(TypedDict):
-    """The cross-harness directive contract — what ``t3 loop directives --json`` prints."""
-
-    slot_id: str
-    cadence_seconds: int
-    text: str
-    scope: str
-    wakes_session: bool
-
+logger = logging.getLogger(__name__)
 
 #: Every attended session — a session a human is present for. Each harness
 #: decides what that means for its own runtime.
@@ -66,8 +61,6 @@ SCOPE_ATTENDED_SINGLETON = "attended-singleton"
 #: directives is (texts x injections per hour), so the text side is capped here
 #: and the injection side is capped by the cadences below.
 MAX_DIRECTIVE_CHARS = 1200
-
-_SECONDS_PER_HOUR = 3600
 
 _OVERRIDE_PROMPT_PREFIX = "standing-directive:"
 
@@ -91,9 +84,8 @@ def golden_rule_cadence_seconds() -> int:
     """``standing-golden-rule`` cadence (``T3_GOLDEN_RULE_CADENCE``, default 300s, floor 60).
 
     Five minutes is the owner's own measured re-statement interval — the rule was
-    observed to hold while repeated at roughly that rate. This slot costs no turn,
-    so the cadence is a MINIMUM interval between refreshes rather than a wake-up,
-    and the floor can stay tight.
+    observed to hold while repeated at roughly that rate. The cadence is a MINIMUM
+    interval between refreshes rather than a wake-up, so the floor can stay tight.
     """
     return _cadence("T3_GOLDEN_RULE_CADENCE", 300, 60)
 
@@ -103,8 +95,7 @@ def todo_consolidate_cadence_seconds() -> int:
 
     Half-hourly rather than tight: a consolidation pass can trigger real work, so
     firing it often would preempt the work already in flight. The floor is what
-    actually bounds the cost — a session configured at the old 300s floor could
-    wake itself twelve times an hour for this slot alone.
+    actually bounds how often a session is sent back to it.
     """
     return _cadence("T3_TODO_CONSOLIDATE_CADENCE", 1800, 600)
 
@@ -156,39 +147,37 @@ _PR_BOARD_TEXT = (
 
 @dataclass(frozen=True, slots=True)
 class StandingDirective:
-    """One standing instruction, its cadence, who receives it, and what it costs.
+    """One standing instruction, its cadence, who receives it, and whether it sends the session to work.
 
-    ``wakes_session`` is the cost declaration a delivery adapter reads: ``False``
-    means the directive only has to be present when the session next acts, so it
-    rides a turn that already exists; ``True`` means it must drive work with
-    nobody prompting, so delivering it costs a turn.
+    ``drives_work`` is what the self-pump brake reads: a slot that sends the session
+    to work has nothing to do while the active mode masks that loop off.
     """
 
     slot_id: str
     cadence_seconds: Callable[[], int]
     default_text: str
     scope: str
-    wakes_session: bool
+    drives_work: bool
 
 
 #: The standing directives, in delivery order. Slot 1 deliberately covers BOTH
 #: coupled failures the owner named — the orchestrator implementing without a
 #: plan, AND the orchestrator doing the work itself instead of routing it. It is
-#: also the only zero-cost slot, which is why it is the one that reaches widest.
+#: also the only slot that drives no work, which is why the brake never drops it.
 STANDING_DIRECTIVES: tuple[StandingDirective, ...] = (
     StandingDirective(
         "standing-golden-rule",
         golden_rule_cadence_seconds,
         _GOLDEN_RULE_TEXT,
         scope=SCOPE_ATTENDED,
-        wakes_session=False,
+        drives_work=False,
     ),
     StandingDirective(
         "standing-todo-consolidate",
         todo_consolidate_cadence_seconds,
         _TODO_CONSOLIDATE_TEXT,
         scope=SCOPE_ATTENDED,
-        wakes_session=True,
+        drives_work=True,
     ),
     # The PR board is one board per host: N sessions each driving it means N cold
     # reviews per PR per pass and two sub-agents on one branch, not faster merges.
@@ -197,7 +186,7 @@ STANDING_DIRECTIVES: tuple[StandingDirective, ...] = (
         pr_board_cadence_seconds,
         _PR_BOARD_TEXT,
         scope=SCOPE_ATTENDED_SINGLETON,
-        wakes_session=True,
+        drives_work=True,
     ),
 )
 
@@ -210,17 +199,26 @@ class ResolvedDirective:
     cadence_seconds: int
     text: str
     scope: str
-    wakes_session: bool
 
     def as_dict(self) -> StandingDirectivePayload:
-        """The five-key payload ``t3 loop directives --json`` prints."""
+        """The four-key payload ``t3 loop directives show --json`` prints and the hooks read."""
         return {
             "slot_id": self.slot_id,
             "cadence_seconds": self.cadence_seconds,
             "text": self.text,
             "scope": self.scope,
-            "wakes_session": self.wakes_session,
         }
+
+
+def compiled_directives() -> list[ResolvedDirective]:
+    """Every slot with its compiled default text — what a hook delivers while nothing is published.
+
+    Reads no store, so it resolves in a process that has no Django at all.
+    """
+    return [
+        ResolvedDirective(directive.slot_id, directive.cadence_seconds(), directive.default_text, directive.scope)
+        for directive in STANDING_DIRECTIVES
+    ]
 
 
 def _override_texts() -> dict[str, str]:
@@ -247,7 +245,7 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
 _MODE_READ_LOGGERS = ("teatree.core.mode_resolution", "teatree.loop.preset_resolution")
 
 #: The loop the Stop self-pump drives. A mode that masks it OFF is not self-driving,
-#: so a self-waking directive slot has nothing to wake into.
+#: so a slot that sends the session to work has nothing to send it to.
 SELF_PUMP_LOOP = "dispatch"
 
 
@@ -259,37 +257,39 @@ def _drop_record(_record: logging.LogRecord) -> bool:
 def _mode_read_unlogged() -> Iterator[None]:
     """Silence the mode read's own fail-open WARNINGs for the duration of one call.
 
-    The caller below is documented silent: its only stderr is the delivery hook's,
-    so a degraded store would print a full traceback into the owner's terminal on
-    every prompt, for a probe whose failure is already handled here.
+    The publish chain resolves every minute, so a degraded store would log a full
+    traceback once a minute, for a probe whose failure is already handled here.
 
     Named-logger filters rather than ``logging.disable``, which is process-global:
-    :func:`resolve_standing_directives` is a public export reachable from the
-    ``t3 worker``'s pool, where a blanket disable would swallow a concurrent
-    thread's own unrelated logging for the length of this read.
+    :func:`resolve_standing_directives` runs in the ``t3 worker``'s pool, where a
+    blanket disable would swallow a concurrent thread's own unrelated logging for
+    the length of this read.
     """
-    loggers = [logging.getLogger(name) for name in _MODE_READ_LOGGERS]
-    for logger in loggers:
-        logger.addFilter(_drop_record)
+    resolvers = [logging.getLogger(name) for name in _MODE_READ_LOGGERS]
+    for resolver in resolvers:
+        resolver.addFilter(_drop_record)
     try:
         yield
     finally:
-        for logger in loggers:
-            logger.removeFilter(_drop_record)
+        for resolver in resolvers:
+            resolver.removeFilter(_drop_record)
 
 
 def _self_pump_paused() -> bool:
-    """Whether the active mode masks the self-pump's loop OFF — a self-waking directive IS one.
+    """Whether the active mode masks the self-pump's loop OFF — then nothing should be driving work.
 
     Reads the MERGED mode (#4196), never the override/schedule layer: that layer stops
     at ``None`` when neither governs, so it cannot see the configured default mode.
 
     Fails OPEN to delivering: an unresolvable mode still delivers.
     """
+    from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: Django-free defaults
+
     try:
         with _mode_read_unlogged():
             return resolve_active_mode().state_for(SELF_PUMP_LOOP) is False
-    except Exception:  # noqa: BLE001 — an unresolvable mode degrades to delivering.
+    except Exception:
+        logger.debug("the active mode is unreadable — the brake stays off", exc_info=True)
         return False
 
 
@@ -298,48 +298,39 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
 
     Fails open to the compiled defaults: a directive that cannot be looked up is
     still worth delivering, and a store outage must not silently drop the golden
-    rule from every session. A mode that pauses the self-pump drops the
-    self-waking slots and only those — the zero-turn rule keeps reaching a session
-    that is deliberately idle, because it costs that session nothing. The brake is
-    read only once a self-waking slot has survived text resolution: with the
-    waking slots switched off there is nothing for it to drop, and this runs on
-    every prompt of every engaged session.
+    rule from every session. A mode that pauses the self-pump drops the slots that
+    drive work and only those — the golden rule keeps reaching a session that is
+    deliberately idle, because it costs that session nothing. The brake is read
+    only once a work-driving slot has survived text resolution: with those slots
+    switched off there is nothing for it to drop.
     """
     try:
         overrides = _override_texts()
-    except Exception:  # noqa: BLE001 — an unreachable store degrades to the compiled defaults.
+    except Exception:
+        logger.debug("the directive overrides are unreadable — the compiled defaults resolve", exc_info=True)
         overrides = {}
     resolved = [
-        ResolvedDirective(
-            directive.slot_id,
-            directive.cadence_seconds(),
-            text,
-            scope=directive.scope,
-            wakes_session=directive.wakes_session,
-        )
+        (directive, text)
         for directive in STANDING_DIRECTIVES
         if (text := _resolve_text(directive, overrides)) is not None
     ]
-    if not any(directive.wakes_session for directive in resolved):
-        return resolved
-    return [directive for directive in resolved if not directive.wakes_session] if _self_pump_paused() else resolved
+    if any(directive.drives_work for directive, _ in resolved) and _self_pump_paused():
+        resolved = [(directive, text) for directive, text in resolved if not directive.drives_work]
+    return [
+        ResolvedDirective(directive.slot_id, directive.cadence_seconds(), text, directive.scope)
+        for directive, text in resolved
+    ]
 
 
-def self_woken_turns_per_hour() -> dict[str, int]:
-    """The self-woken turn budget the resolved directives cost, split by scope.
+def publish() -> bool:
+    """Publish the resolved directives for the hooks; ``False`` when that resolution is already published.
 
-    ``per_session`` multiplies by the number of attended sessions;
-    ``per_host_singleton`` does not, because exactly one session delivers it. The
-    zero-turn slots contribute nothing by construction, so this is the whole cost
-    of the mechanism and the number the budget test pins.
+    Resolved inside the cache's publisher lock, so the worker's chain and an owner's ``disable`` never
+    interleave a stale read with a newer write.
     """
-    budget = {"per_session": 0, "per_host_singleton": 0}
-    for directive in resolve_standing_directives():
-        if not directive.wakes_session:
-            continue
-        key = "per_host_singleton" if directive.scope == SCOPE_ATTENDED_SINGLETON else "per_session"
-        budget[key] += _SECONDS_PER_HOUR // directive.cadence_seconds
-    return budget
+    return standing_directives_cache.publish(
+        lambda: [directive.as_dict() for directive in resolve_standing_directives()]
+    )
 
 
 __all__ = [
@@ -349,11 +340,11 @@ __all__ = [
     "STANDING_DIRECTIVES",
     "ResolvedDirective",
     "StandingDirective",
-    "StandingDirectivePayload",
+    "compiled_directives",
     "golden_rule_cadence_seconds",
     "override_prompt_name",
     "pr_board_cadence_seconds",
+    "publish",
     "resolve_standing_directives",
-    "self_woken_turns_per_hour",
     "todo_consolidate_cadence_seconds",
 ]

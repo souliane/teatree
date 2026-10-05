@@ -642,7 +642,7 @@ class TestAmbientOverlayMatchesConfigResolution:
 
 
 class TestResolveOverlayName:
-    """``resolve_overlay_name`` folds a name onto its registered canonical form (#1959)."""
+    """``resolve_overlay_name`` accepts only registered canonical names."""
 
     def test_registered_name_resolves_to_itself(self):
         with patch(
@@ -651,13 +651,13 @@ class TestResolveOverlayName:
         ):
             assert resolve_overlay_name("t3-teatree") == "t3-teatree"
 
-    def test_legacy_short_alias_folds_onto_entry_point(self):
+    def test_short_aliases_do_not_resolve_to_entry_points(self):
         with patch(
             "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
-            assert resolve_overlay_name("teatree") == "t3-teatree"
-            assert resolve_overlay_name("beta") == "t3-beta"
+            assert resolve_overlay_name("teatree") is None
+            assert resolve_overlay_name("beta") is None
 
     def test_unknown_name_resolves_to_none(self):
         with patch(
@@ -676,7 +676,7 @@ class TestResolveOverlayName:
             "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
-            assert resolve_overlay_name("teatree") is not None
+            assert resolve_overlay_name("t3-teatree") is not None
             assert resolve_overlay_name("removed-overlay") is None
 
 

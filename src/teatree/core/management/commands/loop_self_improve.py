@@ -19,10 +19,11 @@ from django_typer.management import TyperCommand
 from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.notify_types import NotifyKind
+from teatree.core.notify_types import NotifyKind, NotifyReason
 
 if TYPE_CHECKING:
     from teatree.core.models.self_improve_firing import SelfImproveFiring
+    from teatree.loop.self_improve.actions import OwnerAlertDelivery
     from teatree.loop.self_improve.detectors.base import DetectorReport
     from teatree.loop.self_improve.schedule import TierResult
 
@@ -30,10 +31,11 @@ type ReportDict = dict[str, Any]
 logger = logging.getLogger(__name__)
 
 
-def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring | None") -> bool:
+def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring | None") -> "OwnerAlertDelivery":
     """Use the verified bot→owner egress without a reverse domain dependency."""
     from teatree.core.notify import notify_user_outcome  # noqa: PLC0415 — keep command import light for CLI discovery
     from teatree.loop.self_improve.actions import (  # noqa: PLC0415 — defer domain action import until command execution
+        OwnerAlertDelivery,
         format_slack_payload,
         owner_alert_key,
     )
@@ -44,9 +46,9 @@ def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring 
         idempotency_key=owner_alert_key(report, existing),
         audience=NotifyAudience.OWNER_ESCALATION,
     )
-    if not outcome.sent:
+    if not outcome.sent and outcome.reason is not NotifyReason.ROUTED_TO_PULL:
         logger.warning("self-improve owner alert not delivered: %s (%s)", report.dedup_key, outcome.reason)
-    return outcome.sent
+    return OwnerAlertDelivery(sent=outcome.sent, pulled=outcome.reason is NotifyReason.ROUTED_TO_PULL)
 
 
 def _result_to_dict(result: "TierResult") -> ReportDict:
@@ -143,7 +145,7 @@ class Command(TyperCommand):
             )
             return
         try:
-            overlay_name = overlay_name_of(get_overlay())
+            overlay_name = overlay_name_of(get_overlay(os.environ.get("T3_SELF_IMPROVE_OWNER_OVERLAY") or None))
             result = run_tier(
                 tier,
                 auto_fix_callable=self_improve_rerender,

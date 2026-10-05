@@ -1,18 +1,21 @@
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from time import monotonic
 from typing import cast
 
 import httpx
 
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.pagination import next_cursor
-from teatree.identity import agent_signature_suffix
 from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
 
 logger = logging.getLogger(__name__)
+
+# Caps wall-clock only: the lookback's ``oldest`` edge is what ends a healthy walk.
+_HISTORY_WALK_BUDGET_SECONDS = 60.0
 
 
 def _webhook_result(response: httpx.Response) -> RawAPIDict:
@@ -29,21 +32,13 @@ def _webhook_result(response: httpx.Response) -> RawAPIDict:
         return {"ok": True} if body == "ok" else {"ok": False, "error": body}
 
 
-def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
+def post_webhook_message(webhook_url: str, text: str) -> RawAPIDict:
     """Post a Slack webhook message on the user's behalf.
-
-    `signature` is appended only when the DB-home `agent_signature` setting is
-    `true` (`t3 <overlay> config_setting set agent_signature true`); a
-    `[teatree] agent_signature` TOML value is ignored on read. Default config
-    keeps the message indistinguishable from one the user typed themselves —
-    see `teatree.identity` and
-    `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
-    Behalf".
 
     The #3809 wrap runs here: this is a raw ``httpx`` post, so it never reaches
     ``SlackBotBackend._post`` where the in-app wrap seam lives.
     """
-    body = wrap_slack_message(text + agent_signature_suffix(signature))
+    body = wrap_slack_message(text)
     response = httpx.post(webhook_url, json={"text": body}, timeout=10.0)
     response.raise_for_status()
     return _webhook_result(response)
@@ -153,7 +148,7 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
     :func:`read_recent_review_matches`; the two differ only in how they report
     read success. Returns ``(matches, read_ok)``: ``read_ok`` is ``False`` when a
     page came back not-ok, and when the walk ended with history still pending
-    (the page cap was hit, or a page claimed ``has_more`` without a cursor) — an
+    (the walk budget ran out, or a page claimed ``has_more`` without a cursor) — an
     unread page could hold the very message the dedup is looking for, so a
     truncated walk must not pass for a clean one that simply found nothing.
     """
@@ -171,8 +166,9 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
         workspace_domain=workspace_domain,
     )
 
+    deadline = monotonic() + _HISTORY_WALK_BUDGET_SECONDS
     cursor: str | None = None
-    for _ in range(request.max_pages):
+    while True:
         data = _fetch_history_page(client, request.token, request.channel_id, cursor, request.oldest_ts)
         if not data:
             return matches, False
@@ -181,7 +177,7 @@ def _walk_review_history(request: "SlackReviewSearchRequest") -> tuple[list["Sla
         if seen == pr_url_set or not data.get("has_more"):
             return matches, True
         cursor = next_cursor(data)
-        if cursor is None:
+        if cursor is None or monotonic() >= deadline:
             break
     logger.warning(
         "Slack conversations.history walk on %s ended with history still pending; the read is truncated",
@@ -196,7 +192,6 @@ class SlackReviewSearchRequest:
     channel_id: str
     channel_name: str
     pr_urls: list[str]
-    max_pages: int = 10
     workspace_domain: str = ""
     oldest_ts: str = ""
     timeout: float = 15.0

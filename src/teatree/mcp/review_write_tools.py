@@ -101,26 +101,6 @@ def _seam_note(finding: dict[str, Any]) -> SeamNote | str:
     )
 
 
-async def _review_post_draft_note(repo: str, mr: int, finding: dict[str, Any]) -> dict[str, Any]:
-    """Post a colleague-INVISIBLE draft review note — inline when the finding names an anchor.
-
-    ``finding`` is ``{"note": ..., "anchor": "path/to/file.py:LINE", "evidence": ...}``;
-    a blank or absent ``anchor`` posts a general note, and ``evidence`` is the #1280
-    record as JSON (the same object ``--evidence-json`` takes). Routes through the
-    registered review seam — the exact ``t3 review post-draft-note`` service — so the
-    anchor validation and the shape / bloat / evidence / banned-terms pre-publish gates
-    apply identically to the CLI.
-    """
-    built = _seam_note(finding)
-    if isinstance(built, str):
-        return {"message": built, "code": _BAD_INPUT}
-    message, code = await sync_to_async(
-        lambda: review_post_seam(repo).post_draft_note(repo, mr, built),
-        thread_sensitive=True,
-    )()
-    return {"message": message, "code": code}
-
-
 async def _review_post_comment(repo: str, mr: int, finding: dict[str, Any], *, live: bool = False) -> dict[str, Any]:
     """Post one review comment — DRAFT by default, inline when the finding names an anchor.
 

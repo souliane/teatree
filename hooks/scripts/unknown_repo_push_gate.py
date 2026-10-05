@@ -230,4 +230,4 @@ def handle_block_unknown_repo_push(data: dict) -> bool:
         return False
     if _classify_push_for_cwd(target) != "require_approval":
         return False
-    return _fail_open_or_deny(data, _UNKNOWN_REPO_PUSH_REASON)
+    return _fail_open_or_deny(data, _UNKNOWN_REPO_PUSH_REASON, gate_id="unknown_repo_push")

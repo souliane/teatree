@@ -41,7 +41,6 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import Icon, ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.config import get_effective_settings
 from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay import McpToolGroup, OverlayBase
@@ -515,8 +514,7 @@ _READ_TOOLS: tuple[_ReadTool, ...] = (
 _FACTORY_SCORE_TOOL = _ReadTool(
     "factory_score",
     _factory_score,
-    "- factory_score(overlay, window_days): the recipe-weighted factory score "
-    "(registered only when factory_score_enabled is on).",
+    "- factory_score(overlay, window_days): the recipe-weighted factory score (available on every server build).",
 )
 
 
@@ -529,13 +527,7 @@ def build_server() -> MCPServer:
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
-    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: both
-    # its tool registration and its instruction line are appended ONLY when
-    # factory_score_enabled is on (the same fail-closed contract the per-service
-    # groups honour — the instructions never advertise an unregistered tool), so
-    # the outer loop has no MCP metric-to-beat until enablement is a deliberate act.
-    score_on = get_effective_settings().factory_score_enabled
-    read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL) if score_on else _READ_TOOLS
+    read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL)
 
     instructions = (
         _PREAMBLE

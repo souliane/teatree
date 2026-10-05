@@ -148,7 +148,7 @@ class TestRemedyAddressesTheBlockedObject:
         reason = raw_review_deny_reason(command)
         assert reason is not None
         assert "review post-comment` (draft by default" not in reason
-        assert "post-draft-note" not in reason
+        assert "post-comment" not in reason
 
     @pytest.mark.parametrize(
         "command",
@@ -161,6 +161,6 @@ class TestRemedyAddressesTheBlockedObject:
         reason = raw_review_deny_reason(command)
         assert reason is not None
         assert "review post-comment" in reason
-        assert "post-draft-note" in reason
+        assert "post-comment" in reason
         assert "delete-discussion" in reason
         assert "ticket comment" not in reason

@@ -1,4 +1,4 @@
-"""TeaTree config enums — operating mode, throughput dial, autonomy, on-behalf gate, send proxy."""
+"""TeaTree config enums for operating mode, throughput, autonomy, and review backend."""
 
 from enum import StrEnum
 
@@ -35,16 +35,6 @@ class Mode(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid t3 mode {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
-
-
-# Friendly aliases accepted by ``Wip.parse`` and normalised to a canonical
-# tier. Module-level (not a class attribute) so ``StrEnum`` does not try to
-# treat the mapping as an enum member.
-_WIP_ALIASES: dict[str, str] = {
-    "low": "slow",
-    "normal": "medium",
-    "high": "full",
-}
 
 
 class Wip(StrEnum):
@@ -84,21 +74,18 @@ class Wip(StrEnum):
 
     @classmethod
     def parse(cls, value: str) -> "Wip":
-        """Parse a wip string, accepting friendly aliases; typos raise ``ValueError``.
+        """Parse a wip string; typos raise ``ValueError``.
 
         Mirrors :meth:`Mode.parse`: the dataclass default (:attr:`FULL`) is
         applied by the caller when the setting is absent, so this validates
         only explicit values and a typo raises rather than changing throughput.
-        ``low``/``normal``/``high`` map onto ``slow``/``medium``/``full``.
         """
         normalised = value.strip().lower()
-        normalised = _WIP_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
-            aliases = ", ".join(sorted(_WIP_ALIASES))
-            msg = f"Invalid wip {value!r}; valid values: {valid} (aliases: {aliases})"
+            msg = f"Invalid wip {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
 
 
@@ -111,23 +98,15 @@ class Autonomy(StrEnum):
         stays in the loop on merges and answers.
         Review-request posting follows the active posture like any other
         colleague-visible post.
-    *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
-        (derived ``notify_on_behalf``) and the user's MR merges only after a
-        colleague approval (per-diff CLEAR, never self-approve). The
-        collaborative/customer surface: the resolved ``review_request_post_disabled``
-        is ``True`` so the agent never auto-requests review — it stops at "MR is
-        mergeable + review-requestable".
-    *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
+    *   :attr:`NOTIFY` — autonomous with colleague approval before merge
+        (per-diff CLEAR, never self-approve).
+    *   :attr:`FULL` — autonomous; the single-author
         ``solo_overlay`` merge bypass is reachable here only, and the substrate
         per-PR sign-off is satisfied by this standing grant (the §17.4.3 step 5
         carve-out — see :func:`teatree.core.merge.execution.assert_merge_preconditions`)
-        so a substrate CLEAR needs no per-CLEAR ``human_authorizer``. The solo
-        tooling surface: the resolved ``review_request_post_disabled`` is ``False``
-        so review-request proceeds.
+        so a substrate CLEAR needs no per-CLEAR ``human_authorizer``.
 
-    Both autonomous tiers collapse the tier-governed gates, pin ``mode = auto``, and
-    set the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
-    the deleted ``agent_review_request_disabled`` side flag) — see
+    Both autonomous tiers collapse the tier-governed gates and pin ``mode = auto`` — see
     :func:`_apply_autonomy`. Two gates are deliberately outside that set, each its
     own named opt-in no tier touches: ``require_human_approval_to_merge`` for review
     before merge (#3630), and ``Mode.egress`` for speaking to a colleague
@@ -156,90 +135,6 @@ class Autonomy(StrEnum):
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid autonomy {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
-class CriticGateMode(StrEnum):
-    """Tri-state enforcement posture for the user-proxy critic gate (SELFCATCH-5).
-
-    Re-typed from the former boolean enforcement flag (#104), which coupled
-    "arm the expensive async LLM critic" with "block on a finding", leaving no
-    way to accumulate ``CriticVerdict`` evidence without also blocking. The three
-    points on the ramp:
-
-    *   :attr:`OFF` (default) — dark: the cheap deterministic findings are still
-        recorded (advisory evidence), but the EXPENSIVE async LLM critic is never
-        armed and no finding blocks — a customer overlay that never opts in
-        creates no ``Session``/``Task``/``CriticDispatch``.
-    *   :attr:`ADVISORY` — armed: the async critic dispatches and records
-        ``CriticVerdict``/``CriticFinding`` rows, but a blocking finding never
-        raises. The mode that accumulates critic-liveness evidence pre-enablement.
-    *   :attr:`BLOCKING` — armed and enforcing: a blocking deterministic finding
-        refuses the delivery (``CriticGateError``), the ticket stays RETRO_RECORDED.
-    """
-
-    OFF = "off"
-    ADVISORY = "advisory"
-    BLOCKING = "blocking"
-
-    @classmethod
-    def parse(cls, value: str) -> "CriticGateMode":
-        """Parse a critic-gate-mode string; invalid values raise ``ValueError``.
-
-        The conservative default (:attr:`OFF`) is applied by the caller when the
-        setting is absent, so a typo never silently arms or un-blocks the critic.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid critic_gate_mode {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
-class SendProxyMode(StrEnum):
-    """Enforcement posture for the outbound send-proxy destination allowlist (#117).
-
-    Every outbound artifact (Slack post/DM/react, forge PR/MR/issue comment)
-    routes through :mod:`teatree.core.send_proxy`, which redaction-scans the
-    payload and checks the destination against the per-overlay allowlist. This
-    mode decides what the proxy DOES with a non-allowlisted destination or a
-    redaction hit:
-
-    *   :attr:`WARN` (default) — audit-only: every send is recorded in a
-        :class:`~teatree.core.models.send_audit.SendAudit` row with the
-        would-be allowlist verdict and redaction matches, but the send is
-        NEVER blocked and the live payload is NEVER mutated. This is the safe
-        ship posture: it accumulates the destination soak an operator seeds the
-        allowlist from before ever flipping to :attr:`ENFORCE`.
-    *   :attr:`ENFORCE` — deterministic block: a destination absent from the
-        per-overlay allowlist is refused and the payload is redacted before the
-        wire call. Only turned on after the allowlist is seeded from a WARN-mode
-        soak (else it would over-block legitimate posts).
-
-    The user's own DM destination is always allowed under BOTH modes (the
-    never-lockout carve-out) so the bot→user notify path can never be gated by
-    a mis-seeded allowlist.
-    """
-
-    WARN = "warn"
-    ENFORCE = "enforce"
-
-    @classmethod
-    def parse(cls, value: str) -> "SendProxyMode":
-        """Parse a send-proxy-mode string; invalid values raise ``ValueError``.
-
-        The conservative default (:attr:`WARN`, audit-only) is applied by the
-        caller when the setting is absent, so a typo never silently arms
-        enforcement.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid send_proxy_mode {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
 
 
@@ -274,76 +169,4 @@ class PrReviewBackend(StrEnum):
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid pr_review_backend {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
-class MissingIssuePolicy(StrEnum):
-    """What to do when a commit/MR needs an issue reference and none is in hand.
-
-    The recurring failure this setting encodes: the agent is about to make a
-    commit or open an MR/PR that links to an issue/ticket, but it has no
-    reference. The correct behaviour is NOT to improvise — it is to first
-    recover the ORIGINAL existing issue (the one that introduced the bug or
-    left the scope unimplemented, found by searching the repo's issues and the
-    introducing commit's linked issue) and use THAT. Only when no existing
-    issue is found does the policy decide the fallback, and the fallback differs
-    by repo class:
-
-    *   On a **colleague-facing / external** repo (a shared product repo of an
-        org, not one the user owns), the agent must NEVER auto-create an issue
-        and never use a placeholder/dummy reference — it must ASK the user. A
-        fabricated issue or a dummy ref on a colleague-facing repo pollutes a
-        shared tracker the user does not control.
-    *   On the **user's own** repo (teatree itself, the user's solo overlay
-        repos), creating an issue is allowed without asking — the user owns the
-        tracker, so a created issue is self-bookkeeping, not noise on a
-        colleague's surface.
-
-    Tiers (default :attr:`FIND_EXISTING_THEN_ASK`, the conservative choice):
-
-    *   :attr:`FIND_EXISTING_THEN_ASK` (default) — search for the original
-        existing issue first; if none is found, ASK on a colleague-facing repo
-        and CREATE on the user's own repo. Never a dummy ref. This is the
-        never-improvise default.
-    *   :attr:`CREATE` — opt-in. After the existing-issue search comes up empty,
-        the agent is authorised to auto-create an issue even on a
-        colleague-facing repo. The user has accepted the agent filing issues on
-        the shared tracker.
-    *   :attr:`DUMMY` — opt-in. After the existing-issue search comes up empty,
-        the agent is authorised to use a placeholder/dummy reference even on a
-        colleague-facing repo. The most permissive tier — the user accepts a
-        non-real ref rather than a stop-and-ask.
-
-    ``create`` and ``dummy`` are opt-in only; the default is OFF for
-    colleague-facing repos (it never auto-creates and never uses a dummy there).
-    ``missing_issue_ref_policy`` is a DB-home setting: read from the
-    ``ConfigSetting`` store (``t3 <overlay> config_setting set
-    missing_issue_ref_policy <value>``), per-overlay overridable with
-    ``--overlay <name>``; the ``T3_MISSING_ISSUE_POLICY`` env var wins over
-    both. A ``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on
-    read. Resolved by
-    :func:`teatree.missing_issue_policy.resolve_missing_issue_verdict`, and the
-    agent-facing prose lives in ``skills/ship/SKILL.md`` § "Missing Issue
-    Reference Policy".
-    """
-
-    FIND_EXISTING_THEN_ASK = "find_existing_then_ask"
-    CREATE = "create"
-    DUMMY = "dummy"
-
-    @classmethod
-    def parse(cls, value: str) -> "MissingIssuePolicy":
-        """Parse a missing-issue-policy string; invalid values raise ``ValueError``.
-
-        Mirrors :meth:`Mode.parse`: the conservative default
-        (:attr:`FIND_EXISTING_THEN_ASK`) is applied by the caller when the
-        setting is absent, so a typo never silently opts the agent into
-        auto-creating or dummy-referencing on a colleague-facing repo.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid missing_issue_ref_policy {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc

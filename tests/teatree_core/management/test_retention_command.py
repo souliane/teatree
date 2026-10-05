@@ -370,7 +370,7 @@ class ArtifactEvictionCommandTests(TestCase):
         (self.host_proc / "1" / "exe").symlink_to(tmp_path / "elsewhere" / "bin" / "process")
         this_process_in(self.host_proc)
         self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", self.host_proc))
-        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(tmp_path,)))
+        self.enterContext(patch("teatree.core.cleanup.venue_population.venue_checkout_roots", return_value=(tmp_path,)))
         self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=tmp_path / "nowhere"))
         self.enterContext(patch(f"{_COMMAND}.worktree_root", return_value=tmp_path))
 
@@ -444,7 +444,7 @@ class ArtifactEvictionCommandTests(TestCase):
         """
         artifact = self._dormant_artifact()
 
-        with patch.object(artifact_removal.shutil, "rmtree", side_effect=OSError("Permission denied")):
+        with patch.object(artifact_removal.os, "unlink", side_effect=PermissionError("Permission denied")):
             payload = self._run("--days", "1", "--apply")
 
         row = next(row for row in payload["entries"] if row["path"] == str(artifact))
@@ -470,9 +470,9 @@ class ArtifactEvictionCommandTests(TestCase):
         real_remove = artifact_eviction._remove_anchored_candidate
         removed = 0
 
-        def _remove(candidate: artifact_eviction.ArtifactCandidate) -> str:
+        def _remove(candidate: artifact_eviction.ArtifactCandidate, **kwargs: float | None) -> str:
             nonlocal removed, blinded
-            reason = real_remove(candidate)
+            reason = real_remove(candidate, **kwargs)
             if not reason:
                 removed += 1
             if removed == 1:

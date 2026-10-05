@@ -107,11 +107,9 @@ class TestPinnedKeysCannotMoveThroughThisPath(SnapshotCommandTestCase):
         assert "no change" in self._run().lower()
         assert self._shipped()["require_human_approval_to_merge"] is True
 
-    def test_a_live_dark_flag_override_never_reaches_the_proposal(self) -> None:
-        # `outer_loop_enabled` is the still-DARK exemplar; `directive_loop_enabled`
-        # graduated to SETTLING in #3895 and is no longer pinned by this path.
-        ConfigSetting.objects.set_value("outer_loop_enabled", value=True)
-        assert _emitted(self._plan().toml)["outer_loop_enabled"] is False
+    def test_a_live_send_proxy_allowlist_override_never_reaches_the_proposal(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["C123"])
+        assert _emitted(self._plan().toml)["send_proxy_allowlist"] == []
 
     def test_a_pinned_override_is_reported_as_declined(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "babysit")

@@ -26,12 +26,13 @@ from a dead one — so a caller with a destructive disposition must fail CLOSED 
 a non-empty ``gaps`` rather than delete on partial evidence (the #706 standard).
 
 That only holds while ``complete`` means what it says, so **anything the walk
-does not cover is a gap** (#3872). :data:`_NEVER_A_CHECKOUT` is the one
+does not cover is a gap** (#3872). :func:`excluded_from_walk` is the one
 exclusion, and it is exempt because those dirs cannot hold a checkout the
 resolver ever mints an env dir for. Everything else is walked, including
 symlinked dirs; the depth cap reports rather than truncates.
 """
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from stat import S_ISDIR, S_ISREG
@@ -59,6 +60,10 @@ _NEVER_A_CHECKOUT = frozenset(
     {".git", "node_modules", "__pycache__", ".venv", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 )
 
+_CACHEDIR_TAG = "CACHEDIR.TAG"
+#: What https://bford.info/cachedir/ requires the tag to open with; a file merely so named marks nothing.
+_CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+
 
 @dataclass(frozen=True, slots=True)
 class CheckoutRegistry:
@@ -71,6 +76,8 @@ class CheckoutRegistry:
     #: whether it exists — the distinction #3872 turns on (see
     #: :func:`~teatree.core.management.commands._workspace.owner_stamps.venue_can_observe`).
     scanned_roots: tuple[Path, ...] = ()
+    #: The non-checkout directories the walk listed — where a checkout created later appears.
+    listed: tuple[Path, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -127,19 +134,36 @@ def checkout_scan_roots(workspace: Path) -> tuple[Path, ...]:
     The configured roots are unioned on top so an operator who points teatree
     outside home is still covered.
     """
-    candidates = {Path.home(), clone_root(), workspace, *scanned_worktree_roots(workspace)}
+    return outermost_roots({Path.home(), clone_root(), workspace, *scanned_worktree_roots(workspace)})
+
+
+def is_tagged_cache(directory: Path) -> bool:
+    try:
+        with (directory / _CACHEDIR_TAG).open("rb") as tag:
+            return tag.read(len(_CACHEDIR_SIGNATURE)) == _CACHEDIR_SIGNATURE
+    except OSError:
+        return False
+
+
+def excluded_from_walk(directory: Path) -> bool:
+    """Whether a walk skips *directory* without a gap; asked of children only, so a named root is always walked."""
+    return directory.name in _NEVER_A_CHECKOUT or is_tagged_cache(directory)
+
+
+def outermost_roots(candidates: set[Path]) -> tuple[Path, ...]:
     resolved = {path.expanduser() for path in candidates}
     return tuple(
         sorted(root for root in resolved if not any(root != other and root.is_relative_to(other) for other in resolved))
     )
 
 
-def _child_directories(directory: Path) -> tuple[list[Path], list[str]]:
+def child_directories(directory: Path) -> tuple[list[Path], list[str]]:
     """The subdirectories of *directory* to walk, and what could not be read.
 
     A symlinked entry is an ordinary child here: ``is_dir`` follows it, so a
-    checkout behind a link is walked like any other. Only :data:`_NEVER_A_CHECKOUT`
-    is dropped without a gap.
+    checkout behind a link is walked like any other. Only what
+    :func:`excluded_from_walk` names is dropped without a gap — among it a tagged
+    cache, whose uv sdists each carry a ``.git`` no classifier can read.
     """
     try:
         entries = list(directory.iterdir())
@@ -148,17 +172,17 @@ def _child_directories(directory: Path) -> tuple[list[Path], list[str]]:
     children: list[Path] = []
     gaps: list[str] = []
     for entry in entries:
-        if entry.name in _NEVER_A_CHECKOUT:
-            continue
         try:
-            if entry.is_dir():
+            if entry.is_dir() and not excluded_from_walk(entry):
                 children.append(entry)
         except OSError as exc:
             gaps.append(f"could not stat {entry} ({exc})")
     return children, gaps
 
 
-def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
+def scan_checkout_paths(
+    roots: tuple[Path, ...], *, into_checkouts: bool = True, deadline: float | None = None
+) -> CheckoutRegistry:
     """Every directory under *roots* carrying checkout metadata, plus what went unread.
 
     A checkout carries a ``.git`` directory or a classified ``.git`` file. Linked
@@ -170,6 +194,7 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
     (``<clone>/.claude/worktrees/…``), and THROUGH symlinked directories, because a
     symlinked dir is an ordinary way to reach a checkout — the host reaches its own
     teatree clone that way.
+
 
     **Every path the walk does not cover is a gap (#3872).** A skip that records
     nothing is worse than an unreadable one: it drops an unknown number of live
@@ -185,12 +210,21 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
     runs BEFORE that dedup and before the listing, so a checkout is recorded
     under every spelling it is reached by, and one whose contents cannot be
     listed is still recorded rather than lost along with them.
+
+    ``into_checkouts=False`` stops at each checkout instead: its source tree is what
+    makes a full descent unaffordable, and a linked worktree nested inside it is then
+    the clone registry's to report (:mod:`teatree.core.cleanup.venue_population`). A *deadline*
+    (``time.monotonic()``) that passes ends the walk as a gap naming what went unscanned.
     """
     found: set[str] = set()
     gaps: list[str] = []
     walked: set[str] = set()
+    listed: list[Path] = []
     stack = [(root, 0) for root in roots]
     while stack:
+        if deadline is not None and time.monotonic() >= deadline:
+            gaps.append(f"walk budget exhausted — {len(stack)} director(ies) left unscanned, among them {stack[-1][0]}")
+            break
         directory, depth = stack.pop()
         try:
             real = str(directory.resolve(strict=True))
@@ -204,29 +238,34 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
         if carries_checkout:
             found.add(str(directory))
             found.add(real)
+            if not into_checkouts:
+                continue
         if real in walked:
             continue
         walked.add(real)
         if depth > _MAX_SCAN_DEPTH:
             gaps.append(f"stopped at depth {_MAX_SCAN_DEPTH} under {directory} — its subtree went unscanned")
             continue
-        children, child_gaps = _child_directories(directory)
+        children, child_gaps = child_directories(directory)
         gaps.extend(child_gaps)
+        listed.append(directory)
         stack.extend((child, depth + 1) for child in children)
-    return CheckoutRegistry(frozenset(found), tuple(gaps), roots)
+    return CheckoutRegistry(frozenset(found), tuple(gaps), roots, tuple(listed))
 
 
 def _carries_checkout(directory: Path) -> tuple[bool, str]:
     marker = directory / ".git"
     try:
         try:
-            marker_mode = marker.stat().st_mode
+            status = marker.stat()
         except FileNotFoundError:
             return False, ""
+        marker_mode = status.st_mode
         if S_ISDIR(marker_mode):
             carries_checkout = True
         elif S_ISREG(marker_mode):
-            return _classify_git_file_checkout(directory, marker)
+            # git itself refuses an empty gitfile, so nothing ever used this directory as a checkout.
+            return (False, "") if status.st_size == 0 else _classify_git_file_checkout(directory, marker)
         else:
             return False, f"could not classify {directory}'s .git entry"
     except (OSError, UnicodeDecodeError) as exc:
@@ -305,57 +344,16 @@ def one_spelling_each(paths: frozenset[str]) -> list[Path]:
     return unique
 
 
-def linked_worktree_paths(workspace: Path) -> CheckoutRegistry:
-    """Every LINKED worktree that exists — the population a worktree GC may act on (#4244).
-
-    The narrower sibling of :func:`live_checkout_paths`: main clones and the
-    ad-hoc checkouts that are nobody's worktree are excluded, so a caller that
-    removes what it is handed can never be handed a clone.
-
-    Asking one directory for its worktrees is what made the pressure loop's GC
-    inert for its whole life. It ran ``git worktree list`` against the worktree
-    ROOT — a directory that CONTAINS worktrees and is not itself a repository —
-    so git answered ``fatal: not a git repository``, the helper mapped that to
-    ``[]``, and an unreadable answer became "nothing needs reaping" on every
-    tick. Both halves were wrong: the enumeration cannot be run from a non-repo,
-    and a worktree is registered by its source CLONE, not by whatever directory
-    it happens to sit under.
-
-    Two sources, unioned. The filesystem scan is primary (#3852): a checkout
-    whose ``.git`` file resolves through linked-worktree ``commondir`` metadata
-    needs no registry to be found. A submodule's superficially similar file is
-    excluded. Each scanned CLONE (``.git`` a directory) is then asked for its own
-    registry, which reaches a worktree living outside every scanned root. A
-    registry that will not answer is a gap, never an empty answer.
-    """
-    scan = scan_checkout_paths(checkout_scan_roots(workspace))
-    found: set[str] = set()
-    gaps = list(scan.gaps)
-    for path in one_spelling_each(scan.paths):
-        marker = path / ".git"
-        try:
-            registered_elsewhere = marker.is_file()
-            is_clone = marker.is_dir()
-        except OSError as exc:
-            gaps.append(f"could not classify {path}'s .git entry ({exc})")
-            continue
-        if registered_elsewhere:
-            found.add(str(path))
-        elif is_clone:
-            try:
-                found.update(raw_worktree_paths(str(path)))
-            except (CommandFailedError, OSError) as exc:
-                gaps.append(f"clone {path}: could not list worktrees ({exc})")
-    return CheckoutRegistry(frozenset(found), tuple(gaps), scan.scanned_roots)
-
-
 __all__ = [
     "CheckoutRegistry",
     "candidate_clones",
     "checkout_scan_roots",
-    "linked_worktree_paths",
+    "child_directories",
+    "excluded_from_walk",
+    "is_tagged_cache",
     "live_checkout_paths",
     "one_spelling_each",
+    "outermost_roots",
     "raw_worktree_paths",
     "scan_checkout_paths",
 ]

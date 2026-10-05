@@ -10,9 +10,7 @@ call-time imports the cycle previously forced are no longer needed (#F7.9).
 
 The module imports only the stdlib; it must never import another
 ``teatree.hooks`` module, so it stays a true leaf every parser module can depend
-on. ``_command_parser`` re-exports every name here for backward compatibility, so
-existing ``from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL`` (and
-siblings) keep resolving unchanged.
+on.
 """
 
 import re
@@ -28,7 +26,8 @@ _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*
 
 # Transparent argv wrappers whose first non-flag operand IS the real executed
 # program (``xargs gh``, ``env GH_PAGER= gh``, ``command gh``, ``nohup gh``,
-# ``time gh``, ``exec gh``). Mirrors the keys of ``forge_subcommand._WRAPPER_VALUE_OPTIONS``.
+# ``time gh``, ``exec gh``), stripped as a single leading word. ``forge_subcommand`` also reads
+# ``timeout``/``nice``/``stdbuf``/``setsid`` with their options and operands; this list does not.
 # The frozenset is defined LOCALLY so this stays a leaf: after the wrapper is stripped
 # the leader canonicalises to the real forge tool.
 _WRAPPER_PROGRAMS: Final[frozenset[str]] = frozenset({"command", "time", "nohup", "exec", "xargs", "env"})

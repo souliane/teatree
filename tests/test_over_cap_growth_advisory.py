@@ -20,6 +20,7 @@ import pytest
 import hooks.scripts.hook_router as router
 import hooks.scripts.over_cap_growth_advisory as advisory
 from teatree.hooks.portable.check_module_health import MAX_LOC
+from tests._unread_pipe import unread_stdout
 
 
 def _lines(loc: int) -> str:
@@ -84,6 +85,15 @@ class TestFiresOnExactlyWhatTheRatchetRefuses:
         payload = json.loads(out)
         assert payload["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
         assert "net +10" in payload["hookSpecificOutput"]["additionalContext"]
+
+    def test_an_advisory_whose_write_never_reaches_the_session_is_given_again(self, repo: Path) -> None:
+        _grow(repo, "src/teatree/big.py", MAX_LOC + 13)
+        with unread_stdout(), patch("sys.stderr", StringIO()):
+            assert advisory.handle_over_cap_growth_advisory(_edit(repo, "src/teatree/big.py")) is None
+
+        out, _err = _run(_edit(repo, "src/teatree/big.py"))
+
+        assert "net +10" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
 
     def test_shrinking_an_over_cap_module_is_silent(self, repo: Path) -> None:
         """Shrinking is the behaviour the rule asks for — never nag it."""

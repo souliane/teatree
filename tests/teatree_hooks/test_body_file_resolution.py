@@ -14,7 +14,8 @@ from teatree.hooks._body_file_resolution import (
     heredoc_files_map,
     unredirected_heredoc_bodies,
 )
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, extract_bash_payload
+from teatree.hooks._command_parser import extract_bash_payload
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
 from teatree.hooks._shell_lexer import tokenize
 
 

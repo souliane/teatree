@@ -1,12 +1,4 @@
-"""The headless watchdog / ticket-budget knobs are DB-home config, not a 3rd plane (F9.5).
-
-Before this, ``LoopWatchdog`` / ``TicketBudget`` read their ceilings from the Django
-``settings.TEATREE_LOOP_WATCHDOG`` / ``TEATREE_TICKET_BUDGET`` dicts — a third config
-plane invisible to ``config_setting get`` (#1775). They are now ``UserSettings`` fields
-registered in ``OVERLAY_OVERRIDABLE_SETTINGS``, so they resolve through the normal
-env -> ConfigSetting -> default chain and show up in the setting provenance surface. The
-Django-settings value stays only as a documented fallback (proven in the agent tests).
-"""
+"""Headless watchdog and ticket budget settings resolve through DB-home config."""
 
 import dataclasses
 
@@ -35,8 +27,7 @@ class TestFieldsAreRegistered:
             assert field in OVERLAY_OVERRIDABLE_SETTINGS, f"{field} needs a parser in OVERLAY_OVERRIDABLE_SETTINGS"
 
     def test_defaults_preserve_the_shipped_watchdog_posture(self) -> None:
-        # The runtime ceiling is armed (generous); turn/cost caps ship OFF (0), matching
-        # the pre-fold _DEFAULT_WATCHDOG / _DEFAULT_TICKET_BUDGET dicts.
+        # The runtime ceiling is armed; turn and cost caps ship disabled.
         defaults = UserSettings()
         assert defaults.watchdog_max_runtime_seconds == 3 * 60 * 60
         assert defaults.watchdog_max_turns == 0

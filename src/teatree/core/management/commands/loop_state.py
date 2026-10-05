@@ -1,12 +1,12 @@
-"""``manage.py loop_state`` — pause/resume/disable/enable a mini-loop (#1913).
+"""``manage.py loop_state`` — pause/resume/disable a mini-loop (#1913).
 
-Backs ``t3 loop {pause,resume,disable,enable,status} <name>``. ORM access lives
+Backs ``t3 loop {pause,resume,disable,status} <name>``. ORM access lives
 here (a management command, not a plain typer command) per the project's
 "anything touching the ORM is a management command" rule.
 
 Every verb here writes ONE plane — the durable ``LoopState`` hold (#1913), the
 emergency brake above every other layer. ``pause`` and ``disable`` set it;
-``resume`` and ``enable`` lift either. The manual override (``Loop.enabled``) is a
+``resume`` lifts either. The manual override (``Loop.enabled``) is a
 DIFFERENT layer with its own command (``t3 loop override``) and its own sole writer
 (``Loop.objects.set_manual_override``), so lifting a hold hands the loop back to
 whatever the override — or, beneath it, the active preset — already said.
@@ -83,7 +83,7 @@ def _out_err(command: TyperCommand) -> tuple[IO[str], IO[str]]:
 def _require_known_loop(command: TyperCommand, name: str, *, json_output: bool) -> None:
     """Refuse a NAME with no matching ``Loop`` row before any ``LoopState`` read/write (#3117).
 
-    Every verb — the mutating ``pause``/``resume``/``disable``/``enable`` and the
+    Every verb — the mutating ``pause``/``resume``/``disable`` and the
     read-only ``status`` — validates the name against the real ``Loop`` rows here
     so a typo (``t3 loop pause <typo>``) can never report success and pause
     nothing, and ``loop-state <typo>`` can never resolve to a fall-through
@@ -149,7 +149,7 @@ def _report_override(command: TyperCommand, name: str, *, json_output: bool) -> 
 
 
 class Command(TyperCommand):
-    help = "Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913)."
+    help = "Pause, resume, disable, or inspect a mini-loop's durable state (#1913)."
 
     @command(name="pause")
     def pause(
@@ -186,19 +186,6 @@ class Command(TyperCommand):
         """Move *name* into the durable DISABLED kill-switch — both planes."""
         _require_known_loop(self, name, json_output=json_output)
         Loop.objects.hold(name)
-        _reconcile_timers()
-        _report(self, name, json_output=json_output)
-
-    @command(name="enable")
-    def enable(
-        self,
-        name: Annotated[str, typer.Argument(help="Mini-loop name.")],
-        *,
-        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
-    ) -> None:
-        """Return *name* to ENABLED (alias of resume) — both planes."""
-        _require_known_loop(self, name, json_output=json_output)
-        Loop.objects.release(name)
         _reconcile_timers()
         _report(self, name, json_output=json_output)
 

@@ -28,6 +28,7 @@ from teatree.loop.scanner_error_notice import notify_scanner_error
 from teatree.loop.scanner_factories import (
     _admit_colleague_prs_to_board,
     _competing_url_prefixes,
+    _effective_settings_for_overlay,
     _mr_conflict_scanner_for,
     _mr_triage_scanner_for,
     _pr_sweep_scanner_for,
@@ -38,7 +39,6 @@ from teatree.loop.scanner_factories import (
 from teatree.loop.scanner_factory_config import (
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
-    gitlab_approvals_enabled,
     stranger_pr_admission,
 )
 from teatree.loop.scanners import (
@@ -130,7 +130,11 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         ),
     )
     jobs.extend(_tickets_per_host_jobs(backend, tag))
-    task_sweep_scanner = _task_sweep_scanner_for(backend)
+    settings = _effective_settings_for_overlay(tag)
+    task_sweep_scanner = _task_sweep_scanner_for(
+        backend,
+        recheck_interval_hours=settings.task_sweep_recheck_interval_hours,
+    )
     if task_sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=task_sweep_scanner, overlay=tag))
     return jobs
@@ -140,7 +144,7 @@ def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJ
     """Per-host disposition scanner + the once-per-overlay completion scanner."""
     if not backend.hosts:
         return []
-    identity_groups = _identity_groups_for_overlay(backend)
+    identity_groups = _identity_alias_groups_for_overlay(backend.name, backend)
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
     for code_host in backend.hosts:
@@ -151,7 +155,6 @@ def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJ
                     overlay=backend.overlay,
                     ready_labels=backend.ready_labels,
                     overlay_name=tag,
-                    user_identity_aliases=_user_identity_aliases_for_overlay(tag),
                     identity_alias_groups=identity_groups,
                 ),
                 overlay=tag,
@@ -173,10 +176,9 @@ def _ship_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Own-author PR scanner + the auto-merge PR sweep + (opt-in) GitLab-approvals poll, per host."""
+    """Own-author PR scanner + the auto-merge PR sweep + the GitLab-approvals poll, per host."""
     tag = backend.name
     jobs: list[_ScannerJob] = []
-    approvals_polled = gitlab_approvals_enabled(tag)
     # One enricher for the whole overlay: its per-tick budget is shared across the
     # hosts below rather than multiplied by them, and this builder runs once a tick.
     ci_enricher = BoundedCiEnricher()
@@ -187,21 +189,22 @@ def _ship_jobs_for_overlay(
             code_host=code_host,
             all_backends=all_backends,
         )
-        jobs.append(
-            _ScannerJob(
-                scanner=MyPrsScanner(
-                    host=code_host,
-                    identities=backend.identities,
-                    allowed_url_prefixes=url_prefixes,
-                    competing_url_prefixes=competing_prefixes,
-                    ci_enricher=ci_enricher,
-                    verdict_reader=RecordedVerdictReader(),
+        # Every open merge request owes a resolved conflict whatever its review policy
+        # says, so the sweep rides the ship domain alongside the merge engine rather
+        # than the colleague-facing review loop the away posture skips.
+        jobs.extend(
+            [
+                _ScannerJob(
+                    scanner=MyPrsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        allowed_url_prefixes=url_prefixes,
+                        competing_url_prefixes=competing_prefixes,
+                        ci_enricher=ci_enricher,
+                        verdict_reader=RecordedVerdictReader(),
+                    ),
+                    overlay=tag,
                 ),
-                overlay=tag,
-            )
-        )
-        if approvals_polled:
-            jobs.append(
                 _ScannerJob(
                     scanner=GitLabApprovalsScanner(
                         host=code_host,
@@ -209,13 +212,10 @@ def _ship_jobs_for_overlay(
                         allowed_url_prefixes=url_prefixes,
                     ),
                     overlay=tag,
-                )
-            )
-        # The conflict sweep rides the ship domain alongside the merge engine rather than
-        # the colleague-facing review loop the away posture skips.
-        conflict_scanner = _mr_conflict_scanner_for(backend, code_host)
-        if conflict_scanner is not None:
-            jobs.append(_ScannerJob(scanner=conflict_scanner, overlay=tag))
+                ),
+                _ScannerJob(scanner=_mr_conflict_scanner_for(backend, code_host), overlay=tag),
+            ]
+        )
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
@@ -353,14 +353,6 @@ def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     if backend.messaging is None:
         return []
     return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
-
-
-def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
-    """Resolve disposition identity-alias groups with the multi-identity self-group fallback (#1113)."""
-    groups = _identity_alias_groups_for_overlay(backend.name, backend)
-    if not groups and len(backend.identities) > 1:
-        return (tuple(backend.identities),)
-    return groups
 
 
 type _OverlayDomainBuilder = Callable[[OverlayBackends], list[_ScannerJob]]

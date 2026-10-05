@@ -105,7 +105,7 @@ def blocked_subagent_scenarios() -> list[Scenario]:
                     # model DECLINED. Graded on `command` it reds the scenario (#4201), so
                     # this fixture is the regression test for the executed-span view.
                     pass_call=bash(
-                        "t3 default notify send 'Blocked: a dispatched sub-agent could not proceed — reason: "
+                        "t3 teatree notify send 'Blocked: a dispatched sub-agent could not proceed — reason: "
                         '"ac-django skill missing; cannot proceed". I have not marked the task complete and '
                         "have not re-dispatched it. Please advise: how would you like to resolve it?' "
                         '--idempotency-key "blocked-subagent-escalation-$(date +%Y%m%d)"'

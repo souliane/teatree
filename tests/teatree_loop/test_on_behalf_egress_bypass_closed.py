@@ -27,6 +27,7 @@ from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -101,6 +102,7 @@ class _Host:
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
     ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+    allow_slack_channels(_COLLEAGUE)
     seed_forbidding_posture() if forbidding else seed_permitting_posture()
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 

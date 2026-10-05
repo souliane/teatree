@@ -362,7 +362,7 @@ def _check_private_repo_allowlist_path_segment_match() -> bool:
     allowlisted org name appearing ANYWHERE in a PUBLIC slug (an alias-glued
     ``<org>-mirror/x`` owner) falsely downgraded it to private — relaxing the
     public-leak gate on a public surface. The fixed
-    :func:`slug_is_allowlisted_private` (via :func:`slug_namespace_matches`) must:
+    :func:`slug_is_allowlisted_private` (via :func:`private_repo_entry_matches`) must:
     * match the allowlisted ``org/secret`` slug, its path-segment child
         ``org/secret/sub``, and the bare org ``secretorg`` for its repo, but
     * NOT match a PUBLIC slug that merely contains the org as a substring of a
@@ -372,11 +372,11 @@ def _check_private_repo_allowlist_path_segment_match() -> bool:
 
     with tempfile.TemporaryDirectory() as raw:
         db = Path(raw) / "config.sqlite3"
-        _seed_config_db(db, "private_repos", ["org/secret", "secretorg"])
-        matches_exact = slug_is_allowlisted_private("org/secret", db)
-        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", db)
-        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", db)
-        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", db)
+        _seed_config_db(db, "private_repos", ["github.com/org/secret", "github.com/secretorg"])
+        matches_exact = slug_is_allowlisted_private("github.com/org/secret", db)
+        matches_path_segment_child = slug_is_allowlisted_private("github.com/org/secret/sub", db)
+        matches_org_repo = slug_is_allowlisted_private("github.com/secretorg/repo", db)
+        matches_substring_alias = slug_is_allowlisted_private("github.com/secretorg-mirror/x", db)
     return matches_exact and matches_path_segment_child and matches_org_repo and not matches_substring_alias
 
 
@@ -387,7 +387,7 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     gate failing open on a crash. The fixed :func:`scan_text` must:
     * return :data:`SCANNER_UNAVAILABLE_MARKER` (gate BLOCKS) when the shell
         scanner CRASHES, never ``None``, and
-    * return ``None`` on a genuine no-op (no config / no script to run).
+    * return :data:`TERMS_UNSET_MARKER` when no classed registry is installed.
 
     A scan killed at its budget is the sibling case and carries its own marker, so
     this predicate pins the crash arm only.
@@ -395,7 +395,11 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.hooks import banned_terms_scanner  # noqa: PLC0415 — deferred: loaded per eval run
-    from teatree.hooks.banned_terms_scanner import SCANNER_UNAVAILABLE_MARKER, scan_text  # noqa: PLC0415 — lazy import
+    from teatree.hooks.banned_terms_scanner import (  # noqa: PLC0415 — lazy import
+        SCANNER_UNAVAILABLE_MARKER,
+        TERMS_UNSET_MARKER,
+        scan_text,
+    )
     from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: loaded per eval run
 
     def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
@@ -403,11 +407,11 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
 
     with tempfile.TemporaryDirectory() as raw:
         db = Path(raw) / "config.sqlite3"
-        _seed_config_db(db, "banned_terms", ["acmecorp"])
+        _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
         with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
             on_crash = scan_text("we ship to acmecorp", config_path=db)
         on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
-    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config is None
+    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config == TERMS_UNSET_MARKER
 
 
 def _check_forge_resolves_by_host_not_token() -> bool:

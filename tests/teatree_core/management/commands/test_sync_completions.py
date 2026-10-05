@@ -20,7 +20,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting, Ticket
+from teatree.core.models import Ticket
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
 
@@ -51,10 +51,6 @@ def _run() -> list[BoardTransition]:
 
 class TestSyncCompletionsSurvivesGateRefusal(TestCase):
     """A gate-refused first ticket must not abort the sweep for the rest."""
-
-    def setUp(self) -> None:
-        # The merge-evidence gate must bite so the ``review_requested`` ticket is genuinely refused.
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
 
     def test_first_ticket_gate_refused_still_advances_the_second(self) -> None:
         # Created first → lower pk → iterated first. It has no merge evidence, so

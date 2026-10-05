@@ -151,9 +151,8 @@ def format_refusal(result: PrivacyGateResult) -> str:
 def _target_is_public(target_repo: str, forge: str) -> bool:
     """Classify *target_repo* through the bash gates' visibility axis, not ``public_repos``.
 
-    A repo is PUBLIC (scanned) unless provably private — via the ``private_repos`` /
-    ``internal_publish_namespaces`` allowlists or a cached ``gh``/``glab`` probe — so
-    the gate AGREES with the bash publish gates and protects a real public repo (e.g.
+    A repo is PUBLIC (scanned) unless ``private_repos`` or a cached forge probe proves it private.
+    This agrees with the bash publish gates and protects a real public repo (e.g.
     ``souliane/teatree``) without a per-overlay ``public_repos`` list, which is empty
     by default and would make the gate inert. Fails CLOSED on any classification error
     (treats the target as public → scanned), so a detection failure never silently
@@ -255,34 +254,28 @@ def overlay_privacy_rules(overlay_name: str = "") -> tuple[list[str], list[str]]
 
 
 def _db_banned_terms() -> tuple[str, ...] | None:
-    """The DB-home ``banned_terms`` list to union into a PUBLIC-target scan, or ``None`` to fail CLOSED.
+    """The DB-home ``banned_term_registry`` to union into a PUBLIC-target scan, or ``None`` to fail CLOSED.
 
-    The customer codenames live in the DB-home ``banned_terms`` list (the source
+    The customer codenames live in the DB-home ``banned_term_registry`` (the source
     the shell/CI gates scan), NOT in the overlay ``privacy_redact_terms`` (empty
     by default). So the egress chokepoint scans a public body against the SAME
     fail-closed source via :func:`teatree.hooks.banned_terms_cli.resolve_banned_terms`.
     Posture mirrors that gate exactly:
 
-    * a resolved list (including the deliberate empty ``[]``) → those terms;
-    * a genuinely UNSET list (:class:`BannedTermsUnsetError`) → fail CLOSED
-        (``None``) only when ``banned_terms_required``, else the dev/solo no-op (``()``);
+    * a resolved nonempty list → those terms;
+    * an UNSET or empty list (:class:`BannedTermsUnsetError`) → fail CLOSED (``None``);
     * any OTHER read failure → fail CLOSED (``None``): an unreadable ban source
         must never silently degrade to "no terms" on a public target.
 
-    The unset-vs-fail-closed choice is :func:`resolve_unset_verdict`, the same disposition the
-    pre-commit scanner reports through, so the two gates cannot drift apart (#4008).
+    The pre-commit scanner also refuses an unset registry, so the two gates agree.
     """
-    from teatree.hooks.banned_terms_cli import (  # noqa: PLC0415 — deferred hooks edge
-        UnsetVerdict,
-        resolve_banned_terms,
-        resolve_unset_verdict,
-    )
+    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415 — deferred hooks edge
     from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError  # noqa: PLC0415 — deferred hooks edge
 
     try:
         return resolve_banned_terms()
-    except BannedTermsUnsetError as unset:
-        return () if resolve_unset_verdict(unset) is UnsetVerdict.ALLOW else None
+    except BannedTermsUnsetError:
+        return None
     except Exception as exc:  # noqa: BLE001 — an unreadable ban source fails CLOSED, never scan-less.
         warn_throttled(
             logger,
@@ -303,6 +296,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
     visibility probe to the right tool.
 
+
     The overlay whose rules attribute the scan is the one that OWNS *target_repo*
     (:func:`~teatree.core.overlays.repo_ownership.owning_overlay_for_repo`), not
     whichever is ambient: on a multi-overlay install a bare resolution RAISES on every
@@ -313,7 +307,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
 
     On a PUBLIC target the scan vocabulary is that overlay's ``privacy_redact_terms``
     UNIONED with every registered overlay's (:func:`_registered_overlay_rules_union`)
-    and with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`). The
+    and with the DB-home ``banned_term_registry`` (:func:`_db_banned_terms`). The
     registry union is deliberate and unchanged by the attribution above: a term one
     overlay marks private does not stop being private because a sibling overlay owns
     the destination, and unioning can only refuse MORE, never leak more (#1295). The

@@ -17,59 +17,66 @@ from django.test import TestCase
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.models import Ticket
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
+
+
+def _forge_merged_ticket(state: Ticket.State) -> Ticket:
+    ticket = Ticket.objects.create(overlay="test", state=state)
+    record_confirmed_merge_for_test(ticket)
+    return ticket
 
 
 class TestReconcileMerged(TestCase):
     def test_started_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
+        ticket = _forge_merged_ticket(Ticket.State.WORK_STARTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_not_started_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        ticket = _forge_merged_ticket(Ticket.State.NOT_STARTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_scoped_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
+        ticket = _forge_merged_ticket(Ticket.State.SCOPED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_coded_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
+        ticket = _forge_merged_ticket(Ticket.State.CODED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_tested_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        ticket = _forge_merged_ticket(Ticket.State.TESTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_reviewed_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
+        ticket = _forge_merged_ticket(Ticket.State.SELF_REVIEWED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_shipped_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
+        ticket = _forge_merged_ticket(Ticket.State.PR_OPENED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_in_review_reconciles_to_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        ticket = _forge_merged_ticket(Ticket.State.REVIEW_REQUESTED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED
 
     def test_merged_is_idempotent(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
+        ticket = _forge_merged_ticket(Ticket.State.MERGED)
         ticket.reconcile_merged()
         ticket.save()
         assert ticket.state == Ticket.State.MERGED

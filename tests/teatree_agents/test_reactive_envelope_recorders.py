@@ -5,6 +5,7 @@ from unittest import mock
 from django.test import TestCase
 
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.answer_handback import collect
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, Ticket
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 
@@ -42,6 +43,22 @@ class TestScanningNewsDigestDelivery(TestCase):
 
         assert PendingArticleSuggestion.objects.count() == 2
         assert DeferredQuestion.objects.count() == 1
+
+    def test_the_batch_question_names_no_asking_session_so_its_answer_is_never_posted(self) -> None:
+        task = _news_task()
+        Task.objects.filter(pk=task.pk).update(claimed_by_session="loop-driving-session")
+        task.refresh_from_db()
+        with mock.patch("teatree.agents.reactive_envelope_recorders.notify_user", return_value=True):
+            record_reactive_envelopes(task, {"article_suggestions": _SUGGESTIONS}, phase="scanning_news")
+        question = DeferredQuestion.objects.get()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            DeferredQuestion.consume(question.pk, answer="approve both")
+
+        question.refresh_from_db()
+        assert question.session_id == ""
+        assert question.applied_at is None
+        assert collect("loop-driving-session") == []
 
     def test_the_digest_is_delivered_to_slack(self) -> None:
         task = _news_task()

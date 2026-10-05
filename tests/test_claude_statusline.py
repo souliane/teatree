@@ -40,6 +40,26 @@ def _harness_tasks_dir(state_dir: Path) -> Path:
     return state_dir / "_harness_tasks"
 
 
+def _stub_macos_resources(state_dir: Path, env: dict[str, str]) -> None:
+    bin_dir = state_dir / "resource-bin"
+    bin_dir.mkdir(exist_ok=True)
+    commands = {
+        "sysctl": (
+            "#!/bin/sh\nprintf '17179869184\\n8\\n{ 4.00 3.10 2.50 }\\n"
+            "total = 1000.00M used = 500.00M free = 500.00M\\n'\n"
+        ),
+        "vm_stat": (
+            "#!/bin/sh\nprintf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\n"
+            "Pages free: 1000000.\\nPages inactive: 1000000.\\n'\n"
+        ),
+    }
+    for name, content in commands.items():
+        command = bin_dir / name
+        command.write_text(content, encoding="utf-8")
+        command.chmod(0o755)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+
 def _run(
     payload: dict,
     *,
@@ -57,6 +77,8 @@ def _run(
         (state_dir / f"{session_id}.teatree-active").touch()
     env = os.environ.copy()
     env["T3_AUTOLOAD"] = "1"
+    if cpu is not None:
+        _stub_macos_resources(state_dir, env)
     # Pin the width these CONTENT tests render at. `statusline.sh` caps every line to
     # `COLUMNS`, and the resource group ahead of the assertion tokens is host-sized
     # (3-digit `cpu=`, 2-digit GB) — so on a runner that exports `COLUMNS=80` the
@@ -131,6 +153,32 @@ class TestStatuslineHook:
         assert feed["ram_available_mib"] == 117
         assert feed["swap_used_mib"] == 500
         assert feed["swap_total_mib"] == 1000
+
+    def test_macos_render_leaves_a_fresh_publisher_sample_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The launchd publisher's sample carries the swap-activity delta the statusline
+        # cannot compute; overwriting it every render would blank the swap brake.
+        monkeypatch.setenv("OSTYPE", "darwin")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, body in {
+            "sysctl": "printf '1073741824\\n10\\n{ 1.00 1.00 1.00 }\\n"
+            "total = 1000.00M used = 500.00M free = 500.00M\\n'",
+            "vm_stat": "printf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\n"
+            "Pages free: 20000.\\nPages inactive: 10000.\\n'",
+        }.items():
+            (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+            (bin_dir / name).chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        state = tmp_path / "state"
+        feed = state / "xdg" / "teatree" / "host-pressure.json"
+        feed.parent.mkdir(parents=True)
+        published = json.dumps({"epoch": int(time.time()) - 20, "swap_mib_per_s": 0.0}, separators=(",", ":")) + "\n"
+        feed.write_text(published, encoding="utf-8")
+
+        assert _run({"session_id": "host-feed"}, state_dir=state).returncode == 0
+        assert feed.read_text(encoding="utf-8") == published
 
     def test_displays_loaded_skills_from_session_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -296,10 +344,13 @@ class TestStatuslineHook:
     def test_renders_free_disk_segment_after_ram(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
+        loadavg = tmp_path / "loadavg"
+        loadavg.write_text("4.00 3.10 2.50\n", encoding="utf-8")
 
         result = _run(
             {"session_id": "s-disk", "model": {"display_name": "Claude Opus"}},
             state_dir=state_dir,
+            cpu=(loadavg, 8),
         )
 
         assert result.returncode == 0, result.stderr
@@ -1551,29 +1602,18 @@ class TestStatuslineAutoloadDbFlip:
 
 
 class TestStatuslineRendersOnAutoloadWithoutMarker:
-    """Render gate keys on the ``autoload`` owner flag alone, not the marker.
+    """Render for global autoload, or for a session carrying the ``.t3-engaged`` marker (any ``t3:`` skill load).
 
-    The per-session ``.teatree-active`` marker is NOT required (souliane/teatree
-    render-gate fix). Root cause of the reported blank statusline: the gate ANDed the
-    per-session ``.teatree-active`` marker WITH ``autoload``. That marker is written
-    by SessionStart-engage / a teatree-skill load, but the harness runs the loop in
-    a background ``bg-spare`` daemon session (which gets the marker and owns the
-    tick) while the owner's foreground TUI sessions frequently never get it — so the
-    statusline blanked in exactly the sessions the owner looks at, despite a global
-    ``autoload = true``. ``autoload`` is the ONE owner flag that "engages the
-    session", so it alone gates whether the statusline renders. Loop *arming* keeps
-    its stricter ``marker AND autoload`` gate (``_loop_auto_load_active``); this is
-    display *visibility*, which the owner wants in every one of their sessions. The
-    #256 colleague guarantee is preserved: ``autoload`` off shows only a one-line
-    how-to hint (#3233), never the loop statusline, regardless of the marker.
+    ``.teatree-active`` alone (autoload off, a non-``t3:`` skill requiring ``t3:interactive``) never renders the
+    bar (#256): that session sees only the one-line hint (#3233).
     """
 
-    def _run(self, tmp_path: Path, *, autoload: bool, marker: bool) -> subprocess.CompletedProcess:
+    def _run(self, tmp_path: Path, *, autoload: bool, marker: str = "") -> subprocess.CompletedProcess:
         state_dir = tmp_path / "state"
         state_dir.mkdir(exist_ok=True)
         session_id = "owner-sess"
         if marker:
-            (state_dir / f"{session_id}.teatree-active").touch()
+            (state_dir / f"{session_id}.{marker}").touch()
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         env = os.environ.copy()
@@ -1598,12 +1638,12 @@ class TestStatuslineRendersOnAutoloadWithoutMarker:
     def test_autoload_on_without_marker_renders(self, tmp_path: Path) -> None:
         # THE regression: the owner enabled autoload but this foreground session
         # never got the .teatree-active marker -> must STILL render (was blank).
-        result = self._run(tmp_path, autoload=True, marker=False)
+        result = self._run(tmp_path, autoload=True)
         assert result.returncode == 0, result.stderr
         assert "model=" in _strip_ansi(result.stdout)
 
     def test_autoload_on_with_marker_renders(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, autoload=True, marker=True)
+        result = self._run(tmp_path, autoload=True, marker="teatree-active")
         assert result.returncode == 0, result.stderr
         assert "model=" in _strip_ansi(result.stdout)
 
@@ -1611,19 +1651,22 @@ class TestStatuslineRendersOnAutoloadWithoutMarker:
         # Colleague who merely cloned the repo: autoload off, no marker -> the loop
         # statusline stays suppressed (#256), but a one-line how-to hint shows
         # instead of a blank bar (#3233).
-        result = self._run(tmp_path, autoload=False, marker=False)
+        result = self._run(tmp_path, autoload=False)
         assert result.returncode == 0, result.stderr
         assert "autoload" in result.stdout
         assert "model=" not in _strip_ansi(result.stdout)
 
-    def test_autoload_off_with_marker_shows_hint(self, tmp_path: Path) -> None:
-        # #256: a colleague who even loaded a teatree skill (marker present) but did
-        # NOT enable autoload is still not shown the loop statusline — autoload is the
-        # authoritative owner opt-in. Only the one-line hint shows (#3233).
-        result = self._run(tmp_path, autoload=False, marker=True)
+    def test_autoload_off_with_only_the_teatree_active_marker_shows_hint(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, autoload=False, marker="teatree-active")
         assert result.returncode == 0, result.stderr
         assert "autoload" in result.stdout
         assert "model=" not in _strip_ansi(result.stdout)
+
+    def test_autoload_off_in_a_t3_engaged_session_renders_full_bar(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, autoload=False, marker="t3-engaged")
+        assert result.returncode == 0, result.stderr
+        assert "model=" in _strip_ansi(result.stdout)
+        assert "autoload" not in result.stdout
 
 
 # A dangling escape is an ESC byte that does NOT open a recognised, complete
@@ -1926,6 +1969,7 @@ class TestTheCheapLineIsUnconditional:
         env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
         env["CLAUDE_CONFIG_DIR"] = str(state_dir)
         env["CLAUDE_TASKS_DIR"] = str(state_dir / "_harness_tasks")
+        _stub_macos_resources(state_dir, env)
         env.update(env_extra)
         return subprocess.run(
             [str(SCRIPT)],

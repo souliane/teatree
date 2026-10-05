@@ -14,15 +14,21 @@ from teatree.core.models.review_backend_cooldown import ReviewBackendCooldown
 from teatree.failure_signatures import quota_exhausted
 
 
-def record_quota_exhaustion(*, backend: str, overlay: str = "", returncode: int, stderr: str) -> str:
+def record_quota_exhaustion(
+    *, backend: str, overlay: str = "", returncode: int, stderr: str, failure_kind: str | None = None
+) -> str:
     """Park *backend* when its run failed for want of quota; return the signature.
 
     ``""`` means the run was not an exhaustion and nothing was recorded — a
     successful run, or a failure with an ordinary error. The caller passes the
-    run's stderr, never its review body: see :func:`quota_exhausted` for why that
-    distinction is the whole of the precision here.
+    run's stderr, never its review body. An explicitly classified *failure_kind*
+    takes precedence over text; only ``quota_exhausted`` parks the backend then.
     """
-    signature = quota_exhausted(returncode=returncode, stderr=stderr)
+    signature = (
+        ("quota_exhausted" if returncode != 0 and failure_kind == "quota_exhausted" else "")
+        if failure_kind is not None
+        else quota_exhausted(returncode=returncode, stderr=stderr)
+    )
     if not signature:
         return ""
     ReviewBackendCooldown.start(

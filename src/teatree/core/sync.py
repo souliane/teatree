@@ -123,29 +123,3 @@ def fetch_notion_statuses() -> None:
         status = client.get_page_status(page_id, property_name=property_name)
         if status is not None:
             ticket.merge_extra(set_keys=TicketExtra(notion_status=status))
-
-
-def push_notion_status(page_id: str, value: str) -> bool:
-    """Mirror *value* to a Notion page's status property (teatree → Notion).
-
-    The opt-in WRITE direction: no-op unless the active overlay sets
-    ``notion_write_back = True`` (and a token resolves). Returns whether a
-    ``PATCH`` was issued. A dead or unprovable page is never written: Notion
-    accepts the patch and the value lands where nobody will ever read it, which
-    reports as a delivered mirror that never happened.
-    """
-    config = get_overlay().config
-    if not config.notion_write_back:
-        return False
-    client = notion_client_from_overlay()
-    if client is None:
-        return False
-    if not client.page_is_live(page_id):
-        logger.warning(
-            "Notion status write-back refused — page %s is archived, in the trash, or could not be proven "
-            "to be the current version",
-            page_id,
-        )
-        return False
-    client.update_page_status(page_id, property_name=config.notion_status_property, value=value)
-    return True

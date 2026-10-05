@@ -1,7 +1,7 @@
-r"""The UserPromptSubmit renderer surfaces SOFT companion suggestions (#53).
+r"""The SessionStart renderer surfaces SOFT companion suggestions (#53).
 
 ``companions`` are the soft counterpart to the hard ``requires`` -> ``suggestions``
-edge: surfaced in the prompt-submit message as an optional, complementary
+edge: surfaced in the session-start message as an optional, complementary
 suggestion, but NEVER written to ``<session>.pending`` (so the PreToolUse
 skill-loading gate never hard-blocks on them). Before this wiring the value was
 computed by ``suggest_skills`` and dropped on the floor — the renderer read only
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_user_prompt_submit
+from hooks.scripts.session_start_skills import session_start_skill_context
 from hooks.scripts.skill_suggestion_render import companion_suggestion_line, render_skill_suggestion_message
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
@@ -42,9 +42,8 @@ class TestRenderSkillSuggestionMessage:
     def test_companion_is_surfaced_but_never_written_to_pending(self, tmp_path: Path) -> None:
         pending = tmp_path / "pending"
         message = render_skill_suggestion_message(
-            {"suggestions": ["code"], "advisory": [], "companions": ["writing-plans"]},
+            {"suggestions": ["code"], "companions": ["writing-plans"]},
             pending=pending,
-            t3_reminder="",
             normalize=lambda name: name,
         )
         assert "LOAD THESE SKILLS NOW" in message
@@ -58,9 +57,8 @@ class TestRenderSkillSuggestionMessage:
         # reads back out of pending — so the directive must name it too.
         pending = tmp_path / "pending"
         message = render_skill_suggestion_message(
-            {"suggestions": ["overlay/skills/acme/SKILL.md"], "advisory": [], "companions": []},
+            {"suggestions": ["overlay/skills/acme/SKILL.md"], "companions": []},
             pending=pending,
-            t3_reminder="",
             normalize=lambda name: "acme" if name.endswith("/SKILL.md") else name,
         )
         assert "/acme" in message
@@ -72,9 +70,8 @@ class TestRenderSkillSuggestionMessage:
         # the companion is still surfaced (no mandatory directive is rendered).
         pending = tmp_path / "pending"
         message = render_skill_suggestion_message(
-            {"suggestions": [], "advisory": [], "companions": ["ac-python"]},
+            {"suggestions": [], "companions": ["ac-python"]},
             pending=pending,
-            t3_reminder="",
             normalize=lambda name: name,
         )
         assert "/ac-python" in message
@@ -82,7 +79,7 @@ class TestRenderSkillSuggestionMessage:
 
 
 class TestCompanionSurfacedEndToEnd:
-    """End-to-end through the live ``handle_user_prompt_submit`` handler."""
+    """End-to-end through the live ``session_start_skill_context``."""
 
     @pytest.fixture
     def state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -94,7 +91,7 @@ class TestCompanionSurfacedEndToEnd:
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
-            lambda _input: {"suggestions": ["code"], "advisory": [], "companions": ["writing-plans"]},
+            lambda _input: {"suggestions": ["code"], "companions": ["writing-plans"]},
         )
         yield router.STATE_DIR
         router.STATE_DIR = original
@@ -105,10 +102,7 @@ class TestCompanionSurfacedEndToEnd:
             return []
         return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
 
-    def test_companion_line_printed_and_not_hard_demanded(
-        self, state_dir: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        handle_user_prompt_submit({"session_id": "sess-comp", "prompt": "fix the bug"})
-        message = capsys.readouterr().out
+    def test_companion_line_printed_and_not_hard_demanded(self, state_dir: Path) -> None:
+        message = session_start_skill_context("sess-comp")
         assert "writing-plans" in message  # surfaced through the renderer ...
         assert "writing-plans" not in self._pending("sess-comp")  # ... never a hard demand

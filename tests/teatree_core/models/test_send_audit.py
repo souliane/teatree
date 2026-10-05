@@ -14,7 +14,6 @@ class TestSendAuditRow(TestCase):
             action="post_comment",
             target="org/repo!42",
             overlay="acme",
-            mode="warn",
             allowlist_verdict=SendAudit.Verdict.WARNED.value,
             redaction_applied=False,
             redaction_matches=[],
@@ -36,7 +35,6 @@ class TestSendAuditStr:
             channel="slack",
             destination="C_TEAM",
             allowlist_verdict="denied",
-            mode="enforce",
         )
         assert "C_TEAM" in str(row)
         assert "denied" in str(row)

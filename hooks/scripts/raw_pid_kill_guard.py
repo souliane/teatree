@@ -17,8 +17,8 @@ Because the gate sits on the broad ``Bash`` matcher, its deny routes through the
 router's shared ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the
 always-allowed self-rescue commands and the master ``danger_gate_fail_open``
 kill-switch keep it from ever wedging a session (the never-lockout contract);
-the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` deny writer
-stays in the router. Fails OPEN on any import/internal error — a gate bug must
+the deny is written only through the router's
+``emit_pretooluse_deny``. Fails OPEN on any import/internal error — a gate bug must
 never wedge the agent.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
@@ -73,4 +73,4 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
         return False
     if not detection.is_raw_pid_kill:
         return False
-    return _fail_open_or_deny(data, detection.message)
+    return _fail_open_or_deny(data, detection.message, gate_id="raw_pid_kill")

@@ -25,7 +25,7 @@ from teatree.core.runners import ship as ship_runner
 from teatree.core.worktree import branch_currency
 from teatree.eval import regression_corpus, regression_corpus_schema
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
-from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks import _private_repo_entries, banned_terms_scanner
 from teatree.utils import forge as forge_util
 
 
@@ -51,8 +51,9 @@ class TestRegressionCorpusGreen(TestCase):
     def test_every_check_passes_on_the_fixed_code(self) -> None:
         report = run_regression_corpus()
         failures = [(r.check.failure_class, r.detail) for r in report.failures]
+        assert len(report.results) >= 17, "real-code pin selection is empty"
         assert report.ok, f"regression corpus went RED on the fixed code: {failures}"
-        assert all(not r.skipped for r in report.results), "no check should skip when Django is configured"
+        assert report.validated, "strict real-code pins cannot pass with skipped checks"
 
     def test_corpus_covers_the_named_failure_classes(self) -> None:
         classes = {c.failure_class for c in regression_corpus._CHECKS}
@@ -133,10 +134,10 @@ class TestRegressionCorpusAntiVacuous(TestCase):
         assert any("account-switch" in r.check.failure_class for r in report.failures)
 
     def test_private_repo_allowlist_check_fails_under_substring_match(self) -> None:
-        def _substring_match(entry: str, slug: str) -> bool:
+        def _substring_match(entry: str, slug: str, **_kwargs: object) -> bool:
             return entry.strip().lower() in slug.strip().lower()
 
-        with patch.object(_repo_visibility, "slug_namespace_matches", _substring_match):
+        with patch.object(_private_repo_entries, "private_repo_entry_matches", _substring_match):
             report = run_regression_corpus()
         assert not report.ok
         assert any("private-repo allowlist" in r.check.failure_class for r in report.failures)

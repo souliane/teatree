@@ -50,7 +50,7 @@ Everything you write and everything you review aims at seven attributes. Treat t
 - **Coherent** — fits the surrounding patterns and stays consistent across the whole changeset. Coherence includes **cross-repo coherence** (a referenced artifact — a skill name, a CLI command, a sibling-repo path — must actually exist where it's referenced) and **wired-and-exercised** (a mechanism must actually fire — a hook that's defined but never invoked, or a gate that's declared but never reached, is incoherent even if it reads correctly).
 - **Reliable** — does what it claims under repeated and concurrent use; no flaky or order-dependent behavior.
 - **Proactive** — sweeps the class, not just the instance; when a fix reveals a broader pattern, address the pattern rather than the single symptom.
-- **Scoped** — carries everything the ask requires, and no behaviour it did not. **Under-delivery** is work the author already understands, parked as a follow-up issue, a `TODO`, or a "phase 2" — refused by First Principles 8-10; the only sanctioned deferral is one the OWNER stated and governs. **Over-delivery is measured in customer-observable behaviour, never in diff size**: an unrequested feature, a reworded label, a moved control, an altered default is a finding even when it is an improvement, while extra *mechanism* — an extraction, a guard, a hardened path, a test nobody asked for — changes nothing a customer can perceive and is how **Clean**, **Robust** and **Maintainable** get paid for. So size only earns the question "which of these does the ask require?": a 300-file refactor that answers it is fine, a 3-line diff that quietly changes a default is not. This is also the boundary against **Proactive** — sweeping a class *within* the surface the change already touches is completeness; adding capability past it is scope the owner never approved (`AGENTS.md` § "What 8-10 bind — and what they do not").
+- **Scoped** — carries everything the ask requires, and no behaviour it did not. **Under-delivery** is work the author already understands, parked as a follow-up issue, a `TODO`, or a "phase 2" — refused by First Principles 8-10; the only sanctioned deferral is one the OWNER stated and governs. **Over-delivery is measured in customer-observable behaviour, never in diff size**: an unrequested feature, a reworded label, a moved control, an altered default is a finding even when it is an improvement, while extra *mechanism* — an extraction, a guard, a hardened path, a test nobody asked for — changes nothing a customer can perceive and is how **Clean**, **Robust** and **Maintainable** get paid for. Size tests scope: split large work by concern before review, then judge each concern by what the ask requires; even a 3-line diff that quietly changes a default is a finding. This is also the boundary against **Proactive** — sweeping a class *within* the surface the change already touches is completeness; adding capability past it is scope the owner never approved (`AGENTS.md` § "What 8-10 bind — and what they do not").
 
 ### Spawn the t3:reviewer Sub-Agent Before Pushing (Non-Negotiable)
 
@@ -64,7 +64,7 @@ Everything you write and everything you review aims at seven attributes. Treat t
 
 When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase evidence gate (#1539) hardens this further: `lifecycle visit-phase <id> reviewing` refuses unless a `review_skill_run` artifact attests the configured skill ran. After running the skill, stamp the evidence with `t3 <overlay> lifecycle record-review-skill-run <id> <skill>`, then record the phase. With `review_skill` unset the gate is a NO-OP (opt-in default).
 
-Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: when `require_review_context` is set, the FSM `→ reviewing` transition (`teatree.core.gates.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — stamp it with `t3 <overlay> lifecycle record-review-context <id> --work-item <url> --documents <urls> --analysis <how-checked>`. A diff-only verdict cannot enter `reviewing`.
+Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: the FSM `→ reviewing` transition (`teatree.core.gates.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — return `review_context` with `work_item`, `documents`, and `analysis` in the result envelope. A diff-only verdict cannot enter `reviewing`.
 
 **NEVER directly assign a reviewer on an MR/PR — review is REQUESTED, never assigned (Non-Negotiable).** Colleague review is obtained ONLY by posting the MR link to the Slack/approval channel (`/t3:review-request` → `review-request post`); the reviewer self-claims from there. Never set a reviewer directly — not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface — including a raw `curl` REST write; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token. The one assignment that is not a colleague request is the overlay's own standing `pr_auto_reviewers` policy: set in the same POST that opens the MR, and caught up on already-open MRs by `t3 <overlay> review apply-reviewer-policy`, which names no username, applies only on a repo the overlay writes under a non-owner credential, and refuses any MR that identity did not author.
 
@@ -161,7 +161,11 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
 
 #### File-Hierarchy & Module-Placement Check (Non-Negotiable)
 
-Scoped strictly to the diff, never a whole-tree audit: check *where* added, moved or renamed files live — a wrong package, a subpackage now due, a repo-root drop, a widened concern or a crossed layer, a reorg the change reveals. Every finding must name the target path; a whole-tree layout audit is `ac-reviewing-codebase`'s job. Full text: `skills/review/references/architecture-checks.md`.
+Scoped strictly to the diff, never a whole-tree audit: check *where* added, moved or renamed files live — a wrong package, a subpackage now due, a repo-root drop, a widened concern or a crossed layer, a reorg the change reveals. Every finding must name the target path; a whole-tree layout audit is `architectural-review`'s job. Full text: `skills/review/references/architecture-checks.md`.
+
+#### The One-Place Test — Count the Files (Non-Negotiable)
+
+Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `architectural-review` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
 
 #### The One-Place Test — Count the Files (Non-Negotiable)
 
@@ -175,7 +179,7 @@ When the diff touches `BLUEPRINT.md` (or a `docs/blueprint/*.md` appendix), revi
 2. **Stale or duplicated sections.** A section describing a mechanism that the diff just changed (or removed) must be updated or deleted in the same PR — see the documentation-alignment rule. Two sections saying the same thing is a consolidation finding: point at the one that should remain.
 3. **Appendix-class detail in the top-level file.** When a section grows past architectural overview into implementation depth, suggest splitting it into a linked appendix under `docs/blueprint/` (name the target path) so the top-level file stays digestible. The top-level file holds the architecture; appendices hold the depth. BLUEPRINT.md stays one file — move detail out, never split the top-level file itself.
 
-Scale the finding to impact: a section that legitimately documents a new architectural invariant is fine even if it grows the file — the test is "does this prose earn its place as architecture", not "how many bytes did it add". The full-tree staleness sweep (every section vs current code) is the periodic holistic review's job (`ac-reviewing-codebase` / the architectural-review loop); this per-diff check is scoped to what the change touches.
+Scale the finding to impact: a section that legitimately documents a new architectural invariant is fine even if it grows the file — the test is "does this prose earn its place as architecture", not "how many bytes did it add". The full-tree staleness sweep (every section vs current code) is the periodic holistic review's job (`architectural-review` / the architectural-review loop); this per-diff check is scoped to what the change touches.
 
 #### Read BLUEPRINT.md Before Designing (Non-Negotiable)
 
@@ -210,7 +214,7 @@ Correctness is the **maker's** responsibility, not the reviewer's. Colleagues re
 
 A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
 
-When `require_anti_vacuity_attestation` is set, stamp the proof with the `record-anti-vacuity` lifecycle command before the `request review` or merge transition — the gate mechanically refuses the transition without it:
+For an automatic reviewing task, return `anti_vacuity` with `ac_coverage`, `proven_tests`, and `no_new_tests`; the review recorder writes the attestation at the reviewed head before completion. For a manual review, stamp the same proof before the `request review` or merge transition:
 
 ```bash
 t3 <overlay> lifecycle record-anti-vacuity <ticket-id> \
@@ -221,7 +225,7 @@ t3 <overlay> lifecycle record-anti-vacuity <ticket-id> \
 
 The flag is `--head-sha`, not `--sha`.
 
-**Record the review's own evidence, or the gates that read it can never be armed** — `review record-evidence`, `lifecycle record-review-context`, and `review record --ticket-id`. Full text: `skills/review/references/verdict-envelope.md`.
+**Return the review's evidence** — `review_context`, `anti_vacuity`, and, for combined changesets, `integration_review.repos`. The recorder writes the gate artifacts; manual commands remain available for manual reviews. Full text: `skills/review/references/verdict-envelope.md`.
 
 **Independent adversarial review is an *optional escalation*, not a requirement.** For a complicated implementation — subtle concurrency, a wide blast radius, a contract change across services — escalate to an independent adversarial pass (e.g. a `codex` cold-review, reviewer ≠ maker) to falsify the diff against each acceptance criterion. For ordinary changes the skilled self-review above is the bar; don't gate every MR on a second reviewer.
 
@@ -240,7 +244,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
-6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced — the `$HOME/.teatree-skills.yml` keyword→skill routing config and the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists — must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`); this command additionally covers the personal `$HOME/.teatree-skills.yml`, which lives outside the repo.
+6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced in the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`) against the repo's skills; this command checks them against every installed skill.
 
 **Iteration limit:** After 3 fix-verify cycles without convergence, **stop and ask the user** — the issue may be systemic rather than incremental.
 
@@ -355,7 +359,7 @@ What the agent does *after* an independent cold-review verdict exists on a **col
 
 **Approval and severity are coupled — decide the VERDICT first (Non-Negotiable).** Never post a blocking finding and approve, and never soften a real blocker to approve. Full text: `skills/review/references/posting-review-comments.md`.
 
-`notify` additionally DMs the user after each on-behalf post (derived `notify_on_behalf`); `full` posts without the after-the-fact DM.
+Every on-behalf post DMs the user afterwards, at every tier.
 
 **The tier does not open colleague egress (#3895).** `_AUTONOMY_COLLAPSED_GATE_VALUES` holds `require_human_approval_to_answer` only; colleague egress is the active posture's (`Mode.egress`) and sits outside it exactly as `require_human_approval_to_merge` does (#3630), so speaking to a colleague under the user's own identity stays its own named opt-in. Under a forbidding posture the on-behalf pre-gate still BLOCKs a live post at any tier — so the autonomous form of "act on the verdict" is `t3 review post-comment` (a draft, colleague-invisible, exempt under every posture, and the agent DMs the user the publish command). Go live only under a permitting posture (`t3 loop preset use present --reason <why>`), or where an `OnBehalfApproval` is recorded for that action.
 
@@ -429,7 +433,7 @@ Speculative questions ("is this correct?", "could this cause issues?") without e
 
 A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `// HACK`, `# HACK` marker on an added line — or the phrases "not in this MR", "follow-up", "deferred", "implement later", "out of scope" — is the **author explicitly documenting that the work is deferred**. NEVER post a blocker-shaped (REQUEST_CHANGES) comment anchored to (or within ±3 lines of) such a marker. The strongest verdict allowed is a non-blocker comment, and only when it adds genuinely new context (e.g. "tracked at [#NNN]") — not re-stating what the author already said.
 
-`t3 review post-comment` and `post-draft-note` enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
+`t3 review post-comment` enforce this deterministically via `src/teatree/cli/review/todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
 
 Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code.
 
@@ -455,6 +459,7 @@ The babysit-tier draft flow — the pre-flight read of existing discussions, the
 - **Push back when:** suggestion breaks functionality (show evidence), violates YAGNI, is based on stale context, or conflicts with user's stated architecture.
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
 - **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
+- **Review rounds:** fix the defect class; three per MR is the cap. Full text: `skills/review/references/review-rounds.md`.
 
 #### Replying to Review Discussions
 

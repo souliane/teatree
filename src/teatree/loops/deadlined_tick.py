@@ -29,9 +29,9 @@ from teatree.utils.run import Popen, TimeoutExpired, spawn_session_leader
 logger = logging.getLogger(__name__)
 
 #: Set in the deadlined tick subprocess's environment so the ``loops_tick`` command can
-#: ``os._exit`` right after rendering — a hung NON-daemon scanner thread would otherwise
-#: block interpreter shutdown (its ``ThreadPoolExecutor`` atexit join), pinning the
-#: subprocess (and one scarce ``loops`` executor slot) until the outer deadline SIGKILL.
+#: ``os._exit`` right after rendering — a hung NON-daemon thread would otherwise
+#: block interpreter shutdown, pinning the subprocess (and one scarce ``loops``
+#: executor slot) until the outer deadline SIGKILL.
 #: Only the spawned subprocess carries it — an in-process ``call_command`` never does, so
 #: tests never trip the hard exit.
 TICK_SUBPROCESS_ENV_MARKER = "T3_LOOPS_TICK_SUBPROCESS"

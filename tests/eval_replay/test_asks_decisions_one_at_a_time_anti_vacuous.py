@@ -14,7 +14,7 @@ decisions are pending:
 
 The cap is the minimal justified ``max_turns: 6`` for the HOOKED lane — the
 correct one-ask-then-stop arc under ``production_hooks`` spends turns on the
-SessionStart/UserPromptSubmit hook context and the post-ask terminal disposition
+SessionStart hook context and the post-ask terminal disposition
 text (the metered 2026-07-08 trial at cap 2 ended ON the correct single ask with
 no final message, force-failing a correct trajectory via #2192). The teeth, NOT
 the cap, must discriminate correct from drift: this proof drives the RE-ASK ``_fail`` fixture

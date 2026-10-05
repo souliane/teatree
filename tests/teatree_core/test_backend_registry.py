@@ -85,7 +85,6 @@ class TestBackendProviderRegistry:
                 channel_id="C1",
                 channel_name="rev",
                 pr_urls=["https://example/1"],
-                max_pages=1,
                 oldest_ts="0",
                 timeout=1.0,
             )

@@ -99,25 +99,16 @@ class TestAdmissionBlockReason:
         with patch(_PROBE, side_effect=RuntimeError("boom")):
             assert schema_admission_block_reason("default") != ""
 
-    def test_kill_switch_off_never_blocks(self) -> None:
-        """`schema_readiness_gate_enabled=false` is the never-lockout escape."""
-        with (
-            patch(_PROBE, return_value=["core.0042_widget"]),
-            patch(
-                "teatree.core.schema_readiness.schema_readiness_gate_enabled",
-                return_value=False,
-            ),
-        ):
-            assert schema_admission_block_reason("default") == ""
+    def test_switch_off_bypasses_a_cached_false_behind_without_waiting_for_ttl(self) -> None:
+        with patch(_PROBE, return_value=["core.0042_widget"]):
+            assert schema_admission_block_reason("default") != ""
+            with patch("teatree.core.schema_readiness.schema_readiness_gate_enabled", return_value=False):
+                assert schema_admission_block_reason("default") == ""
 
-    def test_setting_read_failure_keeps_the_gate_enabled(self) -> None:
-        """An unreadable kill switch fails CLOSED — it cannot silently open the gate."""
+    def test_unreadable_switch_keeps_the_gate_enabled(self) -> None:
         with (
             patch(_PROBE, return_value=["core.0042_widget"]),
-            patch(
-                "teatree.core.schema_readiness.get_effective_settings",
-                side_effect=RuntimeError("config store down"),
-            ),
+            patch("teatree.core.schema_readiness.get_effective_settings", side_effect=RuntimeError("store down")),
         ):
             assert schema_admission_block_reason("default") != ""
 

@@ -18,6 +18,7 @@ import shutil
 import stat
 import subprocess
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,8 @@ _BASH = shutil.which("bash") or "bash"
 _GIT = shutil.which("git") or "git"
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("flock") is None,
-    reason="needs bash + flock (present in the deploy image and CI)",
+    shutil.which("bash") is None,
+    reason="needs bash",
 )
 
 _SERVICES = "teatree-init teatree-worker teatree-admin teatree-slack-listener teatree-watchdog"
@@ -45,6 +46,15 @@ if [ "$1" = inspect ]; then
     case "${{3:-}}" in
     *"State.ExitCode"*)
         printf '%s\\n' "${{STUB_INIT_STATE:-exited 0}}"
+        ;;
+    *"StartedAt"*)
+        [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
+        restarts="${{STUB_WORKER_RESTART_COUNT:-0}}"
+        if [ -s "${{STUB_DRAIN_COUNT_FILE:-/dev/null}}" ] && [ -n "${{STUB_WORKER_RESTART_COUNT_AFTER_DRAIN:-}}" ]; then
+            restarts="$STUB_WORKER_RESTART_COUNT_AFTER_DRAIN"
+        fi
+        started="${{STUB_WORKER_STARTED_AT:-2020-01-01T00:00:00.123456789Z}}"
+        printf '%s %s %s\\n' "$(stub_worker_state)" "$restarts" "$started"
         ;;
     *"RestartCount"*)
         [ -z "${{STUB_WORKER_INSPECT_EXIT:-}}" ] || exit "$STUB_WORKER_INSPECT_EXIT"
@@ -75,7 +85,12 @@ exec)
         *) break ;;
         esac
     done
+    svc="${{1:-}}"
     shift || true
+    if [ "$svc" = teatree-admin ] && [ "${{1:-}}" = curl ]; then
+        shift
+        STUB_CURL_VENUE=admin exec curl "$@"
+    fi
     case "$*" in
     *"worker status"*)
         [ -z "${{STUB_WORKER_STATUS_EXIT:-}}" ] || exit "$STUB_WORKER_STATUS_EXIT"
@@ -91,6 +106,9 @@ exec)
         [ -f "${{STUB_DRAIN_COUNT_FILE:-/dev/null}}" ] && drain_count="$(cat "$STUB_DRAIN_COUNT_FILE")"
         drain_count=$((drain_count + 1))
         printf '%s' "$drain_count" >|"${{STUB_DRAIN_COUNT_FILE}}"
+        if [ -n "${{STUB_STATE_AFTER_DRAIN:-}}" ]; then
+            printf '%s' "$STUB_STATE_AFTER_DRAIN" >|"${{STUB_WORKER_STATE_FILE}}"
+        fi
         if [ -n "${{STUB_DRAIN_FAIL_AFTER:-}}" ] && [ "$drain_count" -gt "$STUB_DRAIN_FAIL_AFTER" ]; then
             exit 1
         fi
@@ -118,12 +136,24 @@ config)
     printf '%s\\n' {" ".join(_SERVICES.split())}
     exit 0
     ;;
-build) exit "${{STUB_BUILD_EXIT:-0}}" ;;
+build)
+    log="${{STUB_DOCKER_LOG:-/dev/null}}"
+    ctx="${{TEATREE_BUILD_CONTEXT:-/nonexistent}}"
+    printf 'build-context-marker %s\\n' "$(cat "$ctx/marker.txt" 2>/dev/null || echo absent)" >>"$log"
+    live="${{STUB_LIVE_ROOT:-/nonexistent}}"
+    printf 'live-tree-marker %s\\n' "$(cat "$live/marker.txt" 2>/dev/null || echo absent)" >>"$log"
+    exit "${{STUB_BUILD_EXIT:-0}}"
+    ;;
 stop)
     printf '%s' "${{STUB_STOP_STATE:-exited}}" >|"${{STUB_WORKER_STATE_FILE}}"
     exit "${{STUB_STOP_EXIT:-0}}"
     ;;
+start)
+    printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}"
+    exit 0
+    ;;
 up)
+    printf 'host-os %s\\n' "${{TEATREE_HOST_OS:-unset}}" >>"${{STUB_DOCKER_LOG:-/dev/null}}"
     case " $* " in
     *" teatree-worker "*) printf '%s' running >|"${{STUB_WORKER_STATE_FILE}}" ;;
     esac
@@ -137,6 +167,10 @@ exit 0
 # dashboard that was up before its swap and never came back after it.
 _CURL_STUB = """#!/usr/bin/env bash
 printf 'curl %s\\n' "$*" >>"${STUB_DOCKER_LOG:-/dev/null}"
+if [ "${STUB_CURL_VENUE:-host}" = host ]; then
+    printf 'host-loopback-probe\\n' >>"${STUB_DOCKER_LOG:-/dev/null}"
+    [ -z "${STUB_HOST_CURL_EXIT:-}" ] || exit "$STUB_HOST_CURL_EXIT"
+fi
 n=0
 if [ -n "${STUB_CURL_COUNT:-}" ]; then
     [ -f "$STUB_CURL_COUNT" ] && n="$(cat "$STUB_CURL_COUNT")"
@@ -146,8 +180,27 @@ fi
 if [ -n "${STUB_CURL_FAIL_AFTER:-}" ] && [ "$n" -gt "$STUB_CURL_FAIL_AFTER" ]; then
     exit 22
 fi
+if [ -n "${STUB_CURL_FAIL_FIRST:-}" ] && [ "$n" -le "$STUB_CURL_FAIL_FIRST" ]; then
+    exit 22
+fi
 exit 0
 """
+
+
+# Logs every call and answers `--fetch-only` with the checkout's HEAD, as the real helper
+# does for a checkout with no upstream.
+_FF_STUB = """#!/usr/bin/env bash
+printf 'fast-forward-checkout %s\\n' "$*" >>"${STUB_DOCKER_LOG:-/dev/null}"
+if [ "${1:-}" = --fetch-only ]; then
+    git -C "$2" rev-parse HEAD
+    exit 0
+fi
+exit "${STUB_FF_EXIT:-0}"
+"""
+
+
+def _seconds_ago(seconds: int) -> str:
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -161,11 +214,12 @@ def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout"
     deploy = root / "deploy"
     deploy.mkdir(parents=True)
-    for name in ("deploy.sh", "docker-compose.yml", "docker-compose.host-identity.yml"):
+    for name in ("deploy.sh", "deploy-lock.sh", "Dockerfile", "docker-compose.yml", "docker-compose.host-identity.yml"):
         shutil.copy2(_DEPLOY_DIR / name, deploy / name)
     (deploy / "deploy.sh").chmod(0o755)
     (deploy / "teatree.env").write_text("", encoding="utf-8")
-    _write_exec(deploy / "fast-forward-checkout.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_exec(deploy / "fast-forward-checkout.sh", _FF_STUB)
+    _write_exec(deploy / "install-host-pressure.zsh", "#!/usr/bin/env bash\nexit 0\n")
 
     probe = root / "src" / "teatree" / "utils"
     probe.mkdir(parents=True)
@@ -201,6 +255,7 @@ def _run(checkout: Path, tmp_path: Path, **env_extra: str) -> tuple[subprocess.C
         STUB_CURL_COUNT=str(tmp_path / "curl.count"),
         STUB_DRAIN_COUNT_FILE=str(tmp_path / "drain.count"),
         STUB_WORKER_STATE_FILE=str(tmp_path / "worker.state"),
+        STUB_LIVE_ROOT=str(checkout),
         TEATREE_DEPLOY_LOCK=str(tmp_path / "deploy.lock"),
         TEATREE_DEPLOY_LOG_ARCHIVE_DIR=str(tmp_path / "archive"),
         TEATREE_ADMIN_SWAP_BUDGET="2",
@@ -414,6 +469,93 @@ class TestInFlightWorkSurvivesTheSwap:
         assert admin_probe_at < stop_at < stopped_state_at < init_at
         _assert_fresh_worker_route_precedes_admin_swap(calls, after=init_at)
 
+    @pytest.mark.parametrize("sampled_state", ["running", "restarting"])
+    def test_a_crash_looping_worker_is_contained_whichever_moment_of_its_cycle_is_sampled(
+        self, checkout: Path, tmp_path: Path, sampled_state: str
+    ) -> None:
+        """A worker the restart policy keeps reviving is no control-plane route, so no admin is needed to stop it."""
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_STATUS=sampled_state,
+            STUB_WORKER_RESTART_COUNT="361",
+            STUB_WORKER_STARTED_AT=_seconds_ago(6),
+            STUB_DRAIN_EXIT="1",
+            STUB_CURL_FAIL_FIRST="1",
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert -1 < stop_at < init_at
+
+    def test_a_worker_that_restarted_during_the_drain_is_a_crash_loop(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_RESTART_COUNT="1",
+            STUB_WORKER_RESTART_COUNT_AFTER_DRAIN="3",
+            STUB_DRAIN_EXIT="1",
+            STUB_CURL_FAIL_FIRST="1",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"]) != -1
+
+    def test_a_worker_that_turns_restarting_while_it_drains_is_contained_without_the_admin(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        """It died under the drain: Docker is reviving it, so it is no route to keep for the admin's sake."""
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_RESTART_COUNT="0",
+            STUB_STATE_AFTER_DRAIN="restarting",
+            STUB_DRAIN_EXIT="1",
+            STUB_CURL_FAIL_FIRST="1",
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"]) != -1
+
+    def test_a_healthy_worker_that_once_restarted_keeps_the_admin_requirement(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        """The worker exits non-zero on transient faults by design, so one old restart is no crash loop."""
+        proc, calls = _run(
+            checkout,
+            tmp_path,
+            STUB_WORKER_RESTART_COUNT="1",
+            STUB_DRAIN_EXIT="1",
+            STUB_CURL_FAIL_FIRST="1",
+        )
+
+        assert proc.returncode != 0
+        assert _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"]) == -1, (
+            "the only live control-plane route was stopped while the admin was down"
+        )
+
+    def test_the_refusal_names_the_probe_and_where_it_ran(self, checkout: Path, tmp_path: Path) -> None:
+        proc, _ = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", STUB_CURL_FAIL_FIRST="1")
+
+        assert proc.returncode != 0
+        fatal = next(line for line in proc.stderr.splitlines() if "FATAL" in line)
+        assert "curl http://127.0.0.1:8000/admin/login/" in fatal
+        assert "inside teatree-admin" in fatal
+
+    def test_the_admin_probe_runs_where_admin_listens_not_on_the_host_loopback(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        """Docker Desktop's host network is its VM, so the host loopback never reaches admin (#307)."""
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", STUB_HOST_CURL_EXIT="7")
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        admin_probe_at = _index_of(calls, lambda a: a[:4] == ["exec", "-T", "teatree-admin", "curl"])
+        assert proc.returncode == 0, proc.stderr
+        assert "host-loopback-probe" not in calls
+        assert admin_probe_at != -1
+        assert admin_probe_at < stop_at
+
     def test_second_failed_drain_restores_the_worker_route_before_admin_swap(
         self, checkout: Path, tmp_path: Path
     ) -> None:
@@ -489,6 +631,126 @@ class TestInFlightWorkSurvivesTheSwap:
         assert "could not determine teatree-worker state" in proc.stderr
 
 
+def _ahead_origin(checkout: Path, tmp_path: Path) -> None:
+    """An origin one commit ahead of *checkout*, which tracks it; the new commit adds marker.txt."""
+    origin = tmp_path / "origin.git"
+    subprocess.run([_GIT, "clone", "-q", "--bare", str(checkout), str(origin)], check=True)
+    subprocess.run([_GIT, "-C", str(checkout), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run([_GIT, "-C", str(checkout), "fetch", "-q", "origin"], check=True)
+    subprocess.run([_GIT, "-C", str(checkout), "branch", "-q", "--set-upstream-to", "origin/main"], check=True)
+    work = tmp_path / "work"
+    subprocess.run([_GIT, "clone", "-q", str(origin), str(work)], check=True)
+    (work / "marker.txt").write_text("fetched\n", encoding="utf-8")
+    subprocess.run([_GIT, "-C", str(work), "add", "marker.txt"], check=True)
+    subprocess.run(
+        [_GIT, "-C", str(work), "-c", "user.email=f", "-c", "user.name=f", "commit", "-qm", "ahead"], check=True
+    )
+    subprocess.run([_GIT, "-C", str(work), "push", "-q"], check=True)
+
+
+def _live_fast_forward_at(calls: list[str]) -> int:
+    return next(
+        (i for i, c in enumerate(calls) if c.startswith("fast-forward-checkout ") and "--fetch-only" not in c), -1
+    )
+
+
+class TestTheLiveTreeMovesOnlyOnceTheOldWorkerIsOutOfTheWay:
+    """The checkout is bind-mounted into every running container, so moving it mixes old and new modules."""
+
+    def test_the_live_tree_is_fast_forwarded_after_the_drain_and_before_init(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path)
+
+        build_at = _index_of(calls, lambda a: a[:1] == ["build"])
+        drain_at = next((i for i, c in enumerate(calls) if "worker drain" in c), -1)
+        ff_at = _live_fast_forward_at(calls)
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert -1 < build_at < drain_at < ff_at < init_at, (build_at, drain_at, ff_at, init_at)
+
+    def test_a_crash_loop_is_contained_before_the_live_tree_moves(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(
+            checkout, tmp_path, STUB_WORKER_STATUS="restarting", STUB_WORKER_RESTART_COUNT="3", STUB_DRAIN_EXIT="1"
+        )
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        ff_at = _live_fast_forward_at(calls)
+        init_at = _index_of(calls, lambda a: _is_up(a) and _up_services(a) == ["teatree-init"])
+        assert proc.returncode == 0, proc.stderr
+        assert -1 < stop_at < ff_at < init_at
+
+    def test_a_refused_drain_leaves_the_live_tree_where_it_was(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", STUB_CURL_FAIL_AFTER="0")
+
+        assert proc.returncode != 0
+        assert _live_fast_forward_at(calls) == -1
+
+    def test_a_checkout_that_cannot_fast_forward_is_refused_before_anything_is_touched(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        _ahead_origin(checkout, tmp_path)
+        shutil.copy2(_DEPLOY_DIR / "fast-forward-checkout.sh", checkout / "deploy" / "fast-forward-checkout.sh")
+        (checkout / "marker.txt").write_text("local work the merge would overwrite\n", encoding="utf-8")
+
+        proc, calls = _run(checkout, tmp_path)
+
+        assert proc.returncode != 0
+        assert _index_of(calls, lambda a: a[:1] == ["build"]) == -1
+        assert not any("worker drain" in c for c in calls), "admission was quiesced for a deploy that cannot land"
+        assert "marker.txt" in proc.stderr
+
+    def test_an_upstream_rename_over_a_locally_edited_file_is_refused_before_anything_is_touched(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        _ahead_origin(checkout, tmp_path)
+        work = tmp_path / "work"
+        subprocess.run([_GIT, "-C", str(work), "mv", "deploy/teatree.env", "deploy/renamed.env"], check=True)
+        subprocess.run(
+            [_GIT, "-C", str(work), "-c", "user.email=f", "-c", "user.name=f", "commit", "-qm", "rename"], check=True
+        )
+        subprocess.run([_GIT, "-C", str(work), "push", "-q"], check=True)
+        shutil.copy2(_DEPLOY_DIR / "fast-forward-checkout.sh", checkout / "deploy" / "fast-forward-checkout.sh")
+        (checkout / "deploy" / "teatree.env").write_text("LOCAL_ONLY=1\n", encoding="utf-8")
+
+        proc, calls = _run(checkout, tmp_path)
+
+        assert proc.returncode != 0
+        assert _index_of(calls, lambda a: a[:1] == ["build"]) == -1
+        assert not any("worker drain" in c for c in calls)
+        assert "teatree.env" in proc.stderr
+
+    @pytest.mark.parametrize("failure", [{"STUB_FF_EXIT": "1"}, {"STUB_INIT_STATE": "exited 1"}])
+    def test_a_worker_the_deploy_stopped_is_started_again_when_a_later_stage_fails(
+        self, checkout: Path, tmp_path: Path, failure: dict[str, str]
+    ) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_DRAIN_EXIT="1", **failure)
+
+        stop_at = _index_of(calls, lambda a: a[:2] == ["stop", "teatree-worker"])
+        start_at = _index_of(calls, lambda a: a[:2] == ["start", "teatree-worker"])
+        assert proc.returncode != 0
+        assert -1 < stop_at < start_at, "the worker the deploy stopped was left stopped"
+
+    def test_a_worker_the_deploy_never_stopped_is_not_started(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path, STUB_INIT_STATE="exited 1")
+
+        assert proc.returncode != 0
+        assert _index_of(calls, lambda a: a[:2] == ["start", "teatree-worker"]) == -1
+
+    def test_the_image_is_built_from_the_fetched_revision_not_the_live_tree(
+        self, checkout: Path, tmp_path: Path
+    ) -> None:
+        _ahead_origin(checkout, tmp_path)
+        shutil.copy2(_DEPLOY_DIR / "fast-forward-checkout.sh", checkout / "deploy" / "fast-forward-checkout.sh")
+
+        proc, calls = _run(checkout, tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "build-context-marker fetched" in calls, "the build must read the fetched revision"
+        assert "live-tree-marker absent" in calls, "the live tree must not have moved while the image built"
+        assert (checkout / "marker.txt").read_text(encoding="utf-8") == "fetched\n"
+
+
 class TestLogsSurviveTheRecreate:
     def test_each_service_log_is_archived_before_that_service_is_recreated(
         self, checkout: Path, tmp_path: Path
@@ -560,14 +822,32 @@ class TestTheConvergenceRecordsItsHolder:
         snapshot = tmp_path / "lock.snapshot"
         _write_exec(
             checkout / "deploy" / "fast-forward-checkout.sh",
-            f'#!/usr/bin/env bash\ncp "$TEATREE_DEPLOY_LOCK" {str(snapshot)!r}\nexit 0\n',
+            f'#!/usr/bin/env bash\ncp "$TEATREE_DEPLOY_LOCK" {str(snapshot)!r}\n'
+            '[ "$1" = --fetch-only ] && git -C "$2" rev-parse HEAD\nexit 0\n',
         )
 
         _run(checkout, tmp_path)
 
-        pid, stamp = snapshot.read_text(encoding="utf-8").split()
+        pid, beat, deadline = snapshot.read_text(encoding="utf-8").split()
         assert pid.isdigit()
-        assert stamp.isdigit()
+        assert int(deadline) > int(beat) > 0
+
+    def test_the_heartbeat_is_refreshed_while_the_convergence_runs(self, checkout: Path, tmp_path: Path) -> None:
+        _beat_every_second(checkout)
+        first, second = tmp_path / "first.snapshot", tmp_path / "second.snapshot"
+        _write_exec(
+            checkout / "deploy" / "fast-forward-checkout.sh",
+            '#!/usr/bin/env bash\n[ "$1" = --fetch-only ] || exit 0\n'
+            f'cp "$TEATREE_DEPLOY_LOCK" {str(first)!r}\nsleep 3\ncp "$TEATREE_DEPLOY_LOCK" {str(second)!r}\n'
+            'git -C "$2" rev-parse HEAD\n',
+        )
+
+        _run(checkout, tmp_path)
+
+        pid, beat, deadline = first.read_text(encoding="utf-8").split()
+        later_pid, later_beat, later_deadline = second.read_text(encoding="utf-8").split()
+        assert (later_pid, later_deadline) == (pid, deadline)
+        assert int(later_beat) > int(beat), "a convergence that runs long must keep proving it is alive"
 
     def test_the_record_is_cleared_on_exit(self, checkout: Path, tmp_path: Path) -> None:
         _run(checkout, tmp_path)
@@ -575,3 +855,19 @@ class TestTheConvergenceRecordsItsHolder:
         assert (tmp_path / "deploy.lock").read_text(encoding="utf-8") == "", (
             "a lock file outliving its holder must carry no in-progress record"
         )
+
+
+def _beat_every_second(checkout: Path) -> None:
+    script = checkout / "deploy" / "deploy.sh"
+    body = script.read_text(encoding="utf-8")
+    assert "\nDEPLOY_HEARTBEAT_INTERVAL=60\n" in body
+    script.write_text(
+        body.replace("\nDEPLOY_HEARTBEAT_INTERVAL=60\n", "\nDEPLOY_HEARTBEAT_INTERVAL=1\n"), encoding="utf-8"
+    )
+
+
+class TestTheContainersLearnTheHostOs:
+    def test_the_convergence_exports_the_host_os_to_compose(self, checkout: Path, tmp_path: Path) -> None:
+        _, calls = _run(checkout, tmp_path, TEATREE_HOST_OS="")
+
+        assert f"host-os {os.uname().sysname}" in calls

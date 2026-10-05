@@ -38,6 +38,7 @@ from teatree.loop.stuck_ticket_redispatch import (
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._pr_open_state_stub import pr_open_state
+from tests.factories import record_test_plan
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
 _REAL_DEFECT = "the review found a real defect in the diff"
@@ -46,6 +47,8 @@ _ALREADY_LANDED = "the push gate refused the branch: its content already landed"
 
 def _stuck_ticket(*, state: str = Ticket.State.WORK_STARTED, idle_hours: int = 48) -> Ticket:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
+    if state not in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED}:
+        record_test_plan(ticket)
     transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state=state)
     TicketTransition.objects.filter(pk=transition.pk).update(
         created_at=timezone.now() - timedelta(hours=idle_hours),

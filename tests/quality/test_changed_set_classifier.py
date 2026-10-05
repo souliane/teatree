@@ -186,14 +186,6 @@ class TestChangedPathsGather:
         paths = set(changed.paths)
         assert {"committed.py", "staged.py", "base.py", "untracked.py"} <= paths
 
-    def test_delete_is_captured_as_delete_status(self, tmp_path: Path) -> None:
-        self._init_repo(tmp_path)
-        self._git(tmp_path, "rm", "-q", "base.py")
-        self._git(tmp_path, "commit", "-qm", "remove base")
-        changed = changed_paths(base_ref="origin/main", cwd=tmp_path)
-        assert changed.has_delete_or_rename
-        assert classify(changed).full
-
 
 class TestChangedPathsFailSafe:
     """A git failure (R7 dirty/shallow merge-base) raises, so the caller forces FULL."""

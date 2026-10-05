@@ -17,7 +17,8 @@ from typer.testing import CliRunner
 from teatree.cli.mcp import browser_diagnosis, open_reconnect_targets, reconnect, serve
 from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
 from teatree.core.evidence.browser_diagnosis import BrowserDiagnosisRegistration
-from teatree.mcp import build_server
+from teatree.mcp import services_notion
+from teatree.mcp.server import build_server
 
 runner = CliRunner()
 
@@ -40,6 +41,25 @@ def _down(name: str, *, required: bool = True, ever: bool = True, instruction: s
 
 
 class TestServeCommand:
+    def test_the_notion_write_seam_is_registered_before_the_server_is_built(self) -> None:
+        factories = []
+        original = services_notion._factory_registry.factory
+        services_notion.register_notion_write_seam(services_notion._unregistered_factory)
+        try:
+            with (
+                patch("teatree.cli.mcp.ensure_django"),
+                patch(
+                    "teatree.mcp.server.build_server",
+                    side_effect=lambda: factories.append(services_notion._factory_registry.factory),
+                ),
+            ):
+                runner.invoke(_app, [])
+        finally:
+            services_notion.register_notion_write_seam(original)
+
+        assert len(factories) == 1
+        assert factories[0] is not services_notion._unregistered_factory
+
     def test_bootstraps_django_then_runs_stdio_server(self) -> None:
         with (
             patch("teatree.cli.mcp.ensure_django") as ensure_mock,

@@ -20,6 +20,7 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
+from tests.teatree_core.conftest import record_review_context_for_test
 
 
 class SelfTransitionIsNotAnAuditEvent(TestCase):
@@ -39,6 +40,7 @@ class SelfTransitionIsNotAnAuditEvent(TestCase):
             phase="reviewing",
             status=Task.Status.COMPLETED,
         )
+        record_review_context_for_test(ticket)
         return ticket
 
     def test_re_marking_an_already_reviewed_ticket_adds_no_row(self) -> None:

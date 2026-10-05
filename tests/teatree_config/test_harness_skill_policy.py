@@ -12,7 +12,6 @@ from teatree.harness_skills import (
     authorize_harness_skill_removal,
     parse_harness_skill_exclusions,
     remove_harness_skill_exclusion,
-    required_harness_skill_names,
 )
 from teatree.skill_support.inventory import (
     SkillDeclaration,
@@ -72,7 +71,7 @@ def test_exclusion_parser_rejects_invalid_values(raw: object) -> None:
         parse_harness_skill_exclusions(raw)
 
 
-def test_required_names_combine_inventory_apm_and_runtime_demands() -> None:
+def test_removal_refusals_combine_inventory_apm_and_runtime_demands() -> None:
     diagnostics = (
         SkillInventoryDiagnostic(
             code=SkillInventoryDiagnosticCode.MISSING_DEPENDENCY,
@@ -96,13 +95,23 @@ def test_required_names_combine_inventory_apm_and_runtime_demands() -> None:
         ),
     )
 
-    required = required_harness_skill_names(
-        _inventory(diagnostics=diagnostics),
-        (NamedDependency("apm-one"), NamedDependency("External")),
-        ("runtime-one", "vendor:review-bot"),
-    )
-
-    assert required == ("apm-one", "external", "review-bot", "runtime-one")
+    expected_sources = {
+        "apm-one": ("apm.yml",),
+        "external": ("apm.yml", "missing_dependency"),
+        "review-bot": ("missing_agent_companion", "missing_agent_skill", "runtime"),
+        "runtime-one": ("runtime",),
+    }
+    for skill, required_by in expected_sources.items():
+        with pytest.raises(HarnessSkillRequiredError) as error:
+            authorize_harness_skill_removal(
+                SkillsHarness.CODEX,
+                skill,
+                inventory=_inventory(diagnostics=diagnostics),
+                apm_dependencies=(NamedDependency("apm-one"), NamedDependency("External")),
+                runtime_demands=("runtime-one", "vendor:review-bot"),
+            )
+        assert error.value.target == HarnessSkillTarget(SkillsHarness.CODEX, skill)
+        assert error.value.required_by == required_by
 
 
 def test_required_skill_is_refused_before_removal() -> None:

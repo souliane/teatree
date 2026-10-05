@@ -7,21 +7,18 @@ Locks the five owner-flagged invariants around the merged :class:`Mode` (Mode):
     in ``tests/teatree_agents/test_owner_answer_threading.py``).
 2.  Auto-merge under away — loop membership, proven in
     ``tests/teatree_loops/test_loop_table.py::TestAutoMergePathAdmittedUnderAway``.
-3.  Live-presence #189 escape — ``PresenceHeartbeat.is_live_user_turn`` still gates a
-    per-turn in-client render, independent of the named mode.
+3.  Live-presence #189 escape — the transcript's recent owner action still gates a
+    per-turn in-client render, independent of the named mode (``tests/test_owner_prompts.py``).
 4.  autoload gate — untouched by the merge (no mode read added to it).
 5.  ``require_human_approval_to_merge`` stays a SEPARATE knob — it is NOT folded into
     the merged Mode (design decision D).
 """
 
-import datetime as dt
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import django.test
 
 from teatree.core.models import Mode
-from teatree.live_presence import PresenceHeartbeat
 
 
 class TestOwnerReplyAlwaysOn(django.test.SimpleTestCase):
@@ -52,37 +49,3 @@ class TestRequireHumanApprovalStaysSeparate(django.test.SimpleTestCase):
         assert {"entries", "egress"} <= field_names
         assert "overlay_scope" not in field_names
         assert not any("approval" in name or "merge" in name for name in field_names)
-
-
-class TestLivePresenceEscapeIntact(django.test.SimpleTestCase):
-    """Invariant 3: the #189 per-turn live-user escape is unchanged by the merge."""
-
-    def _heartbeat(self, tmp: Path) -> PresenceHeartbeat:
-        return PresenceHeartbeat(locate=lambda: tmp / "presence")
-
-    def test_fresh_same_session_turn_is_live(self) -> None:
-        import tempfile  # noqa: PLC0415 — test-local
-
-        with tempfile.TemporaryDirectory() as td:
-            beat = self._heartbeat(Path(td))
-            now = datetime.now(tz=UTC)
-            beat.record(session_id="sess-A", now=now)
-            assert beat.is_live_user_turn(session_id="sess-A", now=now + timedelta(seconds=10)) is True
-
-    def test_foreign_session_is_not_live(self) -> None:
-        import tempfile  # noqa: PLC0415 — test-local
-
-        with tempfile.TemporaryDirectory() as td:
-            beat = self._heartbeat(Path(td))
-            now = datetime.now(tz=UTC)
-            beat.record(session_id="sess-A", now=now)
-            assert beat.is_live_user_turn(session_id="sess-B", now=now) is False
-
-    def test_stale_turn_is_not_live(self) -> None:
-        import tempfile  # noqa: PLC0415 — test-local
-
-        with tempfile.TemporaryDirectory() as td:
-            beat = self._heartbeat(Path(td))
-            now = datetime.now(tz=UTC)
-            beat.record(session_id="sess-A", now=now - dt.timedelta(minutes=5))
-            assert beat.is_live_user_turn(session_id="sess-A", now=now) is False

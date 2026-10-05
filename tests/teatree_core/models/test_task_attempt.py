@@ -1,6 +1,8 @@
 """``TaskAttempt.Lane`` attribution and the per-row ``effective_tokens`` metric."""
 
 import datetime as dt
+import hashlib
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -134,6 +136,44 @@ class TestTaskAttemptOutcome(TestCase):
         attempt.save()
         attempt.refresh_from_db()
         assert attempt.outcome == TaskAttempt.Outcome.REFUSAL
+
+    def test_finished_transition_passes_bounded_recurrence_and_session_evidence(self) -> None:
+        with (
+            patch("teatree.core.models.task_attempt.record_lifecycle_event") as record,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            attempt = TaskAttempt.objects.create(
+                task=self.task,
+                exit_code=1,
+                error="private failure details",
+                agent_session_id="agent-session-123",
+            )
+
+        record.assert_called_once()
+        event = record.call_args.args[0]
+        assert event.kind == "attempt.finished"
+        assert event.entity_id == attempt.pk
+        assert event.ticket_id == self.ticket.pk
+        assert event.task_id == self.task.pk
+        assert event.cause == attempt.failure_kind
+        assert event.iteration == attempt.iteration
+        assert event.error_fingerprint == attempt.error_fingerprint
+        assert event.session_ref == hashlib.sha256(b"agent-session-123").hexdigest()[:16]
+        assert "private failure details" not in repr(record.call_args)
+
+    def test_late_failure_still_gets_a_fingerprint_on_its_finished_transition(self) -> None:
+        attempt = TaskAttempt.objects.create(task=self.task, agent_session_id="agent-session-123")
+        assert attempt.error_fingerprint == ""
+        attempt.exit_code = 1
+        attempt.error = "private late failure"
+
+        with (
+            patch("teatree.core.models.task_attempt.record_lifecycle_event") as record,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            attempt.save()
+
+        assert record.call_args.args[0].error_fingerprint == hashlib.sha256(b"private late failure").hexdigest()
 
 
 class TestTaskAttemptQuerySetUsagesCarriesLane(TestCase):

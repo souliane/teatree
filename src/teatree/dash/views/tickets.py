@@ -19,6 +19,7 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task_once
 from teatree.core.models.ticket import Ticket
 from teatree.dash import audit
@@ -133,7 +134,7 @@ def task_action(request: "HttpRequest", ticket_id: int) -> "HttpResponse":
     reason = request.POST.get("reason", "").strip() or f"Enqueued from the dashboard by {who}: run the {phase} phase."
     try:
         task = enqueue_phase_task_once(ticket=ticket, phase=phase, reason=reason)
-    except TaskEnqueueError as exc:
+    except (TaskEnqueueError, NoPlanArtifactError) as exc:
         return _refused(request, ticket_id, str(exc))
     audit.record(
         actor=who,

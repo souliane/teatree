@@ -13,31 +13,26 @@ its idempotence, its fail-closed probe, and its per-run work bound.
 
 import contextlib
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.db import OperationalError
 from django.test import TestCase
-from django.utils import timezone
 
-from teatree.config import UserSettings
-from teatree.core.backend_protocols import IssueReopenState, PrOpenState
+from teatree.core.backend_protocols import PrMergeState, PrOpenState
 from teatree.core.gates import merge_evidence_gate
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
-from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.known_issue import KnownIssue
 from teatree.loop.scanners import board_reconcile
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_report import BoardAction
+from tests.teatree_loop._board_reconcile_overlays import overlays_registered, rule_f_inert
 
 _FORTY_HEX = "a" * 40
 
 
-@contextlib.contextmanager
-def _merge_evidence(*, required: bool) -> Iterator[None]:
-    with patch.object(
-        merge_evidence_gate,
-        "get_effective_settings",
-        return_value=UserSettings(require_merge_evidence=required),
-    ):
-        yield
+def _merged_query(sha: str = _FORTY_HEX) -> SimpleNamespace:
+    return SimpleNamespace(pr_merge_state=lambda: PrMergeState(state="MERGED", merge_commit_oid=sha))
 
 
 @contextlib.contextmanager
@@ -47,30 +42,23 @@ def _forge(states: dict[str, PrOpenState]) -> Iterator[None]:
     def _probe(pr_url: str) -> PrOpenState:
         return states.get(pr_url, PrOpenState.UNKNOWN)
 
-    with patch.object(board_reconcile, "pr_open_state", _probe):
+    def _merge_state(ref: object) -> PrMergeState:
+        url = f"https://github.com/{ref.slug}/pull/{ref.pr_id}"
+        state = states.get(url, PrOpenState.UNKNOWN)
+        return PrMergeState(state=state.value, merge_commit_oid=_FORTY_HEX if state is PrOpenState.MERGED else "")
+
+    with (
+        patch.object(board_reconcile, "pr_open_state", _probe),
+        patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+            side_effect=lambda ref: SimpleNamespace(pr_merge_state=lambda: _merge_state(ref)),
+        ),
+    ):
         yield
 
 
-@contextlib.contextmanager
-def _rule_f_inert() -> Iterator[None]:
-    """Judge no URL, so rule F cannot act in a lane that is about another rule (#4711).
-
-    Rule F's candidates are the PRE-SHIP states most of these fixtures sit in, and it reads
-    the live forge — an unregistered overlay is the one thing that provably stops it.
-    """
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value={}):
-        yield
-
-
-@contextlib.contextmanager
-def _overlays_registered(name: str = "t3-teatree") -> Iterator[None]:
-    """Register *name* in the overlay registry so the per-URL probe is actually reached."""
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value={name: object()}):
-        yield
-
-
-def _merged_pr(ticket: Ticket) -> PullRequest:
-    return PullRequest.objects.create(
+def _merged_pr(ticket: Ticket, *, produce_evidence: bool = True) -> PullRequest:
+    row = PullRequest.objects.create(
         ticket=ticket,
         url=f"https://github.com/souliane/teatree/pull/{ticket.pk}",
         repo="souliane/teatree",
@@ -78,6 +66,13 @@ def _merged_pr(ticket: Ticket) -> PullRequest:
         overlay=ticket.overlay,
         state=PullRequest.State.MERGED,
     )
+    if produce_evidence:
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+            return_value=_merged_query(),
+        ):
+            assert merge_evidence_gate.record_confirmed_forge_merge(ticket)
+    return row
 
 
 def _audit_for(ticket: Ticket) -> None:
@@ -164,22 +159,107 @@ class TestMergedPrRowRule(TestCase):
 
     def test_gate_on_without_evidence_is_a_fail_closed_skip(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED)
-        _merged_pr(ticket)
+        _merged_pr(ticket, produce_evidence=False)
 
         with (
-            _merge_evidence(required=True),
-            patch.object(merge_evidence_gate, "forge_confirms_merged", return_value=False),
+            contextlib.nullcontext(),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=_merged_query(""),
+            ),
         ):
             assert reconcile_board(probe_forge=False).applied == ()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.NOT_STARTED
 
+    def test_persistent_merge_refusal_has_one_known_issue_and_resolves_on_success(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        _merged_pr(ticket)
+        with patch(
+            "teatree.core.gates.merge_evidence_gate.record_confirmed_forge_merge", side_effect=[False, False, True]
+        ):
+            assert len(reconcile_board(probe_forge=False).refused) == 1
+            assert len(reconcile_board(probe_forge=False).refused) == 1
+            issue = KnownIssue.objects.get(fingerprint=f"board-merge-refused:{ticket.pk}")
+            assert issue.is_open
+            assert issue.auto_resolve is False
+            assert KnownIssue.objects.filter(fingerprint=issue.fingerprint).count() == 1
+            assert len(reconcile_board(probe_forge=False).applied) == 1
+        issue.refresh_from_db()
+        assert not issue.is_open
+
+    def test_a_merge_refusal_clears_when_the_ticket_merges_by_another_path(self) -> None:
+        # The refusal is pinned against auto-resolve, so only a merge can clear it — whoever merges.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        _merged_pr(ticket)
+        with patch("teatree.core.gates.merge_evidence_gate.record_confirmed_forge_merge", return_value=False):
+            assert len(reconcile_board(probe_forge=False).refused) == 1
+        issue = KnownIssue.objects.get(fingerprint=f"board-merge-refused:{ticket.pk}")
+        assert issue.is_open
+
+        ticket.mark_merged()
+        ticket.save()
+
+        issue.refresh_from_db()
+        assert not issue.is_open
+
+    def test_a_failing_refusal_resolution_never_blocks_the_merge(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        _merged_pr(ticket)
+
+        def _a_write_the_database_refuses(_ticket_pk: int) -> int:
+            Ticket.objects.create(pk=ticket.pk, overlay="test")
+            return 0
+
+        with (
+            patch.object(KnownIssue.objects, "resolve_merge_refusal", side_effect=_a_write_the_database_refuses),
+            self.assertLogs("teatree.core.models.known_issue", level="ERROR") as logged,
+        ):
+            ticket.mark_merged()
+            ticket.save()
+
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.MERGED
+        assert any(f"ticket {ticket.pk}" in line for line in logged.output)
+
+    def test_a_merge_whose_save_fails_leaves_the_refusal_open(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        _merged_pr(ticket)
+        with patch("teatree.core.gates.merge_evidence_gate.record_confirmed_forge_merge", return_value=False):
+            reconcile_board(probe_forge=False)
+        save = Ticket.save
+        locked = "database is locked"
+
+        def _refused_once_merged(row: Ticket, *args: object, **kwargs: object) -> None:
+            if row.state == Ticket.State.MERGED:
+                raise OperationalError(locked)
+            save(row, *args, **kwargs)
+
+        with (
+            patch.object(Ticket, "save", autospec=True, side_effect=_refused_once_merged),
+            contextlib.suppress(OperationalError),
+        ):
+            reconcile_board(probe_forge=False)
+
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.REVIEW_REQUESTED
+        assert KnownIssue.objects.get(fingerprint=f"board-merge-refused:{ticket.pk}").is_open
+
+    def test_a_merge_refusal_stays_open_while_the_ticket_is_unmerged(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
+        _merged_pr(ticket)
+        with patch("teatree.core.gates.merge_evidence_gate.record_confirmed_forge_merge", return_value=False):
+            reconcile_board(probe_forge=False)
+
+        ticket.request_review()
+        ticket.save()
+
+        assert KnownIssue.objects.get(fingerprint=f"board-merge-refused:{ticket.pk}").is_open
+
     def test_gate_on_with_merge_audit_advances(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.NOT_STARTED)
-        _merged_pr(ticket)
+        _merged_pr(ticket, produce_evidence=False)
         _audit_for(ticket)
 
-        with _merge_evidence(required=True):
+        with contextlib.nullcontext():
             assert len(reconcile_board(probe_forge=False).applied) == 1
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
@@ -421,7 +501,7 @@ class TestForgeMergedRule(TestCase):
             issue_url="https://github.com/souliane/teatree/issues/3841",
         )
 
-        with _forge({}), _rule_f_inert():
+        with _forge({}), rule_f_inert():
             assert reconcile_board().probes == 0
 
 
@@ -439,8 +519,15 @@ class TestIssueDoneRule(TestCase):
 
     def test_completable_ticket_with_a_done_issue_advances(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PR_OPENED, issue_url=self.URL)
+        PullRequest.objects.record_opened(ticket=ticket, url="https://github.com/souliane/teatree/pull/3841")
 
-        with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}):
+        with (
+            patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=_merged_query(),
+            ),
+        ):
             report = reconcile_board()
 
         ticket.refresh_from_db()
@@ -451,7 +538,7 @@ class TestIssueDoneRule(TestCase):
         """Rule D's walk IS the author ladder, so a pre-ship row must never enter it."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED, issue_url=self.URL)
 
-        with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}), _rule_f_inert():
+        with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}), rule_f_inert():
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
@@ -464,7 +551,7 @@ class TestIssueDoneRule(TestCase):
         with (
             _forge({}),
             patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}),
-            _overlays_registered(),
+            overlays_registered(),
             patch(
                 "teatree.backends.issue_reads.get_code_host_for_url",
                 return_value=_ClosedIssueHost(),
@@ -478,8 +565,15 @@ class TestIssueDoneRule(TestCase):
 
     def test_the_issue_done_lane_is_idempotent(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PR_OPENED, issue_url=self.URL)
+        PullRequest.objects.record_opened(ticket=ticket, url="https://github.com/souliane/teatree/pull/3841")
 
-        with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}):
+        with (
+            patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=_merged_query(),
+            ),
+        ):
             assert len(reconcile_board().applied) == 1
             assert reconcile_board().applied == ()
 
@@ -508,194 +602,6 @@ class TestIssueDoneRule(TestCase):
             reviewer.refresh_from_db()
             assert reviewer.state == state, f"reviewer ticket moved from {state}"
             assert report.applied == ()
-
-
-class TestReopenedIssueRule(TestCase):
-    """Rule E — DELIVERED is terminal, so a reopened issue behind it was stranded (#4152)."""
-
-    URL = "https://github.com/souliane/teatree/issues/4133"
-
-    def _delivered(self, *, url: str = "", **kwargs: object) -> Ticket:
-        return Ticket.objects.create(
-            overlay="t3-teatree", state=Ticket.State.DELIVERED, issue_url=url or self.URL, **kwargs
-        )
-
-    def test_a_delivered_ticket_behind_a_reopened_issue_is_revived(self) -> None:
-        ticket = self._delivered()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            report = reconcile_board()
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.WORK_STARTED
-        assert [t.action for t in report.applied] == [BoardAction.REVIVED_REOPENED]
-
-    def test_a_delivered_ticket_whose_issue_is_not_reopened_is_left_alone(self) -> None:
-        """The false-positive population — delivered, issue never closed — must not be re-run."""
-        ticket = self._delivered()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)):
-            assert reconcile_board().applied == ()
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
-
-    def test_the_reopened_lane_is_idempotent(self) -> None:
-        ticket = self._delivered()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            assert len(reconcile_board().applied) == 1
-            assert reconcile_board().applied == ()
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.WORK_STARTED
-
-    def test_a_reviewer_ticket_is_never_revived(self) -> None:
-        """A reviewer ticket's ``issue_url`` IS a PR — rules B/C own it, not this one."""
-        reviewer = self._delivered(role=Ticket.Role.REVIEWER)
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            assert reconcile_board().applied == ()
-
-        reviewer.refresh_from_db()
-        assert reviewer.state == Ticket.State.DELIVERED
-
-    def test_dry_run_reports_the_revival_without_writing(self) -> None:
-        ticket = self._delivered()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            report = reconcile_board(dry_run=True)
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
-        assert [t.to_state for t in report.transitions] == [Ticket.State.WORK_STARTED]
-        assert report.applied == ()
-
-    def _walk_back_to_delivered(self, ticket: Ticket) -> None:
-        """Return a revived ticket to DELIVERED the way the ladder does.
-
-        ``test()`` is the step that matters: it rewrites ``extra`` through
-        ``validated_ticket_extra``, so a counter it does not know is dropped here.
-        """
-        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.CODED)
-        ticket.refresh_from_db()
-        ticket.test(passed=True)
-        ticket.save()
-        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.DELIVERED)
-        ticket.refresh_from_db()
-
-    def _capped(self) -> Ticket:
-        ticket = self._delivered()
-        Ticket.objects.filter(pk=ticket.pk).update(extra={"reopen_revivals": board_reconcile.MAX_REOPEN_REVIVALS})
-        ticket.refresh_from_db()
-        self._walk_back_to_delivered(ticket)
-        return ticket
-
-    def test_the_cap_fires_after_max_revivals_across_ladder_walks(self) -> None:
-        """A revival only recurs after a full ladder walk, so the counter must survive one (#4152)."""
-        ticket = self._delivered()
-        applied = 0
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            for _ in range(board_reconcile.MAX_REOPEN_REVIVALS + 2):
-                applied += len(reconcile_board().applied)
-                ticket.refresh_from_db()
-                self._walk_back_to_delivered(ticket)
-
-        assert applied == board_reconcile.MAX_REOPEN_REVIVALS
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"reopen-revival-capped:{ticket.pk}").count() == 1
-
-    def test_the_revival_cap_halts_and_escalates_exactly_once(self) -> None:
-        """The cap must not become the silence this rule exists to remove."""
-        ticket = self._capped()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            assert reconcile_board().applied == ()
-            assert reconcile_board().applied == ()
-
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"reopen-revival-capped:{ticket.pk}").count() == 1
-
-    def test_an_answered_escalation_is_never_re_asked(self) -> None:
-        """Answering does not move the ticket off DELIVERED, so a per-PENDING guard would re-ask hourly."""
-        ticket = self._capped()
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=({self.URL}, 1)), _rule_f_inert():
-            reconcile_board()
-            DeferredQuestion.objects.update(answered_at=timezone.now())
-            reconcile_board()
-
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"reopen-revival-capped:{ticket.pk}").count() == 1
-
-    def test_the_live_probe_path_revives_on_a_definite_reopened_verdict(self) -> None:
-        ticket = self._delivered()
-
-        with (
-            _overlays_registered(),
-            patch.object(board_reconcile, "issue_reopen_state", return_value=IssueReopenState.REOPENED) as probe,
-        ):
-            report = reconcile_board()
-
-        assert probe.call_args.args[1] == self.URL
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.WORK_STARTED
-        assert [t.action for t in report.applied] == [BoardAction.REVIVED_REOPENED]
-
-    def test_an_unknown_verdict_never_revives(self) -> None:
-        """Fail-CLOSED: only a DEFINITE reopened counts, so an unreachable forge is inert."""
-        ticket = self._delivered()
-
-        with (
-            _overlays_registered(),
-            patch.object(board_reconcile, "issue_reopen_state", return_value=IssueReopenState.UNKNOWN) as probe,
-        ):
-            assert reconcile_board().applied == ()
-
-        assert probe.call_count == 1
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.DELIVERED
-
-    def test_the_probe_budget_bounds_the_reopen_reads(self) -> None:
-        for n in range(3):
-            self._delivered(url=f"https://github.com/souliane/teatree/issues/70{n}")
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)) as urls:
-            reconcile_board(probe_budget=1)
-
-        assert len(urls.call_args.args[0]) == 1
-
-    def test_rule_e_is_not_capped_when_rule_f_has_no_candidates(self) -> None:
-        """#4808: the reservation is demand-aware — F's cap can't exceed its own candidates.
-
-        Ten DELIVERED candidates outnumber the ten-probe budget and rule F is
-        completely inert (no pre-ship tickets at all). A FIXED half-split
-        (``remaining // 2``) would still hand F a reservation of 5 it has nothing
-        to spend on and cap rule E at the other 5, stranding half the budget —
-        measured at 5 probes/10 on the pre-fix split versus all 10 here.
-        """
-        for n in range(10):
-            self._delivered(url=f"https://github.com/souliane/teatree/issues/60{n}")
-
-        with patch.object(board_reconcile, "_reopened_issue_urls", return_value=(set(), 0)) as urls:
-            reconcile_board(probe_budget=10)
-
-        assert len(urls.call_args.args[0]) == 10
-
-    def test_a_url_no_overlay_owns_is_never_charged_as_a_probe(self) -> None:
-        """#4808 FINDING 3 (pre-existing): the reported spend counts reads ISSUED, not candidates considered.
-
-        Rule F already had this guarantee (``_closed_issue_verdicts``); rule E's
-        ``_reopened_issue_transitions`` used to charge ``len(probed)`` regardless of
-        whether any read was actually issued, so a ticket whose overlay was not
-        installed here was charged for a read that never happened.
-        """
-        self._delivered()
-
-        with patch("teatree.core.overlay_loader.get_all_overlays", return_value={}):
-            report = reconcile_board()
-
-        assert (report.applied, report.probes) == ((), 0)
 
 
 class TestReportIsObservable(TestCase):

@@ -5,9 +5,7 @@ binaries enter the repo. A plan issued outside the repository cannot do that —
 its readers have no access to that artifacts directory — so those captures are
 committed beside it under ``test-plans/evidence/<plan name>/<env>/`` and embedded
 by a relative link. Each side owns its own directory, so a local and a stack
-capture of the same slot never overwrite each other. Captures committed flat,
-before sides had directories, migrate to their recorded side when it is safe
-to do so; a flat capture still cited by another side remains in place.
+capture of the same slot never overwrite each other.
 
 That exception is where evidence stopped being validated: the citation path runs
 the preflight over the manifest's files, but a capture placed in the evidence
@@ -21,7 +19,6 @@ name; ``skip`` is the same user-authorised bypass the manifest preflight carries
 
 import re
 import shutil
-from collections.abc import Collection
 from pathlib import Path
 
 from teatree.core.evidence.bdd_scenario_source import BddSourceError, validate_bdd_source
@@ -29,7 +26,7 @@ from teatree.core.evidence.test_plan_validation import TestPlanImageValidationEr
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV, declared_invocation_cwd
 from teatree.core.management.commands._test_plan.file_store import PLAN_DIR_NAME
 from teatree.core.management.commands._test_plan.render import SideManifest, WorkflowEmbed
-from teatree.core.management.commands._test_plan.state import PlanState, TestPlanValidationError
+from teatree.core.management.commands._test_plan.state import TestPlanValidationError
 
 EVIDENCE_DIR_NAME = "evidence"
 PLANS_DIR_DEFAULT = PLAN_DIR_NAME
@@ -41,8 +38,6 @@ __all__ = [
     "committed_captures",
     "embed_side_captures",
     "evidence_dir_for",
-    "legacy_flat_capture_migration",
-    "migrate_legacy_flat_captures",
     "refuse_invalid_committed_captures",
     "resolve_default_plans_dir",
     "verify_plans_dir",
@@ -89,41 +84,10 @@ def committed_captures(evidence_dir: Path) -> list[Path]:
     return sorted(p for p in evidence_dir.rglob("*") if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES)
 
 
-def legacy_flat_capture_migration(
-    evidence_dir: Path, *, incoming: dict[str, list[Path]], prior: PlanState
-) -> dict[Path, Path]:
-    """Map each flat capture that only the re-captured side cites to that side's directory.
-
-    A flat capture another side still cites stays put, so an identical re-capture meets it
-    in the duplicate gate as the cross-side duplicate it is.
-    """
-    migrations: dict[Path, Path] = {}
-    for env, captures in incoming.items():
-        for capture in captures:
-            legacy = evidence_dir / capture.name
-            citation = f"{EVIDENCE_DIR_NAME}/{evidence_dir.name}/{capture.name}"
-            if legacy.is_file() and _legacy_capture_sides(prior, citation=citation) == {env}:
-                migrations[legacy] = evidence_dir / env / capture.name
-    return migrations
-
-
-def migrate_legacy_flat_captures(migrations: dict[Path, Path], *, prior: PlanState) -> None:
-    """Move safe legacy captures and update their persisted plan citations."""
-    for legacy, destination in migrations.items():
-        legacy_citation = f"{EVIDENCE_DIR_NAME}/{legacy.parent.name}/{legacy.name}"
-        destination_citation = (
-            f"{EVIDENCE_DIR_NAME}/{destination.parent.parent.name}/{destination.parent.name}/{destination.name}"
-        )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        legacy.replace(destination)
-        _rewrite_capture_citation(prior, old=legacy_citation, new=destination_citation)
-
-
 def refuse_invalid_committed_captures(
     evidence_dir: Path,
     *,
     incoming: dict[str, list[Path]],
-    superseded_legacy: Collection[Path] = (),
     skip: bool = False,
 ) -> None:
     """Refuse the run when the captures this plan will carry in git are not evidence.
@@ -131,42 +95,17 @@ def refuse_invalid_committed_captures(
     Validates the set the repo holds AFTER this run — the already-committed
     captures this run does not replace, plus the ones it is about to write —
     so a re-capture that replaces every stale image passes while a leftover is
-    named. The duplicate check spans every side's directory and legacy flat
-    captures, except a legacy capture this run migrates. Raises
+    named. The duplicate check spans every side's directory. Raises
     :class:`TestPlanValidationError`; nothing is copied or written.
     """
     destinations = {evidence_dir / env / path.name for env, paths in incoming.items() for path in paths}
-    resulting = [
-        path for path in committed_captures(evidence_dir) if path not in destinations and path not in superseded_legacy
-    ]
+    resulting = [path for path in committed_captures(evidence_dir) if path not in destinations]
     resulting.extend(path for paths in incoming.values() for path in paths)
     try:
         validate_test_plan_images(resulting, skip=skip)
     except TestPlanImageValidationError as exc:
         msg = f"{exc} (captures committed under {evidence_dir})"
         raise TestPlanValidationError(msg) from exc
-
-
-def _legacy_capture_sides(prior: PlanState, *, citation: str) -> set[str]:
-    """The plan-state sides whose workflow embeds cite a legacy capture."""
-    return {
-        env
-        for env in ("dev", "local", "stack")
-        if any(_workflow_cites(workflow, citation=citation) for workflow in prior[env]["workflows"].values())
-    }
-
-
-def _workflow_cites(workflow: WorkflowEmbed, *, citation: str) -> bool:
-    """Whether a workflow embed refers to *citation*."""
-    return citation in workflow["video_md"] or any(citation in image for image in workflow["image_md"])
-
-
-def _rewrite_capture_citation(prior: PlanState, *, old: str, new: str) -> None:
-    """Replace a migrated capture's persisted image or video embed."""
-    for env in ("dev", "local", "stack"):
-        for workflow in prior[env]["workflows"].values():
-            workflow["video_md"] = workflow["video_md"].replace(old, new)
-            workflow["image_md"] = [image.replace(old, new) for image in workflow["image_md"]]
 
 
 def verify_plans_dir(plans_dir: Path, *, skip: bool = False) -> list[str]:

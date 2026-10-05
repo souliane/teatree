@@ -9,16 +9,10 @@ amortization schedules, requirement docs). A diff-only verdict
 checks that the code compiles, not that it matches the specified requirements
 and business rules.
 
-When a project opts in by setting ``require_review_context`` (per-overlay or
-global ``[teatree]``), entering the ``reviewing`` phase is refused until a
+Entering the ``reviewing`` phase is refused until a
 durable ``review_context`` artifact attests the retrieval: the work item was
 fetched from its source and at least one referenced document was downloaded +
 analyzed against the diff.
-
-Opt-in default
-    ``require_review_context`` is ``False`` unless configured. With it unset the
-    gate is a NO-OP — projects that do not require deep retrieval keep recording
-    ``reviewing`` unchanged.
 
 Satisfying evidence
     ``ticket.extra['review_context']`` whose ``work_item`` names the fetched
@@ -34,7 +28,6 @@ non-zero exit.
 
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.types import ReviewContext
 
@@ -44,16 +37,6 @@ if TYPE_CHECKING:
 
 class ReviewContextError(RuntimeError):
     """A ``reviewing`` attestation lacked recorded referenced-context retrieval."""
-
-
-def review_context_required(overlay: str | None = None) -> bool:
-    """Whether the deep-retrieval gate is in force for *overlay* (overlay -> global).
-
-    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
-    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
-    resolves the ambient overlay as before.
-    """
-    return get_effective_settings(overlay).require_review_context
 
 
 def recorded_review_context(ticket: "Ticket") -> ReviewContext:
@@ -80,21 +63,18 @@ def is_complete(context: ReviewContext) -> bool:
 def check_review_context(ticket: "Ticket") -> None:
     """Refuse a ``reviewing`` attestation that no deep-retrieval evidence backs.
 
-    NO-OP when ``require_review_context`` is off (the opt-in default).
-    Otherwise the durable ``review_context`` artifact must name the fetched
+    The durable ``review_context`` artifact must name the fetched
     work item, list a downloaded reference, and record its analysis.
     """
-    if not review_context_required(ticket.overlay or None):
-        return
     if is_complete(recorded_review_context(ticket)):
         return
     msg = (
         f"`lifecycle visit-phase {ticket.pk} reviewing` requires recorded "
-        f"referenced-context retrieval (require_review_context): the work item "
+        f"referenced-context retrieval: the work item "
         f"must be fetched from its source, every link in the MR description + "
         f"ticket followed, and each referenced document downloaded + analyzed "
         f"against the diff. Record it with `lifecycle record-review-context "
-        f"{ticket.pk} --work-item <url> --document <url> --analysis <how-it-was-"
+        f"{ticket.pk} --work-item <url> --documents <urls> --analysis <how-it-was-"
         f"checked>` once the retrieval is done, then retry."
     )
     raise ReviewContextError(msg)
@@ -103,12 +83,9 @@ def check_review_context(ticket: "Ticket") -> None:
 def review_context_satisfied(ticket: "Ticket") -> bool:
     """Whether the ``-> reviewing`` deep-retrieval precondition is met (#2385).
 
-    The boolean ``review()`` FSM condition. NO-OP (``True``) when the
-    ``require_review_context`` knob is off, else true only when a complete
+    The boolean ``review()`` FSM condition is true only when a complete
     ``review_context`` artifact is recorded.
     """
-    if not review_context_required(ticket.overlay or None):
-        return True
     return is_complete(recorded_review_context(ticket))
 
 

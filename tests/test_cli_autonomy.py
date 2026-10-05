@@ -134,13 +134,13 @@ class TestAutonomySetPerOverlay(TestCase):
     def test_defaults_to_active_overlay(self) -> None:
         """With no --overlay, the value lands in the active overlay's scope (real resolver).
 
-        Overlay discovery is DB-home: a ``t3-active`` entry in the ``overlays``
-        registry (read cold from ``T3_CONFIG_DB``) makes it the resolvable active
-        overlay. The autonomy value itself is DB-home, so the write lands as an
-        overlay-scoped ``ConfigSetting`` row.
+        Overlay discovery is DB-home: a ``t3-active`` entry with a real project
+        path in the ``overlays`` registry (read cold from ``T3_CONFIG_DB``) makes
+        it the resolvable active overlay. The autonomy value itself is DB-home,
+        so the write lands as an overlay-scoped ``ConfigSetting`` row.
         """
         config_db = self.tmp_path / "config.sqlite3"
-        _seed_overlays_registry(config_db, {"t3-active": {}})
+        _seed_overlays_registry(config_db, {"t3-active": {"path": str(self.tmp_path)}})
         self.monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
         self.monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-active")

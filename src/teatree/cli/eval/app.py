@@ -448,7 +448,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         gate_cost_regression=gate_cost_regression,
         gate_cost_bounds=gate_cost_bounds,
     )
-    # Checked on the RESOLVED backend (--benchmark/--model/--preset force api above),
+    # Checked on the RESOLVED fresh backend (benchmark/model/preset select a fresh lane above),
     # and before docker routing, so the refusal costs no container and no model call.
     require_metering_backend_for_cost_bounds(backend=backend, gate_cost_bounds=gate_cost_bounds)
     route_to_docker_if_needed(
@@ -508,7 +508,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         models=None if benchmark else models,
     )
     specs = select_specs(discover_specs(), name, lane=lane, surface=surface, shard=shard)
-    grader = make_grader(enabled=judge, judge_budget=judge_budget)
+    grader = make_grader(enabled=judge, judge_budget=judge_budget, backend=backend)
     # "If we run the fresh-run lane, of course we want it executed." Both fresh
     # Claude backends (api and the CLI-free anthropic_api — and the always-fresh-run
     # --trials/--models lanes) arm the all-skipped gate unconditionally: a fresh run

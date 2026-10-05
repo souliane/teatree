@@ -13,8 +13,8 @@ it. Bare ``t3 agent`` with no task argument execs an INTERACTIVE ``claude`` and
 deliberately pins nothing — that session is attended, and its mode is the
 operator's to choose.
 
-:data:`READER_DEFAULT_DENY` is pinned by the #116 quarantined reader and the eval
-judge: ``dontAsk`` denies whatever no allow rule permits. The judge also sets
+:data:`READER_DEFAULT_DENY` is pinned by the eval judge: ``dontAsk`` denies
+whatever no allow rule permits. The judge also sets
 an empty tool list explicitly, so it can run under a root CI user without
 requesting ``bypassPermissions``.
 

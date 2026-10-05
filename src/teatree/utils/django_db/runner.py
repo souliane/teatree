@@ -5,9 +5,11 @@ pipenv-vs-uv dependency-manager detection lives in one place; a hand-rolled
 second prefix silently diverges (pinned by ``test_runner_prefix_chokepoint``).
 """
 
+import os
 import sys
 from pathlib import Path
 
+from teatree.paths import PathHelpers
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 from teatree.utils.venv_artifacts import foreign_venv_interpreter
 
@@ -39,9 +41,12 @@ def runner_prefix(repo: Path) -> list[str]:
     overlay ``managepy`` / ``db_worker`` route here) so the pipenv-vs-uv
     detection lives in one place; a hand-rolled second prefix silently diverges
     (souliane/teatree#1976, #1973; pinned by ``test_runner_prefix_chokepoint``).
+    A project inside an image generation's sealed tree runs under the image's own interpreter.
     Pipenv repos (:func:`_is_pipenv_repo`) use ``pipenv run`` with
     ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``.
     """
+    if PathHelpers.within_baked_generation(repo):
+        return [sys.executable]
     if _is_pipenv_repo(repo):
         return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
     return ["uv", "--directory", str(repo), "run", "python"]
@@ -87,7 +92,10 @@ def project_env_import_error(repo: Path, module: str = "django.apps") -> str | N
         return None
     try:
         probe = run_allowed_to_fail(
-            [str(interpreter), "-c", f"import {module}"], expected_codes=None, timeout=_IMPORT_PROBE_TIMEOUT_SECONDS
+            [str(interpreter), "-c", f"import {module}"],
+            expected_codes=None,
+            env={**os.environ, "PYTHON_COLORS": "0"},
+            timeout=_IMPORT_PROBE_TIMEOUT_SECONDS,
         )
     except (OSError, TimeoutExpired):
         return None

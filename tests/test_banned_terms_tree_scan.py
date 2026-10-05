@@ -26,13 +26,13 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
-from typer.main import get_command
 from typer.testing import CliRunner
 
 from teatree.cli import banned_terms as banned_terms_cli
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.core import banned_terms_tree
 from teatree.hooks import banned_terms_tree_scan
+from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from tests._ansi import strip_ansi
 
 # Synthetic high-confidence brand — never a real tenant name. Used so the
@@ -43,7 +43,7 @@ SYNTH_BRAND = "zzsynthbrand"
 @pytest.fixture(autouse=True)
 def _clear_brands_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop any ambient brand env so tests start from a clean source."""
-    monkeypatch.delenv("TEATREE_BANNED_BRANDS", raising=False)
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -77,25 +77,28 @@ def _repo_with(tmp_path: Path, relpath: str, content: str) -> Path:
 
 
 def _seed_db(tmp_path: Path, *, brands: list[str], banned_terms: list[str] | None = None) -> Path:
-    """Build a ``teatree_config_setting`` DB carrying the ``banned_brands`` (and terms) rows."""
+    """Build a ``teatree_config_setting`` DB carrying the ``banned_term_registry`` row."""
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     conn.execute(
         "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
+    registry = {"leak": brands, "prose_collider": banned_terms or []}
     conn.execute(
-        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_brands', ?)",
-        (json.dumps(brands),),
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps(registry),),
     )
-    if banned_terms is not None:
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-            (json.dumps(banned_terms),),
-        )
     conn.commit()
     conn.close()
     return db
+
+
+def _replace_registry(db: Path, registry: dict[str, list[str]]) -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE teatree_config_setting SET value=? WHERE key='banned_term_registry'", (json.dumps(registry),))
+    conn.commit()
+    conn.close()
 
 
 def _empty_db(tmp_path: Path) -> Path:
@@ -186,9 +189,10 @@ class TestScanTree:
         repo = _repo_with(tmp_path, "src/app.py", "WORKTREE = 'wt_777_generic'\n")
         assert banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,)) == []
 
-    def test_no_brands_configured_is_clean(self, tmp_path: Path) -> None:
+    def test_no_brands_configured_refuses_scan(self, tmp_path: Path) -> None:
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
-        assert banned_terms_tree_scan.scan_tree(repo, ()) == []
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError, match=r"banned_term_registry\.leak is empty"):
+            banned_terms_tree_scan.scan_tree(repo, ())
 
     def test_untracked_file_is_not_scanned(self, tmp_path: Path) -> None:
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
@@ -302,13 +306,10 @@ class TestScanTreeOfAVendoredSubtree:
 
 
 class TestLoadBrandTerms:
-    """``load_brand_terms`` separates UNSET from explicit-empty.
+    """``load_brand_terms`` requires a populated leak list.
 
-    A genuinely-absent brand list — no env, a missing ``banned_brands`` row, or
-    a wrong-typed value — is refused LOUD with ``BannedTermsUnsetError`` so a
-    load bug can never masquerade as "the operator chose no brands". An explicit
-    ``banned_brands = []`` is the deliberate no-brands choice and is allowed.
-    ``$TEATREE_BANNED_BRANDS`` keeps precedence and short-circuits the raise.
+    An absent, malformed, or empty leak class raises ``BannedTermsUnsetError``.
+    ``$TEATREE_TERM_REGISTRY`` keeps precedence and short-circuits the raise.
     """
 
     def test_reads_high_confidence_brands(self, tmp_path: Path) -> None:
@@ -321,24 +322,26 @@ class TestLoadBrandTerms:
         db = _seed_db(tmp_path, brands=[SYNTH_BRAND], banned_terms=["ship"])
         assert banned_terms_tree_scan.load_brand_terms(db_path=db) == (SYNTH_BRAND,)
 
-    def test_explicit_empty_brands_list_is_allowed(self, tmp_path: Path) -> None:
-        # The deliberate no-brands choice: an explicit empty list is NOT unset.
+    def test_explicit_empty_brands_list_is_refused(self, tmp_path: Path) -> None:
         db = _seed_db(tmp_path, brands=[])
-        assert banned_terms_tree_scan.load_brand_terms(db_path=db) == ()
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError, match="no terms for the tree scan"):
+            banned_terms_tree_scan.load_brand_terms(db_path=db)
 
     def test_missing_db_with_no_env_raises(self, tmp_path: Path) -> None:
         with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
             banned_terms_tree_scan.load_brand_terms(db_path=tmp_path / "absent.sqlite3")
 
-    def test_missing_banned_brands_key_raises(self, tmp_path: Path) -> None:
+    def test_a_registry_without_a_leak_class_refuses(self, tmp_path: Path) -> None:
         db = _seed_db(tmp_path, brands=[SYNTH_BRAND], banned_terms=["ship"])
-        # Drop the banned_brands row so only banned_terms remains.
-        conn = sqlite3.connect(str(db))
-        conn.execute("DELETE FROM teatree_config_setting WHERE key='banned_brands'")
-        conn.commit()
-        conn.close()
-        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+        _replace_registry(db, {"prose_collider": ["ship"]})
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError, match="no terms for the tree scan"):
             banned_terms_tree_scan.load_brand_terms(db_path=db)
+
+    def test_a_registry_holding_only_leak_terms_still_enforces_them(self, tmp_path: Path) -> None:
+        db = _seed_db(tmp_path, brands=[SYNTH_BRAND], banned_terms=["ship"])
+        _replace_registry(db, {"leak": [SYNTH_BRAND]})
+        assert banned_terms_tree_scan.load_brand_terms(db_path=db) == (SYNTH_BRAND,)
+        assert SYNTH_BRAND in resolve_banned_terms(db_path=db)
 
     def test_no_banned_brands_row_raises(self, tmp_path: Path) -> None:
         with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
@@ -346,11 +349,11 @@ class TestLoadBrandTerms:
 
     def test_env_var_takes_precedence_over_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _seed_db(tmp_path, brands=["fromdb"])
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", f" {SYNTH_BRAND} , other ")
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND, "other"], "prose_collider": []}))
         assert banned_terms_tree_scan.load_brand_terms(db_path=db) == (SYNTH_BRAND, "other")
 
     def test_env_var_supplies_brands_without_a_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND], "prose_collider": []}))
         assert banned_terms_tree_scan.load_brand_terms(db_path=tmp_path / "absent.sqlite3") == (SYNTH_BRAND,)
 
     def test_corrupt_db_value_raises(self, tmp_path: Path) -> None:
@@ -358,7 +361,9 @@ class TestLoadBrandTerms:
         # the load-bug-shaped UNSET → refused LOUD, never scanned as empty.
         db = _empty_db(tmp_path)
         conn = sqlite3.connect(str(db))
-        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_brands', ?)", ("{",))
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)", ("{",)
+        )
         conn.commit()
         conn.close()
         with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
@@ -368,8 +373,8 @@ class TestLoadBrandTerms:
         db = _empty_db(tmp_path)
         conn = sqlite3.connect(str(db))
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_brands', ?)",
-            (json.dumps("not-a-list"),),
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": "not-a-list", "prose_collider": []}),),
         )
         conn.commit()
         conn.close()
@@ -380,26 +385,17 @@ class TestLoadBrandTerms:
 class TestBannedTermsUnsetErrorMessageIsKeyAware:
     """``for_key`` phrases the message for the actual key it is raised for.
 
-    The same class serves both the ``banned_brands`` and ``banned_terms``
-    keys, so a brands failure must read in brand vocabulary ("no brands",
-    "banned-brands list") instead of the generic "terms" wording, while the
-    terms failure keeps its original phrasing.
+    The registry message names the required leak class and the JSON secret.
     """
 
-    def test_brands_key_reads_in_brand_vocabulary(self) -> None:
-        message = str(banned_terms_tree_scan.BannedTermsUnsetError.for_key("banned_brands", "TEATREE_BANNED_BRANDS"))
-        assert "banned_brands is unset" in message
-        assert "if you intend no brands" in message
-        assert "unloadable banned-brands list" in message
-        assert "$TEATREE_BANNED_BRANDS" in message
+    def test_registry_message_names_required_classes(self) -> None:
+        message = str(
+            banned_terms_tree_scan.BannedTermsUnsetError.for_key("banned_term_registry", "TEATREE_TERM_REGISTRY")
+        )
+        assert "banned_term_registry is unset" in message
+        assert "nonempty leak list" in message
+        assert "$TEATREE_TERM_REGISTRY" in message
         assert "no terms" not in message
-
-    def test_terms_key_keeps_term_vocabulary(self) -> None:
-        message = str(banned_terms_tree_scan.BannedTermsUnsetError.for_key("banned_terms"))
-        assert "banned_terms is unset" in message
-        assert "if you intend no terms" in message
-        assert "unloadable banned-terms list" in message
-        assert "secret" not in message
 
 
 class TestCommonWordIsNotSubstringMatched:
@@ -419,14 +415,12 @@ class TestScanCommittedTree:
         repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
         result = banned_terms_tree.scan_committed_tree(repo, config_path=db)
         assert [f.path for f in result.findings] == ["src/app.py"]
-        assert result.brands_configured is True
 
     def test_env_var_brands_without_a_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND], "prose_collider": []}))
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
         result = banned_terms_tree.scan_committed_tree(repo)
         assert len(result.findings) == 1
-        assert result.brands_configured is True
 
     def test_no_brands_anywhere_raises(self, tmp_path: Path) -> None:
         # Genuinely unset (no DB row, no env) is refused LOUD by the loader and
@@ -436,14 +430,11 @@ class TestScanCommittedTree:
         with pytest.raises(banned_terms_tree.BannedTermsUnsetError):
             banned_terms_tree.scan_committed_tree(repo, config_path=tmp_path / "absent.sqlite3")
 
-    def test_explicit_empty_brands_is_inert_not_raise(self, tmp_path: Path) -> None:
-        # An explicit empty banned_brands is the deliberate no-brands choice:
-        # the scan is INERT (brands_configured False), never a raise.
+    def test_explicit_empty_brands_refuses_before_scanning(self, tmp_path: Path) -> None:
         db = _seed_db(tmp_path, brands=[], banned_terms=["ship"])
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
-        result = banned_terms_tree.scan_committed_tree(repo, config_path=db)
-        assert result.findings == []
-        assert result.brands_configured is False
+        with pytest.raises(banned_terms_tree.BannedTermsUnsetError, match="no terms for the tree scan"):
+            banned_terms_tree.scan_committed_tree(repo, config_path=db)
 
 
 class TestScanTreeCli:
@@ -465,7 +456,7 @@ class TestScanTreeCli:
 
     def test_env_var_brand_list_blocks_without_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # The CI path: no DB row, brand list comes from the env.
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND], "prose_collider": []}))
         repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
         result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
         assert result.exit_code == 1
@@ -483,13 +474,11 @@ class TestScanTreeCli:
 
 
 class TestScanTreeCliInertSignal:
-    """Unset brands FAIL LOUD; an explicit empty list stays INERT.
+    """Missing or empty brand lists both fail loud.
 
     The #1591 design announced an INERT backstop but still exited 0 for BOTH
     a genuinely-absent ``banned_brands`` and a deliberate empty list — the
-    exact conflation this rule forbids. Genuinely-unset now hard-fails (exit 2),
-    while an explicit ``banned_brands = []`` keeps the loud INERT warning at
-    exit 0 (the operator's deliberate no-brands choice).
+    exact conflation this rule forbids. Both now hard-fail (exit 2).
     """
 
     def test_unset_brands_exits_misconfigured(self, tmp_path: Path) -> None:
@@ -499,15 +488,13 @@ class TestScanTreeCliInertSignal:
         assert "MISCONFIGURED" in result.stdout
         assert "unset" in result.stdout.lower()
 
-    def test_empty_brands_list_is_inert(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An explicit empty banned_brands is the deliberate no-brands choice:
-        # a loud INERT warning, exit 0 — NOT a hard fail and NOT a raise.
+    def test_empty_brands_list_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _seed_db(tmp_path, brands=[], banned_terms=["ship", "delivery"])
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
         result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
-        assert result.exit_code == 0
-        assert "INERT" in result.stdout
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in result.stdout
 
     def test_populated_brands_does_not_warn_inert(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _seed_db(tmp_path, brands=[SYNTH_BRAND])
@@ -519,80 +506,26 @@ class TestScanTreeCliInertSignal:
         assert "clean" in result.stdout
 
 
-class TestScanTreeRequireBrandsHardFail:
-    """Fix #3: ``--require-brands`` hard-fails when brands aren't configured.
+class TestScanTreeRequiredBrands:
+    """A populated leak class is required for every full-tree scan."""
 
-    Without the flag the inert state is a LOUD warning + exit 0 (local dev
-    stays green). With the flag — the form CI passes — an unpopulated brand
-    list is MISCONFIGURED (exit 2, distinct from exit 1 = findings), so a
-    missing TEATREE_BANNED_BRANDS secret reds the job instead of running a
-    fake-green no-op scan.
-    """
-
-    def test_require_brands_hard_fails_when_no_brands(self, tmp_path: Path) -> None:
-        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
-        assert result.exit_code == 2
-        assert "MISCONFIGURED" in result.stdout
-
-    def test_require_brands_with_empty_brands_list_hard_fails(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        db = _seed_db(tmp_path, brands=[], banned_terms=["ship", "delivery"])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
-        assert result.exit_code == 2
-        assert "MISCONFIGURED" in result.stdout
-
-    def test_without_flag_explicit_empty_brands_stays_green(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Anti-vacuity for the flag: the SAME explicit-empty config that exits 2
-        # under --require-brands must exit 0 without it, proving the hard-fail is
-        # the flag's doing. (Genuinely-unset brands now fail LOUD regardless of
-        # the flag — see TestScanTreeCliInertSignal.)
-        db = _seed_db(tmp_path, brands=[], banned_terms=["ship"])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
-        assert result.exit_code == 0
-        assert "INERT" in result.stdout
-
-    def test_require_brands_with_brands_configured_runs_normally(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The flag only hard-fails on the misconfigured state; a populated brand
-        # list scans normally and the flag is a no-op (exit 0 on a clean tree).
+    def test_brands_configured_runs_normally(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _seed_db(tmp_path, brands=[SYNTH_BRAND])
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         repo = _repo_with(tmp_path, "src/app.py", "WORKTREE = 'wt_777_generic'\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
         assert result.exit_code == 0
         assert "clean" in result.stdout
 
-    def test_require_brands_with_brands_still_reports_findings_as_exit_1(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # A dirty tree under --require-brands is exit 1 (findings), NOT exit 2 —
+    def test_brands_still_reports_findings_as_exit_1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A dirty tree is exit 1 (findings), NOT exit 2 —
         # the two failure modes stay distinct.
         db = _seed_db(tmp_path, brands=[SYNTH_BRAND])
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
         assert result.exit_code == 1
         assert "src/app.py" in result.stdout
-
-    def test_help_text_describes_explicit_empty_governance_not_unset(self) -> None:
-        # The flag governs ONLY the explicit-empty list; a genuinely-unset list
-        # fails loud regardless. The help must reflect that — not the stale
-        # framing that tied the flag to a missing TEATREE_BANNED_BRANDS secret.
-        scan_tree = get_command(banned_terms_app).commands["scan-tree"]
-        option = next(p for p in scan_tree.params if "--require-brands" in p.opts)
-        help_text = option.help or ""
-        assert "banned_brands = []" in help_text
-        assert "regardless" in help_text
-        assert "missing TEATREE_BANNED_BRANDS secret reds" not in help_text
 
 
 class TestEnumerationFailureIsLoud:
@@ -621,11 +554,11 @@ class TestEnumerationFailureIsLoud:
     def test_cli_exits_misconfigured_and_never_prints_clean(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND], "prose_collider": []}))
         plain = tmp_path / "plain"
         plain.mkdir()
         (plain / "leak.md").write_text(f"{SYNTH_BRAND} leaked\n", encoding="utf-8")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(plain), "--require-brands"])
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(plain)])
         assert result.exit_code == 2
         assert "MISCONFIGURED" in strip_ansi(result.stdout)
         assert "clean (0 findings)" not in strip_ansi(result.stdout)
@@ -634,38 +567,25 @@ class TestEnumerationFailureIsLoud:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The control: the ONLY difference is the enclosing git repo, and it exits 1."""
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [SYNTH_BRAND], "prose_collider": []}))
         repo = _repo_with(tmp_path, "leak.md", f"{SYNTH_BRAND} leaked\n")
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo), "--require-brands"])
+        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(repo)])
         assert result.exit_code == 1
         assert "leak.md" in strip_ansi(result.stdout)
 
-    def test_allow_unset_does_not_downgrade_an_unreadable_tree(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """``--allow-unset`` governs the BRAND-list axis only — a fork can still enumerate."""
-        monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
-        plain = tmp_path / "plain"
-        plain.mkdir()
-        result = CliRunner().invoke(banned_terms_app, ["scan-tree", "--repo-root", str(plain), "--allow-unset"])
-        assert result.exit_code == 2
-        assert "MISCONFIGURED" in strip_ansi(result.stdout)
 
+class TestBannedTermsTreeCiUsesUnconditionalGate:
+    """The CI job uses the same required scan as the local CLI."""
 
-class TestBannedTermsTreeCiPassesRequireBrands:
-    """Fix #3 (CI side): the banned-terms-tree job passes ``--require-brands``."""
-
-    def test_ci_step_passes_require_brands(self) -> None:
+    def test_ci_step_runs_without_a_mode_flag(self) -> None:
         import yaml  # noqa: PLC0415
 
         ci = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text())
         steps = ci["jobs"]["banned-terms-tree"]["steps"]
         joined = " ".join(s.get("run", "") for s in steps if isinstance(s, dict))
         assert "scan-tree" in joined, "The banned-terms-tree CI step must run `banned-terms scan-tree`."
-        assert "--require-brands" in joined, (
-            "The banned-terms-tree CI step must pass --require-brands so a missing "
-            "TEATREE_BANNED_BRANDS secret reds the job (fail-loud), not a silent no-op."
-        )
+        assert "--require-brands" not in joined
+        assert "--allow-unset" not in joined
 
 
 class TestBackstopBrandVsCommonWord:
@@ -689,7 +609,6 @@ class TestBackstopBrandVsCommonWord:
         flagged_terms = {f.term.lower() for f in result.findings}
         assert SYNTH_BRAND in flagged_terms
         assert "ship" not in flagged_terms
-        assert result.brands_configured is True
 
 
 class TestScanTreeCliSummaryIsBrandAgnostic:

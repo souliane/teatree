@@ -23,7 +23,7 @@ from django_fsm import can_proceed
 from teatree.core.backend_protocols import IssueReopenState
 from teatree.core.models import Task, Ticket
 from teatree.core.models.transition import TicketTransition
-from teatree.loop.scanners import board_reconcile
+from teatree.loop.scanners import board_reconcile_issue_reopen as issue_reopen
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.stuck_ticket_redispatch import redispatch_stuck_tickets
 
@@ -34,7 +34,7 @@ _URL = "https://github.com/souliane/teatree/issues/4152"
 def _forge_says_reopened() -> Iterator[None]:
     with (
         patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}),
-        patch.object(board_reconcile, "issue_reopen_state", return_value=IssueReopenState.REOPENED),
+        patch.object(issue_reopen, "issue_reopen_state", return_value=IssueReopenState.REOPENED),
     ):
         yield
 

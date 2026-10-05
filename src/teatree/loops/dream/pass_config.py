@@ -1,21 +1,4 @@
-"""The per-pass WALL-CLOCK budget and the live-validation setting the dream pass reads (#4776).
-
-`loop.py` owns the ten phase kill-switches — booleans answering "does phase P run at
-all?". ``validate_live_enabled`` and :class:`PassBudget` answer a different question:
-given that a phase DOES run, how much may it spend? ``validate_live`` decides whether a
-pass's eval promotion runs the METERED live validator; :class:`PassBudget` bounds how
-LONG the pass spends before it must stop starting new metered work.
-
-There used to be a second budget here — :class:`PromotionBudget`, which rationed how
-MANY gaps one pass could schedule as its own coding task, because every promoting phase
-(core-gap memory promotion, the automatable-ask promoter, compliance escalation) drove
-each gap through its own ``schedule_coding()`` call: one gap, one ticket, one PR. That
-was the wrong fix for the wrong problem — the fan-out itself was the defect, not its
-rate — so #4776 deleted the ration and replaced the fan-out with
-:mod:`teatree.loops.dream.batch_promote`: every gap a pass decides to promote collects
-into ONE :class:`~teatree.loops.dream.batch_promote.PromotionBatch` and mints AT MOST
-ONE ticket, so there is nothing left to ration.
-"""
+"""The per-pass wall-clock budget and settings read for the dream pass."""
 
 import logging
 import time
@@ -30,9 +13,8 @@ logger = logging.getLogger(__name__)
 def dream_settings() -> UserSettings:
     """The effective settings; a read failure falls back to the shipped defaults, loudly.
 
-    A stored ``false`` is as unreadable as everything else, so the phases that file a
-    ticket (memory promotion) or rewrite memory files (decay, merge) fall back OFF rather
-    than let a shipped ``true`` act in its place.
+    The fallback never files a ticket: a stored ``dream_memory_promote = false`` is as
+    unreadable as everything else, so the shipped ``true`` must not act in its place.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: ORM-backed read
 
@@ -40,20 +22,10 @@ def dream_settings() -> UserSettings:
         return get_effective_settings()
     except Exception:
         logger.warning(
-            "dream settings read failed — shipped defaults with memory promotion, decay and merge OFF",
+            "dream settings read failed — falling back to the shipped defaults with memory promotion OFF",
             exc_info=True,
         )
-        return replace(UserSettings(), dream_memory_promote=False, dream_decay=False, dream_merge=False)
-
-
-def validate_live_enabled() -> bool:
-    """Whether eval promotion runs the METERED live validator (default OFF, #4176).
-
-    Default OFF is the nightly tick's key safety property — without the validator every
-    clearing candidate is WITHHELD.
-    """
-    settings = dream_settings()
-    return settings.dream_validate_live
+        return replace(UserSettings(), dream_memory_promote=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,5 +83,4 @@ class PassBudget:
 __all__ = [
     "PassBudget",
     "dream_settings",
-    "validate_live_enabled",
 ]

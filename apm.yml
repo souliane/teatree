@@ -12,29 +12,32 @@ keywords:
 - django
 agents:
 - claude-code
+- codex
 # `dependencies.apm` is the REQUIRED tier and its only declaration surface:
-# `teatree.provisioning.declared` enumerates it, `t3 setup` provisions each entry,
+# `teatree.provisioning.declared` enumerates it, `t3 setup` provisions each external entry,
 # and `t3 doctor check` FAILs on any that is still absent (BLUEPRINT.md § the
-# declared-dependency provisioning gate). The three `souliane/skills` companions
-# are mandatory, not suggestions — the architectural-review scanner and the
-# `architectural_review_skill` / `review_skill` settings resolve against
-# `ac-reviewing-codebase`, so a box without it runs its periodic review with no
-# skill guidance at all. Only the superpowers methodology skills teatree delegates
-# to are pinned, one entry each; `architecture-design` ships in the plugin's own
-# `skills/` tree. Optional, provider-specific suggestions belong in
-# `teatree.provisioning.recommended` (doctor INFO), never here.
+# declared-dependency provisioning gate). TeaTree-owned dependencies stay in the
+# namespaced plugin/prompt lane, and none of them may share a bare name with an entry
+# here. The three `souliane/skills` companions are mandatory, not suggestions —
+# `t3 assess` loads `ac-reviewing-codebase` and the coding phase loads `ac-python` /
+# `ac-django`, plus FastAPI's own `fastapi` skill on a FastAPI repo. Only the
+# superpowers methodology skills teatree delegates to are pinned, one entry each;
+# `architecture-design` ships in the plugin's own `skills/` tree. Optional,
+# provider-specific suggestions belong in `teatree.provisioning.recommended` (doctor
+# INFO), never here.
 dependencies:
   apm:
-  - obra/superpowers/skills/finishing-a-development-branch#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - obra/superpowers/skills/receiving-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - obra/superpowers/skills/requesting-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - obra/superpowers/skills/systematic-debugging#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - obra/superpowers/skills/test-driven-development#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
   - obra/superpowers/skills/verification-before-completion#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
   - obra/superpowers/skills/writing-plans#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/test-driven-development#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/systematic-debugging#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/receiving-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/finishing-a-development-branch#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/requesting-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
   - souliane/skills/ac-reviewing-codebase#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - souliane/skills/ac-python#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - souliane/skills/ac-django#84f075fff0187ccbdf187143a6cf3ab91711fddb
+  - fastapi/fastapi/fastapi/.agents/skills/fastapi#7ac0f1b541b8df5921b45486a5c72a49965d00af  # 0.140.4
   - souliane/teatree
 install:
   pip: teatree

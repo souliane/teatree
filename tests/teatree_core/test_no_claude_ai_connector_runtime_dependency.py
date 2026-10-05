@@ -7,12 +7,15 @@ excluded — they legitimately *forbid* raw MCP-Slack sends (they name the token
 to gate/detect them, not to call them).
 """
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
 import teatree
 from teatree.core.connector_manifest import overlay_connector_manifests
+from teatree.core.overlay_loader import get_all_overlays
 
 _SRC_ROOT = Path(teatree.__file__).resolve().parent
 _EXCLUDED_DIRS = ("hooks", "eval")
@@ -37,13 +40,17 @@ class TestNoClaudeAiConnectorRuntimeDependency(TestCase):
         }
         assert offenders == {}, f"runtime modules punt to a claude.ai connector: {offenders}"
 
-    def test_no_registered_overlay_declares_a_required_claude_ai_connector(self) -> None:
-        required = [
-            (manifest.overlay, req.name)
-            for manifest in overlay_connector_manifests()
-            for req in manifest.requirements
-            if req.required
-        ]
+    def test_no_registered_overlay_declares_a_required_claude_ai_connector_in_deployment(self) -> None:
+        worker_roles = {
+            f"{name.removeprefix('t3-').replace('-', '_').upper()}_ROLE": "worker" for name in get_all_overlays()
+        }
+        with patch.dict(os.environ, worker_roles):
+            required = [
+                (manifest.overlay, req.name)
+                for manifest in overlay_connector_manifests()
+                for req in manifest.requirements
+                if req.required
+            ]
         assert required == [], (
             f"a registered overlay declares REQUIRED connectors {required}; preflight could "
             "SystemExit the loop on a claude.ai connector being down"

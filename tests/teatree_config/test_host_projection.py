@@ -66,7 +66,7 @@ def _previous_schema_payload() -> dict[str, object]:
         "generation": 22,
         "source": "/var/lib/teatree/control-db/db.sqlite3",
         "projected_at": "2026-07-30T06:00:04+00:00",
-        "settings": {GLOBAL_SCOPE: {"memory_recall_enabled": False}},
+        "settings": {GLOBAL_SCOPE: {"auto_update_require_green_main": False}},
         "loop_state": {"dispatch": "paused"},
     }
 
@@ -78,7 +78,7 @@ def source_db(tmp_path: Path) -> Path:
     _build_source(
         db_path,
         {
-            (GLOBAL_SCOPE, "memory_recall_enabled"): False,
+            (GLOBAL_SCOPE, "auto_update_require_green_main"): False,
             (GLOBAL_SCOPE, GENERATION_KEY): 7,
             ("demo-overlay", "mode"): "auto",
         },
@@ -98,7 +98,7 @@ class TestProjectionCarriesWhatTheHooksRead:
     def test_publishes_every_scope_and_every_loop_status(self, source_db: Path, data_dir: Path) -> None:
         published = ProjectionPublisher(source_db, data_dir).publish()
 
-        assert published.setting("memory_recall_enabled") is False
+        assert published.setting("auto_update_require_green_main") is False
         assert published.setting("mode", scope="demo-overlay") == "auto"
         assert published.loop_status("dispatch") == "paused"
 
@@ -170,13 +170,13 @@ class TestStaleProjectionRaisesAnAdvisory:
         ProjectionPublisher(source_db, data_dir).publish()
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
         monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: data_dir / "absent.sqlite3")
-        assert cold_reader.bool_setting("memory_recall_enabled", default=True) is False, (
+        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is False, (
             "control: the fresh projection must be what the cold reader answers from"
         )
 
         _plant_generation(reader.target, 3)
 
-        assert cold_reader.bool_setting("memory_recall_enabled", default=True) is True, (
+        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is True, (
             "a stale projection must fall back to the compiled-in default, never serve its own stored value"
         )
 
@@ -226,7 +226,7 @@ class TestColdReadersFallThroughToTheProjection:
     def test_settings_resolve_from_the_projection(self, source_db: Path, data_dir: Path) -> None:
         ProjectionPublisher(source_db, data_dir).publish()
 
-        assert cold_reader.read_setting("memory_recall_enabled") is False
+        assert cold_reader.read_setting("auto_update_require_green_main") is False
         assert cold_reader.read_setting("mode", scope="demo-overlay") == "auto"
 
     def test_loop_status_resolves_from_the_projection(self, source_db: Path, data_dir: Path) -> None:
@@ -236,7 +236,7 @@ class TestColdReadersFallThroughToTheProjection:
 
     def test_an_unpublished_projection_leaves_the_compiled_in_default(self) -> None:
         assert cold_db.loop_status("dispatch") == "enabled"
-        assert cold_reader.read_setting("memory_recall_enabled") is None
+        assert cold_reader.read_setting("auto_update_require_green_main") is None
 
 
 class TestProjectionHasZeroAuthority:
@@ -276,7 +276,7 @@ class TestAnOlderPublishersPayloadIsStillServed:
         read = reader.read()
 
         assert read.trustworthy
-        assert read.projection.setting("memory_recall_enabled") is False
+        assert read.projection.setting("auto_update_require_green_main") is False
         assert read.projection.loop_status("dispatch") == "paused"
 
     def test_a_cold_setting_read_still_resolves_from_a_previous_schema(
@@ -286,7 +286,7 @@ class TestAnOlderPublishersPayloadIsStillServed:
         monkeypatch.setattr(cold_db, "canonical_data_dir", lambda **_: data_dir)
         monkeypatch.setattr(cold_db, "canonical_config_db", lambda **_: data_dir / "absent.sqlite3")
 
-        assert cold_reader.bool_setting("memory_recall_enabled", default=True) is False
+        assert cold_reader.bool_setting("auto_update_require_green_main", default=True) is False
 
     @pytest.mark.parametrize("version", [0, 99, "two", None])
     def test_a_version_outside_the_readable_range_is_refused(self, data_dir: Path, version: object) -> None:

@@ -81,12 +81,14 @@ def _upload_step_named(workflow: Path, name_fragment: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize("workflow", _UPLOADING_WORKFLOWS, ids=lambda path: path.name)
 class TestEveryUploadIsDiagnostic:
-    def test_every_artifact_upload_is_unconditional(self, workflow: Path) -> None:
+    def test_every_artifact_upload_runs_on_a_red_leg(self, workflow: Path) -> None:
         # A success-only (or absent) `if:` drops the artifact on exactly the runs that
-        # need it — the whole point of uploading a summary is to explain a failure.
+        # need it — the whole point of uploading a summary is to explain a failure. The
+        # only other condition allowed is the redaction pass's own success
+        # (tests/test_eval_upload_paths_redacted.py), which a red leg does not change.
         for step in _upload_steps(workflow):
-            assert step.get("if") == "always()", (
-                f"{workflow.name}: upload step {step.get('name')!r} must be `if: always()` so a RED "
+            assert str(step.get("if", "")).startswith("always() && steps."), (
+                f"{workflow.name}: upload step {step.get('name')!r} must start `if: always()` so a RED "
                 f"leg still publishes its diagnostics; got {step.get('if')!r}."
             )
 
@@ -120,9 +122,10 @@ class TestDiagnosticArtifactsSurviveAFailingLeg:
 class TestFailureOutputReachesTheJobLog:
     def test_run_output_is_captured_to_a_durable_file(self, workflow: Path) -> None:
         command = _eval_command(workflow)
-        assert "tee -a" in command, (
-            f"{workflow.name}: the eval run's combined output must be teed to a file — streaming "
-            f"alone leaves nothing to upload and loses everything killed by the step timeout."
+        assert 'artifact_redaction tee "$LOG"' in command, (
+            f"{workflow.name}: the eval run's combined output must be teed to a file through the "
+            f"redacting filter — streaming alone leaves nothing to upload and loses everything killed "
+            f"by the step timeout, and a raw `tee` would copy a credential into the uploaded log."
         )
         assert "2>&1" in command, (
             f"{workflow.name}: stderr must be merged into the captured stream (tracebacks land on stderr)."
@@ -140,7 +143,7 @@ class TestFailureOutputReachesTheJobLog:
     def test_the_real_exit_code_is_preserved(self, workflow: Path) -> None:
         command = _eval_command(workflow)
         assert "set -o pipefail" in command, (
-            f"{workflow.name}: `tee` would otherwise mask a non-zero eval exit code and turn a red leg green."
+            f"{workflow.name}: the log filter would otherwise mask a non-zero eval exit code and turn a red leg green."
         )
         assert 'exit "$rc"' in command, (
             f"{workflow.name}: the failure handler adds visibility, never swallows the error — the leg must still fail."

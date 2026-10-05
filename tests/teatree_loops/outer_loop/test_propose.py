@@ -7,7 +7,6 @@ ADMITTED only AFTER a human answer approves — never auto-implemented.
 """
 
 import datetime as dt
-from types import SimpleNamespace
 
 import pytest
 from django.test import TestCase
@@ -17,9 +16,9 @@ from teatree.core.factory.factory_signals import Direction, FactorySignalsReport
 from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.outer_loop import guards
-from teatree.loops.outer_loop.guards import GuardSeams
 from teatree.loops.outer_loop.propose import operator_proposal, select_proposal
 from teatree.loops.outer_loop.tick import TickSeams, run_tick
+from teatree.loops.shared.guards import GuardSeams
 
 
 def _row(provider_id: str, verdict: SignalVerdict, *, status: SignalStatus = SignalStatus.OK) -> SignalRow:
@@ -43,20 +42,6 @@ def _report(*rows: SignalRow) -> FactorySignalsReport:
         signals=list(rows),
         verdict=SignalVerdict.REGRESSING,
     )
-
-
-def _open_settings() -> SimpleNamespace:
-    return SimpleNamespace(
-        outer_loop_enabled=True,
-        factory_score_enabled=True,
-        outer_loop_measure_days=7,
-        outer_loop_max_per_week=1,
-        outer_loop_stop_after_consecutive_failures=3,
-    )
-
-
-def _live_critic() -> guards.CriticLiveness:
-    return guards.CriticLiveness(live=True, verdict_count=guards.MIN_CRITIC_SAMPLE)
 
 
 class TestSelectProposal:
@@ -99,9 +84,8 @@ class TestSelectProposal:
 class TestGatesOpenedPipeline(TestCase):
     def _tick(self, report: FactorySignalsReport) -> object:
         return run_tick(
-            settings=_open_settings(),
             seams=TickSeams(
-                guards=GuardSeams(critic_probe=_live_critic, signal_report=report, budget=BudgetVerdict.allow()),
+                guards=GuardSeams(signal_report=report, budget=BudgetVerdict.allow()),
                 propose_report=report,
             ),
         )

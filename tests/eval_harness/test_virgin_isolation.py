@@ -17,6 +17,7 @@ asserted unreachable through the constructed env.
 """
 
 import asyncio
+import json
 import os
 import shutil
 from collections.abc import AsyncIterator
@@ -188,7 +189,11 @@ class TestRunnerIsolation:
         assert isinstance(system_prompt, dict)
         assert system_prompt["type"] == "file"
         assert captured["system_prompt_text"].startswith("# fake skill")
-        assert captured["options"].settings == '{"hooks":{}}'
+        assert json.loads(captured["options"].settings or "") == {
+            "hooks": {},
+            "syncClaudeAiSkills": False,
+            "syncClaudeAiPlugins": False,
+        }
 
     def test_options_carry_sanitized_env_and_neutral_cwd(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False):
@@ -221,7 +226,11 @@ class TestJudgeIsolation(TestCase):
     def test_options_carry_empty_setting_sources(self) -> None:
         captured = self._grade()
         assert captured["options"].setting_sources == []
-        assert captured["options"].settings == '{"hooks":{}}'
+        assert json.loads(captured["options"].settings or "") == {
+            "hooks": {},
+            "syncClaudeAiSkills": False,
+            "syncClaudeAiPlugins": False,
+        }
 
     def test_options_carry_sanitized_env_and_neutral_cwd(self) -> None:
         with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False):

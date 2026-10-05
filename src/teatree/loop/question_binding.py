@@ -23,10 +23,11 @@ whichever had been posted last, and ✅-acked the owner for it.
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 
-from teatree.core.models import PendingChatInjection
+from teatree.core.models import NoPlanArtifactError, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
 
@@ -34,6 +35,8 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReader
 # is required so ``#12abc`` is not read as question 12 answered "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +79,12 @@ def apply_bound_answer(bound: BoundAnswer) -> bool:
     if parked is not None:
         from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — lazy ORM import
 
-        schedule_resume(parked, answer=bound.answer)
+        try:
+            schedule_resume(parked, answer=bound.answer)
+        except NoPlanArtifactError:
+            logger.warning(
+                "Answer to question %s kept; its parked task %s was not resumed", bound.question.pk, parked.pk
+            )
     return True
 
 

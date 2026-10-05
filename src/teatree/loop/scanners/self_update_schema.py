@@ -51,10 +51,6 @@ class SchemaReconcile:
     applied: tuple[str, ...] = ()
     detail: str = ""
 
-    @property
-    def blocks_work(self) -> bool:
-        return self.state is SchemaReconcileState.FAILED
-
 
 def reconcile_schema_after_pull(*, label: str, head_sha: str) -> SchemaReconcile:
     """Bring the control DB up to the freshly-pulled code, or page the owner."""
@@ -82,13 +78,8 @@ def retry_pending_reconcile(*, label: str, head_sha: str) -> SchemaReconcile | N
     claim gate stays shut until a human intervenes. This is that retry, run on the
     ticks where nothing advanced.
 
-    It is gated on :func:`schema_admission_block_reason` — the claim chokepoint's OWN
-    face of the verdict — and not on the raw readiness read, because that function is
-    what consults the ``schema_readiness_gate_enabled`` kill switch. Gating on the bare
-    verdict would leave the never-lockout escape half-effective: on the box the switch
-    exists for, one whose probe MISFIRES, the operator would stand the gate down and
-    still get a migrate attempt and an ``action_needed`` row every tick from the same
-    bad verdict. Switch off means this mechanism is off too.
+    It uses :func:`schema_admission_block_reason`, the claim chokepoint's own
+    memoised verdict, so a current schema needs no reconcile retry.
 
     The gate reuses the memoised verdict, so it never walks the migration graph more
     than once per :data:`READINESS_TTL_SECONDS` — but the TTL is on the order of the

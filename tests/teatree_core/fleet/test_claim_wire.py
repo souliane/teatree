@@ -1,8 +1,6 @@
 """Wiring of the Stage 2 mutex into the issue-implementer dispatch + the ship fence.
 
-The kill-switch ``fleet_claim_enabled`` is default-OFF, so with it off the
-scanner's claim is byte-for-byte today's local-only ``ImplementedIssueMarker.claim``.
-With it on, the GitHub claim ref becomes the AUTHORITY: the marker is a cache
+The GitHub claim ref is the authority: the marker is a cache
 stamped with the fencing sha (via ``cache_from_fleet_claim``), and the ship fence
 (:func:`run_fleet_claim_fence_gate`) refuses to open the PR for a claim this
 instance no longer holds. All against a real local bare-git origin.
@@ -19,12 +17,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.factory.operational_health import HealthStatus, read_health
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.forge_push import PushOutcome
 from teatree.core.forge_push_verdict import CredentialSource
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
-from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
+from teatree.core.models import ImplementedIssueMarker, KnownIssue, Ticket, Worktree
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
@@ -62,32 +61,17 @@ def _scanner(host: "CodeHostBackend | None" = None) -> IssueIntakeScanner:
     )
 
 
-def _enable_and_route(client: Path) -> tuple:
-    """Turn the kill-switch on and route claim pushes at *client* (its origin = the test bare)."""
-    return (
-        patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
-        patch.object(fleet_claim_wire, "resolve_claim_repo", return_value=str(client)),
-    )
+def _route_claims(client: Path):
+    """Route claim pushes at *client* (its origin is the test bare repo)."""
+    return patch.object(fleet_claim_wire, "resolve_claim_repo", return_value=str(client))
 
 
-class TestDispatchClaimFlagOff(TestCase):
-    """Kill-switch OFF (default): the ref infra is never touched."""
-
-    def test_claim_is_local_only_get_or_create(self) -> None:
-        first = _scanner()._claim(_ISSUE)
-        again = _scanner()._claim(_ISSUE)
-        assert first is not None
-        assert first.claim_ref_sha == ""  # no ref taken when the switch is off
-        assert again is None  # local get_or_create dedup, exactly today's behaviour
-
-
-class TestDispatchClaimFlagOn(TestCase):
+class TestDispatchClaim(TestCase):
     def test_acquires_ref_and_stamps_fencing_sha(self) -> None:
         tmp = Path(self._make_tmp())
         bare = init_bare(tmp / "origin.git")
         client = init_client(tmp / "client", bare)
-        enable, route = _enable_and_route(client)
-        with enable, route:
+        with _route_claims(client):
             row = _scanner()._claim(_ISSUE)
 
         assert row is not None
@@ -98,8 +82,7 @@ class TestDispatchClaimFlagOn(TestCase):
         tmp = Path(self._make_tmp())
         bare = init_bare(tmp / "origin.git")
         client = init_client(tmp / "client", bare)
-        enable, route = _enable_and_route(client)
-        with enable, route:
+        with _route_claims(client):
             first = _scanner()._claim(_ISSUE)
             # A re-tick while the claim is live: the ref exists, so no new claim
             # is granted (the loop skips — exactly-once across ticks).
@@ -113,13 +96,62 @@ class TestDispatchClaimFlagOn(TestCase):
         # remote op errors -> FleetClaimUnavailableError -> the wire fails safe.
         client = init_client(tmp / "client", tmp / "does-not-exist.git")
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", return_value=str(client)),
         ):
             row = _scanner()._claim(_ISSUE)
 
         assert row is None  # failed safe: did not claim
         assert not ImplementedIssueMarker.objects.filter(issue_url=_ISSUE).exists()
+
+    def test_missing_local_clone_records_health_fault(self) -> None:
+        with (
+            patch.object(fleet_claim_wire, "resolve_claim_repo", return_value=""),
+            patch("teatree.core.notify.notify_user"),
+        ):
+            assert _scanner()._claim(_ISSUE) is None
+
+        assert not ImplementedIssueMarker.objects.filter(issue_url=_ISSUE).exists()
+        fault = KnownIssue.objects.get(kind="fleet_claim_push")
+        assert "missing local clone for souliane/teatree" in fault.summary
+        assert read_health().status is HealthStatus.RED
+
+        with (
+            patch.object(fleet_claim_wire, "resolve_claim_repo", return_value="/clones/teatree"),
+            patch.object(fleet_claim, "acquire", return_value=None),
+            patch.object(fleet_claim, "steal_if_expired", return_value=None),
+        ):
+            assert fleet_claim_wire.acquire_issue_claim(_ISSUE) is None
+        fault.refresh_from_db()
+        assert fault.resolved_at is not None
+
+    def test_refused_push_records_health_fault_and_uses_stable_owner_notification_key(self) -> None:
+        tmp = Path(self._make_tmp())
+        bare = init_bare(tmp / "origin.git")
+        client = init_client(tmp / "client", bare)
+        hook = bare / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho claim refs refused >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        with _route_claims(client), patch("teatree.core.notify.notify_user") as notify:
+            assert _scanner()._claim(_ISSUE) is None
+            assert _scanner()._claim(_ISSUE) is None
+
+        assert not ImplementedIssueMarker.objects.filter(issue_url=_ISSUE).exists()
+        fault = KnownIssue.objects.get(kind="fleet_claim_push")
+        assert fault.severity == KnownIssue.Severity.CRITICAL
+        assert fault.auto_resolve is False
+        assert "refs/teatree/claims/*" in fault.summary
+        assert read_health().status is HealthStatus.RED
+        KnownIssue.objects.reconcile(set(), complete=True)
+        fault.refresh_from_db()
+        assert fault.resolved_at is None
+        assert notify.call_count == 2  # the notify ledger deduplicates delivery by key
+        assert {call.kwargs["idempotency_key"] for call in notify.call_args_list} == {fault.fingerprint}
+
+        hook.unlink()
+        with _route_claims(client), patch("teatree.core.notify.notify_user"):
+            assert _scanner()._claim(_ISSUE) is not None
+        fault.refresh_from_db()
+        assert fault.resolved_at is not None
 
     def _make_tmp(self) -> str:
         import tempfile  # noqa: PLC0415 — test-local
@@ -185,17 +217,10 @@ class TestShipFenceGate(TestCase):
         )
         return ticket, worktree, claim.sha, bare
 
-    def test_off_switch_is_a_no_op(self) -> None:
-        tmp = self._tmp()
-        ticket, worktree, _sha, _bare = self._ship_setup(tmp)
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=False):
-            assert run_fleet_claim_fence_gate(ticket, worktree) is None
-
     def test_passes_when_claim_still_held(self) -> None:
         tmp = self._tmp()
         ticket, worktree, _sha, _bare = self._ship_setup(tmp)
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
-            assert run_fleet_claim_fence_gate(ticket, worktree) is None
+        assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
     def test_blocks_when_claim_was_stolen(self) -> None:
         tmp = self._tmp()
@@ -204,8 +229,7 @@ class TestShipFenceGate(TestCase):
         thief = init_client(tmp / "thief", bare)
         stolen = fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=1e12)
         assert stolen is not None
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
-            failure = run_fleet_claim_fence_gate(ticket, worktree)
+        failure = run_fleet_claim_fence_gate(ticket, worktree)
         assert failure is not None
         assert failure["allowed"] is False
         assert "no longer held by this instance" in failure["error"]
@@ -217,8 +241,7 @@ class TestShipFenceGate(TestCase):
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
         )
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
-            assert run_fleet_claim_fence_gate(ticket, worktree) is None
+        assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
     def test_ticket_without_issue_url_is_a_no_op(self) -> None:
         # A ticket with no issue_url cannot carry a fleet claim to fence — short-circuit.
@@ -227,8 +250,7 @@ class TestShipFenceGate(TestCase):
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(tmp), branch="feat", extra={"worktree_path": str(tmp)}
         )
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
-            assert run_fleet_claim_fence_gate(ticket, worktree) is None
+        assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
     def test_fence_fails_closed_when_ref_infra_unreachable(self) -> None:
         tmp = self._tmp()
@@ -237,8 +259,7 @@ class TestShipFenceGate(TestCase):
             _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder"
         )
         broken = init_client(tmp / "broken", tmp / "absent.git")  # origin absent -> ls-remote raises
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True):
-            assert fleet_claim_wire.ticket_claim_is_lost(ticket, str(broken)) is True
+        assert fleet_claim_wire.ticket_claim_is_lost(ticket, str(broken)) is True
 
 
 def _tempdir(tc: TestCase) -> Path:
@@ -261,7 +282,6 @@ class TestHeartbeatSweep(TestCase):
         assert claim is not None
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha=claim.sha)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
             patch("teatree.core.fleet.claim.time.time", return_value=1090.0),
         ):
@@ -284,7 +304,6 @@ class TestHeartbeatSweep(TestCase):
         # A rival steals the expired claim: the ref moves off the holder's sha.
         assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", ttl_seconds=10.0, now=5000.0)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")
@@ -306,7 +325,6 @@ class TestHeartbeatSweep(TestCase):
             state=ImplementedIssueMarker.State.DECLINED,
         )
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
             patch("teatree.core.fleet.claim.time.time", return_value=1090.0),
         ):
@@ -314,18 +332,9 @@ class TestHeartbeatSweep(TestCase):
         # Un-refreshed, the original claim expired at t=1100, so the rival takes it.
         assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), remote="origin", now=2000.0) is not None
 
-    def test_heartbeat_is_a_no_op_when_switch_off(self) -> None:
-        marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
-        with patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=False):
-            fleet_claim_wire.heartbeat_inflight_claims("acme")
-        marker.refresh_from_db()
-        assert marker.claim_ref_sha == "a" * 40
-        assert marker.state == ImplementedIssueMarker.State.DISPATCHED
-
     def test_heartbeat_skips_a_marker_when_no_repo_resolves(self) -> None:
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: ""),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")
@@ -337,7 +346,6 @@ class TestHeartbeatSweep(TestCase):
         client = init_client(tmp / "c", tmp / "absent.git")  # valid local repo, absent origin
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(client)),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")  # transient: leave for retry, never abandon
@@ -379,7 +387,6 @@ class TestExecuteShipFence(TestCase):
         pushed: list[dict[str, object]] = []
         executor = ShipExecutor(ticket)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(ShipExecutor, "_check_branch_currency", return_value=None),
             patch("teatree.core.runners.ship.push_branch", side_effect=_record_push(pushed)),
         ):
@@ -412,7 +419,6 @@ class TestExecuteShipFence(TestCase):
 
         executor = ShipExecutor(ticket)
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch.object(ShipExecutor, "_check_branch_currency", return_value=None),
             patch("teatree.core.runners.ship.push_branch", side_effect=_steal_during_push),
         ):
@@ -443,7 +449,6 @@ class TestEnsurePrFence(TestCase):
         )
 
         with (
-            patch.object(fleet_claim_wire, "fleet_claim_enabled", return_value=True),
             patch("teatree.core.management.commands._ensure_pr.check_pr_budget"),
             patch("teatree.core.management.commands._ensure_pr.evaluate_debt_delta", return_value=None),
         ):

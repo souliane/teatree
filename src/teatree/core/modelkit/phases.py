@@ -13,28 +13,14 @@ transition method that records it.
 
 This module also owns the per-phase **fan-out** registry (teatree#2229):
 ``FANOUT_BY_PHASE`` maps a ``(role, phase)`` pair to a :class:`PhaseFanout`
-spec, and ``resolve_fanout_directive`` renders the opt-in directive that the
-loop threads into a sub-agent's prompt. The registry parallels
-``SUBAGENT_BY_PHASE`` (every fan-out key MUST be a dispatched key) and is
-default-OFF: with no ``[agent.phase_fanout]`` opt-in the resolver renders the
-empty string, so dispatch is byte-identical to today.
+spec, and ``resolve_fanout_directive`` renders the directive that the loop
+threads into a sub-agent's prompt. The registry parallels
+``SUBAGENT_BY_PHASE`` (every fan-out key MUST be a dispatched key); every
+registered pair receives its directive.
 """
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # Annotation-only: ``resolve_fanout_directive`` receives a resolved
-    # ``AgentConfig`` from the caller (loop-side), so ``core`` keeps NO runtime
-    # import of the ``config.agent_spawn`` platform module. (The layered tach
-    # config would actually permit a domain→platform edge; the decoupling is
-    # upheld by convention + the import-isolation guard
-    # ``test_core_phases_has_no_runtime_config_agent_import``, not by tach.) The
-    # TYPE_CHECKING import is invisible to tach, mirroring the sibling
-    # ``core.management.commands.loop_self_improve`` type-only import of
-    # ``teatree.loop``.
-    from teatree.config.agent_spawn import AgentConfig
 
 # Canonical token -> every accepted alias (including the canonical itself).
 _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
@@ -133,6 +119,16 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     # (the mechanism-design doctrine + the PR-2 exemplar) drives the sketch it returns.
     ("author", "directive_interpreting"): "t3:planner",
 }
+
+#: The sub-agents that AUTHOR source. The read-only and coordinating ones (``t3:reviewer``,
+#: ``t3:planner``, ``t3:shipper``) are excluded: gating them would refuse the work that records a plan.
+IMPLEMENTING_SUBAGENTS: frozenset[str] = frozenset({"t3:coder", "t3:debugger", "t3:tester", "t3:e2e"})
+
+SUBAGENT_BY_IMPLEMENTING_PHASE: dict[str, str] = {
+    phase: subagent for (_role, phase), subagent in SUBAGENT_BY_PHASE.items() if subagent in IMPLEMENTING_SUBAGENTS
+}
+
+IMPLEMENTING_PHASES: frozenset[str] = frozenset(SUBAGENT_BY_IMPLEMENTING_PHASE)
 
 #: Phases a loop SCANNER writes DIRECTLY to ``Task.phase``, bypassing the
 #: ``SUBAGENT_BY_PHASE`` ``(role, phase)`` dispatch map.
@@ -259,8 +255,7 @@ def subagent_for_phase(role: str, phase: str) -> str:
 
 #: The inclusive ``(min, max)`` bound on a fan-out's ``N`` (concurrent verifiers
 #: / judges). ``2`` is the floor (a single agent is not a fan-out); ``5`` is the
-#: ceiling so an int override cannot request an unbounded panel. An override
-#: outside this range raises ``ValueError`` (fail-loud, like ``parse_effort``).
+#: ceiling for a registered panel. Conformance checks every registry entry.
 _FANOUT_N_BOUNDS: tuple[int, int] = (2, 5)
 
 
@@ -269,14 +264,13 @@ class PhaseFanout:
     """The teatree-owned fan-out spec for one ``(role, phase)`` pair (#2229).
 
     *   ``pattern`` — the named dynamic-workflow shape (``adversarial-verify``,
-        ``judge-panel``) the opted-in phase performs. Version-controlled prose,
+        ``judge-panel``) the registered phase performs. Version-controlled prose,
         not a runtime-loaded script: the directive degrades to inline
         sequential rigor when no formal workflow runtime engages.
     *   ``fanout_n`` — the default panel width (concurrent verifiers / judges).
-        Within :data:`_FANOUT_N_BOUNDS`. A user opt-in of ``true`` uses this
-        default; an int opt-in overrides it (within the bounds, else raises).
+        Within :data:`_FANOUT_N_BOUNDS`.
     *   ``directive_template`` — the plain-prompt instruction rendered into the
-        sub-agent's prompt. ``{n}`` is substituted with the resolved width. The
+        sub-agent's prompt. ``{n}`` is substituted with the registered width. The
         text is SDK/API-portable (BLUEPRINT §2): identical whether the flow is
         driven by the terminal today or the Agent SDK later.
     """
@@ -286,7 +280,7 @@ class PhaseFanout:
     directive_template: str
 
 
-#: The fan-out registry — opt-in, default-OFF, parallel to
+#: The fan-out registry, parallel to
 #: ``SUBAGENT_BY_PHASE``. CONFORMANCE: every key here MUST also be a
 #: ``SUBAGENT_BY_PHASE`` key (a fan-out can only apply to a dispatched
 #: ``(role, phase)`` pair). Keyed on the canonical phase token so a task stored
@@ -365,73 +359,17 @@ def fanout_for_phase(role: str, phase: str) -> "PhaseFanout | None":
     return FANOUT_BY_PHASE.get((role, normalize_phase(phase)))
 
 
-def resolve_fanout_directive(role: str, phase: str, cfg: "AgentConfig") -> str:
-    """Render the opt-in fan-out directive for a ``(role, phase)`` pair, or ``""``.
+def resolve_fanout_directive(role: str, phase: str) -> str:
+    """Render the registered fan-out directive for a ``(role, phase)`` pair.
 
     The SINGLE chokepoint both the interactive (``loop_dispatch._task_to_dict``)
-    and headless (``agents.prompt.build_system_context``) routes call. ``cfg`` is
-    a resolved :class:`~teatree.config.agent_spawn.AgentConfig` passed by the
-    loop-side caller, so ``core`` never imports UP into ``config.agent_spawn`` (tach).
-
-    Default-OFF guarantee (the anti-vacuous spine): a pair with no
-    ``[agent.phase_fanout]`` opt-in — the absent-key / ``False`` case — renders
-    the **empty string**, so a dispatch is byte-identical to today until the
-    user opts a pair in. An opt-in of ``True`` renders the registry's default
-    ``fanout_n``; an int opt-in overrides it (must lie within
-    :data:`_FANOUT_N_BOUNDS`); an int outside the bounds raises ``ValueError``
-    (fail-loud) so a misconfiguration is seen, not silently clamped to a value
-    the user did not write.
+    and headless (``agents.prompt.build_system_context``) routes call. A pair
+    absent from :data:`FANOUT_BY_PHASE` renders the empty string.
     """
     spec = fanout_for_phase(role, phase)
     if spec is None:
         return ""
-    opt_in = _phase_fanout_opt_in(cfg.phase_fanout, role=role, phase=phase)
-    resolved_n = _resolved_fanout_n(spec, opt_in=opt_in)
-    if resolved_n is None:
-        return ""
-    return spec.directive_template.format(n=resolved_n)
-
-
-def _phase_fanout_opt_in(phase_fanout: "dict[str, bool | int]", *, role: str, phase: str) -> "bool | int | None":
-    """Look up the opt-in for a ``(role, phase)`` pair, tolerant of key spelling.
-
-    The user writes ``[agent.phase_fanout]`` keys ``"role:phase"`` by hand, so a
-    short-verb spelling (``"reviewer:review"``) must resolve the same as the
-    canonical gerund (``"reviewer:reviewing"``) — mirroring
-    :func:`fanout_for_phase`'s normalization on the registry side. Keys are
-    normalized here (in ``core``, where :func:`normalize_phase` lives) rather
-    than at parse time, so the platform-layer ``config.agent_spawn`` need not
-    import UP into ``core``. The canonical key wins when both spellings are present.
-    """
-    canonical_key = f"{role}:{normalize_phase(phase)}"
-    direct = phase_fanout.get(canonical_key)
-    if direct is not None:
-        return direct
-    for raw_key, opt_in in phase_fanout.items():
-        raw_role, _, raw_phase = raw_key.partition(":")
-        if f"{raw_role}:{normalize_phase(raw_phase)}" == canonical_key:
-            return opt_in
-    return None
-
-
-def _resolved_fanout_n(spec: PhaseFanout, *, opt_in: bool | int | None) -> int | None:
-    """Resolve the effective ``N`` for an opt-in value, or ``None`` when disabled.
-
-    ``None``/``False`` (absent or explicitly off) → ``None`` (no directive).
-    ``True`` → the registry default ``spec.fanout_n``. An ``int`` → that value,
-    which must lie within :data:`_FANOUT_N_BOUNDS` (out-of-range raises
-    ``ValueError`` — fail-loud). ``bool`` is checked before ``int`` because
-    ``bool`` is an ``int`` subclass.
-    """
-    if opt_in is None or opt_in is False:
-        return None
-    if opt_in is True:
-        return spec.fanout_n
-    low, high = _FANOUT_N_BOUNDS
-    if not low <= opt_in <= high:
-        message = f"Invalid phase_fanout N {opt_in!r}; valid range: {low}..{high} inclusive"
-        raise ValueError(message)
-    return opt_in
+    return spec.directive_template.format(n=spec.fanout_n)
 
 
 def normalize_phase(phase: str) -> str:

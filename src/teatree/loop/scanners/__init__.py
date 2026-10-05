@@ -22,6 +22,7 @@ from teatree.loop.scanners.db_backup import DbBackupScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
+from teatree.loop.scanners.gitlab_events import GitLabEventsScanner
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
@@ -95,6 +96,7 @@ __all__ = [
     "GhCodexPrApi",
     "GhPrApiClient",
     "GitLabApprovalsScanner",
+    "GitLabEventsScanner",
     "GlabGhMrStateClassifier",
     "GlabPrApiClient",
     "IdleStackReaperScanner",

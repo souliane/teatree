@@ -43,21 +43,21 @@ class TestConfiguredReviewSkillGaps:
         self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _seed_skill(canonical_dir, "code")
-        _pin(monkeypatch, replace(UserSettings(), architectural_review_skill="ac-reviewing-codebase", review_skill=""))
+        _pin(monkeypatch, replace(UserSettings(), architectural_review_skill="architectural-review", review_skill=""))
         gaps = _configured_review_skill_gaps()
         assert len(gaps) == 1
         assert "architectural_review_skill" in gaps[0]
-        assert "ac-reviewing-codebase" in gaps[0]
+        assert "architectural-review" in gaps[0]
 
     def test_installed_skill_resolves_clean(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _seed_skill(canonical_dir, "ac-reviewing-codebase")
-        _pin(monkeypatch, replace(UserSettings(), architectural_review_skill="ac-reviewing-codebase", review_skill=""))
+        _seed_skill(canonical_dir, "architectural-review")
+        _pin(monkeypatch, replace(UserSettings(), architectural_review_skill="architectural-review", review_skill=""))
         assert _configured_review_skill_gaps() == []
 
     def test_empty_review_skill_is_a_noop(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # The empty review_skill (opt-in unset) is skipped; the architectural skill
         # is always checked now, so it is seeded and the run is clean.
-        _seed_skill(canonical_dir, "ac-reviewing-codebase")
+        _seed_skill(canonical_dir, "architectural-review")
         _pin(
             monkeypatch,
             replace(UserSettings(), review_skill=""),
@@ -66,6 +66,7 @@ class TestConfiguredReviewSkillGaps:
 
     def test_opted_in_review_skill_dangling_flagged(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(canonical_dir, "code")
+        _seed_skill(canonical_dir, "architectural-review")
         _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
@@ -76,7 +77,13 @@ class TestConfiguredReviewSkillGaps:
         assert "review_skill" in gaps[0]
 
     def test_namespaced_configured_name_resolves(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_skill(canonical_dir, "architectural-review")
+        _pin(
+            monkeypatch,
+            replace(UserSettings(), review_skill="t3:architectural-review"),
+        )
         _seed_skill(canonical_dir, "ac-reviewing-codebase")
+        assert _configured_review_skill_gaps() == []
         _pin(
             monkeypatch,
             replace(UserSettings(), review_skill="t3:ac-reviewing-codebase"),
@@ -87,6 +94,7 @@ class TestConfiguredReviewSkillGaps:
         # An alternate the gate would accept evidence for, that nobody can run,
         # is the same incident class as a dangling primary — and it hides better.
         _seed_skill(canonical_dir, "elite-review")
+        _seed_skill(canonical_dir, "architectural-review")
         _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
@@ -104,6 +112,7 @@ class TestConfiguredReviewSkillGaps:
     def test_installed_alternate_resolves_clean(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(canonical_dir, "elite-review")
         _seed_skill(canonical_dir, "codex-review")
+        _seed_skill(canonical_dir, "architectural-review")
         _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
@@ -119,7 +128,7 @@ class TestConfiguredReviewSkillGaps:
         _seed_skill(canonical_dir, "code")
         _pin(
             monkeypatch,
-            replace(UserSettings(), architectural_review_skill="ac-reviewing-codebase", review_skill=""),
+            replace(UserSettings(), architectural_review_skill="architectural-review", review_skill=""),
             overlays=[SimpleNamespace(name="t3-teatree"), SimpleNamespace(name="companion")],
         )
         gaps = _configured_review_skill_gaps()
@@ -138,12 +147,12 @@ class TestCheckConfiguredReviewSkills:
         assert _check_configured_review_skills() is False
         out = capsys.readouterr().out
         assert "FAIL" in out
-        assert "ac-reviewing-codebase" in out
+        assert "architectural-review" in out
 
     def test_installed_skill_passes(
         self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _seed_skill(canonical_dir, "ac-reviewing-codebase")
+        _seed_skill(canonical_dir, "architectural-review")
         _pin(monkeypatch, UserSettings())
         assert _check_configured_review_skills() is True
         assert "FAIL" not in capsys.readouterr().out

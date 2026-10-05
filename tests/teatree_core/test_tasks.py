@@ -40,7 +40,7 @@ from teatree.core.tasks import (
     sync_followup,
 )
 from teatree.loop.drain import DrainReport, set_worker_quiescing
-from tests.factories import waive_rubric
+from tests.factories import MergeAuditFactory, planned_ticket, waive_rubric
 from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.test_managers_task_claim import a_drain_lands_mid_claim, admits_then_the_fleet_stops
 
@@ -53,6 +53,16 @@ IMMEDIATE_BACKEND = {
 }
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
+
+
+def _record_review_context(ticket: Ticket) -> None:
+    ticket.record_review_context(
+        work_item="https://example.test/issues/1",
+        documents=["specification.pdf"],
+        analysis="Compared the change with the referenced specification.",
+    )
+    if ticket.role == Ticket.Role.AUTHOR:
+        ticket.record_anti_vacuity_attestation("a" * 40, "AC covered", [], no_new_tests=True)
 
 
 class TestRefreshFollowupSnapshot(TestCase):
@@ -279,7 +289,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
         from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
-        ticket = Ticket.objects.create()
+        ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,
@@ -317,7 +327,7 @@ class TestExecuteHeadlessUnknownOverlay(TestCase):
         from teatree.core import agent_runner as agent_runner_mod  # noqa: PLC0415 - deferred: local import
         from teatree.core.tasks import execute_task  # noqa: PLC0415 - deferred: local import
 
-        ticket = Ticket.objects.create()
+        ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING, phase="coding")
 
@@ -470,7 +480,8 @@ class TestExecuteRetrospect(TestCase):
         ticket = self._ticket_in_merged()
         ticket.state = Ticket.State.RETRO_RECORDED
         ticket.save(update_fields=["state"])
-        waive_rubric(ticket)  # the subject is the retro advance, not the rubric gate
+        waive_rubric(ticket)
+        MergeAuditFactory(clear__ticket=ticket)
 
         result = execute_retrospect.enqueue(ticket.pk)
 
@@ -873,27 +884,6 @@ class TestExecuteProvision(TestCase):
         assert manifest.entries[0]["source_url"] == attachment
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_kill_switch_lifts_the_hold(self) -> None:
-        # Never-lockout: `[teatree] attachment_gate_enabled = false` hands the
-        # ticket off even with an un-fetched attachment, so a stuck ticket is
-        # never a hard lockout.
-        ticket = self._ticket_in_started()
-        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
-
-        with (
-            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
-            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
-            patch(
-                "teatree.core.tasks.get_effective_settings",
-                return_value=MagicMock(attachment_gate_enabled=False),
-            ),
-        ):
-            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
-            execute_provision.enqueue(ticket.pk)
-
-        assert ticket.tasks.filter(phase="planning").exists()
-
-    @override_settings(**IMMEDIATE_BACKEND)
     def test_hands_off_once_attachment_is_fetched(self) -> None:
         # The gate is not permanently blocking: once the cached file exists the
         # planner is scheduled. Pairs with the hold test as the two-sided proof.
@@ -1264,7 +1254,8 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
     """
 
     def _ticket_with_session(self, state: Ticket.State) -> tuple[Ticket, Session]:
-        ticket = Ticket.objects.create(overlay="test", state=state)
+        ticket = planned_ticket(overlay="test", state=state)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         return ticket, session
 
@@ -1331,6 +1322,7 @@ class TestReviewConditionNormalizesPhase(TestCase):
 
     def test_short_verb_review_task_alone_advances_tested_to_reviewed(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         # The sole reviewing task uses the short verb (unnormalized, as
         # `tasks create <id> review` stores it). Pre-fix, review()'s
@@ -1351,6 +1343,7 @@ class TestReviewConditionNormalizesPhase(TestCase):
 
     def test_reviewer_role_short_verb_review_advances(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED, role=Ticket.Role.REVIEWER)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(ticket=ticket, session=session, phase="review", status=Task.Status.COMPLETED)
 
@@ -1365,6 +1358,7 @@ class TestReviewConditionNormalizesPhase(TestCase):
     def test_canonical_reviewing_task_still_satisfies_condition(self) -> None:
         # Regression guard: the canonical spelling must keep working.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -1441,6 +1435,7 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
     def test_direct_review_consumes_pending_short_verb_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         # Condition-satisfier: a COMPLETED reviewing task so review() is legal.
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
@@ -1461,6 +1456,7 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
     def test_canonical_pending_task_still_consumed(self) -> None:
         # Regression guard: the canonical spelling must keep being consumed.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.TESTED)
+        _record_review_context(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="t")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
         zombie = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.CLAIMED)
@@ -1497,7 +1493,7 @@ class TestHeadlessClaimLease(TestCase):
 
         assert HEARTBEAT_MATCHED_LEASE_SECONDS == _LEASE_SECONDS
 
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket(overlay="t3-teatree")
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(
             ticket=ticket,

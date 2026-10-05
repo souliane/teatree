@@ -32,7 +32,6 @@ def stale_dslr_snapshots(
     *,
     keep: int = 1,
     snapshot_tool: str = "dslr",
-    main_repo_path: str = "",
     in_use_tenants: set[str] | None = None,
 ) -> list[str]:
     """The snapshot names :func:`prune_dslr_snapshots` would delete — selection only.
@@ -41,7 +40,7 @@ def stale_dslr_snapshots(
     selection a live run uses, rather than describing it from the outside
     (souliane/teatree#3489).
     """
-    dslr_cmd = find_dslr_cmd(snapshot_tool, main_repo_path)
+    dslr_cmd = find_dslr_cmd(snapshot_tool)
     if not dslr_cmd:
         return []
     result = run_allowed_to_fail([*dslr_cmd, "list"], expected_codes=None)
@@ -60,7 +59,6 @@ def prune_dslr_snapshots(
     *,
     keep: int = 1,
     snapshot_tool: str = "dslr",
-    main_repo_path: str = "",
     in_use_tenants: set[str] | None = None,
 ) -> list[str]:
     """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
@@ -76,12 +74,10 @@ def prune_dslr_snapshots(
     recover short of a fresh remote dump. Pass the set of tenant strings
     (matching the DSLR snapshot suffix after the date) to skip entirely.
     """
-    dslr_cmd = find_dslr_cmd(snapshot_tool, main_repo_path)
+    dslr_cmd = find_dslr_cmd(snapshot_tool)
     if not dslr_cmd:
         return []
-    stale = stale_dslr_snapshots(
-        keep=keep, snapshot_tool=snapshot_tool, main_repo_path=main_repo_path, in_use_tenants=in_use_tenants
-    )
+    stale = stale_dslr_snapshots(keep=keep, snapshot_tool=snapshot_tool, in_use_tenants=in_use_tenants)
     deleted: list[str] = []
     for old in stale:
         sys.stdout.write(f"  Pruning DSLR snapshot: {old}\n")

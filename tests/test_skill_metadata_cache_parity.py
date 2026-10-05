@@ -3,8 +3,8 @@
 The skill cache is a cross-tier artifact of the #3499 / #3819 / #3826 shape.
 :mod:`teatree.core.skill_cache` builds it under Django (overlay metadata, the
 ``requires:`` closure, the SKILL.md mtimes and the package version);
-:mod:`scripts.lib.skill_loader` — stdlib-only by design, because it runs on
-every UserPromptSubmit before any Django bootstrap — reads it back with its
+:mod:`scripts.lib.skill_loader` — stdlib-only by design, because it runs at
+every SessionStart before any Django bootstrap — reads it back with its
 own duplicated resolver and its own validity rules.
 
 Every existing test sits on one side of that seam, and the failure mode is
@@ -29,8 +29,8 @@ from scripts.lib import skill_loader
 from teatree.core import skill_cache
 from teatree.paths import resolve_data_dir
 
-#: A repo root that is definitionally not a worktree — the venue the prompt hook
-#: runs in, and the only one whose data dir the stdlib-only reader can resolve.
+#: A repo root that is definitionally not a worktree — the venue the SessionStart
+#: suggester runs in, and the only one whose data dir the stdlib-only reader can resolve.
 _PRIMARY_CLONE = Path("/nonexistent-primary-clone")
 
 _SKILLS = {
@@ -135,7 +135,7 @@ class TestSkillMetadataCacheLocationParity:
         self, explicit_xdg: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # ``resolve_data_dir`` is the writer's answer. For a primary clone — the
-        # only venue the prompt hook runs in — the cold duplicate must agree with
+        # only venue the SessionStart suggester runs in — the cold duplicate must agree with
         # it under every environment, not just the default one.
         home = tmp_path / "home"
         monkeypatch.setenv("HOME", str(home))

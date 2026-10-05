@@ -233,4 +233,6 @@ def handle_block_second_branch(data: dict) -> bool:
     if resolved is None:
         return False
     finding, pinned, repo = resolved
-    return _fail_open_or_deny(data, core.deny_reason(finding, pinned_branch=pinned, repo=repo))
+    return _fail_open_or_deny(
+        data, core.deny_reason(finding, pinned_branch=pinned, repo=repo), gate_id="single_branch_repo"
+    )

@@ -1,4 +1,4 @@
-"""``t3 <overlay> ticket bulk-close`` / ``fold`` / ``fold-check`` / the two gate overrides.
+"""``t3 <overlay> ticket bulk-close`` / ``fold`` / ``fold-check`` / ``attach-gaps`` / the two gate overrides.
 
 Factored out of ``ticket.py`` as a :class:`CloseCommands` mixin (the module-health
 LOC cap), exactly like ``RubricCommands`` / ``ContextCommands``: django-typer
@@ -11,12 +11,14 @@ guard (:func:`teatree.core.gates.bulk_close_gate.check_bulk_close`); ``fold`` an
 ``fold-check`` are the close's precondition under the backlog sweep's group-first
 posture (#4344) — a member's body moves into its host verbatim, and the host is
 re-read and proved to carry it before the standalone row is retired;
+``attach-gaps`` is the same fold for the dream gaps a pass left pending on the umbrella host;
 ``integration-review-override`` records the audited escape hatch for the
 cross-repo integration-review gate, and ``fix-record-override`` the one for the
 fix-ticket FixRecord DoD gate — which prescribed this command from #1661 while
 nothing implemented it, so its documented exception was unreachable.
 """
 
+import json
 from pathlib import Path
 from typing import Annotated, TypedDict
 
@@ -28,6 +30,10 @@ from django_typer.management import TyperCommand, command
 from teatree.core.gates.bulk_close_gate import check_bulk_close
 from teatree.core.gates.fold_preservation import check_fold_preserved, fold_body
 from teatree.core.models import Ticket
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url, umbrella_ticket
+from teatree.core.models.types import DreamGapEntry
+from teatree.loops.dream.gap_attach import GapAttachError, attach_dream_gaps
+from teatree.loops.dream.umbrella_ledger import code_host_for
 
 
 class BulkCloseResult(TypedDict, total=False):
@@ -46,6 +52,23 @@ class FoldResult(TypedDict, total=False):
 class FoldCheckResult(TypedDict, total=False):
     preserved: bool
     reason: str
+
+
+class AttachGapsResult(TypedDict, total=False):
+    host_id: int
+    attached: list[str]
+    task_id: int | None
+
+
+def _manifest_items(raw: str) -> list[DreamGapEntry]:
+    """A JSON list of ``{"gap_key", "theme"?}`` objects or bare gap keys; ``[]`` for anything else."""
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(items, list):
+        return []
+    return [{"gap_key": item} if isinstance(item, str) else item for item in items if isinstance(item, str | dict)]
 
 
 class IntegrationReviewOverrideResult(TypedDict, total=False):
@@ -175,6 +198,48 @@ class CloseCommands(TyperCommand):
         self.print_result = False
         self.stdout.write("  fold preserved: every line of the member's body is in the host body")
         return {"preserved": True}
+
+    @command(name="attach-gaps")
+    def attach_gaps(
+        self,
+        host_id: int,
+        *,
+        manifest: Annotated[
+            str,
+            typer.Option("--manifest", help='JSON list of {"gap_key": ..., "theme": ...} objects or bare gap keys.'),
+        ] = "",
+        sweep_run_id: Annotated[
+            str, typer.Option(help="Active `ticket sweep-begin` run the fold is counted against.")
+        ] = "",
+    ) -> AttachGapsResult:
+        """Fold pending dream gaps into an existing host ticket, proved on the forge.
+
+        The backlog sweep picks the host; this moves the gaps. Each gap's substance is folded
+        into the host issue and re-read before anything is recorded, so a fold the forge did
+        not keep attaches nothing and the gaps stay pending. Exits non-zero on any refusal.
+        """
+        host = Ticket.objects.filter(pk=host_id).first()
+        umbrella = umbrella_ticket(dream_umbrella_url())
+        items = _manifest_items(manifest)
+        if not items:
+            self.stderr.write("  attach-gaps refused: --manifest must be a non-empty JSON list of gap keys")
+            raise SystemExit(1)
+        code_host = code_host_for(host.issue_url) if host is not None else None
+        if host is None or umbrella is None or code_host is None:
+            reason = "no such host ticket" if host is None else "no umbrella ticket or no code host for the host issue"
+            self.stderr.write(f"  attach-gaps refused: {reason}")
+            raise SystemExit(1)
+        try:
+            outcome = attach_dream_gaps(host, items, umbrella=umbrella, code_host=code_host, sweep_run_id=sweep_run_id)
+        except GapAttachError as exc:
+            self.stderr.write(f"  attach-gaps refused: {exc}")
+            raise SystemExit(1) from exc
+        if outcome.refusal:
+            self.stderr.write(f"  attach-gaps refused: {outcome.refusal}")
+            raise SystemExit(1)
+        self.print_result = False
+        self.stdout.write(f"  attached {len(outcome.attached)} gap(s) to ticket {host.pk}")
+        return {"host_id": host.pk, "attached": outcome.attached, "task_id": outcome.task.pk if outcome.task else None}
 
     @command(name="integration-review-override")
     def integration_review_override(

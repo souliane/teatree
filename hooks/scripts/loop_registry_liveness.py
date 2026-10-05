@@ -11,6 +11,8 @@ function, since hooks run under whatever interpreter the agent harness invokes.
 
 import sys
 
+from hooks.scripts.loop_registry_path import OWNER_LOOP, read_loop_registry
+
 
 def pid_namespace() -> str:
     """This process's pid namespace, ``""`` when ``teatree`` is unimportable from the hook."""
@@ -43,7 +45,7 @@ def prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     Keeping an entry this reader cannot attribute would be permanent: nothing
     behind this file expires a record — no TTL, no reaper, and only the owning
     session's own SessionEnd deletes one — and a restarted container never
-    returns to its old namespace, so ``_session_owns_loop`` and
+    returns to its old namespace, so :func:`session_owns_loop` and
     ``_session_drives_loop`` would read a dead foreign owner forever, retiring
     the Stop gates for every session on the box. An unknown-owner keep is
     conservative only where something else can eventually say NO.
@@ -62,3 +64,9 @@ def prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
         for name, entry in registry.items()
         if isinstance(entry, dict) and pid_alive(int(entry.get("pid", 0) or 0))
     }
+
+
+def session_owns_loop(session_id: str) -> bool:
+    """Whether *session_id* is the live owner of the host's loop slot — a read, never a claim."""
+    owner = prune_dead_owner(read_loop_registry()).get(OWNER_LOOP)
+    return owner is not None and owner.get("session_id") == session_id

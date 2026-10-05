@@ -144,16 +144,12 @@ _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 # independent locks: an action outside this set stays gated even with
 # ``own_mr=True`` (an approve/unapprove/live comment on one's own MR is
 # NOT covered), and an action inside it stays gated whenever authorship
-# is unproven. The receipt DM (``notify_on_post_on_behalf``) is untouched
-# — autonomy here is the absence of a pre-ask, never of visibility.
+# is unproven. The after-receipt DM still runs.
 _AUTHOR_SIDE_ACTIONS: frozenset[str] = frozenset({"reply_to_discussion"})
 
 
 # The agent-driven review-request post action (mirrors ``_ACTION`` in
-# ``teatree.core.management.commands.review_request_post``). When the resolved
-# ``review_request_post_disabled`` is true (the ``notify`` tier sets it, or the
-# user pinned it), this one action BLOCKs regardless of the posture —
-# the customer-overlay done-definition gate.
+# ``teatree.core.management.commands.review_request_post``).
 _REVIEW_REQUEST_POST_ACTION: str = "review_request_post"
 
 _OWNER_AUTHORSHIP_REQUIRED_ACTIONS: frozenset[str] = frozenset(
@@ -222,17 +218,9 @@ def resolve_on_behalf_verdict(
     dropping more than that one tier would retire an operator's override almost
     everywhere.
 
-    One posture-independent override sits above the table: when the resolved
-    ``review_request_post_disabled`` is true, the single action
-    ``review_request_post`` BLOCKs regardless of the posture — even a permitting one.
-    No autonomy tier reaches the posture (#3895): opening colleague egress is its own
-    named opt-in, so an autonomous overlay still BLOCKs here before the flag is read.
-    The autonomy TIER drives the flag (#2579): the ``notify`` tier resolves it true
-    (a collaborative/customer surface keeps a human in the merge loop and stops at
-    "MR is mergeable + review-requestable", never auto-requesting review), while
-    the ``full`` tier resolves it false (a solo tooling surface auto-requests). An
-    explicit per-overlay pin always wins. It is scoped to that one action — every
-    other colleague-visible post resolves through the table below unchanged.
+    No autonomy tier changes the posture (#3895): opening colleague egress is its own
+    named opt-in. Review-request posts follow the same posture as other
+    colleague-visible actions.
     """
     context = context or OnBehalfContext()
     settings = get_effective_settings(context.scope, apply_env=True)
@@ -250,12 +238,6 @@ def _carve_out_verdict(action: str, context: OnBehalfContext, settings: "UserSet
     """
     if on_behalf_authorship_refusal(action, context):
         return OnBehalfVerdict.BLOCK
-    # Posture-independent override: review-request posting is BLOCKed when the
-    # resolved ``review_request_post_disabled`` is true (the ``notify`` tier sets
-    # it, or the user pinned it), so this one action BLOCKs even under a permitting
-    # posture. Scoped to ``review_request_post`` — it never collapses any other action.
-    if action == _REVIEW_REQUEST_POST_ACTION and settings.review_request_post_disabled:
-        return OnBehalfVerdict.BLOCK
     # Auto-proceed actions are the user's routine self-documentation on their
     # OWN ticket (E2E evidence) — not a colleague-facing voice — so they need
     # no per-post approval and proceed directly under a forbidding posture.
@@ -271,24 +253,3 @@ def _carve_out_verdict(action: str, context: OnBehalfContext, settings: "UserSet
     if action in _DRAFT_FORM_ACTIONS:
         return OnBehalfVerdict.AUTO_DRAFT
     return None
-
-
-def on_behalf_post_will_block(action: str, context: OnBehalfContext | None = None, *, egress_forbidden: bool) -> bool:
-    """Whether *action* WILL BLOCK under the given posture — the proactive pre-check.
-
-    The forward-looking companion to :func:`resolve_on_behalf_verdict`: a caller
-    runs this BEFORE attempting a colleague-visible on-behalf post so it can
-    surface the owner's solution-oriented choice up front — select a permitting
-    posture durably, or approve just this once (see
-    :func:`teatree.core.on_behalf_gate_recorded.format_on_behalf_block_message`) —
-    instead of blundering into the BLOCK and only then reacting. The gate is an
-    extra safety net, not the primary control (``/t3:rules`` § "Anticipate a
-    Predictable Gate"), so anticipating the predictable block one action ahead is
-    the point: teatree should ideally never hit it.
-
-    ``True`` iff the verdict is :attr:`OnBehalfVerdict.BLOCK`; a draft-form action
-    (AUTO_DRAFT) and an :attr:`OnBehalfVerdict.PROCEED` action both return
-    ``False`` — neither needs a pre-ask. *context* must be the one the publish
-    will pass, or the pre-check and the verdict disagree about the same post.
-    """
-    return resolve_on_behalf_verdict(action, context, egress_forbidden=egress_forbidden) is OnBehalfVerdict.BLOCK

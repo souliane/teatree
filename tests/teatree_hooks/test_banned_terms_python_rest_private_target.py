@@ -54,7 +54,10 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, private_repos: lis
             "CREATE TABLE IF NOT EXISTS teatree_config_setting "
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
-        for key, value in {"banned_terms": [_TERM], "private_repos": private_repos}.items():
+        for key, value in {
+            "banned_term_registry": {"leak": [_TERM], "prose_collider": [_TERM]},
+            "private_repos": [f"gitlab.com/{entry}" for entry in private_repos],
+        }.items():
             conn.execute(
                 "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
                 (key, json.dumps(value)),

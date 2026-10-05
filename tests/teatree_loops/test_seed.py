@@ -141,12 +141,12 @@ class TestSeedDefaultLoops(django.test.TestCase):
     def test_arch_review_is_prompt_backed_and_references_the_review_skill(self) -> None:
         # arch_review stays the single PROMPT-backed default; its body is a real
         # instruction telling the sub-agent to run an architectural review using
-        # the ``ac-reviewing-codebase`` skill (owner decision) — not a script.
+        # the ``architectural-review`` skill (owner decision) — not a script.
         seed_default_loops_and_prompts()
         arch = Loop.objects.get(name="arch_review")
         assert arch.script == ""
         assert arch.prompt_id is not None
-        assert "ac-reviewing-codebase" in arch.prompt.body
+        assert "/t3:architectural-review" in arch.prompt.body
 
     def test_every_seeded_loop_carries_a_real_description(self) -> None:
         # The owner's requirement: every default loop ships a real, useful
@@ -266,7 +266,6 @@ class TestSpecsAreShippedDataNotCode:
             "[loops.sentinel]\n"
             "delay_seconds = 42\n"
             "colleague_facing = true\n"
-            "default_enabled = true\n"
             'description = "a synthetic loop"\n'
             "daily_at = 04:30:00\n",
             encoding="utf-8",
@@ -278,17 +277,15 @@ class TestSpecsAreShippedDataNotCode:
             description="a synthetic loop",
             daily_at=dt.time(4, 30),
             colleague_facing=True,
-            default_enabled=True,
         )
 
     def test_an_omitted_optional_field_falls_back_to_the_dataclass_default(self, tmp_path: Path) -> None:
         fixture = tmp_path / "defaults.toml"
         fixture.write_text('[loops.sentinel]\ndelay_seconds = 1\ndescription = "x"\n', encoding="utf-8")
         (spec,) = load_loop_specs(fixture)
-        assert (spec.daily_at, spec.prompt_body, spec.colleague_facing, spec.default_enabled) == (
+        assert (spec.daily_at, spec.prompt_body, spec.colleague_facing) == (
             None,
             None,
-            False,
             False,
         )
 
@@ -302,11 +299,10 @@ class TestSpecsAreShippedDataNotCode:
             assert spec.daily_at == entry.get("daily_at")
             assert spec.prompt_body == entry.get("prompt_body")
             assert spec.colleague_facing is entry["colleague_facing"]
-            assert spec.default_enabled is entry["default_enabled"]
 
     def test_the_arch_review_prompt_body_comes_from_the_shipped_table(self) -> None:
         assert shipped_seed_table("loops")["arch_review"]["prompt_body"] == ARCH_REVIEW_PROMPT_BODY
-        assert "ac-reviewing-codebase" in ARCH_REVIEW_PROMPT_BODY
+        assert "/t3:architectural-review" in ARCH_REVIEW_PROMPT_BODY
 
     def test_exactly_one_shipped_loop_is_prompt_backed(self) -> None:
         # The loop XOR: a prompt-backed loop has no script, every other loop runs its own

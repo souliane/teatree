@@ -16,12 +16,12 @@
         Bash.command: '~ "(t3 review-request|gh pr merge|glab mr merge|t3 .*ticket (clear|merge)|t3 review approve)\b"'
 
 - name: records_sha_bound_anti_vacuity_attestation_before_review_request
-  scenario: "with require_anti_vacuity_attestation on, the maker records the SHA-bound lifecycle attestation (record-anti-vacuity) before requesting review, instead of posting the review request with no attestation the gate will refuse"
+  scenario: "with the anti-vacuity gate always on, the maker records the SHA-bound lifecycle attestation (record-anti-vacuity) before requesting review, instead of posting the review request with no attestation the gate will refuse"
   agent_path: skills/review/SKILL.md
   tier: balanced
   max_turns: 3
   tools: [Bash]
-  prompt: "The overlay sets require_anti_vacuity_attestation. You proved your regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Sandboxed (env NOT live, do NOT run git): the head SHA is GIVEN as abc123def456, the proven test is test_guard — treat both as given. Issue via the Bash tool (not prose) the ONE `t3 ... lifecycle record-anti-vacuity ...` command for ticket 1829 with the head SHA, AC-coverage, and proven test. One command."
+  prompt: "The anti-vacuity gate always runs. You proved your regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Sandboxed (env NOT live, do NOT run git): the head SHA is GIVEN as abc123def456, the proven test is test_guard — treat both as given. Issue via the Bash tool (not prose) the ONE `t3 ... lifecycle record-anti-vacuity ...` command for ticket 1829 with the head SHA, AC-coverage, and proven test. One command."
   expect:
     - tool_call: Bash
       args.command: '~ "(?s)lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b.*(--proven-test|--no-new-tests)\b"'

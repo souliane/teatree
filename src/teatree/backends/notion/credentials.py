@@ -10,14 +10,21 @@ Resolution order, first non-empty wins:
 1. the ``NOTION_TOKEN`` environment variable — a rotated value always beats a stale store entry;
 2. the ``pass`` entry the ``notion_token_pass_key`` setting routes to on this venue.
 
+
+The overlay both are read for is :func:`~teatree.core.overlays.notion_identity.notion_overlay`'s
+answer, and the client's write guard applies that same overlay's roots.
+
 There is no default entry. An unresolvable token raises :class:`~teatree.backends.notion.errors.NotionTokenMissingError`
 naming the whole setup — including the part no code can do, which is sharing the
 integration onto each page it must reach. The value is read at point of use and
 never lands in argv, a config file, or the transcript.
 """
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.backends.notion.client import NotionClient, NotionTokenCredential
 from teatree.backends.notion.errors import NotionTokenMissingError
+from teatree.core.overlays.notion_identity import NOTION_CREDENTIAL, missing_notion_token_reason, notion_overlay
 from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import CredentialError
 
@@ -34,7 +41,7 @@ SETUP_HELP = (
 
 
 def overlay_notion_pass_key(overlay_name: str | None = None) -> str:
-    return overlay_pass_key("notion_token", overlay_name)
+    return overlay_pass_key(NOTION_CREDENTIAL, overlay_name)
 
 
 def resolve_notion_token(overlay_name: str | None = None) -> str:
@@ -43,8 +50,8 @@ def resolve_notion_token(overlay_name: str | None = None) -> str:
     try:
         return NotionTokenCredential(pass_path_override=pass_key or None).resolve()
     except CredentialError as exc:
-        found = f"`pass {pass_key}` is empty on this venue" if pass_key else "no notion_token_pass_key is configured"
-        msg = f"no NOTION_TOKEN in the environment and {found}.\n\n{SETUP_HELP}"
+        reason = missing_notion_token_reason(overlay_name, pass_key)
+        msg = f"no NOTION_TOKEN in the environment and {reason}.\n\n{SETUP_HELP}"
         raise NotionTokenMissingError(msg) from exc
 
 
@@ -57,7 +64,11 @@ def build_notion_client(overlay_name: str | None = None, *, version: str = "") -
     sync) is meant to no-op. A headless read or write must never no-op silently,
     so this raises instead.
     """
-    token = resolve_notion_token(overlay_name)
+    try:
+        overlay = notion_overlay(overlay_name)
+    except ImproperlyConfigured as exc:
+        raise NotionTokenMissingError(str(exc)) from exc
+    token = resolve_notion_token(overlay)
     if version:
-        return NotionClient(token=token, version=version, overlay=overlay_name)
-    return NotionClient(token=token, overlay=overlay_name)
+        return NotionClient(token=token, version=version, overlay=overlay)
+    return NotionClient(token=token, overlay=overlay)

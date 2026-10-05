@@ -84,7 +84,7 @@ class TestR1AstGrepRuleFlagsUntouchedFile:
         offender = "src/teatree/core/overlay.py"  # an UNCHANGED file the edited rule now flags
         changed = _changed(("M", ".ast-grep/blocking/except-swallow-to-empty.yml"))
         assert offender not in _naive_astgrep_scope(changed), "naive scope MISSES the untouched offender"
-        plan = plan_push_gate(changed, enabled=True)
+        plan = plan_push_gate(changed)
         assert plan.is_full
         assert ".ast-grep" in plan.reason
         assert plan.astgrep_scope is None, "FULL scans the whole tree, catching the planted offender"
@@ -97,7 +97,7 @@ class TestR2NewRuleNewlyViolatesCleanFile:
             ("A", ".ast-grep/blocking/new-rule.yml"),
         )
         assert _naive_astgrep_scope(changed) == [], "naive scope is empty — a previously-clean file is never re-scanned"
-        assert plan_push_gate(changed, enabled=True).is_full
+        assert plan_push_gate(changed).is_full
 
 
 class TestR3ConftestChangesDoctestSemantics:
@@ -106,12 +106,12 @@ class TestR3ConftestChangesDoctestSemantics:
         # Naive DOCTEST scope is empty (no src .py changed) — a tree-wide doctest
         # option/fixture change would be silently skipped.
         assert _naive_doctest_scope(changed) == []
-        plan = plan_push_gate(changed, enabled=True)
+        plan = plan_push_gate(changed)
         assert plan.is_full
         assert plan.doctest_targets == (WHOLE_TREE_DOCTEST,)
 
     def test_pyproject_forces_full(self) -> None:
-        plan = plan_push_gate(_changed(("M", "pyproject.toml")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "pyproject.toml")))
         assert plan.is_full
 
 
@@ -121,7 +121,7 @@ class TestR4DoctestLocalityIsSound:
     def test_changed_base_module_scopes_doctest_to_itself_only(self) -> None:
         base = "src/teatree/foundation.py"
         consumer = "src/teatree/consumer.py"  # UNCHANGED — its docstring may use base's API
-        plan = plan_push_gate(_changed(("M", base)), enabled=True)
+        plan = plan_push_gate(_changed(("M", base)))
         assert not plan.is_full
         assert plan.doctest_targets == (Path(base),)
         # The unchanged consumer's docstring is main's / CI's concern, never the
@@ -135,34 +135,34 @@ class TestR5DeleteOrRename:
         # A naive selector ignoring status would treat the deleted path as a normal
         # scoped src file; the real classifier forces FULL (its edges are gone).
         assert not plan_push_gate_naive_is_full(changed)
-        assert plan_push_gate(changed, enabled=True).is_full
+        assert plan_push_gate(changed).is_full
 
     def test_rename_forces_full(self) -> None:
-        assert plan_push_gate(_changed(("R", "src/teatree/renamed.py")), enabled=True).is_full
+        assert plan_push_gate(_changed(("R", "src/teatree/renamed.py"))).is_full
 
 
 class TestR6NonPythonDataFile:
     def test_yaml_corpus_under_src_forces_full(self) -> None:
         changed = _changed(("M", "src/teatree/eval/corpus/scenario.yaml"))
         assert _naive_astgrep_scope(changed) == [], "naive scope misses a data-driven yaml a test reads at runtime"
-        assert plan_push_gate(changed, enabled=True).is_full
+        assert plan_push_gate(changed).is_full
 
     def test_fixture_under_tests_forces_full(self) -> None:
-        assert plan_push_gate(_changed(("M", "tests/fixtures/data.json")), enabled=True).is_full
+        assert plan_push_gate(_changed(("M", "tests/fixtures/data.json"))).is_full
 
 
 class TestR7Unclassifiable:
     def test_unknown_path_forces_full(self) -> None:
         changed = _changed(("M", "some/weird/artifact.xyz"))
         assert _naive_astgrep_scope(changed) == []
-        plan = plan_push_gate(changed, enabled=True)
+        plan = plan_push_gate(changed)
         assert plan.is_full
         assert "fail-safe" in plan.reason or "unclassifiable" in plan.reason
 
     def test_astgrep_engine_absent_defers_loudly_never_wedges(self) -> None:
         # R7 engine-absent: the ast-grep portion is DEFERRED to the CI backstop with
         # a LOUD notice — never silently green, never a wedged push (CI is the guarantor).
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
 
         def _raise(*_args: object, **_kwargs: object) -> list[dict]:
             message = "no engine on PATH"
@@ -180,21 +180,14 @@ class TestR7Unclassifiable:
 
 
 class TestFlagGatingAndExecutor:
-    def test_flag_off_is_always_full_whole_tree(self) -> None:
-        # OFF ⇒ whole-tree doctest + whole-tree ast-grep (the pre-#122 run, the escape hatch).
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=False)
-        assert plan.is_full
-        assert plan.doctest_targets == (WHOLE_TREE_DOCTEST,)
-        assert plan.astgrep_scope is None
-
     def test_flag_on_scopes_a_clean_src_diff(self) -> None:
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         assert not plan.is_full
         assert plan.doctest_targets == (Path("src/teatree/core/session.py"),)
         assert plan.astgrep_scope == (Path("src/teatree/core/session.py"),)
 
     def test_executor_fails_on_ast_grep_finding(self) -> None:
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         finding = {"check_id": "except-swallow-to-empty", "path": "src/teatree/core/session.py", "start": {"line": 3}}
         result = run_push_gate(
             plan,
@@ -206,7 +199,7 @@ class TestFlagGatingAndExecutor:
         assert result.astgrep_findings == (finding,)
 
     def test_executor_fails_on_doctest_failure(self) -> None:
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
@@ -228,14 +221,14 @@ def plan_push_gate_naive_is_full(changed: ChangedSet) -> bool:
 class TestResolvePlanAndDoctestRunner:
     def test_resolve_plan_dirty_merge_base_forces_full(self) -> None:
         with patch.object(push_gate_mod, "changed_paths", side_effect=ChangedSetError("dirty")):
-            plan = resolve_plan("origin/main", enabled=True)
+            plan = resolve_plan("origin/main")
         assert plan.is_full
         assert "could not compute" in plan.reason
 
     def test_resolve_plan_scopes_a_clean_diff(self) -> None:
         changed = _changed(("M", "src/teatree/core/session.py"))
         with patch.object(push_gate_mod, "changed_paths", return_value=changed):
-            plan = resolve_plan("origin/main", enabled=True)
+            plan = resolve_plan("origin/main")
         assert not plan.is_full
         assert plan.doctest_targets == (Path("src/teatree/core/session.py"),)
 
@@ -291,7 +284,6 @@ class TestResolvePlanAndDoctestRunner:
             reason="signal propagation probe",
             doctest_targets=(probe,),
             astgrep_scope=(),
-            enabled=True,
         )
 
         result = run_push_gate(plan, repo_root=repo_root, astgrep_scanner=lambda *_a, **_k: [])
@@ -341,7 +333,7 @@ class TestDoctestSweepIsDiagnosableAndUnpoisoned:
         assert run.call_args.kwargs["env"]["PATH"] == "/probe/bin"
 
     def test_failing_sweep_note_carries_exit_code_targets_and_output(self) -> None:
-        plan = plan_push_gate(_changed(("M", "dev/push-gate.sh")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "dev/push-gate.sh")))
         assert plan.is_full, "a FULL escalation is the shape that dies silently"
         sweep = DoctestOutcome(ok=False, returncode=2, output="ERROR collecting src/teatree/probe.py\nBoomError")
         result = run_push_gate(
@@ -358,7 +350,7 @@ class TestDoctestSweepIsDiagnosableAndUnpoisoned:
         assert str(WHOLE_TREE_DOCTEST) in joined
 
     def test_passing_sweep_adds_no_note(self) -> None:
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
@@ -369,7 +361,7 @@ class TestDoctestSweepIsDiagnosableAndUnpoisoned:
         assert not any("1 passed" in note for note in result.notes)
 
     def test_silent_sweep_still_says_something_actionable(self) -> None:
-        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        plan = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         result = run_push_gate(
             plan,
             repo_root=Path.cwd(),
@@ -409,22 +401,21 @@ class TestDoctestSweepIsDiagnosableAndUnpoisoned:
 
 class TestReportShape:
     def test_full_and_scoped_reports_are_human_readable(self) -> None:
-        full = plan_push_gate(_changed(("M", "pyproject.toml")), enabled=True)
+        full = plan_push_gate(_changed(("M", "pyproject.toml")))
         assert full.report().startswith("push-gate: FULL")
-        scoped = plan_push_gate(_changed(("M", "src/teatree/core/session.py")), enabled=True)
+        scoped = plan_push_gate(_changed(("M", "src/teatree/core/session.py")))
         assert scoped.report().startswith("push-gate: SCOPED")
 
 
 @pytest.mark.parametrize(
     "plan",
     [
-        PushGatePlan(is_full=True, reason="r", doctest_targets=(WHOLE_TREE_DOCTEST,), astgrep_scope=None, enabled=True),
+        PushGatePlan(is_full=True, reason="r", doctest_targets=(WHOLE_TREE_DOCTEST,), astgrep_scope=None),
         PushGatePlan(
             is_full=False,
             reason="r",
             doctest_targets=(Path("src/teatree/x.py"),),
             astgrep_scope=(Path("src/teatree/x.py"),),
-            enabled=True,
         ),
     ],
 )

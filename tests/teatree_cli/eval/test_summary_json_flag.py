@@ -85,7 +85,7 @@ def test_summary_json_written_before_the_red_gate_exits(monkeypatch: pytest.Monk
     body = out.read_text(encoding="utf-8")
     payload = json.loads(body)
     assert payload["head_sha"] == "deadbeef"
-    assert payload["totals"] == {"total": 1, "passed": 0, "failed": 1, "skipped": 0}
+    assert payload["totals"] == {"total": 1, "passed": 0, "failed": 1, "skipped": 0, "incomplete": 0}
     assert payload["scenarios"][0]["triage_class"] == "behavioral"
     assert SENTINEL not in body
     assert "text_blocks" not in body

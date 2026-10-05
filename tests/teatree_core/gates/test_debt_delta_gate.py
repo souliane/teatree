@@ -60,7 +60,7 @@ class TestCheckDebtDeltaWithExplicitWaivers(TestCase):
             check_debt_delta(self._ticket(), _NEW_NOQA, waivers=())
         message = str(excinfo.value)
         assert "noqa" in message
-        assert "require_debt_delta" in message  # names the operator escape
+        assert "approved_debt" in message  # names the satisfying evidence
 
     def test_passes_a_clean_diff(self) -> None:
         check_debt_delta(self._ticket(), _CLEAN, waivers=())  # no raise

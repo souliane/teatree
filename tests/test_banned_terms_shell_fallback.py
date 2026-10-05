@@ -41,8 +41,8 @@ def _seed_db(tmp_path: Path, terms: tuple[str, ...] = ("acmecorp",)) -> Path:
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
     conn.execute(
-        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-        (json.dumps(list(terms)),),
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps({"leak": list(terms), "prose_collider": list(terms)}),),
     )
     conn.commit()
     conn.close()

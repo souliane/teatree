@@ -399,15 +399,14 @@ class TestOverlayResolution:
         assert "t3 teatree workspace ticket" in out
         mock_run.assert_not_called()
 
-    def test_short_overlay_name_is_resolved_before_the_variant_lookup(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """``--overlay teatree`` reaches ``get_overlay`` as its dispatchable ``t3-teatree`` form.
+    def test_registered_overlay_is_resolved_before_the_variant_lookup(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """``--overlay t3-teatree`` reaches ``get_overlay`` as its registered name.
 
-        ``get_overlay`` keys on the registered entry-point name, so handing it the ambient short
-        form degraded every run to ``uncovered: ... not loadable`` — a green smoke that had
-        silently stopped exercising the variant→tenant path it exists to prove.
+        ``get_overlay`` keys on the registered entry-point name. The variant lookup
+        must exercise that overlay rather than report it unloadable.
         """
         with patch("teatree.core.management.commands.dogfood.run_smoke"):
-            out, code = _call_smoke(capsys, "--overlay=teatree", "--dry-run")
+            out, code = _call_smoke(capsys, "--overlay=t3-teatree", "--dry-run")
 
         assert code == 0
         assert "not loadable" not in out

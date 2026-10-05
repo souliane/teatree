@@ -24,6 +24,7 @@ A YAML that ships without an anti-vacuous fail fixture is silently
 toothless, so this test runs on every PR.
 """
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,8 +35,7 @@ import pytest
 from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.context_budget import HEADING_RE, MissingSectionError, extract_sections
-from teatree.eval.discovery import discover_specs, fixture_dir_for
-from teatree.eval.matcher_vacuity import negative_only_specs
+from teatree.eval.discovery import discover_core_specs, discover_specs, fixture_dir_for
 from teatree.eval.models import (
     AnyOf,
     AssistantTextMatcher,
@@ -44,8 +44,11 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 from teatree.eval.report import evaluate
+from teatree.eval.skill_command_validity import resolve_command_path
+from tests.teatree_eval._matcher_vacuity import is_negative_only
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -99,7 +102,7 @@ def _run_against_fixture(spec: EvalSpec, fixture_text: str, tmp_path: Path) -> b
 
 def _specs_with_fixtures() -> list[tuple[EvalSpec, Path | None, Path | None]]:
     rows: list[tuple[EvalSpec, Path | None, Path | None]] = []
-    for spec in discover_specs():
+    for spec in discover_core_specs():
         fixtures = fixture_dir_for(spec)
         fail = fixtures / f"{spec.name}_fail.stream.jsonl"
         pass_ = fixtures / f"{spec.name}_pass.stream.jsonl"
@@ -160,8 +163,7 @@ class TestScenarioFixtures:
         tmp_path: Path,
     ) -> None:
         _ = pass_fixture
-        if fail_fixture is None:
-            pytest.skip(f"no fail fixture for {spec.name}")
+        assert fail_fixture is not None, f"missing fail fixture for {spec.name}"
         passed = _run_against_fixture(spec, fail_fixture.read_text(encoding="utf-8"), tmp_path)
         assert passed is False, (
             f"scenario {spec.name!r} stayed GREEN against {fail_fixture.name} — "
@@ -176,8 +178,7 @@ class TestScenarioFixtures:
         tmp_path: Path,
     ) -> None:
         _ = fail_fixture
-        if pass_fixture is None:
-            pytest.skip(f"no pass fixture for {spec.name}")
+        assert pass_fixture is not None, f"missing pass fixture for {spec.name}"
         passed = _run_against_fixture(spec, pass_fixture.read_text(encoding="utf-8"), tmp_path)
         assert passed is True, (
             f"scenario {spec.name!r} went RED against {pass_fixture.name} — "
@@ -205,6 +206,41 @@ def test_noop_transcript_drives_scenario_red(spec: EvalSpec, noop_fixture: Path,
         "the scenario is satisfied by a no-op agent and therefore vacuous. "
         "Add a positive matcher that requires the expected tool call."
     )
+
+
+def test_fetch_without_merge_is_red(tmp_path: Path) -> None:
+    spec = next(s for s in discover_specs() if s.name == "review_branch_current_with_main")
+    fixture = fixture_dir_for(spec) / "review_branch_current_with_main_fetch_only_fail.stream.jsonl"
+    (tmp_path / f"{spec.name}.jsonl").write_text(fixture.read_text(), encoding="utf-8")
+    result = evaluate(spec, TranscriptRunner(transcript_dir=tmp_path).run(spec))
+    assert not result.passed
+    assert not result.matcher_results[0].passed, "the required merge matcher must reject fetch alone"
+
+
+def test_pass_fixture_t3_commands_exist_in_cli_registry() -> None:
+    from teatree.cli import _build_skill_command_registry  # noqa: PLC0415 — test reads the live registry
+
+    valid, groups = _build_skill_command_registry()
+    assert resolve_command_path("t3 ship validate-title", valid, groups) is None
+    checked = 0
+    stale = []
+    for spec in discover_core_specs():
+        fixture = fixture_dir_for(spec) / f"{spec.name}_pass.stream.jsonl"
+        assert fixture.is_file(), f"missing pass fixture for {spec.name}"
+        for line in fixture.read_text().splitlines():
+            event = json.loads(line)
+            for content in event.get("message", {}).get("content", []):
+                if content.get("name") != "Bash":
+                    continue
+                command = content.get("input", {}).get("command", "")
+                for match in re.finditer(r"(?<![\w])t3\s+[^;&|\n]+", command):
+                    raw = match.group().strip()
+                    representative = re.sub(r"^t3\s+(?:acme|example|widget|default)\b", "t3 teatree", raw)
+                    checked += 1
+                    if resolve_command_path(representative, valid, groups) is None:
+                        stale.append(f"{fixture.name}: {raw}")
+    assert checked > 0
+    assert not stale, "pass fixtures invoke absent t3 commands:\n" + "\n".join(stale)
 
 
 def test_every_behavioral_scenario_ships_a_fail_fixture() -> None:
@@ -541,6 +577,9 @@ def _matcher_regexes(spec: EvalSpec) -> "Iterator[tuple[str, str]]":
                 yield "result", matcher.result_value
                 yield f"{matcher.before_tool}.{matcher.before_arg_path} (before)", matcher.before_value
                 continue
+            if isinstance(matcher, ToolCallCountMatcher):
+                yield f"{matcher.tool}.{matcher.arg_path}", matcher.pattern
+                continue
             yield f"{matcher.tool}.{matcher.arg_path}", matcher.value
             if matcher.guard_value:
                 yield f"{matcher.tool}.{matcher.guard_arg_path} (guard)", matcher.guard_value
@@ -566,3 +605,13 @@ def test_no_matcher_regex_is_over_escaped() -> None:
         "between the operator's quotes VERBATIM, so `\\\\s` matches a literal backslash and "
         "the matcher can never fire. Write a single backslash:\n" + "\n".join(offenders)
     )
+
+
+def negative_only_specs(specs: list[EvalSpec]) -> list[EvalSpec]:
+    """The offenders: specs with a negative matcher and no positive anchor.
+
+    A negative-only scenario is satisfied by a no-op agent, so it guards nothing.
+    The gate (``test_scenarios_anti_vacuous.py``) consumes this and fails loud,
+    naming each offender, so the vacuous shape can never reach the suite green.
+    """
+    return [spec for spec in specs if is_negative_only(spec)]

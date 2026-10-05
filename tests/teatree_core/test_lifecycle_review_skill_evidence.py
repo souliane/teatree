@@ -30,6 +30,7 @@ from teatree.core.gates.review_skill_gate import (
 )
 from teatree.core.management.commands.lifecycle import ReviewSkillEvidenceError
 from teatree.core.models import Session, Ticket
+from tests.teatree_core.conftest import record_review_context_for_test
 
 
 @contextmanager
@@ -54,6 +55,7 @@ class TestReviewingRequiresReviewSkillEvidence(TestCase):
     def _ticket_ready_for_review(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         return ticket
 
     def _visit_reviewing(self, ticket: Ticket) -> None:
@@ -109,6 +111,7 @@ class TestAlternateReviewSkillsSatisfyTheGate(TestCase):
     def _ticket_ready_for_review(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         return ticket
 
     def _visit_reviewing(self, ticket: Ticket) -> None:
@@ -181,6 +184,7 @@ class TestReviewSkillGateRepoScoping(TestCase):
     def _ticket_ready_for_review(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         return ticket
 
     def _visit_reviewing(self, ticket: Ticket) -> None:
@@ -242,7 +246,7 @@ class TestPerPrReviewTierScoping(TestCase):
     """souliane/teatree#3530 — a per-PR ship is not accountable for the periodic sweep."""
 
     @contextmanager
-    def _tiers(self, *, review: str, architectural: str = "ac-reviewing-codebase") -> Iterator[None]:
+    def _tiers(self, *, review: str, architectural: str = "architectural-review") -> Iterator[None]:
         with (
             _configured_review_skill(review),
             patch(
@@ -255,10 +259,11 @@ class TestPerPrReviewTierScoping(TestCase):
     def _ticket_ready_for_review(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         return ticket
 
     def test_periodic_architectural_skill_resolves_to_the_per_pr_tier(self) -> None:
-        with self._tiers(review="ac-reviewing-codebase"):
+        with self._tiers(review="architectural-review"):
             assert accepted_per_pr_review_skills() == frozenset({PER_PR_REVIEW_SKILL})
 
     def test_a_distinct_per_pr_skill_is_left_alone(self) -> None:
@@ -271,9 +276,9 @@ class TestPerPrReviewTierScoping(TestCase):
 
     def test_gate_still_blocks_without_per_pr_tier_evidence(self) -> None:
         ticket = self._ticket_ready_for_review()
-        ticket.record_review_skill_run("ac-reviewing-codebase")
+        ticket.record_review_skill_run("architectural-review")
         with (
-            self._tiers(review="ac-reviewing-codebase"),
+            self._tiers(review="architectural-review"),
             _repo_is_overlay_own(is_own=True),
             pytest.raises(ReviewSkillEvidenceError, match=PER_PR_REVIEW_SKILL),
         ):
@@ -282,7 +287,7 @@ class TestPerPrReviewTierScoping(TestCase):
     def test_gate_passes_on_per_pr_tier_evidence(self) -> None:
         ticket = self._ticket_ready_for_review()
         ticket.record_review_skill_run(PER_PR_REVIEW_SKILL)
-        with self._tiers(review="ac-reviewing-codebase"):
+        with self._tiers(review="architectural-review"):
             call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer")
         session = ticket.sessions.first()
         assert session is not None

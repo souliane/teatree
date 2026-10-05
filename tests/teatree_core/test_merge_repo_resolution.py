@@ -28,10 +28,10 @@ from teatree.core.merge import (
     pr_slug_resolution,
     resolve_pr_repo_slug,
 )
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import MergeClear, PullRequest, Ticket
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -50,6 +50,14 @@ _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
 
 def _workstream_clear(ticket: Ticket) -> MergeClear:
     """A CLEAR exactly as `t3 teatree ticket clear` issues it in production."""
+    record_merge_prerequisites_for_test(ticket, _SHA)
+    PullRequest.objects.create(
+        ticket=ticket,
+        overlay=ticket.overlay,
+        url="https://github.com/souliane/teatree/pull/866",
+        repo="souliane/teatree",
+        iid="866",
+    )
     return MergeClear.objects.create(
         ticket=ticket,
         pr_id=866,
@@ -189,6 +197,14 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
             state=Ticket.State.REVIEW_REQUESTED,
         )
         waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
+        record_merge_prerequisites_for_test(ticket, self._OVERLAY_SHA)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay=ticket.overlay,
+            url=f"https://github.com/{self._OVERLAY_REPO}/pull/139",
+            repo=self._OVERLAY_REPO,
+            iid="139",
+        )
         return MergeClear.objects.create(
             ticket=ticket,
             pr_id=139,

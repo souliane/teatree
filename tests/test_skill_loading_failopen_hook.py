@@ -2,21 +2,19 @@
 
 The skill-loading gate (``handle_enforce_skill_loading``) blocks
 Bash/Edit/Write until every suggested-but-unloaded skill is loaded. A
-suggestion comes from the supplementary keyword config
-(``$HOME/.teatree-skills.yml``) or from lifecycle/intent detection, and lands
-in ``<session>.pending``.
+suggestion comes from the SessionStart suggester and lands in
+``<session>.pending``.
 
-The lockout class this guards against: a ``$HOME/.teatree-skills.yml`` entry
-maps a keyword to a skill *name that no longer resolves* (renamed or
-removed skill). The gate would then demand a skill the ``Skill`` tool
+The lockout class this guards against: a demand names a skill *that no longer
+resolves* (renamed or removed skill). The gate would then demand a skill the ``Skill`` tool
 cannot load ("Unknown skill"), blocking ALL Bash/Edit/Write for the whole
 session with no in-session self-rescue.
 
 The fix: before blocking on a required skill, the gate verifies the name
 resolves to a loadable skill (a ``<skill>/SKILL.md`` under one of the
 skill search dirs). An unresolvable name does NOT block — the gate emits
-a one-line warning naming the stale skill + the config file and lets the
-tool through. A real-but-unloaded skill still enforces load-first.
+a one-line warning naming the stale skill and lets the tool through. A
+real-but-unloaded skill still enforces load-first.
 
 Integration-style: the real handler, real ``STATE_DIR`` on ``tmp_path``,
 real skill dirs seeded under the temp ``HOME``.
@@ -214,11 +212,10 @@ class TestStaleSkillFailsOpen:
         assert blocked is False
         assert payload is None
 
-    def test_unresolvable_skill_warns_with_name_and_config(self, gate: Path) -> None:
+    def test_unresolvable_skill_warns_with_its_name(self, gate: Path) -> None:
         _write_pending("sess-stale2", ["ac-auditing-repos"])
         _, _, warning = _run({"session_id": "sess-stale2", "tool_name": "Bash"})
         assert "ac-auditing-repos" in warning
-        assert ".teatree-skills.yml" in warning
 
 
 class TestRealUnloadedSkillStillEnforced:

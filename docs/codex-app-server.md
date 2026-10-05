@@ -90,14 +90,70 @@ last verified cache from pass.
 
 - `cwd` and `add_dirs` become Codex runtime workspace roots. Workspace-write
   mode makes those same roots writable.
-- Claude's `bypassPermissions` means unattended approval here, not unrestricted
-  host access: Codex receives `approvalPolicy = "never"` with workspace-write.
-- Read-only policy is preserved. Tool rules Codex cannot faithfully enforce are
-  rejected by the phase-aware availability probe before the process starts, so
-  an ordered route selects its next harness instead of failing the task. A phase
-  that denies delegation sets Codex's `features.multi_agent = false`; a phase
-  that denies the shell or all file reads is not Codex-compatible with the
-  pinned CLI because it has no equivalent per-tool deny control.
+- On the host, `bypassPermissions` gives unattended approval with workspace-write
+  and network off; read-only phases use Codex's read-only sandbox.
+- Codex's own sandbox needs a user namespace that a container may not grant. A
+  deployment whose container is the sandbox says so with
+  `TEATREE_CODEX_CONTAINER_IS_SANDBOX=1`; nothing is inferred from the container
+  marker or the worker role. A downstream deployment sets it on its worker service
+  only. Hosts keep the host policy above. A container that leaves it unset (the core
+  compose worker, which mounts the Docker socket, the host clone and the host credential
+  stores; a host `t3` that execs into a worker) is not offered Codex at all: its own
+  sandbox cannot start there, so the availability probe refuses every phase and the
+  route falls through to Claude.
+- In an opted-in container, write phases use `danger-full-access` with network on
+  and `approvalPolicy = "untrusted"`. Codex raises an approval request for every
+  file change and for every command it does not consider known-safe. Teatree
+  judges each through its PreToolUse router (a command is judged as the script
+  inside Codex's `<shell> -lc` wrapper) and steers a refusal reason back to the
+  model. Known-safe commands (`cat`, `rg`, `find`, `git show` and the like) run
+  with no request and are not judged, so they can read whatever the worker user
+  can, for example `/proc/1/environ` or the mounted credential volumes. The
+  container is the boundary for that read access, not the gate.
+- The router declines when it cannot be run, exits with anything but success or
+  its deny code, prints output that is not JSON, times out, answers anything other
+  than allow, or reports on stderr that it crashed (`Traceback`) or that hooks are
+  disabled (`run-hook.sh` finds no Python 3.11+ interpreter). Only a router
+  handler that fails open, exiting 0 with no output, is accepted: the router
+  prints nothing on an allow, so there is no explicit allow to require.
+- The session marks its workspace roots `untrusted`, so a project's `.codex/rules`
+  cannot pre-approve a command; user rules in the Codex home cannot be switched
+  off for the app server, so while any `rules/*.rules` file exists there the
+  availability probe refuses Codex. Read-only phases cannot be enforced in an
+  opted-in container, and an `architectural_review` that starts in a managed main
+  clone could dirty it, so the probe refuses Codex for both and selects the next
+  candidate (Claude).
+- Those threads run with the `t3@souliane` plugin switched off
+  (`plugins."t3@souliane".enabled = false`) and without inline MCP servers: the
+  plugin declares the teatree MCP server, and an MCP tool call is not an approval
+  request, so the gate would never see it. Hosts keep the plugin and MCP. Switching
+  the plugin off also removes its skills from the thread; the skills a phase
+  requires arrive as `SKILL.md` bodies in the dispatched prompt (`developerInstructions`),
+  so only ambient discovery of the rest is lost.
+- Right after `thread/start`, an unsandboxed thread is asked `mcpServerStatus/list`.
+  Any MCP server it still loads (another plugin, a `mcp_servers` entry, a connector),
+  an error reply, no answer within 10 s, or a status it cannot read refuses the thread
+  as an access fallback before any turn runs, so the route falls through to the next
+  candidate. A protocol failure while asking is not relabelled: it surfaces as itself.
+  The check runs when the thread opens rather than in the availability probe, because
+  the list is per thread. On the shared server a refused thread is unsubscribed
+  (`thread/unsubscribe`, 5 s bound, outside the session lock) so Codex can unload it;
+  that unload is expected, not verified against a live server.
+- The refusals of the availability probe that guard the unsandboxed lane (a container
+  that has not opted in, a user execpolicy rule in the Codex home, an
+  `architectural_review` that starts in a managed main clone) are evaluated again when
+  the harness is built and refuse its session as an access fallback when it opens. A
+  dispatch pinned with `agent_harness=codex_app_server` never runs the probe, and would
+  otherwise skip them (`agent_phase_harness` cannot name Codex: it parses only the closed
+  `AgentHarness` values).
+- Server requests other than the two approval methods (`item/tool/requestUserInput`,
+  `mcpServer/elicitation/request`, `item/tool/call`, `item/permissions/requestApproval`,
+  `account/chatgptAuthTokens/refresh`) are answered with a JSON-RPC `-32601` error.
+- Tool rules Codex cannot faithfully enforce are rejected before the process
+  starts. A phase that denies delegation sets Codex's
+  `features.multi_agent = false`; a phase that denies the shell or all file reads
+  is not Codex-compatible with the pinned CLI because it has no equivalent
+  per-tool deny control.
 - Inline stdio MCP servers are translated and supported. Remote/non-inline MCP
   configurations are rejected.
 - Server-side resume is supported. Claude hooks and native structured output are

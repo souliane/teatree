@@ -7,13 +7,19 @@ environment — the only oracle that cannot be satisfied by an argv the kernel w
 — and each is paired with the pre-fix inline shape as its control.
 """
 
+import asyncio
+import json
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import SystemPromptPreset
+from django.test import TestCase
 
 from teatree.agents.claude_cli_spawn import (
     APPEND_PROMPT_FILE_FLAG,
@@ -24,7 +30,12 @@ from teatree.agents.claude_cli_spawn import (
     prepared_spawn,
     spawn_error,
 )
+from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.spawn_payload import MAX_ARG_STRLEN, AgentSpawnError, measure_spawn_payload
+from teatree.agents.write_turn import run_bounded_write_turn
+from teatree.loops.dream.sdk_distiller import _distill_options
+from teatree.loops.dream.sdk_eval_synthesizer import _synth_options
+from tests.teatree_agents._sdk_fake import assert_uncompacted, fake_sdk
 
 #: Past the 32-page per-argument cap, so the pre-fix inline shape is refused by execve.
 _OVERSIZED_APPEND = "# Loaded skills\n\n" + "x" * (MAX_ARG_STRLEN + 50_000)
@@ -98,15 +109,69 @@ class TestPreparedSpawnMovesThePromptOffArgv:
             path = Path(spawn_options.extra_args[APPEND_PROMPT_FILE_FLAG] or "")
         assert not path.exists()
 
-    def test_options_without_a_preset_append_are_yielded_unchanged(self) -> None:
-        options = ClaudeAgentOptions(system_prompt="a plain string prompt")
-        with prepared_spawn(options) as spawn_options:
-            assert spawn_options is options
+    def test_options_without_a_preset_append_keep_their_prompt(self) -> None:
+        with prepared_spawn(ClaudeAgentOptions(system_prompt="a plain string prompt")) as spawn_options:
+            assert spawn_options.system_prompt == "a plain string prompt"
+            assert APPEND_PROMPT_FILE_FLAG not in spawn_options.extra_args
 
-    def test_a_preset_with_no_append_is_yielded_unchanged(self) -> None:
-        options = ClaudeAgentOptions(system_prompt=SystemPromptPreset(type="preset", preset="claude_code"))
-        with prepared_spawn(options) as spawn_options:
-            assert spawn_options is options
+    def test_a_preset_with_no_append_keeps_its_prompt(self) -> None:
+        preset = SystemPromptPreset(type="preset", preset="claude_code")
+        with prepared_spawn(ClaudeAgentOptions(system_prompt=preset)) as spawn_options:
+            assert spawn_options.system_prompt == preset
+            assert APPEND_PROMPT_FILE_FLAG not in spawn_options.extra_args
+
+
+_ACCOUNT_SYNC_OFF = {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}
+
+
+def _spawned_settings(argv: list[str]) -> object:
+    return json.loads(argv[argv.index("--settings") + 1])
+
+
+def _harness_spawn_argv(options: ClaudeAgentOptions) -> list[str]:
+    async def _open() -> None:
+        async with ClaudeSdkHarness.open(options):
+            pass
+
+    with fake_sdk([]) as client:
+        asyncio.run(_open())
+    return _rendered_argv(client.last_options)
+
+
+class TestAFactorySpawnHidesTheAccountSkills:
+    @pytest.mark.parametrize(
+        ("settings", "spawned"),
+        [
+            pytest.param(None, _ACCOUNT_SYNC_OFF, id="dispatch"),
+            pytest.param('{"hooks":{}}', {"hooks": {}, **_ACCOUNT_SYNC_OFF}, id="clean-room"),
+        ],
+    )
+    def test_the_harness_spawn_turns_account_skill_sync_off(self, settings: str | None, spawned: object) -> None:
+        options = replace(_options("skill body"), settings=settings)
+        assert _spawned_settings(_harness_spawn_argv(options)) == spawned
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(lambda _: _distill_options(env=None), id="dream-distill"),
+            pytest.param(lambda _: _synth_options(env=None), id="dream-eval-synth"),
+        ],
+    )
+    def test_a_session_opened_outside_the_harness_turns_it_off_too(
+        self, build: Callable[[Path], ClaudeAgentOptions], tmp_path: Path
+    ) -> None:
+        assert _spawned_settings(_rendered_argv(build(tmp_path))) == _ACCOUNT_SYNC_OFF
+
+
+class TestTheWriteTurnSpawnHidesTheAccountSkills(TestCase):
+    def test_the_bounded_write_turn_spawn_turns_it_off(self) -> None:
+        checkout = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        with fake_sdk([]) as client:
+            run_bounded_write_turn("fix", checkout, timeout_seconds=5, harness=ClaudeSdkHarness())
+
+        assert _spawned_settings(_rendered_argv(client.last_options)) == _ACCOUNT_SYNC_OFF
+        assert_uncompacted(client.last_options)
 
 
 class TestAnOversizedPromptRemainsSpawnable:

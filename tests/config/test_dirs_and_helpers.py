@@ -1,6 +1,6 @@
 """Directory resolution, data/logging helpers and e2e-repo config.
 
-Covers ``worktree_root`` (env/Django override then the DB tier then the default),
+Covers ``worktree_root`` (DB tier then the default),
 ``clone_root``, ``get_data_dir``, ``default_logging``, ``_extract_settings_module``
 and ``load_e2e_repos`` (DB-home ``e2e_repos`` registry).
 
@@ -8,8 +8,13 @@ Integration-first per the Test-Writing Doctrine: a real on-disk ``manage.py`` an
 real cold-path sqlite (``config_db``) under ``tmp_path``.
 """
 
+import io
+import logging
+import logging.config
+from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 
 from teatree.config import (
@@ -26,19 +31,9 @@ from ._shared import _seed_config_db
 
 
 class TestWorktreeRoot:
-    def test_returns_path_from_django_settings(self, tmp_path: Path, settings) -> None:
-        custom = tmp_path / "custom-ws"
-        settings.T3_WORKSPACE_DIR = str(custom)
-        result = worktree_root()
-        assert result == custom
-
-    def test_falls_back_to_per_overlay_default(self, settings, monkeypatch: pytest.MonkeyPatch) -> None:
-        # With no env/Django override and no DB row the per-overlay default
-        # ``~/workspace/t3-workspaces/<overlay>/`` stands. The DB and env tiers are
+    def test_falls_back_to_per_overlay_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # With no DB row the per-overlay default stands. The DB tier is
         # covered in test_workspace_dir_per_overlay.py.
-        if hasattr(settings, "T3_WORKSPACE_DIR"):
-            del settings.T3_WORKSPACE_DIR
-        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
         monkeypatch.setenv("T3_OVERLAY_NAME", "myoverlay")
 
         assert worktree_root() == Path.home() / "workspace" / "t3-workspaces" / "myoverlay"
@@ -83,6 +78,36 @@ def test_default_logging_returns_dict(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "console" in config["handlers"]
     log_dir = tmp_path / "data" / "test-ns" / "logs"
     assert log_dir.is_dir()
+
+
+@pytest.fixture
+def restored_logging() -> Iterator[None]:
+    root, httpx_logger = logging.getLogger(), logging.getLogger("httpx")
+    handlers, level, httpx_level = list(root.handlers), root.level, httpx_logger.level
+    yield
+    for handler in root.handlers:
+        if handler not in handlers:
+            handler.close()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+    httpx_logger.setLevel(httpx_level)
+
+
+@pytest.mark.usefixtures("restored_logging")
+def test_default_logging_keeps_httpx_request_lines_off_every_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path / "data")
+    config = default_logging("test-ns")
+    console = io.StringIO()
+    config["handlers"]["console"] = {"class": "logging.StreamHandler", "stream": console, "formatter": "verbose"}
+    logging.config.dictConfig(config)
+
+    with httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(200))) as client:
+        client.get("https://api.notion.com/v1/users/me")
+
+    logged = console.getvalue() + (tmp_path / "data" / "test-ns" / "logs" / "teatree.log").read_text()
+    assert "HTTP Request" not in logged
 
 
 # ── _extract_settings_module ──────────────────────────────────────────

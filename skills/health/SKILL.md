@@ -94,36 +94,58 @@ t3 loops list            # the DB Loop rows directly: name, enabled, cadence, la
 ```bash
 t3 loops tick --loop <name>   # run ONE enabled, due loop — the per-loop primitive the worker's timer chain fires (#2650)
 t3 loops tick                 # HARD ERROR: there is no master tick — `--loop <name>` is required (#2650)
+t3 loops tick --loop followup --dry-run          # preview the colleague-facing posts, post NOTHING
+t3 <overlay> loops tick --loop followup --dry-run --json   # same, scoped to one overlay
 ```
 
-`t3 loops tick --loop <name>` is what the worker's `loop_timer` chain runs on each loop's own cadence (and what you run to trigger a loop by hand): it scopes `build_loop_table_jobs` to that single row and claims the disjoint per-loop `loop:<name>` lease (so the N per-loop loops run in parallel, never serialised on the singleton `t3-master`). Running `t3 loops tick` with no `--loop` is a hard error — there is no master tick and no continuous interval-runner loop. It honours the enabled / due / unified-verdict gates on that one row.
+**`--dry-run` (followup only) — verify a posting change without firing it at real people.** Runs the
+real followup scanners against a throwaway copy of the database and swaps ONLY the final Slack call, so every
+live read, gate and decision still runs and there is no second decision surface to drift. It emits one row per
+candidate — target, author, the self/foreign/unreadable authorship verdict, the action it would have taken, the
+channel/thread, the live outcome and the refusal reason — and writes nothing: no post, no reaction, no
+`DeferredQuestion`, no `ReviewRequestPost` claim, no `OnBehalfAudit`, no `LoopLease`, and no `Loop.last_run_at`
+bump.
 
-Each per-loop tick claims that loop's `loop:<name>` lease; a non-owner session SKIPs. A loop runs only when its `Loop` row is `enabled` AND `is_due` AND the unified `LoopState` verdict (`loop_state_admits`) admits — a disabled or cooling row is skipped, AND a loop held by a `LoopState` pause/disable (`t3 loop pause`/`disable`) is skipped too (the unified verdict, #2584), so triggering a loop never runs a held loop and never bumps a held loop's cadence anchor. Loop control is `/loops` (`t3 loop enable`/`disable`/`pause`/`resume`) + the DB `LoopState` tier only — there is no env kill-switch. Each script-backed `Loop` row carries its OWN on-disk entry point `src/teatree/loops/<name>/loop.py` (the module exposing that loop's `MINI_LOOP`) — the `script` column is per-loop and load-bearing; there is no shared runner. The live tick reads each admitted row's column to decide what to dispatch, and the per-loop runner (`t3 loops tick --loop <name>`, which scopes `build_loop_table_jobs` to that one row — #2650) honours the SAME enabled / due / unified-verdict gates; a row whose `script` does not resolve to a real registered loop module raises loudly rather than silently running nothing. A prompt-backed loop runs its `Prompt` body as the per-tick instruction — `arch_review` is the one prompt-backed default, instructing a sub-agent to run an architectural review with the `ac-reviewing-codebase` skill — see `/t3:prompts`.
+Selection deliberately bypasses the live admission gate, because `followup` is previewed precisely while it is
+masked off — a gated preview would answer "0 candidates" and read as a clean bill of health for a scan that
+never ran. The live verdict is reported in the header instead (`live tick would be: blocked — <reason>`).
+
+It is a gate, not only a report:
+
+| exit | meaning |
+| --- | --- |
+| 0 | clean — every candidate the guard cleared is self-authored |
+| 1 | BREACH — a candidate would be acted on that the authorship guard does not class as the owner's |
+| 2 | usage — `--dry-run` was passed with a loop other than `followup` |
+| 3 | VACUOUS — no scanner was selected (the posture forbids egress, or no messaging backend), so nothing was examined and the run proves nothing |
+
+A foreign or unreadable candidate the guard REFUSED is the guard working: it is listed as refused and exits 0.
+
+Each per-loop tick claims that loop's `loop:<name>` lease; a non-owner session SKIPs. A loop runs only when its `Loop` row is `enabled` AND `is_due` AND the unified `LoopState` verdict (`loop_state_admits`) admits — a disabled or cooling row is skipped, AND a loop held by a `LoopState` pause/disable (`t3 loop pause`/`disable`) is skipped too (the unified verdict, #2584), so triggering a loop never runs a held loop and never bumps a held loop's cadence anchor. Loop control is `/loops` (`t3 loop resume`/`disable`/`pause`) + the DB `LoopState` tier only — there is no env kill-switch. Each script-backed `Loop` row carries its OWN on-disk entry point `src/teatree/loops/<name>/loop.py` (the module exposing that loop's `MINI_LOOP`) — the `script` column is per-loop and load-bearing; there is no shared runner. The live tick reads each admitted row's column to decide what to dispatch, and the per-loop runner (`t3 loops tick --loop <name>`, which scopes `dispatch_loop_table` to that one row — #2650) honours the SAME enabled / due / unified-verdict gates; a row whose `script` does not resolve to a real registered loop module raises loudly rather than silently running nothing. A prompt-backed row dispatches its own registered mini-loop's `build_jobs`: `arch_review`, the one prompt-backed default, runs `ArchitecturalReviewScanner`, which takes the skill from `architectural_review_skill`, so editing the stored `Prompt.body` does not change periodic dispatch.
 
 ### Enabling / disabling a loop
 
 ```bash
-t3 loop enable <name>     # turn a loop ON  — sets BOTH Loop.enabled=True AND the LoopState control tier to ENABLED
-t3 loop disable <name>    # turn a loop OFF — sets BOTH Loop.enabled=False AND the LoopState kill-switch to DISABLED
-t3 loop resume <name>     # alias of enable — lift either a pause or a disable, return the loop to running
+t3 loop resume <name>     # lift a pause or disable hold and reconcile its timer
+t3 loop disable <name>    # hold a loop in DISABLED state
 t3 loop pause <name>      # reversible hold (LoopState only) — does NOT flip the durable Loop.enabled row
 t3 loop loop-state <name> # read the durable LoopState status (ENABLED when never touched)
 ```
 
-`enable`/`disable`/`resume` move the TWO planes the #2584 unified verdict reads in lock-step inside one transaction: the durable `LoopState` control tier (#1913) AND the row-level `Loop.enabled` column that the loop tick gates on (`not row.enabled` skips a loop). They are the agent-facing way to toggle `enabled`; a loop's **cadence** is edited from the dashboard's unified loop table (`/dash/loops/`, validated by `teatree.loops.loop_cadence_editing`), and the Django admin (`Loop` rows) remains the place to edit prompt-vs-script. `pause` is the reversible control-plane hold only — it leaves `Loop.enabled` untouched so a paused loop returns to running with `resume` without re-enabling a row that was deliberately `disable`d.
+`disable` and `resume` change the durable `LoopState` hold (#1913). The row-level `Loop.enabled` manual override is separate; use `t3 loop override` to change it with a reason. A loop's **cadence** is edited from the dashboard's unified loop table (`/dash/loops/`, validated by `teatree.loops.loop_cadence_editing`), and the Django admin (`Loop` rows) remains the place to edit prompt-vs-script. `pause` is a reversible hold; `resume` lifts either hold and leaves any manual override intact.
 
 #### The toggle IS the whole job (#2650 / PR-28)
 
 PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the whole job. The enable/disable chokepoint runs the reconciler, which adds a `loop_timer` chain head for a newly-enabled loop and prunes the timers of a disabled one at once — so the worker starts/stops driving that loop with no `CronCreate`/`CronDelete` step. There is no `claude-spec` to read and no cron to register.
 
-- **Enable a loop `X`:** `t3 loop enable X` — flips `Loop.enabled=True` + `LoopState=ENABLED`; the reconciler heads its timer chain and the worker drives it on its cadence.
-- **Disable a loop `X`:** `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`; the reconciler prunes its queued timers.
+- **Resume a loop `X`:** `t3 loop resume X --emergency` — clears its hold; the reconciler heads its timer chain when the other admission layers allow it.
+- **Disable a loop `X`:** `t3 loop disable X --emergency` — sets its hold to DISABLED; the reconciler prunes its queued timers.
 - **Confirm the worker is running:** `t3 worker status` (the live flock holder + what the active preset admits + per-loop timer counts). If the preset admits work but no worker runs, `t3 worker ensure` spawns a detached one. A preset admitting ZERO loops stops the loops entirely and is the ONLY stop — it quiesces the worker's executors and leaves the process alive, so the next schedule boundary still lands. `/dash/loops/` shows that verdict read-only; the posture itself is switched there or with `t3 loop preset use <name> --reason "<why>"`.
 - **Stop or recycle the worker:** `t3 worker stop` drains, SIGTERMs the flock holder, and verifies the flock was released (non-zero, with the pid, when it did not exit); `t3 worker restart` does that and then proves a NEW worker holds the flock. `t3 worker drain` on its own quiesces admission and stops nothing — the box then admits ZERO work until `worker_quiescing` goes back to `false` — prefer the `mcp__teatree__config_setting_set` MCP tool, falling back to `t3 <overlay> config_setting set worker_quiescing false` when the MCP server isn't connected — or `t3 worker restart` clears the gate.
 
 ### Presets & weekly schedules (mode switching, #3159)
 
-`t3 loop <enable|disable|pause|resume>` are per-loop. **Presets** switch many loops at once as a read-time MASK above the base config and below a `LoopState` hold — no rows are rewritten on a switch. A preset's `entries` are **tri-state** per loop (`on` / `off` / *absent = inherit* the base `Loop.enabled`). Resolution order (first opinion wins): L4 `LoopState` hold → L3 manual override → L2 active-schedule slot → L1 `Loop.enabled`.
+`t3 loop <disable|pause|resume>` are per-loop. **Presets** switch many loops at once as a read-time MASK above the base config and below a `LoopState` hold — no rows are rewritten on a switch. A preset's `entries` are **tri-state** per loop (`on` / `off` / *absent = inherit* the base `Loop.enabled`). Resolution order (first opinion wins): L4 `LoopState` hold → L3 manual override → L2 active-schedule slot → L1 `Loop.enabled`.
 
 ```bash
 t3 loop preset list                      # every preset + the ACTIVE marker
@@ -145,7 +167,7 @@ t3 loop schedule delete-slot standard <id>
 
 `set-slot` creates a slot without `--slot-id`; with one, it updates that slot's days, start time, and preset. `show` renders every slot ID in brackets (and as `id` with `--json`); use that ID for an update or `delete-slot`.
 
-Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `present` / `afk` / `maintenance` / `token-outage` / `off`, and schedules `standard` / `always-afk`. A fresh install seeds everything and PINS `active_loop_schedule` to `standard`, so a fresh box runs the owner's working-hours calendar out of the box (Mon-Fri 09:00-16:00 `Europe/Vienna` -> `present`, every other hour -> `afk`); the provenance-aware seed never overrides an operator who switched calendars or cleared the pin. Everything fails OPEN: a deleted preset/loop/schedule resolves with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset is a TOTAL per-loop on/off table (activated through the one `set_mode_override` chokepoint behind `t3 loop preset use`) plus one setting-shaped opinion, `egress`, read at SELECTION time so a loop whose output a posture forbids is never dispatched to produce it. Which overlays the full-fleet scanners sweep is NOT a preset fact — it is the box-global `scanner_overlay_scope` setting, because it answers whose repos this box looks after, which does not change when the operator goes AFK. `token-outage` auto-engages while a usage window is parked, behind the default-off `token_outage_auto_engage` flag.
+Seeded defaults (owner-editable DB data, never clobbered by re-seeding): presets `present` / `afk` / `maintenance` / `token-outage` / `off`, and schedules `standard` / `always-afk`. A fresh install seeds everything and PINS `active_loop_schedule` to `standard`, so a fresh box runs the owner's working-hours calendar out of the box (Mon-Fri 09:00-16:00 `Europe/Vienna` -> `present`, every other hour -> `afk`); the provenance-aware seed never overrides an operator who switched calendars or cleared the pin. Everything fails OPEN: a deleted preset/loop/schedule resolves with a WARNING + a `t3 doctor` finding — a broken schedule can never brick the fleet. A preset is a TOTAL per-loop on/off table (activated through the one `set_mode_override` chokepoint behind `t3 loop preset use`) plus one setting-shaped opinion, `egress`, read at SELECTION time so a loop whose output a posture forbids is never dispatched to produce it. Which overlays the full-fleet scanners sweep is NOT a preset fact — it is the box-global `scanner_overlay_scope` setting, because it answers whose repos this box looks after, which does not change when the operator goes AFK. `token-outage` auto-engages while a usage window is parked.
 
 The dashboard's **`/dash/presets/`** page is the same control surface with a UI: switch the active schedule and the active preset, edit a preset's per-loop tri-state entries, create / rename / delete a preset, edit its description, and add or remove schedule slots. Every write goes through the `teatree.loops.preset_editing` / `preset_admin` / `schedule_editing` seams — the same ones the CLI verbs above call — so the two surfaces cannot diverge. A rename re-points every by-name referrer (the override row, schedule slots, and the settings that select a preset) in one transaction, and a delete is refused while any of them still names the preset. The switch refuses a preset name no row carries rather than writing an override that would silently fall open to base config.
 
@@ -153,7 +175,7 @@ To read what the box is currently configured to DO — model and reasoning effor
 
 ### Reactive infra loops (not DB `Loop` rows)
 
-Three tight-cadence reactive slots run separately from the DB-configured domain loops above — self-contained cycle commands, not scanner ticks. **All three are worker maintenance chains** (`teatree.loops.timer_reconciler`: `run_slack_answer`, `run_self_improve`, `drain_chain`), so a live `t3 worker` drives them with NO Claude session open, and a session registers nothing. The owner bootstrap (`hooks/scripts/loop_registrations.py`) probes the worker singleton: worker alive → it emits one line saying the worker drives them; worker down → it falls back to emitting one `/loop <cadence> Run …` directive per slot, the legitimate degraded path. `t3 loop <slot> start` does the same, printing the paste-me slash command only when no worker is alive. Registering one of these as a cron/`/loop` while a worker is alive is refused by the `block-cron-loop-shell` PreToolUse gate (`/t3:rules` § "Never Cron a `t3 loop` Command From a Session"). Their cadence is env-overridable:
+Three tight-cadence reactive slots run separately from the DB-configured domain loops above — self-contained cycle commands, not scanner ticks. **All three are worker maintenance chains** (`teatree.loops.timer_reconciler`: `run_slack_answer`, `run_self_improve`, `drain_chain`), so a live `t3 worker` drives them with NO Claude session open, and a session registers nothing. With the worker down, `t3 loop <slot> start` prints the paste-me slash command — the legitimate degraded path; it prints nothing to register while a worker is alive. Registering one of these as a cron/`/loop` while a worker is alive is refused by the `block-cron-loop-shell` PreToolUse gate (`/t3:rules` § "Never Cron a `t3 loop` Command From a Session"). Their cadence is env-overridable:
 
 ```bash
 t3 loop slack-answer start    # /loop 20s Run `t3 loop slack-answer run`.       (T3_SLACK_ANSWER_CADENCE, floor 15s)

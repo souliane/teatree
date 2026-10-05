@@ -108,17 +108,10 @@ def _enumerate_cold_bool_flags() -> set[str]:
 
 
 def test_enumeration_is_not_vacuous() -> None:
-    # Guard the guard: a broken regex / moved hook dir must not make the coverage
-    # tests pass against an empty enumeration.
     flags = _enumerate_cold_bool_flags()
     assert _HOOK_SCRIPTS.is_dir()
-    assert "deny_circuit_breaker_enabled" in flags
-    # The two shapes the enumeration's scope used to exclude: a ``_loud`` reader, and a
-    # reader in a hook SUBPACKAGE. An excluded reader's key reads as an unread key, so
-    # narrowing back to ``teatree_bool_setting(`` or to a flat glob turns this red.
-    assert "dispatch_quote_scan_enabled" in flags
     assert "banned_terms_gate_enabled" in flags
-    assert len(flags) >= 10
+    assert flags
 
 
 def test_every_cold_bool_flag_has_a_registered_home() -> None:
@@ -217,7 +210,7 @@ def test_parsers_match_the_declared_default_type() -> None:
 
 
 def test_dataclass_is_frozen() -> None:
-    setting = COLD_HOOK_SETTINGS["deny_circuit_breaker_enabled"]
+    setting = COLD_HOOK_SETTINGS["orchestrator_delegation_gate_enabled"]
     assert isinstance(setting, ColdHookSetting)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        setting.default = False  # ty: ignore[invalid-assignment] — the assignment IS the assertion: asserted to raise.
+        setting.default = False  # ty: ignore[invalid-assignment] — assert the assignment raises.

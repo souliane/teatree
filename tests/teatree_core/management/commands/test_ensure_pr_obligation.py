@@ -10,17 +10,28 @@ genuine one — the branch is absent from the remote because it was never pushed
 not because a classifier was patched to say so.
 """
 
+import os
+import shlex
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from django.core.management import call_command
-from django.db import OperationalError
+from django.db import OperationalError, connection
 from django.db.models.query import QuerySet
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
+from teatree.core.forge_pr_probe import PrProbe
+from teatree.core.gates import orphan_guard
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.models import PendingPullRequest
@@ -121,6 +132,202 @@ class EnsurePrDeferralIsAnObligationTestCase(TestCase):
         owed = PendingPullRequest.objects.get(branch="feat-q")
         assert owed.spec["title"] == "feat: cool thing"
         assert owed.spec["repo"] == "souliane/teatree"
+
+
+class _RefusingHttpRemote(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="forge"')
+        self.end_headers()
+
+
+_SSH_TRANSPORTS = {
+    "ssh": "echo 'git@forge.invalid: Permission denied (publickey).' >&2\nexit 255",
+    "leaky": "echo 'fatal: unable to access https://forge.invalid/team/repo.git?token=hunter2' >&2\nexit 255",
+    "hang": 'echo $$ > "$0.pid"\nexec sleep 30',
+}
+
+
+@contextmanager
+def _unreadable_remote(repo: Path, transport: str) -> Iterator[None]:
+    if transport in _SSH_TRANSPORTS:
+        ssh = repo.parent / f"ssh-{transport}"
+        ssh.write_text(f"#!/bin/sh\n{_SSH_TRANSPORTS[transport]}\n")
+        ssh.chmod(0o755)
+        _run_git("config", "core.sshCommand", str(ssh), cwd=repo)
+        _run_git("remote", "set-url", "origin", "git@forge.invalid:team/repo.git", cwd=repo)
+        yield
+        return
+    server = HTTPServer(("127.0.0.1", 0), _RefusingHttpRemote)
+    serving = Thread(target=server.serve_forever, daemon=True)
+    try:
+        serving.start()
+        _run_git("config", "credential.helper", "", cwd=repo)
+        _run_git("remote", "set-url", "origin", f"http://127.0.0.1:{server.server_port}/team/repo.git", cwd=repo)
+        yield
+    finally:
+        if serving.is_alive():
+            server.shutdown()
+        server.server_close()
+
+
+def _process_is_gone(pid: int, *, within_seconds: float) -> bool:
+    deadline = time.monotonic() + within_seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+class EnsurePrReadsTheRemoteBeforeOwingTestCase(TestCase):
+    """What the remote says decides the obligation: present, absent, or unreadable.
+
+    Real git throughout; only the forge's PR create is a double.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._tmp_path = tmp_path
+        self._monkeypatch = monkeypatch
+        self._caplog = caplog
+
+    def _ensure(self, repo: Path, branch: str) -> dict[str, object]:
+        return cast("dict[str, object]", call_command("pr", "ensure-pr", repo=str(repo), branch=branch))
+
+    def test_a_pushed_branch_gets_its_pr_and_the_earlier_deferral_is_discharged(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        assert self._ensure(repo, branch)["owed"] is True
+        _run_git("push", "origin", branch, cwd=repo)
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://forge.example/team/repo/pull/7"}
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = self._ensure(repo, branch)
+
+        assert result["url"] == "https://forge.example/team/repo/pull/7"
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
+    def test_an_open_pr_discharges_a_deferral_the_drain_never_retried(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        self._ensure(repo, branch)
+        _run_git("push", "origin", branch, cwd=repo)
+
+        with patch.object(orphan_guard, "find_open_pr_for_branch", return_value=PrProbe.found("https://f/pr/8")):
+            result = self._ensure(repo, branch)
+
+        assert result["skipped"] == "open PR exists"
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
+    def test_a_merged_branch_discharges_its_deferral(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        self._ensure(repo, branch)
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("merge", "--ff-only", branch, cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+
+        assert "synced" in str(self._ensure(repo, branch)["skipped"])
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
+    def _assert_owed_as_unreadable(self, result: dict[str, object], branch: str) -> None:
+        assert result["skipped"] == ensure_pr_mod.REMOTE_UNKNOWN_DEFERRAL
+        assert result["owed"] is True
+        assert PendingPullRequest.objects.get(branch=branch).reason == ensure_pr_mod.REMOTE_UNKNOWN_DEFERRAL
+
+    def _ensure_behind(self, transport: str) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+
+        with _unreadable_remote(repo, transport):
+            result = self._ensure(repo, branch)
+
+        self._assert_owed_as_unreadable(result, branch)
+
+    def test_an_ssh_remote_refusing_the_key_owes_as_unreadable_never_as_a_first_push(self) -> None:
+        self._ensure_behind("ssh")
+
+    def test_an_https_remote_refusing_the_credential_owes_as_unreadable(self) -> None:
+        self._ensure_behind("http")
+
+    def test_a_remote_read_that_outlives_its_bound_owes_as_unreadable_and_leaves_no_transport_behind(self) -> None:
+        self._monkeypatch.setattr(orphan_guard, "VERIFY_TIMEOUT_SECONDS", 1.0)
+        repo, branch = _first_push_repo(self._tmp_path)
+
+        with _unreadable_remote(repo, "hang"):
+            started = time.monotonic()
+            result = self._ensure(repo, branch)
+            elapsed = time.monotonic() - started
+
+        self._assert_owed_as_unreadable(result, branch)
+        assert elapsed < 20
+        transport_pid = int((self._tmp_path / "ssh-hang.pid").read_text())
+        assert _process_is_gone(transport_pid, within_seconds=5)
+
+    def test_a_credential_in_the_remote_diagnostic_never_reaches_the_log(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+
+        with _unreadable_remote(repo, "leaky"):
+            self._ensure(repo, branch)
+
+        assert "remote_unknown" in self._caplog.text
+        assert "hunter2" not in self._caplog.text
+
+    def test_an_unreadable_remote_keeps_the_obligation_it_cannot_settle(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        self._ensure(repo, branch)
+
+        with _unreadable_remote(repo, "ssh"):
+            result = self._ensure(repo, branch)
+
+        self._assert_owed_as_unreadable(result, branch)
+
+    def test_a_push_through_a_distinct_pushurl_still_leaves_its_branch_owed(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        origin = self._tmp_path / "origin.git"
+
+        with _unreadable_remote(repo, "ssh"):
+            _run_git("remote", "set-url", "--push", "origin", str(origin), cwd=repo)
+            result = self._ensure(repo, branch)
+            _run_git("push", "origin", branch, cwd=repo)
+
+        _run_git("rev-parse", "--verify", f"refs/heads/{branch}", cwd=origin)
+        self._assert_owed_as_unreadable(result, branch)
+
+    def test_a_same_named_branch_under_another_prefix_is_not_the_branch(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        _run_git("push", "origin", f"{branch}:refs/heads/team/{branch}", cwd=repo)
+
+        assert self._ensure(repo, branch)["skipped"] == ensure_pr_mod.UNPUSHED_DEFERRAL
+
+    def test_a_settled_run_that_owes_nothing_never_writes_the_ledger(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("merge", "--ff-only", branch, cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+
+        with CaptureQueriesContext(connection) as queries:
+            result = self._ensure(repo, branch)
+
+        assert "synced" in str(result["skipped"])
+        writes = [q["sql"] for q in queries if not q["sql"].lstrip().upper().startswith("SELECT")]
+        assert writes == []
+
+    def test_a_ledger_that_cannot_be_written_never_fails_a_settled_run(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        self._ensure(repo, branch)
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("merge", "--ff-only", branch, cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+
+        with patch.object(PendingPullRequest.objects, "discharge", side_effect=_LOCKED):
+            result = self._ensure(repo, branch)
+
+        assert "synced" in str(result["skipped"])
+        assert "could not retire" in self._caplog.text
 
 
 class DeferralSurvivesABusyControlDbTestCase(TestCase):
@@ -321,3 +528,28 @@ class ADisposableCheckoutOwesNothingTestCase(TestCase):
 
         assert result["owed"] is True
         assert PendingPullRequest.objects.filter(branch=branch).exists()
+
+
+class TestTheHookEntrySeesEveryOverlay:
+    """A member-dir uv invocation installs only that member, so a sibling overlay's declared bot is invisible.
+
+    Nothing then reads as unreachable, the ambient overlay's owner token is the only credential in
+    sight, and the MR is opened as the owner. The entry has to install every workspace member.
+    """
+
+    _CONFIG = Path(__file__).resolve().parents[4] / ".pre-commit-config.yaml"
+
+    def _entry(self) -> list[str]:
+        repos = yaml.safe_load(self._CONFIG.read_text(encoding="utf-8"))["repos"]
+        entries = [hook["entry"] for repo in repos for hook in repo["hooks"] if hook["id"] == "ensure-pr"]
+        assert len(entries) == 1, "the ensure-pr hook must exist exactly once"
+        return shlex.split(entries[0])
+
+    def test_the_entry_installs_every_workspace_member_before_running_the_cli(self) -> None:
+        argv = self._entry()
+
+        assert argv[:2] == ["uv", "run"]
+        assert "--all-packages" in argv[: argv.index("t3")]
+
+    def test_the_entry_still_runs_ensure_pr_through_the_teatree_prefix(self) -> None:
+        assert self._entry()[-4:] == ["t3", "teatree", "pr", "ensure-pr"]

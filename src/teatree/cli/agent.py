@@ -113,8 +113,6 @@ def _launch_claude(
         skill_prefix="/",
     )
     cmd = [claude_bin]
-    if settings.claude_chrome:
-        cmd.append("--chrome")
     cmd.extend(["--append-system-prompt", context])
 
     if settings.contribute_plugin_dir:

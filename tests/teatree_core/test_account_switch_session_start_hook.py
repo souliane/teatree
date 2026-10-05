@@ -52,14 +52,14 @@ class TestAccountSwitchAdvisory:
     def test_merge_prepends_advisory_to_session_context(self, staged_home: Path) -> None:
         _write_active_account(staged_home, "uuid-B")
         record_fingerprint("uuid-A", home=staged_home)
-        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
+        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
         assert "BASE DIRECTIVE" in merged
         assert merged.index(RECOVERY_COMMAND) < merged.index("BASE DIRECTIVE")
 
     def test_merge_no_switch_leaves_context_unchanged(self, staged_home: Path) -> None:
         _write_active_account(staged_home, "uuid-A")
         record_fingerprint("uuid-A", home=staged_home)
-        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
+        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
         assert "account switch detected" not in merged.lower()
 
 

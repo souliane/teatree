@@ -7,15 +7,15 @@ from django.apps import apps
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
-from django_fsm import FSMField, TransitionNotAllowed
+from django_fsm import FSMField, TransitionNotAllowed, can_proceed
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
-from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
-from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
+from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
@@ -45,6 +45,8 @@ SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 
 class Task(models.Model):
+    attempts: "models.Manager[TaskAttempt]"
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         CLAIMED = "claimed", "Claimed"
@@ -104,6 +106,8 @@ class Task(models.Model):
     claimed_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.CharField(max_length=255, blank=True)
     claimed_by_session = models.CharField(max_length=255, blank=True, default="")
+    # db_default: a generation predating this column must still INSERT a valid row.
+    claimed_generation = models.CharField(max_length=40, blank=True, default="", db_default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     # #4164 The OS process currently executing this claim, so a sweep can tell a stalled
@@ -305,8 +309,16 @@ class Task(models.Model):
 
             park_for_user_input(self)
             return
-        self._record_phase_visit()
+        if not self._review_skipped():
+            self._record_phase_visit()
         self._apply_phase_transition()
+
+    def _review_skipped(self) -> bool:
+        """Whether the latest attempt records a deliberate no-review disposition."""
+        if normalize_phase(self.phase) != "reviewing":
+            return False
+        last_attempt = self.attempts.order_by("-pk").first()
+        return bool(last_attempt and (last_attempt.result or {}).get("review_skipped"))
 
     def _needs_user_input_followup_pending(self) -> bool:
         """True iff this task was *held* for human input (#927).
@@ -321,6 +333,34 @@ class Task(models.Model):
         transition path, not only the live ``complete()`` chain.
         """
         return self._last_attempt_needs_user_input()
+
+    def _complete_reviewer_task_transition(self, ticket: Ticket) -> bool:
+        """Distinguish a recorded no-review disposition from an actual review."""
+        if self._review_skipped():
+            if ticket.state == Ticket.State.REVIEW_DELIVERED:
+                return False
+            # A self-authored stray can share its reviewer ticket with an armed
+            # cold review or a claimed run. mark_review_no_action consumes both.
+            protected_sibling = (
+                Task.objects.pending_in_phase("reviewing")
+                .filter(ticket=ticket)
+                .filter(Q(status=Task.Status.CLAIMED) | Q(auto_review_dispatches__isnull=False))
+                .exclude(pk=self.pk)
+                .exists()
+            )
+            if protected_sibling:
+                return False
+            if can_proceed(ticket.mark_review_no_action):
+                ticket.mark_review_no_action()
+        else:
+            ticket.mark_reviewed_externally()
+        return True
+
+    def _advance_reviewer_ticket(self, ticket: Ticket) -> bool:
+        if not self._complete_reviewer_task_transition(ticket):
+            return False
+        ticket.save()
+        return True
 
     def _apply_phase_transition(self) -> bool:
         """Fire the FSM transition this task's phase implies, if its guard holds.
@@ -383,9 +423,8 @@ class Task(models.Model):
                 and ticket.role == Ticket.Role.REVIEWER
                 and ticket.state in mark_reviewed_externally_source_states
             ):
-                ticket.mark_reviewed_externally()
-                ticket.save()
-            elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+                return self._advance_reviewer_ticket(ticket)
+            if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
             elif phase == "planning" and ticket.state == Ticket.State.WORK_STARTED:
@@ -397,13 +436,10 @@ class Task(models.Model):
             elif (
                 phase == "coding"
                 and ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED}
-                and is_auto_implement(ticket)
+                and has_plan_decision(ticket)
             ):
-                # The issue-implementer auto-start path schedules coding directly
-                # on a fresh NOT_STARTED author ticket (no scope/plan phase), so
-                # the coding-completion cannot match the PLAN_RECORDED-source ``code()``
-                # guard above. ``code_direct`` is the plan-skipped sibling, gated
-                # on the auto-implement marker, so the normal flow is untouched.
+                # A plan recorded off the WORK_STARTED rung (``ticket plan`` / ``skip-planning`` on an
+                # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
                 ticket.code_direct(parent_task=self)
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
@@ -455,7 +491,7 @@ class Task(models.Model):
         )
 
     def _last_attempt_needs_user_input(self) -> bool:
-        last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        last = self.attempts.order_by("-pk").first()
         return bool(last and isinstance(last.result, dict) and last.result.get("needs_user_input"))
 
     def fail(self, *, reason: str, by_holder: bool) -> None:
@@ -518,7 +554,7 @@ class Task(models.Model):
         conversation, which is the very history it was continuing. So does one the retry cannot
         continue: served by the CLI's fallback model, or with no room left for another prompt (#4874).
         """
-        last_attempt = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        last_attempt = self.attempts.order_by("-pk").first()
         if last_attempt is not None and (
             exhausted_the_conversation(last_attempt.error) or last_attempt.cannot_continue_its_conversation()
         ):
@@ -579,8 +615,10 @@ class Task(models.Model):
         """Create one child task per repo for parallel execution.
 
         Each child task inherits the ticket and session from the parent.
-        The parent can wait for all children by querying ``child_tasks``.
+        The parent can wait for all children by querying ``child_tasks``. An implementing
+        phase on a ticket with no plan decision raises ``NoPlanArtifactError`` and spawns nothing.
         """
+        refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
         children = []
         for repo in repos:
             child = Task.objects.create(
@@ -592,13 +630,6 @@ class Task(models.Model):
             )
             children.append(child)
         return children
-
-    def all_children_done(self) -> bool:
-        """Return True if all child tasks have reached a terminal state."""
-        children = self.child_tasks.all()  # ty: ignore[unresolved-attribute]
-        if not children.exists():
-            return True
-        return not children.exclude(status__in=self.Status.terminal()).exists()
 
     def phase_iteration_count(self) -> int:
         """How many attempts this ticket-phase has already recorded (#2009)."""

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 import teatree.core.provision.provisioners as provisioners_mod
-from teatree.core.provision.provisioners import apply_symlinks, inject_settings, start_services
+from teatree.core.provision.provisioners import apply_symlinks, start_services
 
 
 class TestApplySymlinks(TestCase):
@@ -338,44 +338,3 @@ class TestStartServices(TestCase):
 
         assert results["good"] is True
         assert results["bad"] is False
-
-
-class TestInjectSettings(TestCase):
-    def test_creates_new_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "settings.env"
-            inject_settings(target, {"KEY": "value"})
-            assert target.read_text().strip() == "KEY=value"
-
-    def test_updates_existing_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "settings.env"
-            target.write_text("KEY=old\nOTHER=keep\n")
-
-            inject_settings(target, {"KEY": "new"})
-
-            lines = target.read_text().strip().splitlines()
-            assert "KEY=new" in lines
-            assert "OTHER=keep" in lines
-
-    def test_updates_key_in_place_preserving_order(self) -> None:
-        """Existing keys are updated at their original line position."""
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "settings.env"
-            target.write_text("FIRST=1\nSECOND=2\nTHIRD=3\n")
-
-            inject_settings(target, {"SECOND": "updated"})
-
-            lines = target.read_text().strip().splitlines()
-            assert lines[0] == "FIRST=1"
-            assert lines[1] == "SECOND=updated"
-            assert lines[2] == "THIRD=3"
-
-    def test_adds_header(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "settings.env"
-            inject_settings(target, {"DB_HOST": "localhost"}, header="Database")
-
-            content = target.read_text()
-            assert "# Database" in content
-            assert "DB_HOST=localhost" in content

@@ -567,17 +567,10 @@ class PullMainCloneScannerWiringTests(TestCase):
 
         assert UserSettings().pull_main_clone_cadence_hours == 1
 
-    def test_pull_main_clone_disabled_setting_defaults_off(self) -> None:
-        """``pull_main_clone_disabled`` defaults to ``False`` — scanner on by default."""
-        from teatree.config import UserSettings  # noqa: PLC0415
-
-        assert UserSettings().pull_main_clone_disabled is False
-
     def test_settings_are_overlay_overridable(self) -> None:
-        """Both knobs are registered for per-overlay ``[overlays.<name>]`` overrides."""
+        """The cadence is registered for per-overlay ``[overlays.<name>]`` overrides."""
         from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS  # noqa: PLC0415
 
-        assert "pull_main_clone_disabled" in OVERLAY_OVERRIDABLE_SETTINGS
         assert "pull_main_clone_cadence_hours" in OVERLAY_OVERRIDABLE_SETTINGS
 
     def test_wiring_resolves_workspace_repos_to_main_clones(self) -> None:
@@ -616,22 +609,6 @@ class PullMainCloneScannerWiringTests(TestCase):
         labels = [label for label, _ in scanner.repos]
         assert labels == ["acme:acme-backend"]
         assert scanner.repos[0][1] == clone
-
-    def test_wiring_returns_none_when_disabled(self) -> None:
-        """Escape hatch — ``pull_main_clone_disabled=True`` → no scanner."""
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.scanner_factories import _pull_main_clone_scanner_for  # noqa: PLC0415
-
-        backend = OverlayBackends(name="acme", overlay=_FakeOverlay(["acme-backend"]))
-        with patch(
-            "teatree.loop.scanner_factories._effective_settings_for_overlay",
-            return_value=UserSettings(pull_main_clone_disabled=True),
-        ):
-            scanner = _pull_main_clone_scanner_for(backend)
-        assert scanner is None
 
     def test_wiring_returns_none_when_overlay_has_no_python_class(self) -> None:
         """An overlay backend with no Python class has no workspace repos to walk."""

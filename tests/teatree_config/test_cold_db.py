@@ -4,21 +4,21 @@ The raw read layer under `cold_reader`: config-DB path resolution, the loop-stat
 status read, and the generic existence probe. The happy paths build a REAL sqlite
 database via stdlib `sqlite3` and read it back — the fail-open, WAL-fallback, and
 locking behaviour exercised against actual sqlite. The rarer fail-open branches
-(a PRAGMA-setup failure, the exact `SQLITE_CANTOPEN` quiescent-WAL retry, a
+(a PRAGMA-setup failure, the exact quiescent-WAL retry codes, a
 non-`OperationalError` sqlite error) are driven with a fake connection so each
 error class is deterministic rather than OS-dependent.
 """
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
 
 import teatree.paths
 from teatree.config import cold_db
-from teatree.config.cold_db import canonical_config_db, fetch_all, fetch_one, loop_status, row_exists
+from teatree.config.cold_db import canonical_config_db, fetch_one, loop_status, row_exists
 
 _PRAGMA_FAIL = "pragma failed"
 
@@ -192,29 +192,15 @@ class TestLoopStatus:
         assert not db.with_name(db.name + "-wal").exists()
         assert loop_status("dispatch", db_path=db) == "paused"
 
-
-class TestFetchAll:
-    """`fetch_all` is the multi-row sibling of `fetch_one` — the cold schedule-slot read."""
-
-    _SLOTS = "SELECT key, value FROM teatree_config_setting WHERE scope=? ORDER BY key"
-
-    def test_returns_every_matching_row_in_query_order(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "mode", "auto"), ("", "wip", "full"), ("other", "mode", "off")])
-        assert fetch_all(db, self._SLOTS, ("",)) == [("mode", '"auto"'), ("wip", '"full"')]
-
-    def test_empty_result_is_an_empty_list_not_an_error(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "mode", "auto")])
-        assert fetch_all(db, self._SLOTS, ("absent",)) == []
-
-    @pytest.mark.parametrize("build", [_absent_db, _db_without_the_queried_table])
-    def test_missing_db_or_table_fails_open_to_empty(self, tmp_path: Path, build: Callable[[Path], None]) -> None:
-        # Fail-open to [] is what lets an unreadable store resolve toward ASKING
-        # rather than inheriting a restrictive posture from a half-read schedule.
-        db = tmp_path / "db.sqlite3"
-        build(db)
-        assert fetch_all(db, self._SLOTS, ("",)) == []
+    def test_quiescent_wal_db_in_a_read_only_directory_readable(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
+        _remove_wal_sidecars(db)
+        tmp_path.chmod(0o555)
+        try:
+            assert loop_status("dispatch", db_path=db) == "paused"
+        finally:
+            tmp_path.chmod(0o755)
 
 
 class TestRowExists:
@@ -313,12 +299,15 @@ class TestReadOnlyFailOpenBranches:
         monkeypatch.setattr(cold_db.sqlite3, "connect", lambda *_a, **_k: conn)
         assert row_exists("SELECT 1", on_error=True, db_path=db) is True
 
-    def test_mode_ro_cantopen_retries_immutable_and_reads(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("code", [sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_READONLY_DIRECTORY])
+    def test_mode_ro_quiescent_wal_error_retries_immutable_and_reads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
     ) -> None:
         db = tmp_path / "db.sqlite3"
         db.touch()
-        conns = [_FakeConn(exec_error=_CantOpen("quiescent")), _FakeConn()]  # mode=ro CANTOPEN, then immutable OK
+        quiescent = sqlite3.OperationalError("quiescent")
+        quiescent.sqlite_errorcode = code
+        conns = [_FakeConn(exec_error=quiescent), _FakeConn()]
 
         def _connect(conn_str: str, *_a: object, **_k: object) -> _FakeConn:
             return conns[0] if "mode=ro" in conn_str else conns[1]

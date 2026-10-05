@@ -18,11 +18,8 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.setup import setup_app
-from teatree.cli.slack.setup import (
-    _APP_ID_RE,
+from teatree.cli.slack.manifest import (
     _BOT_ONLY_SCOPES,
-    _BOT_TOKEN_RE,
-    _USER_ID_RE,
     _USER_SCOPES,
     SlackManifestError,
     _user_scopes_carry_no_bot_only_scope,
@@ -34,8 +31,8 @@ from teatree.cli.slack.setup import (
     manifests_equivalent,
     rotate_config_token,
     update_manifest,
-    write_overlay_settings,
 )
+from teatree.cli.slack.setup import _APP_ID_RE, _BOT_TOKEN_RE, _USER_ID_RE, write_overlay_settings
 from teatree.config import OverlayEntry
 from teatree.core.models import ConfigSetting
 
@@ -1028,7 +1025,7 @@ class TestSlackAppApi:
     """``_slack_app_api`` is the single Slack HTTP boundary."""
 
     def test_posts_with_bearer_token_and_returns_json(self) -> None:
-        from teatree.cli.slack.setup import _slack_app_api  # noqa: PLC0415 — scoped import inside the test method
+        from teatree.cli.slack.manifest import _slack_app_api  # noqa: PLC0415 — scoped import inside the test method
 
         captured: dict[str, Any] = {}
 

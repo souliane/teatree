@@ -154,5 +154,4 @@ def record_stuck_transition_question(task: "Task", *, phase: str, ticket: Ticket
         f"advance and is stuck before {phase!r}. How should it proceed — rework the "
         f"earlier phases, or ignore?"
     )
-    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
-    DeferredQuestion.record(question, session_id=str(session_id or ""), tool_use_id=dedup_key)
+    DeferredQuestion.record(question, task_session=task.session, tool_use_id=dedup_key)

@@ -15,7 +15,7 @@ same user-authorised bypass and no second implementation.
 import io
 import json
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,12 +26,10 @@ from teatree.core import invocation_cwd as _invocation_cwd
 from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, render_bdd_source
 from teatree.core.management.commands._test_plan import committed_captures as _captures
 from teatree.core.management.commands._test_plan import file_store as _file_store
-from teatree.core.management.commands._test_plan import render as _render
 from teatree.core.management.commands._test_plan import write as _write
 from teatree.core.models import Ticket
 
 _MOCK_OVERLAY_NAME = "test"
-_Side = Literal["dev", "local", "stack"]
 _ISSUE_URL = "https://gitlab.com/org/repo/-/issues/4521"
 _FINAL_BDD_SOURCE: BddScenarioSource = {
     "prd_page": "https://notion.so/example-prd",
@@ -123,25 +121,6 @@ class _PlanCaptureTestBase(TestCase):
     def _run_expecting_exit(self, manifest: str, **kwargs: object) -> None:
         with pytest.raises(SystemExit):
             call_command("e2e", "write-test-plan", ticket=_ISSUE_URL, manifest=manifest, **_STILLS_ONLY, **kwargs)
-
-    def _make_capture_legacy_flat(self, *, env: _Side, name: str, also_cite_from: _Side | None = None) -> Path:
-        namespaced = self._evidence_dir / env / name
-        legacy = self._evidence_dir / name
-        namespaced.replace(legacy)
-        state = _file_store.read_plan_state(self._plan_path)
-        flat_link = f"evidence/{self._evidence_dir.name}/{name}"
-        namespaced_link = f"evidence/{self._evidence_dir.name}/{env}/{name}"
-        for workflow in state[env]["workflows"].values():
-            workflow["video_md"] = workflow["video_md"].replace(namespaced_link, flat_link)
-            workflow["image_md"] = [link.replace(namespaced_link, flat_link) for link in workflow["image_md"]]
-        if also_cite_from is not None:
-            state[also_cite_from] = {
-                "commits": {},
-                "workflows": state[env]["workflows"],
-                "env": also_cite_from,
-            }
-        _file_store.write_plan(self._plan_path, _render.render_body(state))
-        return legacy
 
 
 class TestCapturesCommittedBesideThePlan(_PlanCaptureTestBase):
@@ -264,57 +243,6 @@ class TestStackCapturesTakeTheSameEmbedPath(_PlanCaptureTestBase):
         assert "evidence/repo-4521/stack/step1.png" in body
         assert (self._evidence_dir / "local" / "step1.png").read_bytes() == local.read_bytes()
         assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == stack.read_bytes()
-
-    def test_a_legacy_flat_capture_stays_in_place_beside_a_namespaced_one(self) -> None:
-        self._ticket()
-        self._evidence_dir.mkdir(parents=True)
-        legacy = _red_boxed_png(self._evidence_dir / "step1.png", fill=(210, 230, 250))
-        legacy_bytes = legacy.read_bytes()
-        (self._tmp / "stack").mkdir()
-        stack = _red_boxed_png(self._tmp / "stack" / "step1.png")
-
-        self._run(self._manifest(images=[stack], env="stack"), embed_captures=True)
-
-        assert legacy.read_bytes() == legacy_bytes
-        assert (self._evidence_dir / "stack" / "step1.png").read_bytes() == stack.read_bytes()
-
-    def test_an_identical_legacy_flat_capture_is_migrated_on_same_side_rerun(self) -> None:
-        self._ticket()
-        fresh = _red_boxed_png(self._tmp / "step1.png")
-        self._run(self._manifest(images=[fresh]), embed_captures=True)
-        legacy = self._make_capture_legacy_flat(env="local", name="step1.png")
-
-        self._run(self._manifest(images=[fresh]), embed_captures=True)
-
-        assert not legacy.exists()
-        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == fresh.read_bytes()
-        assert "evidence/repo-4521/step1.png" not in self._plan_path.read_text(encoding="utf-8")
-
-    def test_a_changed_legacy_flat_capture_is_replaced_on_same_side_rerun(self) -> None:
-        self._ticket()
-        self._run(self._manifest(images=[_red_boxed_png(self._tmp / "step1.png")]), embed_captures=True)
-        legacy = self._make_capture_legacy_flat(env="local", name="step1.png")
-        (self._tmp / "recapture").mkdir()
-        changed = _red_boxed_png(self._tmp / "recapture" / "step1.png", fill=(200, 220, 240))
-
-        self._run(self._manifest(images=[changed]), embed_captures=True)
-
-        assert not legacy.exists()
-        assert (self._evidence_dir / "local" / "step1.png").read_bytes() == changed.read_bytes()
-        assert "evidence/repo-4521/step1.png" not in self._plan_path.read_text(encoding="utf-8")
-
-    def test_an_identical_legacy_flat_capture_another_side_cites_is_refused_as_a_duplicate(self) -> None:
-        self._ticket()
-        fresh = _red_boxed_png(self._tmp / "step1.png")
-        self._run(self._manifest(images=[fresh]), embed_captures=True)
-        legacy = self._make_capture_legacy_flat(env="local", name="step1.png", also_cite_from="stack")
-        body = self._plan_path.read_text(encoding="utf-8")
-
-        self._run_expecting_exit(self._manifest(images=[fresh]), embed_captures=True)
-
-        assert legacy.read_bytes() == fresh.read_bytes()
-        assert not (self._evidence_dir / "local" / "step1.png").exists()
-        assert self._plan_path.read_text(encoding="utf-8") == body
 
     def test_a_stack_capture_identical_to_a_committed_local_one_is_refused(self) -> None:
         self._ticket()
@@ -440,11 +368,6 @@ class TestEvidenceDirIsKeyedLikeThePlanFile(_PlanCaptureTestBase):
         assert product != client
         assert product.parent == plans_dir / "evidence"
 
-    def test_a_legacy_unprefixed_plan_keeps_its_unprefixed_directory(self) -> None:
-        plans_dir = self._checkout / "test-plans"
-
-        assert _captures.evidence_dir_for(plans_dir / "4521.md") == plans_dir / "evidence" / "4521"
-
 
 class TestVerifyPlanCapturesCommand(_PlanCaptureTestBase):
     """The standing gate a repo runs over evidence already in git."""
@@ -541,8 +464,8 @@ class TestPlanFileIsNamedPerRepo(_PlanCaptureTestBase):
         self._monkeypatch.setattr(_file_store, "_checkout_for", lambda _t, *, repo: self._checkout)
         self._monkeypatch.setattr(
             _file_store,
-            "get_overlay",
-            lambda _name: MagicMock(metadata=MagicMock(get_e2e_config=lambda: {"project_path": "org/repo"})),
+            "get_overlay_for_ticket",
+            lambda _ticket: MagicMock(metadata=MagicMock(get_e2e_config=lambda: {"project_path": "org/repo"})),
         )
 
         assert _file_store.plan_path_for_ticket(ticket) == self._plan_path

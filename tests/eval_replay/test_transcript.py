@@ -156,13 +156,14 @@ class TestExtractUsage:
 
 
 class TestExtractBilledModel:
-    def test_returns_dominant_model_usage_key(self) -> None:
+    def test_returns_the_key_that_billed_most_not_the_auxiliary_listed_first(self) -> None:
         stream = (
             '{"type":"result","subtype":"success","model_usage":'
-            '{"claude-sonnet-4-6":{"input_tokens":10},"claude-opus-4-8":{"input_tokens":900}}}\n'
+            '{"claude-haiku-4-5-20251001":{"inputTokens":900,"outputTokens":40},'
+            '"claude-sonnet-5-5":{"outputTokens":17000,"cacheReadInputTokens":400000}}}\n'
         )
         events = parse_stream_json(stream)
-        assert extract_billed_model(events) == "claude-opus-4-8"
+        assert extract_billed_model(events) == "claude-sonnet-5-5"
 
     def test_returns_none_when_model_usage_absent(self) -> None:
         events = parse_stream_json('{"type":"result","subtype":"success"}\n')

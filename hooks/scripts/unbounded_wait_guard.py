@@ -79,4 +79,4 @@ def handle_block_unbounded_wait(data: dict) -> bool:
         return False
     if not detection.is_unbounded_wait:
         return False
-    return _fail_open_or_deny(data, detection.message)
+    return _fail_open_or_deny(data, detection.message, gate_id="unbounded_wait")

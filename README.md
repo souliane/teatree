@@ -396,7 +396,8 @@ DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 - **Loop & Statusline** — the singleton `t3 worker` scans signals,
   dispatches actions, renders a statusline file the Claude Code hook reads
   on every prompt.
-- **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
+- **Portable agent plugin** — one package of skills and MCP tools exposed through
+  native Claude Code and Codex manifests, with its hook workflow enabled by Claude Code.
 
 ## Three tiers
 
@@ -430,20 +431,34 @@ t3 mcp serve                    # serve teatree's structured search (tickets, wo
 t3 notion whoami|doctor         # headless Notion access via an integration token (no interactive connector, so a scheduled run reaches a page at all): verify the token / triage one page (token valid, page shared, page still LIVE)
 t3 notion fetch <page>          # read a page as Markdown (or raw blocks), optionally with its open comments; refuses an ARCHIVED page with its own exit code and names the successor, because a dead page renders exactly like a current one
 t3 notion audit-fetch <page>    # read a DEAD page for a postmortem — deliberately its own command so it is not reachable by habit
-t3 notion comments|append|query # list open comments; append at the end of a page; query a database/data source as JSON
+t3 notion comments|append|query # every open discussion anchored anywhere UNDER a page (a comment's parent is the BLOCK, so the page anchor alone sees only page-level threads) — exits 18 rather than returning a set it could not prove whole; append at the end of a page; query a database/data source as JSON
+t3 notion create <parent>       # a new child page under a page/database the integration already reaches (Notion gives an integration no workspace-level create), once per title — a same-title page an earlier run left short exits 9 — verified by re-read
+t3 notion replace <page>        # anchored edit of text that occurs exactly once, inside one block, formatting kept; --dry-run prints the diff (ONE JSON document on stdout, the human diff on stderr); --old-text/--new-text take the text inline; refused outside the write roots; a block edited since the read exits 20
 t3 notion section show|replace  # the owned-section write primitive — block-scoped, so replacing one heading's body leaves every discussion on the rest of the page intact (there is deliberately no whole-page replace)
 t3 notion comment post          # marker-keyed, so a caller that forgets the flag under-posts rather than double-posts
+t3 notion comment on|reply      # open a discussion on the block holding --quote (the API anchors whole blocks, never a text range) / reply by --discussion id; same marker dedup
+mcp__teatree__notion_replace|create|comment|property_set|archive  # those writes over MCP with inline text, and `archive`, which trashes a page or with `archived=false` restores it (no CLI twin): a dry run by default, and a real write spends an approval the owner recorded with `t3 review approve-on-behalf` (exit 23 without); notion_discussions reads
 t3 notion property get|set      # read/write one page property — the poll a block-tree fetch cannot answer; every write re-reads and refuses to report success unless the change landed
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated pass (~04:00 slot); the worker's off-live-tick driver chain fires it, decoupled from the live loop
-t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
-t3 outer tick                   # cadence-gated step the worker's off-live-tick driver chain fires (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
 t3 notion whoami|fetch|audit-fetch  # read a Notion work item headlessly through the overlay's routed token — `whoami` proves the token resolves, `fetch` pulls a page (optionally one section), `audit-fetch` records what was read so a review can show its retrieval
 t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
 t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
 t3 directive tick               # cadence-gated step the worker's off-live-tick driver chain fires (implement→configure→verify→keep-or-revert; ships triple-OFF)
 t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
+
+### Live agent mailbox
+
+Simultaneously running Claude and Codex tasks on the same TeaTree worker and ticket
+can exchange targeted messages through the `agent_mailbox_*` tools. TeaTree assigns
+each task its address and private Unix-socket identity; agents cannot join rooms or
+declare their own harness. `agent_mailbox_self` shows the task's address,
+`agent_mailbox_peers` discovers live peers, and `agent_mailbox_send` sends to one
+peer with an idempotency key. `agent_mailbox_inbox` and `agent_mailbox_wait` read
+messages in order. Delivery is live-only: there is no database queue, parked-task
+delivery, cross-worker delivery, or automatic idle-session wake-up. The MCP tools
+are absent outside TeaTree-managed tasks.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.
@@ -480,26 +495,30 @@ action needed / in flight). The Claude Code statusline hook `cat`s that file in
 # Run the worker (the cadence owner). Bare `t3 worker` is the run alias:
 t3 worker
 
-# Check the worker: live flock holder, how many loops the active preset admits, timer counts:
+# Check the worker: live flock holder, what the active preset admits, timer counts:
 t3 worker status            # --json for a machine-readable payload
 # Ensure one is running (spawns a detached worker iff the flock is free, then verifies
 # it took the flock — a startup crash prints the child's own stderr):
-t3 worker ensure            # refuses (with the reason) when one is already running
+t3 worker ensure            # refuses (with the reason) when one already runs
 
 # Quiesce admission WITHOUT stopping anything (the deploy verb — leaves the box
 # admitting no work until a fresh container boot, or `t3 worker restart`, clears the gate):
 t3 worker drain
+# Drain ONE image generation instead: it stops claiming, the next generation keeps working:
+t3 worker drain --generation <sha>
+# Roll the stack to the image generation built from <rev>; it holds the deploy lock that `t3 deploy roll` requires:
+deploy/roll.sh <rev>
 # End the live worker: drain, SIGTERM the flock holder, verify the flock was released:
 t3 worker stop              # --no-drain to skip the wait; non-zero when it did not exit
 # Stop then start a fresh one, verified by the flock probe (and clears a stuck quiesce):
 t3 worker restart
 
-# Spawn a Claude Code session (the worker drives the reactive infra loops; a session registers
-# self-improve/slack-answer/drain-queue only when no worker is alive):
+# Spawn a Claude Code session (the worker drives the reactive infra loops; with none alive, run
+# `t3 worker ensure`, or register one in a session with the `/loop` that `t3 loop <slot> start` prints):
 t3 loop start
 
 # Enable/disable an individual loop (the reconciler adds/prunes its timer at once):
-t3 loop enable <name>
+t3 loop resume <name>
 t3 loop disable <name>
 
 # Out of band, run one by-hand full-scan tick or read the last-rendered statusline:
@@ -513,9 +532,10 @@ t3 loops list
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
 `loop_cadence_seconds` in the teatree DB (`t3 <overlay> config_setting set
 loop_cadence_seconds 720`; env wins; default `720`).
-To stop the loops entirely, switch to a preset that admits none:
-`t3 loop preset use off --reason "<why>"` (there is no fallback plane and no second
-stop switch; the worker stays alive so the next posture change is picked up).
+The active preset is the stop condition — `t3 loop preset use off --reason "<why>"`
+admits zero loops and stops them entirely (there is no fallback plane and no second
+stop switch). The worker stays alive with its executors stopped, so the next
+schedule boundary or posture change still lands.
 On a headless box with no Claude session ever opening, start `t3 worker` once from a
 login profile.
 
@@ -576,6 +596,9 @@ one prevents a specific class of failure that has bitten a real session:
   surface form (plain, quoted, attribute access, subscript, CamelCase
   variants, sibling repos) and confirms zero hits before claiming the rename
   is complete.
+- **Debt scanning exempts only `# noqa: PLC0415` deferred imports.** The code
+  list ends at the first non-code token, so a plain-text reason after the code
+  is accepted while an additional suppression code remains visible to the gate.
 - **A PUBLIC-repo PR never auto-merges unless its author is trusted.** On a
   public repo anyone who is not the user is a potential malicious actor, so the
   merge keystone refuses to auto-merge a PR whose author is not one of the
@@ -632,7 +655,7 @@ auto-engage every session.
 git clone https://github.com/YOUR_USERNAME/teatree.git ~/workspace/teatree
 cd ~/workspace/teatree
 uv tool install --editable . --overrides uv-overrides.txt   # global `t3`, live-reloaded from this clone
-t3 setup                       # installs skills globally, respects local symlinks
+t3 setup                       # installs dependencies and registers both runtime plugins
 ```
 
 New here? [`docs/MAP.md`](docs/MAP.md) lists every package directory with a one-line
@@ -641,12 +664,16 @@ find where something lives.
 
 `uv tool install --editable . --overrides uv-overrides.txt` produces the same global `~/.local/bin/t3` as
 the user flow — edits in this clone take effect on the next invocation, no
-`uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to
-install companion dependencies (superpowers, ac-django, etc.), symlinks teatree
-skills to `~/.claude/skills/`, registers the Claude plugin in
-`~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
-clone so hooks and agents always read from the live checkout, applies any
-pending self-DB migrations, and — if `t3` is not on `PATH` — re-runs
+`uv run` prefix. `t3 setup` uses the exact pinned `skills` CLI to install the
+individually declared companion dependencies (superpowers, ac-django, etc.),
+symlinks overlay skills to supported harnesses, and registers the plugin for
+Claude Code and Codex. The Claude registration points `installPath` at the live
+clone; the Codex registration uses a slim local marketplace built from the Codex
+manifest and installs `t3@souliane`. Both runtimes discover the shared skills and `t3 mcp
+serve`; Claude Code also activates TeaTree's hook workflow. The experimental
+Codex hook adapter is not declared by the validated Codex plugin manifest.
+Setup also applies any pending self-DB migrations
+and — if `t3` is not on `PATH` — re-runs
 `uv tool install --editable .` (with the overrides file) to self-install. Must be run from the main
 clone, not a worktree.
 
@@ -680,8 +707,8 @@ graph LR
 <!-- BEGIN SKILLS -->
 | Skill | Phase |
 |-------|-------|
-| `ac-reviewing-codebase` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `ac-reviewing-codebase`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
+| `architectural-review` | Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `architectural-review`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked. |
 | `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written. |
 | `checking` | The check-in surface — a SHORT "what did I miss" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders) |
 | `code` | Writing code with TDD methodology |
@@ -710,11 +737,11 @@ graph LR
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
 | `slack-formatting` | Rendering tables and formatting messages for Slack — the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack. |
 | `sweeping-prs` | Maintenance sweep across all your open PRs/PRs — merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases |
-| `sweeping-tickets` | Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first |
+| `sweeping-tickets` | Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, recording the reason in the description first. Posts zero comments, and touches only tickets the owner or factory bot filed |
 | `sweeping-worktrees` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
 | `test` | Testing, QA, and CI — running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence |
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
-| `triaging-issues` | Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row |
+| `triaging-issues` | Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval record the rationale in the issue description and run `gh issue close/edit` then stamp the row |
 | `update` | WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so |
 | `wip` | The bounded-WIP throughput dial — slow / medium / full / boost — plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
@@ -742,8 +769,8 @@ requires: [rules, platforms, verification-before-completion]
 Skill loading is fully explicit — slash commands (`/t3:ship`), phase mapping
 (`t3 agent --phase shipping`), ticket status, the `requires` chain, and
 cwd/overlay context. There is no free-text scan of the prompt: the
-`UserPromptSubmit` hook surfaces only the framework / overlay / companion
-skills a prompt's cwd context implies, and `PreToolUse` blocks Python code
+`SessionStart` hook surfaces only the framework / overlay / companion
+skills a session's cwd context implies, and `PreToolUse` blocks Python code
 edits until those load.
 
 See `BLUEPRINT.md` § 11.5 for the explicit-loading model and
@@ -797,7 +824,6 @@ t3 <overlay> config_setting set excluded_skills '["my-custom-skill"]'  # extra s
 t3 <overlay> config_setting set loop_cadence_seconds 720               # loop tick interval (default 12 min)
 t3 <overlay> config_setting set require_human_approval_to_merge true   # auto mode: still gate merge on a 👍 / /merge
 t3 <overlay> config_setting set require_human_approval_to_answer true  # gate t3:answerer behind a DM confirmation
-t3 <overlay> config_setting set agent_signature false                  # append an AI signature to posts (default off)
 ```
 
 | Key | Default | Effect |
@@ -809,7 +835,6 @@ t3 <overlay> config_setting set agent_signature false                  # append 
 | `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
 | `require_human_approval_to_answer` | `true`, collapsed to `false` by the shipped `autonomy = full` | `t3:answerer` drafts a reply and DMs for approval. The answer's own post is separately gated by the active mode's egress posture, which no tier reaches |
-| `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
 (default `false`), not a TOML key — it exists as a deliberate stop for
@@ -817,6 +842,41 @@ privacy review before any skill improvement leaves the machine.
 
 Run `t3 setup` after changing config to apply changes to skill
 symlinks and caches.
+
+### Local stacks
+
+Three keys bound how many docker stacks a box runs at once and how long an unused
+one survives, all defined in `src/teatree/config/settings.py`. They are not three
+settings on one mechanism — each governs a different actor, and only one of them
+ever removes anything.
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `max_concurrent_local_stacks` | `1` (`:847`) | How many tickets may hold a running local stack. It removes nothing at all, and it does not refuse either: `acquire_or_enqueue` reaps idle stacks, re-checks, then ENQUEUES the request for a later retry rather than raising (`src/teatree/core/gates/local_stack_gate.py:281-296`). `0` is unbounded |
+| `idle_stack_idle_minutes` | `30` (`:1007`) | Minutes of inactivity after which the idle-stack reaper demotes a running stack via `stop_services`. Reversible: the database and the checkout survive, so `start_services` is a fast resume |
+| `stale_stack_min_age_minutes` | `240` (`:1023`) | Age at which the automatic pre-start sweep reaps a settled compose project teatree can prove it owns. `0` disables the sweep; an age it cannot determine keeps the stack |
+
+Only `stale_stack_min_age_minutes` destroys anything, and what it destroys is
+worth stating plainly: `reap_compose_project` (`src/teatree/docker/reap.py:183-190`)
+issues `docker rm -f` on the project's containers and `docker rmi -f` on its
+images. It never runs `docker compose down`, so it removes no volume — an
+anonymous one is left dangling exactly as a plain `down` would leave it — and it
+is the only path here that deletes a project's IMAGES.
+
+It also refuses outright to touch a stack with a running container: the shared
+candidate seam skips any project holding a `running`, `restarting` or `paused`
+container whatever its age. The idle reaper is the deliberate exception —
+stopping a running stack is its purpose — and it substitutes a stronger test:
+nine keep-reasons in `teatree.core.gates.idle_stack`, ending in a docker probe
+that asks the containers themselves whether they emitted anything inside the
+window, so an out-of-band Playwright or browser run registers even though it
+writes no row. Every uncertainty in either path, including a probe docker could
+not answer, resolves to KEEP.
+
+Which projects either reaper may consider at all is three ownership routes, not
+two — see `AGENTS.md` § "Things That Catch People". All three keys are
+per-overlay overridable, so a heavy overlay can cap to `1` while a cheap one
+stays unbounded.
 
 ### Operating mode
 
@@ -880,6 +940,18 @@ bash dev/test-cov.sh        # coverage lane: --cov --doctest-modules, 93% floor 
 prek run --all-files         # ruff, codespell, banned-terms
 ```
 
+Negative eval matchers that inspect shell commands may opt into
+`Bash.command_span`. That view removes quoted prose only when the scanner can
+identify it as data: a command-specific payload option value, a quoted operand
+of a known reporting command, a long standalone prose operand, or redirected
+input consumed solely by known readers. Quoted fragments that compose an
+executable token, such as `app'rove'`, remain in the span. Command substitutions
+are reduced recursively to their own executed spans, and quoted output from a
+known reporting command is retained when a later pipeline stage may execute it.
+Every adopter is pinned explicitly by
+`tests/eval_replay/test_command_span.py`; adding one requires adversarial tests
+for both forbidden commands and safe report/payload text.
+
 ### E2E Tests
 
 E2E tests run via `t3 <overlay> e2e run`, which dispatches to an in-repo
@@ -908,29 +980,24 @@ makes the supply chain a security surface.
 no auto-update mechanism. All pushes go to branches (never main) and require
 a PR. APM dependencies are pinned to specific commit SHAs in `apm.yml`.
 
-**Supply chain:** `t3 setup` verifies that skills are loaded via symlinks to
-the local clone — not stale copies. If you use a fork from someone else, you
-are trusting that person's skill files as agent instructions. Review changes
-before pulling.
+**Supply chain:** `t3 setup` registers TeaTree's core skills from the local
+checkout and links overlay skills rather than creating stale copies. If you use
+a fork from someone else, you are trusting that person's skill files as agent
+instructions. Review changes before pulling.
 
 **Leak backstop:** the banned-terms gate scans diffs, commit messages, and
 publish-surface bodies — but a customer/tenant brand name already committed
 never appears in a later diff, so it would stay hidden. `t3 banned-terms
 scan-tree` is the full-tree backstop: it walks every git-tracked file (`git
-ls-files`) and scans its content for the high-confidence brand list, exiting
+ls-files`) and scans its content for the registry's leak terms, exiting
 non-zero with the offending `file:line` list. Its matcher is
-underscore-tolerant — `wt_777_<brand>` and `<brand>_x` are caught where the
-diff gate's word-boundary matcher misses them — while common-word entries keep
-strict boundaries (no substring noise) and the email carve-out is preserved.
-The brand list comes from the `banned_brands` setting in the teatree DB or the
-`$TEATREE_BANNED_BRANDS` environment variable; it is a curated high-confidence
-subset (brand-only — common words stay in `banned_terms` so the
-underscore-tolerant tree scan never substring-matches them). The public repo
-ships with none, so the brand scan is a no-op — but it reports a loud
-`brand backstop INERT: banned_brands is unpopulated` warning rather than a
-silent clean line, so an operator who expected the backstop to be active can
-tell it is not yet populated. A CI job runs the scan on push to `main` and on a
-daily schedule.
+underscore-tolerant — `wt_777_<term>` and `<term>_x` are caught where the
+diff gate's word-boundary matcher misses them. An email address is scanned like
+any other content; the registry's `allow` class exempts configured identifiers.
+The scan reads the `leak` class of the `banned_term_registry` DB setting or the
+`$TEATREE_TERM_REGISTRY` JSON secret. It refuses an absent registry or an empty
+`leak` class, so a missing term source cannot produce a clean result. A CI job
+runs the scan on push to `main` and on a daily schedule.
 
 ## Project Structure
 

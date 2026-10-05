@@ -16,6 +16,7 @@ from teatree.core.management.commands._clear_preflight import clear_preflight_re
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
+from teatree.core.management.commands._note_commands import NoteCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
@@ -37,12 +38,7 @@ from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Re
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
 from teatree.core.send_proxy import forge_from_url, route_forge_write
-
-
-class CommentResult(TypedDict, total=False):
-    issue_url: str
-    comment_id: int
-    error: str
+from teatree.utils.url_slug import project_slug_from_ref
 
 
 class CreateSubResult(TypedDict, total=False):
@@ -127,6 +123,7 @@ class Command(
     CloseCommands,
     AttachmentCommands,
     MergeKeystoneCommands,
+    NoteCommands,
     SweepCommands,
     TargetBranchCommands,
     ClearBackfillCommands,
@@ -461,45 +458,6 @@ class Command(
             result["ticket_id"] = int(resolved_ticket.pk)
         return result
 
-    @command()
-    def comment(
-        self,
-        issue_url: str,
-        *,
-        body: Annotated[str, typer.Option(help="Comment body text.")] = "",
-        body_file: Annotated[str, typer.Option(help="Path to a file containing the comment body.")] = "",
-    ) -> CommentResult:
-        """Post a comment to an issue or work item by its URL.
-
-        Resolves the code host per-URL across all registered overlays, so it
-        works for any tracker an overlay is configured for (GitLab issues and
-        work items, GitHub issues). Pass the body inline with ``--body`` or
-        from a file with ``--body-file``.
-        """
-        from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: lazy command import
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps command import light
-
-        text = Path(body_file).read_text(encoding="utf-8") if body_file else body
-        if not text:
-            return {"error": "No comment body: pass --body or --body-file"}
-        # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
-        forge = forge_from_url(issue_url)
-        text = route_forge_write(forge=forge, repo=issue_url, text=text, action="ticket_comment", target=issue_url)
-        for overlay in get_all_overlays().values():
-            host = get_code_host_for_url(overlay, issue_url)
-            if host is None:
-                continue
-            raw = host.post_issue_comment(issue_url=issue_url, body=text)
-            if isinstance(raw, dict) and raw.get("error"):
-                self.stdout.write(f"  failed: {raw['error']}")
-                return {"error": str(raw["error"])}
-            comment_id = raw.get("id") if isinstance(raw, dict) else None
-            self.stdout.write(f"  commented on {issue_url}")
-            return {"issue_url": issue_url, "comment_id": comment_id if isinstance(comment_id, int) else 0}
-        return {"error": f"No code host could be resolved for {issue_url}"}
-
     @command(name="create-sub")
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def create_sub(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public --parent/--title/--description/--description-file/--labels/--type surface (same rationale as `clear`), not an internal design smell.
@@ -540,10 +498,15 @@ class Command(
         # Labels ride the scrub too (a forge auto-creates a missing label),
         # matching the MCP twin.
         forge = forge_from_url(parent)
-        title = route_forge_write(forge=forge, repo=parent, text=title, action="ticket_create_sub", target=parent)
-        body = route_forge_write(forge=forge, repo=parent, text=body, action="ticket_create_sub", target=parent)
+        destination_repo = project_slug_from_ref(parent)
+        title = route_forge_write(
+            forge=forge, repo=destination_repo, text=title, action="ticket_create_sub", target=parent
+        )
+        body = route_forge_write(
+            forge=forge, repo=destination_repo, text=body, action="ticket_create_sub", target=parent
+        )
         label_list = [
-            route_forge_write(forge=forge, repo=parent, text=label, action="ticket_create_sub", target=parent)
+            route_forge_write(forge=forge, repo=destination_repo, text=label, action="ticket_create_sub", target=parent)
             for label in label_list
         ]
 

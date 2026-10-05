@@ -123,32 +123,6 @@ class TestBodyLinksAreEmbeddedFromTheArtifactsDir(_BodyCaptureTestBase):
         assert (self._evidence_dir / "local" / "result.png").read_bytes() == fresh.read_bytes()
 
 
-class TestLegacyFlatCapturesUnderABody(_BodyCaptureTestBase):
-    def test_a_flat_capture_the_body_no_longer_links_gives_way_to_its_side_capture(self) -> None:
-        self._ticket()
-        fresh = self._artifact("local/result.png")
-        self._evidence_dir.mkdir(parents=True)
-        legacy = self._evidence_dir / "result.png"
-        shutil.copyfile(fresh, legacy)
-
-        self._embed(self._body("evidence/repo-4521/local/result.png"))
-
-        assert not legacy.exists()
-        assert (self._evidence_dir / "local" / "result.png").read_bytes() == fresh.read_bytes()
-
-    def test_a_flat_capture_the_body_still_links_stays_in_place(self) -> None:
-        self._ticket()
-        self._evidence_dir.mkdir(parents=True)
-        legacy = _red_boxed_png(self._evidence_dir / "result.png", fill=(200, 220, 240))
-        legacy_bytes = legacy.read_bytes()
-        self._artifact("local/result.png")
-
-        self._embed(self._body("evidence/repo-4521/result.png", "evidence/repo-4521/local/result.png"))
-
-        assert legacy.read_bytes() == legacy_bytes
-        assert (self._evidence_dir / "local" / "result.png").is_file()
-
-
 class TestBodyLinksWithoutEmbedding(_BodyCaptureTestBase):
     def test_a_link_to_an_uncommitted_capture_is_refused(self) -> None:
         self._ticket()

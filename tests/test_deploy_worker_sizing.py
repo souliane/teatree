@@ -68,11 +68,13 @@ class TestDeployShRunDerivesWorkerCaps:
         # alone makes the run die at `No such file or directory` before it reaches
         # the compose invocation under test.
         shutil.copy(FF_CHECKOUT_SH, repo / "deploy" / "fast-forward-checkout.sh")
+        shutil.copy(DEPLOY_SH.with_name("deploy-lock.sh"), repo / "deploy" / "deploy-lock.sh")
         # Host pressure installation is outside this sizing test and must not
         # register a real launchd agent on the macOS test host.
         _write_exec(repo / "deploy" / "install-host-pressure.zsh", "#!/bin/zsh\nexit 0\n")
         shutil.copy(RAM_PROBE, repo / "src" / "teatree" / "utils" / "ram_probe.py")
         (repo / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        (repo / "deploy" / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
         (repo / "deploy" / "teatree.env").write_text("", encoding="utf-8")
 
         record_cpus = tmp_path / "recorded_cpus"
@@ -110,7 +112,10 @@ class TestDeployShRunDerivesWorkerCaps:
         )
         _write_exec(
             bindir / "git",
-            '#!/usr/bin/env bash\ncase "$*" in\n  *abbrev-ref*) echo main;;\n  *short*) echo abc1234;;\nesac\nexit 0\n',
+            '#!/usr/bin/env bash\ncase "$*" in\n  *abbrev-ref*) echo main;;\n  *short*) echo abc1234;;\n'
+            f'  *--show-toplevel*) printf "%s\\n" "{repo}";;\n'
+            f"  *--verify*) echo {'a' * 40};;\n"
+            f'  *archive*) tar -cf - -C "{repo}" deploy/Dockerfile;;\nesac\nexit 0\n',
         )
         _write_exec(bindir / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
         _write_exec(bindir / "curl", "#!/usr/bin/env bash\nexit 0\n")
@@ -151,10 +156,10 @@ class TestDeployShRunDerivesWorkerCaps:
             DockerWorkerSizing.worker_cpus(daemon_cpus=max(1, available_cpu_count() // 2))
         )
         assert daemon_ram_mib < physical_ram_mib
-        expected_mem = DockerWorkerSizing.worker_mem_limit_mib(
+        expected_mem = DockerWorkerSizing.worker_sizing(
             total_ram_mib=physical_ram_mib,
             daemon_ram_mib=daemon_ram_mib,
-        )
+        ).mem_limit_mib
         if expected_mem > 0:
             assert record_mem.read_text() == f"{expected_mem}m"
 

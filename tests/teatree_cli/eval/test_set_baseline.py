@@ -7,19 +7,32 @@ files); only ``discover_specs`` is stubbed, so the "still discovered" /
 
 import itertools
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.cli import app
+from teatree.cli.eval import set_baseline
 from teatree.eval.models import EvalSpec
 
-_HAIKU = TIER_MODELS["cheap"]
+_HAIKU = "claude-haiku-4-5"
 _SONNET = TIER_MODELS["balanced"]
 _OPUS = TIER_MODELS["frontier"]
+
+
+@pytest.fixture(autouse=True)
+def _three_distinct_tier_models() -> Iterator[None]:
+    with (
+        patch.dict(TIER_MODELS, {"cheap": _HAIKU}),
+        patch.dict(set_baseline._TIER_BY_MODEL, {_HAIKU: "cheap", _SONNET: "balanced"}),
+    ):
+        yield
+
 
 #: The frontier model of a matrix produced before the opus-5 bump — a column no
 #: current tier maps back to. Held as a literal (not a former TIER_MODELS read)

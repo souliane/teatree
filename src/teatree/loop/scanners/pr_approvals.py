@@ -106,7 +106,7 @@ class PrApprovalScanner:
             return []
         rows = list(PullRequest.objects.filter(state=PullRequest.State.REVIEW_REQUESTED).select_related("ticket"))
         if self.overlay:
-            rows = [row for row in rows if row.overlay in {self.overlay, ""}]
+            rows = [row for row in rows if row.overlay == self.overlay]
         if not rows:
             return []
         return [

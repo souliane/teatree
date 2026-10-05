@@ -29,8 +29,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
+from teatree.core.issue_hygiene import IssueDraft, create_or_extend_by_marker
 from teatree.core.models import NEEDS_TRIAGE_LABEL
-from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError, forge_from_url
 from teatree.hooks import banned_terms_scanner
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict
@@ -372,30 +373,15 @@ def build_issue_title(finding: ReviewFinding) -> str:
     return f"Enforcement gate for recurring review finding: {snippet}"
 
 
-def find_existing_issue(host: "CodeHostBackend", *, repo: str, fingerprint: str) -> str:
-    """Return the URL of an already-filed enforcement issue, or ``""``.
+def fingerprint_marker(fingerprint: str) -> str:
+    """The idempotency marker an enforcement issue carries for *fingerprint*.
 
-    Searches the repo's open issues for the fingerprint marker so a re-run of
-    the command never refiles a class-C finding that already has a tracking
-    issue (#1573 dedup). Best-effort against forge search indexing: an issue
-    filed seconds ago may not yet be in the search index, so a back-to-back
-    re-run could refile once — acceptable, and self-corrects on the next run.
+    The dedupe key :func:`file_class_c_issue` hands the hygiene facade, so the
+    "already filed?" question is answered against the WHOLE open backlog rather
+    than the forge's search index — which lags, and used to let a back-to-back
+    re-run refile the same finding once.
     """
-    matches = host.search_open_issues(repo=repo, query=_FINGERPRINT_MARKER + fingerprint)
-    for raw in matches:
-        body = str(raw.get("body") or raw.get("description") or "")
-        if f"{_FINGERPRINT_MARKER} {fingerprint}" in body:
-            return _issue_url(raw)
-    return ""
-
-
-def _issue_url(raw: RawAPIDict) -> str:
-    """Pull the clickable issue URL from a created/searched issue payload."""
-    for key in ("html_url", "web_url", "url"):
-        value = raw.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
+    return f"{_FINGERPRINT_MARKER} {fingerprint}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,19 +415,17 @@ def file_class_c_issue(
 ) -> FiledIssue:
     """File (or find the already-filed) enforcement issue for a class-C finding.
 
-    Dedup-first: if an open issue already carries this fingerprint marker, no
-    new issue is filed and the existing URL is returned with
-    ``already_filed=True``. Otherwise the title + body are rendered (with the
-    untrusted finding text's bare references neutralized) and the rendered text
-    is banned-term scanned: if it would leak a banned term (a customer/tenant
-    name) the issue is **withheld** — never filed — so nothing leaks over the
-    ``gh api`` stdin path. Otherwise a scoped issue is filed via the same
-    backend the agent files issues through.
-    """
-    existing = find_existing_issue(host, repo=context.repo, fingerprint=finding.fingerprint)
-    if existing:
-        return FiledIssue(fingerprint=finding.fingerprint, url=existing, already_filed=True)
+    Routed through :func:`~teatree.core.issue_hygiene.create_or_extend_by_marker`
+    (#162 Rule 1), so the fingerprint dedupe is judged against every OPEN ticket
+    rather than the lagging search index, and a ticket that already carries the
+    marker is EXTENDED with this PR's recurrence instead of silently dropping the
+    re-file. The append is digest-idempotent, so re-running the same retro writes
+    nothing twice.
 
+    Before any of that the title + body are rendered (with the untrusted finding
+    text's bare references neutralized) and banned-term scanned: if they would leak
+    a banned term (a customer/tenant name) the issue is **withheld** — never filed.
+    """
     title = build_issue_title(finding)
     body = build_issue_body(finding=finding, enforcement=enforcement, pr_url=context.pr_url)
     rendered = f"{title}\n{body}"
@@ -468,25 +452,35 @@ def file_class_c_issue(
             withheld_reason=f"contains bare reference(s): {', '.join(leaked)}",
         )
 
-    # The SAME shared forge-write seam the MCP tools use: the public-repo leak
-    # gate + the #117 send-proxy audit fire before the backend call, so this
-    # internal filer is no longer laxer than the MCP surface. A leak/blocked
-    # verdict withholds the issue rather than crashing the retro command.
-    forge = forge_from_url(context.pr_url)
+    # The facade owns the scrub, so the public-repo leak gate + the #117 send-proxy
+    # audit still fire before the backend call under this filer's own audit label.
+    draft = IssueDraft(
+        repo=context.repo,
+        title=title,
+        body=body,
+        labels=tuple(context.labels()),
+        action="retro_review_finding",
+        forge=forge_from_url(context.pr_url),
+    )
     try:
-        clean_title = route_forge_write(
-            forge=forge, repo=context.repo, text=title, action="retro_review_finding", target=context.pr_url
-        )
-        clean_body = route_forge_write(
-            forge=forge, repo=context.repo, text=body, action="retro_review_finding", target=context.pr_url
-        )
+        outcome = create_or_extend_by_marker(host=host, draft=draft, marker=fingerprint_marker(finding.fingerprint))
     except OutboundBlockedError as exc:
         return FiledIssue(
             fingerprint=finding.fingerprint, url="", already_filed=False, withheld=True, withheld_reason=str(exc)
         )
-
-    raw = host.create_issue(repo=context.repo, title=clean_title, body=clean_body, labels=context.labels())
-    return FiledIssue(fingerprint=finding.fingerprint, url=_issue_url(raw), already_filed=False)
+    if outcome.kind == "external_conflict":
+        return FiledIssue(
+            fingerprint=finding.fingerprint,
+            url=outcome.issue_url,
+            already_filed=True,
+            withheld=True,
+            withheld_reason=f"a fitting ticket at {outcome.issue_url} was filed by someone else — a human decides",
+        )
+    return FiledIssue(
+        fingerprint=finding.fingerprint,
+        url=outcome.issue_url,
+        already_filed=outcome.kind == "extended_existing",
+    )
 
 
 def process_review_findings(

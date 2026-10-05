@@ -1,6 +1,7 @@
 """Which model a run is recorded as served by, and the window it ran in (souliane/teatree#4874)."""
 
-from teatree.agents.runner_usage import UsageObservation, _attempt_usage, _billed_model
+from teatree.agents.runner_usage import UsageObservation, _attempt_usage
+from teatree.core.billed_model import dominant_model as _billed_model
 from tests.teatree_agents._sdk_fake import result_message
 
 #: A Sonnet run as the CLI reports it: the Haiku auxiliary call sorts FIRST, the served model dwarfs it.
@@ -30,8 +31,8 @@ class TestTheServedModelIsTheDominantOne:
         assert _billed_model({"claude-opus-5": {}}) == "claude-opus-5"
 
     def test_no_entries_is_no_served_model(self) -> None:
-        assert _billed_model(None) == ""
-        assert _billed_model({}) == ""
+        assert _billed_model(None) is None
+        assert _billed_model({}) is None
 
 
 class TestTheConversationSizeAndWindowAreRecorded:

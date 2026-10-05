@@ -1,7 +1,7 @@
 """Voice/token mismatch gate for outbound Slack posts (#1395).
 
 A pre-publish classifier between ``chat.postMessage`` and the Slack API
-that refuses (or warns) when the body's *voice* and the *token kind* it
+that refuses when the body's *voice* and the *token kind* it
 would go out under disagree. The structural fix for a recurrence the
 prose-level rule failed to stop: sub-agents posting agent-voice DMs via
 the user's personal ``xoxp-`` token, rendering as user-to-self with no
@@ -19,21 +19,15 @@ Two heuristic predicates and one assertion live in
 *   :func:`classify_token` inspects the token prefix
     (``xoxp-`` → user, ``xoxb-`` → bot).
 *   :func:`assert_voice_token_match` raises
-    :class:`SlackVoiceMismatchError` in
-    :attr:`ClassifierMode.STRICT` when an agent-voice body would post
+    :class:`SlackVoiceMismatchError` when an agent-voice body would post
     via the personal user token to a user-DM channel (the recurrence
     that motivated the gate), or when a user-voice body would post via
-    the bot token. In :attr:`ClassifierMode.WARN` (default for
-    backward-compat) the helper logs the mismatch but allows the post
-    to proceed. :attr:`ClassifierMode.OFF` disables the classifier.
+    the bot token..
 """
-
-import logging
 
 import pytest
 
 from teatree.backends.slack.voice_classifier import (
-    ClassifierMode,
     SlackVoiceMismatchError,
     TokenKind,
     Voice,
@@ -107,8 +101,8 @@ class TestClassifyToken:
         assert classify_token("Bearer abc") is TokenKind.UNKNOWN
 
 
-class TestAssertVoiceTokenMatchStrict:
-    """The strict-mode gate refuses voice/token mismatches."""
+class TestAssertVoiceTokenMatch:
+    """The gate refuses voice/token mismatches."""
 
     def _dm_channels(self) -> set[str]:
         return {"D0DEMOCLNT1", "D0DEMOTEAM1"}
@@ -120,7 +114,6 @@ class TestAssertVoiceTokenMatchStrict:
                 text="PR merged, evidence at https://example/p1",
                 channel="D0DEMOCLNT1",
                 token="xoxp-personal",
-                mode=ClassifierMode.STRICT,
                 dm_channel_ids=self._dm_channels(),
             )
         message = str(exc_info.value)
@@ -134,7 +127,6 @@ class TestAssertVoiceTokenMatchStrict:
             text="PR merged, evidence at https://example/p1",
             channel="D0DEMOCLNT1",
             token="xoxb-bot",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
 
@@ -144,7 +136,6 @@ class TestAssertVoiceTokenMatchStrict:
             text="please review !6264 when you have time",
             channel="C-the-review-team",
             token="xoxp-personal",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
 
@@ -155,7 +146,6 @@ class TestAssertVoiceTokenMatchStrict:
                 text="please review !6264",
                 channel="C-the-review-team",
                 token="xoxb-bot",
-                mode=ClassifierMode.STRICT,
                 dm_channel_ids=self._dm_channels(),
             )
         message = str(exc_info.value)
@@ -173,19 +163,17 @@ class TestAssertVoiceTokenMatchStrict:
             text="the agent received: please review !1234",
             channel="D0DEMOCLNT1",
             token="xoxp-personal",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
         assert_voice_token_match(
             text="hi",
             channel="D0DEMOCLNT1",
             token="xoxp-personal",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
 
     def test_agent_voice_personal_token_to_public_channel_allowed(self) -> None:
-        """Strict mode only refuses agent-voice→personal on user-DM channels.
+        """The gate only refuses agent-voice→personal on user-DM channels.
 
         An agent-voice post to a public channel via the personal token
         is a different failure class (workspace-scoping, not the
@@ -196,7 +184,6 @@ class TestAssertVoiceTokenMatchStrict:
             text="PR merged, evidence at https://example/p1",
             channel="C-public",
             token="xoxp-personal",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
 
@@ -210,59 +197,17 @@ class TestAssertVoiceTokenMatchStrict:
             text="PR merged, evidence at https://example/p1",
             channel="D0DEMOCLNT1",
             token="",
-            mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
         )
-
-
-class TestAssertVoiceTokenMatchWarn:
-    """Warn-mode logs the mismatch but never raises (backward compat)."""
-
-    def _dm_channels(self) -> set[str]:
-        return {"D0DEMOCLNT1"}
-
-    def test_agent_voice_personal_token_warns_but_does_not_raise(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack.voice_classifier"):
-            assert_voice_token_match(
-                text="PR merged, evidence at https://example/p1",
-                channel="D0DEMOCLNT1",
-                token="xoxp-personal",
-                mode=ClassifierMode.WARN,
-                dm_channel_ids=self._dm_channels(),
-            )
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert warnings
-        assert any("voice" in r.getMessage().lower() for r in warnings)
-
-
-class TestAssertVoiceTokenMatchOff:
-    """Disabled mode never refuses and never warns."""
-
-    def test_off_mode_never_refuses(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack.voice_classifier"):
-            assert_voice_token_match(
-                text="PR merged",
-                channel="D0DEMOCLNT1",
-                token="xoxp-personal",
-                mode=ClassifierMode.OFF,
-                dm_channel_ids={"D0DEMOCLNT1"},
-            )
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert not warnings
 
 
 class TestSlackBotBackendVoiceClassifier:
     """``SlackBotBackend.post_message`` consults the voice classifier (#1395).
 
-    The wire-through confirms strict mode at the construction site
-    refuses an agent-voice DM via the personal token, and that warn
-    mode (the default for backward-compat) allows it through.
+    The default refuses an agent-voice DM via the personal token.
     """
 
-    def test_strict_post_message_refused_on_agent_voice_to_user_dm(self) -> None:
+    def test_default_post_message_refused_on_agent_voice_to_user_dm(self) -> None:
         from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
@@ -271,13 +216,10 @@ class TestSlackBotBackendVoiceClassifier:
             user_id="U1",
             dm_channel_id="D0DEMOCLNT1",
         )
-        backend.set_voice_classifier_mode(ClassifierMode.STRICT)
         with pytest.raises(SlackVoiceMismatchError):
             backend.post_message(channel="D0DEMOCLNT1", text="PR merged, evidence at https://example/p1")
 
-    def test_warn_post_message_allows_agent_voice_to_user_dm(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
+    def test_post_reply_refuses_agent_voice_to_user_dm(self) -> None:
         from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
@@ -286,41 +228,5 @@ class TestSlackBotBackendVoiceClassifier:
             user_id="U1",
             dm_channel_id="D0DEMOCLNT1",
         )
-        backend.set_voice_classifier_mode(ClassifierMode.WARN)
-        with patch.object(backend, "_post", return_value={"ok": True}) as posted:
-            backend.post_message(channel="D0DEMOCLNT1", text="PR merged, evidence at https://example/p1")
-        posted.assert_called_once()
-
-    def test_post_reply_strict_refuses_agent_voice_to_user_dm(self) -> None:
-        from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
-
-        backend = SlackBotBackend(
-            bot_token="",
-            user_token="xoxp-personal",
-            user_id="U1",
-            dm_channel_id="D0DEMOCLNT1",
-        )
-        backend.set_voice_classifier_mode(ClassifierMode.STRICT)
         with pytest.raises(SlackVoiceMismatchError):
             backend.post_reply(channel="D0DEMOCLNT1", ts="1.0", text="task completed, evidence attached")
-
-
-class TestClassifierModeParse:
-    """The ``slack_voice_classifier_mode`` config parser."""
-
-    def test_strict(self) -> None:
-        assert ClassifierMode.parse("strict") is ClassifierMode.STRICT
-
-    def test_warn_default(self) -> None:
-        assert ClassifierMode.parse("warn") is ClassifierMode.WARN
-
-    def test_off(self) -> None:
-        assert ClassifierMode.parse("off") is ClassifierMode.OFF
-
-    def test_case_insensitive(self) -> None:
-        assert ClassifierMode.parse("STRICT") is ClassifierMode.STRICT
-        assert ClassifierMode.parse(" Warn ") is ClassifierMode.WARN
-
-    def test_invalid_raises(self) -> None:
-        with pytest.raises(ValueError, match="slack_voice_classifier_mode"):
-            ClassifierMode.parse("loud")

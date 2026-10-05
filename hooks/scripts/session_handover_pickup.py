@@ -27,15 +27,21 @@ Three states, and delivery on two of them:
     DB can legitimately BE the delivery DB, so reading the shared mirror would
     trade a silent miss for a wrong delivery.
 3. **unreachable** — the mirror bootstraps the session, loudly.
+
+A claim is handed back when the SessionStart write that carried it fails
+(:class:`~hooks.scripts.session_start_delivery.StartClaims`): the claimed rows
+are released, and a claimed mirror goes back unless a newer one replaced it.
 """
 
 import contextlib
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
+from hooks.scripts.session_start_delivery import StartClaims
 
 #: With no logging configured in a hook subprocess, ``logging``'s lastResort
 #: handler writes WARNING and above to stderr — the hook layer's logging channel.
@@ -49,7 +55,7 @@ _HANDOVER_DIRECTIVE = (
 )
 
 
-def claim_session_handover(session_id: str) -> str | None:
+def claim_session_handover(session_id: str, claims: StartClaims) -> str | None:
     """Claim every unclaimed hand-off for *session_id* as a directive, or ``None``.
 
     The zero-copy-paste takeover: a fresh / non-owner session picks up the
@@ -76,7 +82,10 @@ def claim_session_handover(session_id: str) -> str | None:
         try:
             from teatree.core.handover import claim_handovers  # noqa: PLC0415 — deferred: ORM/app-registry
 
+            claimed_since = datetime.now(UTC)
             payload, from_session = claim_handovers(session_id)
+            if payload:
+                claims.add(lambda: _release_claimed_rows(session_id, claimed_since))
         except Exception:
             logger.warning(
                 "session hand-off drain FAILED for session %s — the DB is UNREACHABLE, failing open to the "
@@ -95,7 +104,7 @@ def claim_session_handover(session_id: str) -> str | None:
         )
 
     if not db_readable:
-        payload, from_session = claim_session_handover_from_file()
+        payload, from_session = claim_session_handover_from_file(claims)
         if payload:
             logger.warning(
                 "session hand-off for session %s was delivered from the FILE MIRROR because the DB was "
@@ -139,7 +148,26 @@ def _warn_if_the_control_db_is_not_the_primary(session_id: str) -> None:
             )
 
 
-def claim_session_handover_from_file() -> tuple[str, str]:
+def _release_claimed_rows(session_id: str, since: datetime) -> None:
+    try:
+        from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        SessionHandover.objects.release_claims(session_id, since=since)
+    except Exception:
+        logger.warning(
+            "the hand-offs session %s claimed were NOT released after its start failed", session_id, exc_info=True
+        )
+
+
+def _put_back_mirror(path: Path) -> None:
+    """Restore a claimed mirror, unless a newer hand-off was mirrored since (a link never replaces one)."""
+    claimed = path.with_name("latest.claimed.md")
+    with contextlib.suppress(OSError):
+        os.link(claimed, path)
+        claimed.unlink()
+
+
+def claim_session_handover_from_file(claims: StartClaims) -> tuple[str, str]:
     """Read the XDG mirror as a one-shot hand-off fallback, renaming it on claim.
 
     Returns ``(payload, from_session)`` or ``("", "")``. The mirror is the
@@ -165,6 +193,7 @@ def claim_session_handover_from_file() -> tuple[str, str]:
             return "", ""
         with contextlib.suppress(OSError):
             path.replace(path.with_name("latest.claimed.md"))
+            claims.add(lambda: _put_back_mirror(path))
     except Exception:
         logger.warning("session hand-off file-mirror read failed — no hand-off delivered", exc_info=True)
         return "", ""

@@ -4,9 +4,7 @@ The canonical, reusable equality check the merge keystone's SHA-bind gate runs
 (§17.4.3 step 2): a merge executes only against the exact head SHA the review
 clearance was recorded at. Any new push moves the live head off the cleared SHA
 and this returns ``False`` — clearance is invalidated until re-cleared. Extracted
-so the gate is a named, enumerable entry in the chokepoint registry
-(:mod:`teatree.core.factory.chokepoint_registry`) instead of an anonymous ``!=`` buried
-in the precondition orchestration.
+so the merge precondition uses a named predicate instead of an anonymous ``!=``.
 """
 
 

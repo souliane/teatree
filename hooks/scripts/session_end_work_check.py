@@ -4,8 +4,7 @@ Extracted whole from ``hook_router`` (the shrink-only dispatcher re-exports
 :func:`handle_session_end` into ``_HANDLERS``) and widened along two axes:
 
 **Armed unconditionally.** Whether a session stranded work is not a function of
-which skills it loaded, so the sweep runs on every session end. The retro
-suggestion keeps its own lifecycle-skill trigger.
+which skills it loaded, so the sweep runs on every session end.
 
 **All five work-bearing states**, not orphan branches alone: unstaged and staged
 changes in the harness cwd, commits absent from every remote, a pushed branch with
@@ -16,21 +15,33 @@ Dirtiness is decided by ``git status --porcelain`` — index-aware. A bare
 ``git diff`` returns zero bytes against a worktree holding only staged work, which
 is how 79 KB of staged changes read as CLEAN.
 
-Fail-OPEN and crash-proof: a probe that raises, times out, or finds no tooling
-contributes nothing, and the handler as a whole swallows every error. A hook that
-throws blocks the session, which is worse than a missed warning.
+**Left for the next session in the checkout.** Nothing a SessionEnd hook prints reaches
+a model, so the report is stored by :mod:`hooks.scripts.stranded_work_report` and the
+next ``SessionStart`` in the same checkout delivers it (``stranded_work_start.py``); this
+hook prints nothing and never fails.
+
+Fail-OPEN and crash-proof: a probe that times out or finds no tooling contributes nothing,
+and the handler as a whole swallows every error. A hook that throws blocks the session,
+which is worse than a missed warning. Only an end whose probes ALL answered may clear the
+earlier report; one where some could not look replaces the findings of the probes that
+answered and keeps the earlier findings of the ones that could not. Each finding is dated
+by its first sighting, so a kept one ages out on its own and never takes this end's fresh
+findings down with it.
 
 Cold-import safe: the module top imports only stdlib plus the already-extracted
 ``stop_snapshot_slot`` / ``t3_invocation`` siblings.
 """
 
 import json
+import re
 import subprocess  # noqa: S404 — fixed-argv git probes, no shell; the `t3` probe is the seam's
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from hooks.scripts.stop_snapshot_slot import open_prs_for_repo
+from hooks.scripts.stop_snapshot_slot import read_open_prs
+from hooks.scripts.stranded_work_report import checkout_root, clear, found_at, found_line, leave, peek
 from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -40,8 +51,6 @@ sys.modules.setdefault("hooks.scripts.session_end_work_check", sys.modules[__nam
 
 PROBE_TIMEOUT_SECONDS = 4
 PREVIEW_LIMIT = 5
-
-LIFECYCLE_SKILLS = frozenset({"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"})
 
 _CLEAN_INDEX_CODES = frozenset({" ", "?"})
 _PORCELAIN_PREFIX_WIDTH = 3
@@ -54,10 +63,42 @@ class WorkItem:
     state: str
     label: str
     command: str
+    #: When an end first found it; ``None`` for a finding of the end rendering it now.
+    found_at: float | None = None
 
 
-def _git(repo: Path, *args: str) -> str:
-    """Raw stdout, trailing newlines only removed — a porcelain row's leading column is data."""
+_ORPHAN_STATES = frozenset({"orphan_branch"})
+_WORKTREE_STATES = frozenset({"staged", "unstaged", "unpushed"})
+_PR_STATES = frozenset({"open_pr"})
+
+
+@dataclass(frozen=True, slots=True)
+class WorkScan:
+    """Every stranded state found, and the states whose probe could not answer — only a complete scan may clear."""
+
+    items: list[WorkItem]
+    unanswered: frozenset[str] = frozenset()
+
+    @property
+    def complete(self) -> bool:
+        return not self.unanswered
+
+
+class ProbeFailedError(Exception):
+    """A probe that could not look (timed out, no ``git``) — unlike one that looked and found nothing."""
+
+
+#: The exit a quiet (``-q``) ref query gives for a ref that does not exist: git's answer, not an error.
+_REF_ABSENT_EXIT = 1
+
+
+def _git(repo: Path, *args: str, absent_is_empty: bool = False) -> str:
+    """Raw stdout, trailing newlines only removed — a porcelain row's leading column is data.
+
+    :class:`ProbeFailedError` when git could not run or could not read the checkout (a corrupt
+    index, dubious ownership). *absent_is_empty* is for a quiet ref query — no commit yet, no
+    upstream, a detached HEAD — whose "no such ref" exit is git's answer and reads as ``""``.
+    """
     try:
         return subprocess.check_output(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
             ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607 — trusted internal git invocation
@@ -65,8 +106,12 @@ def _git(repo: Path, *args: str) -> str:
             timeout=PROBE_TIMEOUT_SECONDS,
             stderr=subprocess.DEVNULL,
         ).rstrip("\n")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+    except subprocess.CalledProcessError as exc:
+        if absent_is_empty and exc.returncode == _REF_ABSENT_EXIT:
+            return ""
+        raise ProbeFailedError(str(exc)) from exc
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ProbeFailedError(str(exc)) from exc
 
 
 def _porcelain_rows(repo: Path) -> list[tuple[str, str, str]]:
@@ -90,35 +135,35 @@ def unstaged_paths(repo: Path) -> list[str]:
 
 
 def unpushed_commit_count(repo: Path) -> int:
-    """Commits on HEAD absent from the branch's upstream, or from every remote."""
-    against_upstream = _git(repo, "log", "@{u}..HEAD", "--oneline")
-    if against_upstream:
-        return len(against_upstream.splitlines())
-    if _git(repo, "rev-parse", "--abbrev-ref", "@{u}"):
+    """Commits on HEAD absent from the branch's upstream, or from every remote; none before the first commit."""
+    if not _git(repo, "rev-parse", "--verify", "-q", "HEAD", absent_is_empty=True):
         return 0
+    if _git(repo, "rev-parse", "--verify", "-q", "@{u}", absent_is_empty=True):
+        return len(_git(repo, "log", "@{u}..HEAD", "--oneline").splitlines())
     return len(_git(repo, "log", "HEAD", "--not", "--remotes", "--oneline").splitlines())
 
 
 def current_branch(repo: Path) -> str:
-    return _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() or "(detached)"
+    """The checked-out branch, even before its first commit; ``(detached)`` when HEAD names no branch."""
+    return _git(repo, "symbolic-ref", "--short", "-q", "HEAD", absent_is_empty=True).strip() or "(detached)"
 
 
-def fetch_orphans() -> list[dict]:
-    """``t3 teatree workspace list-orphans`` as JSON, or ``[]`` on any failure."""
-    argv = t3_argv("teatree", "workspace", "list-orphans")
+def fetch_orphans() -> list[dict] | None:
+    """``t3 teatree workspace list-orphans --json``, or ``None`` when it could not answer."""
+    argv = t3_argv("teatree", "workspace", "list-orphans", "--json")
     if argv is None:
-        return []
+        return None
     try:
         result = run_t3(argv, timeout=PROBE_TIMEOUT_SECONDS)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
+        return None
     if result.returncode != 0 or not result.stdout.strip():
-        return []
+        return None
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+        return None
+    return data if isinstance(data, list) else None
 
 
 def _worktree_items(repo: Path) -> list[WorkItem]:
@@ -160,15 +205,22 @@ def _names(paths: list[str]) -> str:
     return ", ".join(preview) + suffix
 
 
-def _orphan_items() -> list[WorkItem]:
+def _orphan_command(repo: str, branch: str, status: str) -> str:
+    ensure_pr = f"t3 teatree pr ensure-pr --repo {repo} --branch {branch}"
+    if status == "pushed_orphan":
+        return ensure_pr
+    if status == "remote_unknown":
+        return f"the remote of {repo} could not be read: check the network and credentials, then {ensure_pr}"
+    return f"git -C {repo} push -u origin {branch} && {ensure_pr}"
+
+
+def _orphan_items(orphans: list[dict]) -> list[WorkItem]:
     items: list[WorkItem] = []
-    for orphan in fetch_orphans()[:PREVIEW_LIMIT]:
+    for orphan in orphans[:PREVIEW_LIMIT]:
         repo = orphan.get("repo", "?")
         branch = orphan.get("branch", "?")
         ahead = orphan.get("ahead_count", 0)
-        pushed = orphan.get("status", "") == "pushed_orphan"
-        ensure_pr = f"t3 teatree pr ensure-pr --repo {repo} --branch {branch}"
-        command = ensure_pr if pushed else f"git -C {repo} push -u origin {branch} && {ensure_pr}"
+        command = _orphan_command(repo, branch, orphan.get("status", ""))
         items.append(
             WorkItem(
                 state="orphan_branch",
@@ -179,70 +231,85 @@ def _orphan_items() -> list[WorkItem]:
     return items
 
 
-def _open_pr_items(repo: Path) -> list[WorkItem]:
+def _open_pr_items(prs: list[dict]) -> list[WorkItem]:
     return [
         WorkItem(
             state="open_pr",
             label=f"#{pr.get('number', '?')} {pr.get('title', '(no title)')} — open, not merged",
             command="t3 loops tick --loop ship",
         )
-        for pr in open_prs_for_repo(repo)[:PREVIEW_LIMIT]
+        for pr in prs[:PREVIEW_LIMIT]
     ]
 
 
-def collect_work_items(cwd: str) -> list[WorkItem]:
-    """Every work-bearing state this session leaves behind, best-effort."""
-    items = _orphan_items()
-    repo = Path(cwd) if cwd else None
-    if repo is not None and repo.is_dir() and (repo / ".git").exists():
-        items += _worktree_items(repo)
-        items += _open_pr_items(repo)
-    return items
+def scan_work(cwd: str) -> WorkScan:
+    """Every work-bearing state this session leaves behind in its checkout, best-effort."""
+    items: list[WorkItem] = []
+    unanswered: set[str] = set()
+    orphans = fetch_orphans()
+    if orphans is None:
+        unanswered |= _ORPHAN_STATES
+    else:
+        items += _orphan_items(orphans)
+    repo = checkout_root(cwd)
+    if (repo / ".git").exists():
+        try:
+            items += _worktree_items(repo)
+        except ProbeFailedError:
+            unanswered |= _WORKTREE_STATES
+        prs = read_open_prs(repo)
+        if prs is None:
+            unanswered |= _PR_STATES
+        else:
+            items += _open_pr_items(prs)
+    return WorkScan(items, frozenset(unanswered))
 
 
 def render_work_report(items: list[WorkItem]) -> str:
+    """Every item with its next command and its first sighting — no count, as a start drops the aged-out ones."""
     header = (
-        f"UNSHIPPED WORK AT SESSION END ({len(items)}) — this session authored work that is "
+        "UNSHIPPED WORK AT SESSION END — the ending session authored work that is "
         "neither merged nor tracked. No work-bearing state is terminal:"
     )
+    now = time.time()
     lines = [header]
     for item in items:
-        lines.extend((f"  - [{item.state}] {item.label}", f"      next: {item.command}"))
+        found = found_line(now if item.found_at is None else item.found_at)
+        lines.extend((f"  - [{item.state}] {item.label}", f"      next: {item.command}", found))
     return "\n".join(lines)
 
 
-def _loaded_skills(session_id: str, state_dir: Path) -> set[str]:
-    skills_file = state_dir / f"{session_id}.skills"
-    if not skills_file.is_file():
-        return set()
-    return {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
+#: One item as :func:`render_work_report` lays it out; a report an older end left may carry no ``found`` line.
+_RENDERED_ITEM = re.compile(
+    r"^  - \[(?P<state>\w+)\] (?P<label>.*)\n      next: (?P<command>.*)(?P<found>\n      found: \S+)?$", re.MULTILINE
+)
 
 
-def _retro_part(loaded: set[str]) -> str:
-    lifecycle = loaded & LIFECYCLE_SKILLS
-    if not lifecycle:
-        return ""
-    return (
-        f"SESSION ENDING — lifecycle skills were loaded during this session ({', '.join(sorted(lifecycle))}). "
-        "Consider running /t3:retro to capture learnings before the session ends."
-    )
+def _carried(cwd: str, unanswered: frozenset[str]) -> list[WorkItem]:
+    """The undelivered findings an earlier end left for the probes that could not answer now, each dated as it was."""
+    earlier = peek(cwd) if unanswered else None
+    if earlier is None:
+        return []
+    return [
+        WorkItem(match["state"], match["label"], match["command"], found_at(match["found"] or "") or earlier.left_at)
+        for match in _RENDERED_ITEM.finditer(earlier.text)
+        if match["state"] in unanswered
+    ]
 
 
 def handle_session_end(data: dict) -> None:
-    """Suggest retro and surface every stranded work-bearing state at session close."""
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    try:
-        from hooks.scripts.hook_router import STATE_DIR  # noqa: PLC0415 — deferred: avoids an import cycle
+    """Leave every stranded work-bearing state for the next session in this checkout; print nothing."""
+    if data.get("session_id") and data.get("cwd"):
+        _leave_report(str(data["cwd"]))
 
-        parts = [_retro_part(_loaded_skills(session_id, STATE_DIR))]
-        items = collect_work_items(data.get("cwd", "") or "")
-        if items:
-            parts.append(render_work_report(items))
+
+def _leave_report(cwd: str) -> None:
+    try:
+        scan = scan_work(cwd)
+        if scan.complete and not scan.items:
+            clear(cwd)
+            return
+        items = [*scan.items, *_carried(cwd, scan.unanswered)]
+        leave(cwd, render_work_report(items) if items else "")
     except Exception:  # noqa: BLE001 — a session-end advisory must never break the session
         return
-    populated = [part for part in parts if part]
-    if not populated:
-        return
-    json.dump({"additionalContext": "\n\n".join(populated)}, sys.stdout)

@@ -1,6 +1,7 @@
 """Codex App Server JSONL is translated at the real subprocess boundary."""
 
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -13,12 +14,13 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
 
-from teatree.agents import harness_registry
+from teatree.agents import codex_app_server_options, harness, harness_registry
 from teatree.agents.codex_app_server import (
     CODEX_APP_SERVER_CAPABILITIES,
     CodexAppServerError,
@@ -29,6 +31,7 @@ from teatree.agents.codex_app_server import (
     codex_process_env,
 )
 from teatree.agents.codex_app_server_messages import tool_blocks, translate_usage
+from teatree.agents.codex_app_server_options import CONTAINER_IS_SANDBOX_ENV
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY, CodexAuthCache, CodexAuthCacheError
 from teatree.agents.harness_registry import (
     HarnessBuildContext,
@@ -38,6 +41,8 @@ from teatree.agents.harness_registry import (
     register_harness,
     select_harness,
 )
+from teatree.agents.round_ceiling import ROUND_STARTED, starts_a_round
+from tests.teatree_agents._codex_command_shape import codex_wrapped
 
 _THREAD_ID = "0197e1d4-1f5f-7b00-8000-000000000001"
 _PROTOCOL_CONTRACT = Path(__file__).parents[1] / "fixtures" / "codex_app_server" / "0.155.1-contract.json"
@@ -75,6 +80,8 @@ for raw in sys.stdin:
     request = json.loads(raw)
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(json.dumps(request) + "\n")
+    if "method" not in request:
+        continue
     method = request["method"]
     request_id = request.get("id")
     if method == "initialized":
@@ -91,10 +98,13 @@ for raw in sys.stdin:
             continue
         experimental_api = request["params"].get("capabilities", {}).get("experimentalApi") is True
         emit({"id": request_id, "result": {"userAgent": "fake-codex"}})
-        if scenario == "unexpected_server_request":
+        if scenario in {"unexpected_approval_request", "unexpected_tool_request"}:
             emit({
                 "id": 900,
-                "method": "item/commandExecution/requestApproval",
+                "method": {
+                    "unexpected_approval_request": "item/commandExecution/requestApproval",
+                    "unexpected_tool_request": "item/tool/call",
+                }[scenario],
                 "params": {"command": "do-not-print"},
             })
         continue
@@ -169,6 +179,18 @@ for raw in sys.stdin:
                 },
             })
             continue
+        if scenario == "command_started":
+            command_item = {
+                "id": "cmd-1",
+                "type": "commandExecution",
+                "command": os.environ["FAKE_CODEX_COMMAND"],
+                "cwd": "/work",
+                "status": "inProgress",
+                "commandActions": [],
+            }
+            emit({"method": "item/started", "params": common | {"item": command_item}})
+            done = command_item | {"status": "completed", "exitCode": 0, "aggregatedOutput": ""}
+            emit({"method": "item/completed", "params": common | {"item": done}})
         emit({"method": "item/agentMessage/delta", "params": common | {"itemId": "msg-1", "delta": "good"}})
         emit({"method": "item/agentMessage/delta", "params": common | {"itemId": "msg-1", "delta": "bye"}})
         emit({
@@ -349,7 +371,11 @@ def _options(
                 "env": {"T3_DATA_DIR": "/data"},
             }
         },
-        env={"FAKE_CODEX_LOG": str(log), "FAKE_CODEX_SCENARIO": scenario},
+        env={
+            "FAKE_CODEX_LOG": str(log),
+            "FAKE_CODEX_SCENARIO": scenario,
+            "FAKE_CODEX_COMMAND": codex_wrapped("git -C /work push origin feature"),
+        },
         resume=resume,
     )
     return CodexAppServerOptions.from_sdk_options(sdk), sdk.resume
@@ -497,9 +523,9 @@ def test_extended_tool_items_are_visible_and_make_replay_unsafe(tmp_path: Path, 
         "result": {"ok": True},
     }
 
-    session._record_possible_side_effect(item)
+    session.translator.record_possible_side_effect(item)
 
-    assert session._side_effects_started is True
+    assert session.translator.side_effects_started is True
     assert [block.id if isinstance(block, ToolUseBlock) else block.tool_use_id for block in tool_blocks(item)] == [
         "side-effect-1",
         "side-effect-1",
@@ -513,7 +539,7 @@ def test_default_code_home_is_private_teatree_data_not_ambient_codex_home(
     monkeypatch.delenv("T3_CODEX_HOME", raising=False)
     monkeypatch.setattr("teatree.agents.codex_auth_cache.data_dir_root", lambda: tmp_path / "data")
 
-    assert CodexAppServerHarness().code_home == tmp_path / "data" / "codex-home"
+    assert CodexAppServerHarness(refusal=None).code_home == tmp_path / "data" / "codex-home"
 
 
 def test_configured_private_home_overrides_ambient_codex_home_in_the_child(
@@ -525,7 +551,7 @@ def test_configured_private_home_overrides_ambient_codex_home_in_the_child(
     monkeypatch.setenv("T3_CODEX_HOME", str(private_home))
     monkeypatch.setenv("CODEX_HOME", str(ambient_home))
     options, resume = _options(log)
-    harness = CodexAppServerHarness(command=command)
+    harness = CodexAppServerHarness(refusal=None, command=command)
     session = _session(options, resume=resume, code_home=harness.code_home, command=command)
 
     async def run() -> None:
@@ -563,7 +589,7 @@ def test_missing_codex_binary_falls_through_to_the_next_configured_harness(
     assert "codex" in selection.rejected[0].reason.lower()
 
 
-@pytest.mark.parametrize("phase", ["scoping", "requesting_review", "answering", "directive_reading"])
+@pytest.mark.parametrize("phase", ["scoping", "requesting_review", "answering", "short_describe"])
 def test_unenforceable_phase_policy_falls_through_before_codex_starts(
     monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
@@ -591,6 +617,84 @@ def test_unenforceable_phase_policy_falls_through_before_codex_starts(
     assert "cannot enforce" in selection.rejected[0].reason
 
 
+@pytest.mark.parametrize("phase", ["planning", "reviewing", "codex_reviewing"])
+def test_factory_container_read_only_phase_selects_claude(monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+    codex_spec = codex_app_server_spec()
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    monkeypatch.setattr("teatree.agents.codex_app_server.shutil.which", lambda _name: "/usr/bin/codex")
+    register_harness(
+        HarnessSpec(
+            name="codex_container_probe", factory=codex_spec.factory, unavailable_reason=codex_spec.unavailable_reason
+        )
+    )
+    try:
+        selection = select_harness(
+            ["codex_container_probe", harness.AgentHarness.CLAUDE_SDK.value], HarnessBuildContext(phase=phase)
+        )
+    finally:
+        harness_registry._REGISTRY.pop("codex_container_probe", None)
+
+    assert selection.spec.name == harness.AgentHarness.CLAUDE_SDK.value
+
+
+@pytest.mark.parametrize(
+    ("in_container", "opted_in", "phase", "refused"),
+    [
+        (True, False, "coding", True),
+        (True, False, "testing", True),
+        (True, False, "planning", True),
+        (True, False, "reviewing", True),
+        (True, True, "coding", False),
+        (False, False, "coding", False),
+        (False, False, "planning", False),
+    ],
+    ids=[
+        "container-write",
+        "container-verify",
+        "container-planning",
+        "container-review",
+        "opted-in",
+        "host",
+        "host-plan",
+    ],
+)
+def test_a_container_that_has_not_opted_in_refuses_codex_for_every_phase(
+    monkeypatch: pytest.MonkeyPatch, *, in_container: bool, opted_in: bool, phase: str, refused: bool
+) -> None:
+    monkeypatch.setattr(codex_app_server_options, "running_in_container", lambda: in_container)
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: in_container and opted_in)
+    monkeypatch.setattr("teatree.agents.codex_app_server.container_is_the_sandbox", lambda: in_container and opted_in)
+    monkeypatch.setattr("teatree.agents.codex_app_server.shutil.which", lambda _name: "/usr/bin/codex")
+
+    reason = codex_app_server_spec().unavailable_reason(HarnessBuildContext(phase=phase))
+
+    assert (reason is not None) is refused
+    if refused:
+        assert CONTAINER_IS_SANDBOX_ENV in reason
+
+
+def test_a_harness_has_no_default_refusal() -> None:
+    assert inspect.signature(CodexAppServerHarness).parameters["refusal"].default is inspect.Parameter.empty
+
+
+def test_factory_container_refuses_codex_while_user_execpolicy_rules_are_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+    monkeypatch.setattr("teatree.agents.codex_app_server.container_is_the_sandbox", lambda: True)
+    monkeypatch.setattr("teatree.agents.codex_app_server.shutil.which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setenv("T3_CODEX_HOME", str(tmp_path))
+    context = HarnessBuildContext(phase="coding")
+    assert codex_app_server_spec().unavailable_reason(context) is None
+
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "default.rules").write_text('prefix_rule(pattern = ["git"], decision = "allow")\n')
+
+    reason = codex_app_server_spec().unavailable_reason(context)
+    assert reason is not None
+    assert "default.rules" in reason
+
+
 @pytest.mark.parametrize(
     "cache_error",
     [
@@ -602,7 +706,7 @@ def test_unenforceable_phase_policy_falls_through_before_codex_starts(
 def test_auth_cache_bootstrap_failures_are_safe_typed_fallbacks(
     tmp_path: Path, cache_error: CodexAuthCacheError
 ) -> None:
-    harness = CodexAppServerHarness(code_home=tmp_path / "home")
+    harness = CodexAppServerHarness(refusal=None, code_home=tmp_path / "home")
 
     async def run() -> None:
         with patch.object(CodexAuthCache, "hydrate", side_effect=cache_error):
@@ -623,7 +727,7 @@ def test_auth_persist_failure_after_completed_turn_retains_thread_and_forbids_re
 ) -> None:
     command, log = fake_codex
     home = tmp_path / "home"
-    harness = CodexAppServerHarness(code_home=home, command=command)
+    harness = CodexAppServerHarness(refusal=None, code_home=home, command=command)
     options, _resume = _options(log)
     sdk_options = ClaudeAgentOptions(
         model=options.core.model,
@@ -654,6 +758,35 @@ def test_auth_persist_failure_after_completed_turn_retains_thread_and_forbids_re
     assert CODEX_AUTH_PASS_ENTRY in str(raised.value)
     assert "t3 codex auth import" in str(raised.value)
     assert "do-not-print" not in str(raised.value)
+
+
+def test_a_command_is_announced_when_it_starts_before_its_completed_tool_block(
+    fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path
+) -> None:
+    """The round ceiling can only stop a hookless runtime before a push lands if it hears the start."""
+    command, log = fake_codex
+    options, resume = _options(log, scenario="command_started")
+    session = _session(options, resume=resume, code_home=tmp_path / "home", command=command)
+
+    async def run() -> list[object]:
+        await session.start()
+        try:
+            await session.query("do the work")
+            return [message async for message in session.receive_response()]
+        finally:
+            await session.close()
+
+    messages = asyncio.run(run())
+
+    started = next(i for i, m in enumerate(messages) if isinstance(m, SystemMessage) and m.subtype == ROUND_STARTED)
+    assert messages[started].data == {"command": codex_wrapped("git -C /work push origin feature")}
+    assert starts_a_round(messages[started].data["command"])
+    completed = next(
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, AssistantMessage) and any(isinstance(b, ToolUseBlock) for b in m.content)
+    )
+    assert started < completed
 
 
 def test_start_query_and_stream_translate_the_exact_protocol(
@@ -820,7 +953,7 @@ def test_backend_default_model_is_omitted_from_thread_and_turn_requests(
         assert "model" not in request["params"]
 
 
-@pytest.mark.parametrize("scenario", ["initialize_error", "protocol_error", "unexpected_server_request", "api_key"])
+@pytest.mark.parametrize("scenario", ["initialize_error", "protocol_error", "api_key"])
 def test_startup_failure_is_safe_and_always_reaps_the_child(
     fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path, scenario: str
 ) -> None:
@@ -845,14 +978,43 @@ def test_startup_failure_is_safe_and_always_reaps_the_child(
 
 
 @pytest.mark.parametrize(
+    ("scenario", "reply"),
+    [
+        ("unexpected_approval_request", {"result": {"decision": "decline"}}),
+        ("unexpected_tool_request", {"error": {"code": -32601, "message": "Unsupported server request."}}),
+    ],
+)
+def test_a_server_request_before_any_thread_is_refused_on_the_wire_and_startup_carries_on(
+    fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path, scenario: str, reply: dict
+) -> None:
+    command, log = fake_codex
+    options, resume = _options(log, scenario=scenario)
+    session = _session(options, resume=resume, code_home=tmp_path / "home", command=command)
+
+    async def run() -> None:
+        await session.start()
+        try:
+            for _ in range(100):
+                if any(request.get("id") == 900 and "method" not in request for request in _requests(log)):
+                    return
+                await asyncio.sleep(0.05)
+        finally:
+            await session.close()
+
+    asyncio.run(run())
+
+    assert [request for request in _requests(log) if request.get("id") == 900] == [{"id": 900, **reply}]
+
+
+@pytest.mark.parametrize(
     ("scenario", "kind", "side_effects_started"),
     [
         ("account_unauthorized", HarnessFallbackKind.AUTH, False),
-        ("turn_error_quota", HarnessFallbackKind.QUOTA, False),
+        ("turn_error_quota", HarnessFallbackKind.QUOTA_EXHAUSTED, False),
         ("turn_error_access", HarnessFallbackKind.ACCESS, False),
         ("turn_error_5xx", HarnessFallbackKind.PROVIDER_5XX, False),
-        ("turn_error_quota_after_tool", HarnessFallbackKind.QUOTA, True),
-        ("turn_error_quota_after_collab", HarnessFallbackKind.QUOTA, True),
+        ("turn_error_quota_after_tool", HarnessFallbackKind.QUOTA_EXHAUSTED, True),
+        ("turn_error_quota_after_collab", HarnessFallbackKind.QUOTA_EXHAUSTED, True),
     ],
 )
 def test_provider_failures_are_safe_typed_route_fallbacks(
@@ -950,7 +1112,7 @@ def test_new_turn_request_failure_does_not_inherit_an_old_turns_side_effect_stat
     with pytest.raises(HarnessFallbackError) as raised:
         asyncio.run(run())
 
-    assert raised.value.kind is HarnessFallbackKind.QUOTA
+    assert raised.value.kind is HarnessFallbackKind.QUOTA_EXHAUSTED
     assert raised.value.side_effects_started is False
     assert raised.value.agent_session_id == _THREAD_ID
 

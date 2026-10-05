@@ -6,6 +6,7 @@ from django.test import TestCase
 from teatree.core.models import Session, Task, Ticket, TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
 from tests.factories import record_test_plan
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
 
 def _advance_ticket_to_tested(ticket: Ticket) -> None:
@@ -20,6 +21,8 @@ def _advance_ticket_to_tested(ticket: Ticket) -> None:
     ticket.save()
     ticket.test(passed=True)
     ticket.save()
+    record_review_context_for_test(ticket)
+    record_maker_review_for_test(ticket, "a" * 40)
 
 
 class TestTicketTransitionAudit(TestCase):
@@ -192,20 +195,6 @@ class TestLifecycleDiagramTicketFlag(TestCase):
         assert "not_started --> scoped: scope()" in result
 
 
-class TestScheduleReviewInSession(TestCase):
-    def test_creates_task_in_existing_session(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="coding-agent")
-
-        task = ticket.schedule_review_in_session(session)
-
-        assert task.session == session
-        assert task.phase == "reviewing"
-        assert task.ticket == ticket
-        # Should NOT create a new session
-        assert Session.objects.filter(ticket=ticket).count() == 1
-
-
 class TestCheckGatesStructured(TestCase):
     def test_check_gates_returns_missing_phases(self) -> None:
         ticket = Ticket.objects.create()
@@ -233,11 +222,12 @@ class TestVisitPhaseCommand(TestCase):
     def test_visit_phase_marks_session(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent")
+        record_review_context_for_test(ticket)
 
         call_command("lifecycle", "visit-phase", ticket.pk, "reviewing", agent_id="cold-reviewer")
 
         session.refresh_from_db()
-        assert session.has_visited("reviewing")
+        assert "reviewing" in session.visited_phases
 
     def test_visit_phase_creates_session_if_none(self) -> None:
         ticket = Ticket.objects.create()
@@ -246,7 +236,7 @@ class TestVisitPhaseCommand(TestCase):
 
         session = ticket.sessions.first()
         assert session is not None
-        assert session.has_visited("testing")
+        assert "testing" in session.visited_phases
 
 
 class TestTicketLifecycleMermaidIsBounded(TestCase):

@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 import teatree.cli.worker as worker_cli
 from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
 from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt, WorkerGeneration
 from teatree.loop import worker_lifecycle
 from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
@@ -411,6 +411,32 @@ class TestWorkerDrain(django.test.TestCase):
         result = runner.invoke(worker_app, ["drain", "--help"])
         rendered = " ".join(result.stdout.split())
         assert "config_setting set worker_quiescing false" in rendered
+
+
+class TestWorkerDrainOneGeneration(django.test.TestCase):
+    _SHA = "5" * 40
+
+    def test_drains_only_the_named_generation(self) -> None:
+        WorkerGeneration.objects.boot(self._SHA)
+
+        result = runner.invoke(worker_app, ["drain", "--generation", self._SHA, "--timeout", "30"])
+
+        assert result.exit_code == 0, result.output
+        assert WorkerGeneration.objects.state_of(self._SHA) == WorkerGeneration.State.DRAINING
+        assert "worker_quiescing" not in result.stdout
+
+    def test_an_unregistered_generation_is_refused_by_name(self) -> None:
+        result = runner.invoke(worker_app, ["drain", "--generation", self._SHA])
+
+        assert result.exit_code == 2
+        assert "555555555555 is not registered" in result.output
+
+    def test_a_malformed_sha_is_refused_before_touching_anything(self) -> None:
+        result = runner.invoke(worker_app, ["drain", "--generation", "main"])
+
+        assert result.exit_code == 2
+        assert "40-hex" in result.output
+        assert not ConfigSetting.objects.filter(key=QUIESCING_SETTING).exists()
 
 
 class TestWorkerDrainHeartbeat(django.test.TestCase):

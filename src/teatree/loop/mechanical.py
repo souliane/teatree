@@ -13,7 +13,7 @@ from django_fsm import can_proceed
 
 from teatree.core.models.errors import LeaseLostError
 from teatree.core.review.author_trust import classify_author
-from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_artifacts import sweep_artifacts
 from teatree.loop.mechanical_ci_eval_heal import advance_ci_eval_heal
@@ -51,7 +51,7 @@ def payload_author_untrusted_public(payload: ActionPayload) -> bool:
     ref = pr_ref_from_url(str(payload.get("url") or payload.get("mr_url") or ""))
     if ref is None:
         return False
-    return classify_author(ref.slug, author, host_kind=ref.host_kind).untrusted
+    return classify_author(ref.slug, author, pr_url=str(payload.get("url") or payload.get("mr_url") or "")).untrusted
 
 
 def ignore_disposed_ticket(payload: ActionPayload) -> None:
@@ -92,6 +92,12 @@ def complete_ticket(payload: ActionPayload) -> None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
 
+    if ticket.state in {ticket_model.State.PR_OPENED, ticket_model.State.REVIEW_REQUESTED}:
+        from teatree.core.gates.merge_evidence_gate import (  # noqa: PLC0415 — ORM import after app setup
+            record_confirmed_forge_merge,
+        )
+
+        record_confirmed_forge_merge(ticket)
     result = ticket.advance_to_delivered()
     if result.refused:
         logger.info(
@@ -252,7 +258,9 @@ def _complete_tasks(tasks: "Iterable[Task]", *, skip_reason: str) -> int:
     for task in tasks:
         try:
             with transaction.atomic():
-                task.complete_with_attempt(result={"summary": f"no verdict reached: {skip_reason}"})
+                task.complete_with_attempt(
+                    result={"summary": f"no verdict reached: {skip_reason}", "review_skipped": skip_reason}
+                )
         except LeaseLostError:
             logger.info("Left reviewing task %s to the run that claimed it after the read", task.pk)
             continue
@@ -368,31 +376,6 @@ _DISPOSITION_AUDIT_REASONS: dict[str, str] = {
 }
 
 
-def _scrub_disposition_close_comment(host: "CodeHostBackend", issue_url: str, comment: str) -> str | None:
-    """Return the close comment to post after the scanned forge-write seam, or ``None`` to skip.
-
-    Matches the MCP ``<forge>_issue_close`` twin: the public-repo leak gate + the
-    #117 send-proxy run BEFORE the backend close, so this loop-driven close never
-    posts to a public forge on a laxer path than the MCP surface. A leak/blocked
-    verdict — or any scrub failure — returns ``None`` (skip the close: never
-    raise, never post unscanned) rather than wedging the tick.
-    """
-    try:
-        return route_forge_write(
-            forge=forge_from_url(issue_url),
-            repo=host.repo_for_issue_url(issue_url),
-            text=comment,
-            action="issue_disposition_close",
-            target=issue_url,
-        )
-    except OutboundBlockedError:
-        logger.warning("close_dead_issue: close comment refused by the forge-write seam for %s — skipping", issue_url)
-        return None
-    except Exception:
-        logger.exception("close_dead_issue: could not scrub the close comment for %s", issue_url)
-        return None
-
-
 def _survivor_confirmed_open(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bool:
     """Whether *survivor_url* is a same-repo, still-open issue — unreadable is neither."""
     if not survivor_url or not _same_repo(host, issue_url, survivor_url):
@@ -423,45 +406,77 @@ def _same_repo(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bo
     return False
 
 
-def _disposition_close_comment(host: "CodeHostBackend", issue_url: str, payload: ActionPayload) -> str | None:
-    """The scrubbed audit comment to close *issue_url* with, or ``None`` when it must stay open."""
+def _disposition_close_rationale(host: "CodeHostBackend", issue_url: str, payload: ActionPayload) -> str | None:
+    """The audit rationale to close *issue_url* with, or ``None`` when it must stay open."""
     reason = str(payload.get("reason", ""))
     survivor = str(payload.get("duplicate_of") or "")
     if reason == "exact_duplicate" and not _survivor_confirmed_open(host, issue_url, survivor):
         logger.info("close_dead_issue: no confirmed-open survivor for duplicate %s — keeping it open", issue_url)
         return None
     audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
-    return _scrub_disposition_close_comment(host, issue_url, f"Auto-closed by the issue-disposition scanner: {audit}.")
+    return f"Auto-closed by the issue-disposition scanner: {audit}."
+
+
+def _disposition_host(payload: ActionPayload, issue_url: str) -> "CodeHostBackend | None":
+    """The code host for *issue_url*, or ``None`` when it cannot be resolved."""
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    host = get_code_host_for_url(get_overlay(str(payload.get("overlay") or "") or None), issue_url)
+    if host is None:
+        logger.info("close_dead_issue: no code host resolved for %s", issue_url)
+    return host
 
 
 def close_dead_issue(payload: ActionPayload) -> None:
-    """Close a high-confidence DEAD issue with an audit-trail comment (#2122).
+    """Close a high-confidence DEAD issue, its audit rationale in the DESCRIPTION (#2122, #162).
 
     The ``IssueDispositionScanner`` emits ``issue_disposition.close_candidate``
     only for issues carrying machine-checkable dead evidence; this handler
-    resolves the code host for the issue URL and closes it. Idempotent: the
-    backend ``close_issue`` is a no-op on an already-closed issue, so a re-tick
-    on the same candidate does no harm. A missing URL or host is a logged
-    no-op; a raise reaches ``_execute_mechanical``, which records it in the
-    tick's errors. The handler labels/closes only; it creates no Task or claim.
+    resolves the code host for the issue URL and closes it through
+    :func:`~teatree.core.issue_hygiene.close_with_rationale`. Why the ticket was
+    retired is exactly what a later reader needs, so it lands in the description
+    where a lane reads it and the close itself carries no comment — the old
+    ``close_issue(comment=...)`` was a hidden comment seam.
+
+    Two consequences of routing through the facade, both intended. A ticket the
+    owner / factory bot did NOT file is refused rather than closed: the factory does
+    not retire other people's tickets (#162 Rule 5). And an unconfirmed rationale
+    append leaves the issue OPEN, because a ticket closed for a reason nobody can
+    read is the invisibility the facade exists to end.
+
+    Idempotent: the backend ``close_issue`` is a no-op on an already-closed issue and
+    the append is digest-keyed, so a re-tick on the same candidate does no harm.
+    A missing URL or host is a logged no-op; a raise reaches ``_execute_mechanical``,
+    which records it in the tick's errors. The handler labels/closes only; it creates
+    no Task or claim.
     """
-    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.core.issue_hygiene import (  # noqa: PLC0415 — deferred: ORM-adjacent import
+        IssueWriteConflictError,
+        close_with_rationale,
+    )
 
     issue_url = str(payload.get("url") or payload.get("issue_url") or "")
     if not issue_url:
         return
     reason = str(payload.get("reason", ""))
-    host = get_code_host_for_url(get_overlay(str(payload.get("overlay") or "") or None), issue_url)
+    host = _disposition_host(payload, issue_url)
     if host is None:
-        logger.info("close_dead_issue: no code host resolved for %s", issue_url)
         return
-    comment = _disposition_close_comment(host, issue_url, payload)
-    if comment is None:
+    rationale = _disposition_close_rationale(host, issue_url, payload)
+    if rationale is None:
         return
-    result = host.close_issue(issue_url=issue_url, comment=comment)
-    if isinstance(result, dict) and "error" in result:
-        logger.warning("close_dead_issue: backend refused to close %s (%s)", issue_url, result["error"])
+    try:
+        outcome = close_with_rationale(
+            host=host, issue_url=issue_url, rationale=rationale, action="issue_disposition_close"
+        )
+    except (OutboundBlockedError, IssueWriteConflictError):
+        logger.warning(
+            "close_dead_issue: rationale refused by the forge-write seam for %s — keeping it open", issue_url
+        )
+        return
+    if outcome.kind == "external_refused":
+        logger.info("close_dead_issue: %s was filed by someone else — not ours to close", issue_url)
         return
     logger.info("Auto-closed DEAD issue %s (reason: %s)", issue_url, reason or "?")
 

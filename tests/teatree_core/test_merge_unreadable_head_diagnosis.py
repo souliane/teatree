@@ -34,7 +34,7 @@ from teatree.core.merge import (
     merge_ticket_pr,
     pr_slug_resolution,
 )
-from teatree.core.merge.head_read_diagnosis import read_credential_env_vars, unreadable_head_advisory
+from teatree.core.merge.head_read_diagnosis import unreadable_head_advisory
 from teatree.core.models import MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 
@@ -291,9 +291,6 @@ class TestStepTwoUnreadableHeadCarriesTheSameAdvisory(TestCase):
 class TestAdvisoryNeverOverClaims(TestCase):
     """A venue that DOES carry a credential gets the other branch."""
 
-    def test_unknown_host_kind_falls_back_to_the_github_credentials(self) -> None:
-        assert read_credential_env_vars("bitbucket") == read_credential_env_vars("github")
-
     def test_present_ambient_token_does_not_rule_out_the_routed_credential(self) -> None:
         with patch.dict(os.environ, {**_NO_AMBIENT_TOKENS, "GH_TOKEN": "x" * 8}, clear=False):
             advisory = unreadable_head_advisory("github")
@@ -313,13 +310,6 @@ class TestAdvisoryNeverOverClaims(TestCase):
 
 class TestAdvisoryNamesTheChainTheFailingReadActuallyUSES(TestCase):
     """#4239's own defect class, applied to the diagnosis: never name a chain the read skips."""
-
-    def test_gitlab_never_names_a_variable_no_read_path_consults(self) -> None:
-        """``glab`` was retired from the merge transport (#4007) — ``GLAB_TOKEN`` is fiction."""
-        assert "GLAB_TOKEN" not in read_credential_env_vars("gitlab")
-
-        with patch.dict(os.environ, _NO_AMBIENT_TOKENS, clear=False):
-            assert "GLAB_TOKEN" not in unreadable_head_advisory("gitlab")
 
     def test_gitlab_names_the_bound_route_the_absent_env_var_did_not_rule_out(self) -> None:
         """GitLab resolves ``GITLAB_TOKEN`` env-first, then the bound route."""

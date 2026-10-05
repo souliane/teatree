@@ -1,22 +1,14 @@
-"""Promote a derived eval CANDIDATE into a live, graded scenario (#1933, #2346).
+"""Queue a validated eval candidate's scenario and fixtures for a coding PR (#1933, #2346).
 
-Phase-3b derives inert eval CANDIDATES (``eval_proposer``); this module is the
-step that turns a candidate JSONL row into a REAL ``under_load`` scenario file
-under ``evals/scenarios/`` plus its ``_pass``/``_fail`` replay fixtures under
-``evals/fixtures/`` — the artifacts the deterministic replay test
-(``tests/eval_replay/test_scenarios_anti_vacuous.py``) and the metered Agent-SDK
-lane actually run.
+Phase-3b derives inert eval CANDIDATES (``eval_proposer``). This module validates
+each candidate and queues the exact scenario and replay fixture text on the dream
+umbrella ticket. The backlog sweep folds it into a coding ticket; the coding PR
+adds the files that the replay and metered eval lanes run.
 
 Promotion is AUTO, gated by a NON-BYPASSABLE anti-vacuity guard
-(:func:`guard_can_fail`). The user wants live evals, so a grounded candidate is
-promoted without a human review queue — but ONLY when its grader is *proven* able
-to FAIL. The guard is the dreaming-side enforcement of the standing rule "a drift
-is not fixed until an anti-vacuous eval pins it": a candidate whose matchers do
-NOT reject a known-bad transcript guards nothing, so it is REJECTED, never
-written. The guard is structurally non-bypassable — :func:`promote_candidate`
-calls it internally and returns a ``rejected`` outcome rather than writing any
-file when it does not hold, so there is no code path that promotes an unproven
-candidate.
+(:func:`guard_can_fail`) and a live-model pass@k. A candidate whose matchers do
+not reject a known-bad transcript guards nothing, so it is rejected before any
+ticket update. The running install's eval files are never the output destination.
 
 What "proven able to fail" means, concretely and deterministically (no metered
 model, no network):
@@ -30,10 +22,8 @@ model, no network):
     grade PASS, so the scenario is not a tautology that fails everything.
 
 Both checks run the same ``report.evaluate`` the suite uses, so a candidate that
-clears the guard is graded identically once it lands. The metered AI lane that
-runs the promoted scenario live is independent (and is being unblocked in
-parallel by the eval-harness E2BIG fix); this guard is deterministic and does not
-depend on it.
+clears the guard is graded identically when its coding PR lands. The metered
+live-model gate checks the proposed scenario before it is queued.
 """
 
 import json
@@ -290,7 +280,7 @@ class _GateOutcome:
 
 
 def _run_pre_write_gates(candidate: Mapping[str, object], live_gate: LiveGate) -> _GateOutcome:
-    """The non-bypassable gate ladder run before any file is written.
+    """The non-bypassable gate ladder before a ticket update or scratch file write.
 
     scrub (publish-safe) → anti-vacuity :func:`guard_can_fail` (the grader has teeth
     on synthetic fixtures) → live-model pass@k (the scenario actually PASSES a real
@@ -330,33 +320,31 @@ def promote_candidate(
     dry_run: bool = False,
     live_gate: LiveGate | None = None,
 ) -> PromotionOutcome:
-    """Promote one candidate to a live scenario IFF scrub + anti-vacuity + live pass@k hold.
+    """Queue a guarded scenario on a coding ticket; explicit scratch directories allow file inspection.
 
     Gate order (:func:`_run_pre_write_gates`): scrub (publish-safe) → anti-vacuity
     :func:`guard_can_fail` (the grader has teeth on synthetic fixtures) →
     **live-model pass@k** (:class:`LiveGate` — the scenario actually PASSES a real
-    model) → write. On a pass (and not *dry_run*) writes the scenario YAML
-    (``scenarios_dir/promoted_drift.yaml``, appending) and both replay fixtures
-    (``fixtures_dir/<name>_{fail,pass}.stream.jsonl``); any failed gate writes
-    NOTHING and returns ``promoted=False`` with the rejecting reason — every gate is
-    non-bypassable because this is the only promotion entry point.
+    model) → queue the exact YAML and replay fixtures on the existing dream umbrella
+    ticket. The backlog sweep folds that content into a coding ticket and a normal
+    PR adds the files. A failed gate queues nothing. Explicit scenario and fixture
+    directories are an inspection seam for callers outside the running install.
 
     The live gate is the soundness fix: the anti-vacuity guard proves only that the
     grader CAN fail a synthetic bad transcript, never that the scenario passes a
     real model — two of three auto-promoted scenarios failed a live pass@3 on a
     mismatched templated grader. *live_gate* (default ``None``, treated as an empty
-    :class:`LiveGate` whose validator is ``None``) gates the write:
+    :class:`LiveGate` whose validator is ``None``) gates the ticket update:
 
-    *   no validator — the metered check was NOT run (nightly tick, or no
-        ``claude``/auth). The scenario is WITHHELD (``promoted=False``,
+    *   no validator — the metered check was NOT run. The scenario is WITHHELD (``promoted=False``,
         ``"withheld: live-model validation not run"``, ``retryable=True``). This is
-        the KEY safety property: without a live check, nothing auto-lands.
+        the KEY safety property: without a live check, nothing is queued.
     *   the validator runs and the candidate FAILS pass@k — WITHHELD
         (``"withheld: failed live-model pass@{k}"``), terminal.
     *   the validator runs and the candidate PASSES pass@k — the scenario +
-        fixtures are written.
+        fixtures are carried as ticket content, never written to the running install.
 
-    Before anything is written the candidate's operator-derived free-text is
+    Before the ticket or scratch files are written, the candidate's operator-derived free-text is
     scrubbed (:func:`_scrub_candidate`): bare forge/Slack references are
     neutralised so the committed YAML and fixtures are publish-safe by
     construction. A banned term that SURVIVES neutralisation has no safe
@@ -375,15 +363,24 @@ def promote_candidate(
     candidate = cleared
     name = str(candidate["scenario_name"])
 
-    scen_dir = scenarios_dir or SCENARIOS_DIR
-    fix_dir = fixtures_dir or FIXTURES_DIR
     drift_rule = str(candidate.get("drift_rule") or "the cited drift rule")
+    if dry_run:
+        return PromotionOutcome(scenario_name=name, promoted=True, reason="DRY (guard passed); no files written")
+
+    if scenarios_dir is None and fixtures_dir is None:
+        return _queue_candidate(candidate, drift_rule)
+    if scenarios_dir is None or fixtures_dir is None:
+        msg = "scenario and fixture directories must both be explicit"
+        raise ValueError(msg)
+    install_root = SCENARIOS_DIR.resolve().parent.parent
+    if scenarios_dir.resolve().is_relative_to(install_root) or fixtures_dir.resolve().is_relative_to(install_root):
+        msg = "promotion may not write into the running install"
+        raise ValueError(msg)
+    scen_dir = scenarios_dir
+    fix_dir = fixtures_dir
     scenario_path = scen_dir / _PROMOTED_SCENARIO_FILE
     fail_fixture = fix_dir / f"{name}_fail.stream.jsonl"
     pass_fixture = fix_dir / f"{name}_pass.stream.jsonl"
-
-    if dry_run:
-        return PromotionOutcome(scenario_name=name, promoted=True, reason="DRY (guard passed); no files written")
 
     scen_dir.mkdir(parents=True, exist_ok=True)
     fix_dir.mkdir(parents=True, exist_ok=True)
@@ -401,6 +398,44 @@ def promote_candidate(
         fail_fixture=fail_fixture,
         pass_fixture=pass_fixture,
     )
+
+
+def _queue_candidate(candidate: Mapping[str, object], drift_rule: str) -> PromotionOutcome:
+    """Put exact, scrubbed artifacts on one existing ticket through the dream-gap ledger."""
+    from teatree.core.models.dream_gap_ledger import dream_umbrella_url  # noqa: PLC0415 — ORM at promotion time
+    from teatree.loops.dream.batch_promote import (  # noqa: PLC0415 — ORM at promotion time
+        PromotionBatch,
+        covering_ticket,
+        promote_batch,
+    )
+    from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — ORM at promotion time
+
+    name = str(candidate["scenario_name"])
+    gap_key = f"eval-scenario-{name}"
+    if owner := covering_ticket(gap_key):
+        return PromotionOutcome(scenario_name=name, promoted=True, reason=f"already queued on ticket {owner.pk}")
+    scenario_yaml = yaml.safe_dump(
+        [_scenario_entry(candidate, drift_rule)], sort_keys=False, allow_unicode=True, width=10_000
+    )
+    detail = (
+        "Add these validated eval artifacts in a coding PR:\n\n"
+        f"`evals/scenarios/{_PROMOTED_SCENARIO_FILE}` (merge this entry by name):\n"
+        f"```yaml\n{scenario_yaml}```\n\n"
+        f"`evals/fixtures/{name}_fail.stream.jsonl`:\n"
+        f"```jsonl\n{_fail_transcript(name, drift_rule)}\n```\n\n"
+        f"`evals/fixtures/{name}_pass.stream.jsonl`:\n"
+        f"```jsonl\n{_pass_transcript(name, drift_rule)}\n```"
+    )
+    batch = PromotionBatch()
+    considered = batch.consider(
+        gap=GapSpec(gap_key=gap_key, title=f"Add validated eval scenario {name}", cluster_key=gap_key, detail=detail)
+    )
+    if not considered.queued:
+        return PromotionOutcome(scenario_name=name, promoted=False, reason=considered.reason, retryable=True)
+    queued = promote_batch(umbrella_url=dream_umbrella_url(), batch=batch)
+    if not queued.queued:
+        return PromotionOutcome(scenario_name=name, promoted=False, reason=queued.reason, retryable=True)
+    return PromotionOutcome(scenario_name=name, promoted=True, reason="queued on the dream umbrella ticket")
 
 
 def _append_scenario_yaml(path: Path, candidate: Mapping[str, object], drift_rule: str) -> None:
@@ -427,7 +462,7 @@ def _append_scenario_yaml(path: Path, candidate: Mapping[str, object], drift_rul
 #: the candidate cleared scrub + anti-vacuity and only lacks a live verdict) are
 #: both NON-terminal and MAY be retried on a subsequent pass; ``withheld`` is the
 #: explicit "come back with a metered check" signal so a later ``--validate-live``
-#: run can land it, rather than silently abandoning it.
+#: run can queue it, rather than silently abandoning it.
 _PROMOTED_STATUS = "promoted"
 _WITHHELD_STATUS = "withheld"
 _REJECTED_STATUS = "rejected"
@@ -449,16 +484,16 @@ def promote_proposals_file(
     dry_run: bool = False,
     live_gate: LiveGate | None = None,
 ) -> list[PromotionOutcome]:
-    """Promote every candidate row in a proposals JSONL, writing each outcome back.
+    """Queue every passing candidate on a ticket and record each outcome in the JSONL.
 
     Reads the candidate review queue the eval-proposer wrote, attempts each row,
     and returns one outcome per row. *live_gate* (a :class:`LiveGate`) is threaded
     straight into :func:`promote_candidate`'s live-model pass@k gate; with no gate /
-    no validator (the default — nightly tick) every clearing candidate is WITHHELD
-    rather than landed. Unless *dry_run*, the queue is REWRITTEN so each row records
+    no validator every clearing candidate is WITHHELD. Unless *dry_run*, the queue is
+    REWRITTEN so each row records
     its ``status`` (``promoted`` / ``withheld`` / ``rejected``) and a
     ``promotion_reason``. Idempotent: a row already ``status: promoted`` is SKIPPED
-    (not re-promoted, not re-appended, its scenario not duplicated); a ``rejected``
+    (not re-queued, its scenario not duplicated); a ``rejected``
     row may be retried, and so may a ``withheld`` one — but ONLY when this pass
     carries a live validator, since that is the sole thing that could reach a
     different verdict. Without one a withheld row is skipped rather than re-deriving

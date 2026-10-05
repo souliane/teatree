@@ -43,6 +43,7 @@ from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
 from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
 from teatree.cli.doctor.self_heal_slack_listener import check_slack_listener_alive
 from teatree.cli.doctor.self_heal_task_activity import check_task_attempt_activity
+from teatree.generation import is_image_generation
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
 _COMPOSE_PROJECT = "teatree"
@@ -465,6 +466,8 @@ def _check_runtime_clone_on_default_branch() -> bool:
     """
     from teatree.utils import git  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+    if is_image_generation():
+        return True
     try:
         root = _Probe.runtime_clone_root()
         if root is None:

@@ -1,26 +1,15 @@
-"""Draft-note CLI commands and the inline-vs-general validator (#72).
+"""Draft-note management CLI commands.
 
 Kept separate from :mod:`teatree.cli.review` so the GitLab-MR review
 mechanics module stays under the OOP/LOC ceiling
-(``scripts/hooks/check_module_health.py``). Two distinct concerns
-live here:
-
-* :func:`validate_inline_or_general` — the typer-wrapper-side
-    validator for ``t3 review post-draft-note``. Refuses both
-    half-specified-inline (``--file`` without ``--line`` and vice
-    versa) and contradictory (``--general`` together with
-    ``--file``/``--line``) invocations, closing the #72
-    silent-degradation foot-gun.
-* :func:`register` — wires the ``delete-draft-note``,
+(``scripts/hooks/check_module_health.py``). :func:`register` wires the ``delete-draft-note``,
     ``delete-discussion``, ``delete-issue-note``, ``list-draft-notes``,
     ``publish-draft-notes``, ``resolve-discussion``, and ``update-note``
     typer commands onto the ``review`` typer app. The issue-note variant is
     the sanctioned path the ``block-raw-review-post`` hook (#1164) leaves no
     other way to take. These are the draft/note-management cluster:
     lifecycle operations on individual notes (publish, delete, list,
-    edit, resolve) distinct from the posting commands
-    (``post-draft-note``/``post-comment``) which carry their own
-    argument-validation surface and stay in ``review.py``.
+    edit, resolve), distinct from posting a comment.
 
 The helpers import their service-layer dependencies lazily inside
 each command body so this module can be imported (by typer for
@@ -39,40 +28,6 @@ from collections.abc import Callable
 from typing import Any
 
 import typer
-
-
-def validate_inline_or_general(*, file: str, line: int | None, general: bool) -> None:
-    """Refuse half-specified or contradictory ``post-draft-note`` invocations (#72).
-
-    Without this check a half-specified ``--file``/``--line`` pair
-    degrades into a general (MR-wide) note: the draft the author meant to
-    anchor on one line loses its anchor, silently. The validator enforces:
-
-    * Without ``--general``: both ``--file`` AND ``--line`` are required.
-    * With ``--general``: both ``--file`` and ``--line`` must be absent
-        (mutually exclusive).
-
-    Lives at module scope (not on :class:`ReviewService`) so the service
-    contract stays ``file: str = "", line: int = 0`` — existing
-    service-layer tests stay green. Calls ``typer.echo`` + ``typer.Exit``
-    rather than ``typer.BadParameter`` to match the surrounding refusal
-    style in :mod:`teatree.cli.review`.
-    """
-    if general:
-        if file or line is not None:
-            typer.echo(
-                "Refusing: --general is mutually exclusive with --file/--line. "
-                "Drop --general to post inline, or drop --file/--line to post a general note."
-            )
-            raise typer.Exit(code=1)
-        return
-    if not file or line is None:
-        typer.echo(
-            "Refusing: --file AND --line are both required for an inline draft note. "
-            "Pass --general explicitly to post a general (MR-wide) note instead "
-            "(this guards against silently degrading an intended-inline draft)."
-        )
-        raise typer.Exit(code=1)
 
 
 def _delete_draft_note(

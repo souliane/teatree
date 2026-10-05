@@ -65,8 +65,8 @@ def outcome_failure(
 ) -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure or park."""
     usage = _failure_usage(outcome, lane=lane, transport=transport)
-    if outcome.stuck_reason is not None:
-        return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason, usage=usage)
+    if (stopped := _record_stop(task, outcome, phase=phase, usage=usage)) is not None:
+        return stopped
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=transport.metered)
     if limit is not None:
         sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
@@ -89,6 +89,31 @@ def outcome_failure(
         logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
         return _record_failure(task, error=error_reason, result=outcome.unfinished_result, usage=usage)
     return None
+
+
+def _record_stop(task: Task, outcome: HarnessOutcome, *, phase: str, usage: "AttemptUsage") -> TaskAttempt | None:
+    """A run the driver ended: a round-boundary hand-off parks, a watchdog breach or lost lease fails."""
+    if outcome.round_handoff:
+        return record_round_handoff(task, outcome, phase=phase, usage=usage)
+    if outcome.stuck_reason is not None:
+        return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason, usage=usage)
+    return None
+
+
+def record_round_handoff(task: Task, outcome: HarnessOutcome, *, phase: str, usage: "AttemptUsage") -> TaskAttempt:
+    """Park a run the driver stopped at a round boundary, as the agent's own ``needs_user_input`` would."""
+    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — avoids recorder cycle
+
+    logger.warning("Task %s stopped at a round boundary: %s", task.pk, outcome.round_handoff)
+    result: AgentResultBlob = {
+        "summary": outcome.agent_text.strip()[-_PROSE_SUMMARY_CHARS:] or "Stopped at a round boundary.",
+        "needs_user_input": True,
+        "user_input_reason": (
+            f"Round ceiling reached: {outcome.round_handoff}. That round's command may have partially run "
+            "(a push may already have landed), so check the branch and its pipeline, then decide how to continue."
+        ),
+    }
+    return record_result_envelope(task, result, phase=phase, usage=usage)
 
 
 def cli_too_old_failure(task: Task, outcome: HarnessOutcome, *, lane: str, transport: Transport) -> TaskAttempt | None:

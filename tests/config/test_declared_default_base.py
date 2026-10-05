@@ -101,12 +101,6 @@ class TestTheBaseTheResolverIsHandedSurvives(TestCase):
     def _no_overlay(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
-    def test_a_staged_base_value_survives(self) -> None:
-        staged = TeaTreeConfig(user=UserSettings(self_update_disabled=True))
-        assert shipped_defaults_table()["self_update_disabled"] is False
-        with mock.patch("teatree.config.load_config", return_value=staged):
-            assert get_effective_settings().self_update_disabled is True
-
     def test_a_staged_enum_base_value_survives(self) -> None:
         # ``autonomy``, not ``mode``: ``mode`` is autonomy-collapsed, so ``_apply_autonomy``
         # pins it and the staged base could never be what survived.
@@ -116,11 +110,10 @@ class TestTheBaseTheResolverIsHandedSurvives(TestCase):
             assert get_effective_settings().autonomy is Autonomy.BABYSIT
 
     def test_a_db_row_still_beats_a_staged_base(self) -> None:
-        # The base is a DEFAULTS-tier opinion, not an override: a real row still wins.
-        ConfigSetting.objects.set_value("self_update_disabled", value=False)
-        staged = TeaTreeConfig(user=UserSettings(self_update_disabled=True))
+        ConfigSetting.objects.set_value("contribute", value=False)
+        staged = TeaTreeConfig(user=UserSettings(contribute=True))
         with mock.patch("teatree.config.load_config", return_value=staged):
-            assert get_effective_settings().self_update_disabled is False
+            assert get_effective_settings().contribute is False
 
 
 class TestEveryShippedKeyIsPinned:
@@ -224,17 +217,9 @@ class TestResolvedFieldsStayOnTheirDataclassDefault(TestCase):
         }
         assert not moved, f"the resolver moves a field off its dataclass default: {moved}"
 
-    def test_every_collapsed_field_moves_only_to_what_the_tier_prescribes(self) -> None:
-        # The exemption above is bounded here: at the shipped ``autonomy = full`` the
-        # collapse writes exactly these values, so a collapsed field cannot drift to
-        # something the tier never prescribed.
+    def test_autonomy_collapsed_gate_keeps_its_shipped_value(self) -> None:
         resolved = get_effective_settings()
         assert resolved.autonomy is Autonomy.FULL
         assert resolved.mode is Mode.AUTO
         assert resolved.require_human_approval_to_answer is False
-        assert resolved.review_request_post_disabled is False
-        # ``notify_on_behalf`` is the NOTIFY tier's derivation; ``full`` leaves it alone.
-        assert resolved.notify_on_behalf is UserSettings().notify_on_behalf
-        # #3630: the merge gate is collapsed by no tier, so it stays a guarded field
-        # above and keeps its shipped value here.
         assert resolved.require_human_approval_to_merge is True

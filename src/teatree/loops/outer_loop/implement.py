@@ -1,9 +1,9 @@
 """The IMPLEMENT phase — synthetic ticket + normal maker pipeline (T4-PR-3).
 
-Cloned from :func:`teatree.loops.dream.batch_promote._schedule_batch_fix`: an
-admitted experiment anchors an ``AUTHOR`` ``Ticket`` on a unique synthetic issue
-URL and rides :meth:`Ticket.schedule_coding` — the SAME isolated-worktree → plan
-gate → phase agents → review → critic-gated merge keystone every ticket uses. The
+An admitted experiment anchors an ``AUTHOR`` ``Ticket`` on a unique synthetic issue
+URL and rides :meth:`Ticket.schedule_implementing` — planning first, then the SAME
+isolated-worktree → plan gate → phase agents → review → critic-gated merge keystone
+every ticket uses. The
 critic therefore supervises every experiment merge for free (the ``mark_delivered``
 FSM condition); the outer loop gains ZERO new merge authority.
 """
@@ -32,11 +32,11 @@ def schedule_experiment_fix(
     *,
     umbrella_url: str = OUTER_LOOP_UMBRELLA_URL,
 ) -> Task | None:
-    """Anchor the experiment's synthetic ticket + schedule its coding task.
+    """Anchor the experiment's synthetic ticket + schedule its implementation, planned first.
 
     Idempotent per experiment (the synthetic issue URL dedups); transitions the
     experiment ``ADMITTED`` → ``IMPLEMENTING`` and returns the scheduled ``Task``
-    (``None`` when a coding task already exists for the ticket).
+    (``None`` once the ticket has left NOT_STARTED or already carries a coding task).
     """
     issue_url = _experiment_issue_url(experiment, umbrella_url=umbrella_url)
     ticket, _ = Ticket.objects.get_or_create(
@@ -47,6 +47,9 @@ def schedule_experiment_fix(
     task: Task | None = None
     already_scheduled = Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists()
     if not already_scheduled and ticket.state == Ticket.State.NOT_STARTED:
-        task = ticket.schedule_coding()
+        task = ticket.schedule_implementing(
+            "coding",
+            reason=f"Outer-loop experiment {experiment.pk} — {experiment.hypothesis.strip()}",
+        )
     experiment.begin_implementation(ticket)
     return task

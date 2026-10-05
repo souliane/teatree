@@ -43,10 +43,10 @@ def _parked_question(*, ticket_state: str) -> DeferredQuestion:
 
 
 def _session_keyed_question(*, ticket_state: str) -> DeferredQuestion:
-    """A marker-less row whose ``session_id`` is a stringified ``Session`` pk."""
+    """A marker-less row raised by a task of a ``Session``."""
     ticket = _ticket(ticket_state)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
-    return DeferredQuestion.record("How should this session proceed?", session_id=str(session.pk))
+    return DeferredQuestion.record("How should this session proceed?", task_session=session)
 
 
 def _age(question: DeferredQuestion, *, days: int) -> None:
@@ -106,8 +106,10 @@ class TestSubjectDerivedDrain(TestCase):
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_PENDING
 
-    def test_session_id_naming_no_session_row_is_kept(self) -> None:
-        question = DeferredQuestion.record("A real owner decision", session_id="999999")
+    def test_a_row_whose_task_session_is_gone_is_kept(self) -> None:
+        session = Session.objects.create(ticket=_ticket(Ticket.State.MERGED), agent_id="coding")
+        question = DeferredQuestion.record("A real owner decision", task_session=session)
+        session.delete()
 
         assert drain_pending_questions().drained == 0
         question.refresh_from_db()
@@ -379,7 +381,7 @@ class TestSettledPullRequestsDrain(TestCase):
     def test_a_merged_pr_on_a_non_terminal_ticket_drains_the_question(self) -> None:
         ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
-        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+        question = DeferredQuestion.record("Ship it?", task_session=session)
         _pull_request(ticket, state=PullRequest.State.MERGED)
 
         assert drain_pending_questions().drained == 1
@@ -391,7 +393,7 @@ class TestSettledPullRequestsDrain(TestCase):
     def test_one_open_pull_request_keeps_the_question(self) -> None:
         ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
-        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+        question = DeferredQuestion.record("Ship it?", task_session=session)
         _pull_request(ticket, state=PullRequest.State.MERGED, iid="1")
         _pull_request(ticket, state=PullRequest.State.OPEN, iid="2")
 
@@ -403,7 +405,7 @@ class TestSettledPullRequestsDrain(TestCase):
         # No PR row proves nothing about whether the work landed — the #3692 guard.
         ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
-        question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
+        question = DeferredQuestion.record("Ship it?", task_session=session)
 
         assert drain_pending_questions().drained == 0
         question.refresh_from_db()

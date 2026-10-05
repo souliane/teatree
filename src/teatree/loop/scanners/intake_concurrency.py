@@ -86,15 +86,17 @@ class IntakeConcurrencyScanner:
             return None
         previous = marker.adaptive_intake_concurrency or self.static_ceiling
         available_gb = available_mib / _MIB_PER_GB
-        # The load watermark rides the SAME core count the sizing does, so one box cannot
-        # be judged saturated against a core count its own hard cap was not derived from.
+        # Sizing rides the CPUs this process can use; the load watermark rides the cores the
+        # load average was measured across, which is the host's when the host feed answers.
         cores = available_cpu_count()
-        load1 = read_machine_signal(ram_available_gb=available_gb).load1
+        machine = read_machine_signal(ram_available_gb=available_gb)
+        load1 = machine.load1
         # Memory is deliberately withheld from the scalar HERE: ``additional`` already owns
         # "how many agents fit in memory", and two unsynchronised readers of one quantity
         # drift (#4125). What the scalar adds to this decision is the TOKEN dimension.
         pressure = pressure_for(
-            quota=read_quota_signal(), machine=MachineSignal(cores=cores, load1=load1, ram_available_gb=None)
+            quota=read_quota_signal(),
+            machine=MachineSignal(cores=cores, load1=load1, ram_available_gb=None, load_cores=machine.load_scope_cores),
         )
         adapted = adapt_concurrency(
             available_gb=available_gb,
@@ -112,7 +114,13 @@ class IntakeConcurrencyScanner:
                 "intake_concurrency: per-agent RAM cost is %s — intake keeps the static ceiling", self.per_agent_gb
             )
             return None
-        return _Decision(concurrency=adapted, previous=previous, available_gb=available_gb, load1=load1, cores=cores)
+        return _Decision(
+            concurrency=adapted,
+            previous=previous,
+            available_gb=available_gb,
+            load1=load1,
+            cores=machine.load_scope_cores,
+        )
 
     def _cadence_blocks(self, marker: "ResourcePressureMarker") -> bool:
         """True iff this window's adaptation already ran — the ramp is per window, not per tick."""

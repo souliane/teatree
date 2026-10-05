@@ -17,6 +17,7 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.tick import TickReport, TickRequest
+from tests.factories import MergeAuditFactory
 
 _NOW = dt.datetime(2026, 6, 16, tzinfo=dt.UTC)
 
@@ -118,6 +119,7 @@ class TestRenderPhaseReconcilesMergedTickets(TestCase):
             overlay="test",
             state=PullRequest.State.MERGED,
         )
+        MergeAuditFactory(clear__ticket=ticket, clear__pr_id=3540)
         report = TickReport(started_at=_NOW, signals=[])
         report.actions = dispatch(report.signals, errors=report.errors)
 
@@ -350,7 +352,7 @@ def test_identity_aliases_for_request_fails_open_on_config_error(monkeypatch: py
         msg = "config read failed"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(render_mod, "_identity_groups_for_overlay", _boom)
+    monkeypatch.setattr(render_mod, "_identity_alias_groups_for_overlay", _boom)
     request = TickRequest(
         backends=[
             OverlayBackends(

@@ -45,41 +45,6 @@ def _run_gh(*args: str, token: str = "", timeout: float | None = None) -> Comple
     return run_checked(list(args), env=env, timeout=timeout)
 
 
-def gh_can_push(repo_slug: str, *, token: str = "") -> bool | None:
-    """Whether the identity behind routed *token* has push access to *repo_slug*.
-
-    Reads ``repos/{slug}`` ``.permissions.push`` for the authenticated identity:
-    ``True`` / ``False`` on a definite answer, ``None`` when it cannot be
-    determined — no slug, ``gh`` absent, a network/auth error, an unreadable repo
-    (404), or an unparsable payload. :func:`teatree.backends.loader.get_code_host_for_repo`
-    reads ``None`` as "keep the configured token": a collaborator override must
-    be CERTAIN, so a transient probe failure never switches the PR-authoring
-    identity. This is the seam that keeps ``gh pr create``'s ``createPullRequest``
-    from running under a non-collaborator token. An empty token is unreadable,
-    never a request to inherit a logged-in ``gh`` account.
-    """
-    if not repo_slug:
-        return None
-    try:
-        result = _run_gh(
-            "gh",
-            "api",
-            f"repos/{repo_slug}",
-            "--jq",
-            ".permissions.push",
-            token=token,
-            timeout=_FORGE_READ_TIMEOUT_SECONDS,
-        )
-    except (CommandFailedError, FileNotFoundError):
-        return None
-    answer = result.stdout.strip().lower()
-    if answer == "true":
-        return True
-    if answer == "false":
-        return False
-    return None
-
-
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:
     """Call ``gh api`` (GET) and return parsed JSON."""
     result = _run_gh(

@@ -37,8 +37,7 @@ reproduces the pre-#4508 brake set exactly — and the range beneath it, which s
 The signal dataclasses live there for the same reason: they are the scalar's inputs, so
 the dependency runs this way only.
 
-Ships behind the default-ON ``admission_governor_enabled`` setting; setting it false is
-the kill-switch and the rollback lever (see :func:`governor_enabled`).
+The governor applies on every admission path.
 """
 
 import datetime as dt
@@ -54,7 +53,6 @@ from teatree.core.admission_pressure import (
     RAM_RESUME_FLOOR_GB,
     SHED_AT_DEFAULT,
     UNBRAKED,
-    UNREAD_QUOTA,
     AdmissionPressure,
     MachineBrake,
     MachineSignal,
@@ -68,7 +66,7 @@ from teatree.core.admission_pressure import (
     resume_ceiling_conflict,
     weekly_pace,
 )
-from teatree.utils import host_pressure, ram_scope
+from teatree.utils import host_pressure, ram_probe, ram_scope
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +185,8 @@ class AdmissionDecision:
     ``ceiling`` is always a positive bound, never ``None``: an unbounded lane is not a
     state the governor can express (#4097), and the floor of 1 means it can never
     deadlock the factory to zero either. "The governor has no opinion" is the ABSENCE of
-    a decision — :func:`teatree.loop.admission.governor_verdict` returns ``None`` for the
-    kill-switch and the failed-probe paths — not a decision carrying an absent ceiling.
+    a decision — :func:`teatree.loop.admission.governor_verdict` returns ``None`` for a
+    failed probe — not a decision carrying an absent ceiling.
     """
 
     admit: bool
@@ -196,19 +194,6 @@ class AdmissionDecision:
     ceiling: int
     braked: bool
     cause: str = ""
-
-
-def governor_enabled() -> bool:
-    """The default-ON flag; setting ``admission_governor_enabled`` false is the kill-switch.
-
-    Fails OPEN (enabled) is wrong here and fails CLOSED is worse — an unreadable setting
-    resolves through the ordinary config resolver, which already degrades to the
-    dataclass default (``True``). The kill-switch is an explicit operator row, so it is
-    never the accidental answer.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
-
-    return bool(get_effective_settings().admission_governor_enabled)
 
 
 def per_agent_test_workers(
@@ -273,22 +258,6 @@ def _shed_at() -> float:
     return resolve_shed_at(configured)
 
 
-def _quota_brake_enabled() -> bool:
-    """Whether the TOKEN brakes apply at all; an unreadable setting keeps them ON.
-
-    Fail-safe in the only direction that matters: a config read that raises must never
-    silently widen admission. ``admission_governor_enabled`` remains the separate
-    whole-governor kill switch — this one stands down the quota family alone (#4816).
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
-
-    try:
-        return bool(get_effective_settings().admission_quota_brake_enabled)
-    except Exception:
-        logger.exception("admission_quota_brake_enabled unreadable — keeping the quota brake on")
-        return True
-
-
 def pressure_for(
     *,
     quota: QuotaSignal,
@@ -310,8 +279,6 @@ def pressure_for(
     from the REAL quota in :func:`decide_admission` before this is reached, so standing
     the brake down refuses less without ever buying more concurrency.
     """
-    if not _quota_brake_enabled():
-        quota, metered = UNREAD_QUOTA, None
     return admission_pressure(
         quota=quota,
         machine=machine,
@@ -405,7 +372,7 @@ def resume_agent_ceiling(machine: MachineSignal) -> int:
     """
     base = max(1, math.floor(max(1, machine.cores) * HOST_AGENT_POPULATION_PER_CORE))
     headroom = min(
-        box_load_headroom(load1=machine.load1, cores=machine.cores),
+        box_load_headroom(load1=machine.load1, cores=machine.load_scope_cores),
         ram_headroom(machine.ram_available_gb),
     )
     return max(1, math.floor(base * headroom))
@@ -424,7 +391,7 @@ def resume_shed_directive(*, restored: int, machine: MachineSignal) -> str:
         return ""
     return (
         f"ADMISSION — RESTORED FLEET OVER CEILING. This resume brought back {restored} background "
-        f"agents; the live machine carries {ceiling} (load {machine.load1:.0f} on {max(1, machine.cores)} "
+        f"agents; the live machine carries {ceiling} (load {machine.load1:.0f} on {machine.load_scope_cores} "
         "cores). The ramp that paced this fleet belonged to the dispatch, not the agents, so the "
         "restore replayed it in one step. Shed down to the ceiling — stop or collect the surplus "
         "agents — BEFORE dispatching anything new."
@@ -526,12 +493,13 @@ def read_machine_signal(*, ram_available_gb: float | None = None) -> MachineSign
                 memory_cap_gb = headroom.box_watermark_cap_gb
             ram_available_gb = available_mib / _MIB_PER_GB
         return MachineSignal(
-            # load1 is the host's, so it is judged against the host's cores, not a worker quota.
-            cores=host.cores,
+            cores=min(host.cores, quota) if (quota := ram_probe.cgroup_cpu_quota()) is not None else host.cores,
             load1=host.load1,
             ram_available_gb=ram_available_gb,
             memory_cap_gb=memory_cap_gb,
-            swap_used_fraction=host.swap_used_fraction,
+            swap_mib_per_s=host.swap_mib_per_s,
+            vm_pressure_level=host.vm_pressure_level,
+            load_cores=host.cores,
         )
     load1, cores = machine_load.read_load_and_cores()
     # The cap rides along only on OUR OWN reading: a caller's figure has an unknown scope,
@@ -622,7 +590,6 @@ __all__ = [
     "YieldSignal",
     "box_load_headroom",
     "decide_admission",
-    "governor_enabled",
     "per_agent_test_workers",
     "pressure_for",
     "ram_headroom",

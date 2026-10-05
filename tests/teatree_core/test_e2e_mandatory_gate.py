@@ -2,12 +2,12 @@
 
 The gate refuses a ship / §17.4 CLEAR for a customer-display-impacting change
 unless recorded green E2E evidence exists at the reviewed tree OR a single-use
-user-recorded bypass exists OR the gate's own kill-switch is off. The decision
+user-recorded bypass exists. The decision
 is a pure function over durable rows + the classifier verdict + the SHA; no
 network.
 
 Symmetric corpus per the regression-eval rule. must-ALLOW: non-impacting diff;
-green posted evidence; recorded bypass; kill-switch off. must-BLOCK: impacting
+green posted evidence; recorded bypass. must-BLOCK: impacting
 diff with no evidence and no bypass.
 
 Each must-ALLOW is anti-vacuous: the same impacting diff with the satisfier
@@ -29,13 +29,12 @@ _IMPACTING_DIFF = ["app/api/serializers.py"]
 _NON_IMPACTING_DIFF = ["app/tests/test_api.py", "README.md"]
 
 
-def _inputs(ticket: Ticket, *, diff: list[str], display_impacting: bool, kill_switch_on: bool = True) -> GateInputs:
+def _inputs(ticket: Ticket, *, diff: list[str], display_impacting: bool) -> GateInputs:
     return GateInputs(
         ticket=ticket,
         changed_files=diff,
         head_sha=_SHA,
         display_impacting=display_impacting,
-        gate_enabled=kill_switch_on,
     )
 
 
@@ -103,9 +102,6 @@ class TestMustAllow(TestCase):
         assert E2EBypassApproval.has_unconsumed(self.ticket, _SHA) is False
         assert E2EBypassAudit.objects.filter(ticket=self.ticket).count() == 1
 
-    def test_kill_switch_off_allows(self) -> None:
-        check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True, kill_switch_on=False))
-
 
 class TestAntiVacuity(TestCase):
     """Each satisfier flips the verdict: remove it and the same diff BLOCKs."""
@@ -147,11 +143,8 @@ class TestAntiVacuity(TestCase):
 class TestNeverLockout(TestCase):
     """The gate is satisfiable, never a hard trap (#1967).
 
-    Three independent escapes each unblock a genuinely-impacting change without
-    code: recording evidence, the user bypass, and the kill-switch. This is the
-    CLI analogue of the never-lockout contract for hook gates — proven by the
-    must-ALLOW corpus above, asserted here as one explicit statement so the
-    property is named, not incidental.
+    Posted evidence and a single-use user bypass can each unblock a genuinely
+    impacting change without changing the gate.
     """
 
     def setUp(self) -> None:
@@ -169,40 +162,6 @@ class TestNeverLockout(TestCase):
     def test_user_bypass_escape_unblocks(self) -> None:
         E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
         check_e2e_mandatory(self.blocked)
-
-    def test_kill_switch_escape_unblocks(self) -> None:
-        check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True, kill_switch_on=False))
-
-
-class TestNonConsumingPeek(TestCase):
-    """``e2e_mandatory_block_message`` reports the verdict without consuming."""
-
-    def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/24")
-
-    def test_peek_returns_message_when_blocked(self) -> None:
-        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
-
-        message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
-        assert "record-e2e-run" in message
-
-    def test_peek_does_not_consume_bypass(self) -> None:
-        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
-
-        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
-        message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
-        assert message == ""
-        # Peek must NOT have consumed it.
-        assert E2EBypassApproval.has_unconsumed(self.ticket, _SHA) is True
-        assert E2EBypassAudit.objects.filter(ticket=self.ticket).count() == 0
-
-    def test_peek_returns_empty_when_gate_would_pass(self) -> None:
-        # A non-impacting change passes via the cheap short-circuit, so the peek
-        # reports "" without reaching the bypass lookup at all.
-        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
-
-        message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_NON_IMPACTING_DIFF, display_impacting=False))
-        assert message == ""
 
 
 class TestClearWithoutTicket(TestCase):

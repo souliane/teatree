@@ -540,6 +540,7 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert "main-agent-orchestration-guard" in out["permissionDecisionReason"]
         assert "run_in_background" in out["permissionDecisionReason"]
         assert self._RULE_CITATION in out["permissionDecisionReason"]
+        assert out["gate_id"] == "orchestrator_foreground_dispatch"
 
     def test_agent_absent_run_in_background_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
         # The current Claude Code Agent tool dispatches asynchronously and omits

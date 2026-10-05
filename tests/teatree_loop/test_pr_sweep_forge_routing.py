@@ -257,9 +257,6 @@ class TestGitLabMrDecoding(TestCase):
         assert summary.host_kind == "gitlab"
         assert summary.same_repo is True
 
-    def test_the_legacy_wip_flag_still_reads_as_a_draft(self) -> None:
-        assert self._decode(draft=False, work_in_progress=True).is_draft is True
-
     def test_an_unresolved_blocking_thread_reads_as_changes_requested(self) -> None:
         assert self._decode(blocking_discussions_resolved=False).has_changes_requested is True
 

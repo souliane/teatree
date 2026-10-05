@@ -45,8 +45,8 @@ _TERMS = ("acme",)
 
 @pytest.fixture(autouse=True)
 def _no_ambient_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop any ambient ``T3_BANNED_TERMS`` so the DB is the only source under test."""
-    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+    """Drop any ambient ``TEATREE_TERM_REGISTRY`` so the DB is the only source under test."""
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
 
 def _seed_db(tmp_path: Path, terms: list[str], *, allowlist: list[str] | None = None) -> Path:
@@ -59,14 +59,9 @@ def _seed_db(tmp_path: Path, terms: list[str], *, allowlist: list[str] | None = 
             "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-            (json.dumps(terms),),
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": [], "prose_collider": terms, "allow": allowlist or []}),),
         )
-        if allowlist is not None:
-            conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms_allowlist', ?)",
-                (json.dumps(allowlist),),
-            )
         conn.commit()
     finally:
         conn.close()
@@ -435,7 +430,7 @@ def test_resolve_banned_terms_reads_the_db_list(tmp_path: Path) -> None:
 
 
 def test_resolve_banned_terms_raises_on_unset(tmp_path: Path) -> None:
-    # A missing DB, a DB that omits banned_terms, and a wrong-typed value are ALL
+    # A missing DB, a DB that omits banned_term_registry, and a wrong-typed value are ALL
     # "unset" — refused LOUD so a load bug never masquerades as a deliberate
     # empty list.
     with pytest.raises(BannedTermsUnsetError):
@@ -450,15 +445,15 @@ def test_resolve_banned_terms_raises_on_unset(tmp_path: Path) -> None:
         resolve_banned_terms(db_path=empty_db)
 
 
-def test_resolve_banned_terms_explicit_empty_list_is_allowed(tmp_path: Path) -> None:
-    # The deliberate no-terms choice: an explicit empty array is NOT unset.
+def test_resolve_banned_terms_explicit_empty_list_is_refused(tmp_path: Path) -> None:
     db = _seed_db(tmp_path, [])
-    assert resolve_banned_terms(db_path=db) == ()
+    with pytest.raises(BannedTermsUnsetError, match="no terms for the diff scan"):
+        resolve_banned_terms(db_path=db)
 
 
 def test_resolve_banned_terms_env_wins_over_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = _seed_db(tmp_path, ["from-db"])
-    monkeypatch.setenv("T3_BANNED_TERMS", "acme, widget")
+    monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [], "prose_collider": ["acme", "widget"]}))
     assert resolve_banned_terms(db_path=db) == ("acme", "widget")
 
 
@@ -469,14 +464,7 @@ def test_load_allowlist_stays_empty_when_unset(tmp_path: Path) -> None:
 
 
 class TestMainUnsetVsEmpty:
-    """``main`` WARNS-and-allows on an unset banned_terms by default; empty is a no-op.
-
-    With the DB-home store, "unset" is no ``banned_terms`` row AND no
-    ``T3_BANNED_TERMS`` env. By default this WARNS loud and exits 0 — an unset
-    list is not a banned-term violation on a dev/solo box (#3247). Only a
-    deployment that sets ``banned_terms_required`` keeps the fail-loud exit 2. An
-    explicit empty list is the deliberate no-op.
-    """
+    """An unset registry and an explicit empty list both fail closed."""
 
     @staticmethod
     def _empty_db(tmp_path: Path) -> Path:
@@ -487,32 +475,21 @@ class TestMainUnsetVsEmpty:
         conn.close()
         return empty_db
 
-    def test_unset_db_warns_and_allows_by_default(
+    def test_unset_db_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
-        monkeypatch.setenv("T3_CONFIG_DB", str(self._empty_db(tmp_path)))
-        clean = tmp_path / "clean.md"
-        clean.write_text("nothing\n", encoding="utf-8")
-        assert main([str(clean)]) == 0
-        assert "UNSET" in capsys.readouterr().err
-
-    def test_unset_db_fails_closed_when_required(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
         monkeypatch.setenv("T3_CONFIG_DB", str(self._empty_db(tmp_path)))
         clean = tmp_path / "clean.md"
         clean.write_text("nothing\n", encoding="utf-8")
         assert main([str(clean)]) == 2
-        assert "banned_terms is unset" in capsys.readouterr().err
+        assert "banned_term_registry is unset" in capsys.readouterr().err
 
-    def test_explicit_empty_banned_terms_is_a_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_explicit_empty_banned_terms_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = _seed_db(tmp_path, [])
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         flagged = tmp_path / "doc.md"
         flagged.write_text("acme reference\n", encoding="utf-8")
-        assert main([str(flagged)]) == 0
+        assert main([str(flagged)]) == 2
 
 
 def test_full_file_report_flags_committed_line(tmp_path: Path) -> None:

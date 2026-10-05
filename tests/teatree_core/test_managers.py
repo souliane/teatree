@@ -9,6 +9,8 @@ from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQu
 from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
 from teatree.core.modelkit.phases import phase_spellings
 from teatree.core.models import DeferredQuestion, IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
+from tests.factories import planned_ticket
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
 
 class TestTicketQuerySet(TestCase):
@@ -108,7 +110,7 @@ class TestInboundManagersStayWired(TestCase):
     the wiring, which is the only thing a relocation can break. Every predicate
     test in this module reaches these classes through `Model.objects`, so a
     manager silently rebuilt from a plain `QuerySet` would leave them all
-    passing while `unprocessed()` and `due_for_retry()` vanish at runtime.
+    passing while `unprocessed()` vanishes at runtime.
     """
 
     def test_managers_are_built_from_the_relocated_querysets(self) -> None:
@@ -187,14 +189,6 @@ class TestIncomingEventQuerySet(TestCase):
 
         assert backoff not in IncomingEvent.objects.unprocessed()
         assert backoff not in IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
-
-
-class TestSessionQuerySet(TestCase):
-    def test_for_agent_filters_by_agent_identifier(self) -> None:
-        wanted = Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-1")
-        Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-2")
-
-        assert list(Session.objects.for_agent("agent-1")) == [wanted]
 
 
 class TestTaskQuerySet(TestCase):
@@ -1027,49 +1021,6 @@ class TestTaskClaimAtomic(TestCase):
         assert task.status == Task.Status.FAILED
 
 
-class TestReplyDispatchQuerySet(TestCase):
-    def test_due_for_retry_orders_by_oldest_due_first(self) -> None:
-        """``due_for_retry`` returns rows oldest-due-first by ``next_retry_at``.
-
-        Not oldest-dispatched-first — this matches the
-        ``Index(["status", "next_retry_at"])`` on the model.
-        """
-        event = IncomingEvent.objects.create(
-            source=IncomingEvent.Source.SLACK,
-            actor="U_ALICE",
-            channel_ref="C-eng",
-            thread_ref="t1",
-            body="orig",
-            idempotency_key="slack:e1",
-        )
-        now = timezone.now()
-        early_dispatch_late_retry = ReplyDispatch.objects.create(
-            event=event,
-            target_ref="C-eng",
-            action_name="post_in_thread",
-            idempotency_key="k-early-dispatch",
-            status=ReplyDispatch.Status.FAILED,
-            dispatched_at=now - timedelta(hours=5),
-            next_retry_at=now - timedelta(minutes=1),
-        )
-        late_dispatch_early_retry = ReplyDispatch.objects.create(
-            event=event,
-            target_ref="C-eng",
-            action_name="post_in_thread",
-            idempotency_key="k-late-dispatch",
-            status=ReplyDispatch.Status.FAILED,
-            dispatched_at=now - timedelta(hours=1),
-            next_retry_at=now - timedelta(minutes=30),
-        )
-
-        # Ordered by next_retry_at: the one due longest ago comes first,
-        # regardless of dispatched_at.
-        assert list(ReplyDispatch.objects.due_for_retry(now)) == [
-            late_dispatch_early_retry,
-            early_dispatch_late_retry,
-        ]
-
-
 class TestReplayOrphanedTransitions(TestCase):
     """#883 — a mid-transition crash must leave *recoverable* state.
 
@@ -1099,7 +1050,7 @@ class TestReplayOrphanedTransitions(TestCase):
         # Simulate the half-advanced state a mid-transition crash leaves:
         # the coding task is COMPLETED but the ticket is still PLAN_RECORDED
         # (the FSM ``code()`` transition never landed).
-        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(
             ticket=ticket,
@@ -1202,6 +1153,8 @@ class TestReplayOrphanedTransitions(TestCase):
         s1 = Session.objects.create(ticket=coded, agent_id="a")
         Task.objects.create(ticket=coded, session=s1, phase="testing", status=Task.Status.COMPLETED)
         tested = Ticket.objects.create(state=Ticket.State.TESTED)
+        record_review_context_for_test(tested)
+        record_maker_review_for_test(tested, "a" * 40)
         s2 = Session.objects.create(ticket=tested, agent_id="b")
         Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -1222,6 +1175,7 @@ class TestReplayOrphanedTransitions(TestCase):
         # reviewer-role ticket whose completed reviewing task's external
         # review transition was lost is recovered to REVIEW_DELIVERED.
         ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED, role=Ticket.Role.REVIEWER)
+        record_review_context_for_test(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -1238,7 +1192,7 @@ class TestReplayOrphanedTransitions(TestCase):
         # would all no-op on the guards anyway, but the dedup keeps the
         # sweep O(tickets) not O(all completed tasks) and proves the
         # latest-per-ticket selection is exercised.
-        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         # Older completed coding task, then the latest is also coding
         # (e.g. a re-run). Both COMPLETED on the same PLAN_RECORDED ticket.
@@ -1307,7 +1261,7 @@ class TestReplayOrphanedTransitions(TestCase):
         # task (last attempt did NOT request user input) must still be
         # replay-advanced, exactly as before — the recovery sweep is
         # not over-blocked into uselessness.
-        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.complete_with_attempt(exit_code=0, result={"summary": "done"})
@@ -1378,6 +1332,7 @@ class TestReplayLeavesTerminalTicketsAlone(TestCase):
         # Anti-vacuity: the sweep is not over-blocked. A reviewer ticket a crash
         # left on a pre-terminal state still gets its dropped transition replayed.
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.NOT_STARTED)
+        record_review_context_for_test(ticket)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -1411,7 +1366,7 @@ class TestCompleteIsAtomic(TestCase):
 
         import pytest  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(
             ticket=ticket,

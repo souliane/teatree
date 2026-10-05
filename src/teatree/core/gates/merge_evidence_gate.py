@@ -20,18 +20,11 @@ Keystone artifact (pure, no network)
     merge path is never over-blocked.
 
 Forge fallback (live, fail-closed — the never-wedge escape)
-    A live ``CodeHostQuery.pr_merge_state`` probe over the ticket's ``PullRequest`` rows
-    that confirms a PR is ``MERGED``. This covers the genuinely-merged PR whose
-    keystone MergeAudit row is absent (a manual / out-of-band merge), so a real
-    merge is never falsely wedged. An unreachable or erroring probe is
-    INCONCLUSIVE and yields no evidence: believe-done-not-done is exactly the
-    failure this gate kills, so an indeterminate probe never passes on error.
-
-Kill-switch (documented never-lockout escape)
-    ``require_merge_evidence`` (per-overlay overridable, DB-first) is off by
-    default and enabled for the teatree overlay so it bites real teatree
-    tickets. Setting it back off is the operator's audited escape if a forge
-    outage would otherwise wedge a ticket the forge cannot confirm.
+    A live ``CodeHostQuery.pr_merge_state`` probe over the ticket's PR refs
+    confirms ``MERGED`` and supplies a merge commit SHA. Board and completion
+    reconciliation persist that result on the ticket before transitioning; a
+    direct transition can still verify it live. An unreadable forge or a merged
+    response without a SHA is inconclusive and yields no evidence.
 
 Invoked from the ``Ticket.mark_merged()`` and ``Ticket.reconcile_merged()``
 transition bodies exactly as ``ship()`` invokes ``local_e2e_dod`` — the single
@@ -40,9 +33,9 @@ chokepoint every path to MERGED funnels through. On a block it raises
 """
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
 from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import MergeAudit, PullRequest
@@ -55,6 +48,7 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+_MERGED_SHA = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 
 
 class NoMergeEvidenceError(InvalidTransitionError):
@@ -63,14 +57,8 @@ class NoMergeEvidenceError(InvalidTransitionError):
     A subclass of :class:`InvalidTransitionError` (sibling of
     :class:`~teatree.core.gates.dod_gate.DodLocalE2EError`) so the caller's outer
     atomic rolls the advance back and the FSM stays put. The message names the
-    kill-switch escape so a forge-down false-negative can never permanently wedge
-    a legitimately-merged ticket.
+    keystone audit or live forge evidence that satisfies the gate.
     """
-
-
-def merge_evidence_required(overlay_name: str | None) -> bool:
-    """Whether the merge-evidence gate is in force for *overlay_name* (overlay -> global)."""
-    return bool(get_effective_settings(overlay_name).require_merge_evidence)
 
 
 def has_merge_audit_evidence(ticket: "Ticket") -> bool:
@@ -109,7 +97,7 @@ def _probeable_refs(ticket: "Ticket") -> list[PrRef]:
 
 
 def forge_confirms_merged(ticket: "Ticket") -> bool:
-    """True iff a live forge probe confirms a PR of *ticket* is MERGED — FAIL-CLOSED.
+    """True iff a live forge probe confirms a PR of *ticket* has a merged SHA — FAIL-CLOSED.
 
     The never-wedge fallback for a genuinely-merged PR whose keystone MergeAudit
     row is absent. Any probe failure (forge unreachable, backend unconfigured,
@@ -126,14 +114,54 @@ def forge_confirms_merged(ticket: "Ticket") -> bool:
                 ref.pr_id,
             )
             continue
-        if state.is_merged:
+        if state.is_merged and _MERGED_SHA.fullmatch(state.merge_commit_oid.strip()):
             return True
     return False
 
 
+def record_confirmed_forge_merge(ticket: "Ticket") -> bool:
+    """Persist a forge-confirmed merged SHA before a reconcile transition.
+
+    A merged PR row or an issue closure alone contains no commit SHA. Read the
+    forge's merge result for a PR actually attached to this ticket, and retain
+    its SHA through the ticket's locked evidence writer.
+    """
+    if has_merge_audit_evidence(ticket) or has_recorded_forge_merge(ticket):
+        return True
+    for ref in _probeable_refs(ticket):
+        try:
+            state = CodeHostQuery.for_ref(ref).pr_merge_state()
+        except Exception:
+            logger.warning(
+                "merge_evidence: could not verify the merged SHA for %s#%s", ref.slug, ref.pr_id, exc_info=True
+            )
+            continue
+        sha = state.merge_commit_oid.strip()
+        if not state.is_merged or not _MERGED_SHA.fullmatch(sha):
+            continue
+        ticket.merge_extra(set_keys={"forge_merge_evidence": {"slug": ref.slug, "pr_id": ref.pr_id, "merged_sha": sha}})
+        PullRequest.objects.record_forge_merge(slug=ref.slug, pr_id=ref.pr_id)
+        return True
+    return False
+
+
+def has_recorded_forge_merge(ticket: "Ticket") -> bool:
+    """Accept only a recorder's SHA for a PR still named by this ticket."""
+    recorded = (ticket.extra or {}).get("forge_merge_evidence")
+    if not isinstance(recorded, dict):
+        return False
+    sha = str(recorded.get("merged_sha", ""))
+    if not _MERGED_SHA.fullmatch(sha):
+        return False
+    return any(
+        ref.slug.casefold() == str(recorded.get("slug", "")).casefold() and ref.pr_id == recorded.get("pr_id")
+        for ref in _probeable_refs(ticket)
+    )
+
+
 def has_merge_evidence(ticket: "Ticket") -> bool:
-    """True iff *ticket* has real merged-SHA evidence: a keystone MergeAudit row OR a live forge MERGED confirmation."""
-    return has_merge_audit_evidence(ticket) or forge_confirms_merged(ticket)
+    """True iff an audit, a recorded forge SHA, or a live forge read proves the merge."""
+    return has_merge_audit_evidence(ticket) or has_recorded_forge_merge(ticket) or forge_confirms_merged(ticket)
 
 
 def check_merge_evidence(ticket: "Ticket") -> None:
@@ -141,22 +169,19 @@ def check_merge_evidence(ticket: "Ticket") -> None:
 
     Order of short-circuits (cheapest, most-permissive first):
 
-    1. Gate off (``require_merge_evidence`` unset for the overlay) → pass.
-    2. A keystone ``MergeAudit`` row with a real ``merged_sha`` → pass (no network).
-    3. A live forge probe confirming a PR is MERGED → pass (the never-wedge fallback).
+    1. A keystone ``MergeAudit`` row with a real ``merged_sha`` → pass (no network).
+    2. A previously recorded forge SHA for this ticket's PR → pass.
+    3. A live forge probe confirming a PR's merged SHA → pass (the fallback).
     4. Otherwise → raise :class:`NoMergeEvidenceError`.
     """
-    if not merge_evidence_required(ticket.overlay or None):
-        return
     if has_merge_evidence(ticket):
         return
     msg = (
         f"Refusing to mark ticket {ticket} MERGED — it has no merged-SHA evidence. MERGED is "
         f"reachable only with a real merge: a MergeAudit row the merge keystone wrote (the "
         f"sanctioned `t3 <overlay> ticket merge <clear_id>` path), or the forge itself confirming "
-        f"the PR merged. A committed-and-tested-but-unpushed ticket is NOT done. If a genuinely "
-        f"merged PR cannot be confirmed (forge outage), the operator's audited escape is to disable "
-        f"the gate: `t3 <overlay> config_setting set require_merge_evidence false --overlay <name>`."
+        f"the PR merged. A committed-and-tested-but-unpushed ticket is not done. "
+        f"Resolve the missing evidence and retry."
     )
     raise NoMergeEvidenceError(msg)
 

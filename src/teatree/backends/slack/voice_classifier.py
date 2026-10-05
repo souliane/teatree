@@ -1,8 +1,7 @@
 """Voice/token mismatch gate for outbound Slack posts (#1395).
 
 A pre-publish classifier between ``chat.postMessage`` and the Slack API
-that refuses (in strict mode) or warns (in warn mode, the
-backward-compat default) when the message body's *voice* and the
+that refuses when the message body's *voice* and the
 *token kind* it would go out under disagree.
 
 The recurrence this guards against. Sub-agents repeatedly produced
@@ -30,13 +29,9 @@ the backend entirely — the issue describes a sibling stopgap of
 patching the dispatch prompt itself, not a runtime hook).
 """
 
-import logging
 from enum import StrEnum
 
-from teatree.types import SlackVoiceClassifierMode as ClassifierMode
-
 __all__ = [
-    "ClassifierMode",
     "SlackVoiceMismatchError",
     "TokenKind",
     "Voice",
@@ -45,9 +40,6 @@ __all__ = [
     "classify_token",
     "classify_voice",
 ]
-
-
-_log = logging.getLogger(__name__)
 
 
 class Voice(StrEnum):
@@ -187,16 +179,15 @@ def _build_mismatch_message(
 class VoiceTokenGate:
     """Per-backend voice/token mismatch gate (#1395).
 
-    Holds the configured strictness mode and the set of channel ids
+    Holds the set of channel ids
     the gate treats as the user's own DM. The :class:`SlackBotBackend`
     composes one and routes every outbound ``chat.postMessage`` body
     through :meth:`check` immediately before the Slack API call.
     """
 
-    __slots__ = ("dm_channel_id", "mode")
+    __slots__ = ("dm_channel_id",)
 
-    def __init__(self, *, mode: ClassifierMode = ClassifierMode.WARN, dm_channel_id: str = "") -> None:
-        self.mode = mode
+    def __init__(self, *, dm_channel_id: str = "") -> None:
         self.dm_channel_id = dm_channel_id
 
     def check(self, *, text: str, channel: str, token: str) -> None:
@@ -204,7 +195,6 @@ class VoiceTokenGate:
             text=text,
             channel=channel,
             token=token,
-            mode=self.mode,
             dm_channel_ids={self.dm_channel_id} if self.dm_channel_id else set(),
         )
 
@@ -214,7 +204,6 @@ def assert_voice_token_match(
     text: str,
     channel: str,
     token: str,
-    mode: ClassifierMode,
     dm_channel_ids: set[str],
 ) -> None:
     """Raise :class:`SlackVoiceMismatchError` on a confident mismatch.
@@ -232,13 +221,7 @@ def assert_voice_token_match(
     refused; the gate trades coverage for false-positive safety so
     legitimate posts cannot be silently dropped.
 
-    In :attr:`ClassifierMode.WARN` (default for backward-compat) the
-    helper logs the mismatch at WARNING and returns; in
-    :attr:`ClassifierMode.OFF` it returns silently.
     """
-    if mode is ClassifierMode.OFF:
-        return
-
     voice = classify_voice(text)
     token_kind = classify_token(token)
 
@@ -257,6 +240,4 @@ def assert_voice_token_match(
         channel=channel,
         text=text,
     )
-    if mode is ClassifierMode.STRICT:
-        raise SlackVoiceMismatchError(message)
-    _log.warning(message)
+    raise SlackVoiceMismatchError(message)

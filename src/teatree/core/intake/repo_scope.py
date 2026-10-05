@@ -10,7 +10,7 @@ SCOPE is one of three orthogonal axes the overlay model keeps separate:
     mean auto-merge: a shared product repo is in scope yet still needs a
     colleague review, so this classifier gates ONLY the approval decision.
 *   **VISIBILITY** — public vs private (``[teatree] private_repos`` +
-    ``internal_publish_namespaces``), a leak-prevention concern handled by
+    ``private_repos``), a leak-prevention concern handled by
     the publish hooks. This axis fails OPEN (unknown → not-private). SCOPE
     fails CLOSED (unknown → ask). Never reuse the visibility verdict here.
 *   **COLLABORATION** — solo vs shared, the author/review gate in
@@ -29,7 +29,6 @@ this module never re-parses a git remote.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from teatree.hooks import _repo_visibility
 
@@ -93,11 +92,6 @@ def host_aware_owns(owned: dict[str, list[str]], repo: RepoIdentity) -> bool:
     if patterns == ["*"]:
         return True
     return any(_repo_visibility.slug_namespace_matches(pat, repo.namespace) for pat in patterns)
-
-
-def repo_scope(cwd: Path, owned: dict[str, list[str]]) -> Literal["owned", "unknown"]:
-    """Classify *cwd* against *owned*: ``owned`` when the forge host+namespace match, else ``unknown``."""
-    return "owned" if host_aware_owns(owned, repo_identity_for_cwd(cwd)) else "unknown"
 
 
 def identity_from_host_and_slug(host: str, slug: str) -> RepoIdentity:

@@ -20,7 +20,6 @@ from django.db import transaction
 
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, RedMrFixAttempt, Task, Ticket
-from teatree.core.models.auto_implement import mark_auto_implement
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
@@ -169,9 +168,6 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
         return None
     if has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
-    # Kept as the fallback edge: ``code_direct`` is conditioned on this marker and is the
-    # only transition advancing a coding completion that lands before PLAN_RECORDED (#10).
-    mark_auto_implement(ticket)
     return ticket.begin_planning()
 
 
@@ -218,6 +214,11 @@ def _get_or_create_ticket(
     return ticket, created
 
 
+def _has_open_work(ticket: Ticket, *, phase: str) -> bool:
+    """An open *phase* task, or the open planning task an unplanned *phase* was routed to."""
+    return has_open_task(ticket, phase=phase) or has_open_task(ticket, phase="planning")
+
+
 def _handle_orchestrator_zone(action: DispatchAction) -> Task | None:
     """Route the shared ``t3:orchestrator`` zone by payload shape.
 
@@ -235,7 +236,7 @@ def _handle_orchestrator_zone(action: DispatchAction) -> Task | None:
 
 
 def _handle_red_card(action: DispatchAction) -> Task | None:
-    """RED CARD signal → author ticket + corrective ``coding`` task (#1130).
+    """RED CARD signal → author ticket + corrective ``coding`` task, planned first (#1130).
 
     Stamps the ``RedCardSignal`` row id into ``ticket.extra`` so the corrective
     agent can identify the upstream teatree gap, file the enforcement issue, and
@@ -260,14 +261,10 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
         },
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="coding"):
+    if ticket.role != Ticket.Role.AUTHOR or _has_open_work(ticket, phase="coding"):
         return None
-    # Intentionally NOT gated by plan_currency (SELFCATCH-3): a redcard:// synthetic
-    # ticket carries no PlanArtifact, so the adequacy/currency gate would false-positive.
-    return create_phase_task(
-        ticket,
-        phase="coding",
-        agent_id="red-card",
+    return ticket.schedule_implementing(
+        "coding",
         reason=(
             "Auto-scheduled RED CARD corrective action — identify the upstream teatree gap, "
             "file the enforcement issue, and record it via RedCardSignal.link_issue"
@@ -318,14 +315,12 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
             kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
         )
-        if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="debugging"):
+        if ticket.role != Ticket.Role.AUTHOR or _has_open_work(ticket, phase="debugging"):
             return None
         if not claim_red_mr_fix(payload):
             return None
-        return create_phase_task(
-            ticket,
-            phase="debugging",
-            agent_id="debug",
+        return ticket.schedule_implementing(
+            "debugging",
             reason=_FIX_REASON_BY_KIND[fix_kind_of(payload)].format(pr_url=pr_url),
         )
 
@@ -400,12 +395,10 @@ def _handle_e2e_fix(action: DispatchAction) -> Task | None:
         extra={"e2e_spec": spec, "e2e_test_title": str(payload.get("test_title") or "")},
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="e2e"):
+    if ticket.role != Ticket.Role.AUTHOR or _has_open_work(ticket, phase="e2e"):
         return None
-    return create_phase_task(
-        ticket,
-        phase="e2e",
-        agent_id="e2e-fix",
+    return ticket.schedule_implementing(
+        "e2e",
         reason=f"Auto-scheduled E2E fix — {spec}",
     )
 
@@ -434,14 +427,10 @@ def _handle_skill_drift(action: DispatchAction) -> Task | None:
         },
         kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
-    if ticket.role != Ticket.Role.AUTHOR or has_open_task(ticket, phase="coding"):
+    if ticket.role != Ticket.Role.AUTHOR or _has_open_work(ticket, phase="coding"):
         return None
-    # Intentionally NOT gated by plan_currency (SELFCATCH-3): a t3:coder skill-drift
-    # synthetic ticket carries no PlanArtifact, so the currency gate would false-positive.
-    return create_phase_task(
-        ticket,
-        phase="coding",
-        agent_id="skill-drift",
+    return ticket.schedule_implementing(
+        "coding",
         reason=f"Auto-scheduled skill-drift fix — {file_path}",
     )
 
@@ -495,7 +484,7 @@ _ZONE_HANDLERS = {
 _HANDLER_TARGET_PHASES: frozenset[tuple[str, str]] = frozenset(
     {
         ("reviewer", "reviewing"),  # _handle_reviewer
-        ("author", "planning"),  # _handle_orchestrator
+        ("author", "planning"),  # _handle_orchestrator, and every unplanned corrective ticket below
         ("author", "coding"),  # _handle_red_card / _handle_skill_drift
         ("author", "debugging"),  # _handle_debug
         ("author", "e2e"),  # _handle_e2e_fix

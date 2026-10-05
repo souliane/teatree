@@ -46,14 +46,13 @@ whole-tree at CI, plus the CI selection-audit".
 
 import ast
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 from teatree.quality.full_suite_invocation import declared_testpaths, runs_full_suite
+from tests._file_cost import describe_runs, remeasure_offenders, run_pytest_measured, settle, unmeasured
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO_ROOT / ".pre-commit-config.yaml"
@@ -367,38 +366,32 @@ class TestConformanceCoreStaysUnderBudget:
     O(fields x src-files) walk with none of those four classes, measured at 35s+
     of call time here -- to ``conformance_core`` left every other guard green.
     Running the declared core once and budgeting PER FILE is the only check that
-    cost shape cannot slip past. Deselected at push (`-m "not push_heavy"`) like
-    the other whole-tree checks in this repo; it runs in CI.
+    cost shape cannot slip past. The budget is CPU seconds, not wall: a congested CI pool
+    inflates wall time without changing the work, and a file that merely waits costs no
+    CPU (``tests/test_file_cost.py`` pins both). A file over the limit is measured once more
+    in a fresh child and the lower CPU reading decides. Deselected at push (`-m "not push_heavy"`)
+    like the other whole-tree checks in this repo; it runs in CI.
     """
 
-    #: Every currently-listed file measures well under a second of call+setup
-    #: time here; the file excluded above for cost measured 35s+. An order of
-    #: magnitude of headroom over the former, comfortably under the latter.
+    #: CPU seconds of a file's setup+call+teardown (children included). The legitimate files
+    #: measure up to ~5s here; the file excluded above for cost measured 35s+ of call time.
     _PER_FILE_BUDGET_S = 15.0
-    _DURATION_LINE = re.compile(r"^(?P<seconds>\d+\.\d+)s\s+(?:call|setup|teardown)\s+(?P<nodeid>\S+)$")
+    _REMEASURE_TIMEOUT_S = 60
 
     def test_each_core_file_stays_under_its_budget(self) -> None:
         core = _declared_conformance_core(_ci_critical_parity_script_body())
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", *(str(path) for path in core), "-n", "0", "-q", "--durations=0"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=170,
-            check=False,
+        run = run_pytest_measured([str(path) for path in core], cwd=_REPO_ROOT, timeout_s=170)
+        assert run.returncode == 0, f"the declared conformance core must pass:\n{run.stdout}\n{run.stderr}"
+        missing = unmeasured([path.relative_to(_REPO_ROOT).as_posix() for path in core], run.costs)
+        assert not missing, f"no cost was recorded for {missing}; a file nothing measured cannot be under budget"
+        rerun = remeasure_offenders(
+            run.costs, budget_s=self._PER_FILE_BUDGET_S, cwd=_REPO_ROOT, timeout_s=self._REMEASURE_TIMEOUT_S
         )
-        assert proc.returncode == 0, f"the declared conformance core must pass:\n{proc.stdout}\n{proc.stderr}"
-        totals: dict[str, float] = {}
-        for line in proc.stdout.splitlines():
-            match = self._DURATION_LINE.match(line.strip())
-            if not match:
-                continue
-            file_path = match.group("nodeid").split("::", 1)[0]
-            totals[file_path] = totals.get(file_path, 0.0) + float(match.group("seconds"))
-        offenders = {path: round(seconds, 1) for path, seconds in totals.items() if seconds > self._PER_FILE_BUDGET_S}
+        offenders = settle(run.costs, rerun, self._PER_FILE_BUDGET_S)
         assert not offenders, (
-            f"conformance core file(s) exceed the {self._PER_FILE_BUDGET_S}s per-file budget "
-            f"(a candidate this slow belongs in CI, not the push-time core): {offenders}"
+            f"conformance core file(s) exceed the {self._PER_FILE_BUDGET_S}s per-file CPU budget (the lower CPU of "
+            f"the first run and one fresh re-run counts; a candidate this slow belongs in CI, not the push-time "
+            f"core): {describe_runs(offenders, rerun)}"
         )
 
 

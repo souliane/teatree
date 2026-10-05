@@ -23,7 +23,7 @@ from django.urls import reverse
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.dash.task_actions import ENQUEUEABLE_PHASES
-from tests.factories import TicketFactory
+from tests.factories import TicketFactory, record_test_plan
 
 _DASH = Path(__file__).resolve().parents[2] / "src/teatree/dash"
 
@@ -138,6 +138,7 @@ class EnqueueingLeavesEveryOutcomeStoreEmptyTestCase(TestCase):
 
     def test_clicking_every_button_records_no_verdict_and_no_clear(self) -> None:
         ticket = TicketFactory()
+        record_test_plan(ticket)
         for phase in ENQUEUEABLE_PHASES:
             response = self.client.post(
                 reverse("dash:task_action", args=[ticket.pk]), {"phase": phase}, headers={"hx-request": "true"}

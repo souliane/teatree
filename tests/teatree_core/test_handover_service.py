@@ -28,7 +28,7 @@ from teatree.core.handover_wrapup import (
     wrapup_section_for,
 )
 from teatree.core.models import LoopLease, SessionHandover
-from teatree.core.push.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.push.fast_push import UNAPPROVABLE_AUTHOR_PR_REFUSAL, FastPushOutcome, LeakFinding
 from teatree.core.session_handover_manager import SessionHandoverQuerySet
 
 
@@ -304,6 +304,26 @@ class TestMergeSubagentRecords:
         assert still_there["remaining"] == "nothing"
         assert still_there["first_seen_at"] == _AT.isoformat(), "the first sighting survives the update"
         assert still_there["last_seen_at"] == _LATER.isoformat()
+
+    def test_a_sub_agent_whose_mr_was_refused_on_its_author_still_has_work_remaining(self) -> None:
+        refused = SubagentPush(
+            worktree=Path("/wt/agent-x"),
+            branch="feat/x",
+            driven=True,
+            outcome=FastPushOutcome(
+                ok=True,
+                branch="feat/x",
+                committed=True,
+                pushed=True,
+                pr_action=UNAPPROVABLE_AUTHOR_PR_REFUSAL,
+                pr_skip_reason="org/factory would be authored by the owner",
+            ),
+        )
+
+        records = _records([refused], at=_AT)
+
+        assert records[0]["remaining"] == "no merge request: org/factory would be authored by the owner"
+        assert "org/factory would be authored by the owner" in _render(records)
 
     def test_an_agent_that_is_gone_is_marked_in_the_rendered_section(self) -> None:
         merged = merge_subagent_records(

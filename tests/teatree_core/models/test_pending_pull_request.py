@@ -48,7 +48,6 @@ class PendingPullRequestTestCase(django.test.TestCase):
 
         row.record_failed_drain()
 
-        assert row.is_overdue
         assert list(PendingPullRequest.objects.overdue()) == [row]
 
     def test_discharge_removes_the_obligation(self) -> None:

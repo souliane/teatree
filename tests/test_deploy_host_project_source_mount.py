@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from _deploy_wrapper_paths import copy_wrapper
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
 WRAPPER = DEPLOY_DIR / "t3"
@@ -75,7 +76,7 @@ def _compose() -> dict:
 def _install_wrapper(deploy_dir: Path) -> Path:
     deploy_dir.mkdir(parents=True, exist_ok=True)
     entry = deploy_dir / "t3"
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     return entry
 

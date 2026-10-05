@@ -17,33 +17,6 @@ from typing import TypedDict
 type SkillIndexEntries = list[dict[str, object]]
 
 
-class SlackVoiceClassifierMode(enum.StrEnum):
-    """Strictness of the Slack voice/token mismatch classifier (#1395).
-
-    Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config`
-    can parse the DB-home ``slack_voice_classifier_mode`` setting
-    without importing the classifier implementation in
-    :mod:`teatree.backends.slack.voice_classifier` (the
-    ``teatree.backends → teatree.config`` direction is forbidden by
-    the tach module boundary, but ``teatree.config → teatree.types``
-    is allowed).
-    """
-
-    STRICT = "strict"
-    WARN = "warn"
-    OFF = "off"
-
-    @classmethod
-    def parse(cls, value: str) -> "SlackVoiceClassifierMode":
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            message = f"Invalid slack_voice_classifier_mode {value!r}; valid values: {valid}"
-            raise ValueError(message) from exc
-
-
 class LocalPlayback(enum.StrEnum):
     """What plays through this machine's speakers (#2060).
 

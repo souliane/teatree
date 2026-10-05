@@ -43,10 +43,11 @@ from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.default_draft import notify_draft_created, resolve_reviewed_head_sha
 from teatree.core.models import BotPing, LivePostApproval, OnBehalfApproval
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
 
 _runner = CliRunner()
 
@@ -85,6 +86,7 @@ def _write_cfg(
     PROCEED) neither on-behalf gate applies, so there is no token to isolate.
     """
     _seed_cold_slack_user(tmp_path, monkeypatch, user_id)
+    allow_forge_repos(OWNED_REPO)
     if forbid:
         seed_forbidding_posture()
     else:

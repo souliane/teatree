@@ -10,16 +10,12 @@ block is proven anti-vacuous by ``test_gate_is_load_bearing``: with the gate
 neutralised the same evidence-less transition advances to MERGED.
 """
 
-import contextlib
-from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.backend_protocols import PrMergeState
-from teatree.core.gates import merge_evidence_gate
 from teatree.core.gates.merge_evidence_gate import (
     NoMergeEvidenceError,
     check_merge_evidence,
@@ -31,17 +27,6 @@ from teatree.core.modelkit import gate_registry
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
 
 _FORTY_HEX = "a" * 40
-
-
-@contextlib.contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    """Pin the gate's ``require_merge_evidence`` flag (mirrors integration_review_gate tests)."""
-    with patch.object(
-        merge_evidence_gate,
-        "get_effective_settings",
-        return_value=UserSettings(require_merge_evidence=required),
-    ):
-        yield
 
 
 def _pr_merge_state(*, merged: bool) -> PrMergeState:
@@ -195,30 +180,23 @@ class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
 
 
 class TestCheckMergeEvidence(TestCase):
-    def test_gate_off_passes_without_any_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
-        with _gate(required=False):
-            check_merge_evidence(ticket)  # no raise
-
     def test_gate_on_refuses_without_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
-        with _gate(required=True), pytest.raises(NoMergeEvidenceError) as exc:
+        with pytest.raises(NoMergeEvidenceError) as exc:
             check_merge_evidence(ticket)
         assert "no merged-SHA evidence" in str(exc.value)
-        assert "require_merge_evidence false" in str(exc.value)  # names the never-wedge escape
+        assert "Resolve the missing evidence and retry" in str(exc.value)
 
     def test_gate_on_passes_with_a_keystone_merge_audit(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _audit_for(ticket)
-        with _gate(required=True):
-            check_merge_evidence(ticket)  # no raise
+        check_merge_evidence(ticket)  # no raise
 
     def test_gate_on_passes_when_the_forge_confirms_merged(self) -> None:
         """Never-wedge: a genuinely-merged PR with no MergeAudit row still passes."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
-            _gate(required=True),
             patch(
                 "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
             ),
@@ -229,7 +207,6 @@ class TestCheckMergeEvidence(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
-            _gate(required=True),
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", side_effect=RuntimeError("forge down")),
             pytest.raises(NoMergeEvidenceError),
         ):
@@ -247,13 +224,13 @@ class TestMergeEvidenceFsmGate(TestCase):
 
     def test_mark_merged_refused_without_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
-        with _gate(required=True), pytest.raises(NoMergeEvidenceError):
+        with pytest.raises(NoMergeEvidenceError):
             ticket.mark_merged()
         assert ticket.state == Ticket.State.REVIEW_REQUESTED  # the transition did NOT advance
 
     def test_reconcile_merged_refused_without_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
-        with _gate(required=True), pytest.raises(NoMergeEvidenceError):
+        with pytest.raises(NoMergeEvidenceError):
             ticket.reconcile_merged()
         assert ticket.state == Ticket.State.WORK_STARTED
 
@@ -261,7 +238,7 @@ class TestMergeEvidenceFsmGate(TestCase):
         """The keystone shape: a MergeAudit written before reconcile → MERGED reached."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         _audit_for(ticket)
-        with _gate(required=True), self.captureOnCommitCallbacks(execute=False):
+        with self.captureOnCommitCallbacks(execute=False):
             ticket.reconcile_merged()
             ticket.save()
         ticket.refresh_from_db()
@@ -271,7 +248,6 @@ class TestMergeEvidenceFsmGate(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
-            _gate(required=True),
             patch(
                 "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
             ),
@@ -291,7 +267,6 @@ class TestMergeEvidenceFsmGate(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         neutralised = {**gate_registry._REGISTRY, ("gate", "merge_evidence"): lambda _ticket: None}
         with (
-            _gate(required=True),
             patch.object(gate_registry, "_REGISTRY", neutralised),
             self.captureOnCommitCallbacks(execute=False),
         ):

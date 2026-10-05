@@ -66,7 +66,6 @@
     - teatree.backends.slack.bot
     - teatree.core.notify
     - teatree.core.reply_transport
-    - teatree.core.daily_digest
     - teatree.core.speak
     - teatree.messaging.notify_with_fallback
     - teatree.loop.slack_answer.cycle
@@ -97,6 +96,13 @@
     route_forge_write first (or, for the reply transport, the equivalent
     _enforce_privacy + _route_reply twin); the backend client modules are the
     primitive layer the seam sits above.
+
+    Since #162 a SECOND question sits above the leak scrub for issue bodies:
+    WHERE the text belongs. teatree.core.issue_hygiene owns that — it routes a
+    requirement into the description (where a lane reads it) rather than a comment
+    (where nothing does), refuses a ticket the owner/factory bot did not file, and
+    scrubs through route_forge_write on the way. A new issue writer belongs behind
+    that facade, not on this allowlist.
   match_kind: method
   protected_attrs:
     - post_pr_comment
@@ -111,14 +117,12 @@
     - teatree.backends.github.client
     - teatree.backends.gitlab.client
     - teatree.core.answering.work_item_filing
+    - teatree.core.issue_hygiene
     - teatree.core.reply_transport
-    - teatree.core.review.review_findings
     - teatree.core.review.verdict_findings_publish
     - teatree.core.management.commands.pr
     - teatree.core.management.commands.ticket
     - teatree.core.management.commands._test_plan.mr_post
-    - teatree.loop.mechanical
-    - teatree.loops.dream.promote_memory
     - teatree.loops.dream.umbrella_ledger
     - teatree.mcp.services_forge
   refs:

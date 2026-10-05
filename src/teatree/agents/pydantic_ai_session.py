@@ -251,7 +251,7 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     ``ModelUsage`` TypedDict documents the shape the CLI sends rather than a constructor
     contract this lane must satisfy. There is no CLI on the metered lane and pydantic_ai
     reports no per-model breakdown, so the entry is deliberately EMPTY: it exists because
-    ``runner_usage._billed_model`` reads the billed model from this map's single KEY.
+    :func:`~teatree.core.billed_model.dominant_model` reads the billed model from this map's KEY.
     The authoritative figures for the turn are ``usage`` and ``total_cost_usd`` on the same
     message. Zero-filling the breakdown to satisfy the TypedDict would publish
     measured-looking zeros for cost, context window, and output cap that nothing observed.

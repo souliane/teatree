@@ -54,10 +54,10 @@ class _FakeHost:
 class TestShipResolvesTheSlugFromTheCheckout:
     def test_a_checkout_path_in_a_banned_namespace_strips_the_trailer(self, tmp_path: Path) -> None:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/1"
+            overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/1"
         )
         Worktree.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             ticket=ticket,
             repo_path="product",
             branch="feat-x",
@@ -70,6 +70,7 @@ class TestShipResolvesTheSlugFromTheCheckout:
             ),
             patch("teatree.core.runners.ship.git.config_value", return_value="tester"),
             patch("teatree.core.runners.ship.git.remote_slug", return_value="eng-group/product"),
+            patch("teatree.core.runners.ship.git.remote_url", return_value="https://github.com/eng-group/product.git"),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=["eng-group/*"]),
         ):
             spec = ShipExecutor._build_pr_spec(ticket, _FakeHost(), str(tmp_path / "worktrees" / "1234"), "feat-x", {})
@@ -78,10 +79,10 @@ class TestShipResolvesTheSlugFromTheCheckout:
 
     def test_an_unbanned_slug_keeps_the_trailer(self, tmp_path: Path) -> None:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/2"
+            overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/2"
         )
         Worktree.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             ticket=ticket,
             repo_path="teatree",
             branch="feat-y",
@@ -94,6 +95,7 @@ class TestShipResolvesTheSlugFromTheCheckout:
             ),
             patch("teatree.core.runners.ship.git.config_value", return_value="tester"),
             patch("teatree.core.runners.ship.git.remote_slug", return_value="souliane/teatree"),
+            patch("teatree.core.runners.ship.git.remote_url", return_value="https://github.com/souliane/teatree.git"),
             patch("teatree.core.runners.ship.get_overlay_publish_gates", return_value=["eng-group/*"]),
         ):
             spec = ShipExecutor._build_pr_spec(ticket, _FakeHost(), str(tmp_path / "wt"), "feat-y", {})
@@ -119,7 +121,7 @@ class _MirrorHost:
 class TestCreatedPrUrlMustNameTheExpectedRepoExactly(TestCase):
     def _ship(self, host: object) -> object:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/3"
+            overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/3"
         )
         spec = PullRequestSpec(
             repo="/tmp/checkout",

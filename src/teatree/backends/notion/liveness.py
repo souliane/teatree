@@ -47,7 +47,15 @@ import dataclasses
 from enum import StrEnum
 from typing import Protocol, cast
 
-from teatree.backends.notion.errors import NotionError, NotionPageNotLiveError
+import httpx
+
+from teatree.backends.notion.errors import (
+    NotionCapabilityDeniedError,
+    NotionError,
+    NotionNotSharedError,
+    NotionPageNotLiveError,
+    describe_failure,
+)
 from teatree.backends.notion.markdown import rich_text_plain
 from teatree.types import RawAPIDict
 
@@ -55,6 +63,9 @@ _RULE = (
     "An archived or superseded page is not a weaker source, it is not a source at all: "
     "do not read it, ignore it entirely, and go find the more recent version."
 )
+
+#: How many rows the by-id membership scan reads before it stops and says so.
+_MEMBERSHIP_SCAN_ROWS = 1000
 
 _AUDIT = (
     "To read it anyway for a genuine audit — and stamp the output as dead so it cannot be "
@@ -73,11 +84,11 @@ class NotionPageReader(Protocol):
     def get_page(self, page_id: str) -> RawAPIDict: ...  # pragma: no branch
 
     def query_database(
-        self, database_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100
+        self, database_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100, max_rows: int = 0
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def query_data_source(
-        self, data_source_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100
+        self, data_source_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100, max_rows: int = 0
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
 
@@ -95,6 +106,7 @@ class PageIdentity:
     data_source: bool = False
     title_property: str = ""
     title: str = ""
+    title_match: RawAPIDict = dataclasses.field(default_factory=dict)
 
     @property
     def is_database_row(self) -> bool:
@@ -110,12 +122,13 @@ class PageIdentity:
         typed = cast("RawAPIDict", parent) if isinstance(parent, dict) else {}
         database_id = str(typed.get("database_id") or "")
         data_source_id = str(typed.get("data_source_id") or "")
-        title_property, title = _title_of(page)
+        title_property, title = title_of(page)
         return cls(
             database_id=database_id or data_source_id,
             data_source=not database_id and bool(data_source_id),
             title_property=title_property,
             title=title,
+            title_match=_title_match(page, title_property),
         )
 
 
@@ -182,31 +195,56 @@ class PageLivenessProbe:
 
     def _membership_verdict(self, page_id: str, identity: PageIdentity) -> LivenessVerdict:
         try:
-            rows = self._rows_titled_like(identity)
-        except NotionError as exc:
+            titled = self._rows_titled_like(identity)
+            found = any(_same_id(row.get("id"), page_id) for row in titled)
+            scanned = [] if found else self._rows(identity, db_filter=None, max_rows=_MEMBERSHIP_SCAN_ROWS)
+        except NotionNotSharedError as exc:
             return LivenessVerdict(
                 state=Liveness.UNKNOWN,
                 reason="parent_database_unreadable",
                 detail=(
                     f"its parent database {identity.database_id} could not be queried, so nothing corroborates "
-                    f"its own flags — share that database with this integration and re-run: {exc}"
+                    "its own flags — check that the integration can see that database (usually: share it) "
+                    f"and re-run: {exc}"
                 ),
             )
-        if any(_same_id(row.get("id"), page_id) for row in rows):
+        except NotionCapabilityDeniedError as exc:
+            return LivenessVerdict(
+                state=Liveness.UNKNOWN,
+                reason="parent_database_unverified",
+                detail=(
+                    f"the integration lacks access to its parent database {identity.database_id} (HTTP 403: {exc}), "
+                    "so its membership could not be verified — grant the integration the capability Notion names"
+                ),
+            )
+        except (NotionError, httpx.HTTPError) as exc:
+            return LivenessVerdict(
+                state=Liveness.UNKNOWN,
+                reason="parent_database_unverified",
+                detail=(
+                    f"querying its parent database {identity.database_id} failed ({describe_failure(exc)}), so its "
+                    "membership could not be verified — transient or unsupported; retry, and open the page in "
+                    "Notion if it persists"
+                ),
+            )
+        if found or any(_same_id(row.get("id"), page_id) for row in scanned):
+            by_id = "" if found else ", found by page id after the title filter missed it"
             return LivenessVerdict(
                 state=Liveness.LIVE,
                 reason="present_in_parent_database",
-                detail=f"its own flags say live and database {identity.database_id} still returns it",
+                detail=f"its own flags say live and database {identity.database_id} still returns it{by_id}",
             )
+        capped = " (the scan stopped at its cap)" if len(scanned) >= _MEMBERSHIP_SCAN_ROWS else ""
         return LivenessVerdict(
             state=Liveness.UNKNOWN,
             reason="absent_from_parent_database",
             detail=(
-                f"its own flags say live, but database {identity.database_id} does not return it among the rows "
-                f"titled {identity.title!r} — it may have been superseded, or the database may serve rows this "
-                "query cannot see"
+                f"its own flags say live; the database query worked but did not return this page among rows titled "
+                f"{identity.title!r} ({len(titled)} row(s) returned), and scanning {len(scanned)} row(s) of database "
+                f"{identity.database_id} by page id did not find it either{capped} — it may have been superseded "
+                "or moved out of that database; open it in Notion to confirm which version is current"
             ),
-            successors=_successor_refs(rows, page_id),
+            successors=_successor_refs(_same_titled(titled, identity), page_id),
         )
 
     def _successors(self, page_id: str, identity: PageIdentity) -> tuple[str, ...]:
@@ -215,18 +253,42 @@ class PageLivenessProbe:
             return ()
         try:
             rows = self._rows_titled_like(identity)
-        except NotionError:
+        except (NotionError, httpx.HTTPError):
             return ()
-        return _successor_refs(rows, page_id)
+        return _successor_refs(_same_titled(rows, identity), page_id)
 
     def _rows_titled_like(self, identity: PageIdentity) -> list[RawAPIDict]:
-        db_filter: RawAPIDict = {"property": identity.title_property, "title": {"equals": identity.title}}
+        if not identity.title_match:
+            return []
+        return self._rows(identity, db_filter={"property": identity.title_property, "title": identity.title_match})
+
+    def _rows(self, identity: PageIdentity, *, db_filter: RawAPIDict | None, max_rows: int = 0) -> list[RawAPIDict]:
         if identity.data_source:
-            return self._client.query_data_source(identity.database_id, db_filter=db_filter)
-        return self._client.query_database(identity.database_id, db_filter=db_filter)
+            return self._client.query_data_source(identity.database_id, db_filter=db_filter, max_rows=max_rows)
+        return self._client.query_database(identity.database_id, db_filter=db_filter, max_rows=max_rows)
 
 
-def _title_of(page: RawAPIDict) -> tuple[str, str]:
+def _title_match(page: RawAPIDict, title_property: str) -> RawAPIDict:
+    """The title condition Notion can match: its title filter sees text runs only, never a mention's text."""
+    properties = page.get("properties")
+    prop = cast("RawAPIDict", properties).get(title_property) if isinstance(properties, dict) else None
+    spans = cast("RawAPIDict", prop).get("title") if isinstance(prop, dict) else None
+    runs = cast("list[RawAPIDict]", spans) if isinstance(spans, list) else []
+    texts = [str(run.get("plain_text", "")) for run in runs if run.get("type", "text") == "text"]
+    if len(texts) == len(runs) and "".join(texts):
+        return {"equals": "".join(texts)}
+    longest = max((text.strip() for text in texts), key=len, default="")
+    return {"contains": longest} if longest else {}
+
+
+def _same_titled(rows: list[RawAPIDict], identity: PageIdentity) -> list[RawAPIDict]:
+    if "equals" in identity.title_match:
+        return rows
+    wanted = " ".join(identity.title.split()).casefold()
+    return [row for row in rows if " ".join(title_of(row)[1].split()).casefold() == wanted]
+
+
+def title_of(page: RawAPIDict) -> tuple[str, str]:
     """The name and plain text of the page's ``title`` property, or two empty strings."""
     properties = page.get("properties")
     carried = cast("RawAPIDict", properties) if isinstance(properties, dict) else {}

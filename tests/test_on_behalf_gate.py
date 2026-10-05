@@ -20,12 +20,7 @@ from django.test import TestCase
 
 from teatree.config import Autonomy, get_effective_settings
 from teatree.core.models import ConfigSetting
-from teatree.on_behalf_gate import (
-    OnBehalfContext,
-    OnBehalfVerdict,
-    on_behalf_post_will_block,
-    resolve_on_behalf_verdict,
-)
+from teatree.on_behalf_gate import OnBehalfContext, OnBehalfVerdict, resolve_on_behalf_verdict
 
 
 def _review_request_verdict(*, egress_forbidden: bool) -> OnBehalfVerdict:
@@ -72,25 +67,6 @@ class TestThePostureDecidesAColleagueVisiblePost(_OnBehalfDbBase):
                 assert verdict is OnBehalfVerdict.PROCEED
 
 
-class TestProactivePreCheck(_OnBehalfDbBase):
-    """``on_behalf_post_will_block`` is the forward-looking BLOCK predicate.
-
-    A caller runs it BEFORE attempting a colleague-visible post so it can offer the owner
-    the switch-posture / approve-once choice proactively, instead of hitting the gate and
-    only then reacting.
-    """
-
-    def test_visible_post_will_block_under_a_forbidding_posture(self) -> None:
-        assert on_behalf_post_will_block("post_comment", egress_forbidden=True) is True
-
-    def test_visible_post_will_not_block_under_a_permitting_posture(self) -> None:
-        assert on_behalf_post_will_block("post_comment", egress_forbidden=False) is False
-
-    def test_draft_form_action_will_not_block_under_either_posture(self) -> None:
-        assert on_behalf_post_will_block("post_draft_note", egress_forbidden=True) is False
-        assert on_behalf_post_will_block("post_draft_note", egress_forbidden=False) is False
-
-
 class TestThePostureIsAlwaysStatedExplicitly(_OnBehalfDbBase):
     """Neither entry point carries a posture DEFAULT — a caller states it or gets a TypeError.
 
@@ -102,10 +78,6 @@ class TestThePostureIsAlwaysStatedExplicitly(_OnBehalfDbBase):
     def test_the_leaf_requires_an_explicit_posture(self) -> None:
         with pytest.raises(TypeError):
             resolve_on_behalf_verdict("post_comment")  # ty: ignore[missing-argument]
-
-    def test_the_precheck_requires_an_explicit_posture(self) -> None:
-        with pytest.raises(TypeError):
-            on_behalf_post_will_block("post_comment")  # ty: ignore[missing-argument]
 
 
 class TestPerOverlayAutoActions(_OnBehalfDbBase):
@@ -159,21 +131,3 @@ class TestAutonomyTierDoesNotDecideColleagueEgress(_OnBehalfDbBase):
 
         assert resolve_on_behalf_verdict("post_comment", egress_forbidden=True) is OnBehalfVerdict.BLOCK
         assert resolve_on_behalf_verdict("post_comment", egress_forbidden=False) is OnBehalfVerdict.PROCEED
-
-
-class TestReviewRequestPostAnswersToItsOwnFlag(_OnBehalfDbBase):
-    """The one action decided by a setting rather than the posture — it is action-shaped.
-
-    ``review_request_post_disabled`` says "this ACTION is off", so it BLOCKs even where the
-    posture would happily speak. Without the second assertion the first could not tell the
-    flag from the posture.
-    """
-
-    def test_the_flag_blocks_even_under_a_permitting_posture(self) -> None:
-        ConfigSetting.objects.set_value("review_request_post_disabled", value=True)
-
-        assert _review_request_verdict(egress_forbidden=False) is OnBehalfVerdict.BLOCK
-
-    def test_without_the_flag_the_posture_decides_it_like_any_other_action(self) -> None:
-        assert _review_request_verdict(egress_forbidden=False) is OnBehalfVerdict.PROCEED
-        assert _review_request_verdict(egress_forbidden=True) is OnBehalfVerdict.BLOCK

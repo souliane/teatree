@@ -71,9 +71,7 @@ def resolve_overlay_name(name: str) -> str | None:
 
     The single source of truth for "is this overlay name dispatchable, and
     under what canonical name". A name that is already a registered overlay
-    returns unchanged; a legacy short alias folds onto its registered
-    entry-point via the same ``_match_canonical_ep`` rule the config loader
-    uses (``teatree`` → ``t3-teatree``). A name that matches nothing — a
+    returns unchanged. A name that matches nothing — a
     removed overlay, a synthetic scanner tag, a typo — returns ``None`` so
     callers can fail it permanently instead of crashing on every retry
     (souliane/teatree#1959 poison-pill).
@@ -82,12 +80,9 @@ def resolve_overlay_name(name: str) -> str | None:
     is not None``; an empty/blank ``name`` is the ambient single-overlay default
     and is the caller's responsibility to special-case (it returns ``None``).
     """
-    from teatree.config import _match_canonical_ep  # noqa: PLC0415 — deferred: call-time import, kept lazy
     from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred: avoids the loader cycle
 
     if not name:
         return None
     known = set(OverlayConfigResolver.all_names())
-    if name in known:
-        return name
-    return _match_canonical_ep(name, known)
+    return name if name in known else None

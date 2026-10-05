@@ -140,6 +140,17 @@ class SuccessfulToolCallMatcher:
 
 
 @dataclasses.dataclass(frozen=True)
+class ToolCallCountMatcher:
+    """Count matching command values before an edit outside the named round files."""
+
+    tool: str
+    arg_path: str
+    pattern: str
+    equals: int
+    round_files: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class AnyOf:
     """A disjunction of positive matchers — passes when ANY alternative holds.
 
@@ -195,7 +206,13 @@ class PlanBeforeToolMatcher:
 # An ``expect`` entry is a single tool-call matcher, a disjunction of them, or an
 # assertion about the agent's text — its final message, or anywhere in its response.
 ExpectItem = (
-    Matcher | SuccessfulToolCallMatcher | AnyOf | FinalStateMatcher | AssistantTextMatcher | PlanBeforeToolMatcher
+    Matcher
+    | SuccessfulToolCallMatcher
+    | ToolCallCountMatcher
+    | AnyOf
+    | FinalStateMatcher
+    | AssistantTextMatcher
+    | PlanBeforeToolMatcher
 )
 
 #: The SINGLE SOURCE OF TRUTH for the matcher grammar, read by every place that has
@@ -215,11 +232,13 @@ MATCHER_OPERATORS: tuple[str, ...] = ("contains", "~")
 MATCHER_KINDS: tuple[str, ...] = (
     "tool_call",
     "tool_call_succeeded",
+    "tool_call_count",
     "no_tool_call_matching",
     "any_of",
     "final_state",
     "assistant_text",
 )
+
 
 #: Case aliases mapping a tool name's lowercase form to its canonical name. The
 #: single source of truth so the grader (``report._canonicalize_tool``) and the
@@ -514,7 +533,6 @@ COST_SOURCE_NOT_METERED = "not_metered"
 COST_SOURCE_UNKNOWN = "unknown"
 
 #: The sources under which a ``0.0`` is a MEASURED zero rather than an absent measurement.
-MEASURED_COST_SOURCES = (COST_SOURCE_REPORTED, COST_SOURCE_DERIVED, COST_SOURCE_NOT_METERED)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -528,6 +546,7 @@ class EvalRun:
     is_error: bool
     raw_stdout: str
     raw_stderr: str
+    coverage_incomplete: bool = False
     cost_usd: float = 0.0
     #: How ``cost_usd`` was observed — one of the ``COST_SOURCE_*`` values above. Defaults
     #: to UNKNOWN so a run whose producer says nothing about cost can never be read as a

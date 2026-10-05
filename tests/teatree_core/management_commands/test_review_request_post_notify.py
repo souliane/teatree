@@ -26,6 +26,7 @@ from django.test import TestCase
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
+from tests.teatree_core.conftest import ready_review_batch_for_test, record_review_request_prerequisites_for_test
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -111,10 +112,13 @@ class TestReviewRequestPostAfterReceipt(_Base):
 
     def test_successful_post_emits_after_receipt_dm(self) -> None:
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        head_sha = "a" * 40
+        ticket = record_review_request_prerequisites_for_test(head_sha)
         notify_backend = _notify_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
 
         with (
+            ready_review_batch_for_test(_MR_URL),
             # The draft gate precedes the post and fails CLOSED against the
             # unreachable forge of a test env; it has its own suite.
             patch(f"{_CMD}.draft_refusal_reason", return_value=""),
@@ -123,7 +127,7 @@ class TestReviewRequestPostAfterReceipt(_Base):
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=_FakeBackend()),
         ):
-            code = self._run("--title", "fix(scope): thing")
+            code = self._run("--title", "fix(scope): thing", "--ticket-id", str(ticket.pk), "--head-sha", head_sha)
 
         assert code == 0
         ping = BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{_MR_URL}:review_request_post")

@@ -214,10 +214,6 @@ class ReadbackIndex:
                 return ReadbackHit(f"{state}_pr_{signal}", _pr_url(raw))
         return None
 
-    def candidates_for(self, ticket_number: str) -> int:
-        """How many PRs a lookup of *ticket_number* reads — the per-candidate cost."""
-        return len(self.buckets.get(ticket_number, ()))
-
 
 def build_readback_index(open_prs: list[RawAPIDict], merged_prs: list[RawAPIDict]) -> ReadbackIndex:
     """Bucket *open_prs* then *merged_prs* by their digit runs, preserving scan order."""

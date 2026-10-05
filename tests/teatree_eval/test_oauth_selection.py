@@ -25,7 +25,6 @@ from teatree.eval.oauth_selection import (
     WEIGHT_5H,
     WEIGHT_7D,
     CandidateHealth,
-    OAuthSelection,
     TokenProbeStatus,
     parse_tokens,
     select_freshest,
@@ -127,24 +126,6 @@ class TestSelectFreshest:
         assert exhausted.status is TokenProbeStatus.EXHAUSTED
         assert exhausted.is_eligible is False
 
-    def test_utilization_over_the_limit_is_exhausted(self) -> None:
-        reader = _MockReader({SPENT_5H: _snapshot(u5h=0.96, u7d=0.10)})
-        selection = select_freshest([SPENT_5H], reader=reader, now=RUN_START)
-        assert selection.winner is None
-        assert selection.all_ineligible is True
-        assert selection.candidates[0].status is TokenProbeStatus.EXHAUSTED
-
-    def test_all_exhausted_yields_no_winner(self) -> None:
-        reader = _MockReader(
-            {
-                REJECTED: _snapshot(u5h=0.10, u7d=0.10, status_7d=REJECTED_STATUS),
-                SPENT_5H: _snapshot(u5h=0.99, u7d=0.10),
-            }
-        )
-        selection = select_freshest([REJECTED, SPENT_5H], reader=reader, now=RUN_START)
-        assert selection.winner is None
-        assert selection.all_ineligible is True
-
     def test_probe_error_is_unreachable_not_a_crash(self) -> None:
         reader = _MockReader({FRESH: _snapshot(u5h=0.10, u7d=0.10)}, errors={UNREACHABLE})
         selection = select_freshest([UNREACHABLE, FRESH], reader=reader, now=RUN_START)
@@ -177,12 +158,6 @@ class TestSelectFreshest:
         # SPENT_5H projects to 5h=1.0 / 7d=0.80 → binding 0.80, beating FRESH's 0.50.
         assert selection.winner is not None
         assert selection.winner.label == "token[1]"
-
-    def test_empty_token_list_has_no_winner_and_is_not_all_ineligible(self) -> None:
-        selection = select_freshest([], reader=_MockReader({}), now=RUN_START)
-        assert selection.winner is None
-        assert selection.all_ineligible is False
-        assert selection.candidates == ()
 
 
 class TestNoTokenLeak:
@@ -241,7 +216,3 @@ class TestCandidateHealthScoring:
         )
         assert candidate.binding_headroom == pytest.approx(0.2)
         assert candidate.weighted_headroom == pytest.approx(WEIGHT_5H * 0.8 + WEIGHT_7D * 0.2)
-
-    def test_default_selection_is_empty(self) -> None:
-        assert OAuthSelection().winner is None
-        assert OAuthSelection().all_ineligible is False

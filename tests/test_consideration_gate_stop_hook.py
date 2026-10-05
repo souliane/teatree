@@ -329,10 +329,10 @@ class TestRouterWiring:
         names = [h.__name__ for h in _HANDLERS["Stop"]]
         assert "handle_consideration_gate" in names
 
-    def test_runs_after_answered_questions_gate(self) -> None:
-        """Answered-questions and structured-question gates are dominant."""
+    def test_runs_after_structured_question_gate(self) -> None:
+        """The structured-question gate is dominant."""
         names = [h.__name__ for h in _HANDLERS["Stop"]]
-        assert names.index("handle_enforce_answered_questions") < names.index("handle_consideration_gate")
+        assert names.index("handle_enforce_structured_question") < names.index("handle_consideration_gate")
 
     def test_runs_before_loop_self_pump(self) -> None:
         """The loop self-pump must run last."""

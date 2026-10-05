@@ -24,7 +24,7 @@ Detection = Literal["greppable", "judgement"]
 
 _SEVERITIES: frozenset[str] = frozenset({"high", "medium", "low"})
 _DETECTIONS: frozenset[str] = frozenset({"greppable", "judgement"})
-_CONSUMERS: frozenset[str] = frozenset({"architecture-design", "ac-reviewing-codebase", "linter", "eval"})
+_CONSUMERS: frozenset[str] = frozenset({"architecture-design", "architectural-review", "linter", "eval"})
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 

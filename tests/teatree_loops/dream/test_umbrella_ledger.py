@@ -20,16 +20,18 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import umbrella_ledger as ul
+from teatree.loops.dream.umbrella_ledger import code_host_for
+from tests.teatree_loops.dream._own_umbrella import SELF_LOGIN, claims_self
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 REPO = "souliane/teatree"
 
 
-def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
-    host = MagicMock(spec=CodeHostBackend)
-    host.get_issue.return_value = {"body": body}
+def _fake_host(*, body: str = "## Open gaps\n", author: str = SELF_LOGIN) -> CodeHostBackend:
+    """The standing umbrella, as the owner filed it — the #162 Rule 5 read needs an author."""
+    host = claims_self(MagicMock(spec=CodeHostBackend))
+    host.get_issue.return_value = {"body": body, "user": {"login": author}}
     host.update_issue.return_value = {"number": 2663}
     return host
 
@@ -97,8 +99,15 @@ class UpsertGapCheckboxTestCase(TestCase):
         assert "<!-- dream-gap gap-2 -->" in kwargs["body"]
 
     def test_unreadable_body_does_not_crash_and_files_nothing(self) -> None:
-        host = MagicMock(spec=CodeHostBackend)
+        host = claims_self(MagicMock(spec=CodeHostBackend))
         host.get_issue.side_effect = RuntimeError("forge down")
+        added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate")
+        assert added is False
+        host.update_issue.assert_not_called()
+
+    def test_an_umbrella_someone_else_filed_is_left_untouched(self) -> None:
+        """#162 Rule 5 — the body we compute an upsert from is the body we were authorised on."""
+        host = _fake_host(author="someone.else")
         added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate")
         assert added is False
         host.update_issue.assert_not_called()
@@ -143,208 +152,9 @@ class GapPresentTestCase(TestCase):
     def test_an_unreadable_body_is_unknown_never_absent(self) -> None:
         # None, not False: a caller must never conclude "absent" from a forge it could
         # not read, nor "present" — both are claims the read does not support.
-        host = MagicMock(spec=CodeHostBackend)
+        host = claims_self(MagicMock(spec=CodeHostBackend))
         host.get_issue.side_effect = RuntimeError("forge down")
         assert ul.gap_present(host, umbrella_url=UMBRELLA, gap_key="gap-1") is None
-
-
-class ReconcileMergedGapsTestCase(TestCase):
-    """A merged gap-fix Ticket checks its checkbox and retires the linked memory.
-
-    These tickets are the LEGACY per-gap scheme (#4776 replaced per-gap scheduling
-    with batching for NEW gaps, but a ticket already in flight when that shipped
-    keeps draining through this unchanged path) — constructed directly here since
-    ``schedule_gap_fix`` (the function that used to mint one) is deleted.
-    """
-
-    def _scheduled_gap(self, *, key: str = "gap-1", binding: bool = False) -> Ticket:
-        _memory(key=key, binding=binding)
-        return Ticket.objects.create(
-            issue_url=f"{UMBRELLA}#dream-gap={key}",
-            role=Ticket.Role.AUTHOR,
-            short_description="Fix the gate",
-            extra={"dream_gap_key": key, "dream_memory_cluster_key": key, "dream_umbrella_url": UMBRELLA},
-        )
-
-    def test_merged_gap_checks_the_box_and_retires_the_memory(self) -> None:
-        ticket = self._scheduled_gap()
-        ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
-        )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-        host.get_issue.return_value = {"body": existing, "state": "merged"}
-
-        reconciled = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
-
-        assert len(reconciled) == 1
-        # The checkbox is checked on the umbrella.
-        update_bodies = [c.kwargs["body"] for c in host.update_issue.call_args_list]
-        assert any("- [x] Fix the gate <!-- dream-gap gap-1 -->" in b for b in update_bodies)
-        # The linked memory is retired through the existing retire path.
-        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
-        assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
-
-    def test_reconciled_gap_is_stamped_and_not_re_read_next_pass(self) -> None:
-        # F6.9: once a merged gap is reconciled (checkbox checked, memory retired) the
-        # gap-fix ticket is STAMPED reconciled, so the next reconcile pass skips it
-        # instead of re-reading the forge for the same merged gap forever.
-        ticket = self._scheduled_gap()
-        ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
-        )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        existing = "## Open gaps\n- [x] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-        host.get_issue.return_value = {"body": existing, "state": "merged"}
-
-        first = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
-        assert len(first) == 1
-        ticket.refresh_from_db()
-        assert ticket.extra.get("dream_gap_reconciled_at")  # stamped reconciled
-
-        # A second pass over the same merged gap does NOT touch it again.
-        host2 = _fake_host(body=existing)
-        host2.get_issue.return_value = {"body": existing, "state": "merged"}
-        second = ul.reconcile_merged_gaps(host2, umbrella_url=UMBRELLA)
-        assert second == []
-        host2.get_issue.assert_not_called()  # no forge re-read for the already-reconciled gap
-
-    def test_an_unreadable_umbrella_leaves_the_gap_unstamped_for_the_next_pass(self) -> None:
-        # The reconciled stamp is permanent — it removes the ticket from every future
-        # scan — so stamping on a forge read that never returned the body would leave the
-        # umbrella showing an open box for a merged fix with nothing left to re-check it.
-        ticket = self._scheduled_gap()
-        ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
-        )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        host = _fake_host()
-        host.get_issue.side_effect = RuntimeError("forge 503")
-
-        assert ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA) == []
-
-        ticket.refresh_from_db()
-        assert not (ticket.extra or {}).get("dream_gap_reconciled_at")
-        assert ConsolidatedMemory.objects.get(cluster_key="gap-1").disposition != (
-            ConsolidatedMemory.Disposition.RESOLVED_RETIRED
-        )
-
-    def test_a_refused_umbrella_write_leaves_the_gap_unstamped(self) -> None:
-        ticket = self._scheduled_gap()
-        ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
-        )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-        host.get_issue.return_value = {"body": existing, "state": "merged"}
-
-        with patch.object(ul, "_scrubbed_update", return_value=False):
-            assert ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA) == []
-
-        ticket.refresh_from_db()
-        assert not (ticket.extra or {}).get("dream_gap_reconciled_at")
-
-    def test_unmerged_gap_is_left_alone(self) -> None:
-        self._scheduled_gap()
-        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
-        reconciled = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
-        assert reconciled == []
-        host.update_issue.assert_not_called()
-        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
-        assert memory.disposition == ConsolidatedMemory.Disposition.UNTRIAGED
-
-    def test_binding_memory_is_never_retired_even_when_its_gap_merges(self) -> None:
-        ticket = self._scheduled_gap(binding=True)
-        ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
-        )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-
-        ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
-
-        # BINDING feedback is load-bearing user doctrine — never silently dropped.
-        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
-        assert memory.disposition != ConsolidatedMemory.Disposition.RESOLVED_RETIRED
-
-
-class ReconcileFoldedGapsTestCase(TestCase):
-    """A gap folded into a host ticket is reconciled off the HOST's merge (#2663)."""
-
-    def _scheduled_gap(self, *, key: str) -> Ticket:
-        _memory(key=key)
-        return Ticket.objects.create(
-            issue_url=f"{UMBRELLA}#dream-gap={key}",
-            role=Ticket.Role.AUTHOR,
-            short_description="Fix the gate",
-            extra={"dream_gap_key": key, "dream_memory_cluster_key": key, "dream_umbrella_url": UMBRELLA},
-        )
-
-    def _folded_member(self, *, into: int) -> Ticket:
-        member = self._scheduled_gap(key="gap-member")
-        member.state = Ticket.State.IGNORED
-        member.save()
-        member.merge_extra(set_keys={"dream_gap_folded_into": into})
-        return member
-
-    def _umbrella_body(self, *keys: str) -> str:
-        lines = [f"- [ ] Fix the gate <!-- dream-gap {key} -->" for key in keys]
-        return "## Open gaps\n" + "\n".join(lines) + "\n"
-
-    def _host_reading(self, body: str) -> CodeHostBackend:
-        host = _fake_host(body=body)
-        host.get_issue.return_value = {"body": body, "state": "merged"}
-        return host
-
-    def test_a_folded_member_is_reconciled_when_its_host_merges(self) -> None:
-        host_ticket = self._scheduled_gap(key="gap-host")
-        host_ticket.pull_requests.create(
-            url="https://github.com/souliane/teatree/pull/9200", repo=REPO, iid="9200", state="merged"
-        )
-        host_ticket.state = Ticket.State.MERGED
-        host_ticket.save()
-        member = self._folded_member(into=host_ticket.pk)
-        forge = self._host_reading(self._umbrella_body("gap-host", "gap-member"))
-
-        reconciled = ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA)
-
-        assert {ticket.pk for ticket in reconciled} == {host_ticket.pk, member.pk}
-        bodies = [call.kwargs["body"] for call in forge.update_issue.call_args_list]
-        assert any("- [x] Fix the gate <!-- dream-gap gap-member -->" in body for body in bodies)
-        member.refresh_from_db()
-        assert member.extra.get("dream_gap_reconciled_at")
-        memory = ConsolidatedMemory.objects.get(cluster_key="gap-member")
-        assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
-
-    def test_a_folded_member_whose_host_has_not_merged_is_left_alone(self) -> None:
-        host_ticket = self._scheduled_gap(key="gap-host")
-        member = self._folded_member(into=host_ticket.pk)
-        forge = self._host_reading(self._umbrella_body("gap-member"))
-
-        assert ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA) == []
-
-        forge.update_issue.assert_not_called()
-        member.refresh_from_db()
-        assert not (member.extra or {}).get("dream_gap_reconciled_at")
-
-    def test_a_folded_member_pointing_at_no_ticket_is_left_alone(self) -> None:
-        member = self._folded_member(into=9_999_999)
-        forge = self._host_reading(self._umbrella_body("gap-member"))
-
-        assert ul.reconcile_merged_gaps(forge, umbrella_url=UMBRELLA) == []
-
-        forge.update_issue.assert_not_called()
-        member.refresh_from_db()
-        assert not (member.extra or {}).get("dream_gap_reconciled_at")
 
 
 class PromotionAnchorTestCase(TestCase):
@@ -352,7 +162,6 @@ class PromotionAnchorTestCase(TestCase):
 
     def test_only_dream_fragments_are_promotion_anchors(self) -> None:
         cases = {
-            f"{UMBRELLA}#dream-gap=gap-1": True,
             f"{UMBRELLA}#dream-batch=abc123": True,
             UMBRELLA: False,
             "https://github.com/souliane/teatree/pull/9100": False,
@@ -368,16 +177,13 @@ class StampMemoryMergedTestCase(TestCase):
     PR_URL = "https://github.com/souliane/teatree/pull/9100"
 
     def test_a_promotion_anchor_is_restamped_with_the_merged_pr(self) -> None:
-        for index, fragment in enumerate(("dream-gap", "dream-batch")):
-            with self.subTest(fragment=fragment):
-                key = f"gap-{index}"
-                row = _memory(key=key)
-                row.classify_core_gap()
-                row.mark_ticketed(f"{UMBRELLA}#{fragment}={key}")
+        row = _memory(key="gap-1")
+        row.classify_core_gap()
+        row.mark_ticketed(f"{UMBRELLA}#dream-batch=gap-1")
 
-                assert ul._stamp_memory_merged(key, merged_url=self.PR_URL) is True
-                row.refresh_from_db()
-                assert row.ticket_url == self.PR_URL
+        assert ul._stamp_memory_merged("gap-1", merged_url=self.PR_URL) is True
+        row.refresh_from_db()
+        assert row.ticket_url == self.PR_URL
 
     def test_a_row_already_on_a_real_pr_is_left_alone(self) -> None:
         row = _memory()
@@ -390,26 +196,24 @@ class StampMemoryMergedTestCase(TestCase):
         assert row.ticket_url == earlier
 
 
-class ReconcileMergedGapWithoutPrTestCase(TestCase):
-    """A merged legacy gap ticket with no merged PR row still retires its back-filled memory."""
+class TestCodeHostFor(TestCase):
+    def test_the_owning_overlay_is_asked_first(self) -> None:
+        owner, other = MagicMock(name="owner"), MagicMock(name="other")
+        owner_host = MagicMock(spec=CodeHostBackend)
+        with (
+            patch("teatree.loops.dream.umbrella_ledger.get_all_overlays", return_value={"a": other, "b": owner}),
+            patch("teatree.loops.dream.umbrella_ledger.infer_overlay_for_url", return_value="b"),
+            patch(
+                "teatree.loops.dream.umbrella_ledger.get_code_host_for_url",
+                side_effect=lambda overlay, _url: owner_host if overlay is owner else MagicMock(),
+            ),
+        ):
+            assert code_host_for(UMBRELLA) is owner_host
 
-    def test_the_anchor_stamped_row_retires_against_the_ticket(self) -> None:
-        row = _memory()
-        row.classify_core_gap()
-        ticket = Ticket.objects.create(
-            issue_url=f"{UMBRELLA}#dream-gap=gap-1",
-            role=Ticket.Role.AUTHOR,
-            short_description="Fix the gate",
-            extra={"dream_gap_key": "gap-1", "dream_memory_cluster_key": "gap-1", "dream_umbrella_url": UMBRELLA},
-        )
-        row.mark_ticketed(ticket.issue_url)
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
-        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
-        host = _fake_host(body=existing)
-
-        ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
-
-        row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
-        assert row.archive_path == ticket.issue_url
+    def test_no_overlay_reaching_the_forge_is_none(self) -> None:
+        with (
+            patch("teatree.loops.dream.umbrella_ledger.get_all_overlays", return_value={"a": MagicMock()}),
+            patch("teatree.loops.dream.umbrella_ledger.infer_overlay_for_url", return_value=""),
+            patch("teatree.loops.dream.umbrella_ledger.get_code_host_for_url", return_value=None),
+        ):
+            assert code_host_for(UMBRELLA) is None

@@ -130,7 +130,7 @@ class ReviewService:
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def post_draft_note(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-draft-note`` CLI flags; ``evidence`` is the #1280 structured-evidence record and the ``allow_*`` overrides are the #126 documented escapes — all must stay kwargs on this surface.
+    def post_draft_note(  # noqa: PLR0913 — public service method whose params support the ``t3 review post-comment`` draft path; ``evidence`` is the #1280 structured-evidence record and the ``allow_*`` overrides are the #126 documented escapes — all must stay kwargs on this surface.
         self,
         repo: str,
         mr: int,
@@ -549,7 +549,7 @@ class ReviewService:
             msg = (
                 f"Refusing to approve !{mr}: review before approve — no review note authored by your "
                 "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
-                "`post-draft-note`) first, then approve."
+                "`post-comment`) first, then approve."
             )
             return msg, 1
         from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light

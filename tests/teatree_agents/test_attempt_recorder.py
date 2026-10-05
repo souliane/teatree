@@ -533,7 +533,7 @@ class TestOwnerDmAnsweringRepliesInThread(TestCase):
         backend.post_reply.assert_called_once_with(channel=channel, ts=slack_ts, text="Got it, working.")
         # Never parked behind the away/approval defer gate.
         assert DeferredQuestion.objects.count() == 0
-        # The owner-question row is stamped answered so the turn-end gate rests.
+        # The owner-question row records that the agent personally replied.
         assert PendingChatInjection.objects.get().answered_at is not None
 
     def test_failed_post_falls_back_to_the_approval_gate_losing_nothing(self) -> None:

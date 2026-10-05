@@ -79,6 +79,7 @@ def default_logging(namespace: str) -> dict:
         },
         "loggers": {
             "django.request": {"level": "INFO", "propagate": True},
+            "httpx": {"level": "WARNING"},
             "teatree": {"level": "DEBUG", "propagate": True},
         },
     }
@@ -271,8 +272,8 @@ def load_peer_instances() -> list[PeerInstance]:
 def clone_root() -> Path:
     """Canonical CLONE root — where main repo clones live (``~/workspace``).
 
-    This is the OLD ``workspace_dir()`` semantics, kept intact for every
-    clone-discovery caller (``find_clone_path`` + the direct readers). It is
+    Clone-discovery callers (``find_clone_path`` + the direct readers) use this
+    root. It is
     DISTINCT from :func:`worktree_root` (the per-overlay WORKTREE root): conflating
     the two would make provisioning scan the worktree root for clones and fail
     with "No git clone found".
@@ -334,15 +335,11 @@ def worktree_root(*, overlay: str | None = None) -> Path:
 
     Resolution precedence, first match wins:
 
-    1.  ``T3_WORKSPACE_DIR`` — the env var, then the ``settings.T3_WORKSPACE_DIR``
-        Django setting: an explicit, highest-precedence override kept for
-        back-compat (an operator who pinned a workspace dir keeps it — and it then
-        pins BOTH this root and :func:`clone_root`, matching pre-regroup behaviour).
-    2.  the DB-home ``ConfigSetting`` ``workspace_dir`` row — the active overlay's
+    1.  the DB-home ``ConfigSetting`` ``workspace_dir`` row — the active overlay's
         scope first (a per-overlay opinion), then the global scope (a workspace
         default for every overlay). Set with
         ``t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]``.
-    3.  the sound default ``~/workspace/t3-workspaces/<overlay>/``.
+    2.  the sound default ``~/workspace/t3-workspaces/<overlay>/``.
 
     The ambient overlay is resolved exactly as every other per-overlay setting
     (``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay). The DB
@@ -350,25 +347,11 @@ def worktree_root(*, overlay: str | None = None) -> Path:
     edge the module docstring describes) so it stays fail-safe to "no row" when
     Django is unconfigured.
     """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
-
     from teatree.config.resolution import (  # noqa: PLC0415 — deferred: breaks loader ↔ resolution cycle
         _db_global_overrides,
         _db_overlay_overrides,
         _resolved_overlay_name,
     )
-
-    env_override = os.environ.get("T3_WORKSPACE_DIR")
-    if env_override:
-        return Path(env_override).expanduser()
-    # Guard the settings probe like clone_root(): accessing an attribute on an
-    # unconfigured LazySettings raises ImproperlyConfigured, so a pre-Django caller
-    # must fall through to the DB / default tiers rather than crash (fail-safe).
-    with suppress(ImproperlyConfigured):
-        from django.conf import settings  # noqa: PLC0415 — deferred: Django import at call time
-
-        if hasattr(settings, "T3_WORKSPACE_DIR"):
-            return Path(settings.T3_WORKSPACE_DIR)
 
     overlay_name = _resolved_overlay_name(overlay)
     stored = _db_overlay_overrides(overlay_name).get("workspace_dir")
@@ -380,15 +363,5 @@ def worktree_root(*, overlay: str | None = None) -> Path:
 
 
 def check_for_updates(*, force: bool = False) -> str | None:
-    """Resolve a "new release available" notice from config + update_check.
-
-    Reads ``check_updates`` (DB-home) from the ``ConfigSetting`` store via the
-    Django-free ``cold_reader`` — so the opt-out is honoured on the pre-Django CLI
-    paths that are this function's only readers (the root callback, the plain-Typer
-    ``t3 config check-update``), with no Django bootstrap. A missing row fails open
-    to ``True`` (the dataclass default). Delegates to
-    :func:`teatree.update_check.run_update_check` (split out for module-health LOC).
-    """
-    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django path
-
-    return run_update_check(check_updates=cold_reader.bool_setting("check_updates", default=True), force=force)
+    """Resolve a "new release available" notice via the cached release check."""
+    return run_update_check(force=force)

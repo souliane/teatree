@@ -52,15 +52,42 @@ class WriteGuard:
         self._parents: dict[str, tuple[str | None, float]] = {}
 
     def check(self, target: str) -> None:
-        scope = self._scope()
+        self._check_with_scope(target, self._scope())
+
+    def _check_with_scope(self, target: str, scope: WriteScope) -> None:
         lineage = self._lineage(target)
         denied = next((node for node in lineage if _canonical(node) in scope.denied), None)
         if denied is not None:
-            msg = f"refusing to write {target}: it sits under the write-denied root {denied}"
+            msg = (
+                f"refusing to write {target}: it sits under the write-denied root {denied} "
+                "(notion_write_denied_roots: pages shared with customers, which this integration never writes; "
+                "edit them under your own Notion login)"
+            )
             raise NotionWriteRefusedError(msg)
         if not scope.allowed.intersection(_canonical(node) for node in lineage):
-            msg = f"refusing to write {target}: none of its ancestors is a write-allowed root"
+            msg = (
+                f"refusing to write {target}: none of its ancestors is a write-allowed root "
+                "(notion_write_allowed_roots: the internal roots this integration may write; it never writes elsewhere)"
+            )
             raise NotionWriteRefusedError(msg)
+
+    def check_archiveable(self, target: str) -> None:
+        scope = self._scope()
+        canonical_target = _canonical(target)
+        if canonical_target in scope.allowed:
+            msg = (
+                f"refusing to archive {target}: it is a configured write root, including its subtree. "
+                "Nothing was written."
+            )
+            raise NotionWriteRefusedError(msg)
+        for root in scope.allowed:
+            if canonical_target in (_canonical(node) for node in self._lineage(normalize_object_id(root))):
+                msg = (
+                    f"refusing to archive {target}: it contains the configured write root "
+                    f"{normalize_object_id(root)}, including its subtree. Nothing was written."
+                )
+                raise NotionWriteRefusedError(msg)
+        self._check_with_scope(target, scope)
 
     def _lineage(self, target: str) -> list[str]:
         lineage = [target]

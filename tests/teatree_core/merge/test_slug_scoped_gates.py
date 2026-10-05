@@ -15,7 +15,8 @@ from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import execute_bound_merge
 from teatree.core.merge.post_hook import _supersede_siblings
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
-from teatree.core.models import MergeClear, PullRequest, ReviewVerdict
+from teatree.core.models import AutoReviewDispatch, MergeClear, PullRequest, ReviewVerdict, Ticket
+from teatree.loop.scanners.pr_sweep_adapters import AutoReviewTaskDispatcher
 from teatree.utils.pr_ref import PrRef
 from tests.factories import MergeClearFactory, PullRequestFactory, TicketFactory
 
@@ -138,18 +139,28 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
     """Both merge paths cross ``execute_bound_merge``; the ticket-scoped gates must run there."""
 
     def test_a_pr_no_ticket_owns_is_outside_the_rubric_gate(self) -> None:
-        """A PR the factory did not author is outside the rubric gate's subject.
+        """An unowned PR has no ticket evidence to grade."""
+        assert_ticket_scoped_gates(slug=_REPO, pr_id=9001, head_sha=_SHA)
 
-        `pr create` ledgers every factory PR with its ticket and a keystone CLEAR carries
-        one, so no resolvable ticket means no plan to grade and no ticket a bypass could
-        be recorded on — refusing there is a lockout with no escape, not a gate.
-        """
+    def test_ticketless_own_pr_is_queued_for_review_without_adoption(self) -> None:
+        armed = AutoReviewTaskDispatcher().enqueue(
+            slug=_REPO,
+            pr_id=9001,
+            head_sha=_SHA,
+            pr_url=f"https://github.com/{_REPO}/pull/9001",
+            overlay="t3-teatree",
+        )
+        assert armed
+        assert AutoReviewDispatch.objects.filter(slug=_REPO, pr_id=9001, head_sha=_SHA).exists()
+        assert Ticket.objects.count() == 1
+        assert Ticket.objects.get().role == Ticket.Role.REVIEWER
+        assert PullRequest.objects.owning_ticket(slug=_REPO, pr_id=9001) is None
         assert_ticket_scoped_gates(slug=_REPO, pr_id=9001, head_sha=_SHA)
 
     def test_an_ungraded_pr_outside_the_rubric_gate_is_logged(self) -> None:
         with self.assertLogs("teatree.core.merge.ticket_gates", level="WARNING") as logs:
             assert_ticket_scoped_gates(slug=_REPO, pr_id=9005, head_sha=_SHA)
-        assert any("9005" in line and "rubric" in line for line in logs.output)
+        assert any("9005" in line and "ticket-scoped gates" in line for line in logs.output)
 
     def test_the_ledger_ticket_is_graded_when_the_clear_carries_none(self) -> None:
         """A ticketless CLEAR is a no-op on the keystone path, so the chokepoint must grade by the ledger."""
@@ -159,19 +170,11 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
         with pytest.raises(MergePreconditionError, match=f"ticket {ticket.pk}"):
             assert_ticket_scoped_gates(slug=_REPO, pr_id=9006, head_sha=_SHA)
 
-    def test_unresolvable_ticket_refuses_while_a_setting_is_in_force(self) -> None:
-        with (
-            patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
-            pytest.raises(MergePreconditionError, match="no owning ticket resolves"),
-        ):
-            assert_ticket_scoped_gates(slug=_REPO, pr_id=9002, head_sha=_SHA)
-
     def test_resolved_ticket_without_an_attestation_is_refused(self) -> None:
         ticket = TicketFactory()
         PullRequestFactory(ticket=ticket, repo=_REPO, iid="9003")
         with (
-            patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
-            pytest.raises(MergePreconditionError, match="require_anti_vacuity_attestation"),
+            pytest.raises(MergePreconditionError, match="anti-vacuity attestation"),
         ):
             assert_ticket_scoped_gates(slug=_REPO, pr_id=9003, head_sha=_SHA)
 
@@ -189,7 +192,6 @@ class TestTicketScopedGatesAtTheSharedChokepoint(TestCase):
             patch("teatree.core.merge.execution.assert_review_verdict_gate"),
             patch("teatree.core.merge.execution.assert_no_active_review_lock"),
             patch("teatree.core.gates.merge_quality_gate.assert_merge_quality_verdict"),
-            patch("teatree.core.gates.anti_vacuity_gate.anti_vacuity_required", return_value=True),
-            pytest.raises(MergePreconditionError, match="require_anti_vacuity_attestation"),
+            pytest.raises(MergePreconditionError, match="anti-vacuity attestation"),
         ):
             execute_bound_merge(ref=PrRef(slug=_REPO, pr_id=9004), expected_head_oid=_SHA)

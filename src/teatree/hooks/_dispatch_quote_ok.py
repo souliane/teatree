@@ -99,8 +99,7 @@ def block_message(names: str, excerpt: str) -> str:
     the token was added and silently ignored — the refusal taught the agent
     something untrue. The ``description`` field named here is the one placement
     that is BOTH recognised by :func:`reason_in` and immune to preamble length,
-    and the relayed-authorisation case is called out because it is a legitimate
-    reason an agent otherwise has no way to know is allowed.
+    but the refusal leaves the decision to approve a false match with the owner.
     """
     matched = f' (e.g. "{excerpt}")' if excerpt else ""
     return (
@@ -108,16 +107,14 @@ def block_message(names: str, excerpt: str) -> str:
         f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
         "Paraphrase it into author-voice description before dispatching (the sub-agent "
         "would otherwise echo it into a published output, defeating the #1213 publish gate). "
-        "If the match is a false positive — for example you are relaying the owner's own "
-        "authorisation verbatim into the brief, which is inbound, not published — add "
-        "`[quote-ok: <reason>]` to the one-line `description` (subject) field, which always "
+        "If this is a false match, rephrase without the quoted span or ask the owner. "
+        "The owner may approve this one dispatch with a per-call `[quote-ok: <reason>]` "
+        "override in the one-line `description` (subject) field, which always "
         f"gets its own {TOKEN_WINDOW}-character window regardless of prompt length. A token "
         f"placed more than {TOKEN_WINDOW} characters into the `prompt` field itself is NOT "
         "read — an embedded skill preamble routinely pushes the top of your brief past that "
         "point, and a token merely quoted inside pasted/relayed content must never authorise "
-        "the whole dispatch. "
-        "Example subject: `<subject> [quote-ok: relaying the owner's authorisation verbatim "
-        "to the sub-agent]`."
+        "the whole dispatch."
     )
 
 

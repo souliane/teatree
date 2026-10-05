@@ -2,14 +2,14 @@
 
 Nothing here re-implements the drain. A finding is recorded as a
 :class:`~teatree.core.models.ConsolidatedMemory` row already classified a core gap,
-then promoted as a batch of one through
-:mod:`teatree.loops.dream.batch_promote`, so the coverage dedup, the banned-term /
-bare-reference withhold and the send-proxy leak gate all come with it — and the row
+then queued as a batch of one through
+:mod:`teatree.loops.dream.batch_promote`, so the coverage dedup and the banned-term /
+bare-reference withhold come with it — and the row
 retires through :func:`~teatree.loops.dream.promote_memory.retire_resolved_memories`
 when :func:`~teatree.loops.dream.batch_promote.reconcile_batches` sees the fix merge,
 with no retro-specific code anywhere in that path.
 
-The umbrella write sits behind the ``memory_promote`` toggle Pass 2 obeys: with it off
+The queueing sits behind the ``memory_promote`` toggle Pass 2 obeys: with it off
 the finding is still RECORDED and its promotion DEFERRED onto the same drain queue, so
 nothing is lost by waiting and an explicit command may not spend an intent the operator
 withheld.
@@ -24,13 +24,11 @@ from dataclasses import dataclass
 
 from django.db import transaction
 
-from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.loops.dream import batch_promote, umbrella_ledger
 from teatree.loops.dream._shared import WEIGHT_RETRO
 from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.loop import memory_promote_enabled
-from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -40,8 +38,7 @@ _TITLE_PREFIX = "Workflow gap (retro finding)"
 @dataclass(frozen=True, slots=True)
 class FindingOutcome:
     gap_key: str
-    checkbox_added: bool
-    scheduled: bool
+    queued: bool
     withheld: bool = False
     deferred: bool = False
     reason: str = ""
@@ -92,47 +89,27 @@ def record_finding(*, rule: str, citation: str, destination: str) -> Consolidate
     return row
 
 
-def promote_finding(
-    host: CodeHostBackend | None, *, rule: str, umbrella_url: str = UMBRELLA_ISSUE_URL, dry_run: bool = False
-) -> FindingOutcome:
-    """Drive one finding onto the umbrella + a scheduled coding fix, as a batch of one.
+def promote_finding(*, rule: str, umbrella_url: str, dry_run: bool = False) -> FindingOutcome:
+    """Queue one finding on the umbrella host's pending ledger for the backlog sweep, as a batch of one.
 
-    Deferred rather than promoted whenever the umbrella channel is unavailable —
-    ``memory_promote`` off, or no code host reaching the umbrella's forge. Both leave
-    the recorded row in the drain queue, so an installation that cannot reach the
-    public tracker still loses no lesson.
+    Deferred rather than queued while ``memory_promote`` is off; with no ticket tracking
+    the umbrella nothing is queued. Both leave the recorded row in the drain queue, so no
+    lesson is lost by waiting.
     """
     if not memory_promote_enabled():
         return _deferred(rule, "deferred — [loops.dream] memory_promote is off; the recorded gap drains once it is on")
-    if host is None:
-        return _deferred(rule, f"deferred — no code host reaches {umbrella_url}; the recorded gap drains once one does")
     batch = batch_promote.PromotionBatch()
     considered = batch.consider(gap=finding_gap(rule), dry_run=dry_run)
     if not considered.queued:
         return FindingOutcome(
-            gap_key=considered.gap_key,
-            checkbox_added=False,
-            scheduled=False,
-            withheld=considered.withheld,
-            reason=considered.reason,
+            gap_key=considered.gap_key, queued=False, withheld=considered.withheld, reason=considered.reason
         )
-    promoted = batch_promote.promote_batch(host, umbrella_url=umbrella_url, batch=batch, dry_run=dry_run)
-    return FindingOutcome(
-        gap_key=considered.gap_key,
-        checkbox_added=promoted.checkboxes_added > 0,
-        scheduled=promoted.scheduled,
-        reason=promoted.reason,
-    )
+    promoted = batch_promote.promote_batch(umbrella_url=umbrella_url, batch=batch, dry_run=dry_run)
+    return FindingOutcome(gap_key=considered.gap_key, queued=promoted.queued, reason=promoted.reason)
 
 
 def _deferred(rule: str, reason: str) -> FindingOutcome:
-    return FindingOutcome(
-        gap_key=finding_cluster_key(rule),
-        checkbox_added=False,
-        scheduled=False,
-        deferred=True,
-        reason=reason,
-    )
+    return FindingOutcome(gap_key=finding_cluster_key(rule), queued=False, deferred=True, reason=reason)
 
 
 __all__ = ["FindingOutcome", "finding_cluster_key", "finding_gap", "promote_finding", "record_finding"]

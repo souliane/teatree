@@ -30,9 +30,12 @@ from teatree.eval.skill_command_validity import (
     ALLOWED_NON_RESOLVING,
     DEFAULT_REPO_ROOT,
     citation_resolves,
+    iter_backticked_t3_commands,
     resolve_command_path,
     validate_doc_commands,
 )
+from teatree.loop.scanners.backlog_sweep import DREAM_GAP_DIRECTIVE
+from teatree.loops.dream.gap_attach import DISPOSITION_CRITERION, PLANNING_INTENT
 
 
 @pytest.fixture(scope="module")
@@ -153,3 +156,22 @@ class TestAllowlistIsLive:
         paths, groups = tree
         stale = [raw for raw in ALLOWED_NON_RESOLVING if citation_resolves(raw, paths, groups) is not False]
         assert not stale, f"allowlist entries now resolve and should be removed: {stale}"
+
+
+class TestDreamGapInstructionsResolve:
+    """Every ``t3`` command the dream-gap sweep hands an agent at runtime must exist.
+
+    The sweep directive, the host's merge-blocking rubric criterion and the planning
+    intent are built in code, not docs, so the doc lane never reads them.
+    """
+
+    def test_every_command_the_sweep_and_host_criterion_name_resolves(self, tree: tuple[set[str], set[str]]) -> None:
+        paths, groups = tree
+        commands = [
+            command
+            for text in (DREAM_GAP_DIRECTIVE, DISPOSITION_CRITERION, PLANNING_INTENT)
+            for command in iter_backticked_t3_commands(text)
+        ]
+        assert len(commands) >= 3
+        unresolved = [command for command in commands if citation_resolves(command, paths, groups) is False]
+        assert not unresolved, f"runtime instructions cite t3 commands that do not exist: {unresolved}"

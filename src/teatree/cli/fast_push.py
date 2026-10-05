@@ -27,7 +27,7 @@ def fast_push(
         typer.echo(json.dumps(asdict(outcome)))
     else:
         _echo_outcome(outcome)
-    if not outcome.ok:
+    if not outcome.ok or outcome.author_refusal:
         raise typer.Exit(code=1)
 
 
@@ -46,3 +46,5 @@ def _echo_outcome(outcome: FastPushOutcome) -> None:
         typer.echo("  PR skipped: no gh/glab forge detected for the origin remote")
     elif outcome.pr_action == EMPTY_DELTA_PR_SKIP:
         typer.echo(f"  PR skipped: {outcome.pr_skip_reason}")
+    elif outcome.author_refusal:
+        typer.echo(f"  PR REFUSED (the push landed): {outcome.author_refusal}")

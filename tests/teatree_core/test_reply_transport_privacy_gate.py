@@ -18,9 +18,11 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.gates import privacy_gate
-from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.models import ConfigSetting, IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import GitHubReplier, GitLabReplier, PublicationPrivacyBlockedError, SlackReplier
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 GITHUB_REPO = "owner/pub-repo"
 GITLAB_REPO = "group/pub-project"
@@ -30,6 +32,10 @@ REDACT = "SECRETCORP"
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    ConfigSetting.objects.set_value(
+        "send_proxy_allowlist",
+        [f"github:{GITHUB_REPO}", f"gitlab:{GITLAB_REPO}", "gitlab:acme/private", "slack:C-eng"],
+    )
 
 
 def _event(source: str, *, channel_ref: str, thread_ref: str, key: str) -> IncomingEvent:

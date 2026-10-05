@@ -99,11 +99,6 @@ def missing_fix_record_fields(ticket: "Ticket") -> list[str]:
     return fix_record_missing_fields((ticket.extra or {}).get("fix_record"))
 
 
-def has_valid_fix_record(ticket: "Ticket") -> bool:
-    """Return True iff the ticket carries a complete FixRecord."""
-    return not missing_fix_record_fields(ticket)
-
-
 def check_fix_record_dod(ticket: "Ticket") -> None:
     """Refuse the merge transition when a fix-ticket lacks a validated FixRecord.
 

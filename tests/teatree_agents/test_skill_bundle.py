@@ -137,10 +137,10 @@ class TestArchitecturalReviewSkillReachesTheBundle(TestCase):
     def test_the_configured_skill_is_appended_for_the_review_phase(self) -> None:
         with (
             patch.object(skill_bundle, "active_overlay_stage_skills", return_value=["overlay-x"]),
-            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("ac-reviewing-codebase")),
+            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("architectural-review")),
             patch("teatree.config.get_effective_settings", return_value=UserSettings()),
         ):
-            assert stage_skills_for_dispatch("architectural_review") == ["overlay-x", "ac-reviewing-codebase"]
+            assert stage_skills_for_dispatch("architectural_review") == ["overlay-x", "architectural-review"]
 
     def test_every_other_phase_is_untouched(self) -> None:
         with patch.object(skill_bundle, "active_overlay_stage_skills", return_value=["overlay-x"]):
@@ -152,7 +152,7 @@ class TestArchitecturalReviewSkillReachesTheBundle(TestCase):
         settings = replace(UserSettings(), architectural_review_skill="ac-reviewing-skills")
         with (
             patch.object(skill_bundle, "active_overlay_stage_skills", return_value=[]),
-            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("ac-reviewing-codebase")),
+            patch.object(skill_bundle, "_skill_body_dirs", return_value=self._staged("architectural-review")),
             patch("teatree.config.get_effective_settings", return_value=settings),
             pytest.raises(ArchitecturalReviewSkillMissingError, match="ac-reviewing-skills"),
         ):

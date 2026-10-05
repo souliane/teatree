@@ -101,7 +101,7 @@ def authoring_identity_fault(*, remote: str, identity: AuthoringIdentity) -> Ide
     return IdentityFault(
         summary=(
             f"{remote} is declared to be authored under a non-owner credential, but that credential "
-            f"does not resolve here — MRs will be opened by the owner, who then cannot approve them."
+            f"does not resolve here, so no MR is opened: one the owner authored is one the owner cannot approve."
         ),
         remedy=(
             "provision the overlay's scoped forge credential in this venue's secret store (a "

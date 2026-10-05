@@ -82,45 +82,31 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     raise ImproperlyConfigured(msg)
 
 
-def _canonical_overlay_name(name: str) -> str | None:
-    """Fold a stored overlay name onto its canonical registered name, or ``None``.
-
-    A blank name is the ambient single-overlay default (``None`` → the
-    caller lets ``get_overlay(None)`` resolve it). A non-blank name is
-    canonicalized through the same :func:`resolve_overlay_name` rule the
-    config loader uses, so a stored legacy alias (``teatree`` → ``t3-teatree``)
-    resolves instead of raising ``Overlay not found``. An unresolvable name
-    is returned unchanged so ``get_overlay`` raises a precise ``not found``.
-    """
-    if not name:
-        return None
-    return resolve_overlay_name(name) or name
-
-
 def get_overlay_for_ticket(ticket: "Ticket") -> "OverlayBase":
     """Resolve the overlay a ticket belongs to.
 
     The queued FSM workers run a ticket's runners in a process where every
     installed overlay is registered, so a bare :func:`get_overlay` raises
     ``Multiple overlays found`` (souliane/teatree#1814). The ticket records
-    its own overlay, so resolution is unambiguous regardless of how many
-    overlays are installed; an empty value falls through to the ambient
-    single-overlay default. A stored legacy alias is folded onto its
-    canonical registered name (souliane/teatree#1975).
+    its own canonical overlay, so resolution is unambiguous regardless of how many
+    overlays are installed.
     """
-    return get_overlay(_canonical_overlay_name(ticket.overlay))
+    if not ticket.overlay:
+        msg = f"Ticket {ticket.pk} has no overlay"
+        raise ImproperlyConfigured(msg)
+    return get_overlay(ticket.overlay)
 
 
 def get_overlay_for_worktree(worktree: "Worktree") -> "OverlayBase":
     """Resolve the overlay a worktree belongs to.
 
     Like :func:`get_overlay_for_ticket` but keyed on the worktree's own
-    ``overlay`` field, falling back to the owning ticket for rows created
-    before the field was populated (souliane/teatree#1814).
+    ``overlay`` field.
     """
-    if worktree.overlay:
-        return get_overlay(_canonical_overlay_name(worktree.overlay))
-    return get_overlay_for_ticket(worktree.ticket)
+    if not worktree.overlay:
+        msg = f"Worktree {worktree.pk} has no overlay"
+        raise ImproperlyConfigured(msg)
+    return get_overlay(worktree.overlay)
 
 
 def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
@@ -223,7 +209,7 @@ class OverlayConfigResolver:
         """
         from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-        resolved = _canonical_overlay_name(name) if name else None
+        resolved = name or None
         try:
             overlay = get_overlay(resolved)
         except ImproperlyConfigured:

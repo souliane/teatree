@@ -53,7 +53,7 @@ class HarnessCapabilities:
     Capability flags — WHAT the backend supports:
 
     *   ``hooks`` — fires pre/post-tool hook events (the ``claude-agent-sdk`` lane does).
-    *   ``mcp`` — drives MCP servers/toolsets.
+    *   ``mcp`` — drives MCP servers/toolsets; on unless a backend says otherwise, so the teatree server is wired.
     *   ``cache_control`` — can place explicit prompt-cache breakpoints with a TTL (the
         direct Anthropic Messages-API binding does; the OpenAI-compatible router does not).
     *   ``server_resume`` — resumes a prior session server-side (the SDK's ``--resume``).
@@ -72,7 +72,7 @@ class HarnessCapabilities:
     """
 
     hooks: bool = False
-    mcp: bool = False
+    mcp: bool = True
     cache_control: bool = False
     server_resume: bool = False
     structured_output: bool = False
@@ -97,6 +97,7 @@ class HarnessBuildContext:
     settings: "UserSettings | None" = None
     overlay: str = ""
     model: str = ""
+    tier: str | None = None
     provider: str = ""
 
 
@@ -152,6 +153,7 @@ class HarnessFallbackKind(StrEnum):
 
     AUTH = "auth"
     QUOTA = "quota"
+    QUOTA_EXHAUSTED = "quota_exhausted"
     ACCESS = "access"
     TRANSPORT = "transport"
     PROVIDER_5XX = "provider_5xx"

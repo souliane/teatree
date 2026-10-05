@@ -270,6 +270,12 @@ class TaskEnqueuePostTestCase(TestCase):
         task = Task.objects.get(ticket=self.ticket, phase="reviewing")
         assert task.execution_reason == "PR is green and blocked on a verdict."
 
+    def test_an_implementing_phase_on_an_unplanned_ticket_is_refused_naming_the_remedy(self) -> None:
+        response = self._post("coding")
+        assert response.status_code == 400
+        assert "plan_missing" in response.content.decode()
+        assert not Task.objects.filter(ticket=self.ticket).exists()
+
     def test_a_phase_outside_the_button_set_is_refused(self) -> None:
         response = self._post("retro")
         assert response.status_code == 400

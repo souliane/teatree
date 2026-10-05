@@ -11,7 +11,7 @@ import pytest
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
 from teatree.hooks import _repo_visibility, banned_terms_scanner
-from teatree.hooks._command_parser import is_fail_closed_sentinel
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 
 
 def _seed_config_db(db_path: Path, rows: dict) -> None:
@@ -43,7 +43,7 @@ def _stage_hook_config(tmp_path: Path, terms: list[str]) -> tuple[Path, Path]:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     db = home / "config.sqlite3"
-    _seed_config_db(db, {"banned_terms": terms})
+    _seed_config_db(db, {"banned_term_registry": {"leak": terms, "prose_collider": terms}})
     return home, db
 
 
@@ -158,7 +158,12 @@ def test_banned_terms_fails_closed_on_probe_error_for_resolvable_target(
     # UNRESOLVABLE target -- no slug at all -- still skips; see
     # ``test_live_hook_skips_unresolvable_target``.)
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
-    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
+    _write_home_config(
+        home,
+        '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n',
+        monkeypatch,
+        tmp_path,
+    )
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -193,7 +198,8 @@ def test_banned_terms_allowed_when_target_resolvable_private(
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
     _write_home_config(
         home,
-        '[teatree]\nbanned_terms = ["acmewidget"]\nprivate_repos = ["acme/secret-product"]\n',
+        '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n'
+        'private_repos = ["github.com/acme/secret-product"]\n',
         monkeypatch,
         tmp_path,
     )
@@ -243,7 +249,12 @@ def test_live_hook_allows_customer_term_to_probe_private_target_from_public_cwd(
     # ambient cwd; the gate must resolve the target FROM THE COMMAND and consult
     # the probe, then SKIP the scan for the private target.
     home = Path(os.environ["HOME"])
-    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
+    _write_home_config(
+        home,
+        '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n',
+        monkeypatch,
+        tmp_path,
+    )
     monkeypatch.setattr(
         _repo_visibility,
         "probe_visibility",
@@ -263,7 +274,10 @@ def test_live_hook_allows_customer_term_to_probe_private_target_from_public_cwd(
     assert captured.out == ""  # no deny JSON
 
 
-_PUBLIC_ONLY_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["customer-org"]\n'
+_PUBLIC_ONLY_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["customercorp"] }\n'
+    'private_repos = ["github.com/customer-org"]\n'
+)
 
 
 def test_live_hook_blocks_customer_term_to_public_repo(
@@ -293,7 +307,10 @@ def test_live_hook_blocks_customer_term_to_public_repo(
 # is the full ``<org>-engineering`` namespace. A body citing the customer repo's own
 # work-item URL tokenizes ``customercorp`` out of that URL -- the address of the repo,
 # not a leak -- so a PUBLIC post whose ONLY occurrence is inside that URL must downgrade.
-_OWN_URL_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["customercorp-engineering"]\n'
+_OWN_URL_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["customercorp"] }\n'
+    'private_repos = ["gitlab.com/customercorp-engineering"]\n'
+)
 _OWN_REPO_URL = "https://gitlab.com/customercorp-engineering/their-svc/-/issues/8223"
 
 
@@ -409,7 +426,8 @@ def test_live_hook_allows_customer_term_on_git_c_commit_to_private_worktree(
 # ``gh pr create --repo`` supplies a BARE ``owner/repo`` slug. The carve-out
 # must still recognise the bare flag slug as that private repo.
 _HOST_QUALIFIED_CONFIG = (
-    '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["github.com/customer-org/their-svc"]\n'
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["customercorp"] }\n'
+    'private_repos = ["github.com/customer-org/their-svc"]\n'
 )
 
 
@@ -465,7 +483,10 @@ def test_live_hook_blocks_customer_term_to_public_repo_under_host_qualified_conf
 # engineering/.../-/issues/N`` tokenizes ``acmecorp`` out of it. The own-slug
 # downgrade (#1951) keys on token-CONTAINMENT, so this prefix qualifies as the
 # repo's own identity -- but ONLY when the commit lands in that private repo.
-_SUBSTRING_TERM_CONFIG = '[teatree]\nbanned_terms = ["acmecorp"]\nprivate_repos = ["acmecorp-engineering"]\n'
+_SUBSTRING_TERM_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmecorp"] }\n'
+    'private_repos = ["gitlab.com/acmecorp-engineering"]\n'
+)
 
 
 def _private_worktree(tmp_path: Path, name: str = "wt") -> Path:
@@ -602,8 +623,11 @@ def test_live_hook_blocks_private_commit_chained_to_public_post(
 # publish-detection cannot silently re-introduce the misfire. Each allow case is
 # paired with an anti-vacuity must-block guard.
 
-_FM_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\n'
-_FM_PRIVATE_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\nprivate_repos = ["owner-org"]\n'
+_FM_CONFIG = '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n'
+_FM_PRIVATE_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n'
+    'private_repos = ["github.com/owner-org"]\n'
+)
 
 _FM1_HEAD_ONLY = 'gh pr create --head ac-acmewidget-feature --title "Add feature" --body "clean public body"'
 _FM1_REF_FLAGS = "gh pr create -H acmewidget-topic --base acmewidget-main --title T --body clean"
@@ -676,6 +700,8 @@ def test_fm2_useratalias_ssh_remote_own_private_repo_does_not_block(
     # broke the allowlist match and the own private repo over-blocked.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    (home / ".ssh").mkdir(exist_ok=True)
+    (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
     monkeypatch.delenv("GH_REPO", raising=False)
 
@@ -704,6 +730,8 @@ def test_fm2_useratalias_ssh_remote_public_repo_still_blocks(
     # alias normalization must not blanket-downgrade every aliased remote.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    (home / ".ssh").mkdir(exist_ok=True)
+    (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
     monkeypatch.delenv("GH_REPO", raising=False)
 
@@ -758,6 +786,8 @@ def test_fm3_unresolvable_body_file_to_own_private_repo_does_not_block(
     # unreadable body.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    (home / ".ssh").mkdir(exist_ok=True)
+    (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
 
     data = {
@@ -945,7 +975,10 @@ def test_live_hook_allows_workitem_url_inline_commit_in_private_worktree(
 # through, and the gate emits no deny.
 
 
-_GATE_DISABLED_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\nbanned_terms_gate_enabled = false\n'
+_GATE_DISABLED_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n'
+    "banned_terms_gate_enabled = false\n"
+)
 
 
 def test_kill_switch_off_allows_a_would_be_blocked_public_post(
@@ -977,7 +1010,12 @@ def test_kill_switch_default_on_still_blocks_a_public_post(
     # public-repo banned-term post still hard-blocks -- proving the off-test
     # above measures the switch, not an unconditionally-allowed command.
     home = Path(os.environ["HOME"])
-    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
+    _write_home_config(
+        home,
+        '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n',
+        monkeypatch,
+        tmp_path,
+    )
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
 
     data = {
@@ -996,12 +1034,15 @@ def test_kill_switch_default_on_still_blocks_a_public_post(
 #
 # The reported over-block fired on a publish to a PRIVATE internal remote the
 # user had not declared. The leak gate enforces ONLY on an affirmatively-PUBLIC
-# target: a target named in ``internal_publish_namespaces`` SKIPS, and so does an
+# target: a target named in ``private_repos`` SKIPS, and so does an
 # unknown/unresolvable one (bias hard toward not firing). ONLY a target the probe
 # CONFIRMS public -- the public teatree repo, a USER-OWNED non-teatree PUBLIC repo
 # -- SCANS. A private/internal/unknown repo must never be falsely blocked.
 
-_DENYLIST_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\ninternal_publish_namespaces = ["internal-eng"]\n'
+_DENYLIST_CONFIG = (
+    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["customercorp"] }\n'
+    'private_repos = ["gitlab.com/internal-eng"]\n'
+)
 
 
 def test_live_hook_allows_customer_term_to_denylisted_internal_repo(
@@ -1009,7 +1050,7 @@ def test_live_hook_allows_customer_term_to_denylisted_internal_repo(
 ) -> None:
     # MUST-NOT-FIRE (the reported over-block, fixed via the denylist): a banned
     # term in a publish to a PRIVATE internal GitLab namespace named in
-    # ``internal_publish_namespaces`` is ALLOWED -- it is provably internal.
+    # ``private_repos`` is ALLOWED -- it is provably internal.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -1154,5 +1195,5 @@ def test_posting_body_file_resolves_against_cwd(tmp_path: Path) -> None:
         "Bash", {"command": "gh pr edit 5 --body-file leak.md"}, tmp_path
     )
     cfg = tmp_path / "cfg.sqlite3"
-    _seed_config_db(cfg, {"banned_terms": ["acmewidget"]})
+    _seed_config_db(cfg, {"banned_term_registry": {"leak": ["acmewidget"], "prose_collider": ["acmewidget"]}})
     assert banned_terms_scanner.scan_text(leaked, config_path=cfg) == "acmewidget"

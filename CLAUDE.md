@@ -65,8 +65,7 @@ property no diff-scoped push subset can prove, and the full suite must never gat
 (`tests/test_no_full_suite_on_pre_push.py`). The push-stage `ci-critical-parity` hook
 runs `dev/push-gate.sh` — the never-lockout safety contract, the `tests/conformance`
 lane, plus the incremental push gate (scoped doctest + ast-grep, FULL on any
-uncertainty, behind the default-TRUE `incremental_push_gate` flag — ON scopes the diff,
-OFF is the pre-#122 whole-tree run; the CI whole-tree backstop is untouched). The broad
+uncertainty; the CI whole-tree backstop is untouched). The broad
 `tests/quality` dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it
 whole-tree); `tests/conformance` is NOT, because a conformance assertion's input is the
 whole tree, so no diff-scoped lane can prove it unaffected (measured 34s at `-n auto`).

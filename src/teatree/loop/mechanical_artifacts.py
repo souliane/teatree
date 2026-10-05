@@ -3,8 +3,8 @@
 Its own module because it is its own pass. It has its own scanner
 (:class:`~teatree.loop.scanners.artifact_eviction.ArtifactEvictionScanner`), its own
 cadence, its own marker fields, and — the reason that matters — its own authority:
-nothing it removes is destructive at any fullness, so it is gated on neither the
-disk-CRIT band nor ``allow_destructive_disk``. Sharing a module with the ladder is what
+nothing it removes is destructive at any fullness, so it is not gated on the
+disk-CRIT band. Sharing a module with the ladder is what
 made both of those couplings look natural.
 
 What it removes and what protects it is :mod:`teatree.core.cleanup.artifact_eviction`;
@@ -28,15 +28,24 @@ from teatree.loop.reclaim_yield import pressure_idle_days
 
 logger = logging.getLogger(__name__)
 
+#: The whole pass — walk, sizing, re-walks, deletions — ends inside this, well under the
+#: resource_pressure tick's 300 s deadline, so it finishes as a recorded partial run.
+ARTIFACT_PASS_BUDGET_SECONDS = 120.0
+
 
 def sweep_artifacts(payload: ActionPayload) -> None:
     """Reclaim dormant build artifacts — the loss-free pass, off the destructive ladder (#4244)."""
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
+    marker = ResourcePressureMarker.load()
+    # Stamped first: a pass the tick deadline kills must still consume its cadence.
+    # NEVER last_freed_at: that field gates the DESTRUCTIVE ladder's anti-thrash
+    # rate-limit, and a throttled CRITICAL band silently degrades to a WARN.
+    marker.last_artifact_sweep_at = timezone.now()
+    marker.save(update_fields=["last_artifact_sweep_at"])
     plan = FreePlan(resource="artifacts")
     eviction = _surveyed_artifacts(payload)
     _append_artifact_steps(plan, eviction)
-    marker = ResourcePressureMarker.load()
     persist_plan(marker, plan, field_name="last_artifact_plan", caller="sweep_artifacts")
     # A refused survey has already said why in `plan.steps`; running the deletion half over
     # its empty candidate list re-reads the process table only to report the same refusal twice.
@@ -44,14 +53,12 @@ def sweep_artifacts(payload: ActionPayload) -> None:
     plan.reclaimed_gb += outcome.freed_bytes / GIB
     append_stopped_deletions(plan, "artifact eviction", outcome.refusal, outcome.skipped)
     persist_plan(marker, plan, field_name="last_artifact_plan", caller="sweep_artifacts")
-    # NEVER last_freed_at: that field gates the DESTRUCTIVE ladder's anti-thrash
-    # rate-limit, and a throttled CRITICAL band silently degrades to a WARN.
-    marker.last_artifact_sweep_at = timezone.now()
-    marker.save(update_fields=["last_artifact_sweep_at"])
     logger.info("sweep_artifacts reclaimed ~%.2f GB", plan.reclaimed_gb)
 
 
 def _append_artifact_steps(plan: FreePlan, eviction: ArtifactEvictionPlan) -> None:
+    for line in sampled(eviction.excluded):
+        plan.steps.append(f"  venue scope: {line}")
     if eviction.refusal:
         plan.steps.append(f"SKIP artifact eviction — {eviction.refusal}")
         return
@@ -70,10 +77,12 @@ def _append_artifact_steps(plan: FreePlan, eviction: ArtifactEvictionPlan) -> No
 
 def _surveyed_artifacts(payload: ActionPayload) -> ArtifactEvictionPlan:
     try:
-        return plan_artifact_eviction(worktree_root(), idle_days=pressure_idle_days(payload))
+        return plan_artifact_eviction(
+            worktree_root(), idle_days=pressure_idle_days(payload), budget_seconds=ARTIFACT_PASS_BUDGET_SECONDS
+        )
     except Exception as exc:
         logger.exception("sweep_artifacts: artifact survey failed — swallowed")
         return ArtifactEvictionPlan(refusal=f"the artifact survey raised ({exc})")
 
 
-__all__ = ["sweep_artifacts"]
+__all__ = ["ARTIFACT_PASS_BUDGET_SECONDS", "sweep_artifacts"]

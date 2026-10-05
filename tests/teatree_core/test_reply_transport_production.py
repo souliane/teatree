@@ -13,14 +13,19 @@ import pytest
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
-from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.models import ConfigSetting, IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import GitHubReplier, GitLabReplier, NoopReplier, ReplySpec, SlackReplier, replier_for
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    ConfigSetting.objects.set_value(
+        "send_proxy_allowlist", ["slack:C-eng", "gitlab:org/repo", "gitlab:bad/repo", "github:owner/repo"]
+    )
 
 
 def _event(source: str, *, key: str, **fields: object) -> IncomingEvent:

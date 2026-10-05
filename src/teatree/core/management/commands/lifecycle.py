@@ -117,8 +117,7 @@ class Command(RefusalExitTyperCommand):
             # attestation must be backed by durable evidence the skill ran —
             # NO-OP when ``review_skill`` is unset (opt-in default preserved).
             check_review_skill_evidence(ticket)
-            # Gate D: deep-retrieval evidence on ``reviewing`` when
-            # ``require_review_context`` is on; NO-OP otherwise.
+            # Gate D: deep-retrieval evidence on ``reviewing``.
             check_review_context(ticket)
         # #801 SSOT: the canonical earliest+locked policy — never the
         # old -pk-latest pick nor a raw blank-agent_id create. The

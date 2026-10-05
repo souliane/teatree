@@ -7,11 +7,11 @@ from django.db import transaction
 from django.tasks import task
 from django.utils import timezone
 
-from teatree.config import get_effective_settings, worktree_root
+from teatree.config import worktree_root
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
-from teatree.core.gates.critic_gate import record_critic_findings
+from teatree.core.gates.critic_gate import enqueue_llm_critic, record_critic_findings
 from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.intake.landscape_persist import persist_intake_landscape
 from teatree.core.managers import _claimable_now_q
@@ -47,12 +47,9 @@ def _attachment_gate_refusal(ticket: Ticket) -> str | None:
     Reads the ticket's issue text through the code-host seam (fail-open — a forge
     outage yields no attachments and hands off), builds the manifest, and returns
     a refusal naming every un-fetched attachment plus the ``--fetch`` command, or
-    ``None`` to hand off. Vacuous on a zero-attachment ticket. The kill-switch
-    ``[teatree] attachment_gate_enabled = false`` short-circuits to ``None`` so a
-    stuck ticket is never a lockout.
+    ``None`` to hand off. Vacuous on a zero-attachment ticket; fetching or placing
+    the missing file satisfies the gate.
     """
-    if not get_effective_settings(ticket.overlay or None).attachment_gate_enabled:
-        return None
     texts = ticket_text_sources(ticket, code_host=code_host_from_overlay(ticket.overlay or None))
     workspace = worktree_root()
     fetch_command = f"t3 {ticket.overlay or '<overlay>'} ticket attachments {ticket.pk} --fetch"
@@ -268,7 +265,8 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
     When the SELFCATCH-5 critic gate blocks (enforcing mode), it raises
     ``CriticGateError`` from inside the advance atomic, rolling back the
-    ``CriticFinding`` rows it just wrote. We re-record them on a FRESH transaction
+    ``CriticFinding`` and critic-dispatch rows it just wrote. We re-record and
+    re-dispatch on a FRESH transaction
     (a sibling of the rolled-back delivery atomic, so they survive) before
     reporting the refusal — the operator sees the very findings the block tells
     them to resolve.
@@ -308,7 +306,7 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
 
 def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
-    """Re-record the blocked delivery's critic findings on a fresh transaction (#SELFCATCH-5).
+    """Re-record findings and dispatch the critic after the delivery rollback (#SELFCATCH-5).
 
     Runs after the delivery atomic has rolled back, so the rows persist despite the
     block. Best-effort: a recording failure must not mask the original refusal.
@@ -317,6 +315,7 @@ def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
         with transaction.atomic():
             ticket = Ticket.objects.get(pk=ticket_id)
             record_critic_findings(ticket, exc.specs)
+        enqueue_llm_critic(ticket)
     except Exception as recording_error:  # noqa: BLE001 — never mask the delivery refusal with a recording failure.
         logger.warning("critic block finding re-record failed for ticket %s: %s", ticket_id, recording_error)
 

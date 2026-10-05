@@ -29,8 +29,11 @@ from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
+from teatree.agents.repro_phase_recorder import record_phase_repro
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
+from teatree.agents.review_context_recorder import record_returned_review_context
 from teatree.agents.review_envelope_recorder import record_returned_review_envelope
+from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
@@ -195,6 +198,10 @@ def record_result_envelope(
     if plan_refusal:
         return _record_failure(task, error=plan_refusal, result=result, usage=usage)
 
+    repro_refusal = record_phase_repro(task, phase=phase)
+    if repro_refusal:
+        return _record_failure(task, error=repro_refusal, result=result, usage=usage)
+
     record_reactive_envelopes(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
@@ -358,6 +365,9 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
     error string when the returned artifact is malformed or maker-graded — the first
     such error stops the chain so the caller fails the task and the block surfaces.
     """
+    context_error = record_returned_review_context(task, result, phase=phase)
+    if context_error:
+        return context_error
     review_error = record_returned_review_envelope(task, result, phase=phase)
     if review_error:
         return review_error
@@ -365,7 +375,8 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
     if critic_error:
         return critic_error
     fix_error = record_returned_fix_record(task, result)
-    return fix_error or record_returned_directive_interpretation(task, result)
+    sweep_error = fix_error or verify_returned_ticket_sweep(result)
+    return sweep_error or record_returned_directive_interpretation(task, result)
 
 
 def _record_failure(

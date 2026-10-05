@@ -138,4 +138,4 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
         return False
     from hooks.scripts.hook_router import _fail_open_or_deny  # noqa: PLC0415 deferred back-import
 
-    return _fail_open_or_deny(data, _DENY_REASON)
+    return _fail_open_or_deny(data, _DENY_REASON, gate_id="mcp_slack_write")

@@ -212,7 +212,7 @@ class TestSurveyLandscape:
         )
 
         assert isinstance(survey, LandscapeSurvey)
-        assert survey.in_flight_worktrees[0].path == repo
+        assert next(worktree.path for worktree in survey.worktrees if worktree.in_flight) == repo
         assert survey.open_prs[0].url == f"{_APP}/pull/1"
         dispositions = {r.issue_url: r.disposition for r in survey.recommendations}
         assert dispositions[f"{_APP}/issues/41"] is IssueDisposition.DONE

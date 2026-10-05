@@ -71,6 +71,13 @@ def _advance_work_started_to_plan_recorded(ticket: Ticket) -> None:
 
 def _complete_phase_task(ticket: Ticket, phase: str) -> None:
     """Find the auto-scheduled task for a phase and complete it."""
+    if phase == "reviewing" and ticket.role == Ticket.Role.AUTHOR:
+        ticket.record_anti_vacuity_attestation("a" * 40, "AC covered", [], no_new_tests=True)
+        ticket.record_review_context(
+            ticket.issue_url,
+            ["the ticket's referenced requirements"],
+            "Compared the completed change against the referenced requirements.",
+        )
     task = ticket.tasks.filter(phase=phase, status=Task.Status.PENDING).first()
     assert task is not None, f"No pending {phase} task found"
     task.claim(claimed_by="test-worker")

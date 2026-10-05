@@ -34,7 +34,6 @@ class SyncConfig(OverlayConfig):
         frontend_repos: list[str] | None = None,
         notion_token: str = "",
         notion_status_property: str = "Status",
-        notion_write_back: bool = False,
     ) -> None:
         super().__init__()
         self._gitlab_token = gitlab_token
@@ -46,7 +45,6 @@ class SyncConfig(OverlayConfig):
         self._review_channel = review_channel
         self._notion_token = notion_token
         self.notion_status_property = notion_status_property
-        self.notion_write_back = notion_write_back
         self.known_variants = known_variants or []
         # Mirror the real OverlayConfig, which always exposes frontend_repos.
         # The #1426 DoD gate fails CLOSED on a config that omits it; this test

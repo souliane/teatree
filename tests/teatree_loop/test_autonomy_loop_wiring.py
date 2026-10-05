@@ -95,7 +95,6 @@ class TestEffectiveSettingsForOverlaySeesCollapse(TestCase):
         assert settings.autonomy is Autonomy.NOTIFY
         assert settings.mode is Mode.AUTO
         assert settings.require_human_approval_to_merge is True
-        assert settings.notify_on_behalf is True
 
     def test_global_interactive_mode_does_not_defeat_collapse_in_loop(self) -> None:
         """The over-pin fix is visible through the loop resolver too.

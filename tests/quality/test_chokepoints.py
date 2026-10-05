@@ -212,9 +212,9 @@ class TestCheckerBehavior:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        target = tmp_path / "src" / "teatree" / "loop" / "mechanical.py"
+        target = tmp_path / "src" / "teatree" / "loops" / "dream" / "umbrella_ledger.py"
         target.parent.mkdir(parents=True)
-        target.write_text("host.close_issue(issue_url='u', comment=clean)\n", encoding="utf-8")
+        target.write_text("host.update_issue(issue_url='u', body=clean)\n", encoding="utf-8")
         assert checker.main([str(target)]) == 0
 
     def test_forge_write_method_definition_not_flagged(self, src_file: Path) -> None:

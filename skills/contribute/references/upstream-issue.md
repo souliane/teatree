@@ -127,13 +127,33 @@ If related issues exist, mention them in the issue body under "Related upstream 
 
 ## 6. Create the Issue
 
-```bash
-gh issue create -R "$T3_UPSTREAM" \
-  --title "fix(<skill>): <title>" \
-  --body "<built issue body>"
+Through the `<forge>_issue_create` MCP tool, never a raw `gh issue create` — the tool
+is the #162 hygiene facade's face, so the upstream backlog is judged BEFORE anything is
+filed. An unread backlog is how the same upstream gap gets filed three times.
+
+Two calls. The first writes nothing and hands back the open backlog:
+
+```text
+github_issue_create(repo="<T3_UPSTREAM>", title="fix(<skill>): <title>", body="<built issue body>")
+  → {"outcome": "judgment_required", "candidates": [...], "snapshot": [...]}
 ```
 
-After creation, print the issue URL.
+Judge every candidate — this is § 4's related-issue check, now mandatory rather than
+advisory — then call again with that same snapshot:
+
+```text
+github_issue_create(repo="<T3_UPSTREAM>", title=..., body=...,
+                    dedupe={"snapshot": <as returned>,
+                            "decisions": [{"url": ..., "fits": false, "reason": "<why not>"}]})
+```
+
+- `created_new` → print the issue URL. Every rejection and its reason is now in the body.
+- `extended_existing` → the request was appended to that ticket's description instead.
+  Print that URL and tell the user no new issue was needed.
+- `external_conflict` → a fitting ticket someone else filed. Neither edited nor
+  duplicated: print it and stop, so a human decides.
+- `stale_snapshot` → a ticket appeared while you were judging. Re-judge with the
+  `unjudged` URLs it names.
 
 ## Issue Body Rules
 

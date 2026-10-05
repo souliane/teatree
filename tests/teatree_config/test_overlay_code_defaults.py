@@ -81,7 +81,7 @@ class TestColdRead:
     """
 
     def test_declared_constant_is_read_without_the_provider(self) -> None:
-        assert cold_overlay_code_defaults("t3-teatree")["review_skill"] == "ac-reviewing-codebase"
+        assert cold_overlay_code_defaults("t3-teatree")["review_skill"] == "architectural-review"
 
     def test_an_undeclared_key_is_absent_rather_than_defaulted(self) -> None:
         assert "single_branch_repos" not in cold_overlay_code_defaults("t3-teatree")
@@ -104,7 +104,7 @@ class TestColdRead:
         original = seam._provider
         try:
             register_overlay_code_default_provider(_unregistered_provider)
-            assert overlay_code_defaults("t3-teatree")["review_skill"] == "ac-reviewing-codebase"
+            assert overlay_code_defaults("t3-teatree")["review_skill"] == "architectural-review"
         finally:
             register_overlay_code_default_provider(original)
 

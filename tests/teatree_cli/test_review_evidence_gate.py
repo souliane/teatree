@@ -2,7 +2,7 @@
 
 When a reviewer posts a finding that asserts something "is missing", "is wrong",
 "is broken", "does not exist", etc. via ``t3 review post-comment`` or
-``post-draft-note``, the gate refuses the post unless a structured
+``post-comment``, the gate refuses the post unless a structured
 :class:`teatree.cli.review.evidence_gate.FindingEvidence` record accompanies the
 call. The evidence record carries the typed receipts a reviewer used to derive
 the claim — file:line on master, ticket dependency refs, helper indirections

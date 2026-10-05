@@ -37,7 +37,12 @@ _SHA = "e" * 40
 _RESOLVER = "teatree.core.models.reviewer_identity._configured_reviewer_identities"
 
 #: The identities a review pass that implements its own findings actually carries.
-REVIEW_AUTHORING_IDENTITIES = ("ac-reviewing-codebase", "architectural_review", "architectural-review")
+REVIEW_AUTHORING_IDENTITIES = (
+    "ac-reviewing-codebase",
+    "architectural_review",
+    "architectural-review",
+    "t3:architectural-review",
+)
 
 #: Spellings reaching the same tokens as their refused twin through a delimiter the
 #: component split did not honour, so the spaced form bought admission (#4378).

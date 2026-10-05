@@ -42,7 +42,6 @@ from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.types import RawAPIDict
 
 #: The shipped default admission label. The effective value is the
-#: ``issue_implementer_label`` setting — see :func:`resolve_admit_label`.
 DEFAULT_ADMIT_LABEL = "t3-auto"
 
 
@@ -173,17 +172,6 @@ def decide_issue_intake(
         admit_label=admit_label,
         exclude_labels=label_policy.exclude,
     )
-
-
-def resolve_admit_label(overlay: str) -> str:
-    """The effective admit label for *overlay* — the ``issue_implementer_label`` setting.
-
-    Falls back to :data:`DEFAULT_ADMIT_LABEL` so a deployment that never set the
-    row still recognises the shipped convention.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps this leaf import-light
-
-    return get_effective_settings(overlay or None).issue_implementer_label or DEFAULT_ADMIT_LABEL
 
 
 def resolve_umbrella_labels(overlay: str) -> frozenset[str]:

@@ -8,13 +8,19 @@ migrated template file (guarded by a cross-process file lock so concurrent
 workers never race the build), and every worker — including the builder —
 restore its own private connection from that template via
 ``sqlite3.Connection.backup()`` instead of re-running migrations. Used by the
-``django_db_setup`` override in ``tests/conftest.py``.
+``django_db_setup`` override in ``tests/conftest.py``, and by ``tests/db_alias.py``
+to hand private aliases the same template.
 """
 
 import fcntl
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+
+import pytest
+
+#: The template ``django_db_setup`` restored ``default`` from, stashed so private-alias fixtures copy it too.
+MIGRATED_TEMPLATE_KEY = pytest.StashKey[Path]()
 
 
 def build_or_reuse_template(template_path: Path, lock_path: Path, build: Callable[[Path], None]) -> None:

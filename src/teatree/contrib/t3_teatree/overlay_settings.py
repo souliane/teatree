@@ -52,7 +52,6 @@ REQUIRE_OWNED_REPO_APPROVAL: bool = False
 
 # ── Workflow ────────────────────────────────────────────────────────
 
-REQUIRE_TICKET: bool = True
 
 # Default = close-on-merge: a merged teatree PR systematically closes its
 # referenced issue. Suppression is the exception, opted into per-PR via
@@ -80,7 +79,7 @@ REQUIRED_THIRD_PARTY_SERVICES: list[str] = ["github", "slack"]
 # through env -> DB(overlay) -> DB(global) -> THIS code default -> the "" dataclass
 # default, so a ``ConfigSetting`` row still overrides it and the DB stays the home
 # for any per-machine change.
-REVIEW_SKILL: str = "ac-reviewing-codebase"
+REVIEW_SKILL: str = "architectural-review"
 
 # ── Companion skills ────────────────────────────────────────────────
 

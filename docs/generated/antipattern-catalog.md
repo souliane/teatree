@@ -7,7 +7,7 @@ edit the YAML and regenerate.
 This is the single source of truth feeding the three review tiers:
 design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
-holistic (`ac-reviewing-codebase`).
+holistic (`architectural-review`).
 
 **38 entries** — 5 greppable, 33 judgement.
 
@@ -61,7 +61,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** greppable
 - **grep hint:** `\.split\(":"\)\[-1\]|\.rsplit\(":", ?1\)\[-1\]`
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** arch-design-check-8, identity-normalization-skill-note
 
 **Anti-pattern.** Dropping a namespace/scope/prefix off one side (split(":")[-1], rsplit("/", 1)[-1], removeprefix) so an under-qualified reference matches a qualified key. Stripping discards qualifying information and silently conflates genuinely distinct entities.
@@ -76,7 +76,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** arch-design-check-8
 
 **Anti-pattern.** A normalize() whose output, fed back in, differs from its first output — so the same logical identity resolves differently depending on how many times it was passed through the boundary.
@@ -91,7 +91,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** arch-design-check-8
 
 **Anti-pattern.** Resolving whether two references denote the same entity by touching the filesystem (case-folding via the OS, realpath, glob) — so the same inputs match on one machine and not another.
@@ -106,7 +106,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** enforcement-gate-family
 
 **Anti-pattern.** A gate that protects a privacy/merge/publish boundary swallows an exception and returns "allow", so a transient error silently disables the protection. Empty input is the same defect wearing a different hat: a helper that degrades to a neutral value (empty set, None, 0) both when the answer is genuinely empty AND when its dependency is unavailable, feeding a caller that reads "empty" as "safe to proceed".
@@ -121,7 +121,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** enforcement-gate-family, gate-self-rescue-note
 
 **Anti-pattern.** An always-on liveness gate (orchestrator-boundary, skill-loading, plan) hard-denies on a transient/broken-env condition, so a recoverable blip locks the factory out with no self-rescue.
@@ -137,7 +137,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** judgement
 - **linter:** _(none — gap)_
 - **eval invariant:** `no_raw_review_post`
-- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **consumers:** architecture-design, architectural-review, eval
 - **refs:** effective-method-classifier, gh-glab-last-wins-finding
 
 **Anti-pattern.** Deciding whether a forge command is a read or a write by the literal verb/tool-name or the mere presence of a method flag, so a last-wins -X/--method override (gh/glab) bypasses the write gate.
@@ -152,7 +152,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **consumers:** architecture-design, architectural-review, eval
 - **refs:** arch-design-check-9, souliane/teatree#4880
 
 **Anti-pattern.** Adding a liveness/strictness gate, or a new None/False path, to a function several callers share, to suit the one caller being fixed. Every other caller silently inherits the stricter verdict: a park/defer decision that never needed the check a release decision needs now flips on it.
@@ -168,7 +168,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** greppable
 - **grep hint:** `phantom_reason\s*=\s*\w`
 - **linter:** `gate-liveness`
-- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **consumers:** architecture-design, architectural-review, eval
 - **refs:** gate-liveness-corpus, phantom-gate-roster
 
 **Anti-pattern.** A correct-looking deny handler keyed on a tool/skill that no registered hooks.json matcher delivers to its event, so the gate never fires in production despite passing its unit test.
@@ -183,7 +183,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, gate-liveness-corpus
 
 **Anti-pattern.** Code that reads as protection while not being in force — a feature merged behind a flag whose live value is off, a scanner registered but never ticked, or a setting whose only safe value is held in place by a SEPARATE gate rather than by the code that consumes it. The source reads correct, so nobody re-checks whether it runs.
@@ -198,7 +198,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** minimal-configurable-surface
 
 **Anti-pattern.** A change that answers "where does this variation live?" by ADDING surface — a new setting, a new flag, a new abstract member — where the value was derivable from something already known, or the specialisation belonged in the single caller that wanted it. The cost is paid at every reader and every implementation rather than once at the definition, so the diff that introduces it looks cheap.
@@ -213,7 +213,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4151, souliane/teatree#4144, resilience-invariants
 
 **Anti-pattern.** A path that performs an outward write — a push, a PR/issue create, a merge, a colleague post — and only then evaluates a check that returns "refused". The verdict is a lie about the world: retrying is unsafe, the caller cannot reconcile state from the return value, and escalation fires on a non-event. The shape is invisible unless someone happens to retry, and it hides behind an intermediate write whose own hook creates the artifact (a push that fires the pre-push ensure-pr hook opens the PR the later refusal denies opening).
@@ -228,7 +228,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, enforcement-gate-family
 
 **Anti-pattern.** A delete, force-push, reap, drop or overwrite whose safety check sits on ONE caller rather than on the operation itself, so a second call site — a retry, a sibling command, a sub-agent's raw invocation — reaches the destruction with the guard skipped.
@@ -243,7 +243,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, souliane/teatree#1967
 
 **Anti-pattern.** An authorization, approval or maker-not-checker decision keyed on an identity the CALLER supplies — an --approver argument, an author field, a role name in a payload — so the actor being gated chooses the value the gate reads.
@@ -258,7 +258,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** anti-vacuous-eval
 
 **Anti-pattern.** A def test_... whose body exercises code but asserts nothing (no assert, no self.assert*, no pytest.raises), so it stays green no matter how the behaviour regresses. (Detecting "body lacks an assert" needs an AST walk, not a regex, so this stays a judgement call.)
@@ -273,7 +273,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** anti-vacuous-eval, baseline-auto-accept-redcard
 
 **Anti-pattern.** A test path that re-captures or rewrites its snapshot/baseline as part of the run, so the assertion auto-accepts whatever the buggy screen currently shows. (A regex cannot tell a deliberate, reviewed baseline refresh from a test that silently rewrites its own expectation, so this stays judgement.)
@@ -288,7 +288,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** anti-vacuous-eval, test-writing-doctrine
 
 **Anti-pattern.** A test whose subject is replaced by a Mock/patch, asserting on call_args or a MagicMock's return value rather than on real behaviour. It passes against code that never ran, so it survives any regression in the thing it names. Mocking first-party code, Django models, the filesystem under tmp_path, or git itself is this shape. (Distinguishing a legitimate external-boundary mock from one that swallowed the unit under test needs judgement, not a regex.)
@@ -303,7 +303,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **consumers:** architecture-design, architectural-review, eval
 - **refs:** souliane/teatree#4215, anti-vacuous-eval
 
 **Anti-pattern.** A test or gate that asserts plenty and still guards nothing, because the only path it exercises is the one where the defect cannot occur — a race reproduced under a lock the buggy code never took, a deny-path probe that never reaches the deny, a fixture whose shape forecloses the failure. It is cited as evidence of safety and survives every mutation of the code it names.
@@ -318,7 +318,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** ac-django-antipatterns-22
 
 **Anti-pattern.** Domain logic living in a view, DRF viewset, or management command instead of on the model/queryset, so the same rule cannot be reused or tested in isolation.
@@ -333,7 +333,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** ac-django-antipatterns-22
 
 **Anti-pattern.** Storing money in a FloatField, accumulating binary floating-point rounding error on every arithmetic operation. (A regex cannot tell a money field from a legitimate float metric, so this stays a judgement call.)
@@ -353,7 +353,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** greppable
 - **grep hint:** `@require_GET`
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** ac-django-antipatterns-22
 
 **Anti-pattern.** A view bound to a safe HTTP GET that mutates state (delete/create/update), so a crawler, prefetch, or refresh silently triggers the mutation.
@@ -369,7 +369,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** greppable
 - **grep hint:** `@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\(`
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** ac-django-antipatterns-22
 
 **Anti-pattern.** A post_save/pre_save receiver implementing core business logic, hiding the flow from the call site and skipping it in data migrations and bulk operations.
@@ -385,7 +385,7 @@ holistic (`ac-reviewing-codebase`).
 - **detection:** greppable
 - **grep hint:** `select_for_update\([^)]*\b(?:skip_locked|nowait)\b`
 - **linter:** `select-for-update-audit`
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** souliane/teatree#4226, souliane/teatree#804, 786-b1-sqlite-lesson
 
 **Anti-pattern.** A select_for_update() the production SQLite engine cannot honour. The clause is a documented no-op there (has_select_for_update is False), so exclusion comes only from transaction_mode=IMMEDIATE's reserved write lock — which a transaction.atomic() block takes and nothing else does. Outside atomic() the read-modify-write silently loses updates, and Django's own "cannot be used outside of a transaction" guard is itself gated on has_select_for_update, so nothing raises. skip_locked/nowait are worse: IMMEDIATE blocks where they promise to return, and the kwarg is dropped without a word.
@@ -400,7 +400,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** `check_module_health`
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** module-health-hook
 
 **Anti-pattern.** A single module accumulating unrelated responsibilities until it exceeds the LOC / module-function / typed-data health thresholds and becomes the place every change has to touch.
@@ -415,7 +415,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** ac-reviewing-codebase, architecture-design
+- **consumers:** architectural-review, architecture-design
 - **refs:** file-hierarchy-check, module-health-hook
 
 **Anti-pattern.** A module sitting beside unrelated neighbours instead of in the package whose concern it shares — a scanner outside the scanners package, a CLI command outside the CLI package, a script or config dropped at the repo root — or a cohesive set of siblings that has grown past the point where it should have become its own subpackage. god-module asks what is INSIDE one file; this asks WHERE the files live. Each placement looked reasonable when it was added, so no single diff reads as wrong and the layout degrades only in aggregate.
@@ -430,7 +430,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** one-place-test, file-hierarchy-check
 
 **Anti-pattern.** A concept whose next change costs more than one file — most often a module-level helper called from N call sites, which removes the duplicated lines while leaving N places to edit. Two near-misses read as factorization too: exempting a surface over a difference of presentation (a locale string, a date stringified for an encoder, an appended flag) rather than of behaviour or data shape, and deduplicating 3 of 5 sites. god-module asks what is INSIDE one file and file-outside-its-package asks WHERE files live; this asks WHO owns the concept.
@@ -445,7 +445,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** `tach`
-- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **consumers:** architecture-design, architectural-review, linter
 - **refs:** module-dependency-graph
 
 **Anti-pattern.** A lower-level module (utils, config, types) importing from a higher-level one (cli, core.management), inverting the dependency DAG and coupling the foundation to its consumers.
@@ -460,7 +460,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** overlay-extension-points
 
 **Anti-pattern.** An overlay reaching past OverlayBase to call platform internals directly, re-implementing behaviour the extension point already provides and drifting from the contract every other overlay honours.
@@ -475,7 +475,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** silent-truncation-note
 
 **Anti-pattern.** A list or fetch that consumes only page one of a paginated API and treats the partial result as complete, silently dropping everything past the first page.
@@ -490,7 +490,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** loop-topology, fault-isolation-note
 
 **Anti-pattern.** A loop/scanner sweep where one item raising an exception aborts the entire pass, so a single bad row stops every sibling from being processed.
@@ -505,7 +505,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, loop-topology
 
 **Anti-pattern.** A network call, subprocess, agent dispatch or multi-second read performed while holding the SQLite control-plane write lock, so every other writer on the box blocks behind one slow external dependency and the factory reads as hung rather than busy.
@@ -520,7 +520,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#1391, loop-topology, memory-consolidation
 
 **Anti-pattern.** A loop scanner, cadence task or headless batch pass that turns each candidate it surfaces into a forge issue or ticket directly — a create_issue per candidate, or a dispatched skill told to file them. One unattended pass publishes durable artifacts under the owner's account that nobody decided should exist, and a noisy feed floods the backlog.
@@ -535,7 +535,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4041, souliane/teatree#4215
 
 **Anti-pattern.** "I cannot see whether X" rendered as "X is false" — a failed read, an empty result, a stale cache or an unreachable dependency collapsed into a confident negative that a caller then consumes as fact. The report is indistinguishable from a genuine measurement, so nobody re-checks it.
@@ -550,7 +550,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, management-command-exit-contract
 
 **Anti-pattern.** A command that writes ERROR to its output and exits 0 — a returned error string, a swallowed exception, a failing step whose status never reaches the exit code. CI, the loop and every unattended caller branch on the code, so the failure is invisible to all of them.
@@ -565,7 +565,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** souliane/teatree#4215, resilience-invariants
 
 **Anti-pattern.** A claimed task, lease, queue or wait with no bound and no watchdog, so work an invariant says always progresses can sit forever — and because the absence of movement emits nothing, the freeze is only ever noticed by a human wondering why the board stopped.
@@ -580,7 +580,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** medium
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** resilience-invariants
 
 **Anti-pattern.** A try/except-or-or chain that silently substitutes a fallback when the primary path fails, so a degraded result looks identical to a healthy one and the failure is never surfaced.
@@ -595,7 +595,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** high
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase
+- **consumers:** architecture-design, architectural-review
 - **refs:** resilience-invariants, single-source-of-truth-note
 
 **Anti-pattern.** The same fact persisted in two or more co-equal stores with no declared source of truth, so the copies drift and readers disagree with no way to say which is right.
@@ -610,7 +610,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** low
 - **detection:** judgement
 - **linter:** `check_comment_density`
-- **consumers:** ac-reviewing-codebase, architecture-design
+- **consumers:** architectural-review, architecture-design
 - **refs:** comments-as-code
 
 **Anti-pattern.** A comment spanning several lines that restates what the code below it plainly does — a section banner, a step-by-step narration, a docstring echoing the signature. Reviewers skim the wall of prose and stop reading, so the one comment that was genuinely load-bearing is lost among the ones restating the next line.
@@ -625,7 +625,7 @@ holistic (`ac-reviewing-codebase`).
 - **severity:** low
 - **detection:** judgement
 - **linter:** _(none — gap)_
-- **consumers:** ac-reviewing-codebase, architecture-design
+- **consumers:** architectural-review, architecture-design
 - **refs:** comments-as-code, keep-blueprint-tight
 
 **Anti-pattern.** A doc or BLUEPRINT section that walks through what a function does line by line, or that describes a mechanism the code has since renamed, moved or removed. It is a second copy of the code's behaviour, so it drifts the moment the code moves, and then confidently asserts the old design to the next reader. Tests do not catch it — 100% coverage says nothing about stale prose.

@@ -13,19 +13,16 @@ row-check over that verdict. Anti-vacuity, both directions, one line each:
     shipped head (RED-before: on pre-PR-4 code the same keystone merged).
 - the merge items are keyed to ``merge`` — they never fire at ``mark_delivered``.
 
-Ordinary tickets are provably unaffected unless ``require_merge_quality_verdict``
-is on; the verdict is armed when absent, so the gate is satisfiable, not suppression.
+Ordinary and directive tickets both require a verdict. An absent verdict arms the
+critic, so the gate is satisfiable.
 """
 
 import contextlib
-from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
-from teatree.core.gates import merge_quality_gate
 from teatree.core.gates.merge_quality_gate import (
     MergeQualityVerdictError,
     assert_merge_quality_verdict,
@@ -33,7 +30,6 @@ from teatree.core.gates.merge_quality_gate import (
     check_merge_quality_verdict,
     is_directive_ticket,
     linked_directive,
-    merge_quality_enforced,
     ratified_test_strategy,
 )
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
@@ -113,16 +109,6 @@ def _clean_verdict_items() -> list[dict]:
     return [_pass("test_value"), _pass("cleanliness")]
 
 
-@contextlib.contextmanager
-def _ordinary_enforcement(*, on: bool) -> Iterator[None]:
-    with patch.object(
-        merge_quality_gate,
-        "get_effective_settings",
-        return_value=UserSettings(require_merge_quality_verdict=on),
-    ):
-        yield
-
-
 class TestDirectiveDetection(TestCase):
     def test_detected_via_reverse_fk(self) -> None:
         ticket = _directive_ticket(link="fk")
@@ -137,21 +123,32 @@ class TestDirectiveDetection(TestCase):
         assert not is_directive_ticket(_ordinary_ticket())
 
 
-class TestEnforcementScope(TestCase):
-    def test_directive_ticket_is_always_enforced(self) -> None:
-        with _ordinary_enforcement(on=False):  # flag off must NOT relax a directive ticket
-            assert merge_quality_enforced(_directive_ticket())
-
-    def test_ordinary_ticket_gated_only_under_the_flag(self) -> None:
-        ticket = _ordinary_ticket()
-        with _ordinary_enforcement(on=False):
-            assert not merge_quality_enforced(ticket)
-        with _ordinary_enforcement(on=True):
-            assert merge_quality_enforced(ticket)
-
-
 class TestVerdictGate(TestCase):
     """The fail-closed row-check — no verdict / any unmet item refuses; a clean verdict passes."""
+
+    def test_missing_verdict_names_quiescing_worker_and_recovery(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=True),
+            pytest.raises(MergeQualityVerdictError, match="worker is quiescing; resume worker admission"),
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_missing_verdict_names_stopped_worker_and_recovery(self) -> None:
+        ticket = _ordinary_ticket()
+        with (
+            patch("teatree.config.resolution.worker_is_quiescing", return_value=False),
+            patch("teatree.core.gates.merge_quality_gate.flock_is_held", return_value=False),
+            pytest.raises(MergeQualityVerdictError, match="worker is stopped; start the worker"),
+        ):
+            check_merge_quality_verdict(ticket, _FORTY_HEX)
+
+    def test_exhausted_critic_refuses_with_rearm_instruction(self) -> None:
+        ticket = _ordinary_ticket()
+        with patch.object(CriticDispatch, "saturated") as saturated:
+            saturated.return_value.filter.return_value.exists.return_value = True
+            with pytest.raises(MergeQualityVerdictError, match="critic retry budget is exhausted; inspect"):
+                check_merge_quality_verdict(ticket, _FORTY_HEX)
 
     def test_no_verdict_refuses_a_directive_keystone(self) -> None:
         ticket = _directive_ticket()
@@ -221,14 +218,9 @@ class TestVerdictGate(TestCase):
         with pytest.raises(MergeQualityVerdictError, match="no recorded merge-quality CriticVerdict"):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
 
-    def test_ordinary_ticket_is_a_noop_when_the_flag_is_off(self) -> None:
+    def test_ordinary_ticket_is_gated_unconditionally(self) -> None:
         ticket = _ordinary_ticket()
-        with _ordinary_enforcement(on=False):
-            check_merge_quality_verdict(ticket, _FORTY_HEX)  # no verdict, no raise — ordinary work unaffected
-
-    def test_ordinary_ticket_is_gated_when_the_flag_is_on(self) -> None:
-        ticket = _ordinary_ticket()
-        with _ordinary_enforcement(on=True), pytest.raises(MergeQualityVerdictError):
+        with pytest.raises(MergeQualityVerdictError):
             check_merge_quality_verdict(ticket, _FORTY_HEX)
 
 
@@ -339,6 +331,7 @@ def _keystone_fixtures(ticket: Ticket) -> MergeClear:
     here — the sibling rubric gate at the same chokepoint would otherwise refuse first.
     """
     waive_rubric(ticket)
+    ticket.record_anti_vacuity_attestation(_FORTY_HEX, "ACs checked against diff", [], no_new_tests=True)
     ReviewVerdict.record(
         pr_id=_PR, slug=_SLUG, reviewed_sha=_FORTY_HEX, verdict="merge_safe", reviewer_identity="cold-reviewer"
     )
@@ -357,12 +350,7 @@ def _keystone_fixtures(ticket: Ticket) -> MergeClear:
 
 
 class TestKeystoneWiring(TestCase):
-    """``execute_bound_merge`` refuses a directive keystone with no clean verdict; the ordinary twin merges.
-
-    The ordinary twin — identical inputs, no merge verdict — MERGES, which is
-    exactly the pre-PR-4 (no-gate) behavior: the RED-before control proving the
-    gate is load-bearing, not a blanket refuse.
-    """
+    """The keystone requires a clean verdict for directive and ordinary tickets."""
 
     @pytest.fixture(autouse=True)
     def _skip_author_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -396,11 +384,18 @@ class TestKeystoneWiring(TestCase):
         assert ticket.state == Ticket.State.MERGED
         assert clear.consumed_at is not None
 
-    def test_ordinary_keystone_merges_without_a_merge_verdict(self) -> None:
-        # The RED-before control: identical setup, ordinary ticket + flag off → merges
-        # (the pre-PR-4 no-gate behavior). Only the directive twin is refused.
+    def test_ordinary_keystone_refuses_without_a_merge_verdict(self) -> None:
         ticket = _ordinary_ticket()
         clear = _keystone_fixtures(ticket)
+        with pytest.raises(MergePreconditionError, match="no recorded merge-quality CriticVerdict"):
+            self._merge(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
+
+    def test_ordinary_keystone_merges_with_a_clean_verdict(self) -> None:
+        ticket = _ordinary_ticket()
+        clear = _keystone_fixtures(ticket)
+        _record_merge_verdict(ticket, items=_clean_verdict_items())
         outcome = self._merge(clear)
         ticket.refresh_from_db()
         assert outcome.merged_sha

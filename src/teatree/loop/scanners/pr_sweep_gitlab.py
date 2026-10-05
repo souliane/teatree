@@ -162,7 +162,7 @@ def _decode_mr(*, slug: str, raw: RawAPIDict) -> PrSummary:
         slug=slug,
         number=_as_int(raw.get("iid")),
         head_sha=_as_str(raw.get("sha")),
-        is_draft=bool(raw.get("draft") or raw.get("work_in_progress")),
+        is_draft=bool(raw.get("draft")),
         has_changes_requested=raw.get("blocking_discussions_resolved") is False,
         url=_as_str(raw.get("web_url")),
         title=_as_str(raw.get("title")),
@@ -183,7 +183,7 @@ def _author_username(raw: RawAPIDict) -> str:
 
 def _is_conflicted(raw: RawAPIDict) -> bool:
     """True iff GitLab has SETTLED that the MR cannot merge because of a conflict."""
-    status = _as_str(raw.get("detailed_merge_status") or raw.get("merge_status")).lower()
+    status = _as_str(raw.get("detailed_merge_status")).lower()
     if status in _UNSETTLED_MERGE_STATUSES:
         return False
     return raw.get("has_conflicts") is True or status in _CONFLICTED_MERGE_STATUSES

@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai import RunContext
-from pydantic_ai.exceptions import ApprovalRequired, ModelRetry, UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelRetry, UnexpectedModelBehavior
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
@@ -282,9 +282,3 @@ def make_soft_gate_predicate(
         return tool_def.name in soft_gated
 
     return predicate
-
-
-def raise_if_soft_gated(tool_name: str, soft_gated: frozenset[str] = DEFAULT_SOFT_GATED) -> None:
-    """Raise ``ApprovalRequired`` when *tool_name* is soft-gated (test seam)."""
-    if tool_name in soft_gated:
-        raise ApprovalRequired

@@ -91,7 +91,7 @@ def check_inline_shape(
         f"Refusing MR-level draft note: this MR already has {pending} inline draft note(s), so stay "
         f"inline — post this finding on its own file:line too, don't fragment an inline review with an "
         f"MR-level note:\n"
-        '  t3 review post-draft-note <repo> <mr> "<note>" --file <path> --line <n>\n'
+        '  t3 review post-comment <repo> <mr> "<note>" --file <path> --line <n>\n'
         "Pass --force-general to override ONLY for a genuinely MR-wide note (a verdict-only summary with "
         "no per-line finding)."
     )

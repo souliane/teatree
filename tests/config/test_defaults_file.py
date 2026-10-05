@@ -2,11 +2,11 @@
 """Conformance suite pinning ``TeatreeSettingsSchema`` + ``defaults.toml`` to the registries.
 
 The load-bearing guard on the Phase-1 foundation: the schema must cover EXACTLY the
-237 known config keys, ``defaults.toml`` must carry EXACTLY the Default-category keys
+known config keys, ``defaults.toml`` must carry EXACTLY the Default-category keys
 at canonical values, the taxonomy must classify every credential/secret key correctly,
 and — the key risk — the model-derived per-field validator must behave IDENTICALLY to
 the pre-change registry coercer (the parity matrix). A drift in any of these turns the
-suite red before the 237-key mapping can silently rot.
+suite red before the key mapping can silently rot.
 
 The one sanctioned divergence is a key whose schema declares a CLOSED value set over a
 tolerant ``str`` coercer: the two tiers then differ on an off-set string, by design and in
@@ -23,7 +23,6 @@ from pydantic import TypeAdapter
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.feature_flags import dark_flags
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.registries import COLD_HOOK_SETTINGS
 from teatree.config.schema import (
     _DEFAULTS_TOML,
     Category,
@@ -177,7 +176,6 @@ class TestSafetyAndDarkFlagsPinned:
     #: literal leaves this value needs an :attr:`_OWNER_RAISED` entry.
     _FAIL_CLOSED: ClassVar[dict[str, Any]] = {
         "autonomy": "babysit",
-        "enforce_regulated_path": False,
         "regulated_path_model_allowlist": [],
         "substrate_self_signoff": False,
         "substrate_auto_merge_authorized_by": "",
@@ -196,9 +194,8 @@ class TestSafetyAndDarkFlagsPinned:
     }
 
     _PINNED: ClassVar[dict[str, Any]] = {
-        # SAFETY_POSTURE_KEYS — the eleven write-is-an-authorization keys.
+        # SAFETY_POSTURE_KEYS — the write-is-an-authorization keys.
         "autonomy": "full",
-        "enforce_regulated_path": False,
         "regulated_path_model_allowlist": [],
         "substrate_self_signoff": False,
         "substrate_auto_merge_authorized_by": "",
@@ -208,14 +205,6 @@ class TestSafetyAndDarkFlagsPinned:
         "independent_reviewer_identities": [],
         "bulk_close_threshold": 5,
         # DARK feature-flags — each pinned to its off value.
-        "outer_loop_enabled": False,
-        "factory_score_enabled": False,
-        "critic_gate_mode": "off",
-        "send_proxy_mode": "warn",
-        "require_debt_delta": False,
-        "require_executed_repro": False,
-        "require_merge_quality_verdict": False,
-        "ci_eval_heal_autofix_enabled": False,
     }
 
     def test_pinned_set_covers_safety_posture_and_dark_flags(self) -> None:
@@ -228,6 +217,7 @@ class TestSafetyAndDarkFlagsPinned:
     def test_every_dark_flag_is_pinned_to_its_own_off_value(self) -> None:
         # A dark flag's literal is not free-form: it must equal the flag's declared
         # off_value, so editing this table can never quietly ship a dark feature ON.
+        assert dark_flags() == {}
         for key, flag in dark_flags().items():
             assert self._PINNED[key] == flag.off_value
 
@@ -241,11 +231,6 @@ class TestSafetyAndDarkFlagsPinned:
         raised = {key for key in SAFETY_POSTURE_KEYS if self._PINNED[key] != self._FAIL_CLOSED[key]}
         assert raised == set(self._OWNER_RAISED)
         assert all(self._OWNER_RAISED[key].strip() for key in raised)
-
-
-def test_the_task_list_quote_gate_ships_off() -> None:
-    """Held off until its hook wiring has had its own review; an explicit true arms it."""
-    assert COLD_HOOK_SETTINGS["dispatch_quote_gate_on_task_create_enabled"].default is False
 
 
 # ---- The parity matrix (the load-bearing test) -----------------------------------------
@@ -262,6 +247,11 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
     "str_list": ([[], ["a"], ["a", "b"]], ["a", True, 5, {}]),
     "aliases": ([[], ["a"], ["a", "a"]], ["a", 5]),
     "registry_dict": ([{}, {"a": 1}], ["x", [], True, 5]),
+    "agent_skill_models": ([{}, {"code": []}, {"review": [{"floor": "haiku"}]}], ["x", [], {"code": "haiku"}]),
+    "private_repos": (
+        [[], ["gitlab.com/group/repo"], ["GitHub.com/Owner"]],
+        ["gitlab.com/group/repo", ["owner/repo"], ["gitlab.com//repo"], ["gitlab.com/o/r*"]],
+    ),
     "header_map": (
         [{}, {"X-OrcaRouter-Include-Cost": "true"}, {"x-orcarouter-session-id": "{session}"}, {"Authorization": "x"}],
         ["x", [], True, 5, {"a": 1}, {"a": True}],
@@ -285,6 +275,8 @@ _KIND_BY_QUALNAME = {
     "_parse_str_list": "str_list",
     "_parse_user_identity_aliases": "aliases",
     "_parse_registry_dict": "registry_dict",
+    "_parse_agent_skill_models": "agent_skill_models",
+    "_parse_private_repos": "private_repos",
     "_parse_header_map": "header_map",
     "parse_harness_name": "harness",
     "parse_speak_setting": "speak",

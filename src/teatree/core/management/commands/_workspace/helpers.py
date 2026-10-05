@@ -67,6 +67,12 @@ def list_orphan_entries() -> list["OrphanEntry"]:
     ]
 
 
+def render_orphans(entries: list["OrphanEntry"]) -> str:
+    """The human view of :func:`list_orphan_entries` — one line per orphan branch."""
+    lines = "".join(f"{e['repo']} ({e['branch']}) — {e['ahead_count']} ahead, {e['status']}\n" for e in entries)
+    return lines or "No orphan branches.\n"
+
+
 def warn_orphans(write: Callable[[str], None]) -> None:
     """Warn (up to 5 previewed) about orphan branches before a session-closing action.
 

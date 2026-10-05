@@ -35,12 +35,16 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from teatree.agents import permission_modes
 from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, is_success_result_error
+from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.resource_caps import env_float
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from pydantic_ai.models import Model
 
 WATCHDOG_SECONDS = 120
 
@@ -94,6 +98,7 @@ class JudgeVerdict:
     passed: bool
     skipped: bool
     rationale: str
+    coverage_incomplete: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +192,56 @@ class ClaudeJudge:
                 raise
             return JudgeVerdict(passed=False, skipped=False, rationale=f"judge hit {reason} cap")
         return _verdict_from_structured(structured)
+
+
+class ModelSeamJudge:
+    """Grade through PydanticAI's injectable model interface, without a CLI child."""
+
+    def __init__(self, *, budget: JudgeBudget | None = None, model: "Model | None" = None) -> None:
+        self._budget = budget
+        self._model = model
+
+    def grade(self, spec: EvalSpec, run: EvalRun) -> JudgeVerdict:
+        if spec.judge is None or run.terminal_reason.startswith("skipped:"):
+            return JudgeVerdict(passed=False, skipped=True, rationale="no judge work")
+        if self._budget is not None:
+            self._budget.consume()
+        from pydantic import BaseModel  # noqa: PLC0415 — only the metered judge path loads this
+        from pydantic_ai import Agent, NativeOutput  # noqa: PLC0415 — same lazy boundary
+
+        from teatree.eval.anthropic_api_runner import (  # noqa: PLC0415 — imports pydantic_ai at module top; same lazy boundary
+            BudgetedModel,
+            _build_anthropic_model,
+        )
+
+        class Verdict(BaseModel):
+            verdict: str
+            reason: str
+
+        model = self._model or _build_anthropic_model(spec.judge.model, AnthropicApiKeyCredential().resolve())
+        budget = suite_budget_from_env()
+        if budget is not None:
+            model = BudgetedModel(model, budget, spec.judge.model, 512)
+        agent = Agent(model, output_type=NativeOutput(Verdict), system_prompt=_JUDGE_SYSTEM_PROMPT)
+        try:
+            answer = asyncio.run(
+                asyncio.wait_for(
+                    agent.run(build_judge_prompt(spec, run), model_settings={"max_tokens": 512}),
+                    timeout=WATCHDOG_SECONDS,
+                )
+            ).output
+        except TimeoutError:
+            return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
+        except RuntimeError:
+            if budget is not None and budget.exhausted:
+                return JudgeVerdict(
+                    passed=False,
+                    skipped=True,
+                    rationale="coverage incomplete: suite budget exhausted",
+                    coverage_incomplete=True,
+                )
+            raise
+        return _verdict_from_structured(StructuredVerdict(answer.verdict, answer.reason))
 
 
 async def _drive_judge(

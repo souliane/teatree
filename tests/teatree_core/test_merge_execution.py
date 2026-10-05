@@ -36,7 +36,7 @@ from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullReques
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.conftest import CommandOverlay, record_merge_prerequisites_for_test, record_owned_pr_for_test
 
 _GIT = shutil.which("git") or "git"
 
@@ -94,6 +94,7 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
     }
     defaults.update(overrides)
     clear = MergeClear.objects.create(**defaults)
+    record_merge_prerequisites_for_test(ticket, clear.reviewed_sha)
     _seed_sibling_verdict(clear)
     return clear
 
@@ -137,6 +138,11 @@ def _record_merge_safe_verdict(*, pr_id: int, sha: str, slug: str = "souliane/te
     """Record a non-author MERGE_SAFE verdict at *sha* for a direct ``execute_bound_merge`` call (#2829)."""
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
 
+    owner = PullRequest.objects.filter(repo=slug, iid=str(pr_id)).select_related("ticket").first()
+    if owner is None:
+        record_owned_pr_for_test(slug=slug, pr_id=pr_id, head_sha=sha)
+    else:
+        record_merge_prerequisites_for_test(owner.ticket, sha)
     ReviewVerdict.record(
         pr_id=pr_id,
         slug=slug,
@@ -599,7 +605,8 @@ class TestMergeExecutionEdgeCases(TestCase):
         # response body is not parseable.
         assert outcome.merged_sha == _SHA
 
-    def test_clear_without_ticket_merges_and_returns_blank_state(self) -> None:
+    def test_ticketless_clear_adopts_the_pr_owner_after_merge(self) -> None:
+        owner = record_owned_pr_for_test(slug="souliane/teatree", pr_id=900, head_sha=_SHA)
         clear = MergeClear.objects.create(
             ticket=None,
             pr_id=900,
@@ -611,7 +618,9 @@ class TestMergeExecutionEdgeCases(TestCase):
         )
         _seed_sibling_verdict(clear)
         outcome = _run(clear, _GhStub())
-        assert outcome.ticket_state == ""
+        assert outcome.ticket_state == Ticket.State.MERGED
+        owner.refresh_from_db()
+        assert owner.state == Ticket.State.MERGED
         clear.refresh_from_db()
         assert clear.consumed_at is not None
 

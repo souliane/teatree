@@ -256,3 +256,39 @@ class TestRecordOpened(TestCase):
 
         assert PullRequest.objects.record_opened(ticket=ticket, url="https://example.com/pr/b-new") is None
         assert PullRequest.objects.count() == 0
+
+
+class TestRecordedPrUrlNeverGuessesAHost(TestCase):
+    """Two GitLab hosts can carry the same group path and MR number; records on both name neither."""
+
+    _OTHER = "https://gitlab.com/acme/widget/-/merge_requests/7"
+    _OURS = "https://gitlab.example.test/acme/widget/-/merge_requests/7"
+
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        for url in (self._OTHER, self._OURS):
+            PullRequest.objects.create(ticket=ticket, url=url, repo="acme/widget", iid="7")
+
+    @staticmethod
+    def _recorded() -> str:
+        return PullRequest.objects.recorded_pr_url(slug="acme/widget", pr_id=7, host_kind="gitlab")
+
+    def test_records_on_two_hosts_are_no_answer(self) -> None:
+        assert self._recorded() == ""
+
+    def test_records_on_one_host_are_that_record(self) -> None:
+        PullRequest.objects.filter(url=self._OTHER).delete()
+
+        assert self._recorded() == self._OURS
+
+    def test_ticket_recorded_urls_on_two_hosts_are_no_answer_either(self) -> None:
+        PullRequest.objects.all().delete()
+        Ticket.objects.create(overlay="t3-teatree", extra={"pr_urls": [self._OTHER, self._OURS]})
+
+        assert self._recorded() == ""
+
+    def test_a_ticket_recorded_url_on_one_host_is_that_record(self) -> None:
+        PullRequest.objects.all().delete()
+        Ticket.objects.create(overlay="t3-teatree", extra={"pr_urls": [self._OURS]})
+
+        assert self._recorded() == self._OURS

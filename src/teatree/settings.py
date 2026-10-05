@@ -48,8 +48,8 @@ def _debug_enabled() -> bool:
 
     Default on preserves local-dev convenience (rich error pages). Nothing
     functional depends on it: ``/admin/`` mounts unconditionally and the
-    admin auto-login is gated on the ``admin_autologin_enabled`` setting +
-    loopback, not ``DEBUG``. A long-running Django process with DEBUG on grows
+    admin auto-login is gated on the loopback source address, not ``DEBUG``.
+    A long-running Django process with DEBUG on grows
     ``connection.queries`` unboundedly, so every long-running service (the
     worker AND the admin) sets ``T3_DEBUG=0`` to run with DEBUG off.
     """
@@ -93,7 +93,7 @@ MIDDLEWARE = [
     # read shares the memo with the view's.
     "teatree.core.middleware.RequestScopedReadCacheMiddleware",
     # Auto-login the single-operator admin as the superuser — gated on the
-    # loopback source + the ``admin_autologin_enabled`` setting (never DEBUG),
+    # loopback source (never DEBUG),
     # so a non-loopback request is never auto-logged-in.
     "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",

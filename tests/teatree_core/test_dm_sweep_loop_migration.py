@@ -17,7 +17,8 @@ _BEFORE = ("core", "0028_session_todo")
 _AFTER = ("core", "0029_dm_sweep_loop_and_directive_cadence")
 
 
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 115 s, 4 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class TestDmSweepLoopLandsOnAnExistingDatabase(TransactionTestCase):
     def setUp(self) -> None:
         self.addCleanup(self._restore_head)

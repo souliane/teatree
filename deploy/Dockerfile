@@ -9,7 +9,8 @@
 #
 # Digest-pinned to the same ubuntu:24.04 manifest dev/Dockerfile.test pins, so a
 # retag of the floating tag can never silently change the deploy toolchain.
-FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+ARG TEATREE_BASE_IMAGE=generation-base
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS system
 
 # Toolchain layer — ca-certificates, curl, git, jq, sqlite3, direnv, node 24, the
 # claude CLI (as in dev/Dockerfile.test) plus gh, plus pass/gnupg so the box can
@@ -40,7 +41,7 @@ FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebff
 # feeds the paths that exec the GLOBAL binary — `t3 loop start`'s os.execv, the agent
 # command, the ttyd web terminal, the tasks command — so it tracks a current
 # known-good release and may lead the bundle, never trail it: a generation behind
-# `claude-opus-5` breaks model_tiering's `frontier` tier. Both tiers are guarded by
+# a tier model's floor breaks model_tiering's tiers. Both tiers are guarded by
 # tests/test_claude_cli_pin.py.
 # `@openai/codex` is the reviewer's second-pass CLI (agents/reviewer.md); its pin is
 # guarded by tests/test_codex_cli_pin.py and matches the laptop's installed codex.
@@ -56,7 +57,7 @@ SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
-        ca-certificates curl direnv git gnupg jq pass postgresql-client procps sqlite3 ttyd && \
+        ca-certificates curl direnv gnupg jq pass postgresql-client procps sqlite3 ttyd && \
     # Fetch the NodeSource setup script to a FILE, never straight into a shell, so
     # a truncated or error body cannot be executed as a script; and retry, so a
     # transient CDN 403/5xx costs seconds instead of the whole deploy.
@@ -83,8 +84,27 @@ RUN apt-get update -qq && \
     chmod go+r /etc/apt/keyrings/docker.asc && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
         > /etc/apt/sources.list.d/docker.list && \
+    # Ubuntu 24.04's own git is 2.43; opening a clone with relative worktree links needs 2.48.
+    git_core_ppa_fingerprint=F911AB184317630C59970973E363C90F8F1B6217 && \
+    git_core_gnupg="$(mktemp -d)" && \
+    curl -fsSL --retry 5 --retry-all-errors "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${git_core_ppa_fingerprint}" \
+        -o "$git_core_gnupg/fetched.asc" && \
+    # Only the pinned primary key reaches apt: whatever else the keyserver returns stays behind.
+    gpg --homedir "$git_core_gnupg" --batch --quiet --import "$git_core_gnupg/fetched.asc" && \
+    gpg --homedir "$git_core_gnupg" --batch --export "$git_core_ppa_fingerprint" > /etc/apt/keyrings/git-core.gpg && \
+    [ "$(gpg --homedir "$git_core_gnupg" --show-keys --with-colons /etc/apt/keyrings/git-core.gpg \
+        | awk -F: '$1 == "pub" { pub = 1; next } pub && $1 == "fpr" { print $10; pub = 0 }')" = "$git_core_ppa_fingerprint" ] && \
+    gpgconf --homedir "$git_core_gnupg" --kill all && \
+    rm -rf "$git_core_gnupg" && \
+    echo "deb [signed-by=/etc/apt/keyrings/git-core.gpg] https://ppa.launchpadcontent.net/git-core/ppa/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+        > /etc/apt/sources.list.d/git-core.list && \
     apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends gh docker-ce-cli docker-compose-plugin docker-buildx-plugin && \
+    apt-get install -y -qq --no-install-recommends git gh docker-ce-cli docker-compose-plugin docker-buildx-plugin && \
+    git_version="$(git --version | awk '{print $3}')" && \
+    if [ "$(printf '%s\n' 2.48 "$git_version" | sort -V | head -n1)" != 2.48 ]; then \
+        echo "deploy image: FATAL - git $git_version is older than 2.48, which cannot open a clone whose worktrees use relative paths (extensions.relativeWorktrees)." >&2; \
+        exit 1; \
+    fi && \
     # Assert the node that landed is the NodeSource one before leaning on npm.
     # `npm: not found` from the line below is the symptom that cost a week of
     # deploys; say what it MEANS at the moment it is provable.
@@ -92,7 +112,7 @@ RUN apt-get update -qq && \
         echo "deploy image: FATAL - npm is absent after installing nodejs ($(node --version 2>/dev/null || echo 'node missing')). The NodeSource repo did not take effect, so this is Ubuntu's nodejs, which packages npm separately." >&2; \
         exit 1; \
     fi && \
-    npm install -g @anthropic-ai/claude-code@2.1.283 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
+    npm install -g @anthropic-ai/claude-code@2.1.284 pyright@1.1.411 @openai/codex@0.155.1 skills@1.7.0 && \
     npm cache clean --force && \
     rm -rf /var/lib/apt/lists/*
 
@@ -190,7 +210,6 @@ RUN mkdir -p \
 # The projects bind target, pre-created so Docker never creates it root-owned in a fresh volume.
 RUN install -d -o teatree -g teatree /home/teatree/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
 
-COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
 # What deploy/entrypoint.sh's ENTRYPOINT_IMAGE_CONTRACT checks before running from the
 # checkout: an older image lacks this file and runs the entrypoint baked above instead.
 RUN install -d /usr/local/share/teatree && echo 1 > /usr/local/share/teatree/entrypoint-contract
@@ -213,14 +232,6 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
     groupmod -g "${TEATREE_UID}" teatree && \
     chown -R teatree:teatree /home/teatree /opt/teatree /var/lib/teatree  # privacy-scan:allow
 
-# The deploy-managed default ~/.claude/settings.json template (#3359). The init
-# role generates the container's real settings.json from this (plus env overrides)
-# BEFORE `t3 setup`, so the headless agent has a configurable model / permission
-# mode / autoMode grants / tool-use concurrency instead of stock CLI defaults.
-# Baked (not mounted) so a mountless standalone run still has the default; edit
-# this committed, reviewable file to change the loop agent's configuration.
-COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
-
 # The GitLab https credential helper, baked at the SYSTEM level because it holds no
 # secret — only the instruction to read one from `GITLAB_TOKEN` at use time. In the
 # image rather than the entrypoint so it also covers the containers the entrypoint
@@ -231,14 +242,11 @@ COPY deploy/claude-settings.template.json /usr/local/share/teatree/claude-settin
 # NOT `glab auth git-credential`: it answers with an EMPTY username, which GitLab's
 # basic auth rejects. This is git's own documented shell-helper extension point —
 # the same mechanism `gh auth setup-git` installs — emitting the conventional
-# `oauth2` username with the token as password. It is NOT conditional on that token:
-# with `GITLAB_TOKEN` unset it answers with the same 26 bytes as an empty one —
-# `username=oauth2` and a blank `password=` — which GitLab rejects as `HTTP Basic:
-# Access denied`, indistinguishable from a branch that does not exist. So every dispatch
-# venue resolves the token for itself (`deploy/t3`'s credential prologue); there is no
-# fall-through here to rely on.
+# `oauth2` username with the token as password. With `GITLAB_TOKEN` unset or empty it
+# answers nothing: a blank password is rejected as `HTTP Basic: Access denied`, which
+# reads as a missing branch, while no answer makes git name the missing credential.
 RUN git config --system --replace-all "credential.https://gitlab.com.helper" \
-    '!f() { test "$1" = get && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
+    '!f() { test "$1" = get && test -n "$GITLAB_TOKEN" && printf "username=oauth2\npassword=%s\n" "$GITLAB_TOKEN"; }; f'
 
 # The GitHub helper, at the same SYSTEM level and for the same reason: every role and
 # every one-off container must authenticate a `git push` / private clone, and `t3 push`
@@ -339,6 +347,93 @@ ENV UV_CONSTRAINT="${TEATREE_CLONE_DIR}/uv-constraints.txt"
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
+# The code-bearing files, kept out of `system` so a code change never invalidates its layers.
+FROM system AS toolchain
+# Where core sits inside the build context: empty for a core clone, `vendor/teatree` for a fork's archive.
+ARG TEATREE_CORE_SUBDIR=""
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/locked-version.sh /usr/local/bin/locked-version.sh
+# The deploy-managed default ~/.claude/settings.json template (#3359). The init
+# role generates the container's real settings.json from this (plus env overrides)
+# BEFORE `t3 setup`, so the headless agent has a configurable model / permission
+# mode / autoMode grants / tool-use concurrency instead of stock CLI defaults.
+# Baked (not mounted) so a mountless standalone run still has the default; edit
+# this committed, reviewable file to change the loop agent's configuration.
+COPY ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
+
+# ============================================================
+# Immutable generation, in two layers deploy/build-generation.sh builds from `git archive <sha>`.
+# generation-base carries the interpreter, the locked runtime dependencies and prek; it is built
+# from the dependency inputs alone, tagged by their hash and reused unchanged by every commit
+# whose inputs match. generation adds only the commit's source, sealed root-owned read-only, so
+# a container runs exactly the commit its revision label names.
+FROM system AS generation-base
+ARG TEATREE_CORE_SUBDIR=""
+USER root
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/locked-version.sh /usr/local/bin/locked-version.sh
+RUN --mount=type=bind,target=/tmp/base-context \
+    --mount=type=cache,target=/root/.cache/uv \
+    deps=/tmp/deps && \
+    core="$deps${TEATREE_CORE_SUBDIR:+/$TEATREE_CORE_SUBDIR}" && \
+    uv=/home/teatree/.local/bin/uv && \
+    cp -a /tmp/base-context/. "$deps" && \
+    unset UV_OVERRIDE && \
+    export UV_CACHE_DIR=/root/.cache/uv UV_LINK_MODE=copy UV_PYTHON_PREFERENCE=only-managed \
+        UV_PROJECT_ENVIRONMENT=/opt/teatree/venv UV_CONSTRAINT=/opt/teatree/uv-constraints.txt && \
+    export_scope="--directory $core" && \
+    if [ "$core" != "$deps" ]; then export_scope="--directory $deps --all-packages --no-emit-workspace"; fi && \
+    "$uv" export --frozen --no-hashes --no-emit-project --no-default-groups --all-extras \
+        $export_scope -o /opt/teatree/uv-constraints.txt && \
+    "$uv" sync --frozen --no-dev --extra slack --compile-bytecode --no-install-workspace --directory "$deps" && \
+    prek_version="$(locked-version.sh "$deps/uv.lock" prek)" && \
+    [ -n "$prek_version" ] && \
+    "$uv" pip install --python /opt/teatree/venv/bin/python "prek==$prek_version" && \
+    rm -rf "$deps" && \
+    chown -R root:root /opt/teatree/venv /opt/teatree/uv-constraints.txt "$UV_PYTHON_INSTALL_DIR"
+
+FROM ${TEATREE_BASE_IMAGE} AS generation
+ARG TEATREE_GENERATION
+ARG TEATREE_CORE_SUBDIR=""
+USER root
+RUN if ! printf '%s' "$TEATREE_GENERATION" | grep -Eqx '[0-9a-f]{40}'; then \
+        echo "generation image: FATAL TEATREE_GENERATION must be the 40-hex commit sha the context was archived from (got '${TEATREE_GENERATION}') - build with deploy/build-generation.sh." >&2; \
+        exit 1; \
+    fi
+COPY --chmod=0755 ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/claude-settings.template.json /usr/local/share/teatree/claude-settings.template.json
+# The dependencies are the base's; the sync below only installs the workspace's own packages.
+RUN --mount=type=bind,target=/tmp/generation-context \
+    --mount=type=cache,target=/root/.cache/uv \
+    root=/home/teatree/teatree && \
+    core="$root${TEATREE_CORE_SUBDIR:+/$TEATREE_CORE_SUBDIR}" && \
+    uv=/home/teatree/.local/bin/uv && \
+    rm -rf "$root" && \
+    cp -a /tmp/generation-context/. "$root" && \
+    if [ ! -f "$core/src/teatree/__init__.py" ]; then \
+        echo "generation image: FATAL $core holds no teatree core - TEATREE_CORE_SUBDIR does not match the archived layout." >&2; \
+        exit 1; \
+    fi && \
+    cp /opt/teatree/uv-constraints.txt "$core/uv-constraints.txt" && \
+    unset UV_OVERRIDE && \
+    export UV_CACHE_DIR=/root/.cache/uv UV_LINK_MODE=copy UV_PYTHON_PREFERENCE=only-managed \
+        UV_PROJECT_ENVIRONMENT=/opt/teatree/venv UV_CONSTRAINT="$core/uv-constraints.txt" && \
+    "$uv" sync --frozen --no-dev --extra slack --inexact --directory "$root" && \
+    /opt/teatree/venv/bin/python -m compileall -q -j 0 "$root/src" "$core/src" && \
+    smoke_home="$(mktemp -d)" && HOME="$smoke_home" /opt/teatree/venv/bin/t3 --help >/dev/null && rm -rf "$smoke_home" && \
+    /opt/teatree/venv/bin/python "$core/src/teatree/utils/constraint_skew.py" "$core/uv-constraints.txt" && \
+    printf '%s\n' "$TEATREE_GENERATION" >"$root/.teatree-generation" && \
+    mkdir -p "$root/plugins" && ln -sfn .. "$root/plugins/t3" && \
+    chown -R root:root "$root" && \
+    chmod -R a-w "$root"
+ENV TEATREE_GENERATION=${TEATREE_GENERATION} \
+    TEATREE_CLONE_DIR=/home/teatree/teatree${TEATREE_CORE_SUBDIR:+/${TEATREE_CORE_SUBDIR}} \
+    UV_CONSTRAINT=/home/teatree/teatree${TEATREE_CORE_SUBDIR:+/${TEATREE_CORE_SUBDIR}}/uv-constraints.txt \
+    PATH="/opt/teatree/venv/bin:${PATH}"
+LABEL org.opencontainers.image.revision=${TEATREE_GENERATION}
+USER teatree
+
+FROM toolchain AS headless
+
 # ============================================================
 # Bake the product — source@ref + interpreter + LOCKED editable install (#3451).
 # Kept as the FINAL build stage (after the ENTRYPOINT metadata declaration,
@@ -376,4 +471,4 @@ RUN git clone "$TEATREE_REPO_URL" "$TEATREE_CLONE_DIR" && \
         --directory "$TEATREE_CLONE_DIR" -o "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
     uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 \
         --constraints "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
-    uv tool install prek==0.3.13
+    uv tool install "prek==$(locked-version.sh "$TEATREE_CLONE_DIR/uv.lock" prek)"

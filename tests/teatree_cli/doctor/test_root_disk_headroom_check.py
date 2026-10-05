@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.doctor.checks_resources import _check_root_disk_headroom, _disk_percent_threshold
+from teatree.cli.doctor.checks_resources import _check_root_disk_headroom
 
 
 @pytest.fixture(autouse=True)
@@ -31,21 +31,6 @@ class _FakeStatvfs:
         self.f_frsize = 1024**3
         self.f_blocks = total_gib
         self.f_bavail = total_gib - total_gib * used_pct // 100
-
-
-class TestDiskPercentThreshold:
-    def test_default_when_unset(self) -> None:
-        assert _disk_percent_threshold(None, default=85) == 85
-
-    def test_parses_a_valid_override(self) -> None:
-        assert _disk_percent_threshold("70", default=85) == 70
-
-    def test_garbage_falls_back_to_default(self) -> None:
-        assert _disk_percent_threshold("not-a-number", default=85) == 85
-
-    def test_out_of_range_falls_back_to_default(self) -> None:
-        assert _disk_percent_threshold("0", default=85) == 85
-        assert _disk_percent_threshold("101", default=85) == 85
 
 
 class TestRootDiskHeadroomCheck:

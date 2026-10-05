@@ -28,7 +28,7 @@ from teatree.core.models import NEEDS_TRIAGE_LABEL, Ticket
 from teatree.core.models.types import SlackAnswerContext
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlay_repos import owned_repo_slugs
-from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_forge_urls
 
@@ -157,7 +157,7 @@ def _file_new(ticket: Ticket, envelope: Mapping[str, object], *, host: "CodeHost
     if already:
         return _attach(ticket, already)
     stamped = f"{body}\n\n<!-- {_marker(fingerprint)} -->"
-    forge = forge_from_url(f"https://github.com/{repo}")
+    forge = get_overlay(ticket.overlay or None).config.code_host
     try:
         clean_title = route_forge_write(forge=forge, repo=repo, text=title, action=_ACTION, target=repo)
         clean_body = route_forge_write(forge=forge, repo=repo, text=stamped, action=_ACTION, target=repo)

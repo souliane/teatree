@@ -7,15 +7,15 @@ one DB key per setting. Set a value with
 
     t3 <overlay> config_setting set agent_session_model opus
     t3 <overlay> config_setting set agent_session_effort xhigh
-    t3 <overlay> config_setting set agent_skill_models '{"code-review": "opus"}'
+    t3 <overlay> config_setting set agent_skill_models '{"code-review": [{"floor": "opus"}]}'
     t3 <overlay> config_setting set agent_skill_models '{"code": [{"harness": "codex_app_server", "model": "codex"}]}'
     t3 <overlay> config_setting set agent_tier_models '{"frontier": "<a-newer-opus-id>"}'
     t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "vendor/some-model"}'
     t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
 
-Each ``agent_skill_models`` value is either the legacy scalar MODEL floor or an
-ordered list of route objects (``harness``, ``model``, optional ``provider``,
-``tier``, and ``effort``). An empty list has the exact legacy inherit behaviour. Route keys use
+Each ``agent_skill_models`` value is a list containing either one MODEL floor
+object (``floor``) or ordered route objects (``harness``, ``model``, optional
+``provider``, ``tier``, and ``effort``). An empty list inherits the default. Route keys use
 the identity emitted by the skill loader (bundled skills are bare manifest names,
 for example ``code``); aliases are not guessed. Exactly one loaded skill may own
 a route list unless the phase's primary lifecycle skill owns one: that primary
@@ -113,8 +113,8 @@ type SkillModelPolicy = str | tuple[AgentRouteCandidate, ...] | None
 class AgentConfig:
     """The resolved ``[agent]`` spawn-model + session-pin settings (teatree#2216).
 
-    *   ``skill_models`` — canonical companion-skill-name → either a legacy
-        model floor, an ordered harness/model route, or ``None`` for inherit.
+    *   ``skill_models`` — canonical companion-skill-name → a model floor,
+        an ordered harness/model route, or ``None`` for inherit.
         Route entries optionally pin a provider and expose a tier used to
         enforce scalar floors from the other loaded skills.
     *   ``tier_models`` — abstract-tier-name → concrete model id, merged OVER
@@ -170,49 +170,17 @@ class AgentConfig:
         DB row instead of a code edit (§3a #3). Mirrors ``tier_models`` tolerance:
         a non-dict value, a non-string entry, or a value that names no
         :class:`AgentHarness` yields no override for that entry.
-    *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
-        keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
-        ``bool`` value enables the registry default ``fanout_n`` (``True``) or
-        disables (``False``); an ``int`` value enables and overrides the panel
-        width. Empty by default → ``core.phases.resolve_fanout_directive``
-        renders nothing → dispatch is byte-identical to today until a pair is
-        opted in. Mirrors the ``skill_models`` precedent (a typed
-        ``agent_phase_fanout`` dict); the int range is validated at
-        directive-render time (``core.phases._resolved_fanout_n``), fail-loud.
     """
 
     skill_models: dict[str, SkillModelPolicy] = field(default_factory=dict)
     session_model: str | None = None
     session_effort: str | None = DEFAULT_SESSION_EFFORT
     session_permission_mode: str = ""
-    phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "opus"
     tier_models: dict[str, str] = field(default_factory=dict)
     pydantic_ai_tier_models: dict[str, str] = field(default_factory=dict)
     tier_effort: dict[str, str] = field(default_factory=dict)
     phase_harness: dict[str, AgentHarness | None] = field(default_factory=dict)
-
-
-def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
-    """Normalise the ``agent_phase_fanout`` value into a ``"role:phase" → opt-in`` map.
-
-    Each value is a ``bool`` (enable at registry default / disable) or an
-    ``int`` (enable + override the panel width). ``bool`` is checked before
-    ``int`` because ``bool`` is an ``int`` subclass — a bare ``true``/``false``
-    must stay a bool, not collapse to ``1``/``0``. A non-dict value (a
-    malformed scalar) yields an empty map, and any non-bool/non-int entry value
-    is skipped, matching the ``skill_models`` loader's tolerance. The int range
-    is NOT validated here — it is validated fail-loud at render time
-    (``core.phases._resolved_fanout_n``) so a bad N surfaces with the rendering
-    context, not as a silent drop at parse time.
-    """
-    if not isinstance(raw, dict):
-        return {}
-    resolved: dict[str, bool | int] = {}
-    for pair, opt_in in raw.items():
-        if isinstance(opt_in, bool | int):
-            resolved[str(pair)] = opt_in
-    return resolved
 
 
 def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
@@ -287,22 +255,23 @@ def _route_candidate(skill: str, index: int, value: object) -> AgentRouteCandida
 
 
 def _skill_models_from(raw: object) -> dict[str, SkillModelPolicy]:
-    """Normalise ``agent_skill_models`` into scalar floors or ordered routes.
+    """Normalise list-form floor policies or ordered routes.
 
-    Each value is normalised through the inherit sentinels (sentinel → ``None``).
-    A non-dict value (a malformed scalar) yields an empty floor map, matching
-    the ``phase_models`` loader's tolerance.
+    A non-dict top-level value yields an empty policy map.
     """
     if not isinstance(raw, dict):
         return {}
     resolved: dict[str, SkillModelPolicy] = {}
     for raw_skill, value in raw.items():
         skill = str(raw_skill)
-        if isinstance(value, list):
-            candidates = tuple(_route_candidate(skill, index, candidate) for index, candidate in enumerate(value))
-            resolved[skill] = candidates or None
-        else:
-            resolved[skill] = _normalize_model(value)
+        if not isinstance(value, list):
+            msg = f"agent_skill_models[{skill!r}] must be a list"
+            raise TypeError(msg)
+        if len(value) == 1 and isinstance(value[0], dict) and set(value[0]) == {"floor"}:
+            resolved[skill] = _normalize_model(value[0]["floor"])
+            continue
+        candidates = tuple(_route_candidate(skill, index, candidate) for index, candidate in enumerate(value))
+        resolved[skill] = candidates or None
     return resolved
 
 
@@ -420,7 +389,6 @@ def resolve_agent_config(scope: str = "") -> AgentConfig:
         session_model=_session_model_from(read("agent_session_model")),
         session_effort=_session_effort_from(read("agent_session_effort")),
         session_permission_mode=_session_permission_mode_from(read("agent_session_permission_mode")),
-        phase_fanout=_phase_fanout_from(read("agent_phase_fanout")),
         honesty_model=_honesty_model_from(read("agent_honesty_model")),
         tier_models=_tier_models_from(read("agent_tier_models")),
         pydantic_ai_tier_models=_pydantic_ai_tier_models_from(read("agent_pydantic_ai_tier_models")),

@@ -74,7 +74,6 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         ".editorconfig",
         ".gitattributes",  # `generated` merge driver for generated docs (souliane/teatree#3582)
         ".gitignore",
-        ".gitlab-ci.yml",
         ".jscpd.json",
         ".markdownlint-cli2.yaml",
         ".mcp.json",

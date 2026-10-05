@@ -8,15 +8,16 @@ delivers it through the one ``notify_user`` egress, stamping the mirror;
 - the user's Slack reply is polled into a ``PendingChatInjection`` row by
 the real ``SlackDmInboundScanner``;
 - the real ``AskUserQuestionReplyScanner`` binds the reply to the live
-question, applies it, and reacts ✅;
-- the next ``UserPromptSubmit`` injects the answer and stamps
-``applied_at`` so it surfaces exactly once.
+question, applies it, and reacts ✅; the answer is then readable on demand.
 """
 
+import io
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.core.management import call_command
 
 import hooks.scripts.hook_router as router
 from teatree.backends.slack.bot import SlackBotBackend
@@ -74,11 +75,7 @@ class TestAskUserQuestionRoundtrip:
         question.refresh_from_db()
         assert question.answer_text == "staging"
         assert question.resolved_via == "slack"
-        assert question.applied_at is None
 
-        router.handle_inject_pending_questions({"session_id": "s-loop"})
-        out = capsys.readouterr().out
-        assert f"#{question.pk}" in out
-        assert "staging" in out
-        question.refresh_from_db()
-        assert question.applied_at is not None
+        listed = io.StringIO()
+        call_command("questions", "list", "--all", "--json", stdout=listed)
+        assert {"id": question.pk, "answer": "staging"}.items() <= json.loads(listed.getvalue())[0].items()

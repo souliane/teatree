@@ -53,6 +53,17 @@ def _write_shards(tmp_path: Path) -> Path:
 
 
 class TestMergeSummaries:
+    def test_incomplete_row_is_counted_in_dashboard(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        shard_dir = tmp_path / "summaries"
+        shard_dir.mkdir()
+        (shard_dir / "incomplete.md").write_text(
+            _SHARD_B.replace("1 skipped", "0 skipped, **1 incomplete**").replace("| skip |", "| incomplete |"),
+            encoding="utf-8",
+        )
+        assert main([str(shard_dir), *_META]) == 0
+        out = capsys.readouterr().out
+        assert "1 incomplete" in out
+
     def test_merges_to_one_table_with_summed_totals(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         shard_dir = _write_shards(tmp_path)
         code = main([str(shard_dir), *_META])

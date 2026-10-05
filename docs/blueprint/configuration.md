@@ -25,7 +25,7 @@ The keys and value shapes below are illustrative — set each one with
 [teatree]
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
-# a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
+# a value left here is ignored on read.
 orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django, DB-first w/ TOML self-rescue)
 # statusline_chain is DB-home now (extra statusline scripts, glob patterns, chained after the loop's zones).
 # Set it with `t3 <overlay> config_setting set statusline_chain '[...]'`; a value left here is ignored on read (the bash hook reads the DB via the sqlite3 CLI).
@@ -75,7 +75,6 @@ globally, or scoped to one overlay with `--overlay <name>`:
 ```bash
 t3 <overlay> config_setting set mode auto                                  # global default
 t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject
-t3 <overlay> config_setting set missing_issue_ref_policy create
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
 t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # dump the store to a TOML backup (stdout default)
 t3 <overlay> config_setting export --default-keys-only --include-defaults      # the defaults.toml shape: a drop-in replacement for the shipped file
@@ -87,7 +86,7 @@ user authors across all repos one code-host token can see (union-queried across
 `user_identity_aliases`, deduped by URL), routes each to a Slack channel via the
 `[mr_reminder]` repo→channel map, and assembles one mrkdwn message per channel.
 `preview` is read-only; `send` posts one message per routed channel. Routing reuses
-the same host-stripped leading-segment-prefix grammar as `private_repos`
+the same leading-segment-prefix grammar as the path half of `private_repos`
 (`teatree.hooks._repo_visibility.slug_namespace_matches`): the most-specific
 configured pattern wins, and an unmatched MR falls back to `default_channel`
 (empty `default_channel` keeps it out of every channel rather than guessing). The
@@ -142,15 +141,7 @@ a field that CAN live in the DB is **DB-home**. As of config-unify
 the carve-out is **EMPTY** — every `UserSettings` field is DB-home. The two homes are
 disjoint (a fitness function asserts it) — a setting is never read from both tiers. A
 DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
-(config-unify moved `check_updates` — its pre-Django reader
-`check_for_updates` now reads the DB via the Django-free `cold_reader` — `timezone`
-— the Django settings module hardcodes `TIME_ZONE` and configures
-`DATABASES` without reading it, so it was not a bootstrap dep (its former sibling
-`worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the former
-per-overlay-TOML-overridable field `orchestrator_bash_gate_enabled` — per-overlay
-override now lives in a `ConfigSetting` overlay-scope row (`timezone` and its carve-out
-sibling `privacy` made the same DB-home move and were later retired reader-less by
-[#4203](https://github.com/souliane/teatree/issues/4203)) — `handover_mirror_path`
+(config-unify moved `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures `DATABASES` without reading it, so it was not a bootstrap dep (its former sibling `worktrees_dir` was removed as a redundant duplicate of `worktree_root()`) — the former per-overlay-TOML-overridable field `orchestrator_bash_gate_enabled` — per-overlay override now lives in a `ConfigSetting` overlay-scope row (`timezone` and its carve-out sibling `privacy` made the same DB-home move and were later retired reader-less by [#4203](https://github.com/souliane/teatree/issues/4203)) — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
 the same default bootstrap path `write_mirror` uses when unset; that default is the SHARED
 data dir (`$T3_DATA_DIR` when set, else `${XDG_DATA_HOME:-~/.local/share}/teatree`) plus
@@ -160,11 +151,8 @@ the worker container wrote its mirror to a filesystem the host could not read an
 every runtime shares (the deploy already bind-mounts it); the mirror is BOOTSTRAP-ONLY, read
 only when the DB is unreachable and never merely because the drain came back empty (#4194) — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
-`json_each` — `statusline_engaged_render` — the #3502 opt-in (strict bool, default OFF)
-that renders the statusline in a hand-engaged session (an engage marker present) even
-with autoload off, read DB-only by the bash statusline
-(`statusline.sh._statusline_engaged_render_db_value`) — and `autoload` — the #256 engagement flag; its cold SessionStart /
-UserPromptSubmit readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
+`json_each` — and `autoload` — the #256 engagement flag; its cold SessionStart /
+PreToolUse readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
 `statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
 value is ignored on read and the how-to advisory points at
 `config_setting set autoload true` — and finally the last two, the nested structured
@@ -192,8 +180,7 @@ mask: it names each masked leaf and both reconcile commands as a loud WARN by de
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
 regroup under a per-overlay default `~/workspace/t3-workspaces/<overlay>/`,
-resolved by `config.worktree_root()` — `T3_WORKSPACE_DIR` env/Django-setting
-override (highest, back-compat) → DB `ConfigSetting` (overlay scope, then global)
+resolved by `config.worktree_root()` — DB `ConfigSetting` (overlay scope, then global)
 → that default. This is **distinct from** the **CLONE root** `config.clone_root()`
 (`~/workspace`, where main repo clones live; `T3_WORKSPACE_DIR` env/Django-setting
 override → `~/workspace`), which `find_clone_path` and every clone-discovery caller
@@ -203,16 +190,14 @@ left in TOML is **ignored on read** and warned about on load (it silently reloca
 worktrees pre-warning); migrate it into the store with `t3 <overlay> config_setting
 import` or set it explicitly. `t3 <overlay> workspace relocate` moves an overlay's
 EXISTING teatree-managed worktrees to that per-overlay dir with `git worktree move`
-(skipping any locked / dirty / live mid-task one, idempotent, `--dry-run`-able). The one DERIVED field
-(`notify_on_behalf`) is computed by the resolver and has no home. The
+(skipping any locked / dirty / live mid-task one, idempotent, `--dry-run`-able). The
 resolution-tier wiring below details each home's chain.
 
 The resolution chain is **per home** (first match wins) — each field reads from
 exactly the tiers its home allows:
 
 * **DB-home field** (every field not in the carve-out): `T3_*` env var (wired one-offs
-  in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_WIP`,
-  `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`), then the **DB store** — an
+  in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_WIP`, `T3_REVIEW_SKILL`), then the **DB store** — an
   **overlay-scoped** `ConfigSetting` row, then a **global** row — then, for a key
   **promoted to an overlay code default** (#36, `config.overlay_code_defaults`),
   the active overlay's `OverlayConfig` value, then the `UserSettings` dataclass
@@ -354,7 +339,7 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
-| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and the active mode's `egress` posture for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `full`). Both autonomous tiers collapse the one tier-governed approval gate (`require_human_approval_to_answer`) and pin `mode = auto`. Two gates sit outside that set, each its own named opt-in no tier touches: `require_human_approval_to_merge` for review before merge (#3630), and the active mode's `egress` posture for speaking to a colleague under the owner's own identity (#3895). `full` enables the single-author `solo_overlay` merge bypass, `notify` keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
 | `wip` | Bounded-WIP throughput dial `slow < medium < full < boost`: how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
@@ -363,30 +348,23 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `substrate_self_signoff` | Explicit, default-off opt-in (#3223) that lets the standing grant sign off a **substrate** merge (merge keystone, architecture spec, governance doc, self-guardrail seam) on an overlay standing at `autonomy = full` (the solo-owned tier). Default `false` preserves the #2727 safety posture — substrate PINGS-and-HOLDS for the owner even at `full`. Turning it on changes only WHO authorizes the sign-off; the quality/safety floor (independent cold review, reviewed-SHA bind, CI-green, not-draft, maker≠checker, anti-vacuity) still runs. The `full` tier gate is kept so a below-full overlay never self-merges substrate even with the setting on. DB-home, per-overlay overridable; wired through `_overlay_grants_standing_substrate_signoff` |
 | `substrate_auto_merge_authorized_by` | Owner-id STANDING substrate delegation (#3413), default empty (`""`). Empty preserves the hold-for-owner posture verbatim — a substrate CLEAR PINGS-and-HOLDS and is never auto-merged (invariant 4). Set to an owner id, the config WRITE is the durable, revocable authorization: the headless `pr_sweep` re-presents that id at merge time as the `--human-authorized` a substrate CLEAR requires, and the keystone (`_config_standing_substrate_delegation`) authorizes ONLY when the presented id still equals this configured value — sourced from config, never a live flag, so unsetting it revokes the delegation at the next merge. Every gate still runs (green required checks, recorded merge_safe verdict, clean rebase, draft-lock, maker≠checker, SHA-bind); on each such auto-merge the owner gets an "informed, not asked" Slack DM, and the merge is audited as config-sourced (`MergeAudit.standing_delegation_by`), distinct from a per-PR recorded human approval. Orthogonal to `substrate_self_signoff` (a `full`-tier bool self-signoff): this is a specific-owner-id, autonomy-independent delegation. DB-home, per-overlay overridable |
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
-| `missing_issue_ref_policy` | What to do when a commit/MR needs an issue ref and none is in hand: `find_existing_then_ask` (default) / `create` / `dummy`. Scoped per overlay so a colleague-facing client overlay stays on the never-create default while a personal one can opt into `create`. The default always recovers the original existing issue first, then ASKs on a colleague-facing repo and CREATEs on the user's own repo — never a dummy. `create` / `dummy` are opt-in and authorise auto-create / a placeholder ref on colleague repos too. Resolved by `teatree.missing_issue_policy.resolve_missing_issue_verdict`; `T3_MISSING_ISSUE_POLICY` env wins; agent prose in `skills/ship/SKILL.md` § 0a |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under a forbidding egress posture (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
-| `review_request_post_disabled` | Whether agent-driven review-request posting is BLOCKED for this overlay (#2579, replacing the deleted `agent_review_request_disabled` side flag). Resolved off the autonomy TIER by `_apply_autonomy`: the `notify` tier sets it `true` so `resolve_on_behalf_verdict("review_request_post")` BLOCKs **regardless of the egress posture** (including a permitting one); the `full` tier leaves it `false` (review-request proceeds); `babysit` keeps the default `false` so review-request follows the egress posture. The customer-overlay done-definition gate: an overlay running `notify` stops at "MR is mergeable + review-requestable" and never auto-requests review. An explicit per-overlay pin always wins (Option A — the per-overlay escape): a `full` overlay can pin `true` to suppress auto-request, a `notify` overlay can pin `false` to opt back in. Orthogonal to `require_human_approval_to_merge` (which gates merge, not the review-request post). Scoped per overlay |
-| `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see `config/settings.py` for the boundary) |
-| `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
-| `admin_autologin_enabled` | Whether the loopback admin dashboard auto-logs-in the first superuser (`LocalAdminAutoLoginMiddleware`). Default `true` so `t3 admin` and the deploy's loopback admin need no password. Never opens the admin alone: the middleware ALSO requires a loopback source (`127.0.0.1` / `::1` / `INTERNAL_IPS`), so a non-loopback request is never auto-logged-in even with the flag on — decoupled from `DEBUG`. Set `false` to force Django's auth wall. Per-overlay overridable |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
-| `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
+| `architectural_review_skill` | Override which skill the scanner dispatches (default `architectural-review`) |
 | `architectural_review_cadence_hours` | Per-overlay success-cadence floor (age of the last COMPLETED review) for the architectural-review scanner (default 168) |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
-| `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the shared host-stripped leading-segment-prefix grammar `private_repos` uses, so a namespace entry covers every repo under it. This is the PIN layer over the overlay's derived `review_exempt_repo_slugs()`, resolved by `teatree.core.review.repo_exemption`, and it wins in BOTH directions — an entry ADDS an exemption, a `!`-prefixed one SUBTRACTS one the overlay declared, so a changed policy is a config edit rather than a merge. Both sources feed one list where the deepest matching pattern decides and a tie does not exempt; both are empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
+| `review_exempt_repos` | Repo patterns whose merge requests never get a review request (a repo whose review the owner asks for in person). Matched on the host-free `slug_namespace_matches` segment grammar, so a namespace entry covers every repo under it. This is the PIN layer over the overlay's derived `review_exempt_repo_slugs()`, resolved by `teatree.core.review.repo_exemption`, and it wins in BOTH directions — an entry ADDS an exemption, a `!`-prefixed one SUBTRACTS one the overlay declared, so a changed policy is a config edit rather than a merge. Both sources feed one list where the deepest matching pattern decides and a tie does not exempt; both are empty by default, so it ships INERT. Exemption is its own declared axis — never derived from `RepoOwner`, which answers DEVOPS for every unrecognised repo. |
 | `review_exempt_repos_count_toward_group_readiness` | Whether a review-exempt merge request still gates its work group's readiness. Default `true` is the conservative reading — an exempt member keeps holding the group, biasing toward NOT broadcasting a partial batch. |
-| `require_work_group_batch` | Turns the work-group batch gate from advisory into a hard refusal: no member is broadcast while a sibling is not yet review-ready. Default `false` ships INERT (the advisory behaviour). |
 | `review_nag_max_interval_days` | Ceiling (default `30`) for the review-nag Fibonacci re-ask backoff, so an unanswered request settles into a monthly rhythm instead of going quiet for months. |
-| `e2e_confidence_threshold` | Rubric score (0-100, default `90`) a Playwright spec must reach to be VERIFIED by the `/t3:e2e` verify↔review loop (`/t3:e2e` § "Verify–Review Loop to Threshold"). The single knob both the `/t3:e2e-review` E2E Confidence Rubric and the loop read, so "the threshold" is one resolved value. A stricter client overlay raises it (e.g. `95`); a fast dogfood overlay lowers it. Documentation-driven today (the loop is agent prose, not a deterministic gate) — the typed field is the shared source of truth for the doc value and any future programmatic consumer. |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |
-| `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
+| `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `running-evals`) |
+| `dogfood_smoke_skill` | Override which skill the dogfood-smoke scanner dispatches (default `dogfooding`). Every loop-skill default must name a shipped skill: setup refuses a headless box whose demanded skills are not loadable |
 | `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `sweeping-tickets`) |
 | `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep row retirements (default `true`). When on, the dispatched skill records each fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing, and routes every retirement through the gated `ticket bulk-close`. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (default `1`, the headless-safe single in-flight stack; `0` = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay can relax to `0`; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `task_attempt_retention_days` | #3693: retention window (days) for `TaskAttempt` rows (default `30`, `0` disables). `t3 <overlay> retention prune` deletes attempts OLDER than this window whose owning task AND ticket are TERMINAL — never a live/in-flight row. Dry-run by default (`--apply` deletes). Per-overlay overridable; enforced by `teatree.core.retention`. |
-| `ticket_transition_prune_disabled` | #3871: kill switch for the `TicketTransition` lane (default `false`). The lane has no window — its trigger is the owning ticket CLOSING (`Ticket.marker_release_states()` plus RETRO_RECORDED), because a closed ticket's operational residue is dead weight the moment it closes and waiting out a window is arbitrary. What it removes is decided per ROW, not per table: only a `from_state == to_state` row, which records no edge and so is not history a reopened ticket (`reopen` / `reopen_for_followup` / `rework`) needs. Every real state edge survives for as long as the ticket does. Each ticket's earliest row (the creation proxy `factory_signal_queries` dates a fix ticket by via `Min(created_at)`) and latest row (the last-activity signal the stale-ticket and stuck-redispatch scanners read) are never touched. Per-overlay overridable; enforced by `teatree.core.models.transition`. |
 | `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the daily `prune_task_results` maintenance chain, through one seam (`teatree.core.retention.task_results`). Per-overlay overridable. |
 | `scratch_retention_days` | #4165: retention window (days) for agent scratch under the temp root (default `0` — the lane ships OFF, as every destructive lever does; set a positive window to arm it). On a RAM-backed `/tmp` this is MEMORY, not idle disk — the measured box carried 8.8 GB of week-old sqlite/venv scratch inside a 15 GB tmpfs on 31 GB of RAM, 28% of the working pool. `t3 <overlay> retention scratch` reclaims a top-level entry only when it is older than the window, owned by this uid, held open (fd or cwd) by no live process the probe can see, not a registered worktree checkout nor a parent/child of one, and not protected by name. Every guard that cannot be answered KEEPS the entry with its reason printed; an unreadable process table or worktree read makes the whole plan removable-empty. Dry-run by default (`--apply` reclaims). Per-overlay overridable; enforced by `teatree.core.retention.scratch`. |
 
@@ -398,42 +376,29 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `provision_slow_threshold_seconds` | #2949: a provision whose total duration exceeds this many seconds (default `600`) fires the same best-effort out-of-band user alert a single step timeout does. Per-overlay overridable. |
 | `single_branch_repos` | Repos that are ONE branch wide while listed — `<repo-slug>=<branch>` entries (default `[]`). The case it exists for is a **fork bootstrap**: the repo's entire reviewed history is still in flight behind one open PR, so there is nothing to base a second branch ON — a side branch has to be re-based onto whatever that PR becomes, and in practice gets re-implemented instead. While a repo is listed, BOTH creation paths refuse a second branch: `t3 <overlay> worktree provision` (in `WorktreeProvisioner._provision_repo`, checked BEFORE the `Worktree` row so a refusal leaves no half-provision) and the raw-git PreToolUse gate (`git worktree add`, `checkout -b`, `switch -c`, `branch <name>`, and a `push` whose destination is not the pinned branch). The CLEANUP verbs stay allowed — `worktree list/remove/prune` and `branch -D` are how a repo that already sprawled is brought back into line, so gating them would make the mechanism defend the sprawl it exists to prevent. Matching is path-suffix-wise in both directions, because the Bash gate resolves a full remote URL while the provisioner has only the bare `Ticket.repos` name. **Removing an entry is how the rule ends** when the bootstrap PR merges — that diff is the dated record of the merge, and it is the intended off-switch rather than working around the gate. Per-overlay overridable; decided by `teatree.core.gates.single_branch_repo_guard`. |
 | `single_branch_repo_gate_enabled` | Kill-switch for `single_branch_repos` (default `true`). `false` reverts both seams to the pre-gate behaviour byte-for-byte while leaving the entries declared. Per-call escape on the Bash seam: append `[single-branch-ok: <reason>]` to the command. Per-overlay overridable. |
-| `dream_propose_evals` | Whether the nightly dream pass requests eval proposals (default `true`). The manual `t3 dream run` reads the SAME key — the two used to carry disagreeing defaults under one name. |
-| `dream_cross_link` | Whether dream phase 4 cross-links related memories (default `true`). |
-| `dream_merge` | Whether dream phase 4b merges near-duplicate memories (default `true`, #2723). |
-| `dream_reindex` | Whether dream phase 5 regenerates `MEMORY.md` (default `true`). |
-| `dream_decay` | Whether dream phase 6 decays and archives stale memories (default `true`). |
-| `dream_compliance_measure` | Whether dream phase 3c PERSISTS a compliance snapshot (default `true`, #2663) — it files nothing, so the root KPI is measured on every pass. |
 | `dream_memory_promote` | Whether Pass-2 memory→fix promotion runs (default `true`, #2426, #4776) — a pass batches its promotions into ONE ticket. |
-| `dream_derive_evals` | Whether the LLM-backed full-scenario derivation runs (default `false`, #2447) — a metered SDK call per candidate. |
-| `dream_compliance_escalate` | Whether dream phase 3c ESCALATES a recurrence into an enforcement ticket (default `false`, #2663). |
-| `dream_automation_asks` | Whether dream phase 3d promotes a recurring manual ask to a fix (default `false`, #2663). |
-| `dream_validate_live` | Whether eval promotion runs the METERED live validator (default `false`, #4176). Without it every clearing candidate is WITHHELD, which is the nightly tick's key safety property. |
+| `dream_umbrella_url` | The issue whose ticket queues each dream pass's collected gaps (`extra.dream_gap_pending`) until the backlog sweep folds them into existing hosts (default `https://github.com/souliane/teatree/issues/2663`). It is the fallback host, never a container a pass mints under. The dream pass, the backlog-sweep scanner and retro all read it, so it is filed under Infrastructure → Retention & sweeps, not the `dream` loop group. |
 | `snapshot_warmer_max_age_days` | #2949: a reference-DB DSLR snapshot older than this many days (default `1`) is STALE; the snapshot-warmer loop refreshes it out-of-band so a ticket-critical-path provision never pays the slow restore+migrate path. Per-overlay overridable. |
+| `gitlab_events_subscription` | The relay's Pub/Sub pull subscription as `projects/<project>/subscriptions/<name>` (default `""`, which is OFF: the `inbox` loop does not build the GitLab-events job). Read by the loop with no overlay, so box-global. The VM's metadata-server identity needs `roles/pubsub.subscriber` on it; nothing is stored. |
 | `stale_stack_min_age_minutes` | #2207: stale-stack reaper threshold (minutes, default `0` = disabled, opt-in; set e.g. `240` to enable). A teatree-provisioned compose stack (named `<repo>-wt<ticket-pk>`) with NO live `Worktree` row — a failed-teardown leftover, or a hand-rolled stack started inside a worktree, which inherits `COMPOSE_PROJECT_NAME` from the env cache — is torn down once its newest container lifecycle event is older than this: automatically before `worktree start` / `workspace start` / `workspace provision`, and on demand via `t3 <overlay> workspace reap-stale [--dry-run]`. Age-keyed + fail-safe (unknown age ⇒ keep) so a parallel session's fresh stack is never reaped, and ownership-gated so a stack teatree did not provision (the deploy stack, an unrelated user project) is never a candidate on either this path or `clean-all`. Per-overlay overridable. |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
 | `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` code work until the resolvable pending teatree skills load. It has no `TaskCreated` counterpart (#4216). Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
 | `plan_edit_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 gate 16 early DX signal (`handle_block_edit_before_planned`) that denies `Edit`/`Write` while the worktree's ticket is in `WORK_STARTED` state. Read directly by the hook layer; set `false` under `[teatree]` or disable via `t3 <overlay> gate plan disable`. Per-call escape: `[skip-plan-gate: <reason>]` in `new_string`/`content`/`file_path` (first 512 chars). |
-| `visible_plan_gate_enabled` | Kill-switch (default `true`) for the visible per-target plan-first gate (`handle_enforce_visible_plan_before_tools`), which denies a governed tool until the turn shows one implementation-plus-verification plan per named ticket. Read directly by the hook layer; disable via `t3 <overlay> gate visible-plan disable`. Per-call escape: `[visible-plan-ok: <reason>]` in any string argument (first 512 chars). Third escape: its `TEATREE PLAN-FIRST GATE` deny prefix sits on the deny circuit breaker's UX allow-list, so the third identical denial fails that one call open rather than escalating a refusal the agent cannot answer. |
+| `visible_plan_gate_enabled` | Kill-switch (default `true`) for the visible per-target plan-first gate (`handle_enforce_visible_plan_before_tools`), which arms only when the owner's own prompt names two or more tickets and one of its sentences orders a plan before a change (a question, or a report about an earlier plan, never arms), then denies a write, question or dispatch until the turn shows one implementation-plus-verification plan per ticket. Read, Grep, Glob, read-only Bash and the task-list tools stay open. Read directly by the hook layer; disable via `t3 <overlay> gate visible-plan disable`. Per-call escape: `[visible-plan-ok: <reason>]` in any string argument (first 512 chars). Third escape: its `TEATREE PLAN-FIRST GATE` deny prefix sits on the deny circuit breaker's UX allow-list, so the third identical denial fails that one call open rather than escalating a refusal the agent cannot answer. |
 | `gate_relaxation_gate_enabled` | Kill-switch (default `true`, [#850](https://github.com/souliane/teatree/issues/850)) for the §17.6.1/§17.6.2 anti-relaxation + tach-soundness prek gate (`scripts/hooks/check_gate_relaxation.py`) that refuses a commit whose staged diff relaxes a lint/coverage constraint or a tach boundary. DB-home (per-overlay overridable): the hook resolves it DB-first through `get_effective_settings`, so `config_setting set gate_relaxation_gate_enabled false` actuates it exactly like the sibling gates, and `t3 <overlay> gate gate-relaxation disable` is the self-rescue. Per-commit escape: the `ALLOW_GATE_RELAX='<reason>'` env marker (non-empty reason) records a sanctioned relaxation and lets the commit through. |
-| `mcp_privacy_gate_enabled` | #171: canary off-switch (default `true`) for the Slack-MCP arm of the #1213 quote-scanner and #1218 bare-reference publish-privacy gates (reachable via the `mcp__.*[Ss]lack.*` matcher). Fails OPEN; set `false` to disable the Slack-MCP arm alone if it misfires. The Bash arm of both gates is unaffected. |
-| `dispatch_quote_gate_on_task_create_enabled` | Opt-in switch (default `false`) for the task-list quote gate (`handle_dispatch_prompt_quote_scanner_on_task_create`) — the task-LIST tools bypass `PreToolUse`, so only `TaskCreated` reaches a task-list write, and that event never reaches a sub-agent dispatch (#4216). The key name predates the correction and is kept: it is a persisted DB-home setting, so a rename would churn operator config and buy no behaviour. Scans task subjects/descriptions for HIGH verbatim user quotes and clears on a `[quote-ok: <reason>]` token. |
-| `dispatch_quote_scan_enabled` | #1564: kill-switch (default `true`) for the `PreToolUse` pre-dispatch quote scan (`handle_dispatch_prompt_quote_scanner`) that refuses an `Agent`/`Task` dispatch whose prompt carries a HIGH verbatim user quote. Disable it with `t3 <overlay> config_setting set dispatch_quote_scan_enabled false` if it misfires — the key is registered, so that write is accepted rather than refused as unknown. Fails OPEN to enabled; **fails LOUD on an unknown value** — a non-boolean (`"yes"`, `on`, `2`) emits one stderr `WARNING` line and keeps the protective default rather than silently swallowing the misconfiguration (`teatree_bool_setting_loud`). |
 | `orchestrator_boundary_agent_gate_enabled` | Kill-switch (default `true`, #1733) for the `Agent` arm of the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary` → `_deny_foreground_agent_dispatch`, #1442), denying a main-agent FOREGROUND `Agent` dispatch. Now LIVE: an `Agent` `PreToolUse` matcher is wired in `hooks.json` ([#1646](https://github.com/souliane/teatree/issues/1646)) and the gate is default-ON after its attended pre-INSTALL dry-run. Fails OPEN to enabled on a missing/broken config; only an explicit bare `false` disables it. Off-ramps (never-lockout): sub-agent context, `run_in_background: true`, per-call `[fg-ok: <reason>]`, the deny-circuit-breaker, and — via `_fail_open_or_deny` ([#1692](https://github.com/souliane/teatree/issues/1692)) — the self-rescue allowlist + the master `danger_gate_fail_open` switch. The `Bash` arm (`orchestrator_bash_gate_enabled`) is unaffected. |
 | `orchestrator_delegation_gate_enabled` | Kill-switch (default `true`) for the delegation gate (`handle_block_undelegated_investigation`), which refuses an ORCHESTRATOR `Bash` call whose shape has no ceiling on what it returns — a SWEEP (`rg`, `grep -r`, `git grep`, `find <path>`) carrying neither a count bound (`-m`/`--max-count`), a piped `head`/`tail`, nor a named single file (a glob is not a name), or a PARSE (output piped into `python`/`node`/`ruby`/`perl`). Routing reads, sub-agent calls and every non-Bash tool are untouched. `run_in_background: true` is NOT an escape (it guards context, not responsiveness); the per-call escape is `[delegate-ok: <reason>]`, and `t3 <overlay> gate delegation disable` flips this switch. |
+| `schema_readiness_gate_enabled` | Default-on claim gate escape. A false `BEHIND` or `UNKNOWN` reading can otherwise refuse every new task; `t3 <overlay> config_setting set schema_readiness_gate_enabled false` bypasses both DB-behind-code and process-behind-DB checks on the next claim without waiting for their memo TTL. |
+| `self_dm_gate_enabled` | Default-on cold-hook escape for a false self-DM Slack MCP refusal. `t3 <overlay> config_setting set self_dm_gate_enabled false` disables only that classifier; restore it after repairing the destination registry. |
 | `raw_pr_create_gate_enabled` | Kill-switch (default `true`) for `handle_block_unapprovable_author_create`, which denies a raw `glab mr create` / `gh pr create` / REST POST to a PR/MR COLLECTION endpoint on a repo that DECLARES a non-owner authoring credential. A repo may declare its MRs are authored under such a credential so the owner stays eligible to approve them; the forge CLI never consults that declaration, so the MR is opened by the owner and the forge then bars him from approving it (HTTP 401). Shape detection is `teatree.hooks.raw_create_detect` (action-aware, sharing its traversal with the sibling merge detector via `teatree.hooks.forge_subcommand`); scope is the tri-state TARGET classification, but on the declared credential rather than the raw-merge gate's repo-managed-ness — a merely-managed repo declaring none (this deployment's own upstream chief among them) is not this gate's business. `t3 <overlay> gate raw-pr-create disable` is the self-rescue; the deny routes through `_fail_open_or_deny`. |
 | `danger_gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. The `danger_` prefix flags that a forgotten `true` override silently disables protective gates. See BLUEPRINT §17 invariant 10. |
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
-| `private_repos` | Offline slug-NAMESPACE allowlist of known-private repos: each entry is a path-segment prefix of a host-stripped `owner/repo` slug (`acme-engineering` covers `acme-engineering/*`, host-qualified or bare), NOT a raw substring (#1953 — a substring match falsely downgraded a public SSH-alias remote). Drives the #126/#1657 carve-out and (unioned with `internal_publish_namespaces`, #1672) the destination skip, so a user with only this set needs no second list. `teatree.hooks._repo_visibility`. |
-| `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
+| `private_repos` | Host-qualified `host/owner` or `host/owner/repo` entries. A namespace entry declares EVERY repo below it private, so use one only for a group with no public repo; otherwise list individual repos. A reachable forge answer PUBLIC wins over a declaration. Matching preserves the host and path-segment boundaries. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). Read outside the scope gate by `merge.host_kind` (forge recovery) and `cli.review.forge_target` (attributing a review target the repo tables never listed); never by merge authorization. `teatree.core.intake.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from the private DB `ConfigSetting` store (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
 | `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
-
-`notify_on_behalf` is NOT in this registry — it is derived (read-only),
-set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
 
 ### 10.1.1 Local text-to-speech (#2060)
 
@@ -528,11 +493,7 @@ t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collabor
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
 ```
 
-Any DB-home key can be scoped to a client overlay the same way:
-
-```bash
-t3 <overlay> config_setting set review_request_post_disabled true --overlay client-project
-```
+Any DB-home key can be scoped to a client overlay with `--overlay`.
 
 ### 10.1.2 Agent model tiering, routes, and session pins
 
@@ -710,19 +671,20 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 
 ### 10.6 Term-scanning taxonomy
 
-Every term-scanning gate resolves through one class-tagged source: the DB-home `banned_term_registry` row (or the `$TEATREE_TERM_REGISTRY` CI secret), read by `teatree.hooks.banned_term_registry.terms_for_gate`. Each class is scanned by a specific gate; the registry is registry-first, falling back to a legacy per-source row when it is unset.
+Every term-scanning gate resolves through one class-tagged source: the DB-home `banned_term_registry` row (or the `$TEATREE_TERM_REGISTRY` CI secret), read by `teatree.hooks.banned_term_registry.terms_for_gate`. Migration `0123` moves legacy rows into the registry before removing their readers.
+The same migration clears stored rows for the retired A/B/C settings; it leaves operator settings in place.
 
-| class | scanned by gate | legacy fallback source | unset behaviour |
+| class | scanned by gate | migrated source | required content |
 |---|---|---|---|
-| `leak` | diff + core + tree | `banned_brands` | fail-loud |
-| `prose_collider` | diff + core | `banned_terms` | fail-loud |
-| `tone` | diff | (none) | inert |
-| `overlay` | overlay core-generic gate | `overlay_leak_terms` | inert |
-| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | inert |
+| `leak` | diff + core + tree | `banned_brands` | nonempty for the tree scan |
+| `prose_collider` | diff + core | `banned_terms` | may be empty when `leak` supplies scan terms |
+| `tone` | diff | (none) | optional |
+| `overlay` | overlay core-generic gate | `overlay_leak_terms` | nonempty for the core overlay-leak scan |
+| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | optional |
 
 * **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
-* **Unset behaviour.** `leak`/`prose_collider` REFUSE (`BannedTermsUnsetError`) when both the registry and their legacy source are unset — a leak gate never scans as empty. `tone`/`overlay`/`allow` are optional and default to an inert empty set (the overlay gate is inert-when-empty by design). A malformed registry fails loud everywhere.
-* **Single resolver.** The four legacy keys are read from the store only by the registry module and the legacy resolvers it delegates to; every other gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. `t3 banned-terms migrate-registry` builds the class-tagged value from the current legacy rows and self-verifies it drops no term (`teatree.hooks.banned_term_registry.verify_migration`).
+* **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate also refuses when its scan classes contain no terms. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
+* **Single resolver.** Every gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. Legacy keys have no runtime fallback. Migration `0123` preserves registry class values when both old and new rows exist, and removes the old rows per scope.
 
 **Code-resident public tier.** A second tier of term data is generic, DB-free, and ships in the repo — it carries no operator-private value, so it stays committed and is NOT part of the registry:
 
@@ -731,7 +693,7 @@ Every term-scanning gate resolves through one class-tagged source: the DB-home `
 * `scripts/privacy_scan.py` — the credential/email/host regexes (`glpat-`, `sk-`, home-directory paths, …).
 * the eval-fixture personal-marker / profanity guard — a generic fixture-hygiene check.
 
-**Secret / defaults boundary.** Every registry class carries operator-private codenames, so the five term keys (`banned_terms`, `banned_terms_allowlist`, `banned_brands`, `overlay_leak_terms`, `banned_term_registry`) are all in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. They must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
+**Secret / defaults boundary.** `banned_term_registry` carries operator-private codenames and is in `SECRET_SETTINGS`: DB-only, empty in code, and withheld from a shared `config_setting export`. It must never appear in a committed defaults file — a forward guard asserts `SECRET_SETTINGS` is disjoint from any `config/defaults.toml` that ever ships.
 
 ### 10.6.1 Every declared setting has an owner, and that is ASSERTED
 
@@ -756,7 +718,36 @@ only there stayed.
 The REACH is the whole difficulty, because every way of narrowing it produces a FALSE
 ABSENCE, which invites a deletion. Three were measured: `hooks/` is outside the package
 and is the only reader of `loop_cadence_seconds`; a `.sh` reader has no Python AST at all
-and `statusline.sh` is the only reader of `statusline_engaged_render`; and `config/` is
+and `statusline.sh` reads `statusline_chain`; and `config/` is
+not uniformly a declaration — its RESOLVERS are readers, and excluding the package
+wholesale hid the only read of `independent_reviewer_identities`. Prose is not readership
+either. An unreadable root REFUSES rather than answering empty, and the check carries a
+planted-key control, because zero is also what a walk that reads nothing reports.
+
+### 10.6.1 Every declared setting has an owner, and that is ASSERTED
+
+A setting nobody reads is a surface nobody maintains, and the count is what makes the
+schema hard to hold. So ownership is derived from the source, never listed: `quality.
+loop_setting_ownership` attributes a key to the LOOP whose code is its only reader (B17 —
+the settings-to-loop map is STRUCTURE, not a table someone keeps in step), and `quality.
+setting_readership` answers the totality half the loop map cannot — *which settings does
+nobody own?* Ownership is total by construction, so the assertion is one-sided: the
+UNREAD set is empty (measured: 0 of 194), and a key that joins it is a B8 ask — activate
+it, or delete it with the owner's decision — never a key left sitting.
+
+SOLE readership is the whole test, and it is what MOVES a declaration: a key one loop
+reads and non-loop code reads too is owned by NEITHER, so it declares outside every loop
+group. Because the map is re-derived from read sites, a declaration drifts when a READER
+moves — a shared health signal, a helper no single loop reaches — with the declaration
+itself untouched. That is how a vendor sync reddens the gate: `disk_warn_free_gb` and
+`disk_crit_free_gb` grew a reclaim-stall reader in `core/` and a yield-ladder reader no
+loop reaches, so they left the `resource_pressure` group while the four keys still read
+only there stayed.
+
+The REACH is the whole difficulty, because every way of narrowing it produces a FALSE
+ABSENCE, which invites a deletion. Three were measured: `hooks/` is outside the package
+and is the only reader of `loop_cadence_seconds`; a `.sh` reader has no Python AST at all
+and `statusline.sh` reads `statusline_chain`; and `config/` is
 not uniformly a declaration — its RESOLVERS are readers, and excluding the package
 wholesale hid the only read of `independent_reviewer_identities`. Prose is not readership
 either. An unreadable root REFUSES rather than answering empty, and the check carries a
@@ -803,10 +794,9 @@ may never move, and neither may its VALUE.
 default an operator tunes to kickstart a box IS a setting whatever table it lives in, so
 the 26 default loops, the 7 curated modes and the 2 weekly schedules ship as data beside
 the `[teatree]` keys rather than as Python literals: `[loops.<name>]` (cadence, optional
-`daily_at`, `colleague_facing`, `default_enabled`, `description`, and `prompt_body` for the
+`daily_at`, `colleague_facing`, `description`, and `prompt_body` for the
 one prompt-backed loop), `[modes.<name>]` (availability posture plus an `entries` table
-masking each loop — a loop ABSENT from `entries` inherits its own enabled flag, which is how
-a destructive-capable loop is never silently re-enabled by a mode switch), and
+masking each loop — a loop ABSENT from `entries` reads off), and
 `[schedules.<name>]` with its `[[...slots]]` array. `teatree.loops.seed.DEFAULT_LOOPS` and
 `preset_seed.default_preset_specs` / `default_schedule_specs` build their spec dataclasses
 from these tables through `config/seed_defaults.py` — the stdlib-`tomllib` sibling of
@@ -885,12 +875,14 @@ from `defaults.toml`, so a malformed file fails once, loudly.
   that registered default.
 
 **Import (`import_toml_to_db(text, dry_run)` + `t3 <overlay> config_setting import`).** The
-precise inverse of `export`: it loads a dump back into the store. Retired aliases fold onto
-their live key; unknown keys and secret / personal-identifier keys are REJECTED, and one
+precise inverse of `export`: it loads a dump back into the store. Unknown keys and
+secret / personal-identifier keys are REJECTED, and one
 rejection refuses the WHOLE import (nothing written) so a bad key never leaves a partial
 store — the reject rule reuses the export withhold taxonomy, so a shared export's rows
 import back exactly and a secret can never round-trip in. Every value is validated through
-the resolver's own registry parser. **Zero-row normalization:** a value equal to the shipped
+the resolver's own registry parser. A pre-upgrade backup containing a renamed key is
+refused with its successor named (for example, `speed` → `wip`); rename the key in
+the backup before retrying the import. **Zero-row normalization:** a value equal to the shipped
 default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
 dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
 `export → import → export` is byte-stable; a shareable export withholds Secret values and

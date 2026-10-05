@@ -122,7 +122,7 @@ class TestReadSettingConfirmed:
     """`read_setting_confirmed` separates an ABSENT value from an UNREADABLE store (#4008).
 
     `read_setting` collapses both to `None`, which is right for a caller that fails open — and
-    exactly wrong for a security gate, which read "no banned_terms row" out of a DB that was
+    exactly wrong for a security gate, which read "no banned_term_registry row" out of a DB that was
     merely locked and opened itself.
     """
 
@@ -166,12 +166,12 @@ class TestReadSettingConfirmed:
     def test_locked_db_is_unreadable(self, tmp_path: Path) -> None:
         # The #4008 field report: a busy writer makes a CONFIGURED list read as absent.
         db = tmp_path / "db.sqlite3"
-        _make_db(db, [("", "banned_terms", ["acme"])])
+        _make_db(db, [("", "banned_term_registry", ["acme"])])
         writer = sqlite3.connect(db)
         writer.isolation_level = None
         writer.execute("BEGIN EXCLUSIVE")
         try:
-            read = cold_reader.read_setting_confirmed("banned_terms", db_path=db)
+            read = cold_reader.read_setting_confirmed("banned_term_registry", db_path=db)
             assert (read.value, read.readable) == (None, False)
         finally:
             writer.rollback()

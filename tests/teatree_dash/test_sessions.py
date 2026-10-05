@@ -82,9 +82,9 @@ class NoConfiguredSecretReachesTheResponseTestCase(TestCase):
 
     def setUp(self) -> None:
         # The redactor resolves its term list Django-free (``cold_reader`` against the
-        # canonical store), so a test DB row would never reach it — ``T3_BANNED_TERMS``
+        # canonical store), so a test DB row would never reach it — ``TEATREE_TERM_REGISTRY``
         # is the documented override that the same resolver reads first.
-        env = patch.dict(os.environ, {"T3_BANNED_TERMS": _SECRET})
+        env = patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": [_SECRET]})})
         env.start()
         self.addCleanup(env.stop)
         self.ticket = TicketFactory(state=State.WORK_STARTED)

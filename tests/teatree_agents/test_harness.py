@@ -40,6 +40,7 @@ import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.pydantic_ai_config as pyconfig_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import harness_registry
+from teatree.agents._runner_options import SpawnOverrides
 from teatree.agents.harness import (
     ClaudeSdkHarness,
     Harness,
@@ -53,9 +54,8 @@ from teatree.agents.harness import (
 from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessSpec, InvalidHarnessProviderError, register_harness
-from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
+from teatree.agents.model_tiering import TIER_MODELS, UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
-    LANE_BULK,
     LANE_EVAL,
     LANE_FACTORY,
     OpenAICompatibleLaneConfig,
@@ -73,6 +73,10 @@ from teatree.mcp.agent_mailbox import MailboxClient
 from tests.factories import _FORTY_HEX, TEST_ADEQUACY, planned_ticket
 from tests.teatree_agents._router_fake import RESOLVED_MODEL, text_reply
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
+from tests.teatree_agents.test_model_tiering import _seeded_db
+
+if TYPE_CHECKING:
+    from claude_agent_sdk.types import McpStdioServerConfig
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpStdioServerConfig
@@ -338,6 +342,11 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
                 "adequacy": dict(TEST_ADEQUACY),
             }
         )
+        skills_root = Path.home() / ".agents" / "skills"
+        for name in ("interactive", "rules", "workspace", "architecture-design", "prd-agent", "bdd-test-creation"):
+            skill_file = skills_root / name / "SKILL.md"
+            skill_file.parent.mkdir(parents=True, exist_ok=True)
+            skill_file.write_text(f"---\nname: {name}\n---\nTest skill.\n", encoding="utf-8")
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=result_json))
         with (
             patch.object(
@@ -824,23 +833,20 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
     def test_model_off_the_allowlist_raises_before_credential_resolution(self) -> None:
         # No backend credential configured — proves the regulated-path allowlist check
         # fires FIRST (a config-policy ValueError), not the credential/endpoint check.
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
             PydanticAiHarness()._resolve_model(options, SessionRun.start())
 
-    def test_unenforced_lane_reaches_the_credential_step(self) -> None:
-        # Default enforce_regulated_path=False — the factory lane is unrestricted,
-        # so resolution proceeds to the (here unconfigured) credential step.
+    def test_empty_allowlist_reaches_the_credential_step(self) -> None:
+        # An empty allowlist blocks nothing, so resolution reaches credentials.
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(CredentialError, match="openai_compatible_base_url"):
             PydanticAiHarness()._resolve_model(options, SessionRun.start())
 
     def test_allowlisted_model_reaches_the_credential_step(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["deepseek/"])
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
@@ -1095,12 +1101,46 @@ class TestPydanticAiModelIdNormalization(TestCase):
         assert model.model_name == "deepseek/deepseek-v4-pro"
 
     def test_a_model_off_the_regulated_allowlist_is_refused(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
             self._configured_harness()._resolve_model(
                 HarnessOptions(model="deepseek/deepseek-v4-pro"), SessionRun.start()
             )
+
+
+class TestPydanticAiSkillFloorSelection(TestCase):
+    @pytest.fixture(autouse=True)
+    def _backend_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://api.example.invalid/v1")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
+        _seeded_db(
+            tmp_path,
+            monkeypatch,
+            agent_phase_models={"planning": "cheap"},
+            agent_skill_models={"floor-skill": [{"floor": "balanced"}]},
+            agent_pydantic_ai_tier_models={"cheap": "vendor/cheap", "balanced": "vendor/balanced"},
+        )
+
+    def test_skill_floor_routes_shared_sonnet_id_to_balanced_handle(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ticket = planned_ticket()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        dispatch = resolve_dispatch_harness(task, phase="planning", skills=["floor-skill"])
+        assert dispatch.spawn_selection is not None
+        assert dispatch.spawn_selection.tier == "balanced"
+        options = _build_options(
+            task,
+            "ctx",
+            phase="planning",
+            skills=["floor-skill"],
+            overrides=SpawnOverrides(spawn_selection=dispatch.spawn_selection),
+        )
+        assert options.model == TIER_MODELS["balanced"]
+        assert isinstance(dispatch.harness, PydanticAiHarness)
+        model = dispatch.harness._resolve_model(HarnessOptions.from_sdk_options(options), SessionRun.start())
+        assert model.model_name == "vendor/balanced"
 
 
 class TestBuildOpenAICompatibleProvider(TestCase):
@@ -1123,7 +1163,7 @@ class TestBuildOpenAICompatibleProvider(TestCase):
     def test_bulk_lane_rides_the_x_lane_header(self) -> None:
         # A secondary overlay's cheap bulk-leg lane: a router DSL rule keys on
         # ``headers["x-lane"] == "bulk"``.
-        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_BULK), SessionRun.start())
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane="bulk"), SessionRun.start())
         assert provider.client.default_headers["x-lane"] == "bulk"
 
     def _capture_pass_path(self, pass_path: str | None) -> str:
@@ -1258,9 +1298,8 @@ class TestPydanticAiMaxTokens(TestCase):
 
         # Published per-model output ceilings for the ids TIER_MODELS resolves to.
         max_output_tokens = {
-            "claude-opus-5": 128_000,
-            "claude-sonnet-5": 128_000,
-            "claude-haiku-4-5": 64_000,
+            "claude-opus-5-5": 128_000,
+            "claude-sonnet-5-5": 128_000,
         }
         assert set(TIER_MODELS.values()) <= max_output_tokens.keys(), (
             "TIER_MODELS gained a model with no known output limit — confirm its ceiling before "
@@ -1287,23 +1326,7 @@ class TestPydanticAiMaxTokens(TestCase):
                 return session.session_id, session._agent.model_settings
 
         _session_id, settings = asyncio.run(drive())
-        assert settings == {"max_tokens": 9000}, "no provider cache key unless the endpoint is declared to take it"
-
-    def test_open_keys_the_provider_cache_on_the_session_when_the_endpoint_takes_it(self) -> None:
-        harness = PydanticAiHarness(
-            model=TestModel(),
-            config=PydanticAiModelConfig(
-                max_tokens=9000, backend=OpenAICompatibleLaneConfig(sends_prompt_cache_key=True)
-            ),
-        )
-
-        async def drive() -> tuple[str, object]:
-            async with harness.open(ClaudeAgentOptions()) as session:
-                assert isinstance(session, PydanticAiHarnessSession)
-                return session.session_id, session._agent.model_settings
-
-        session_id, settings = asyncio.run(drive())
-        assert settings == {"max_tokens": 9000, "openai_prompt_cache_key": session_id}
+        assert settings == {"max_tokens": 9000}
 
 
 class TestVerifierPinnedToClaude(TestCase):
@@ -1455,7 +1478,7 @@ class TestOpenAICompatibleLaneAndModelCallSite(TestCase):
         # One call binds base_url + key + model + x-lane for the right lane — a whole
         # binding, not a half-swap.
         harness = PydanticAiHarness(
-            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(lane=LANE_BULK, model="vendor/other-model"))
+            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(lane="bulk", model="vendor/other-model"))
         )
         model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"), SessionRun.start())
         assert model.model_name == "vendor/other-model"
@@ -1479,20 +1502,6 @@ class TestOpenAICompatibleLaneAndModelCallSite(TestCase):
         assert terminal.session_id == session_id
         assert terminal.total_cost_usd == pytest.approx(0.000382)
         assert terminal.model_usage == {RESOLVED_MODEL: {}}
-
-    def test_a_declared_endpoint_receives_the_session_as_its_cache_key(self) -> None:
-        declared = OpenAICompatibleLaneConfig(sends_prompt_cache_key=True)
-        session_id, request, _terminal = self._drive_router_open(declared)
-
-        assert json.loads(request.content)["prompt_cache_key"] == session_id
-
-    def test_resolve_harness_reads_the_prompt_cache_key_declaration_synchronously(self) -> None:
-        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        assert resolve_harness(phase="coding")._backend.sends_prompt_cache_key is False
-        ConfigSetting.objects.set_value("openai_compatible_sends_prompt_cache_key", value=True)
-        harness = resolve_harness(phase="coding")
-        assert isinstance(harness, PydanticAiHarness)
-        assert harness._backend.sends_prompt_cache_key is True
 
     def _drive_router_open(self, backend: OpenAICompatibleLaneConfig) -> tuple[str, httpx2.Request, ResultMessage]:
         headers = {"X-OrcaRouter-Include-Cost": "true", "X-OrcaRouter-Session-Id": "t3-{session}"}

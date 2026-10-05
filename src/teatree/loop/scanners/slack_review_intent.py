@@ -21,7 +21,6 @@ so a *stopped* review loop queues none of them (#79).
 Mirrors :class:`teatree.loop.scanners.slack_dm_inbound.SlackDmInboundScanner`:
 durable idempotent persistence, single-signal emission, no agent
 invocation here (the dispatcher routes signals to agents). The
-``approve_review_assignment`` helper closes the loop when an MR the user
 reviewed is approved by t3 — it advances ledger rows to ``approved`` so
 the audit trail captures the full reaction → review → approval cycle.
 The ``:white_check_mark:`` Slack reaction itself is posted by
@@ -307,14 +306,3 @@ def record_mention_intent(
         overlay=overlay,
     )
     return ReviewAssignment.record(intent)
-
-
-def approve_review_assignment(*, mr_url: str, overlay: str = "") -> int:
-    """Compatibility wrapper around :meth:`ReviewAssignment.approve_for_mr`.
-
-    The canonical implementation lives on the model so ``teatree.core``
-    can call it without an arch-layer violation (core → loop is
-    forbidden). This module-level alias keeps a stable entry point for
-    callers reading from the loop layer.
-    """
-    return ReviewAssignment.approve_for_mr(mr_url=mr_url, overlay=overlay)

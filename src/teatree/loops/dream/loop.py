@@ -4,7 +4,6 @@ The dreaming consolidation pass is heavier than a scanner tick and must not
 run on — or re-arm — the live 12-minute work loop (issue #1933 § 3). It is
 registered as a MiniLoop so the statusline can show its countdown, but it is
 marked ``off_live_tick`` so the live fan-out
-(:func:`teatree.loops.loop_table.build_loop_table_jobs`) skips it. The actual pass is
 driven by the worker's off-live-tick driver chain
 (:func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), which fires the
 ``off_tick_command`` below — the ``dream`` management command
@@ -61,7 +60,7 @@ DREAM_DEFAULT_CADENCE_SECONDS = 24 * 3600  # nightly; the driver chain fires the
 DREAM_PASS_BUDGET_SECONDS = 30 * 60
 
 #: What the pass keeps back for everything AFTER the distiller: compliance measurement,
-#: the automatable-ask and Pass-2 promoters, phases 4-6 (cross-link / re-index / decay),
+#: the Pass-2 promoter, phases 4-6 (cross-link / re-index / decay),
 #: the §4 acceptance gates and the marker. Measured 2026-08-20 on the live deploy under
 #: load: phases 4-6 + gates 77.4s, compliance measurement 1.5s — about 80s of
 #: deterministic work. The reserve is set at 6x that, because the promoting phases are
@@ -98,73 +97,10 @@ def _settings() -> "UserSettings":
     return dream_settings()
 
 
-def propose_evals_enabled() -> bool:
-    """Whether the nightly ``tick`` should request eval proposals (default ON)."""
-    settings = _settings()
-    return settings.dream_propose_evals
-
-
-def cross_link_enabled() -> bool:
-    """Whether phase 4 (cross-link related memories) runs (default ON)."""
-    settings = _settings()
-    return settings.dream_cross_link
-
-
-def merge_enabled() -> bool:
-    """Whether phase 4b (merge near-duplicate memories) runs (default ON, #2723)."""
-    settings = _settings()
-    return settings.dream_merge
-
-
-def reindex_enabled() -> bool:
-    """Whether phase 5 (regenerate ``MEMORY.md``) runs (default ON)."""
-    settings = _settings()
-    return settings.dream_reindex
-
-
-def decay_enabled() -> bool:
-    """Whether phase 6 (decay/archive stale memories) runs (default ON)."""
-    settings = _settings()
-    return settings.dream_decay
-
-
 def memory_promote_enabled() -> bool:
     """Whether Pass-2 memory→fix promotion runs (default ON — a pass batches its promotions into ONE ticket, #4776)."""
     settings = _settings()
     return settings.dream_memory_promote
-
-
-def derive_evals_enabled() -> bool:
-    """Whether the LLM-backed full-scenario derivation runs (default OFF — metered, #2447)."""
-    settings = _settings()
-    return settings.dream_derive_evals
-
-
-def compliance_measure_enabled() -> bool:
-    """Whether phase-3c compliance MEASUREMENT runs (default ON — it persists, never files, #2663)."""
-    settings = _settings()
-    return settings.dream_compliance_measure
-
-
-def compliance_escalate_enabled() -> bool:
-    """Whether phase-3c compliance ESCALATION runs (default OFF — it FILES enforcement tickets, #2663).
-
-    The toggle ALONE suffices: it used to be ANDed with ``--full`` at the call site, which
-    the cron ``tick`` can never set, so the toggle was dead on the nightly path (#4176).
-    """
-    settings = _settings()
-    return settings.dream_compliance_escalate
-
-
-def automation_asks_enabled() -> bool:
-    """Whether phase-3d automatable-ask promotion runs (default OFF — it schedules work, #2663).
-
-    Gated by an OR at the call site (``if not force_all_phases and not
-    automation_asks_enabled()``), so ``--full`` alone triggers it — whereas the compliance
-    phase's AND-gate additionally requires its own toggle even under ``--full``.
-    """
-    settings = _settings()
-    return settings.dream_automation_asks
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":

@@ -20,7 +20,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.management.commands._workspace.relocate import RelocateIO, run_relocate
-from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -276,10 +276,11 @@ class TestContinuesPastFailure(_RelocateCase):
 class TestCliWiring(_RelocateCase):
     def test_relocate_command_resolves_overlay_and_target_and_moves(self) -> None:
         # The subcommand resolves the active overlay (T3_OVERLAY_NAME) and the
-        # per-overlay target (T3_WORKSPACE_DIR back-compat override → new_ws).
+        # per-overlay target from the DB setting.
         wt = self._make_row()
         target = self.new_ws / self.branch / "myrepo"
-        with patch.dict("os.environ", {"T3_OVERLAY_NAME": "test", "T3_WORKSPACE_DIR": str(self.new_ws)}):
+        ConfigSetting.objects.set_value("workspace_dir", str(self.new_ws), scope="test")
+        with patch.dict("os.environ", {"T3_OVERLAY_NAME": "test"}):
             out = cast("list[str]", call_command("workspace", "relocate"))
         assert any("moved" in line for line in out)
         assert target.is_dir()
@@ -288,7 +289,8 @@ class TestCliWiring(_RelocateCase):
 
     def test_relocate_command_dry_run_touches_nothing(self) -> None:
         self._make_row()
-        with patch.dict("os.environ", {"T3_OVERLAY_NAME": "test", "T3_WORKSPACE_DIR": str(self.new_ws)}):
+        ConfigSetting.objects.set_value("workspace_dir", str(self.new_ws), scope="test")
+        with patch.dict("os.environ", {"T3_OVERLAY_NAME": "test"}):
             out = cast("list[str]", call_command("workspace", "relocate", dry_run=True))
         assert any("would move" in line for line in out)
         assert self.old_wt.exists()

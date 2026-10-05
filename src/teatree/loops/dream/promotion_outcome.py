@@ -1,6 +1,6 @@
 """The outcome value object returned by every dreaming eval-promotion attempt (#1933, #2346).
 
-Lives in its own module so both the promotion writer (:mod:`teatree.loops.dream.promote`)
+Lives in its own module so both the ticket promoter (:mod:`teatree.loops.dream.promote`)
 and the live-model gate (:mod:`teatree.loops.dream.live_gate`) can depend on it without a
 circular import between them.
 """
@@ -14,9 +14,8 @@ class PromotionOutcome:
     """The result of attempting to promote one candidate.
 
     ``promoted`` is the truth of the operation; ``reason`` always explains the
-    decision (the rejecting guard message on a reject, the written paths on a
-    promote). ``scenario_path``/``fail_fixture``/``pass_fixture`` are populated
-    only on a successful promote.
+    decision (the rejecting guard message on a reject, or the ticket receipt on a
+    promote). Paths are populated only for explicit scratch-directory inspection.
     """
 
     scenario_name: str

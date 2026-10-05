@@ -18,7 +18,11 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import is_recorder_refusal
+from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
+from teatree.core.gates.integration_review_gate import check_integration_review
+from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
+from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
 from teatree.core.models import (
     AutoReviewDispatch,
     HonestyEscalation,
@@ -114,7 +118,20 @@ def _envelope(
     }
     if grades is not None:
         payload["rubric_grades"] = grades
-    return {"summary": "Independent cold review of the pull request.", "review_verdict": payload}
+    return {
+        "summary": "Independent cold review of the pull request.",
+        "review_verdict": payload,
+        "review_context": {
+            "work_item": _PR_URL,
+            "documents": ["specs/reviewed-requirements.md"],
+            "analysis": "Compared the diff and acceptance criteria to the downloaded requirements.",
+        },
+        "anti_vacuity": {
+            "ac_coverage": "Both acceptance criteria map to the recorder and rubric tests.",
+            "proven_tests": ["tests/teatree_agents/test_review_envelope_recorder.py::test_producer"],
+            "no_new_tests": False,
+        },
+    }
 
 
 def _envelope_with_raw_grades(payload: object) -> dict[str, object]:
@@ -137,6 +154,44 @@ def _criteria(ticket: Ticket) -> list[RubricCriterion]:
 
 
 class TestTheReviewerGradesTheRubricItVerifies(TestCase):
+    def test_multi_repo_review_envelope_records_combined_integration_review(self) -> None:
+        ticket = _author_ticket()
+        ticket.repos = ["souliane/teatree", "example-org/adapter"]
+        ticket.save(update_fields=["repos"])
+        result = _envelope(grades=_full_pass())
+        result["integration_review"] = {"repos": list(ticket.repos)}
+
+        attempt = record_result_envelope(_reviewing_task_via_dispatch(), result, phase="reviewing")
+
+        assert attempt.error == ""
+        check_integration_review(ticket)
+
+    def test_review_envelope_produces_all_merge_review_evidence_without_manual_recording(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+
+        attempt = record_result_envelope(task, _envelope(grades=_full_pass()), phase="reviewing")
+
+        assert attempt.error == ""
+        ticket.refresh_from_db()
+        check_anti_vacuity_attestation(ticket, _HEAD, transition="merge")
+        check_rubric_satisfied(ticket, _HEAD, transition="merge")
+        assert has_review_evidence(ticket)
+        assert check_reviewed_state(ticket) == ""
+        assert_ticket_scoped_gates(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert ReviewVerdict.objects.filter(ticket=ticket, slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).exists()
+
+    def test_missing_anti_vacuity_refuses_before_verdict_is_recorded(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        result = _envelope(grades=_full_pass())
+        result.pop("anti_vacuity")
+
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert "anti-vacuity recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, slug=_SLUG, pr_id=_PR_ID).exists()
+
     def test_returned_grades_land_on_the_gated_ticket_at_the_dispatch_head(self) -> None:
         ticket = _author_ticket()
         task = _reviewing_task_via_dispatch()
@@ -191,6 +246,17 @@ class TestAnUngradedCriterionRecordsNothing(TestCase):
         assert task.status == Task.Status.FAILED
         assert "#0" in attempt.error
         assert "#1" in attempt.error
+
+    def test_false_string_cannot_claim_no_new_tests(self) -> None:
+        ticket = _author_ticket()
+        task = _reviewing_task_via_dispatch()
+        result = _envelope(grades=_full_pass())
+        result["anti_vacuity"] = {"ac_coverage": "AC covered", "proven_tests": [], "no_new_tests": "false"}
+
+        attempt = record_result_envelope(task, result, phase="reviewing")
+
+        assert "anti-vacuity recording refused" in attempt.error
+        assert not ReviewVerdict.objects.filter(ticket=ticket, reviewed_sha=_HEAD).exists()
 
     def test_a_partial_grade_records_nothing(self) -> None:
         ticket = _author_ticket()
@@ -399,11 +465,10 @@ class TestAFailGradeIsRecordedAndNoBypassOverridesIt(TestCase):
 
 
 class TestOutsideTheGatesSubjectNoGradesAreOwed(TestCase):
-    """Byte-for-byte the subject ``ticket_gates`` already SKIPS — nothing re-widened."""
+    """A direct dispatch with no owner cannot grade a rubric it cannot resolve."""
 
     def test_a_pr_no_ticket_owns_requires_no_grades(self) -> None:
-        # No PullRequest row and no MergeClear: a colleague's / dependabot's PR, which
-        # the merge gate never grades because there is no ticket to record a bypass on.
+        # Direct dispatch bypasses the production adapter's ticket adoption.
         task = _reviewing_task_via_dispatch()
 
         attempt = record_result_envelope(task, _envelope(), phase="reviewing")
@@ -449,6 +514,8 @@ class TestAPhaseOutsideTheGradedSetOwesNoGrades(TestCase):
         # there refuses a checklist the agent was never handed.
         ticket = _author_ticket()
         task = _reviewing_task_via_dispatch()
+        task.phase = "e2e_reviewing"
+        task.save(update_fields=["phase"])
 
         attempt = record_result_envelope(task, _envelope(), phase="e2e_reviewing")
 

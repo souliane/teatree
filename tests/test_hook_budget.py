@@ -10,11 +10,14 @@ makes the sum fit, and pin the ceiling constant to the ``hooks.json`` it mirrors
 """
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from hooks.scripts import hook_budget
 from hooks.scripts.hook_budget import HOOK_CEILING_S, bounded_timeout_s
+from teatree.hooks._repo_visibility import PROBE_NO_TIME
 
 _HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
 
@@ -41,6 +44,10 @@ class TestBoundedTimeout:
         # decision after the last subprocess returns.
         assert bounded_timeout_s(15.0, elapsed=HOOK_CEILING_S - 0.5) is None
 
+    def test_less_than_a_useful_second_left_grants_nothing(self) -> None:
+        # A subprocess granted a fraction of a second can only time out, after paying for its own start.
+        assert bounded_timeout_s(15.0, elapsed=HOOK_CEILING_S - 1.5) is None
+
     def test_a_backwards_clock_reading_is_treated_as_no_time_spent(self) -> None:
         assert bounded_timeout_s(5.0, elapsed=-100.0) == pytest.approx(5.0)
 
@@ -52,6 +59,26 @@ class TestBoundedTimeout:
         assert measurement is not None
         probe = bounded_timeout_s(15.0, elapsed=measurement)
         assert measurement + (probe or 0.0) <= HOOK_CEILING_S
+
+
+class TestTheClockIsTheHookProcess:
+    """Time spent before a handler runs — interpreter start, earlier handlers — is spent from the same ceiling."""
+
+    def test_time_spent_before_the_handler_shrinks_what_it_is_granted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - 25.0)
+
+        granted = hook_budget.remaining_timeout_s(15.0)
+
+        assert granted is not None
+        assert granted <= HOOK_CEILING_S - 25.0
+
+    def test_a_process_that_spent_its_ceiling_is_granted_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(HOOK_CEILING_S))
+
+        assert hook_budget.remaining_timeout_s(1.0) is None
+
+    def test_the_spent_budget_reads_the_same_on_the_git_and_the_forge_side(self) -> None:
+        assert hook_budget.NO_TIME_LEFT == PROBE_NO_TIME
 
 
 class TestCeilingMirrorsHooksJson:

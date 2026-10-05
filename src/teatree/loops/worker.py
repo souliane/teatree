@@ -92,6 +92,14 @@ def build_executor_queues() -> tuple[str, ...]:
     return ("loops",) * loops_executor_count() + ("default",) * default_queue_executor_count() + ("cheap",)
 
 
+def _read_pool_pressure() -> "AdmissionDecision | None":
+    """Live governor verdict for the pool; its own probe failure is fail-open."""
+    from teatree.loop.admission import governor_verdict  # noqa: PLC0415 — loop orchestration at call time
+    from teatree.loop.statusline import default_path  # noqa: PLC0415 — same sidecar as dispatch
+
+    return governor_verdict(statusline_path=default_path())
+
+
 def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str, ...]:
     """Clamp the agent executors to *ceiling*; the ``loops`` control plane is never clamped.
 
@@ -118,14 +126,6 @@ def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str
     for name in names:
         selected.extend([name] * min(ceiling - len(selected), remaining[name]))
     return loops + tuple(sorted(selected, key=names.index))
-
-
-def _read_pool_pressure() -> "AdmissionDecision | None":
-    """Live governor verdict for the pool; its own probe failure is fail-open."""
-    from teatree.loop.admission import governor_verdict  # noqa: PLC0415 — loop orchestration at call time
-    from teatree.loop.statusline import default_path  # noqa: PLC0415 — same sidecar as dispatch
-
-    return governor_verdict(statusline_path=default_path())
 
 
 #: The supervisor re-reads the fleet verdict on this cadence — a preset that stops

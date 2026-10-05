@@ -16,8 +16,7 @@ from teatree.core.selectors._filters import _overlay_q, _task_overlay_q
 class TestOverlayScopeQ(TestCase):
     @staticmethod
     def _task(overlay: str) -> Task:
-        # Set BOTH the ticket and the session overlay so a non-empty overlay row
-        # is not admitted by the empty-overlay clause on the other relation.
+        # Both relations record the same attributed overlay.
         ticket = Ticket.objects.create(overlay=overlay)
         session = Session.objects.create(ticket=ticket, agent_id="a", overlay=overlay)
         return Task.objects.create(ticket=ticket, session=session)
@@ -26,7 +25,7 @@ class TestOverlayScopeQ(TestCase):
         assert overlay_scope_q(None) == Q()
         assert overlay_scope_q("") == Q()
 
-    def test_scopes_tasks_by_overlay_and_admits_empty_rows(self) -> None:
+    def test_scopes_tasks_by_overlay_and_excludes_empty_rows(self) -> None:
         acme = self._task("acme")
         other = self._task("other")
         legacy = self._task("")
@@ -34,7 +33,7 @@ class TestOverlayScopeQ(TestCase):
         matched = set(Task.objects.filter(overlay_scope_q("acme")).values_list("pk", flat=True))
 
         assert acme.pk in matched
-        assert legacy.pk in matched  # pre-multi-overlay rows always admitted
+        assert legacy.pk not in matched
         assert other.pk not in matched
 
     def test_matches_taskqueryset_for_overlay(self) -> None:

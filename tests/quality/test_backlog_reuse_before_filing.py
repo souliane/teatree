@@ -9,7 +9,7 @@ suitable host issue sits at position 40.
 filing-time preconditions the skills cite. The skills that file issues therefore
 POINT at it; a second copy of the rule in a skill is the fragmentation
 ``skills/rules/SKILL.md`` warns about, so this module also pins that
-``ac-reviewing-codebase`` no longer instructs one ticket per instance.
+``architectural-review`` no longer instructs one ticket per instance.
 """
 
 import re
@@ -17,7 +17,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _AGENTS = _ROOT / "AGENTS.md"
-_REVIEW_SKILL = _ROOT / "skills" / "ac-reviewing-codebase" / "SKILL.md"
+_REVIEW_SKILL = _ROOT / "skills" / "architectural-review" / "SKILL.md"
 _RULES_SKILL = _ROOT / "skills" / "rules" / "SKILL.md"
 _SWEEP_SKILL = _ROOT / "skills" / "sweeping-tickets" / "SKILL.md"
 
@@ -87,10 +87,10 @@ def test_the_reuse_rule_states_its_exception() -> None:
 def test_the_review_pass_files_per_root_cause_not_per_instance() -> None:
     body = _REVIEW_SKILL.read_text(encoding="utf-8")
     assert "ticket per confirmed instance" not in body, (
-        "ac-reviewing-codebase's per-instance filing contradicts the backlog-reuse "
+        "architectural-review's per-instance filing contradicts the backlog-reuse "
         "rule — several instances one PR would fix belong in one ticket"
     )
-    assert "root cause" in body, "ac-reviewing-codebase must state the root-cause filing granularity"
+    assert "root cause" in body, "architectural-review must state the root-cause filing granularity"
 
 
 def _cites_the_canonical_home(body: str) -> bool:

@@ -32,10 +32,11 @@ def _repo_with_venv_home(root: Path, name: str, home: Path | str) -> Path:
 
 class TestVenvInterpreterDoctorCheck:
     def test_repointed_venv_fails_loud_and_names_the_repair(self, tmp_path: Path, capsys) -> None:
-        """The observed repoint: a macOS clone whose venv records the container's interpreter."""
-        repo = _repo_with_venv_home(
-            tmp_path, "workspace-root", "/opt/teatree/uv/python/cpython-3.13-linux-aarch64-gnu/bin"
-        )
+        """A clone whose venv records an interpreter for another OS is refused."""
+        foreign_tag = "macos" if sys.platform == "linux" else "linux"
+        home = tmp_path / "uv" / "python" / f"cpython-3.13-{foreign_tag}-aarch64-none" / "bin"
+        home.mkdir(parents=True)
+        repo = _repo_with_venv_home(tmp_path, "workspace-root", home)
         with patch("teatree.cli.update._collect_repos", return_value=[("workspace-root", repo)]):
             assert _check_venv_interpreter_is_this_host() is False
         out = capsys.readouterr().out

@@ -1,15 +1,11 @@
 """General-note carrying inline findings gate (souliane/teatree#72, round 2).
 
-The #72 fix (:func:`teatree.cli.review.drafts.validate_inline_or_general`)
-closed the *half-specified* foot-gun: a ``post-draft-note`` that named a
-``--file`` without a ``--line`` (or vice versa) used to silently degrade
-into a general (MR-wide) note. That validator stops the degradation at the
-typer-wrapper boundary.
+The posting command validates ``--file`` and ``--line`` together so a partially
+specified inline anchor cannot silently become a general note.
 
 This module closes the *other half* of the same discipline: two distinct
 per-line findings crammed into ONE general note instead of posted one per
-line. The #72 validator does not fire there — the call IS a deliberate
-``--general`` post — so the multi-finding general note goes through.
+line. A general post without an inline anchor therefore needs its own check.
 
 The gate runs only on the **general** path of a publishing method (no
 ``file``+``line`` anchor) and refuses the post — before any GitLab call —
@@ -22,7 +18,7 @@ when the body looks like a multi-point per-line review, i.e. it either:
 
 Both shapes say "these are N inline findings". The remediation steers the
 agent to post each one inline with
-``t3 review post-draft-note <repo> <mr> "<note>" --file <path> --line <n>``
+``t3 review post-comment <repo> <mr> "<note>" --file <path> --line <n>``
 (one per finding), and offers the documented per-call escape
 ``--force-general`` for a genuinely MR-wide note (a verdict-only summary
 with no per-line findings) — mirroring the sibling ``--allow-long-review``
@@ -134,7 +130,7 @@ def _refusal(count: int) -> str:
         f"Refusing general note: this looks like {count} inline findings (it references "
         f"{count}+ distinct file:line locations or a numbered per-file finding list). "
         "Post them INLINE — one per finding — with:\n"
-        '  t3 review post-draft-note <repo> <mr> "<note>" --file <path> --line <n>\n'
+        '  t3 review post-comment <repo> <mr> "<note>" --file <path> --line <n>\n'
         "Cramming distinct per-line findings into one general note is the shape "
         "the #72 discipline guards against. Pass --force-general to override ONLY for a "
         "genuinely MR-wide note (a verdict-only summary with no per-line findings)."

@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from importlib.metadata import entry_points
@@ -19,6 +20,7 @@ from teatree.contrib.t3_teatree.overlay import TeatreeOverlay, _repo_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.overlay_loader import get_overlay
+from teatree.skill_support.loading import SkillLoadingPolicy
 
 OverlayRegistry = dict[str, dict[str, object]]
 
@@ -242,15 +244,36 @@ class TestGetSkillMetadata:
         assert "remote_patterns" in metadata
         assert metadata["remote_patterns"] == ["souliane/teatree"]
 
-    def test_skill_path_is_the_internals_skill_md(self) -> None:
-        metadata = TeatreeOverlay().metadata.get_skill_metadata()
-        skill_path = Path(str(metadata["skill_path"]))
+    def test_skill_root_points_to_existing_directory(self) -> None:
+        overlay = TeatreeOverlay()
+        metadata = overlay.metadata.get_skill_metadata()
+        skill_root = Path(str(metadata["skill_root"]))
+        assert skill_root.is_dir()
 
-        assert skill_path.is_absolute()
+    def test_primary_skill_names_the_internals_body(self) -> None:
+        metadata = TeatreeOverlay().metadata.get_skill_metadata()
+        skill_name = str(metadata["skill_path"])
+        skill_path = Path(str(metadata["skill_root"])) / skill_name / "SKILL.md"
+
+        assert skill_name == "internals"
         assert skill_path.name == "SKILL.md"
-        assert skill_path.is_file()
         assert skill_path.parent.name == "internals"
-        assert skill_path.parent.parent == Path(str(metadata["skill_root"]))
+        assert skill_path.is_file()
+
+    def test_architectural_review_selects_internals_once(self) -> None:
+        metadata = TeatreeOverlay().metadata.get_skill_metadata()
+        repo_root = Path(str(metadata["skill_root"])).parent
+
+        selected = SkillLoadingPolicy().select_for_runtime_phase(
+            cwd=repo_root,
+            phase="architectural_review",
+            overlay_skill_metadata=metadata,
+            skill_index=[{"skill": "internals", "requires": []}, {"skill": "architectural-review", "requires": []}],
+            stage_skills=["architectural-review"],
+            agent_declared_skills=[],
+        )
+
+        assert sum(skill == "internals" or skill.endswith("/internals/SKILL.md") for skill in selected.skills) == 1
 
 
 class TestGetEvalScenariosDir:
@@ -517,7 +540,9 @@ class TestTestsPreRunSteps(TestCase):
 
     def test_no_step_when_the_checkout_already_has_a_venv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / ".venv").mkdir()
+            python = Path(tmp) / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.symlink_to(sys.executable)
             worktree = self._worktree(tmp)
 
             assert TeatreeOverlay().runtime.pre_run_steps(worktree, "tests") == []

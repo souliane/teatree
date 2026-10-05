@@ -41,7 +41,6 @@ def _owned() -> dict[str, str]:
 _PREFIX_LOOKALIKES = (
     "review_backend_cooldown_hours",
     "review_exempt_repos",
-    "review_request_post_disabled",
     "review_skill",
     "review_skill_alternates",
 )

@@ -9,16 +9,13 @@ that lists raw rows appends :func:`stored_row_note`, and a dead key can never re
 as a live one.
 
 "Not in the known-key set" is NOT the same as "dead", which is why this is a
-classifier rather than a membership test. Three kinds of row live outside the set
+classifier rather than a membership test. Two kinds of row live outside the set
 and each needs its own answer:
 
-*   a RENAMED key's value still resolves, onto the replacement field, so it is told
-    where its value goes rather than reported out of effect;
 *   an :data:`INTERNAL_STATE_KEYS` row has a live owner module that reads and writes
     it, deliberately kept in ``ConfigSetting`` rather than a declared setting field —
     the "clear this" remedy would destroy working state, so it is never offered;
-*   everything else is an orphan: the removal was never recorded in
-    ``RETIRED_SETTINGS``, so the row is named unknown and the remedy is offered.
+*   everything else is an orphan, so the row is named unknown and the remedy is offered.
 
 The negative bucket says only what the classifier can support. Membership in
 :data:`ALL_KNOWN_CONFIG_SETTINGS` answers "is this a DECLARED setting", never "does
@@ -31,7 +28,6 @@ approval class and resets the mode ladder.
 import dataclasses
 
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.retired_settings import CLEAR_REMEDY, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.secret_settings import is_pass_key_setting
 
 
@@ -96,8 +92,8 @@ def internal_state_key(key: str) -> InternalStateKey | None:
 def stored_row_kind(key: str) -> str:
     """What *key* is, when it is not a live setting — the empty string when it is one.
 
-    The remedy is offered only where clearing the row is the right move: a retired or
-    orphaned key. Naming a live internal-state row "clearable" would hand the operator
+    The remedy is offered only where clearing an orphaned row is the right move.
+    Naming a live internal-state row "clearable" would hand the operator
     a destructive instruction — clearing the mode stamp makes the next transition pass
     read a switch that never happened.
 
@@ -110,12 +106,7 @@ def stored_row_kind(key: str) -> str:
     state = internal_state_key(key)
     if state is not None:
         return f"internal state — {state.purpose}, owned by {state.owner}"
-    replacement = RENAMED_SETTING_KEYS.get(key)
-    if replacement is not None:
-        return f"retired alias — resolves onto {replacement}"
-    remedy = CLEAR_REMEDY.format(key=key)
-    if removed_setting(key) is not None:
-        return f"retired — not in effect; clear with `{remedy}`"
+    remedy = f"t3 <overlay> config_setting clear {key}"
     return f"unknown — not a declared setting; clear with `{remedy}`"
 
 
@@ -128,12 +119,11 @@ def stored_row_note(key: str) -> str:
 def is_operator_configuration(key: str) -> bool:
     """Whether a stored row under *key* is CONFIGURATION rather than something else.
 
-    A live setting, or a retired alias whose stored value still migrates onto one. The
-    negative cases — internal state a module owns, a removed key, an orphan — share one
+    A live setting. The negative cases — internal state a module owns or an orphan — share one
     consequence: nothing will ever read them back as config, so an interchange format that
     carries them (souliane/teatree#4147) is offering rows its own reader has no home for.
     """
-    return key in ALL_KNOWN_CONFIG_SETTINGS or key in RENAMED_SETTING_KEYS
+    return key in ALL_KNOWN_CONFIG_SETTINGS
 
 
 __all__ = [

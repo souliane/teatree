@@ -4,27 +4,25 @@ import json
 import os
 import sqlite3
 import tempfile
-import time
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.config import get_effective_settings
-from teatree.core.admission_governor import governor_enabled
-from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, Ticket
+from teatree.core.models import ModeOverride, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
-from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
+from teatree.loop.admit_budget import write_admit_budget
 from teatree.loop.drain import set_worker_quiescing
 from tests._loop_principal_env import pinned_loop_principal
 from tests._pr_open_state_stub import mint_open_pr_review
+from tests.factories import planned_ticket
 
 
 def _seed_cold_config(db: Path, key: str, value: object) -> None:
@@ -57,7 +55,7 @@ class _LoopDispatchTest(TestCase):
         return mint_open_pr_review(ticket)
 
     def _author_task(self, *, url: str = "https://example.com/issues/9") -> Task:
-        ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)
+        ticket = planned_ticket(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)
         return ticket.schedule_coding()
 
 
@@ -148,13 +146,11 @@ class TestPendingSpawn(_LoopDispatchTest):
         # an unrecognised id — unrecognised ids rank ABOVE every known tier
         # (most-capable fallback), making the raise observable.
         db = Path(tempfile.mkdtemp()) / "config.sqlite3"
-        _seed_cold_config(db, "agent_skill_models", {"code-review": "custom-strong-model"})
+        _seed_cold_config(db, "agent_skill_models", {"code-review": [{"floor": "custom-strong-model"}]})
 
-        # Empty overlay so the ticket-scoped overlay resolver (PR-12) falls back
-        # to the ambient (T3_OVERLAY_NAME) overlay; a synthetic unregistered
-        # overlay would fail resolution and empty the bundle before the patched
-        # resolve_skill_bundle runs, defeating the model-floor assertion.
+        # Use a registered overlay so the ticket-scoped bundle resolves.
         ticket = Ticket.objects.create(
+            overlay="t3-teatree",
             issue_url="https://example.com/pr/1",
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "x"},
@@ -836,101 +832,3 @@ class TestBudgetCountsWorkerInFlight(_LoopDispatchTest):
             write_admit_budget(2, statusline_path=sl)
             payload = self._run_claim_next(sl)
         assert [e["task_id"] for e in payload] == [pending.pk]
-
-
-class TestSpawnClaim(_LoopDispatchTest):
-    def test_claims_pending_task(self) -> None:
-        task = self._reviewer_task()
-        stdout = StringIO()
-        call_command("loop_dispatch", "spawn-claim", str(task.pk), stdout=stdout)
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED
-        assert task.claimed_by == "loop-slot"
-        assert "Claimed task" in stdout.getvalue()
-
-    def test_unknown_task_errors(self) -> None:
-        with pytest.raises(SystemExit):
-            call_command("loop_dispatch", "spawn-claim", "999999")
-
-    def test_claim_with_custom_worker(self) -> None:
-        task = self._reviewer_task()
-        call_command("loop_dispatch", "spawn-claim", str(task.pk), claimed_by="custom-worker")
-        task.refresh_from_db()
-        assert task.claimed_by == "custom-worker"
-
-    def test_a_stopped_fleet_claims_nothing_and_names_why(self) -> None:
-        task = self._reviewer_task()
-        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
-        err = StringIO()
-
-        with pytest.raises(SystemExit):
-            call_command("loop_dispatch", "spawn-claim", str(task.pk), stderr=err)
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
-        assert "admits no loop" in err.getvalue()
-
-    def test_a_quiescing_worker_claims_nothing(self) -> None:
-        task = self._reviewer_task()
-        set_worker_quiescing(value=True)
-
-        with pytest.raises(SystemExit):
-            call_command("loop_dispatch", "spawn-claim", str(task.pk), stderr=StringIO())
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
-
-
-class TestAdmissionGovernorKillSwitchIsATrueRevert(_LoopDispatchTest):
-    """#3644: `admission_governor_enabled = false` restores the pre-governor behaviour.
-
-    The kill-switch is the rollback lever for the riskiest behavioural change in the
-    change, so "a true revert" has to be a pinned property rather than a claim:
-    with the flag off, the static-budget contract at this chokepoint must hold exactly
-    as it did before the governor existed.
-    """
-
-    def _disable_governor(self) -> None:
-        ConfigSetting.objects.set_value("admission_governor_enabled", value=False)
-        # Control: without this the flag might never have taken effect and the
-        # assertions below would pass on the governor's own behaviour instead.
-        assert governor_enabled() is False
-
-    def _claim_in_flight(self, n: int) -> list[Task]:
-        claimed: list[Task] = []
-        for i in range(n):
-            task = self._author_task(url=f"https://example.com/issues/killswitch/{i}")
-            task.claim(claimed_by="other-worker")
-            claimed.append(task)
-        return claimed
-
-    def _run_claim_next(self, sl: Path) -> list[dict]:
-        stdout = StringIO()
-        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
-            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
-        return json.loads(stdout.getvalue())
-
-    def test_stale_budget_stays_unclamped_with_the_governor_off(self) -> None:
-        self._disable_governor()
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            stale_at = time.time() - (2 * 720 + 600)
-            sl.with_name("tick-meta.json").write_text(
-                json.dumps({BUDGET_KEY: 0, WRITTEN_AT_KEY: stale_at}) + "\n", encoding="utf-8"
-            )
-            self._claim_in_flight(1)
-            self._author_task(url="https://example.com/issues/pending-killswitch")
-            payload = self._run_claim_next(sl)
-        assert len(payload) == 1
-
-    def test_a_live_static_budget_still_clamps_with_the_governor_off(self) -> None:
-        # The revert restores the STATIC contract, not "no gate at all".
-        self._disable_governor()
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            write_admit_budget(1, statusline_path=sl)
-            self._claim_in_flight(1)
-            self._author_task(url="https://example.com/issues/over-budget-killswitch")
-            payload = self._run_claim_next(sl)
-        assert payload == []

@@ -11,9 +11,18 @@ re-implemented the extraction would silently assert over the wrong text.
 """
 
 import re
+import shutil
 from pathlib import Path
 
 _WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
+
+
+def copy_wrapper(source: Path, destination: Path) -> None:
+    """Materialize the host wrapper with the sibling project and topology helper it sources."""
+    shutil.copy2(source, destination)
+    shutil.copy2(source.parent / "generation-topology.sh", destination.parent / "generation-topology.sh")
+    shutil.copy2(source.parent / "install-host-pressure.zsh", destination.parent / "install-host-pressure.zsh")
+
 
 _SOURCE_DIR_PATTERN = r"^CONTAINER_SOURCE_DIR=(\S+)"
 _WORKTREE_ROOT_PATTERN = r'"\$PHYSICAL_HOST_HOME/workspace/t3-workspaces:([^"]+)"'

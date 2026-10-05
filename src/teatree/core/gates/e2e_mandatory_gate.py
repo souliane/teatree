@@ -12,7 +12,7 @@ judgment.
 
 The gate is a pure decision over durable state — the classifier verdict, the
 ``E2eMandatoryRun`` evidence rows (whose ``posted_url`` proves the evidence was
-posted), the ``E2EBypassApproval`` rows, and the gate's kill-switch — keyed on
+posted), and the ``E2EBypassApproval`` rows — keyed on
 the exact reviewed tree (``head_sha``). It mirrors the satisfiable-but-not-
 suppressible shape of the on-behalf gate
 (:mod:`teatree.core.on_behalf_gate_recorded`) and ``MergeClear``:
@@ -22,7 +22,6 @@ suppressible shape of the on-behalf gate
     repo-level exemption the overlay declares, for a repo whose every file is
     non-impacting by construction — a skills/docs repo — so no glob list has to
     keep up with each new fixture kind it grows);
-*   kill-switch off → pass (the operator's deliberate, audited opt-out);
 *   a green AND posted ``E2eMandatoryRun`` at ``head_sha`` → pass;
 *   an unconsumed ``E2EBypassApproval`` at ``(ticket, head_sha)`` → consume it
     single-use inside one ``transaction.atomic`` block, write an
@@ -31,7 +30,6 @@ suppressible shape of the on-behalf gate
     remedies verbatim (the record-e2e-run command and the e2e-bypass command).
 
 :func:`check_e2e_mandatory` is the consuming entry point (it may claim a bypass).
-:func:`e2e_mandatory_block_message` is the non-consuming peek a caller uses to
 refuse early before expensive prep; the real pass then goes through
 :func:`check_e2e_mandatory`, so a peek never burns a bypass.
 """
@@ -66,26 +64,13 @@ class GateInputs:
     ``display_impacting`` is the overlay's verdict over ``changed_files`` —
     ``False`` when the ticket's repo carries no customer display surface at all,
     otherwise the per-path classifier's answer; ``head_sha`` is the reviewed
-    tree the evidence/bypass bind to; ``gate_enabled`` is the resolved
-    kill-switch.
+    tree the evidence/bypass bind to.
     """
 
     ticket: Ticket
     changed_files: list[str]
     head_sha: str
     display_impacting: bool
-    gate_enabled: bool = True
-
-
-def _gate_enabled(overlay_name: str | None) -> bool:
-    """Resolve the gate's OWN kill-switch (never another gate's switch).
-
-    ``[teatree] e2e_mandatory_gate_enabled`` (per-overlay overridable via
-    ``[overlays.<name>]``) defaults to ``True``.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    return bool(get_effective_settings(overlay_name).e2e_mandatory_gate_enabled)
 
 
 def _repo_has_no_display_surface(overlay: "OverlayBase", ticket: Ticket) -> bool:
@@ -103,16 +88,14 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
     """Build :class:`GateInputs` for *ticket* at the reviewed *head_sha*.
 
     The wiring seam the ship-gate and §17.4 CLEAR call: it asks the active
-    overlay to classify ``changed_files`` (fail-closed default) and resolves
-    the gate kill-switch for the ticket's overlay. The caller supplies the
+    overlay to classify ``changed_files`` (fail-closed default). The caller supplies the
     already-resolved diff + head SHA so this function stays free of git I/O and
     is exhaustively testable.
 
     Fails CLOSED on an unresolvable overlay (#1426 posture): when
     ``ticket.overlay`` cannot be resolved to a registered overlay, the change is
     presumed display-impacting so the gate is never silently skipped by a
-    misconfigured ticket. The evidence / bypass / kill-switch escapes keep this
-    from being a hard lockout.
+    misconfigured ticket. Posted evidence or a user bypass satisfies the gate.
 
     A repo the overlay declares display-surface-free short-circuits the path
     classifier: no file in it can reach a customer screen, so no diff in it can.
@@ -132,7 +115,6 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
         changed_files=changed_files,
         head_sha=head_sha,
         display_impacting=display_impacting,
-        gate_enabled=_gate_enabled(ticket.overlay or None),
     )
 
 
@@ -173,14 +155,12 @@ def _deny_message(inputs: GateInputs) -> str:
 def _passes_without_bypass(inputs: GateInputs) -> bool:
     """True iff the gate passes without needing to consume a bypass.
 
-    The cheap, most-permissive short-circuits first: not display-impacting,
-    kill-switch off, or green evidence at the reviewed tree.
+    The cheap, most-permissive short-circuits first: not display-impacting or
+    green evidence at the reviewed tree.
     """
     from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
 
     if not inputs.display_impacting:
-        return True
-    if not inputs.gate_enabled:
         return True
     return E2eMandatoryRun.has_green_evidence(inputs.ticket, inputs.head_sha)
 
@@ -218,8 +198,8 @@ def check_clear_e2e_mandatory(ticket: Ticket | None, reviewed_sha: str, changed_
 
     The second gate site (#1967). A ticket-bound CLEAR for a customer-display-
     impacting change is refused unless green E2E evidence exists at
-    ``reviewed_sha`` OR a single-use user bypass exists OR the kill-switch is
-    off; a recorded bypass is consumed single-use here. An out-of-FSM CLEAR
+    ``reviewed_sha`` OR a single-use user bypass exists; a recorded bypass is
+    consumed single-use here. An out-of-FSM CLEAR
     (``ticket`` is ``None``) is not gated — the gate binds to a ticket's
     evidence and has no ticket to bind to.
 
@@ -238,22 +218,3 @@ def check_clear_e2e_mandatory(ticket: Ticket | None, reviewed_sha: str, changed_
     except E2EMandatoryGateError as exc:
         return str(exc)
     return ""
-
-
-def e2e_mandatory_block_message(inputs: GateInputs) -> str:
-    """Return the deny message, or ``""`` when the gate would pass — non-consuming.
-
-    The peek behind an early refusal: it reports whether
-    :func:`check_e2e_mandatory` would raise, without consuming a bypass or
-    writing an audit. A pending unconsumed bypass at ``(ticket, head_sha)``
-    therefore reports ``""`` (would pass) but is left intact for the consuming
-    call.
-    """
-    if _passes_without_bypass(inputs):
-        return ""
-
-    from teatree.core.models.e2e_bypass import E2EBypassApproval  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    if E2EBypassApproval.has_unconsumed(inputs.ticket, inputs.head_sha):
-        return ""
-    return _deny_message(inputs)

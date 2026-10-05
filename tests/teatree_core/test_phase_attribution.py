@@ -59,7 +59,7 @@ class TestNoAgentIdInference(TestCase):
         session.visit_phase("coding", agent_id="same")
         session.visit_phase("reviewing", agent_id="same")
 
-        session.check_gate("reviewing")
+        session.check_gate_across_ticket("reviewing")
 
 
 class TestPhasePresenceStillEnforced(TestCase):
@@ -77,7 +77,7 @@ class TestPhasePresenceStillEnforced(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="loop")
 
         with pytest.raises(QualityGateError, match="testing"):
-            session.check_gate("reviewing")
+            session.check_gate_across_ticket("reviewing")
 
     def test_present_phases_scattered_across_sessions_pass(self) -> None:
         ticket = _ticket(state=Ticket.State.WORK_STARTED)
@@ -89,12 +89,6 @@ class TestPhasePresenceStillEnforced(TestCase):
         s3.visit_phase("retro", agent_id="a")
 
         s3.check_gate_across_ticket("shipping")
-
-    def test_force_bypasses_phase_presence(self) -> None:
-        ticket = _ticket(state=Ticket.State.WORK_STARTED)
-        session = Session.objects.create(ticket=ticket)
-
-        session.check_gate("shipping", force=True)
 
 
 class TestPhaseVisitsRemainsAuditTrail(TestCase):
@@ -113,6 +107,9 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
 
     def test_explicit_agent_id_recorded_verbatim(self) -> None:
         ticket = _ticket(state=Ticket.State.WORK_STARTED)
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(ticket)
         Session.objects.create(ticket=ticket)
 
         call_command("lifecycle", "visit-phase", str(ticket.pk), "review", "--agent-id", "cold-reviewer@cli")

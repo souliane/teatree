@@ -44,7 +44,10 @@ subprocess (``python -m teatree loops_tick --loop <name>``) with a hard deadline
 is killed, so a hung tick occupies one executor slot for at most the deadline and every
 other loop keeps firing. A tick killed at its deadline already consumed its cadence
 anchor, so its work is lost until the next slot — that is escalated LOUDLY via a durable
-``DeferredQuestion``, never left behind a silent warning.
+``DeferredQuestion``, never left behind a silent warning. Consecutive kills are counted on
+the row and back the successor off exponentially (:func:`deadline_backoff_seconds`), so a
+tick that cannot finish stops re-claiming a ``loops`` executor on every slot; the first tick
+that completes resets the count.
 
 Step 5 — post-tick refinement: after the tick's CAS bumps ``Loop.last_run_at``, the
 successor's ``run_after`` is recomputed from the fresh anchor and pushed out to the
@@ -110,6 +113,10 @@ DEADLINE_CADENCE_MULTIPLIER = 3
 #: script loop to carry, not the schedule the loop actually runs on. Daily ticks get
 #: their own deadline; a genuine overrun past it escalates loudly.
 DAILY_TICK_DEADLINE_SECONDS = 1800.0
+
+
+#: The ceiling on :func:`deadline_backoff_seconds`, so a loop that recovers is retried within the hour.
+MAX_DEADLINE_BACKOFF_SECONDS = 3600.0
 
 
 def _loop_timer_path() -> str:
@@ -224,11 +231,19 @@ def compute_tick_deadline(row: "Loop") -> float:
     return max(MIN_TICK_DEADLINE_SECONDS, DEADLINE_CADENCE_MULTIPLIER * float(cadence))
 
 
+def deadline_backoff_seconds(kills: int, *, deadline: float) -> float:
+    """How long a loop killed at its deadline *kills* times in a row waits before its next fire.
+
+    ``deadline x 2^(kills-1)``: a tick that cannot finish would otherwise re-fire on its
+    cadence and hold a ``loops`` executor for its whole deadline on every slot.
+    """
+    return min(MAX_DEADLINE_BACKOFF_SECONDS, deadline * 2 ** max(0, kills - 1))
+
+
 def _escalate_tick_timeout(name: str, *, deadline: float) -> None:
     """Record a durable escalation when a tick was SIGKILLed at its deadline, once per loop.
 
     A killed tick already consumed its cadence anchor (claimed BEFORE the scan in
-    ``build_loop_table_jobs``), so this run's work is lost until the next slot — for a
     daily loop, a full 24 h, repeatable forever. That is exactly the "never silently
     freeze" invariant: the timeout must surface loudly, not sit behind a lone
     ``logger.warning``. Deduped through the sanctioned ``dedupe_marker`` seam, which
@@ -341,12 +356,18 @@ def loop_timer(context: object, name: str) -> TimerResult:
         return {"loop": name, "action": "skipped"}
 
     # (4) deadlined subprocess tick in its own process group.
-    outcome = run_deadlined_tick(name, deadline=compute_tick_deadline(row))
+    deadline = compute_tick_deadline(row)
+    outcome = run_deadlined_tick(name, deadline=deadline)
     if outcome["timed_out"]:
         # The killed tick already consumed its anchor, so its work is lost until the
         # next slot (a full 24 h for a daily loop). Surface it loudly, never silent.
-        _escalate_tick_timeout(name, deadline=compute_tick_deadline(row))
-    elif outcome["returncode"]:
+        kills = Loop.objects.record_deadline_kill(name)
+        _escalate_tick_timeout(name, deadline=deadline)
+        backoff = dt.timedelta(seconds=deadline_backoff_seconds(kills, deadline=deadline))
+        refine_successor(name, run_after=timezone.now() + backoff)
+        return {"loop": name, "action": "ticked", "timed_out": True, "returncode": None}
+    Loop.objects.clear_deadline_kills(name)
+    if outcome["returncode"]:
         # The chain survives a failing tick by design; without this the only record of
         # a loop failing every slot is a return value no health surface reads.
         logger.warning("loop_timer %r tick exited %s — the loop did not do its work", name, outcome["returncode"])
@@ -364,6 +385,6 @@ def loop_timer(context: object, name: str) -> TimerResult:
     return {
         "loop": name,
         "action": "ticked",
-        "timed_out": outcome["timed_out"],
+        "timed_out": False,
         "returncode": outcome["returncode"],
     }

@@ -13,8 +13,7 @@ refuses unless an integration-review
 repo in the combined changeset. A single-repo ticket has no seam, so the gate
 never fires for it — it can never block existing single-repo work.
 
-``require_integration_review`` is ``False`` unless configured — with it unset
-the gate is a NO-OP. ``ticket.extra['integration_review_override']`` with a
+``ticket.extra['integration_review_override']`` with a
 non-empty ``reason`` is the audited escape hatch so a legitimately-exempt ticket
 is never hard-trapped, mirroring
 :mod:`teatree.core.gates.fix_dod_gate`. The gate is a pure function over durable
@@ -25,7 +24,6 @@ caller's outer atomic rolls the advance back and the FSM stays put.
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import ReviewEvidence
 from teatree.core.models.errors import InvalidTransitionError
@@ -46,16 +44,6 @@ class IntegrationReviewError(InvalidTransitionError):
     outer atomic rolls the close advance back and the FSM stays put. The message
     names the record-evidence command and the override escape hatch.
     """
-
-
-def integration_review_required(overlay: str | None = None) -> bool:
-    """Whether the integration-review gate is in force for *overlay* (overlay -> global).
-
-    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
-    when the evaluating process has no ambient ``T3_OVERLAY_NAME``. ``None``
-    resolves the ambient overlay as before.
-    """
-    return get_effective_settings(overlay).require_integration_review
 
 
 def distinct_repos(ticket: "Ticket") -> list[str]:
@@ -79,14 +67,11 @@ def check_integration_review(ticket: "Ticket") -> None:
 
     Order of short-circuits (cheapest, most-permissive first):
 
-    1. Gate off (``require_integration_review`` unset) → pass.
-    2. Fewer than 2 distinct repos → pass (no cross-repo seam to review).
-    3. A recorded override reason → pass (logged for audit).
-    4. An integration-review artifact covering every repo → pass.
-    5. Otherwise → raise :class:`IntegrationReviewError`.
+    1. Fewer than 2 distinct repos → pass (no cross-repo seam to review).
+    2. A recorded override reason → pass (logged for audit).
+    3. An integration-review artifact covering every repo → pass.
+    4. Otherwise → raise :class:`IntegrationReviewError`.
     """
-    if not integration_review_required(ticket.overlay or None):
-        return
     repos = distinct_repos(ticket)
     if len(repos) < _MIN_CROSS_REPO:
         return

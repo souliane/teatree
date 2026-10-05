@@ -15,7 +15,7 @@ deterministic; only the post is an unstoppable external).
 
 Routing reuses the host-stripped leading-segment-prefix matcher
 :func:`teatree.hooks._repo_visibility.slug_namespace_matches` (the same
-grammar ``private_repos`` uses), so an organisation-namespace pattern
+grammar ``slug_namespace_matches`` uses), so an organisation-namespace pattern
 (``acme-engineering``) routes every ``acme-engineering/*`` repo and the
 most-specific pattern wins when several match.
 """

@@ -3,10 +3,7 @@
 The ``debt_delta_gate`` is wired into ``_run_ship_gates`` right after the PR-budget
 gate (both cheap, before the expensive diff-rendering gates): ``run_debt_delta_gate``
 diffs merge-base..HEAD and delegates to ``check_debt_delta``. Anti-vacuous at the
-seam and flag-gated: the SAME wired adapter blocks a net-new ``noqa`` suppression when
-``require_debt_delta`` is ON and is a no-op when it is OFF (the DARK default) — the
-flag is what flips the outcome, and a manifest waiver lets a justified suppression
-through.
+seam and always blocks net-new ``noqa`` suppression; a manifest waiver lets a justified suppression through.
 """
 
 from typing import cast
@@ -16,7 +13,6 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.gates import debt_delta_gate as debt_gate_mod
 from teatree.core.management.commands._ship import gates as ship_gates_mod
 from teatree.core.management.commands._ship.gates import run_debt_delta_gate
@@ -47,16 +43,8 @@ _CLEAN = (
 )
 
 
-def _enabled() -> UserSettings:
-    return UserSettings(require_debt_delta=True)
-
-
-def _disabled() -> UserSettings:
-    return UserSettings(require_debt_delta=False)
-
-
 class TestRunDebtDeltaGate(TestCase):
-    """The ship-chain adapter: flag gate -> diff -> delegate -> typed failure or None."""
+    """The ship-chain adapter: diff -> delegate -> typed failure or None."""
 
     def _worktree(self, ticket: Ticket) -> Worktree:
         return Worktree.objects.create(
@@ -67,11 +55,10 @@ class TestRunDebtDeltaGate(TestCase):
             extra={"worktree_path": "/tmp/wt"},
         )
 
-    def test_blocks_net_new_debt_when_flag_on(self) -> None:
+    def test_blocks_net_new_debt_unconditionally(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
             patch.object(debt_gate_mod.git, "branch_diff", return_value=_NEW_NOQA),
         ):
             result = run_debt_delta_gate(ticket, worktree)
@@ -79,20 +66,10 @@ class TestRunDebtDeltaGate(TestCase):
         assert result["allowed"] is False
         assert "noqa" in result["error"]
 
-    def test_inert_when_flag_off_even_with_net_new_debt(self) -> None:
+    def test_passes_a_clean_diff_unconditionally(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_disabled()),
-            patch.object(debt_gate_mod.git, "branch_diff", return_value=_NEW_NOQA),
-        ):
-            assert run_debt_delta_gate(ticket, worktree) is None
-
-    def test_passes_a_clean_diff_when_flag_on(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
-        worktree = self._worktree(ticket)
-        with (
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
             patch.object(debt_gate_mod.git, "branch_diff", return_value=_CLEAN),
         ):
             assert run_debt_delta_gate(ticket, worktree) is None
@@ -107,7 +84,6 @@ class TestRunDebtDeltaGate(TestCase):
             adequacy={"approved_debt": [{"pattern": "noqa: F821", "reason": "stub gap"}]},
         )
         with (
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
             patch.object(debt_gate_mod.git, "branch_diff", return_value=_NEW_NOQA),
         ):
             assert run_debt_delta_gate(ticket, worktree) is None
@@ -116,7 +92,6 @@ class TestRunDebtDeltaGate(TestCase):
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
             patch.object(
                 ship_gates_mod.git,
                 "branch_diff",
@@ -133,7 +108,6 @@ class TestPrCreateDebtDeltaWiring(TestCase):
         ticket = _shippable_ticket()
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
             patch.object(debt_gate_mod.git, "branch_diff", return_value=_NEW_NOQA),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
@@ -141,14 +115,3 @@ class TestPrCreateDebtDeltaWiring(TestCase):
         assert result.get("allowed") is False
         assert "debt_delta_gate" in str(result.get("error"))
         assert ticket.state != Ticket.State.PR_OPENED
-
-    def test_pr_create_not_blocked_when_flag_off(self) -> None:
-        # The DARK default: the wired gate never blocks a ship even with net-new debt.
-        ticket = _shippable_ticket()
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(debt_gate_mod, "get_effective_settings", return_value=_disabled()),
-            patch.object(debt_gate_mod.git, "branch_diff", return_value=_NEW_NOQA),
-        ):
-            result = cast("dict[str, object]", call_command("pr", "create", str(ticket.id)))
-        assert "debt_delta_gate" not in str(result.get("error", ""))

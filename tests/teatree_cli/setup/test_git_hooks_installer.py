@@ -511,7 +511,6 @@ class TestSetupCommandInstallsHooks:
             patch.object(setup_command, "ToolInstaller"),
             patch.object(setup_command, "strip_apm_hooks", return_value=0),
             patch.object(setup_command, "install_statusline", return_value=StatuslineInstall.ALREADY_PRESENT),
-            patch.object(setup_command, "retire_alias"),
             patch.object(setup_command, "agent_skill_dirs", return_value=[]),
             patch.object(setup_command, "ensure_self_db_migrated", return_value=False),
             patch.object(setup_command, "seed_default_loops"),

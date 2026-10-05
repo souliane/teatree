@@ -14,9 +14,9 @@ from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.scanners.reviewer_prs import CacheEntry, ReviewerPrsScanner, _persist_entry
-from teatree.loop.scanners.reviewer_prs import mark_reviewed as _mark_reviewed_helper
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_loop._review_cache import seed_review_state as _mark_reviewed_helper
 
 #: What the fake answers for a PR no case pinned — an open merge request whose
 #: conflict state was never established, which is what a real forge returns while
@@ -395,21 +395,6 @@ class TestReviewerPrsScanner(TestCase):
         _mark_reviewed_helper(url=url, sha="same", state=ReviewState.APPROVED.value)
         assert scanner.scan() == []
 
-    def test_mark_reviewed_persists_to_reviewer_ticket(self) -> None:
-        """Recording a review creates/updates the reviewer-role ticket in the DB."""
-        from teatree.loop.scanners.reviewer_prs import mark_reviewed  # noqa: PLC0415
-
-        url = "https://gitlab/x/-/merge_requests/42"
-        mark_reviewed(url=url, sha="abc", state=ReviewState.APPROVED.value)
-        ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url=url)
-        assert ticket.extra["reviewed_sha"] == "abc"
-        assert ticket.extra["last_review_state"] == ReviewState.APPROVED.value
-
-    def test_mark_reviewed_refuses_to_invent_a_forge_state(self) -> None:
-        """A blank state used to become APPROVED — an observation nobody made."""
-        with pytest.raises(ValueError, match="OBSERVED forge state"):
-            _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/43", sha="abc")
-
     def test_orphaned_pending_task_for_merged_mr_emits_orphaned_signal(self) -> None:
         """A PENDING reviewing task whose MR was merged externally is reaped (#998).
 
@@ -723,34 +708,6 @@ class TestReviewerPrsScanner(TestCase):
         host = FakeCodeHost(user="alice")
         assert _orphaned_task_signals(None, set(), host) == []
         assert _orphaned_task_signals(None, {"https://x"}, host, "any-overlay") == []
-
-    def test_legacy_json_cache_is_imported_then_deleted(self) -> None:
-        """First scan migrates the legacy JSON file into reviewer tickets, then unlinks it."""
-        import shutil  # noqa: PLC0415
-        import tempfile  # noqa: PLC0415
-        from unittest.mock import patch  # noqa: PLC0415
-
-        import teatree.paths  # noqa: PLC0415
-
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        (tmp / "loop").mkdir(parents=True)
-        url_legacy = "https://gitlab/x/-/merge_requests/100"
-        (tmp / "loop" / "reviewer_prs.json").write_text(
-            f'{{"{url_legacy}": "legacy-sha"}}',
-            encoding="utf-8",
-        )
-
-        host = FakeCodeHost(
-            user="alice",
-            review_requested_prs=[{"web_url": "https://gitlab/x/-/merge_requests/200", "sha": "abc"}],
-        )
-        with patch.object(teatree.paths, "DATA_DIR", tmp):
-            ReviewerPrsScanner(host=host).scan()
-
-        ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url=url_legacy)
-        assert ticket.extra["reviewed_sha"] == "legacy-sha"
-        assert not (tmp / "loop" / "reviewer_prs.json").exists()
 
 
 class TestSlackMentionsScanner:

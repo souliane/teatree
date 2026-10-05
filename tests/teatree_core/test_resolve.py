@@ -1045,11 +1045,10 @@ class TestTicketByNumberFailsLoudOnCollision(TestCase):
 
         assert _ticket_by_number("5", overlay="ov-b") is None
 
-    def test_blank_overlay_ticket_still_matches_under_resolved_overlay(self) -> None:
-        """A blank-overlay (ambient single-overlay default) ticket resolves under any named overlay."""
-        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="")
+    def test_blank_overlay_ticket_does_not_match_named_overlay(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="")
 
-        assert _ticket_by_number("5", overlay="ov-b") == ticket
+        assert _ticket_by_number("5", overlay="ov-b") is None
 
     def test_branch_lookup_raises_on_collision(self) -> None:
         Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")

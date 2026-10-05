@@ -122,6 +122,8 @@ def group_status(
 def post(
     mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL to post."),
     approver: str = typer.Option(..., "--approver", help="User id that recorded the #960 approval."),
+    ticket_id: str = typer.Option(..., "--ticket-id", help="Ticket whose review evidence is checked."),
+    head_sha: str = typer.Option(..., "--head-sha", help="Full reviewed head SHA."),
     title: str = typer.Option("", "--title", help="Review-request subject (recommended)."),
 ) -> None:
     """Sanctioned authorized review-request post: #1094 dedup + #960 approval + post (#1098).
@@ -139,6 +141,10 @@ def post(
         mr_url,
         "--approver",
         approver,
+        "--ticket-id",
+        ticket_id,
+        "--head-sha",
+        head_sha,
         *extra,
         overlay_name=overlay_name,
     )

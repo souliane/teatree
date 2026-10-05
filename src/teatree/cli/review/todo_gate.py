@@ -181,8 +181,7 @@ def check_todo_anchor(  # noqa: PLR0913 — gate entry-point; each kwarg is a do
     * ``allow_todo_blocker`` is set — the documented escape for the
         legitimately-authorized case where the in-MR blocker genuinely must
         be addressed despite the author's deferral marker (the CLI surfaces
-        this as ``--allow-todo-blocker``, mirroring the sibling
-        ``--quote-ok`` / ``--allow-banned-term`` overrides).
+        this as ``--allow-todo-blocker``).
     * The anchor is empty (general MR-level note — nothing to anchor on,
         no author intent to read).
     * ``body`` does not look like a blocker.

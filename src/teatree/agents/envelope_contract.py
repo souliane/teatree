@@ -70,14 +70,6 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
             "sketch": {"kind": "default_behaviour", "setting_key": "", "policy_chokepoint": "<module.function>"},
         }
     },
-    "directive_candidate": {
-        "directive_candidate": {
-            "reader_identity": "<your reader id>",
-            "is_directive": True,
-            "normalized_constraint": "<the constraint in one sentence>",
-            "cited_signal": "<the text you read it from>",
-        }
-    },
     "commands_executed": {"commands_executed": ["git push -u origin HEAD", "gh pr create --base main"]},
     "article_suggestions": {
         "article_suggestions": [
@@ -90,6 +82,9 @@ _EVIDENCE_EXAMPLES: Mapping[str, AgentResult] = {
         ]
     },
     "answer": {"answer": {"text": "<the drafted reply, in the user's voice>", "thread_ref": "<thread ts, or ''>"}},
+    # The id `ticket sweep-begin` printed — the count is read from the run's own
+    # recorded URLs, so the example deliberately shows no changed_count to restate.
+    "ticket_sweep": {"ticket_sweep": {"run_id": "<the id `t3 <overlay> ticket sweep-begin` printed>"}},
 }
 
 

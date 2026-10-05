@@ -17,10 +17,14 @@ from teatree.core.intake.repo_scope import (
     identity_from_host_and_slug,
     normalize_host,
     repo_identity_for_cwd,
-    repo_scope,
 )
 
 _TEATREE_SCOPE = {"github.com": ["souliane", "acme-eng/widget-overlay"]}
+
+
+def _repo_scope(cwd: Path, owned: dict[str, list[str]]) -> str:
+    """Project the live host-aware ownership verdict into the test's labels."""
+    return "owned" if host_aware_owns(owned, repo_identity_for_cwd(cwd)) else "unknown"
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -82,19 +86,19 @@ class TestRepoIdentityForCwd:
 class TestRepoScopeOwnedUnknown:
     def test_owned_github_repo_is_owned(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "own", "https://github.com/souliane/teatree.git")
-        assert repo_scope(repo, _TEATREE_SCOPE) == "owned"
+        assert _repo_scope(repo, _TEATREE_SCOPE) == "owned"
 
     def test_owned_exact_namespace_entry(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "exact", "git@github.com:acme-eng/widget-overlay.git")
-        assert repo_scope(repo, _TEATREE_SCOPE) == "owned"
+        assert _repo_scope(repo, _TEATREE_SCOPE) == "owned"
 
     def test_unknown_github_repo(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "unk", "https://github.com/randomuser/randomrepo.git")
-        assert repo_scope(repo, _TEATREE_SCOPE) == "unknown"
+        assert _repo_scope(repo, _TEATREE_SCOPE) == "unknown"
 
     def test_dotless_alias_is_unknown_fail_safe(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "alias", "git@gh-personal:souliane/teatree.git")
-        assert repo_scope(repo, _TEATREE_SCOPE) == "unknown"
+        assert _repo_scope(repo, _TEATREE_SCOPE) == "unknown"
 
 
 class TestHostGateIsSymmetric:
@@ -102,11 +106,11 @@ class TestHostGateIsSymmetric:
 
     def test_gitlab_repo_does_not_match_github_scope(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "gl", "git@gitlab.com:souliane/x.git")
-        assert repo_scope(repo, {"github.com": ["souliane"]}) == "unknown"
+        assert _repo_scope(repo, {"github.com": ["souliane"]}) == "unknown"
 
     def test_github_repo_matches_github_scope(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "gh", "git@github.com:souliane/teatree.git")
-        assert repo_scope(repo, {"github.com": ["souliane"]}) == "owned"
+        assert _repo_scope(repo, {"github.com": ["souliane"]}) == "owned"
 
     def test_same_namespace_different_host_is_unknown(self) -> None:
         gh = RepoIdentity(host="github.com", namespace="souliane/x")
@@ -131,7 +135,7 @@ class TestPolarityFailsClosed:
 
     This is the OPPOSITE polarity to the VISIBILITY gate, which fails OPEN
     (an unknown repo there is treated as not-private / scanned-as-public).
-    The two verdicts are never shared — see ``repo_scope`` and
+    The two verdicts are never shared — see ``host_aware_owns`` and
     ``teatree.hooks.publish_destination`` docstrings.
     """
 

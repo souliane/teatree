@@ -69,6 +69,28 @@ def test_missing_and_unreadable_telemetry_are_distinct_unknowns(tmp_path: Path) 
     assert unreadable.reason == "otel_unreadable"
 
 
+def test_missing_older_day_cannot_mask_malformed_current_day(tmp_path: Path) -> None:
+    _path(tmp_path).write_bytes(b"{bad\n")
+
+    result = telemetry.checked_pressure_observations(directory=tmp_path, now=NOW, window=dt.timedelta(days=1, hours=1))
+
+    assert result.complete is False
+    assert result.reason == "otel_malformed"
+
+
+def test_damaged_line_is_skipped_and_warned_without_logging_its_content(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _path(tmp_path).write_bytes(json.dumps(_row()).encode() + b"\n{private-broken-line\n")
+
+    result = telemetry.checked_pressure_observations(directory=tmp_path, now=NOW)
+
+    assert result.rows == [_row()]
+    assert result.reason == "otel_malformed"
+    assert "otel_malformed" in caplog.text
+    assert "private-broken-line" not in caplog.text
+
+
 def test_bounded_tail_keeps_positive_rows_but_cannot_prove_absence(tmp_path: Path) -> None:
     row = json.dumps(_row()).encode() + b"\n"
     _path(tmp_path).write_bytes(row * 3)
@@ -124,3 +146,71 @@ def test_wrong_type_pressure_band_is_unknown_without_aborting_scan(tmp_path: Pat
 
     assert result.complete is False
     assert result.reason == "otel_malformed"
+
+
+def test_three_day_scan_reaches_middle_day(tmp_path: Path) -> None:
+    for day in (23, 24, 25):
+        (tmp_path / f"admission-2026-09-{day}.jsonl").write_text(json.dumps(_row()) + "\n" if day == 24 else "")
+
+    result = telemetry.checked_pressure_observations(directory=tmp_path, now=NOW, window=dt.timedelta(days=2, hours=1))
+
+    assert result.rows == [_row()]
+
+
+def _empty_days(directory: Path, count: int) -> None:
+    for offset in range(count):
+        (directory / f"admission-{(NOW - dt.timedelta(days=offset)).date().isoformat()}.jsonl").write_text("")
+
+
+@pytest.mark.parametrize(
+    ("window", "reason"),
+    [
+        (dt.timedelta(days=8), "otel_window_exceeds_retention"),
+        (dt.timedelta(0), "otel_invalid_window"),
+        (-dt.timedelta(minutes=1), "otel_invalid_window"),
+    ],
+    ids=["past-retention", "zero", "negative"],
+)
+def test_a_window_the_daily_files_cannot_answer_is_never_complete(
+    tmp_path: Path, window: dt.timedelta, reason: str
+) -> None:
+    _empty_days(tmp_path, 10)
+
+    result = telemetry.checked_pressure_observations(directory=tmp_path, now=NOW, window=window)
+
+    assert (result.complete, result.reason) == (False, reason)
+
+
+def test_a_read_budget_too_small_for_one_day_is_bounded(tmp_path: Path) -> None:
+    _empty_days(tmp_path, 1)
+    with patch.object(telemetry, "READ_LIMIT_BYTES", 1):
+        result = telemetry.checked_pressure_observations(directory=tmp_path, now=NOW)
+
+    assert (result.complete, result.reason) == (False, "otel_bounded")
+
+
+def test_a_damaged_day_warns_once_and_a_bounded_day_does_not_warn(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    row = json.dumps(_row()).encode() + b"\n"
+    _path(tmp_path).write_bytes(row + b"{broken\n")
+    for _ in range(2):
+        telemetry.checked_pressure_observations(directory=tmp_path, now=NOW)
+    _path(tmp_path).write_bytes(row * 3)
+    with patch.object(telemetry, "READ_LIMIT_BYTES", len(row) * 4):
+        telemetry.checked_pressure_observations(directory=tmp_path, now=NOW)
+
+    warnings = [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "otel_malformed" in warnings[0]
+
+
+def test_a_multi_day_read_shares_one_budget_across_its_days(tmp_path: Path) -> None:
+    row = json.dumps(_row()).encode() + b"\n"
+    _path(tmp_path).write_bytes(row * 2)
+    with patch.object(telemetry, "READ_LIMIT_BYTES", len(row) * 4):
+        result = telemetry.checked_pressure_observations(
+            directory=tmp_path, now=NOW, window=dt.timedelta(days=2, hours=1)
+        )
+
+    assert (result.complete, result.reason) == (False, "otel_bounded")

@@ -104,12 +104,12 @@ class TheAdvisoryNeverFailsTheRunTestCase(TestCase):
     def test_a_drifted_secret_is_reported_with_its_value_masked(self) -> None:
         # The row still has to surface — a secret that drifted is exactly as misleading as any
         # other — but neither the stored nor the shipped value may reach the output.
-        ConfigSetting.objects.set_value("banned_terms", ["leaked-term"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["leaked-term"], "prose_collider": []})
         with patch(
             "teatree.cli.doctor.checks_config_drift.shipped_defaults_table",
-            return_value={"banned_terms": ["shipped-term"]},
+            return_value={"banned_term_registry": {"leak": ["shipped-term"], "prose_collider": []}},
         ):
             out = _run()
-        assert "banned_terms" in out
+        assert "banned_term_registry" in out
         assert "leaked-term" not in out
         assert "shipped-term" not in out

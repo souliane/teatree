@@ -185,3 +185,4 @@ Skip this step entirely when `T3_UPSTREAM` is empty or when the PR already targe
 - Do not create upstream issues from heavily diverged forks — they're not useful.
 - Do not use `git push` directly — always go through this skill for retro commits.
 - Do not create duplicate upstream issues — check for existing ones first.
+- Never file the upstream issue with a raw `gh issue create` — go through the identity-switch and privacy-scrub procedure in [`references/upstream-issue.md`](references/upstream-issue.md).

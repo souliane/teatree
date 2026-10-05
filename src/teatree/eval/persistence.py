@@ -48,6 +48,7 @@ from teatree.eval.models import (
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
     TokenUsage,
+    ToolCallCountMatcher,
 )
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import MatcherResult, ScenarioResult
@@ -111,13 +112,17 @@ def _matcher_detail(item: MatcherResult) -> "MatcherDetail":
             " | ".join(matcher.patterns),
             passed=item.passed,
         )
-    if isinstance(matcher, SuccessfulToolCallMatcher):
+    if isinstance(matcher, (SuccessfulToolCallMatcher, ToolCallCountMatcher)):
+        if isinstance(matcher, ToolCallCountMatcher):
+            kind, operator, value = "tool_call_count", "~", matcher.pattern
+        else:
+            kind, operator, value = "tool_call_succeeded", matcher.operator, matcher.value
         return MatcherDetail(
-            kind="tool_call_succeeded",
+            kind=kind,
             tool=matcher.tool,
             arg_path=matcher.arg_path,
-            operator=matcher.operator,
-            value=matcher.value,
+            operator=operator,
+            value=value,
             passed=item.passed,
         )
     return MatcherDetail(
@@ -283,6 +288,8 @@ def _single_trial_verdict(result: ScenarioResult) -> str:
     # persisted as a behavioral fail scores 0.0 and reads as a regression next run.
     if result.run.is_error and not result.skipped:
         return "error"
+    if result.verdict == "incomplete":
+        return "error"
     return result.verdict
 
 
@@ -318,9 +325,9 @@ def _pass_at_k_verdict(result: PassAtKResult) -> str:
     # of the weekly lane can never read as a behavioral regression.
     if _pass_at_k_errored(result):
         return "error"
-    if result.skipped:
-        return "skip"
-    return "pass" if result.ok else "fail"
+    if result.verdict == "incomplete":
+        return "error"
+    return result.verdict
 
 
 def _matrix_verdict(row: MatrixRow) -> str:

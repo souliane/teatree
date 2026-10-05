@@ -98,9 +98,28 @@
         "turnTrigger"
       ]
     },
+    "turn/steer": {
+      "required": ["expectedTurnId", "input", "threadId"],
+      "allowed": [
+        "additionalContext",
+        "clientUserMessageId",
+        "expectedTurnId",
+        "input",
+        "responsesapiClientMetadata",
+        "threadId"
+      ]
+    },
     "turn/interrupt": {
       "required": ["threadId", "turnId"],
       "allowed": ["threadId", "turnId"]
+    },
+    "mcpServerStatus/list": {
+      "required": [],
+      "allowed": ["cursor", "detail", "limit", "threadId"]
+    },
+    "thread/unsubscribe": {
+      "required": ["threadId"],
+      "allowed": ["threadId"]
     }
   }
 }

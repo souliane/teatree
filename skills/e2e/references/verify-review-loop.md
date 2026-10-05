@@ -1,6 +1,6 @@
 # The verify–review loop — FSM edges, terminal states, and the threshold
 
-The mechanics behind `/t3:e2e` § "Verify–Review Loop to Threshold". That section carries why the loop exists; this file carries its five FSM edges, the three terminal states, and the `e2e_confidence_threshold` setting.
+The mechanics behind `/t3:e2e` § "Verify–Review Loop to Threshold". That section carries why the loop exists; this file carries its five FSM edges, the three terminal states, and the rubric pass bar.
 
 ## The loop as FSM edges (max 5 iterations per ticket)
 
@@ -18,14 +18,6 @@ The mechanics behind `/t3:e2e` § "Verify–Review Loop to Threshold". That sect
 
 Never post a caveated note as a substitute for reaching the threshold: a note that says "verified, except…" is not a VERIFIED — it is a HOLD or a BLOCKED wearing a green coat. The whole point of the threshold is that 100% confidence is unreachable for some tickets, so the loop terminates honestly (BLOCKED or MAX_ITERATIONS) rather than pretending.
 
-## Configuration
+## Pass bar
 
-The pass bar is the DB-home **`e2e_confidence_threshold`** setting — an integer 0–100, **default 90**, **per-overlay overridable**. Set it in the `ConfigSetting` store; a stricter client overlay can raise it, a fast dogfood overlay can lower it. It is the single knob both the rubric (`/t3:e2e-review`) and this loop read, so "the threshold" means one value, resolved through the DB-home chain: overlay-scope DB row → global DB row → the dataclass default (no env layer for this setting).
-
-Prefer the `mcp__teatree__config_setting_set` MCP tool — it accepts this key (a reviewed carve-out, since a quality tunable is not a safety gate) and applies the same registry validation; fall back to the CLI below when the MCP server isn't connected.
-
-```bash
-# CLI fallback (MCP server not connected)
-t3 <overlay> config_setting set e2e_confidence_threshold 90   # rubric score a spec must reach to be VERIFIED (0-100)
-t3 <overlay> config_setting set e2e_confidence_threshold 95 --overlay client-x   # stricter bar for a client overlay
-```
+The rubric pass bar is **90/100**, with every hard gate satisfied. A programme may set a stricter bar in its own E2E specification; the review records the bar it applied.

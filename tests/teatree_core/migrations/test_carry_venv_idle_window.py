@@ -5,8 +5,6 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 
-from teatree.config import retired_settings
-
 _BEFORE = ("core", "0098_a_loss_free_sweep_keeps_its_own_plan")
 _AFTER = ("core", "0099_carry_the_venv_idle_window_onto_every_artifact")
 _OLD_KEY = "venv_idle_days"
@@ -84,12 +82,3 @@ class TestCarryVenvIdleWindow(TransactionTestCase):
         rows = self._migrate_and_read(_BEFORE)
 
         assert rows == {("", _OLD_KEY): "11", ("t3-teatree", _OLD_KEY): "9"}
-
-    def test_the_historical_mapping_is_independent_of_the_live_retirement_registry(self) -> None:
-        self._seed_before((("", _OLD_KEY, "2"),))
-
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setitem(retired_settings.RENAMED_SETTING_KEYS, _OLD_KEY, "future_name")
-            rows = self._migrate_and_read()
-
-        assert rows == {("", _NEW_KEY): "2"}

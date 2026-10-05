@@ -29,6 +29,7 @@ from teatree.eval.gate_failures import (
     recurring_fingerprints,
 )
 from teatree.eval.session_transcript import SessionEvent, parse_session_jsonl
+from tests._send_gate import allow_forge_repos
 
 _FIXTURE = Path(__file__).parents[2] / "evals" / "fixtures" / "gate_failures_session.jsonl"
 
@@ -197,6 +198,9 @@ class _FakeHost:
     def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, object]]:
         return self._existing
 
+    def list_repo_open_issues(self, *, repo: str) -> list[dict[str, object]]:
+        return self._existing
+
     def create_issue(
         self,
         *,
@@ -222,7 +226,12 @@ def _record_recurring(store: FindingsStore, failure: GateFailure) -> None:
     record_gate_failures(store, [GateFailure(gate=failure.gate, hook_event=failure.hook_event, session_id="s9")])
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class TestEscalate:
+    @pytest.fixture(autouse=True)
+    def _forge_installation(self, db: None) -> None:
+        allow_forge_repos("o/r")
+
     def test_recurring_preventable_files_one_issue(self, tmp_path: Path) -> None:
         store = FindingsStore(data_dir=tmp_path)
         failure = _preventable()
@@ -265,8 +274,10 @@ class TestEscalate:
         assert host.created == []
         assert filed == []
 
-    @pytest.mark.usefixtures("banned_config")
-    def test_banned_term_body_is_withheld(self, tmp_path: Path) -> None:
+    def test_banned_term_body_is_withheld(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Override the class fixture in the test body so the fixture's generic
+        # registry cannot replace this case's customer term during setup.
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak": ["acmecorp"], "prose_collider": ["acmecorp"]}')
         store = FindingsStore(data_dir=tmp_path)
         failure = GateFailure(gate="stop:acmecorp-tenant-flow", hook_event="Stop", session_id="s1")
         _record_recurring(store, failure)
@@ -275,11 +286,6 @@ class TestEscalate:
         assert host.created == []
         assert filed[0].withheld
         assert "acmecorp" in filed[0].withheld_reason
-
-
-@pytest.fixture
-def banned_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("T3_BANNED_TERMS", "acmecorp")
 
 
 class TestRecurrenceCountsRepeatsWithinOneSession:
@@ -315,8 +321,10 @@ class TestRecurrenceCountsRepeatsWithinOneSession:
         record_gate_failures(store, [second])
         assert second.fingerprint in recurring_fingerprints([second], store=store)
 
-    def test_a_repeated_gate_within_one_session_escalates(self, tmp_path: Path) -> None:
+    @pytest.mark.usefixtures("configured_banned_term_registry")
+    def test_a_repeated_gate_within_one_session_escalates(self, tmp_path: Path, db: None) -> None:
         # The end-to-end consequence — the filer, not just the reported flag.
+        allow_forge_repos("o/r")
         store = FindingsStore(data_dir=tmp_path)
         repeated = [_preventable("only-session") for _ in range(4)]
         record_gate_failures(store, repeated)

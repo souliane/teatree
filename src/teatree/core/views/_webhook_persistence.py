@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from teatree.core.models import IncomingEvent
 from teatree.core.models.provenance import classify_provenance
@@ -29,6 +30,8 @@ class IngestionRecord:
     parent_text: str = ""
     body: str = ""
     payload_json: dict = field(default_factory=dict)
+    dead_letter_reason: str = ""
+    settled: bool = False
 
 
 def persist_incoming_event(record: IngestionRecord) -> bool:
@@ -49,6 +52,9 @@ def persist_incoming_event(record: IngestionRecord) -> bool:
                 payload_json=record.payload_json or {},
                 idempotency_key=record.idempotency_key,
                 provenance=provenance,
+                last_error=record.dead_letter_reason,
+                dead_lettered_at=timezone.now() if record.dead_letter_reason else None,
+                processed_at=timezone.now() if record.settled else None,
             )
     except IntegrityError:
         logger.debug("%s already ingested — replay suppressed", record.idempotency_key)

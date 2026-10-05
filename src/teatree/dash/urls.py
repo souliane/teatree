@@ -47,6 +47,7 @@ from teatree.dash.views import (
     settings_set,
     settings_snapshot,
     skills,
+    skills_enable,
     skills_refresh,
     skills_remove,
     task_action,
@@ -106,6 +107,7 @@ urlpatterns = [
     path("skills/", skills, name="skills"),
     path("skills/refresh/", skills_refresh, name="skills_refresh"),
     path("skills/<str:harness>/<str:name>/remove/", skills_remove, name="skills_remove"),
+    path("skills/<str:harness>/<str:name>/enable/", skills_enable, name="skills_enable"),
     # Moved out of settings: the dump reaches past the settings store (#4340). The export is
     # a bookmarkable GET, so its old address redirects (filters and all); the import was
     # POST-only, which nothing can have bookmarked.

@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 
@@ -90,7 +91,7 @@ def _fork_checkout(root: Path) -> Path:
     """The `<fork>/vendor/teatree/deploy/t3` layout that resolves TEATREE_SOURCE_MOUNT."""
     entry = root / "vendor" / "teatree" / "deploy" / "t3"
     entry.parent.mkdir(parents=True)
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     (root / "pyproject.toml").write_text("[project]\nname = 'fork'\n", encoding="utf-8")
     shutil.copy2(WRAPPER, entry.parent / "docker-compose.yml")

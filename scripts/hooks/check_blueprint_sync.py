@@ -121,19 +121,6 @@ def _vendoring_prefix() -> str:
         return ""
 
 
-def _teatree_relative(path: str, prefix: str) -> str | None:
-    """*path* re-expressed relative to teatree's root, or ``None`` if outside it.
-
-    ``None`` is the answer that keeps a fork's own tree out of this gate: its
-    ``src/fork_overlay/`` is not teatree source, and teatree's BLUEPRINT does not
-    document it — so it can neither trip the gate nor satisfy it.
-    """
-    norm = path.replace("\\", "/")
-    if not prefix:
-        return norm
-    return norm.removeprefix(prefix) if norm.startswith(prefix) else None
-
-
 def _staged_files() -> list[str]:
     """The paths this commit stages, relative to the git working-tree root.
 

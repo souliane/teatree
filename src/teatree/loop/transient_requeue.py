@@ -329,7 +329,7 @@ def _corrective_reopen(task: Task, note: str) -> int:
 
 def _latest_attempt(task: Task) -> TaskAttempt | None:
     """The newest attempt from the prefetched ``attempts`` (no extra query), or ``None``."""
-    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # Django reverse FK
     return attempts[-1] if attempts else None
 
 
@@ -501,7 +501,7 @@ def _escalate_once(task: Task, *, reason: str) -> None:
         task.ticket.pop_task_thread(int(task.pk))
         DeferredQuestion.record(
             question,
-            session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+            task_session=task.session,
             dedupe_marker=escalation_marker(task),
             audience=DeferredQuestion.Audience.INTERNAL,
         )

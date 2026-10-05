@@ -37,6 +37,7 @@ _UV_STUB = f"""#!/usr/bin/env bash
 set -euo pipefail
 if [ "${{1:-}}" = "--version" ]; then echo "uv 0.0.0-test"; exit 0; fi
 printf '%s\\n' "${{UV_PROJECT_ENVIRONMENT:-{_NO_REDIRECT}}}" >>"${{UV_STUB_ENVS}}"
+printf '%s\\n' "${{DJANGO_SETTINGS_MODULE:-{_NO_REDIRECT}}}" >>"${{UV_STUB_DJANGO_SETTINGS}}"
 """
 
 _COPIED = (
@@ -68,6 +69,20 @@ def _lane_repo(tmp_path: Path, *, vendored: bool) -> Path:
     return lane_repo / "dev" / "push-gate.sh"
 
 
+def _gnu_timeout() -> Path:
+    for name in ("timeout", "gtimeout"):
+        if found := shutil.which(name):
+            return Path(found)
+    pytest.skip("push-gate.sh needs GNU timeout(1) as `timeout` or `gtimeout`; neither is on PATH")
+
+
+def _link_gnu_timeout(tmp_path: Path) -> None:
+    timeout = _gnu_timeout()
+    link = tmp_path / "bin" / timeout.name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(timeout)
+
+
 def _install_uv_stub(tmp_path: Path) -> None:
     stub = tmp_path / "bin" / "uv"
     stub.parent.mkdir(parents=True, exist_ok=True)
@@ -75,10 +90,14 @@ def _install_uv_stub(tmp_path: Path) -> None:
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _run(tmp_path: Path, script: Path) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+def _run(
+    tmp_path: Path, script: Path, *, extra_env: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
+    _link_gnu_timeout(tmp_path)
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     envs_log = tmp_path / "envs.log"
+    django_settings_log = tmp_path / "django_settings.log"
     completed = subprocess.run(
         [str(script)],
         capture_output=True,
@@ -93,10 +112,13 @@ def _run(tmp_path: Path, script: Path) -> tuple[subprocess.CompletedProcess[str]
             "T3_CGROUP_MEMORY_MAX_V2": str(tmp_path / "absent-v2"),
             "T3_CGROUP_MEMORY_MAX_V1": str(tmp_path / "absent-v1"),
             "UV_STUB_ENVS": str(envs_log),
+            "UV_STUB_DJANGO_SETTINGS": str(django_settings_log),
+            **(extra_env or {}),
         },
     )
     recorded = envs_log.read_text(encoding="utf-8").split() if envs_log.exists() else []
-    return completed, recorded
+    django_settings = django_settings_log.read_text(encoding="utf-8").split() if django_settings_log.exists() else []
+    return completed, recorded, django_settings
 
 
 @pytest.mark.integration
@@ -104,7 +126,7 @@ class TestAVendoredLaneNeverSyncsTheSharedEnvironment:
     def test_every_step_runs_against_the_hooks_own_environment(self, tmp_path: Path) -> None:
         _install_uv_stub(tmp_path)
 
-        completed, recorded = _run(tmp_path, _lane_repo(tmp_path, vendored=True))
+        completed, recorded, _ = _run(tmp_path, _lane_repo(tmp_path, vendored=True))
 
         assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
         assert recorded == [_HOOK_ENV] * 3, (
@@ -120,7 +142,7 @@ class TestAStandaloneCheckoutIsLeftAlone:
     def test_a_repo_that_owns_its_environment_keeps_being_managed_in_place(self, tmp_path: Path) -> None:
         _install_uv_stub(tmp_path)
 
-        completed, recorded = _run(tmp_path, _lane_repo(tmp_path, vendored=False))
+        completed, recorded, _ = _run(tmp_path, _lane_repo(tmp_path, vendored=False))
 
         assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
         assert recorded == [_NO_REDIRECT] * 3, f"a standalone checkout must not be redirected: {recorded}"
@@ -129,10 +151,48 @@ class TestAStandaloneCheckoutIsLeftAlone:
 @pytest.mark.integration
 class TestAnUnresolvableUvFailsClosed:
     def test_no_uv_at_all_refuses_the_push_rather_than_reporting_a_pass(self, tmp_path: Path) -> None:
-        completed, recorded = _run(tmp_path, _lane_repo(tmp_path, vendored=True))
+        completed, recorded, _ = _run(tmp_path, _lane_repo(tmp_path, vendored=True))
 
         assert completed.returncode != 0, "a gate that cannot run its own checks must never report a pass"
+        assert "timeout(1)" not in completed.stderr, f"refused for timeout, not uv: {completed.stderr!r}"
         assert recorded == []
+
+
+@pytest.mark.integration
+class TestDjangoSettingsModuleDoesNotLeakIntoTheHooksOwnEnvironment:
+    """No fork overlay is installed in the hook's own env; an inherited ``DJANGO_SETTINGS_MODULE`` would crash it."""
+
+    def test_a_forks_ambient_settings_module_is_stripped_for_a_workspace_member(self, tmp_path: Path) -> None:
+        _install_uv_stub(tmp_path)
+
+        completed, _, django_settings = _run(
+            tmp_path,
+            _lane_repo(tmp_path, vendored=True),
+            extra_env={"DJANGO_SETTINGS_MODULE": "afork.settings"},
+        )
+
+        assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        assert django_settings == [_NO_REDIRECT] * 3, (
+            "an ambient DJANGO_SETTINGS_MODULE reached the hook's own environment, where no fork "
+            f"overlay is installed to satisfy it: {django_settings}"
+        )
+
+    def test_a_forks_ambient_settings_module_is_stripped_for_a_foreign_environment(self, tmp_path: Path) -> None:
+        _install_uv_stub(tmp_path)
+        script = _lane_repo(tmp_path, vendored=False)
+        venv_cfg = script.parents[1] / ".venv" / "pyvenv.cfg"
+        venv_cfg.parent.mkdir()
+        venv_cfg.write_text(f"home = {tmp_path / 'interpreter-of-another-machine'}\n", encoding="utf-8")
+
+        completed, recorded, django_settings = _run(
+            tmp_path, script, extra_env={"DJANGO_SETTINGS_MODULE": "afork.settings"}
+        )
+
+        assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        assert recorded == [_HOOK_ENV] * 3, f"a foreign `.venv` must be redirected away from: {recorded}"
+        assert django_settings == [_NO_REDIRECT] * 3, (
+            f"an ambient DJANGO_SETTINGS_MODULE reached the redirected environment: {django_settings}"
+        )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ A gate that blocks orchestration is as broken as one that lets foreground
 coding through; this file fails on either.
 """
 
+import contextlib
+import io
 import json
 import sqlite3
 from pathlib import Path
@@ -52,6 +54,14 @@ def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
         )
     conn.commit()
     conn.close()
+
+
+def _model_visible_nudge(stdout: str) -> str:
+    """The nudge as Claude Code reads it: ONE object, nested under ``hookSpecificOutput`` for PreToolUse."""
+    payload = json.loads(stdout)
+    assert set(payload) == {"hookSpecificOutput"}
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    return payload["hookSpecificOutput"]["additionalContext"]
 
 
 @pytest.fixture(autouse=True)
@@ -334,10 +344,9 @@ class TestTurnBudgetNudge:
     def test_nudge_fires_once_at_budget(self, capsys: pytest.CaptureFixture[str]) -> None:
         for _ in range(25):
             handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
-        out = capsys.readouterr().out.strip()
-        payload = json.loads(out)
-        assert "orchestrator-responsiveness" in payload["additionalContext"]
-        assert "YIELD" in payload["additionalContext"]
+        nudge = _model_visible_nudge(capsys.readouterr().out)
+        assert "orchestrator-responsiveness" in nudge
+        assert "YIELD" in nudge
 
     def test_nudge_fires_only_once_per_turn(self, capsys: pytest.CaptureFixture[str]) -> None:
         for _ in range(40):
@@ -353,7 +362,7 @@ class TestTurnBudgetNudge:
         handle_reset_turn_tool_budget({"session_id": "s-corpus"})
         for _ in range(25):
             handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
-        assert json.loads(capsys.readouterr().out.strip())["additionalContext"]
+        assert _model_visible_nudge(capsys.readouterr().out)
 
     def test_orchestration_calls_do_not_count_toward_budget(self, capsys: pytest.CaptureFixture[str]) -> None:
         # 100 AskUserQuestion / dispatch calls never count and never nudge:
@@ -386,7 +395,7 @@ class TestTurnBudgetNudge:
             handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
         assert capsys.readouterr().out.strip() == ""
         handle_orchestrator_turn_budget_nudge(_main_tool("Read", file_path="x.py"))
-        assert json.loads(capsys.readouterr().out.strip())["additionalContext"]
+        assert _model_visible_nudge(capsys.readouterr().out)
 
     def test_missing_session_id_is_a_no_op(self, capsys: pytest.CaptureFixture[str]) -> None:
         for _ in range(50):
@@ -395,11 +404,42 @@ class TestTurnBudgetNudge:
 
 
 class TestWiredInChains:
-    def test_reset_handler_wired_in_user_prompt_submit(self) -> None:
-        assert handle_reset_turn_tool_budget in router._HANDLERS["UserPromptSubmit"]
+    def test_reset_handler_wired_first_at_turn_end(self) -> None:
+        assert router._HANDLERS["Stop"][0] is handle_reset_turn_tool_budget
 
     def test_nudge_handler_wired_last_in_pretooluse(self) -> None:
         # Last so it only prints additionalContext on a non-denied call (a
         # deny earlier in the chain short-circuits before it runs).
         chain = router._HANDLERS["PreToolUse"]
         assert handle_orchestrator_turn_budget_nudge is chain[-1]
+
+
+class TestTheRouterWritesOneModelVisibleObject:
+    """What reaches Claude Code is the router's whole stdout for the call, so it must be ONE valid object."""
+
+    @staticmethod
+    def _over_budget_call(command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> str:
+        budget = router._DEFAULT_ORCHESTRATOR_TURN_BUDGET
+        (router.STATE_DIR / f"s-corpus.{router._TURN_TOOL_COUNT_SUFFIX}").write_text(str(budget - 1), encoding="utf-8")
+        payload = {**_main_tool("Bash", command=command), "hook_event_name": "PreToolUse"}
+        monkeypatch.setattr("sys.argv", ["hook_router.py", "--event", "PreToolUse"])
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        with contextlib.suppress(SystemExit):
+            router.main()
+        return capsys.readouterr().out
+
+    def test_the_nudge_on_an_allowed_call_is_the_nested_pretooluse_context(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stdout = self._over_budget_call("ls", monkeypatch, capsys)
+
+        assert "orchestrator-responsiveness" in _model_visible_nudge(stdout)
+
+    def test_a_denied_over_budget_call_carries_the_deny_alone(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stdout = self._over_budget_call("git add -A", monkeypatch, capsys)
+
+        decision = json.loads(stdout)["hookSpecificOutput"]
+        assert decision["permissionDecision"] == "deny"
+        assert "additionalContext" not in decision

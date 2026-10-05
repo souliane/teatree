@@ -317,7 +317,7 @@ class TestResolveSpeakSafeLoudOnConfigCorruption:
 
     def test_config_corruption_logs_error_and_text_dm_still_delivered(self, caplog) -> None:
         backend = _backend()
-        corruption = ValueError("Invalid stored ConfigSetting value for 'allow_destructive_disk'")
+        corruption = ValueError("Invalid stored ConfigSetting value for 'disk_cache_allowlist'")
         with (
             patch.object(speak_mod, "resolve_speak", side_effect=corruption),
             caplog.at_level(logging.ERROR, logger="teatree.core.speak"),
@@ -331,7 +331,7 @@ class TestResolveSpeakSafeLoudOnConfigCorruption:
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors, "config-corruption must log at ERROR, not be swallowed at debug"
         assert any(r.exc_info is not None for r in errors), "ERROR must carry the exception traceback"
-        assert any("allow_destructive_disk" in str(r.exc_info[1]) for r in errors if r.exc_info)
+        assert any("disk_cache_allowlist" in str(r.exc_info[1]) for r in errors if r.exc_info)
 
     def test_optional_failure_does_not_log_error(self, caplog) -> None:
         # No-regression guard: a genuinely-optional speak read failure (not a

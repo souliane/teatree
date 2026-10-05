@@ -33,6 +33,7 @@ from teatree.core.models import MergeAudit, MergeClear, Session, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -104,6 +105,7 @@ def _clear(ticket: Ticket | None = None) -> MergeClear:
     # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
     if ticket is not None:
         waive_rubric(ticket)
+        record_merge_prerequisites_for_test(ticket, _REVIEWED_SHA)
     from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415 — deferred: ORM needs the app registry
 
     clear = MergeClear.objects.create(

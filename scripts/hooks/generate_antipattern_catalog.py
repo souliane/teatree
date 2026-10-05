@@ -73,7 +73,7 @@ def build_markdown(catalog_text: str | None = None) -> str:
         "This is the single source of truth feeding the three review tiers:",
         "design-time (`architecture-design`), per-PR deterministic",
         "(`scripts/hooks/check_antipatterns.py`, manual stage), and periodic",
-        "holistic (`ac-reviewing-codebase`).",
+        "holistic (`architectural-review`).",
         "",
         f"**{len(entries)} entries** — {greppable} greppable, {judgement} judgement.",
         "",

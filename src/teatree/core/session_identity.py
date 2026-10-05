@@ -10,7 +10,7 @@ identity for the persistent ``t3-master`` claim.
 
 This is the single source of truth for that primitive; both
 ``teatree.loop.session_identity`` (the loop-side callers) and
-``teatree.outbound_claim`` (``_resolve_agent_session_id``) re-export it.
+``teatree.outbound_claim`` uses it.
 It lives in ``teatree.core`` rather than ``teatree.loop`` because the
 module-boundary graph forbids ``teatree.outbound_claim`` (core-only)
 depending on ``teatree.loop``; ``core`` is the lowest common module both
@@ -25,16 +25,10 @@ hard-refused → t3-master could never be claimed → every owner-gated slot
 permanently dead (131 user DMs reacted/answered never). The precedence is
 now:
 
-    ``CLAUDE_SESSION_ID`` → ``CLAUDE_CODE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
+    ``CLAUDE_CODE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
 
-#3554 — Claude Code exports the live session id as ``CLAUDE_CODE_SESSION_ID``,
-not ``CLAUDE_SESSION_ID``, so a resolver reading only the old name fell
-through to ``""`` in every interactive session (``handover create``
-refused, ``loop whoami`` reported no session). ``CLAUDE_SESSION_ID`` is
-kept ahead of it for backward compatibility. The accepted names live in
-one place — :data:`SESSION_ID_ENV_VARS` — so a future upstream rename is a
-one-line change caught by a single pinning test rather than silent
-degradation at every call site.
+The accepted names live in :data:`SESSION_ID_ENV_VARS` so all callers use
+the same precedence.
 
 The durable session *pid* (the t3-master lease anchor) resolves with a
 parallel precedence so an env-restricted subprocess that cannot read the
@@ -71,13 +65,11 @@ from teatree.utils.hook_registry import loop_registry_dir
 
 # The session id lands under whichever name the harness exports it, most-
 # to least-preferred. ``CLAUDE_CODE_SESSION_ID`` is what a live Claude Code
-# session exports (#3554); ``CLAUDE_SESSION_ID`` is the legacy name kept for
-# backward compatibility; ``T3_LOOP_SESSION_ID`` is the test/manual override.
+# session exports (#3554); ``T3_LOOP_SESSION_ID`` is the test/manual override.
 # Single source of truth: ``teatree.hooks._hook_state`` redeclares the same
 # list (it cannot import across the module-boundary graph) and a test pins
 # the two in sync.
 SESSION_ID_ENV_VARS: tuple[str, ...] = (
-    "CLAUDE_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
     "T3_LOOP_SESSION_ID",
 )
@@ -108,7 +100,7 @@ RUNNER_SESSION_ENV = "T3_LOOP_RUNNER_SESSION"
 RUNNER_PID_ENV = "T3_LOOP_RUNNER_PID"
 
 # Deliberately redeclared (not imported) — ``teatree.core`` must not
-# depend on ``teatree.loop``/hooks. Mirrors ``hook_router._OWNER_LOOP``
+# depend on ``teatree.loop``/hooks. Mirrors ``loop_registry_path.OWNER_LOOP``
 # and the literal already accepted in ``loop_slack_answer``. The
 # ``gitleaks:allow`` is a false-positive suppression: a registry slot
 # name, not a credential (same literal lives in ``loop_slack_answer.py``
@@ -229,9 +221,8 @@ def current_session_id() -> str:
     """The active Claude session id, or ``""`` when not resolvable.
 
     Claude Code exports the id as ``CLAUDE_CODE_SESSION_ID`` (#3554);
-    ``CLAUDE_SESSION_ID`` is the legacy name kept ahead of it for backward
-    compatibility, and ``T3_LOOP_SESSION_ID`` is the test/manual override
-    (all three in :data:`SESSION_ID_ENV_VARS`). When none is set (#1107:
+    ``T3_LOOP_SESSION_ID`` is the test/manual override
+    (both in :data:`SESSION_ID_ENV_VARS`). When none is set (#1107:
     agent-driven Bash-tool subprocesses never see the id as an env var) the
     loop registry's ``t3-loop-tick-owner`` record is the lowest-precedence
     fallback. Empty string means anonymous (no session) — the t3-master

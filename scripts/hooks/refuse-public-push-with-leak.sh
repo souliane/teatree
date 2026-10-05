@@ -6,7 +6,9 @@
 # range fails `t3 tool privacy-scan` (a planted secret, an internal
 # `/Users/`-`/home/` path, a private IP, an API token, an internal
 # hostname, or a configured banned term). Commit messages and trailers reach
-# public history just like file content, so they are scanned too (#703).
+# public history just like file content, so they are scanned too (#703), and so
+# does the pushed ref NAME — it is published the moment the push lands and
+# survives branch deletion in `refs/pull/*`, so a later rename cannot unpublish it.
 #
 # It ALSO refuses (#730) when any commit in the push range has an author
 # OR committer email that is not a GitHub noreply address. A real /
@@ -16,7 +18,17 @@
 # catch for third-party domains. The accepted shape is the GitHub
 # noreply pattern `([0-9]+\+)?<login>@users.noreply.github.com`, which
 # covers every GitHub identity (souliane and any other login)
-# without hardcoding one specific login.
+# without hardcoding one specific login. That rule applies on every verdict
+# that is not KNOWN private, an undetermined one included: an internal address
+# bound for a remote nobody could classify is refused exactly as on a public
+# one, and the refusal says how to confirm the visibility. A private remote
+# passes because the resolver PROVES it private (the `private_repos` allowlist,
+# or a forge probe), never because the gate stopped asking.
+#
+# No refusal ever recommends rewriting the pushed branch. The pushed branch
+# is the reviewed branch; rewriting it moves every commit an open merge
+# request's comments are anchored to. The remedy is a new branch cut clean
+# of the finding, and a merge request opened on that.
 #
 # Pushes to a private remote, and clean pushes to a public remote, pass
 # through.
@@ -36,9 +48,12 @@
 # thousands of commits behind, that re-scans the entire already-public
 # history on every push and turns the gate into an outage).
 #
-# Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which routes
+# Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which answers
+# from the offline `private_repos` allowlist first and only then probes, routing
 # the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab) and
-# day-caches the verdict per slug. The gate SKIPS the scan only when the
+# host-caching the verdict per slug. The allowlist is what makes the verdict
+# deterministic: a probe carries a network budget a loaded machine loses, and a
+# lost probe used to decide a declared-private repo's visibility. The gate SKIPS the scan only when the
 # remote is KNOWN to be private/internal. Every undetermined case — an
 # unparsable remote, no forge CLI for that host, a probe error, or an
 # unrecognised answer — fails CLOSED and the diff is scanned anyway, so a
@@ -46,7 +61,9 @@
 # (§3f #14; was fail-open). "Fail closed" here means "scan anyway", NOT
 # "block anyway": the scan still fails OPEN on a scanner crash and blocks
 # ONLY on a real finding, so a clean push on a machine without a forge CLI
-# is unaffected.
+# is unaffected. An allowlist the resolver could not READ (a locked, corrupt or
+# absent config DB) is reported as ALLOWLIST_UNREADABLE, enforced the same way but
+# named apart, so the refusal points at the store instead of at redeclaring a repo.
 #
 # Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
 # ships with the repo and needs no per-machine bootstrap.
@@ -69,6 +86,15 @@ fi
 slug=$(printf '%s' "${remote_url}" \
   | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
 
+# Suggest a host-qualified entry. A dotless host needs its canonical HostName;
+# without one, show the expected form instead of suggesting a value that cannot match.
+entry_slug=$(printf '%s' "${remote_url}" \
+  | sed -E 's#^[^:]+://([^@/]*@)?([^/:]+)(:[0-9]+)?/#\2/#; s#^([^/:@]+@)?([^/:]+):#\2/#; s#\.git$##')
+entry_host="${entry_slug%%/*}"
+if [ "${entry_host}" != "${entry_slug}" ] && [[ "${entry_host}" != *.* ]] && [ "${entry_host}" != "localhost" ]; then
+  entry_slug=""
+fi
+
 # Resolve the repo root from this script's own location
 # (scripts/hooks/<this>.sh -> repo root) so the visibility CLI runs against
 # THIS clone's teatree regardless of the caller's cwd.
@@ -87,18 +113,28 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 # bare `python3`, which on a stock Mac is the Command Line Tools 3.9 stub and
 # cannot import core (requires-python >=3.13) whatever PYTHONPATH says.
 #
+# The uv branch gets the same PYTHONPATH. `uv run --project <root> --no-sync` in a
+# checkout whose project env does not carry core (a fresh worktree, where uv creates
+# an EMPTY .venv on the spot, or a vendoring fork whose env never installed it) runs
+# a perfectly good 3.13+ interpreter that cannot import `teatree`; with the bare
+# `python3` being the Mac stub, the same allowlisted remote then resolved PRIVATE in
+# one worktree and UNKNOWN in the next. Core's import chain here is stdlib-only, so
+# the path is all that interpreter lacks.
+#
 # A probe failure is REPORTED, never swallowed. Discarding it is precisely how a
 # PRIVATE repo gets silently downgraded to "assume public" and re-scanned on
 # every push: the verdict is undetermined, the gate says only "could not
-# confirm", and the REASON it could not confirm is invisible forever.
+# confirm", and the REASON it could not confirm is invisible forever. A resolver
+# that could not run at all says so (RESOLVER_FAILED) rather than posing as an
+# answer, because its remedy is the checkout, not the repo's declared visibility.
 _resolve_visibility() {
-  local err py probe_path rc=1
+  local err py probe_path out="" rc=1
   err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX")
   probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src${PYTHONPATH:+:${PYTHONPATH}}"
 
   if command -v uv >/dev/null 2>&1; then
-    if uv run --project "${repo_root}" --no-sync \
-        python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+    if out=$(PYTHONPATH="${probe_path}" uv run --project "${repo_root}" --no-sync \
+        python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"); then
       rc=0
     fi
   fi
@@ -106,19 +142,26 @@ _resolve_visibility() {
   if [ "${rc}" -ne 0 ]; then
     for py in python3.13 python3.14 python3; do
       command -v "${py}" >/dev/null 2>&1 || continue
-      if PYTHONPATH="${probe_path}" \
-          "${py}" -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+      if out=$(PYTHONPATH="${probe_path}" \
+          "${py}" -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"); then
         rc=0
         break
       fi
     done
   fi
 
+  if [ "${rc}" -ne 0 ]; then
+    out="RESOLVER_FAILED"  # no verdict, whatever a failed attempt printed first
+  fi
   if [ "${rc}" -ne 0 ] && [ -s "${err}" ]; then
     echo "⚠ push privacy gate: visibility probe failed — diagnostics below." >&2
     sed 's/^/    /' "${err}" >&2 2>/dev/null || true
+  elif [ "${out}" = "ALLOWLIST_UNREADABLE" ]; then
+    # The resolver names WHICH store it could not read; that path is the whole diagnosis.
+    grep '^could not read private_repos' "${err}" 2>/dev/null | sed 's/^/    /' >&2 || true
   fi
   rm -f "${err}"
+  printf '%s\n' "${out}"
   return "${rc}"
 }
 
@@ -133,6 +176,10 @@ visibility=$(
 # Normalise (PUBLIC/PRIVATE/INTERNAL/UNKNOWN); anything else is undetermined.
 visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
 
+# Both rules below run on every verdict that is not KNOWN private. An undetermined
+# verdict is "could not confirm private", so it is enforced like a public one
+# (hooks/CLAUDE.md: public-surface leak gates fail CLOSED always); only the wording
+# differs, so no refusal calls a repo PUBLIC on a verdict that did not say so.
 case "${visibility}" in
   PRIVATE | INTERNAL)
     exit 0  # KNOWN non-public remote — nothing reaches public history
@@ -141,15 +188,27 @@ case "${visibility}" in
     target="PUBLIC repo '${slug}'"
     confirm_hint=""
     ;;
+  RESOLVER_FAILED)
+    echo "⚠ push privacy gate: could not run the visibility resolver for '${slug:-<remote>}' (diagnostics above) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
+    target="repo '${slug:-<remote>}' (could not run the visibility resolver — visibility unknown, refusing push)"
+    confirm_hint="  The visibility resolver could not start in this checkout (diagnostics above), so neither private_repos nor the forge was asked. Run 'uv sync' in ${repo_root}, or install Python 3.13+, and push again."
+    ;;
+  ALLOWLIST_UNREADABLE)
+    # Not "undeclared": the store that would say whether it is declared could not be
+    # read, so the hint below sends the operator to that store, not to redeclaring.
+    echo "⚠ push privacy gate: could not read private_repos, and no forge probe confirmed '${slug:-<remote>}' — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
+    target="repo '${slug:-<remote>}' (could not read private_repos — visibility unknown, refusing push)"
+    confirm_hint="  The private_repos allowlist could not be read from the config DB this hook resolves (the path is printed above). Repair or unlock that store, or point T3_CONFIG_DB at the DB t3 uses; redeclaring the repo does not help while the store is unreadable."
+    ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
     # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. The
     # scan itself still fails OPEN on a scanner crash and blocks ONLY on a real
     # finding, so a clean push on a tool-less machine still passes — only an
     # actual leak is stopped. Warn loudly so the undetermined path shows.
-    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning anyway (fail closed, §3f #14)." >&2
-    target="repo '${slug:-<remote>}' (visibility could not be confirmed — treated as public)"
-    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${slug:-<owner>/<repo>}\"]'"
+    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
+    target="repo '${slug:-<remote>}' (visibility could not be confirmed)"
+    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${entry_slug:-<host>/<owner>/<repo>}\"]'"
     ;;
 esac
 
@@ -260,8 +319,7 @@ _attribute_findings() {
 # like content. The local name is never sent, so it is not judged.
 _scan_ref_name() {
   local published="$1" name_report name_rc=0
-  published="${published#refs/heads/}"
-  published="${published#refs/tags/}"
+  published="${published#refs/*/}"
   [ -n "${published}" ] || return 0
   name_report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-ref.XXXXXX")
   printf '%s\n' "${published}" | ${scan_cmd} - >"${name_report}" 2>&1 || name_rc=$?
@@ -348,6 +406,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # (`([0-9]+\+)?<login>@users.noreply.github.com`); anything else — a
   # real/deliverable address such as a customer-domain email inherited
   # from local git config — is blocked (#730).
+  #
+  # Every verdict that is not KNOWN private, the undetermined one included. An
+  # internal address is the ordinary identity on a private remote, which is why a
+  # PROVEN-private remote exits above; a remote nobody could classify may be
+  # public, and an address that reaches public history cannot be taken back.
   noreply_re='^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$'
   bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
     | grep -v -E "${noreply_re}" | sort -u || true)
@@ -357,8 +420,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  Offending author/committer email(s):"
     printf '%s\n' "${bad_idents}" | sed 's/^/    /'
     echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
-    echo "  Nothing was published. Cut a new branch from the remote's tip, re-create these commits on it"
-    echo "  under the repo's GitHub noreply identity, and push that new branch for review."
+    echo "  Nothing here has reached the remote yet. Start a new branch from the remote base,"
+    echo "  re-apply the work under the noreply identity, and open a merge request on that branch."
+    echo "  Never rewrite a branch that already backs an open merge request: it moves every commit"
+    echo "  the reviewers' comments are anchored to, and the whole review has to start again."
     echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1
@@ -394,6 +459,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  with generic placeholders so the flagged value is in none of them, and push that branch."
     echo "  A deliberate fake value (a test-fixture email) instead carries an inline 'privacy-scan:allow <reason>'"
     echo "  marker on that same line, in the commit that introduces it."
+    echo "  Never rewrite a branch that already backs an open merge request: it moves every commit"
+    echo "  the reviewers' comments are anchored to, and the whole review has to start again."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1

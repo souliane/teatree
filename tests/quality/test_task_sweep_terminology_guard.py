@@ -7,12 +7,7 @@ because it acts on teatree **tasks**, never the harness **TODO** list. This guar
 turns that rename into a mechanical floor: any reappearance of the conflating
 identifiers in ``src/`` / ``tests/`` / ``skills/`` / ``BLUEPRINT.md`` is RED.
 
-The single sanctioned exception is the backward-compat alias surface: the retired-key
-registry (``config/retired_settings_loop_owned.py``, #3527), its test, the settings docstring
-that documents the rename, and the BLUEPRINT row that points at it all reference the
-retired ``todo_sweep_*`` key on purpose — they pair the old name with the new
-rather than conflating the two. That surface is allow-listed by exact relative
-path so the guard cannot be defeated by planting a conflation elsewhere.
+The guard excludes its own source, which necessarily names the forbidden spelling.
 """
 
 import re
@@ -28,18 +23,11 @@ _EXTRA_FILES = ("BLUEPRINT.md",)
 # below pins that the scanner's own former "The TODO list" docstring is gone.
 _FORBIDDEN = re.compile(r"todo_sweep|TodoSweep|todo_completion|todo\.completion_detected|todo\.orphaned")
 
-# Files that reference the retired ``todo_sweep_*`` config key on purpose, to
-# keep a stored legacy row resolving (the backward-compat alias). Relative to
-# the repo root; matched exactly, never by substring, so the carve-out cannot
-# be widened by accident.
-_LEGACY_ALIAS_ALLOWLIST = frozenset(
-    {
-        "src/teatree/config/retired_settings_loop_owned.py",
-        "tests/teatree_loop/test_task_sweep_wiring.py",
-        "tests/quality/test_task_sweep_terminology_guard.py",
-        "BLUEPRINT.md",
-    },
-)
+_SELF_SCAN_EXCLUSION = "tests/quality/test_task_sweep_terminology_guard.py"
+_HISTORICAL_ALIASES = {
+    # The config import's rename table must name the retired key.
+    "src/teatree/config/known_settings.py",
+}
 
 
 def _candidate_files() -> list[Path]:
@@ -60,7 +48,7 @@ class TestNoTodoSweepConflation:
         offenders: list[str] = []
         for path in _candidate_files():
             rel = _rel(path)
-            if rel in _LEGACY_ALIAS_ALLOWLIST:
+            if rel == _SELF_SCAN_EXCLUSION or rel in _HISTORICAL_ALIASES or "migrations" in path.parts:
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
@@ -86,18 +74,6 @@ class TestNoTodoSweepConflation:
         # The retired module name must be gone entirely.
         assert not (_REPO_ROOT / "src" / "teatree" / "loop" / "scanners" / "todo_sweep.py").exists()
 
-    def test_allowlist_entries_exist_and_actually_reference_the_alias(self) -> None:
-        # An allow-listed file that no longer references the retired key is dead
-        # carve-out — drop it, so the guard cannot silently widen its exemption.
-        alias_refs = {"src/teatree/config/retired_settings_loop_owned.py"}
-        for rel in alias_refs:
-            path = _REPO_ROOT / rel
-            assert path.exists(), f"allow-listed alias file missing: {rel}"
-            assert "todo_sweep" in path.read_text(encoding="utf-8"), (
-                f"{rel} is allow-listed but no longer references the legacy todo_sweep alias — "
-                "remove it from the allowlist"
-            )
-
 
 class TestGuardBites:
     """Anti-vacuity: the guard must turn RED on a planted conflation."""
@@ -107,5 +83,4 @@ class TestGuardBites:
         planted.parent.mkdir(parents=True)
         planted.write_text("class TodoSweepScanner: ...\n", encoding="utf-8")
         assert _FORBIDDEN.search(planted.read_text(encoding="utf-8")) is not None
-        # And the same string in an allow-listed path is permitted (the alias surface).
-        assert "src/teatree/config/retired_settings_loop_owned.py" in _LEGACY_ALIAS_ALLOWLIST
+        assert _SELF_SCAN_EXCLUSION in {_rel(path) for path in _candidate_files()}

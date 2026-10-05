@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.160",
+  "claude-agent-sdk==0.2.161",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -391,7 +391,7 @@ lint.preview = true
 
 [tool.codespell]
 dictionary = ".codespell-dictionary.txt,-"
-ignore-words-list = "caf,iterm,retuned,ture"
+ignore-words-list = "caf,fpr,iterm,retuned,ture"
 skip = "src/teatree/core/static/teatree/js/*,src/teatree/dash/static/dash/js/*"
 
 # --- Pytest ---
@@ -630,19 +630,18 @@ high_value_modules = [
   "src/teatree/core/merge/authorization.py",
   "src/teatree/core/merge/execution.py",
   "src/teatree/core/models/merge_clear.py",
-  "src/teatree/live_presence.py",
   "src/teatree/core/loop_lease_manager.py",
   "src/teatree/loop/review_claim.py",
 ]
 # Ratchet floor (only shrinks). This records the REAL current surviving-mutant
 # count for EVERY high_value_module — the honest snapshot of today's state, NOT a
-# disarm. The `mutation-full` job runs `--all`, mutating all eight modules, but
+# disarm. The `mutation-full` job runs `--all`, mutating all seven modules, but
 # the verdict compares the whole-run total against the SUM of these counts; when
 # only a subset had an entry the `--all` total always exceeded the partial sum
 # and the gate was permanently red (738 measured vs 131 baselined), blocking the
 # first PR of every ISO week (#2142). The counts below come from the gate's own
-# Linux CI output and sum to 622 (738 before #44 paid the presence module 124 -> 8;
-# 760 before PR-2 of #2413 paid review_claim back 109 -> 87). From here the floor
+# Linux CI output and sum to 614 (760 before PR-2 of #2413 paid review_claim back 109 -> 87,
+# less the presence module's 8 when it was deleted). From here the floor
 # only ever SHRINKS:
 # any NEW survivor on any safety module pushes the total above the recorded floor
 # and the gate goes red. The flagship live-gate regression
@@ -651,21 +650,6 @@ high_value_modules = [
 # error formatters, name resolvers) recorded for paydown, the mechanism the
 # ratchet is designed for. Tighten with `t3 mutation run --all --update-baseline`
 # as the suite kills more of them.
-#
-# #44 paid the module 124 -> 8: tests/test_live_presence.py gained
-# mutation kill-proofs pinning every behavioural point (heartbeat parsing,
-# naive-datetime normalisation, the atomic-write utf-8/sorted/same-dir contract, the
-# live-turn wall-clock default and window boundary, the same-session guard). #3826
-# renamed the module to teatree.live_presence when the legacy availability layer was
-# retired; the count is a shrink-only ceiling, and the module got smaller. Verified by a local Linux-container
-# mutmut run (326 killed / 8 survived / 0 inconclusive of 334) — mutmut fork-segfaults
-# on the macOS host, so the mutation lane runs in an Ubuntu container. The 8 residual
-# are irreducible: five are provably-equivalent mutants (a redundant `.get(key, default)`
-# default a downstream guard collapses to the identical result — load_schedule
-# schedule + override reads), and three are mutmut coverage-selection artifacts
-# on def-signature string defaults (write_override user_id/overlay, record session_id):
-# the tests DO kill them logically, but mutmut cannot attribute a covering test to a
-# default evaluated at import time. Neither class carries real-safety value.
 #
 # review_claim drifted 87 -> 109 (+22) in PR-1: the helpers _egress_react and
 # _slack_message_for_pr were exercised but not name-asserted by
@@ -690,7 +674,6 @@ baseline_surviving = [
   { path = "src/teatree/core/merge/authorization.py", count = 48 },
   { path = "src/teatree/core/merge/execution.py", count = 204 },
   { path = "src/teatree/core/models/merge_clear.py", count = 9 },
-  { path = "src/teatree/live_presence.py", count = 8 },
   { path = "src/teatree/core/loop_lease_manager.py", count = 253 },
   { path = "src/teatree/loop/review_claim.py", count = 87 },
 ]
@@ -710,7 +693,6 @@ default = [ "tests/" ]
 "src/teatree/core/merge/authorization.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/merge/execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
-"src/teatree/live_presence.py" = [ "tests/test_live_presence.py" ]
 "src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
 "src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
 
@@ -773,7 +755,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
 # replaced with the project's own `mcp>=2,<3` for the two to resolve together.
-# 0.2.160 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# 0.2.161 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
 # The wide bound is safe rather than merely resolvable because the SDK reaches

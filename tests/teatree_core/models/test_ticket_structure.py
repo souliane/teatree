@@ -55,7 +55,6 @@ _PUBLIC_API: frozenset[str] = frozenset(
         "schedule_coding",
         "schedule_planning",
         "schedule_review",
-        "schedule_review_in_session",
         "schedule_shipping",
         "schedule_testing",
         "scope",

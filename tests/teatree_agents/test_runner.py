@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.db import OperationalError
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
@@ -189,7 +189,7 @@ class TestRunHeadless(TestCase):
             result,
             session_id="sess-noc",
             usage={"input_tokens": 1_000_000, "output_tokens": 0},
-            model_usage={"claude-sonnet-4-6": {}},
+            model_usage={"claude-sonnet-5-5": {}},
         )
         with _fake_sdk(stream):
             session = Session.objects.create(ticket=self.ticket)
@@ -198,8 +198,8 @@ class TestRunHeadless(TestCase):
 
         attempt.refresh_from_db()
         assert attempt.exit_code == 0
-        # 1M input tokens at the Sonnet $3/MTok input rate.
-        assert attempt.cost_usd == pytest.approx(3.0)
+        # 1M input tokens at the Sonnet $2/MTok input rate.
+        assert attempt.cost_usd == pytest.approx(2.0)
 
     def test_fails_when_binary_not_found(self) -> None:
         with patch.object(runner_mod.shutil, "which", return_value=None):
@@ -1134,37 +1134,27 @@ class TestLoopWatchdog(TestCase):
         assert watchdog.breach_reason(self.task, elapsed_seconds=60) is None
 
     def test_from_settings_reads_defaults(self) -> None:
-        with override_settings(
-            TEATREE_LOOP_WATCHDOG={"max_runtime_seconds": 42, "max_turns": 7, "max_cost_usd": 1.5},
-        ):
-            watchdog = LoopWatchdog.from_settings()
+        ConfigSetting.objects.set_value("watchdog_max_runtime_seconds", 42, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_turns", 7, scope="")
+        ConfigSetting.objects.set_value("watchdog_max_cost_usd", 1.5, scope="")
+        watchdog = LoopWatchdog.from_settings()
         assert watchdog.max_runtime_seconds == 42
         assert watchdog.max_turns == 7
         assert watchdog.max_cost_usd == pytest.approx(1.5)
 
-    def test_from_settings_falls_back_to_conservative_default(self) -> None:
-        with override_settings():
-            from django.conf import settings  # noqa: PLC0415
-
-            if hasattr(settings, "TEATREE_LOOP_WATCHDOG"):
-                del settings.TEATREE_LOOP_WATCHDOG
-            watchdog = LoopWatchdog.from_settings()
+    def test_from_settings_uses_shipped_defaults(self) -> None:
+        watchdog = LoopWatchdog.from_settings()
         assert watchdog.max_runtime_seconds > 0
         assert watchdog.max_turns == 0
         assert watchdog.max_cost_usd == pytest.approx(0.0)
 
     def test_from_settings_reads_the_db_home_config_tier(self) -> None:
-        # F9.5: an explicit ConfigSetting row is the authoritative source (visible to
-        # config_setting get) and wins over the Django-settings fallback for that
-        # dimension; unconfigured dimensions still fall back to the Django-settings value.
+        # ConfigSetting rows supply the configured dimensions; others use defaults.
         ConfigSetting.objects.set_value("watchdog_max_turns", 250, scope="")
-        with override_settings(
-            TEATREE_LOOP_WATCHDOG={"max_runtime_seconds": 42, "max_turns": 7, "max_cost_usd": 1.5},
-        ):
-            watchdog = LoopWatchdog.from_settings()
-        assert watchdog.max_turns == 250  # config row wins over the fallback's 7
-        assert watchdog.max_runtime_seconds == 42  # unconfigured -> Django fallback
-        assert watchdog.max_cost_usd == pytest.approx(1.5)  # unconfigured -> Django fallback
+        watchdog = LoopWatchdog.from_settings()
+        assert watchdog.max_turns == 250
+        assert watchdog.max_runtime_seconds == 3 * 60 * 60
+        assert watchdog.max_cost_usd == pytest.approx(0.0)
 
 
 class TestDriveWithHeartbeat(TestCase):
@@ -1467,8 +1457,8 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         TaskAttempt.objects.create(task=spent, cost_usd=8.0)
         task = Task.objects.create(ticket=self.ticket, session=self.session)
 
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
         with (
-            override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
             patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
                 harness_mod,
@@ -1490,8 +1480,8 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         task = Task.objects.create(ticket=self.ticket, session=self.session)
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
 
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
         with (
-            override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
             _fake_sdk(_success_stream(result)),
         ):
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
@@ -1519,8 +1509,8 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         TaskAttempt.objects.create(task=spent, cost_usd=8.0)
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parked)
 
-        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}):
-            attempt = run_agent(resumed, phase="coding", overlay_skill_metadata={})
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 5.0, scope="")
+        attempt = run_agent(resumed, phase="coding", overlay_skill_metadata={})
 
         resumed.refresh_from_db()
         assert attempt.exit_code != 0
@@ -1604,11 +1594,10 @@ class TestBuildOptions(TestCase):
         assert options.thinking == {"type": "adaptive"}
         assert options.effort == TIER_EFFORT["balanced"]
 
-    def test_cheap_phase_leaves_thinking_and_effort_unset(self) -> None:
-        # requesting_review resolves to the Haiku tier, which rejects both levers —
-        # neither thinking nor effort is pinned, so the SDK defaults apply.
+    def test_cheap_phase_pins_no_effort(self) -> None:
+        # The cheap tier has no TIER_EFFORT entry, so the SDK default effort applies.
         options = self._options_for_phase("requesting_review")
-        assert options.thinking is None
+        assert options.thinking == {"type": "adaptive"}
         assert options.effort is None
 
     def test_system_prompt_appends_claude_code_preset(self) -> None:
@@ -1670,7 +1659,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "testing",
             skills=["architecture-design"],
-            config={"agent_skill_models": {"architecture-design": "opus"}},
+            config={"agent_skill_models": {"architecture-design": [{"floor": "opus"}]}},
         )
         assert options.model == "opus"
 
@@ -1678,7 +1667,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "requesting_review",
             skills=["code-review"],
-            config={"agent_skill_models": {"code-review": "inherit"}},
+            config={"agent_skill_models": {"code-review": []}},
         )
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
         assert options.model == TIER_MODELS["cheap"]

@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.discovery import find_spec
 from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalSpec
@@ -105,7 +106,7 @@ _OUTCOMES = ("PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED")
 
 
 def _outcome(row: _ScenarioRow, triage: str | None, *, escalation: str | None) -> str:
-    if row.verdict == "skip" or row.judge_unverified:
+    if row.verdict in {"skip", "incomplete"} or row.judge_unverified:
         return "UNVERIFIED"
     if row.verdict == "pass":
         return "PASS"
@@ -159,7 +160,7 @@ def _pass_at_k_terminal_reason(result: PassAtKResult, executed: Sequence[Scenari
 
 
 def _row_from_pass_at_k(result: PassAtKResult) -> _ScenarioRow:
-    verdict = "skip" if result.skipped else ("pass" if result.ok else "fail")
+    verdict = result.verdict
     executed = [t for t in result.trial_results if not t.skipped]
     spec = find_spec(result.spec_name)
     return _ScenarioRow(
@@ -216,6 +217,7 @@ def render_summary_json(
         "passed": sum(1 for r in rows if r.verdict == "pass"),
         "failed": sum(1 for r in rows if r.verdict == "fail"),
         "skipped": sum(1 for r in rows if r.verdict == "skip"),
+        "incomplete": sum(1 for r in rows if r.verdict == "incomplete"),
     }
     payload = {
         "generated_at": generated_at,
@@ -237,12 +239,12 @@ def write_summary_json(
     environment/clock resolution lives in one place and the pure renderer stays
     testable with explicit values.
     """
-    path.write_text(
+    write_artifact(
+        path,
         render_summary_json(
             results,
             head_sha=next((os.environ[name] for name in _HEAD_SHA_ENV_VARS if os.environ.get(name)), ""),
             generated_at=datetime.now(UTC).isoformat(),
             escalations=escalations,
         ),
-        encoding="utf-8",
     )

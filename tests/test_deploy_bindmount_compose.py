@@ -76,22 +76,16 @@ CREDENTIAL_PLANE = {
     f"{CONTAINER_HOME}/.password-store",
     f"{CONTAINER_HOME}/.gnupg",
 }
-# The Claude session plane: the dream pass's transcript input + memory-corpus
-# product, bound over the factory-owned Claude home. Without it the containerized
-# dream pass globs an empty projects dir and every nightly consolidation is a no-op.
-SESSION_PLANE = {
-    f"{CONTAINER_HOME}/.claude/projects",
-}
 # Agent homes are container-owned.  They persist and are shared between init and
 # runtime roles, but can never import settings, skills, or credentials from the
-# operator's host installations; only the session plane above is bound in.
+# operator's host installations.
 AGENT_HOME_VOLUMES = {
     "teatree_claude_home": f"{CONTAINER_HOME}/.claude",
     "teatree_codex_home": f"{CONTAINER_HOME}/.codex",
     "teatree_agents_home": f"{CONTAINER_HOME}/.agents",
 }
 # The mounts whose SOURCE is their TARGET rebased on the host home.
-PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE | SESSION_PLANE
+PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE
 # The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
 # A PAIR by construction: the open-file guard is read from a process table, so the
 # temp root and the table describing its holders must name the same namespace.
@@ -141,6 +135,7 @@ KEPT_NAMED_VOLUMES = {
     "teatree_uv",
     "teatree_control_db",
     CLONE_ROOT_VOLUME,
+    "teatree_claude_projects",
     *AGENT_HOME_VOLUMES,
 }
 REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
@@ -189,7 +184,11 @@ def _render(work_dir: Path, env_overrides: dict[str, str]) -> dict:
     (work_dir / "teatree.env").write_text("T3_DEBUG=0\n", encoding="utf-8")
     # The interpolation knobs come ONLY from env_overrides — a developer shell
     # that already exports them must not change what this golden renders.
-    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_HOST_HOME", "TEATREE_SOURCE_MOUNT"}}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"TEATREE_HOST_HOME", "TEATREE_SOURCE_MOUNT", "TEATREE_TRANSCRIPT_SOURCE"}
+    }
     env.update(env_overrides)
     # `compose` is a CLI PLUGIN the docker binary loads from the config dir, which
     # defaults to $HOME/.docker — and conftest redirects HOME to a throwaway
@@ -448,6 +447,18 @@ class TestDockerComposeConfigGolden:
         mount = _rendered_mounts(_render(tmp_path, {}))[CONTAINER_SOURCE_DIR]
         assert mount["type"] == "volume"
         assert mount["source"] == DEFAULT_SOURCE_VOLUME
+
+    def test_default_transcript_source_is_factory_named_volume(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {}))[f"{CONTAINER_HOME}/.claude/projects"]
+        assert mount["type"] == "volume"
+        assert mount["source"] == "teatree_claude_projects"
+
+    def test_transcript_source_override_is_host_bind(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {"TEATREE_TRANSCRIPT_SOURCE": "/srv/transcripts"}))[
+            f"{CONTAINER_HOME}/.claude/projects"
+        ]
+        assert mount["type"] == "bind"
+        assert mount["source"] == "/srv/transcripts"
 
     def test_host_home_override_moves_sources_and_keeps_targets(self, tmp_path: Path) -> None:
         host_home = "/home/operator"

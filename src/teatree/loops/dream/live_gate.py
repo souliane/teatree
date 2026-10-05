@@ -1,4 +1,4 @@
-"""The live-model pass@k gate that the dreaming promotion ladder runs before a write (#2634).
+"""The live-model pass@k gate before a dream candidate is queued for coding (#2634).
 
 The anti-vacuity guard (:func:`teatree.loops.dream.promote.guard_can_fail`) proves only
 that a candidate's grader CAN fail a synthetic bad transcript — never that the scenario
@@ -8,8 +8,7 @@ pass@k confirmed through this gate.
 
 The validation seam is injectable: :func:`build_live_validator` is the real, METERED
 implementation, while tests inject a fake so no real model ever runs in the suite. A
-``None`` validator means the metered check is NOT run — the safety property that
-withholds every candidate from the gating suite (the nightly ``tick`` path).
+``None`` validator means the metered check is NOT run and the candidate is withheld.
 """
 
 from dataclasses import dataclass
@@ -32,7 +31,7 @@ class LiveValidator(Protocol):
     teeth against SYNTHETIC fixtures, never that the scenario actually PASSES
     against a real model. Two of three auto-promoted scenarios failed a live
     pass@3 because the one-size templated grader did not fit the rule, so a
-    scenario now lands ONLY when a ``LiveValidator`` confirms a live pass@k.
+    scenario is queued for coding ONLY when a ``LiveValidator`` confirms a live pass@k.
 
     Passes the candidate's spec through a real runner *trials* times and returns
     the pass@k verdict (``require``-of-``trials``). The production implementation
@@ -52,8 +51,8 @@ def build_live_validator() -> LiveValidator:
     :func:`~teatree.eval.pass_at_k.run_pass_at_k`. Returns the gate verdict
     (:attr:`PassAtKResult.ok`): a candidate passes only when the live pass@k holds.
 
-    This is the OPT-IN path — ``t3 dream run --full`` supplies it; the nightly
-    ``tick`` does NOT (it withholds, so nothing auto-lands without a metered check).
+    The nightly tick and the manual pass both use this validator. A passing verdict
+    allows ticket queueing; the eval suite changes only through a coding PR.
     """
     from teatree.eval.api_runner import (  # noqa: PLC0415 — lazy: the eval harness is imported only on the opt-in metered path, keeping the dream loop's import chain free of the SDK runner otherwise.
         ApiInProcessRunner,

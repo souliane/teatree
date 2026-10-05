@@ -61,7 +61,7 @@ _CIRCUIT_BROKEN_SUFFIX = "circuit-broken"
 _FP_GRANT_SUFFIX = "fp-grants"
 # Consecutive identical denials at which the breaker trips. Breaker protocol, not
 # operator policy: a lower K breaks a legitimate retry, a higher one burns the tokens
-# the breaker exists to save. `deny_circuit_breaker_enabled` is the lever that relaxes it.
+# the breaker exists to save.
 _DENY_CIRCUIT_BREAKER_THRESHOLD = 3
 
 # ``[fp-confirmed: <non-empty-reason>]`` in the CURRENT tool call is the agent's
@@ -120,7 +120,7 @@ LEAK_GATE_IDS: frozenset[str] = frozenset(
 
 # Destructive refusals the agent must never self-grant: a force or delete on a
 # colleague's branch rewrites history nobody here owns.
-NON_GRANTABLE_GATE_IDS: frozenset[str] = frozenset({"foreign_branch_push"})
+NON_GRANTABLE_GATE_IDS: frozenset[str] = frozenset({"foreign_branch_push_force_delete"})
 
 # Tool-input fields a call may carry the ``[fp-confirmed:]`` token in, mirroring
 # the skill-loading gate's per-call token surface (command for Bash;
@@ -160,20 +160,6 @@ class _BreakerDecision:
 
     allow: bool
     reason: str
-
-
-def deny_circuit_breaker_enabled() -> bool:
-    """Whether the repeated-denial circuit breaker is enabled (default True).
-
-    Fails OPEN to enabled on a missing/broken config so the breaker keeps its
-    protective default; an explicit ``false`` is the one-line kill-switch that
-    makes the breaker a pure pass-through (never a code edit). Routes through the
-    router's shared ``_teatree_bool_setting`` so every gate reads the bare-boolean
-    config the same single way.
-    """
-    from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
-
-    return _teatree_bool_setting("deny_circuit_breaker_enabled", default=True)
 
 
 def _deny_gate_id(reason: str) -> str:
@@ -433,7 +419,7 @@ def apply_deny_circuit_breaker(reason: str, *, gate_id: str | None = None) -> _B
 
     try:
         event, data = _current_hook_context()
-        if event != "PreToolUse" or not deny_circuit_breaker_enabled():
+        if event != "PreToolUse":
             return _BreakerDecision(allow=False, reason=reason)
         session_id = data.get("session_id", "") if isinstance(data, dict) else ""
         threshold = _DENY_CIRCUIT_BREAKER_THRESHOLD

@@ -15,12 +15,14 @@ a configuration conflict, raised rather than guessed through.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.identity_wiring import (
     AuthoringIdentity,
+    IdentityFault,
     authoring_identity_fault,
     classify_authoring_identity,
     unapprovable_author_fault,
@@ -46,7 +48,11 @@ class DeclaredAuthor:
     token: str
 
 
-class AmbiguousAuthoringCredentialError(RuntimeError):
+class UnapprovableAuthorError(RuntimeError):
+    """An MR opened under the credential in hand would be one its own author can never approve."""
+
+
+class AmbiguousAuthoringCredentialError(UnapprovableAuthorError):
     """Two registered overlays declare DIFFERENT non-owner credentials for one remote."""
 
 
@@ -56,7 +62,8 @@ class RemoteAuthoring:
 
     ``unreachable_in`` is the half an ambient-only read cannot see: an overlay OTHER than the
     caller's declares a non-owner author for this remote and its credential does not resolve
-    here, so MRs would be opened by the owner — who the forge then bars from approving them.
+    here, so the MR is refused and none is opened: a forge bars an author from approving their
+    own MR, and the owner must not be that author.
     """
 
     declared: DeclaredAuthor | None
@@ -80,16 +87,6 @@ def overlay_authoring_for(remote: str) -> RemoteAuthoring:
     if remote not in _declared_cache:
         _declared_cache[remote] = _scan_registered_overlays(remote)
     return _declared_cache[remote]
-
-
-def declared_distinct_author(remote: str) -> DeclaredAuthor | None:
-    """The non-owner credential a REGISTERED overlay declares for *remote*, or ``None``.
-
-    Only a credential that RESOLVED to something other than its overlay's own answers: an
-    unreachable one is missing evidence rather than a declaration to act on, and is reported
-    separately as :attr:`RemoteAuthoring.unreachable_in`.
-    """
-    return overlay_authoring_for(remote).declared
 
 
 def _scan_registered_overlays(remote: str) -> RemoteAuthoring:
@@ -117,25 +114,55 @@ def _scan_registered_overlays(remote: str) -> RemoteAuthoring:
     return RemoteAuthoring(declared=declared, unreachable_in=tuple(sorted(unreachable)))
 
 
-def _declared_or_none(remote: str, *, context: str) -> DeclaredAuthor | None:
-    """*remote*'s declared author, degrading an unreadable overlay registry to ``None``.
+def _fault_text(fault: IdentityFault | None) -> str:
+    return f"{fault.summary} Fix: {fault.remedy}" if fault is not None else ""
+
+
+def _authoring_or_unread(remote: str, *, context: str) -> RemoteAuthoring:
+    """*remote*'s authoring, degrading an unreadable overlay registry to "nothing declared".
 
     A venue with no Django app registry cannot enumerate overlays; that is a known state, not a
     conflict, so it falls back to the ambient answer. A genuine conflict still raises.
     """
     try:
-        return declared_distinct_author(remote)
+        return overlay_authoring_for(remote)
     except AmbiguousAuthoringCredentialError:
         raise
     except Exception:  # noqa: BLE001 — an unreadable overlay registry degrades; it never blocks a push.
         logger.warning("could not enumerate overlays to resolve the author of %s — %s", remote, context)
-        return None
+        return _NOTHING_DECLARED
+
+
+def _declared_or_none(remote: str, *, context: str) -> DeclaredAuthor | None:
+    return _authoring_or_unread(remote, context=context).declared
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoringCredential:
+    """The token *remote*'s MRs are written under, or the named reason no safe one exists."""
+
+    token: str
+    refusal: str = ""
+
+
+def authoring_credential_for_remote(remote: str, *, fallback: Callable[[], str]) -> AuthoringCredential:
+    """The declared bot's credential for *remote*, else *fallback*'s answer; a refusal when the bot is unreachable.
+
+    *fallback* is the owner's credential, and an MR it authors is one the forge bars the owner from
+    approving, so a declared bot that does not resolve here is never answered with it.
+    """
+    authoring = _authoring_or_unread(remote, context="using the fallback credential")
+    if authoring.declared is not None:
+        return AuthoringCredential(authoring.declared.token)
+    if authoring.unreachable_in:
+        fault = authoring_identity_fault(remote=remote, identity=AuthoringIdentity.UNRESOLVABLE)
+        return AuthoringCredential("", _fault_text(fault))
+    return AuthoringCredential(fallback())
 
 
 def gitlab_token_for_remote(config: OverlayConfig, remote: str) -> str:
     """The GitLab credential *remote* must be written under, whichever overlay is asking."""
-    declared = _declared_or_none(remote, context="using the ambient overlay's own credential")
-    return declared.token if declared is not None else config.get_gitlab_token_for_remote(remote)
+    return authoring_credential_for_remote(remote, fallback=lambda: config.get_gitlab_token_for_remote(remote)).token
 
 
 def authoring_identity_for_remote(remote: str, *, fallback: OverlayConfig) -> AuthoringIdentity:
@@ -179,7 +206,7 @@ def unapprovable_author_refusal(host: AuthenticatedHost, remote: str) -> str:
     fault = unapprovable_author_fault(
         remote=remote, authenticated=_read_back_identity(host), approvers=approver_identities()
     )
-    return f"{fault.summary} Fix: {fault.remedy}" if fault is not None else ""
+    return _fault_text(fault)
 
 
 def unresolvable_author_refusal(repo_path: str, *, overlay_config: OverlayConfig) -> str:
@@ -206,10 +233,12 @@ def unresolvable_author_refusal(repo_path: str, *, overlay_config: OverlayConfig
     except Exception:  # noqa: BLE001 — a pre-push hook must never raise; degrade to the generic message.
         logger.warning("could not resolve the declared authoring identity for %s", repo_path)
         return ""
-    return f"{fault.summary} Fix: {fault.remedy}" if fault is not None else ""
+    return _fault_text(fault)
 
 
-def authorized_pr_host(host: CodeHostBackend | None, repo_path: str) -> CodeHostBackend | str:
+def authorized_pr_host(
+    host: CodeHostBackend | None, repo_path: str, *, generic: str = "no code host configured"
+) -> CodeHostBackend | str:
     """*host*, or the named reason a PR on *repo_path* may not be opened with it.
 
     A ``str`` return is a refusal, surfaced BEFORE the create: a declared author this venue
@@ -218,17 +247,17 @@ def authorized_pr_host(host: CodeHostBackend | None, repo_path: str) -> CodeHost
     and open another.
     """
     if host is None:
-        return _no_host_refusal(repo_path)
+        return _no_host_refusal(repo_path, generic=generic)
     return unapprovable_author_refusal(host, git.remote_url(repo=repo_path)) or host
 
 
-def _no_host_refusal(repo_path: str) -> str:
-    """The named unresolvable-author cause behind a missing host, or the generic message."""
+def _no_host_refusal(repo_path: str, *, generic: str) -> str:
+    """The named unresolvable-author cause behind a missing host, or *generic*."""
     try:
         overlay_config = get_overlay().config
     except Exception:  # noqa: BLE001 — an unresolvable overlay leaves the generic message in place.
-        return "no code host configured"
-    return unresolvable_author_refusal(repo_path, overlay_config=overlay_config) or "no code host configured"
+        return generic
+    return unresolvable_author_refusal(repo_path, overlay_config=overlay_config) or generic
 
 
 def _read_back_identity(host: AuthenticatedHost) -> str:

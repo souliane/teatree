@@ -25,7 +25,7 @@ class LocalAdminAutoLoginTestCase(TestCase):
         assert result == "ok"
         return login_mock
 
-    def test_logs_in_superuser_on_loopback_admin_when_flag_on(self) -> None:
+    def test_logs_in_superuser_on_loopback_admin(self) -> None:
         superuser = get_user_model().objects.create_superuser("admin", email="", password="x")
         login_mock = self._run()
         login_mock.assert_called_once()
@@ -49,8 +49,8 @@ class LocalAdminAutoLoginTestCase(TestCase):
         get_user_model().objects.create_superuser("admin", email="", password="x")
         self._run("/dash/board", remote_addr=_NON_LOOPBACK).assert_not_called()
 
-    def test_not_logged_in_for_non_loopback_even_with_flag_on(self) -> None:
-        # SECURITY: the flag is on (default), but a non-loopback client must
+    def test_not_logged_in_for_non_loopback(self) -> None:
+        # SECURITY: a non-loopback client must
         # NEVER be auto-logged-in — the loopback check is the hard boundary that
         # keeps an off-loopback admin port from silently opening the dashboard.
         get_user_model().objects.create_superuser("admin", email="", password="x")
@@ -64,15 +64,6 @@ class LocalAdminAutoLoginTestCase(TestCase):
         # starts trusting forwarded headers.
         get_user_model().objects.create_superuser("admin", email="", password="x")
         login_mock = self._run(remote_addr=_NON_LOOPBACK, HTTP_X_FORWARDED_FOR=_LOOPBACK)
-        login_mock.assert_not_called()
-
-    def test_not_logged_in_when_flag_off(self) -> None:
-        # The flag is the deliberate off-switch for the loopback convenience —
-        # this fails RED if the flag gate is dropped and always-on auto-login
-        # returns.
-        get_user_model().objects.create_superuser("admin", email="", password="x")
-        ConfigSetting.objects.set_value("admin_autologin_enabled", value=False)
-        login_mock = self._run()
         login_mock.assert_not_called()
 
     def test_ignores_non_admin_paths(self) -> None:

@@ -3,12 +3,15 @@
 GitLab forbids an Issue→Issue parent link, so a child is created as a plain
 issue, converted to its work-item type via ``workItemConvert``, then linked under
 the parent via ``workItemUpdate``. These free functions hold that GraphQL
-machinery; :class:`teatree.backends.gitlab.GitLabCodeHost.create_sub_issue`
-orchestrates them with its ``GitLabAPI`` client (injected, like the merge-RPC
-runner) so the host class stays focused on the cross-host Protocol surface.
+machinery AND the :func:`create_child` orchestration over them, so the host
+class stays a thin delegate focused on the cross-host Protocol surface. The
+client is injected (like the merge-RPC runner), and so is the plain-issue
+``create_issue`` the first hop needs — that keeps the shared leak-scrubbed create
+path on the host rather than forking a second one here.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -25,6 +28,17 @@ from teatree.backends.gitlab.payloads import (
 from teatree.types import RawAPIDict
 
 _ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
+
+
+@dataclass(frozen=True)
+class ChildSpec:
+    """What the caller wants the child work item to be."""
+
+    parent_url: str
+    title: str
+    body: str
+    labels: list[str] | None = None
+    child_type: str = "Task"
 
 
 @dataclass(frozen=True)
@@ -89,3 +103,29 @@ def convert_and_link(client: GitLabAPI, child_gid: str, context: SubContext, chi
     if link_errors:
         return {"error": f"Parent link failed: {'; '.join(link_errors)}"}
     return None
+
+
+def create_child(client: GitLabAPI, create_issue: Callable[..., RawAPIDict], spec: ChildSpec) -> RawAPIDict:
+    """Create the child work item *spec* describes, under its parent.
+
+    Three hops, because GitLab forbids an Issue→Issue parent link: create a plain
+    issue, convert it to the child type, then nest it. Any failed hop returns
+    ``{"error": ...}`` and leaves the partially-created child as a non-linked
+    issue — recoverable by hand, which is better than deleting a real issue.
+    """
+    context = resolve_sub_context(client, spec.parent_url, spec.child_type)
+    if not isinstance(context, SubContext):
+        return context
+
+    created = create_issue(repo=context.repo, title=spec.title, body=spec.body, labels=spec.labels)
+    if "error" in created:
+        return created
+    child_iid = created.get("iid")
+    if not isinstance(child_iid, int):
+        return {"error": f"Child issue creation returned no iid: {created}"}
+
+    child_gid = work_item_gid(client, context.project_path, child_iid)
+    if child_gid is None:
+        return {"error": f"Could not resolve created child work item: {created.get('web_url')}"}
+
+    return convert_and_link(client, child_gid, context, spec.child_type) or created

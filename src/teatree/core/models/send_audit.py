@@ -10,9 +10,7 @@ Sibling of :class:`~teatree.core.models.on_behalf_approval.OnBehalfAudit`
 :class:`~teatree.core.models.outbound_claim.OutboundClaim` (did the post I
 claimed actually land): ``OnBehalfAudit`` audits the *approval*, ``OutboundClaim``
 audits *delivery drift*, and ``SendAudit`` audits the *policy decision* at the one
-outbound chokepoint. It is the ledger an operator reads to seed the per-overlay
-destination allowlist from a live-traffic soak before flipping the proxy from
-``warn`` to ``enforce`` (the ship-safe rollout).
+outbound chokepoint.
 
 The row is best-effort — a failed audit write never blocks or rolls back the send
 (the proxy swallows the DB error) — so it can lag the wire call but never breaks it.
@@ -27,11 +25,10 @@ from django.utils import timezone
 class SendAudit(models.Model):
     """One outbound send the proxy evaluated — its destination, verdict, and delegation.
 
-    ``allowlist_verdict`` records what the allowlist check produced regardless of
-    ``mode``: in ``warn`` mode a non-allowlisted destination is stamped
-    :attr:`Verdict.WARNED` (audited, not blocked); in ``enforce`` mode the same
-    destination is stamped :attr:`Verdict.DENIED` (blocked). An allowlisted (or
-    self-DM) destination is :attr:`Verdict.ALLOWED` under both modes.
+    ``allowlist_verdict`` records the allowlist decision: a non-allowlisted
+    destination is :attr:`Verdict.DENIED`; an allowlisted destination or the
+    operator's own DM is :attr:`Verdict.ALLOWED`. Historical rows may carry
+    :attr:`Verdict.WARNED` from before enforcement became unconditional.
     """
 
     class Channel(models.TextChoices):
@@ -50,7 +47,6 @@ class SendAudit(models.Model):
     action = models.CharField(max_length=64, blank=True)
     target = models.CharField(max_length=512, blank=True)
     overlay = models.CharField(max_length=255, blank=True)
-    mode = models.CharField(max_length=16)
     allowlist_verdict = models.CharField(max_length=16, choices=Verdict.choices)
     redaction_applied = models.BooleanField(default=False)
     redaction_matches = models.JSONField(default=list, blank=True)
@@ -73,4 +69,4 @@ class SendAudit(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"send-audit<{self.channel}:{self.destination} {self.allowlist_verdict} ({self.mode})>"
+        return f"send-audit<{self.channel}:{self.destination} {self.allowlist_verdict}>"

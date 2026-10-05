@@ -35,24 +35,18 @@ worktree's every change redundant before wiping it and its CWD signal is one
 guard among several, whereas here "no process is inside" IS the authority to
 delete.
 
-**An enumeration gap costs SAFETY once a guard reads the whole population.** While
-every guard read the candidate's own checkout, a missed checkout was simply never
-a candidate and a gap only cost reclaim. :func:`_symlink_targets` broke that: it
-builds the protected set from the links THAT SAME SCAN found, so an unreadable
-region hides links, and a shared target whose linking worktrees all sit in that
-region is deleted, dangling every link at once. Gaps are not hypothetical —
-:func:`~teatree.core.cleanup.checkout_registry.checkout_scan_roots` includes
-``Path.home()`` unconditionally and macOS TCC refuses several ``~/Library``
-subtrees, measured at 25 gaps on the box that produced this issue.
+**Candidates and protectors are two populations** (:mod:`teatree.core.cleanup.venue_population`).
+Candidates are the bounded checkouts under the roots this venue provisions into;
+protectors are every checkout whose links could point at one — the candidates, every
+worktree a clone registers wherever it lives, and the clones nested inside a candidate.
+An unreadable protector or link is a gap, and a gap refuses the pass: a hidden link
+can guard a shared target nothing else does.
 
-**The guard is re-established before EACH deletion.** Planning and deleting are
-separated by the enumeration walk, the sizing walks, the uv cache prune and the
-docker reclaim — 34-68 s for the walk alone on the box that produced this issue.
-The delete LOOP is longer still: up to
-:data:`_MAX_EVICTIONS_PER_PASS` ``rmtree`` calls over trees reaching tens of GB,
-so a snapshot taken once at the top of :func:`evict_artifacts` is staler by the
-last candidate than the plan-time snapshot #4244 replaced. So the table and the
-checkout population and symlink-target set are re-read per candidate, not per batch.
+**The guard is re-established before EACH deletion, without re-walking.** Up to
+:data:`~teatree.core.cleanup.artifact_sizing.MAX_EVICTIONS_PER_PASS` deletions of
+multi-GB trees separate the plan from the last delete, so the process table is re-read
+and :class:`~teatree.core.cleanup.artifact_protection.ArtifactProtection` refreshed per
+candidate — re-reading only the checkouts and registries whose mtime moved.
 
 **A SYMLINKED artifact is not a candidate at all.** Overlays legitimately symlink
 a worktree's ``node_modules``/``.venv`` at its main clone's, and every primitive
@@ -86,36 +80,46 @@ which is the failure the overlay's symlink step exists to prevent, and recovery
 needs an ``npm ci`` nothing triggers.
 
 The guard is therefore STRUCTURAL rather than circumstantial: before anything is
-planned, :func:`_symlink_targets` resolves every artifact symlink in the whole
-scan population, and a candidate resolving into that set is excluded outright. It
-consults no mtime, no process placement and no ordering — the three things that
-were incidentally keeping the shared tree alive. (Measured on the box that
-produced this: a frontend clone's ``.nx`` was 20 days dormant and survived only
-because ``_last_touched`` folds in the checkout mtime, a fold whose stated reason
-is provisioning writes, not shared targets.) Like liveness, and for the same
-reason, the set is re-resolved over that population immediately before each
-deletion: ``workspace ticket`` creates a checkout and ``worktree provision``
-symlinks its artifacts, so a plan computed between those two steps — or a batch
-still walking its way down its candidate list — sees a checkout carrying no link
-yet and would delete the tree the next step points at.
+planned, every protector's artifact symlinks are resolved and a candidate whose inode is
+a target, or an ancestor of one, is excluded outright. It consults no mtime, no process
+placement and no ordering — the three things that were incidentally keeping the shared
+tree alive. The same reading is refreshed immediately before each deletion:
+``workspace ticket`` creates a checkout and ``worktree provision`` symlinks its
+artifacts, so a plan computed between those two steps would otherwise delete the tree
+the next step points at.
 
 A link this venue cannot RESOLVE is a gap, never an absent target: contributing
 its unresolved spelling would leave the real target unprotected, which is the
 wrong direction for a guard that authorises deletion.
 """
 
+import dataclasses
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.core.cleanup.artifact_lock import ARTIFACT_NAMES, artifact_lock_refusal_reason, artifact_source_lock
+from teatree.core.cleanup.artifact_lock import (
+    ARTIFACT_NAMES,
+    artifact_lock_refusal_reason,
+    artifact_name_pattern,
+    artifact_source_lock,
+)
+from teatree.core.cleanup.artifact_protection import ArtifactProtection
 from teatree.core.cleanup.artifact_rebuild import rebuild_inputs_for, unrebuildable_reason
-from teatree.core.cleanup.artifact_removal import remove_anchored_artifact
-from teatree.core.cleanup.checkout_registry import live_checkout_paths, one_spelling_each
+from teatree.core.cleanup.artifact_removal import (
+    EVICTED_PREFIX,
+    AnchoredArtifact,
+    clear_evicted,
+    remove_anchored_artifact,
+)
+from teatree.core.cleanup.artifact_sizing import ArtifactCandidate, budget_spent, largest_first, path_identity
+from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
+from teatree.core.cleanup.venue_population import venue_population
 
 #: Rebuildable build products a checkout can lose without losing work — each one
 #: root-level, hundreds of MB to GB, and restored by a single documented command
@@ -131,23 +135,6 @@ from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 #: looks at, and Python regenerates them on next import.
 _ARTIFACT_NAMES = ARTIFACT_NAMES
 
-#: How many artifacts one pass may evict. A bound on the blast radius, not a
-#: coverage claim — the count dropped is reported. Raised with the name set, which
-#: went from two names to five.
-_MAX_EVICTIONS_PER_PASS = 50
-
-#: How many eligible artifacts one pass may SIZE. Sizing is an ``os.walk`` per
-#: candidate over trees reaching 100k inodes, and it runs INLINE in the tick beside
-#: the pressure measurement and the intake sizing on the same mini-loop. Ordering the
-#: whole eligible set by size therefore paid for a walk of every candidate it was
-#: going to defer as well — on a box with a few hundred checkouts up to ~1200 walks per pass, with the
-#: remainder re-walked on every pass until the backlog drained. The prefix is
-#: alphabetical, NOT a sample of the biggest — on a box with more eligible artifacts than
-#: this bound, the largest one is likely outside it and waits for a later pass. What makes
-#: that acceptable is that the ordering is deterministic and the backlog drains: what a
-#: pass evicts leaves the eligible set, so the next pass reaches further in.
-_MAX_SIZED_PER_PASS = 200
-
 _SYMLINK_REASON = (
     "a symlink into another checkout — the bytes live in the clone, and the link is a provisioned artifact"
 )
@@ -158,33 +145,11 @@ _SHARED_TARGET_REASON = (
 )
 
 _EMPTY_POPULATION_REFUSAL = (
-    "the plan names candidates but carries no population, so the shared-target guard would be "
-    "structurally disarmed — a plan is deletable only alongside the checkouts it was computed over"
+    "the plan names candidates but carries no protection reading, so the shared-target guard would be "
+    "structurally disarmed — a plan is deletable only alongside the links it was computed over"
 )
 
-
-@dataclass(frozen=True, slots=True)
-class ArtifactCandidate:
-    """One dormant build artifact and what removing it would return."""
-
-    artifact: Path
-    checkout: Path
-    size_bytes: int
-    artifact_identity: tuple[int, int, int] | None = None
-    checkout_identity: tuple[int, int, int] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _SharedTargets:
-    """Where the population's artifact symlinks resolve, and which of them would not resolve.
-
-    An unresolvable link is carried rather than dropped: it names a target this venue
-    cannot see, so the deletion half must treat the population as incomplete instead of
-    concluding no link points anywhere.
-    """
-
-    paths: frozenset[Path] = frozenset()
-    unresolved: tuple[str, ...] = ()
+_BUDGET_REFUSAL = "the pass's time budget ran out"
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +162,16 @@ class _Guards:
     """
 
     table: ProcessTable
-    shared: _SharedTargets
+    protection: ArtifactProtection
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckoutArtifacts:
+    """What sits at one checkout's root: real artifacts, artifact links, and trees an earlier pass moved aside."""
+
+    artifacts: tuple[Path, ...] = ()
+    links: tuple[Path, ...] = ()
+    leftovers: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,11 +187,12 @@ class ArtifactEvictionPlan:
     gaps: tuple[str, ...] = ()
     considered: int = 0
     refusal: str = ""
-    #: The population this plan was computed over, carried so the deletion pass can
-    #: re-resolve the symlink-target set rather than trust a snapshot taken before
-    #: minutes of walks — the same reason liveness is re-established there.
-    checkouts: tuple[Path, ...] = ()
-    workspace: Path | None = None
+    #: The protector links read at plan time, refreshed (never re-walked) before each deletion.
+    protection: ArtifactProtection | None = None
+    #: The ``time.monotonic()`` instant the whole pass — plan and deletions — must end by.
+    deadline: float | None = None
+    excluded: tuple[str, ...] = ()
+    leftovers: tuple[Path, ...] = ()
 
     @property
     def estimated_bytes(self) -> int:
@@ -234,106 +209,121 @@ class EvictionOutcome:
     evicted: tuple[str, ...] = ()
 
 
-def plan_artifact_eviction(workspace: Path, *, idle_days: float | None) -> ArtifactEvictionPlan:
+def plan_artifact_eviction(
+    workspace: Path, *, idle_days: float | None, budget_seconds: float | None = None
+) -> ArtifactEvictionPlan:
     """Which dormant artifacts this pass may evict — empty with a ``refusal`` when it may not.
 
     ``idle_days=None`` means dormancy does not gate at all, which is what disk pressure
     below the critical floor buys (:mod:`teatree.core.cleanup.reclaim_pressure`). Liveness
-    is unaffected by it.
+    is unaffected by it. *budget_seconds* bounds the whole pass, deletions included: a walk
+    it cuts short is a gap, and the sizing and the batch it cuts short are deferred.
     """
+    deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
     table = read_process_table()
     if refusal := table.refuse_reason():
         return ArtifactEvictionPlan(refusal=refusal)
-    registry = live_checkout_paths(workspace)
-    checkouts = tuple(one_spelling_each(registry.paths))
-    classified = _classify_population(checkouts)
-    shared = _symlink_targets(classified)
-    gaps = registry.gaps + shared.unresolved
+    population = venue_population(workspace, deadline=deadline)
+    classified = {checkout: _classify_artifacts_in(checkout) for checkout in one_spelling_each(population.candidates)}
+    protection = ArtifactProtection.read(population.protectors, population.clones, population.listed)
+    gaps = population.gaps + tuple(protection.gaps)
+    base = ArtifactEvictionPlan(
+        protection=protection,
+        deadline=deadline,
+        excluded=population.excluded,
+        leftovers=tuple(leftover for found in classified.values() for leftover in found.leftovers),
+    )
     if gaps:
-        return ArtifactEvictionPlan(
-            gaps=gaps,
-            refusal=_enumeration_refusal(gaps),
-            checkouts=checkouts,
-            workspace=workspace,
-        )
-    guards = _Guards(table=table, shared=shared)
+        return dataclasses.replace(base, gaps=gaps, refusal=_enumeration_refusal(gaps))
     cutoff = None if idle_days is None else timezone.now().timestamp() - idle_days * 86400
-    eligible: list[tuple[Path, Path]] = []
-    kept: list[str] = []
-    considered = 0
-    for checkout, (artifacts, links) in classified.items():
-        for link in links:
-            considered += 1
-            kept.append(f"{link}: {_SYMLINK_REASON}")
-        for artifact in artifacts:
-            considered += 1
-            reason = _keep_reason(artifact, checkout=checkout, guards=guards, cutoff=cutoff)
-            if reason:
-                kept.append(f"{artifact}: {reason}")
-            else:
-                eligible.append((artifact, checkout))
-    candidates, deferred = _largest_first(eligible)
-    return ArtifactEvictionPlan(
+    eligible, kept = _triage(classified, guards=_Guards(table=table, protection=protection), cutoff=cutoff)
+    candidates, deferred = largest_first(eligible, deadline=deadline)
+    return dataclasses.replace(
+        base,
         candidates=candidates,
         kept=tuple(kept),
         deferred=tuple(deferred),
         gaps=gaps,
-        considered=considered,
-        checkouts=checkouts,
-        workspace=workspace,
+        considered=len(eligible) + len(kept),
     )
+
+
+def _triage(
+    classified: dict[Path, _CheckoutArtifacts], *, guards: _Guards, cutoff: float | None
+) -> tuple[list[tuple[Path, Path]], list[str]]:
+    """Each artifact is either eligible or kept with its reason; a symlinked one is always kept."""
+    eligible: list[tuple[Path, Path]] = []
+    kept: list[str] = []
+    for checkout, found in classified.items():
+        kept.extend(f"{link}: {_SYMLINK_REASON}" for link in found.links)
+        for artifact in found.artifacts:
+            if reason := _keep_reason(artifact, checkout=checkout, guards=guards, cutoff=cutoff):
+                kept.append(f"{artifact}: {reason}")
+            else:
+                eligible.append((artifact, checkout))
+    return eligible, kept
 
 
 def evict_artifacts(plan: ArtifactEvictionPlan) -> EvictionOutcome:
     """Remove every planned artifact the guard still allows, re-judged before EACH deletion.
 
-    The table and the symlink-target set are re-read PER CANDIDATE under the artifact
-    lock. A batch is up to :data:`_MAX_EVICTIONS_PER_PASS` ``rmtree`` calls over trees
-    reaching tens of GB, so one snapshot at the top is staler by the last candidate
-    than the plan-time snapshot #4244 replaced — an agent that starts work, or a
-    ``worktree provision`` that plants a link, between two deletions would be judged
-    against a reading taken minutes earlier.
+    The process table is re-read and the protector links refreshed PER CANDIDATE under the
+    artifact lock, from the population the plan computed — a deletion never re-walks it. The
+    batch stops, naming what it left, once the pass budget is spent.
     """
+    freed, cleared = _clear_leftovers(plan)
     if not plan.candidates:
-        return EvictionOutcome()
-    if not plan.checkouts or plan.workspace is None:
-        return EvictionOutcome(refusal=_EMPTY_POPULATION_REFUSAL)
-    workspace = plan.workspace
-    freed = 0
+        return EvictionOutcome(freed_bytes=freed, evicted=cleared)
+    if plan.protection is None:
+        return EvictionOutcome(freed_bytes=freed, evicted=cleared, refusal=_EMPTY_POPULATION_REFUSAL)
     skipped: list[str] = []
-    evicted: list[str] = []
+    evicted = list(cleared)
     for index, candidate in enumerate(plan.candidates):
+        if budget_spent(plan.deadline):
+            partial = EvictionOutcome(freed_bytes=freed, skipped=tuple(skipped), evicted=tuple(evicted))
+            return _stopped_outcome(plan, index, partial, _BUDGET_REFUSAL)
         with artifact_source_lock(candidate.artifact, blocking=False) as locked:
             if not locked:
                 skipped.append(f"{candidate.artifact}: {artifact_lock_refusal_reason(candidate.artifact)}")
                 continue
-            registry = live_checkout_paths(workspace)
-            checkouts = tuple(one_spelling_each(registry.paths))
-            shared = _symlink_targets(_classify_population(checkouts))
-            gaps = registry.gaps + shared.unresolved
-            if gaps:
-                refusal = _enumeration_refusal(gaps)
+            guards = _fresh_guards(plan.protection)
+            if isinstance(guards, str):
                 partial = EvictionOutcome(freed_bytes=freed, skipped=tuple(skipped), evicted=tuple(evicted))
-                return _stopped_outcome(plan, index, partial, refusal)
-            table = read_process_table()
-            if refusal := table.refuse_reason():
-                partial = EvictionOutcome(freed_bytes=freed, skipped=tuple(skipped), evicted=tuple(evicted))
-                return _stopped_outcome(
-                    plan,
-                    index,
-                    partial,
-                    f"the process table stopped answering mid-batch — {refusal}",
-                )
-            guards = _Guards(table=table, shared=shared)
+                return _stopped_outcome(plan, index, partial, guards)
             if reason := _delete_time_reason(candidate, guards=guards):
                 skipped.append(f"{candidate.artifact}: {reason} since it was planned")
                 continue
-            if reason := _remove_anchored_candidate(candidate):
+            if reason := _remove_anchored_candidate(candidate, deadline=plan.deadline):
                 skipped.append(f"{candidate.artifact}: {reason}")
                 continue
             freed += candidate.size_bytes
             evicted.append(str(candidate.artifact))
     return EvictionOutcome(freed_bytes=freed, skipped=tuple(skipped), evicted=tuple(evicted))
+
+
+def _clear_leftovers(plan: ArtifactEvictionPlan) -> tuple[int, tuple[str, ...]]:
+    """Finish the trees an earlier pass moved aside; they left their path already, so no guard applies."""
+    freed = 0
+    cleared: list[str] = []
+    for leftover in plan.leftovers:
+        try:
+            complete, bytes_freed = clear_evicted(leftover.parent, leftover.name, deadline=plan.deadline)
+        except OSError:
+            continue
+        freed += bytes_freed
+        if complete:
+            cleared.append(str(leftover))
+    return freed, tuple(cleared)
+
+
+def _fresh_guards(protection: ArtifactProtection) -> _Guards | str:
+    """The guards re-read for the next deletion, or why the batch must stop instead."""
+    if gaps := protection.refresh():
+        return _enumeration_refusal(gaps)
+    table = read_process_table()
+    if refusal := table.refuse_reason():
+        return f"the process table stopped answering mid-batch — {refusal}"
+    return _Guards(table=table, protection=protection)
 
 
 def _stopped_outcome(
@@ -356,105 +346,32 @@ def _enumeration_refusal(gaps: tuple[str, ...]) -> str:
     return f"the checkout population is incomplete — {'; '.join(gaps)}"
 
 
-def _classify_population(checkouts: tuple[Path, ...]) -> dict[Path, tuple[list[Path], list[Path]]]:
-    """Every checkout's artifacts, split into real directories and links, in one pass."""
-    return {checkout: _classify_artifacts_in(checkout) for checkout in checkouts}
+def _classify_artifacts_in(checkout: Path) -> _CheckoutArtifacts:
+    """The artifacts at *checkout*'s root, split real-vs-link, from ONE listing.
 
-
-def _classify_artifacts_in(checkout: Path) -> tuple[list[Path], list[Path]]:
-    """The artifact names at *checkout*'s root, split real-vs-link with ONE stat each.
-
-    Two questions with one answer, because they are one classification: asking them
-    separately re-stats the same five paths per checkout, which across the hundreds of
-    checkouts on a real box is the same syscalls paid twice for the same fact.
-
-    ``Path.is_dir()`` FOLLOWS symlinks, so it cannot be the only predicate: an
+    ``is_dir()`` FOLLOWS symlinks, so it cannot be the only predicate: an
     overlay-provisioned ``node_modules`` link reads as a directory and would be
-    selected, sized through the link, and aimed at a tree every worktree shares. The
-    links are not merely excluded — they are RETURNED, because where they point is
-    what :func:`_symlink_targets` must protect.
+    selected, sized through the link, and aimed at a tree every worktree shares. An
+    unreadable checkout yields nothing here; the protection reading records it as a gap.
     """
     artifacts: list[Path] = []
     links: list[Path] = []
-    for path in _artifact_paths_in(checkout):
-        if path.is_symlink():
-            links.append(path)
-        elif path.is_dir():
-            artifacts.append(path)
-    return artifacts, links
-
-
-def _artifact_paths_in(checkout: Path) -> list[Path]:
-    """Every path at *checkout*'s root an :data:`_ARTIFACT_NAMES` entry names.
-
-    A glob entry is EXPANDED rather than joined: ``checkout / ".venv-hook*"`` is a path
-    nothing ever created, so joining it finds no platform's hook environment and reports
-    the checkout as carrying none.
-    """
-    paths: list[Path] = []
-    for name in _ARTIFACT_NAMES:
-        paths.extend(sorted(checkout.glob(name)) if "*" in name else [checkout / name])
-    return paths
-
-
-def _symlink_targets(classified: dict[Path, tuple[list[Path], list[Path]]]) -> _SharedTargets:
-    """Where every artifact symlink in the population resolves — the set no pass may delete.
-
-    Collected across the WHOLE population before anything is planned, because the link
-    and its target sit in different checkouts: the checkout holding the target has no
-    local evidence that anyone depends on it.
-    """
-    targets: set[Path] = set()
-    unresolved: list[str] = []
-    for _artifacts, links in classified.values():
-        for link in links:
-            try:
-                targets.add(link.resolve())
-            except OSError as exc:
-                unresolved.append(f"could not resolve the artifact link {link} ({exc})")
-    return _SharedTargets(frozenset(targets), tuple(unresolved))
-
-
-def _largest_first(eligible: list[tuple[Path, Path]]) -> tuple[tuple[ArtifactCandidate, ...], list[str]]:
-    """Spend the cap's budget on the biggest of a BOUNDED prefix, and say what that deferred.
-
-    First-come selection was near-enough arbitrary over two names per checkout; over five
-    names across hundreds of checkouts it lets one pass burn its whole budget on kilobyte
-    candidates while the multi-gigabyte ones are deferred forever. So the accepted set is
-    size-ordered — but ordering the WHOLE eligible set means sizing every candidate the
-    pass is about to defer, and sizing is the expensive part (see
-    :data:`_MAX_SIZED_PER_PASS`).
-
-    The prefix is ALPHABETICAL, so "the biggest" means the biggest of that prefix rather
-    than of the box: past the sizing bound the largest artifact waits for a later pass.
-    Determinism is what makes that drain rather than churn — the same prefix is sized each
-    pass, the evicted ones leave the eligible set, and the next pass reaches further in.
-    """
-    ordered = sorted(eligible)
-    measurable, unsized = ordered[:_MAX_SIZED_PER_PASS], ordered[_MAX_SIZED_PER_PASS:]
-    sized = sorted(
-        (
-            ArtifactCandidate(
-                artifact,
-                checkout,
-                _dir_size_bytes(artifact),
-                _path_identity(artifact),
-                _path_identity(checkout),
-            )
-            for artifact, checkout in measurable
-        ),
-        key=lambda candidate: candidate.size_bytes,
-        reverse=True,
-    )
-    deferred = [
-        f"{candidate.artifact}: over the {_MAX_EVICTIONS_PER_PASS}-per-pass cap, deferred to the next pass"
-        for candidate in sized[_MAX_EVICTIONS_PER_PASS:]
-    ]
-    deferred += [
-        f"{artifact}: over the {_MAX_SIZED_PER_PASS}-per-pass sizing bound, not measured this pass"
-        for artifact, _checkout in unsized
-    ]
-    return tuple(sized[:_MAX_EVICTIONS_PER_PASS]), deferred
+    leftovers: list[Path] = []
+    try:
+        with os.scandir(checkout) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                if entry.name.startswith(EVICTED_PREFIX) and entry.is_dir(follow_symlinks=False):
+                    leftovers.append(path)
+                elif artifact_name_pattern(entry.name) is None:
+                    continue
+                elif entry.is_symlink():
+                    links.append(path)
+                elif entry.is_dir():
+                    artifacts.append(path)
+    except OSError:
+        return _CheckoutArtifacts()
+    return _CheckoutArtifacts(tuple(sorted(artifacts)), tuple(sorted(links)), tuple(sorted(leftovers)))
 
 
 def _keep_reason(artifact: Path, *, checkout: Path, guards: _Guards, cutoff: float | None) -> str:
@@ -485,28 +402,23 @@ def _delete_time_reason(candidate: ArtifactCandidate, *, guards: _Guards) -> str
     )
 
 
-def _path_identity(path: Path) -> tuple[int, int, int] | None:
-    try:
-        value = path.lstat()
-    except OSError:
-        return None
-    return value.st_dev, value.st_ino, value.st_mode
-
-
-def _remove_anchored_candidate(candidate: ArtifactCandidate) -> str:
+def _remove_anchored_candidate(candidate: ArtifactCandidate, *, deadline: float | None = None) -> str:
     return remove_anchored_artifact(
-        artifact=candidate.artifact,
-        checkout=candidate.checkout,
-        artifact_identity=candidate.artifact_identity,
-        checkout_identity=candidate.checkout_identity,
-        rebuild_inputs=rebuild_inputs_for(candidate.artifact),
+        AnchoredArtifact(
+            artifact=candidate.artifact,
+            checkout=candidate.checkout,
+            artifact_identity=candidate.artifact_identity,
+            checkout_identity=candidate.checkout_identity,
+            rebuild_inputs=rebuild_inputs_for(candidate.artifact),
+        ),
+        deadline=deadline,
     )
 
 
 def _identity_change_reason(candidate: ArtifactCandidate) -> str:
-    if candidate.checkout_identity is None or _path_identity(candidate.checkout) != candidate.checkout_identity:
+    if candidate.checkout_identity is None or path_identity(candidate.checkout) != candidate.checkout_identity:
         return "the checkout identity changed"
-    if candidate.artifact_identity is None or _path_identity(candidate.artifact) != candidate.artifact_identity:
+    if candidate.artifact_identity is None or path_identity(candidate.artifact) != candidate.artifact_identity:
         return "the artifact identity changed"
     return ""
 
@@ -518,24 +430,22 @@ def _authorisation_reason(artifact: Path, *, checkout: Path, guards: _Guards) ->
     cannot change; these three are properties of the world, and the world moves during a
     batch.
     """
-    return _shared_target_reason(artifact, shared=guards.shared) or _in_use_reason(
+    return _shared_target_reason(artifact, protection=guards.protection) or _in_use_reason(
         artifact, checkout=checkout, table=guards.table
     )
 
 
-def _shared_target_reason(artifact: Path, *, shared: _SharedTargets) -> str:
-    """Another checkout's artifact symlink resolves here — the STRUCTURAL half of the guard.
+def _shared_target_reason(artifact: Path, *, protection: ArtifactProtection) -> str:
+    """A protector's artifact symlink resolves here or below — the STRUCTURAL half of the guard.
 
-    An ancestor counts as well as an exact match: a link aimed at ``…/node_modules/x``
-    is broken just as thoroughly by removing ``…/node_modules``. An artifact whose own
-    real path cannot be read is KEPT: the comparison is between resolved paths, so an
-    unresolved one can only ever fail to match.
+    An artifact whose own identity cannot be read is KEPT: the comparison is by inode, so
+    an unread one can only ever fail to match.
     """
     try:
-        resolved = artifact.resolve()
+        status = artifact.stat()
     except OSError as exc:
-        return f"its real path could not be read ({exc}), so a link resolving here cannot be ruled out"
-    if any(target == resolved or resolved in target.parents for target in shared.paths):
+        return f"its identity could not be read ({exc}), so a link resolving here cannot be ruled out"
+    if protection.protects((status.st_dev, status.st_ino)):
         return _SHARED_TARGET_REASON
     return ""
 
@@ -581,26 +491,6 @@ def _last_touched(artifact: Path, checkout: Path) -> float | None:
         return max(artifact.stat().st_mtime, checkout.stat().st_mtime)
     except OSError:
         return None
-
-
-def _dir_size_bytes(directory: Path) -> int:
-    """Bytes this tree owns — never a byte reached through a link out of it.
-
-    ``followlinks=False`` is the default and is stated so the next reader does not
-    "simplify" it away: a ``node_modules`` is full of internal links (``.bin/*``,
-    workspace links) whose targets sit outside the tree being sized. A link's own
-    inode is not credited either, so the figure is what deleting the tree returns.
-    """
-    total = 0
-    for root, _, files in os.walk(directory, followlinks=False):
-        for name in files:
-            entry = Path(root) / name
-            try:
-                if not entry.is_symlink():
-                    total += entry.lstat().st_size
-            except OSError:
-                continue
-    return total
 
 
 __all__ = [

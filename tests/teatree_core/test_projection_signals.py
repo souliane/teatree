@@ -70,11 +70,11 @@ class TestTheColdWriteSeamRepublishes:
         _, data_dir = canonical
         assert not (data_dir / "host-projection.json").exists(), "control: nothing published before the write"
 
-        cold_writer.write_setting("memory_recall_enabled", value=False)
+        cold_writer.write_setting("auto_update_require_green_main", value=False)
 
         published = ProjectionReader(data_dir).read().projection
         assert published is not None
-        assert published.setting("memory_recall_enabled") is False
+        assert published.setting("auto_update_require_green_main") is False
 
     def test_each_write_ratchets_the_generation_in_the_source(self, canonical: tuple[Path, Path]) -> None:
         db, data_dir = canonical

@@ -28,8 +28,9 @@ from teatree.core.models import (
     Worktree,
 )
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
-from teatree.mcp import build_server, review_seam, review_write_tools, write_tools
+from teatree.mcp import review_seam, review_write_tools, write_tools
 from teatree.mcp.review_seam import SeamNote, register_review_post_seam
+from teatree.mcp.server import build_server
 from tests.factories import MergeClearFactory, TaskFactory, TicketFactory
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
@@ -51,12 +52,9 @@ class TestConfigSettingSetGateRefusal(TestCase):
     def test_gate_keys_are_refused_and_never_written(self) -> None:
         for key in (
             "banned_terms_gate_enabled",  # cold-hook gate wire
-            "factory_score_enabled",  # feature flag
             "require_human_approval_to_merge",  # require_* training wheel
-            "e2e_mandatory_gate_enabled",  # *_gate_enabled kill-switch
             "overlays",  # registry row
-            "banned_terms",  # leak-scrub input list (cold-read)
-            "overlay_leak_terms",  # leak-scrub input list (cold-read)
+            "banned_term_registry",  # leak-scrub input lists (cold-read)
             "danger_gate_fail_open",  # master fail-open switch (cold-read)
         ):
             with pytest.raises(Exception, match="refused"):
@@ -255,26 +253,23 @@ class _SeamRecorder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def post_draft_note(self, repo: str, mr: int, note: SeamNote) -> tuple[str, int]:
-        self.calls.append(("draft", {"repo": repo, "mr": mr, "note": note}))
-        return ("draft created", 0)
-
     def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]:
         self.calls.append(("comment", {"repo": repo, "mr": mr, "note": note, "live": live}))
         return ("posted", 0)
 
 
 class TestReviewPostTools(TestCase):
-    def test_draft_note_routes_through_the_registered_seam(self) -> None:
+    def test_default_comment_routes_as_draft_through_the_registered_seam(self) -> None:
         recorder = _SeamRecorder()
         with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
             result = _call(
-                "review_post_draft_note",
+                "review_post_comment",
                 {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit: rename"}},
             )
 
-        assert result == {"message": "draft created", "code": 0}
-        assert recorder.calls[0][0] == "draft"
+        assert result == {"message": "posted", "code": 0}
+        assert recorder.calls[0][0] == "comment"
+        assert recorder.calls[0][1]["live"] is False
 
     def test_post_comment_threads_the_live_flag_to_the_gated_seam(self) -> None:
         recorder = _SeamRecorder()
@@ -295,7 +290,7 @@ class TestReviewPostTools(TestCase):
         """
         recorder = _SeamRecorder()
         with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder) as seam:
-            _call("review_post_draft_note", {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit: rename"}})
+            _call("review_post_comment", {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit: rename"}})
 
         assert seam.call_args.args == ("acme/widgets",)
 
@@ -308,7 +303,6 @@ class TestReviewSeamRegistration(TestCase):
         # registration proof does not depend on how the environment is credentialed.
         with patch("teatree.cli.review.service.ReviewService.get_gitlab_token", return_value="tok"):
             seam = review_seam.review_post_seam("acme/widgets")
-        assert callable(seam.post_draft_note)
         assert callable(seam.post_comment)
 
     def test_unregistered_seam_fails_loud(self) -> None:
@@ -349,11 +343,11 @@ class TestReviewToolsCarryInlineAnchors(TestCase):
             "live": True,
         }
 
-    def test_post_draft_note_threads_the_inline_anchor(self) -> None:
+    def test_default_comment_threads_the_inline_anchor(self) -> None:
         recorder = _SeamRecorder()
         with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
             _call(
-                "review_post_draft_note",
+                "review_post_comment",
                 {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit", "anchor": "b.py:3"}},
             )
 
@@ -384,7 +378,7 @@ class TestReviewToolsCarryInlineAnchors(TestCase):
     def test_the_instructions_advertise_the_inline_anchor(self) -> None:
         review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
 
-        assert len(review_lines) == 3
+        assert len(review_lines) == 2
         assert all("anchor" in line for line in review_lines)
 
     def test_the_instructions_advertise_the_evidence_record(self) -> None:
@@ -428,11 +422,11 @@ class TestReviewToolsCarryTheEvidenceRecord(TestCase):
         assert posted.allow_bloat is True
         assert posted.force_general is False
 
-    def test_post_draft_note_threads_the_evidence(self) -> None:
+    def test_default_comment_threads_the_evidence(self) -> None:
         recorder = _SeamRecorder()
         with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
             _call(
-                "review_post_draft_note",
+                "review_post_comment",
                 {
                     "repo": "acme/widgets",
                     "mr": 7,
@@ -625,5 +619,5 @@ class TestEvidenceMayBeTheMappingAModelNaturallyPasses(TestCase):
     def test_the_tool_descriptions_name_both_accepted_evidence_shapes(self) -> None:
         review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
 
-        assert len(review_lines) == 3
+        assert len(review_lines) == 2
         assert all("JSON object or its JSON string" in line for line in review_lines)

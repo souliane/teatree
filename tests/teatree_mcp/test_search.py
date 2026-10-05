@@ -78,14 +78,15 @@ class TestCappedPage:
 
 
 class TestTicketSearch(TestCase):
-    def test_overlay_scopes_and_includes_legacy_empty_overlay(self) -> None:
+    def test_overlay_scope_excludes_unowned_empty_overlay(self) -> None:
         mine = TicketFactory(overlay="t3-teatree", issue_url="https://x/issues/1")
         legacy = TicketFactory(overlay="", issue_url="https://x/issues/2")
         TicketFactory(overlay="other-overlay", issue_url="https://x/issues/3")
 
         ids = {row["id"] for row in search.ticket_search(overlay="t3-teatree")}
 
-        assert ids == {mine.pk, legacy.pk}
+        assert ids == {mine.pk}
+        assert legacy.pk not in ids
 
     def test_filters_by_state(self) -> None:
         coded = TicketFactory(state=Ticket.State.CODED, issue_url="https://x/issues/10")
@@ -225,26 +226,6 @@ class TestFactorySignals(TestCase):
 
     def test_window_days_flows_through(self) -> None:
         assert search.factory_signals(window_days=14)["window_days"] == 14
-
-
-class TestFactoryScore(TestCase):
-    def test_returns_the_score_payload_shape(self) -> None:
-        # Read-only compute is allowed regardless of the flag (calibration path).
-        payload = search.factory_score()
-
-        assert payload["verdict"] in {"ok", "regressing", "red"}
-        assert "recipe_sha" in payload
-        assert "recipe_approved" in payload
-        assert {row["provider_id"] for row in payload["signals"]} == {
-            "first_try_green",
-            "defect_escape",
-            "review_catch",
-            "merge_latency",
-            "repair_burn",
-        }
-
-    def test_window_days_flows_through(self) -> None:
-        assert search.factory_score(window_days=14)["window_days"] == 14
 
 
 class TestTicketGet(TestCase):

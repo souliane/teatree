@@ -69,7 +69,6 @@ UNCONVERTED: frozenset[str] = frozenset(
         "pr:Command.create:typed-return-unpinned",
         "pr:Command.ensure_pr:typed-return-unpinned",
         "pr:Command.fetch_issue:typed-return-unpinned",
-        "pr:Command.post_evidence:typed-return-unpinned",
         "pr:Command.post_test_plan:typed-return-unpinned",
         "pr:Command.sweep:typed-return-unpinned",
         "repro:Command.record_green:typed-return-unpinned",
@@ -85,7 +84,6 @@ UNCONVERTED: frozenset[str] = frozenset(
         "standup:Command.stale:typed-return-unpinned",
         "tasks:Command.work_next:typed-return-unpinned",
         "ticket:Command.clear:typed-return-unpinned",
-        "ticket:Command.comment:typed-return-unpinned",
         "ticket:Command.create_sub:typed-return-unpinned",
         "ticket:Command.dod_override:typed-return-unpinned",
         "ticket:Command.e2e_bypass:typed-return-unpinned",
@@ -95,7 +93,6 @@ UNCONVERTED: frozenset[str] = frozenset(
         "workspace:Command.clean_merged:typed-return-unpinned",
         "workspace:Command.doctor:typed-return-unpinned",
         "workspace:Command.landscape:typed-return-unpinned",
-        "workspace:Command.list_orphans:typed-return-unpinned",
         "workspace:Command.reap_stale:typed-return-unpinned",
         "workspace:Command.relocate:typed-return-unpinned",
         "workspace:Command.stamp_identity:typed-return-unpinned",
@@ -109,7 +106,6 @@ UNCONVERTED: frozenset[str] = frozenset(
 UNPINNED_SCALAR_RETURNS: frozenset[str] = frozenset(
     {
         "env:Command.check_drift:non-str-scalar-return-unpinned",
-        "env:Command.migrate_secrets:non-str-scalar-return-unpinned",
         "env:Command.overrides:non-str-scalar-return-unpinned",
         "env:Command.set_var:non-str-scalar-return-unpinned",
         "env:Command.show:non-str-scalar-return-unpinned",

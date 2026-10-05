@@ -447,7 +447,6 @@ class EvalScenarioResult(models.Model):
     scenario_name = models.CharField(max_length=128)
     trial = models.IntegerField(default=0)
     model = models.CharField(max_length=64, blank=True, default="")
-    # EvalVerdict is a TextChoices; ty's overload resolution misses the type[TextChoices] branch without a default=.
     verdict = models.CharField(max_length=8, choices=EvalVerdict)  # ty: ignore[invalid-argument-type]
     score = models.FloatField(default=0.0)
     trials = models.PositiveSmallIntegerField(default=1)

@@ -10,10 +10,9 @@ reads the DB for both "expected" and "actual" cannot detect a missing row at all
 self-referential defect as a golden compared against its own renderer (#3836).
 
 Severity is what makes the report actionable rather than a wall of ten lines nobody reads.
-Sourcing ``default_enabled`` from the seed is what buys it: a loop that SHIPS ON and is off
-regressed, while a loop that ships off and is off is doing exactly what it shipped doing.
-The same "don't cry wolf" doctrine :mod:`teatree.loops.loop_staleness` already applies to a
-suppressed stale loop — an operator's deliberate off is a note, not a fault.
+A manual override forcing a loop off is deliberate and appears as an INFO note;
+the active preset/mode mask is the normal way to keep it off. A mask or hold
+suppressing a loop is healthy, following :mod:`teatree.loops.loop_staleness`.
 
 A preset is NOT judged on whether anything references it. Four of the seven shipped presets
 (``maintenance`` / ``off``) are named by no slot, override or
@@ -21,9 +20,11 @@ setting on a fresh install — they exist to be selected by hand (``t3 loop pres
 "unreferenced" is their shipped state, not a fault. Reporting it would make the report noisy
 on every new box, which is how a health surface becomes one people learn to ignore.
 
+
 A mask can also kill the BOX. Admitting ``db_backup`` once every reclaim loop is quiet
 leaves the box writing backups with nothing that can free the space — a fault wherever it
 is found (:mod:`teatree.core.models.mode_shape`).
+
 
 Presence alone was not enough (#4096). A live ``standard`` calendar carrying an extra
 ``Mon-Fri 19:00 -> maintenance`` slot, against a ``maintenance`` mask that stopped delivery
@@ -51,7 +52,6 @@ if TYPE_CHECKING:
 
 KIND_MISSING = "missing"
 KIND_DISABLED_VS_SHIPPED = "disabled_vs_shipped"
-KIND_DISABLED = "disabled"
 KIND_STALE = "stale"
 KIND_SUPPRESSED = "suppressed"
 KIND_EMPTY_MASK = "empty_mask"
@@ -66,7 +66,6 @@ KIND_NOT_TOTAL = "not_total"
 __all__ = [
     "KIND_BACKUP_WITHOUT_RECLAIM",
     "KIND_DANGLING_SLOT",
-    "KIND_DISABLED",
     "KIND_DISABLED_VS_SHIPPED",
     "KIND_EMPTY",
     "KIND_EMPTY_MASK",
@@ -197,24 +196,17 @@ def _suppressed(spec: LoopSeedSpec, row: "Loop", now: dt.datetime) -> InertFindi
 
 
 def _force_off(spec: LoopSeedSpec, row: "Loop") -> InertFinding:
-    """A manual override forcing a loop OFF — a person's decision, reported with its reason.
-
-    A fault only when the loop SHIPS on: forcing a shipped-off loop off changes nothing,
-    while forcing a shipped-on one off stops something the box is supposed to be doing.
-    """
-    regressed = spec.default_enabled
+    """A deliberate manual override, shown without treating it as a broken seed."""
     reason = row.override_reason or "no reason recorded"
     return InertFinding(
         family="loop",
         name=spec.name,
-        kind=KIND_DISABLED_VS_SHIPPED if regressed else KIND_DISABLED,
+        kind=KIND_DISABLED_VS_SHIPPED,
         detail=(
-            f"forced OFF by a manual override ({reason}), but ships ENABLED — {spec.description} "
-            "is not happening. Lift the override, or record why the box wants it off."
-            if regressed
-            else f"forced OFF by a manual override ({reason}); it ships off anyway — {spec.description}"
+            f"deliberately forced OFF by a manual override ({reason}). "
+            "Use the active preset/mode mask to keep a loop off as the normal posture."
         ),
-        is_fault=regressed,
+        is_fault=False,
     )
 
 

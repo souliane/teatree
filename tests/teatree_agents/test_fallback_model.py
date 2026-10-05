@@ -6,6 +6,8 @@ resolved fallback on ``ClaudeAgentOptions.fallback_model`` (a Lane-A / ``claude_
 win, independent of Lane B).
 """
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
 from teatree.agents._runner_options import _build_options
@@ -17,8 +19,12 @@ class TestResolveFallbackModel:
     def test_frontier_degrades_to_balanced(self) -> None:
         assert resolve_fallback_model(TIER_MODELS["frontier"]) == resolve_tier("balanced")
 
-    def test_balanced_degrades_to_cheap(self) -> None:
-        assert resolve_fallback_model(TIER_MODELS["balanced"]) == resolve_tier("cheap")
+    def test_balanced_degrades_to_a_distinct_cheap_model(self) -> None:
+        with patch.dict(TIER_MODELS, {"cheap": "claude-haiku-4-5"}):
+            assert resolve_fallback_model(TIER_MODELS["balanced"]) == "claude-haiku-4-5"
+
+    def test_balanced_has_no_fallback_while_cheap_shares_its_model(self) -> None:
+        assert resolve_fallback_model(TIER_MODELS["balanced"]) is None
 
     def test_cheapest_rung_has_no_fallback(self) -> None:
         assert resolve_fallback_model(TIER_MODELS["cheap"]) is None

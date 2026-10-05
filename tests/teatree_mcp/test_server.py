@@ -11,17 +11,13 @@ import asyncio
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
-from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends.types import Service
-from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
 from teatree.core.models import Task
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server
-from teatree.mcp.search import factory_score
-from teatree.mcp.server import _required_services, declared_write_tool_seams
+from teatree.mcp.server import _required_services, build_server, declared_write_tool_seams
 from tests.factories import TaskFactory, TicketFactory
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
@@ -35,6 +31,7 @@ _READ_TOOLS = {
     "task_list",
     "question_list",
     "factory_signals",
+    "factory_score",
     "incoming_event_recent",
     "config_setting_get",
     "gate_status",
@@ -55,7 +52,6 @@ _WRITE_TOOLS = {
     "notify_user",
     "question_answer",
     "worktree_teardown",
-    "review_post_draft_note",
     "review_post_comment",
     "review_post_comments",
     "review_request_post",
@@ -167,7 +163,7 @@ class TestCallToolThroughServer(TestCase):
     def test_config_setting_get_reports_the_source(self) -> None:
         server = build_server()
 
-        result = async_to_sync(server.call_tool)("config_setting_get", {"key": "factory_score_enabled"})
+        result = async_to_sync(server.call_tool)("config_setting_get", {"key": "approved_recipe_sha"})
 
         payload = _payloads(result)[0]
         assert payload["source"] in {"db", "file/env"}
@@ -246,42 +242,3 @@ class TestServiceDeclarationGating(TestCase):
         assert undeclared is not None
         assert "sentry_top_issues" in declared
         assert "sentry" not in undeclared
-
-
-class TestFactoryScoreFlagGating(TestCase):
-    def test_factory_score_absent_when_flag_off(self) -> None:
-        # The shipped OFF state: the outer loop has no MCP metric-to-beat surface.
-        names = {tool.name for tool in asyncio.run(build_server().list_tools())}
-        assert "factory_score" not in names
-
-    def test_factory_score_registered_when_flag_on(self) -> None:
-        call_command("config_setting", "set", "factory_score_enabled", "true")
-        names = {tool.name for tool in asyncio.run(build_server().list_tools())}
-        assert "factory_score" in names
-
-    def test_instructions_do_not_advertise_factory_score_when_flag_off(self) -> None:
-        # The instructions must never name a tool that is not registered — the
-        # same fail-closed contract the per-service groups honour.
-        instructions = build_server().instructions or ""
-        assert "factory_score" not in instructions
-
-    def test_instructions_advertise_factory_score_when_flag_on(self) -> None:
-        call_command("config_setting", "set", "factory_score_enabled", "true")
-        instructions = build_server().instructions or ""
-        assert "factory_score(" in instructions
-
-    def test_factory_score_returns_a_score_payload_when_on(self) -> None:
-        call_command("config_setting", "set", "factory_score_enabled", "true")
-        server = build_server()
-
-        result = async_to_sync(server.call_tool)("factory_score", {})
-
-        payload = _payloads(result)[0]
-        assert payload["verdict"] in {"ok", "regressing", "red"}
-        assert "recipe_sha" in payload
-        assert len(payload["signals"]) == 5
-
-
-class TestFactoryScoreWireShape(TestCase):
-    def test_read_tool_returns_the_declared_typed_dict(self) -> None:
-        assert set(factory_score()) == set(FactoryScoreDict.__annotations__)

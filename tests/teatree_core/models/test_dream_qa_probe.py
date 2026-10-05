@@ -88,13 +88,6 @@ class TestManager(TestCase):
 
         assert result == [prior]
 
-    def test_current_corpus_returns_all_scope_probes(self) -> None:
-        _probe("a", scope="acme")
-        _probe("b", scope="acme", prior=True)
-        _probe("c", scope="widgets")
-
-        assert DreamQaProbe.objects.current_corpus("acme").count() == 2
-
 
 class TestStr(TestCase):
     def test_renders_pk_rate_and_question(self) -> None:

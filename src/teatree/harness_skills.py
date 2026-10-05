@@ -122,14 +122,6 @@ def _required_sources(
     return sources
 
 
-def required_harness_skill_names(
-    inventory: SkillInventoryLike,
-    apm_dependencies: Iterable[NamedSkillDependency],
-    runtime_demands: Iterable[str],
-) -> tuple[str, ...]:
-    return tuple(sorted(_required_sources(inventory, apm_dependencies, runtime_demands)))
-
-
 def authorize_harness_skill_removal(
     harness: SkillsHarness | str,
     skill: str,

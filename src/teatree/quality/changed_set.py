@@ -72,10 +72,6 @@ class ChangedSet:
     def paths(self) -> tuple[str, ...]:
         return tuple(entry.path for entry in self.entries)
 
-    @property
-    def has_delete_or_rename(self) -> bool:
-        return any(entry.status in _DESTRUCTIVE_STATUS for entry in self.entries)
-
 
 @dataclass(frozen=True)
 class FullTrigger:

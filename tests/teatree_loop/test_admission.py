@@ -64,14 +64,9 @@ class TestBrakeStatePersistence:
 
 
 class TestGovernorVerdictDegradesToNoOpinion:
-    def test_kill_switch_off_yields_no_opinion(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(admission, "governor_enabled", lambda: False)
-        assert admission.governor_verdict(statusline_path=tmp_path / "statusline.txt") is None
-
     def test_a_raising_probe_yields_no_opinion_never_a_denial(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        monkeypatch.setattr(admission, "governor_enabled", lambda: True)
         monkeypatch.setattr(admission, "read_quota_signal", _boom)
         with caplog.at_level(logging.ERROR):
             assert admission.governor_verdict(statusline_path=tmp_path / "statusline.txt") is None
@@ -88,7 +83,6 @@ class TestRefusalIsVisible:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         denied = AdmissionDecision(admit=False, reason="weekly window spent", ceiling=1, braked=True)
-        monkeypatch.setattr(admission, "governor_enabled", lambda: True)
         monkeypatch.setattr(admission, "read_quota_signal", lambda: None)
         monkeypatch.setattr(admission, "read_machine_signal", lambda: None)
         monkeypatch.setattr(admission, "read_yield_signal", lambda: None)
@@ -102,7 +96,6 @@ class TestRefusalIsVisible:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         denied = AdmissionDecision(admit=False, reason="load too high", ceiling=1, braked=True)
-        monkeypatch.setattr(admission, "governor_enabled", lambda: True)
         monkeypatch.setattr(admission, "read_quota_signal", lambda: None)
         monkeypatch.setattr(admission, "read_machine_signal", lambda: None)
         monkeypatch.setattr(admission, "read_yield_signal", lambda: None)

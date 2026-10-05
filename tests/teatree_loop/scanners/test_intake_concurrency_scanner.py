@@ -123,6 +123,35 @@ class TestPersistsTheDecision(TestCase):
         assert ResourcePressureMarker.load().adaptive_intake_concurrency is None
 
 
+class TestJudgesHostLoadAgainstHostCores(TestCase):
+    def _adapt(self, *, load_cores: int | None) -> list[ScanSignal]:
+        with (
+            patch(
+                f"{_MODULE}.read_ram_headroom",
+                return_value=RamHeadroom(
+                    available_mib=_idle_mib(60.0), cgroup_limit_mib=None, host_available_mib=_idle_mib(60.0)
+                ),
+            ),
+            patch(f"{_MODULE}.available_cpu_count", return_value=8),
+            patch(
+                f"{_MODULE}.read_machine_signal",
+                return_value=MachineSignal(cores=8, load1=30.0, ram_available_gb=None, load_cores=load_cores),
+            ),
+            patch(f"{_MODULE}.read_quota_signal", return_value=_quota()),
+        ):
+            return list(_scanner(static_ceiling=3).scan())
+
+    def test_a_host_load_is_not_divided_by_the_containers_cpu_quota(self) -> None:
+        # Load 30 on a 16-core host is under 2/core; over the container's 8 CPUs it read as 3.75.
+        host_scoped = self._adapt(load_cores=16)
+        host_adapted = ResourcePressureMarker.load().adaptive_intake_concurrency
+        ResourcePressureMarker.objects.all().delete()
+        self._adapt(load_cores=None)
+
+        assert host_scoped[0].payload["cores"] == 16
+        assert host_adapted > ResourcePressureMarker.load().adaptive_intake_concurrency
+
+
 class TestSuppliesTheWholeBoxReading(TestCase):
     """The scanner's job is both signals, not memory alone (#4407).
 

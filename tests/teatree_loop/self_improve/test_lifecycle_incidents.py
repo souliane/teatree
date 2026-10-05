@@ -227,6 +227,48 @@ class LifecycleIncidentTests(TestCase):
         assert reports[0].payload["cause"] == "harness_crash"
         assert reports[0].requested_rung == ActionRung.TICKET
 
+    def _burst_ticket_context(self, cause: str) -> str:
+        now = timezone.now()
+        tasks = [TaskFactory() for _ in range(3)]
+        rows = [
+            {
+                "epoch": int(now.timestamp()),
+                "kind": "attempt.finished",
+                "entity_id": index,
+                "ticket_id": task.ticket_id,
+                "task_id": task.pk,
+                "cause": cause,
+                "error_fingerprint": "a" * 64,
+                "trace_id": f"{index:032x}",
+                "span_id": f"{index:016x}",
+            }
+            for index, task in enumerate(tasks, start=1)
+        ]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / f"lifecycle-{now.date().isoformat()}.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            detector = LifecycleIncidentDetector(directory=Path(directory), now=lambda: now, overlay_name="t3-teatree")
+            result = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        assert len(result.actions) == 1
+        ticket = result.actions[0].firing.ticket
+        assert ticket is not None
+        return ticket.context
+
+    def test_attempt_burst_ticket_cites_two_distinct_attempts_and_fingerprint(self) -> None:
+        context = self._burst_ticket_context("harness_crash")
+
+        assert "a" * 64 in context
+        assert context.count("otel:") == 2
+        assert '"entity_id":3' in context
+        assert '"entity_id":2' in context
+
+    def test_a_causeless_burst_cites_no_fingerprint(self) -> None:
+        context = self._burst_ticket_context("no_result_envelope")
+
+        assert "a" * 64 not in context
+        assert "otel:" not in context
+
     def test_single_failed_task_ages_through_delivered_alert_to_one_ticket(self) -> None:
         task = TaskFactory()
         task.fail(reason="ProcessError: worker exited", by_holder=True)
@@ -256,7 +298,7 @@ class LifecycleIncidentTests(TestCase):
         assert Ticket.objects.filter(extra__source="self_improve").count() == 1
         assert not run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery).actions
 
-    def test_single_unanswered_message_ages_and_does_not_ticket_before_alert(self) -> None:
+    def test_single_unanswered_message_reaches_repair_after_failed_alert(self) -> None:
         row = PendingChatInjection.record(channel="D1", slack_ts="111.1", text="Please respond", overlay="t3-teatree")
         assert row is not None
         PendingChatInjection.objects.filter(pk=row.pk).update(received_at=timezone.now() - timedelta(hours=2))
@@ -268,17 +310,22 @@ class LifecycleIncidentTests(TestCase):
         firing = first.actions[0].firing
         SelfImproveFiring.objects.filter(pk=firing.pk).update(first_fired_at=timezone.now() - timedelta(hours=3))
 
-        failed_delivery = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
-        assert failed_delivery.actions == []
-        assert Ticket.objects.filter(extra__source="self_improve").count() == 0
-        delivered = run_tier(
-            Tier.CHEAP,
-            detectors=[detector],
-            budget=BudgetVerdict.allow(),
-            delivery=DeliveryRoutes(overlay_name="t3-teatree", owner_alert=lambda *_: True),
-        )
-        assert [action.rung for action in delivered.actions] == [ActionRung.SLACK]
         ticketed = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        assert [action.rung for action in ticketed.actions] == [ActionRung.TICKET]
+        assert Ticket.objects.filter(extra__source="self_improve").count() == 1
+
+    def test_single_failed_task_reaches_repair_without_a_delivered_alert(self) -> None:
+        task = TaskFactory()
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
+        detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
+        delivery = DeliveryRoutes(overlay_name="t3-teatree", owner_alert=lambda *_: False)
+
+        first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+        SelfImproveFiring.objects.filter(pk=first.actions[0].firing.pk).update(
+            first_fired_at=timezone.now() - timedelta(hours=3)
+        )
+        ticketed = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
+
         assert [action.rung for action in ticketed.actions] == [ActionRung.TICKET]
 
     def test_reopened_singleton_starts_new_age_window(self) -> None:

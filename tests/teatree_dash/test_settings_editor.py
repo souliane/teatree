@@ -97,23 +97,23 @@ def _run_starts(labels: list[str]) -> list[str]:
 
 class TestMaskingAndOverrideState(TestCase):
     def test_a_stored_secret_value_is_masked_not_shown(self) -> None:
-        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
-        row = _row("banned_terms")
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
+        row = _row("banned_term_registry")
         assert row.is_secret is True
-        assert _cell("banned_terms").value == MASKED
+        assert _cell("banned_term_registry").value == MASKED
         assert "supersecretcodename" not in str(row)
 
     def test_a_secret_cell_masks_its_wire_value_too_not_only_its_display_text(self) -> None:
         # A cell carries the stored value TWICE — once as display text, once as the JSON a
         # control holds and posts. Masking only the first leaves the real secret in the view
         # context, one template read away from the page.
-        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
-        assert all(cell.selected == MASKED for cell in _row("banned_terms").cells)
-        assert "supersecretcodename" not in str(_row("banned_terms"))
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
+        assert all(cell.selected == MASKED for cell in _row("banned_term_registry").cells)
+        assert "supersecretcodename" not in str(_row("banned_term_registry"))
 
     def test_a_secret_default_is_also_masked(self) -> None:
         # No override — the secret still renders MASKED, never its (empty) default.
-        assert _cell("banned_terms").value == MASKED
+        assert _cell("banned_term_registry").value == MASKED
 
     def test_a_personal_identifier_not_on_the_denylist_is_masked(self) -> None:
         # slack_user_id is a personal identifier (NOT in SECRET_SETTINGS) — the exact
@@ -133,7 +133,7 @@ class TestMaskingAndOverrideState(TestCase):
         assert _cell("mode").verdict is DriftVerdict.AT_DEFAULT
 
     def test_safety_posture_keys_are_flagged(self) -> None:
-        assert _row("enforce_regulated_path").is_safety_posture is True
+        assert _row("regulated_path_model_allowlist").is_safety_posture is True
         assert _row("mode").is_safety_posture is False
 
 
@@ -205,8 +205,8 @@ class TestBuildSettingRow(TestCase):
         assert build_setting_row("mode") == _row("mode")
 
     def test_a_secret_row_is_masked(self) -> None:
-        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
-        row = build_setting_row("banned_terms")
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
+        row = build_setting_row("banned_term_registry")
         assert row.is_secret is True
         assert all(cell.value == MASKED for cell in row.cells)
 
@@ -305,8 +305,11 @@ class TestShippedDefaultComparison(TestCase):
 
     def test_a_secret_default_is_masked_before_it_reaches_the_row(self) -> None:
         # Belt and braces: a secret key that ever gained a shipped default still masks.
-        with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value={"banned_terms": ["leaky"]}):
-            row = _row("banned_terms")
+        with patch(
+            "teatree.dash.settings_editor.shipped_defaults_table",
+            return_value={"banned_term_registry": {"leak": ["leaky"]}},
+        ):
+            row = _row("banned_term_registry")
         assert row.shipped_default == MASKED
         assert "leaky" not in row.shipped_default
 

@@ -15,7 +15,6 @@ from django.utils import timezone
 
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
-    from teatree.core.models.reply_dispatch import ReplyDispatch
 
 __all__ = ["IncomingEventQuerySet", "ReplyDispatchQuerySet"]
 
@@ -62,13 +61,4 @@ class IncomingEventQuerySet(models.QuerySet):
 
 
 class ReplyDispatchQuerySet(models.QuerySet):
-    def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
-        reply_dispatch_model = cast("type[ReplyDispatch]", apps.get_model("core", "ReplyDispatch"))
-
-        moment = now or timezone.now()
-        return (
-            self.filter(status=reply_dispatch_model.Status.FAILED)
-            .exclude(action_name="dead_letter_alert")
-            .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
-            .order_by("next_retry_at", "pk")
-        )
+    """QuerySet retained for the ReplyDispatch manager."""

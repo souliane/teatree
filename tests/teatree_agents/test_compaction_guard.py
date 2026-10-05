@@ -9,17 +9,16 @@ from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
-from claude_agent_sdk.types import HookJSONOutput, HookMatcher, PreCompactHookInput
+from claude_agent_sdk.types import HookJSONOutput, HookMatcher
 from django.test import TestCase
 
 import teatree
 from teatree.agents.compaction_guard import CompactionGuard, GuardedHarness, with_compaction_off
 from teatree.agents.one_shot import OneShotSpec, _clean_room_options
 from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options
-from teatree.loop import ci_eval_heal_fixer
 from teatree.loops.dream.sdk_distiller import _distill_options
 from teatree.loops.dream.sdk_eval_synthesizer import _synth_options
-from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession
+from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assert_uncompacted, pre_compact_input
 
 
 class _ExitedSession:
@@ -28,19 +27,8 @@ class _ExitedSession:
         raise RuntimeError(msg)
 
 
-def _pre_compact(trigger: str) -> PreCompactHookInput:
-    return PreCompactHookInput(
-        hook_event_name="PreCompact",
-        trigger="auto" if trigger == "auto" else "manual",
-        custom_instructions=None,
-        session_id="s1",
-        transcript_path="",
-        cwd="",
-    )
-
-
 async def _fire(guard: CompactionGuard, trigger: str) -> HookJSONOutput:
-    output = await guard.pre_compact(_pre_compact(trigger), None, {"signal": None})
+    output = await guard.pre_compact(pre_compact_input(trigger), None, {"signal": None})
     await asyncio.sleep(0)
     return output
 
@@ -135,16 +123,26 @@ class TestWithCompactionOff:
 
 _SOURCE_ROOT = Path(teatree.__file__).parent
 _HELPER = "with_compaction_off"
+_ACCOUNT_HELPER = "with_account_skills_off"
 _OPENERS = frozenset({"ClaudeSDKClient", "query"})
 _KNOWN_COMPOSERS = frozenset(
     {
         "agents/_runner_options.py::_build_options",
         "agents/one_shot.py::_clean_room_options",
+        "agents/write_turn.py::run_bounded_write_turn",
         "cli/doctor/checks_agent_spawn.py::_check_agent_spawn_headroom",
         "eval/api_runner.py::build_sdk_options",
-        "loop/ci_eval_heal_fixer.py::_fix_turn_options",
         "loops/dream/sdk_distiller.py::_distill_options",
         "loops/dream/sdk_eval_synthesizer.py::_synth_options",
+    }
+)
+#: Their options reach the CLI only through ``ClaudeSdkHarness.open``, whose ``prepared_spawn`` applies it, or never.
+_NOT_OPENED_DIRECTLY = frozenset(
+    {
+        "agents/_runner_options.py::_build_options",
+        "agents/one_shot.py::_clean_room_options",
+        "agents/write_turn.py::run_bounded_write_turn",
+        "cli/doctor/checks_agent_spawn.py::_check_agent_spawn_headroom",
     }
 )
 
@@ -162,17 +160,17 @@ def _called_name(call: ast.Call) -> str:
     return func.attr if isinstance(func, ast.Attribute) else ""
 
 
-def _composers(source: str, relative: str) -> list[_Composer]:
+def _composers(source: str, relative: str, helper: str = _HELPER) -> list[_Composer]:
     found: list[_Composer] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             called = {_called_name(call) for call in ast.walk(node) if isinstance(call, ast.Call)}
             if "ClaudeAgentOptions" in called:
-                found.append(_Composer(location=f"{relative}::{node.name}", routed=_HELPER in called))
+                found.append(_Composer(location=f"{relative}::{node.name}", routed=helper in called))
     return found
 
 
-def _openers_without_options(source: str, relative: str) -> list[str]:
+def _sdk_openers(source: str) -> list[ast.Call]:
     tree = ast.parse(source)
     sdk_names = {
         alias.asname or alias.name
@@ -181,12 +179,14 @@ def _openers_without_options(source: str, relative: str) -> list[str]:
         for alias in node.names
         if alias.name in _OPENERS
     }
+    return [call for call in ast.walk(tree) if isinstance(call, ast.Call) and _called_name(call) in sdk_names]
+
+
+def _openers_without_options(source: str, relative: str) -> list[str]:
     return [
         f"{relative}:{call.lineno}"
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call)
-        and _called_name(call) in sdk_names
-        and not any(keyword.arg == "options" for keyword in call.keywords)
+        for call in _sdk_openers(source)
+        if not any(keyword.arg == "options" for keyword in call.keywords)
         and len(call.args) < (2 if _called_name(call) == "query" else 1)
     ]
 
@@ -234,23 +234,37 @@ class TestEveryHeadlessComposerRunsUncompacted:
         assert _openers_without_options(planted, "planted.py") == ["planted.py:4"]
 
 
-def _assert_uncompacted(options: ClaudeAgentOptions) -> None:
-    assert options.env.get("DISABLE_COMPACT") == "1"
-    assert "PreCompact" in (options.hooks or {})
+class TestEveryDirectSessionComposerHidesTheAccountContent:
+    """A composer whose options open an SDK session directly turns the claude.ai account sync off itself."""
+
+    def test_every_direct_session_composer_routes_through_the_helper(self) -> None:
+        unrouted = [
+            composer.location
+            for relative, source in _source_tree()
+            for composer in _composers(source, relative, _ACCOUNT_HELPER)
+            if not composer.routed and composer.location not in _NOT_OPENED_DIRECTLY
+        ]
+
+        assert unrouted == []
+
+    def test_no_exempt_composer_opens_a_session_in_its_own_module(self) -> None:
+        modules = {location.partition("::")[0] for location in _NOT_OPENED_DIRECTLY}
+
+        assert [relative for relative, source in _source_tree() if relative in modules and _sdk_openers(source)] == []
 
 
 class TestEachHeadlessComposerRunsUncompacted(TestCase):
     def test_the_one_shot_turn(self) -> None:
-        _assert_uncompacted(_clean_room_options(OneShotSpec(system_prompt="answer")))
+        assert_uncompacted(_clean_room_options(OneShotSpec(system_prompt="answer")))
 
     def test_the_dream_distiller_turn_keeps_its_credential_pin(self) -> None:
         options = _distill_options(env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x"})
 
-        _assert_uncompacted(options)
+        assert_uncompacted(options)
         assert options.env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
 
     def test_the_dream_eval_synthesizer_turn(self) -> None:
-        _assert_uncompacted(_synth_options(env=None))
+        assert_uncompacted(_synth_options(env=None))
 
     def test_the_clean_room_eval_run_keeps_its_env(self) -> None:
         workspace = Path(tempfile.mkdtemp())
@@ -266,11 +280,5 @@ class TestEachHeadlessComposerRunsUncompacted(TestCase):
 
         options = build_sdk_options(config)
 
-        _assert_uncompacted(options)
+        assert_uncompacted(options)
         assert options.env["XDG_DATA_HOME"] == str(workspace)
-
-    def test_the_ci_eval_heal_fix_turn(self) -> None:
-        build = getattr(ci_eval_heal_fixer, "_fix_turn_options", None)
-
-        assert build is not None
-        _assert_uncompacted(build("fix it", cwd=Path(tempfile.mkdtemp()), env=None))

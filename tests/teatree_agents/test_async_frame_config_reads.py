@@ -71,10 +71,10 @@ class TestADispatchLeavesTheOverrideTierReadable(TestCase):
 
 
 class TestTheRegulatedPathGateStillSeesTheStoredPolicyUnderALiveLoop(TestCase):
-    """The gate reads two DB-home settings; the harness builds its model inside ``async open``.
+    """The harness resolves the stored allowlist before entering ``async open``.
 
-    Resolved there, a degraded read resolves ``enforce_regulated_path`` to its shipped ``False``
-    and the refusal never fires — an ineligible model runs on a lane the operator restricted.
+    A degraded read inside the event loop would yield an empty allowlist and let an
+    ineligible model run on a restricted path.
     """
 
     @pytest.fixture(autouse=True)
@@ -84,7 +84,6 @@ class TestTheRegulatedPathGateStillSeesTheStoredPolicyUnderALiveLoop(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", ["anthropic/"])
 
     def test_an_ineligible_model_is_still_refused_inside_the_event_loop(self) -> None:

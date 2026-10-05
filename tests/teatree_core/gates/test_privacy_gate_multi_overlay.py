@@ -26,6 +26,7 @@ from django.test import TestCase
 from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import overlay_privacy_rules, scan_outbound_text
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests.teatree_core.gates._two_overlay_registry import register_a_sibling_overlay
 
 # Synthetic, never a real redact term: these tests must not reproduce any
@@ -49,6 +50,7 @@ class TestPrivacyGateMultiOverlay(TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("T3_OVERLAY_NAME", None)
+        os.environ["TEATREE_TERM_REGISTRY"] = TEST_TERM_REGISTRY_JSON
 
         tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(tmp_dir.cleanup)

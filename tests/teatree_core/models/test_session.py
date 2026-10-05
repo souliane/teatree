@@ -10,23 +10,23 @@ from teatree.core.models import QualityGateError, Session, Task, Ticket
 
 
 class TestSession(TestCase):
-    def test_quality_gates_and_manual_handoff(self) -> None:
+    def test_quality_gates_and_session_close(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
 
         with pytest.raises(QualityGateError, match="reviewing requires: testing"):
-            session.check_gate("reviewing")
+            session.check_gate_across_ticket("reviewing")
 
         session.visit_phase("testing")
         session.visit_phase("reviewing")
         session.visit_phase("retro")
-        session.check_gate("shipping")
-        session.begin_manual_handoff()
+        session.check_gate_across_ticket("shipping")
+        session.close()
 
         session.refresh_from_db()
 
-        assert session.has_visited("testing") is True
-        assert session.has_visited("reviewing") is True
+        assert "testing" in session.visited_phases
+        assert "reviewing" in session.visited_phases
         assert session.ended_at is not None
         assert str(session) == "agent-1"
 
@@ -42,7 +42,7 @@ class TestSession(TestCase):
         session.visit_phase("testing", agent_id="agent-1")
         session.visit_phase("reviewing", agent_id="agent-2")
 
-        session.check_gate("shipping")  # must not raise — retro no longer gated
+        session.check_gate_across_ticket("shipping")  # must not raise — retro no longer gated
 
     def test_shipping_gate_still_blocks_when_reviewing_missing(self) -> None:
         """Safety: removing the retro requirement must NOT weaken the gate.
@@ -54,7 +54,7 @@ class TestSession(TestCase):
         session.visit_phase("testing")
 
         with pytest.raises(QualityGateError, match="shipping requires: reviewing"):
-            session.check_gate("shipping")
+            session.check_gate_across_ticket("shipping")
 
     def test_shipping_gate_still_blocks_when_testing_missing(self) -> None:
         """Safety: a ticket missing ``testing`` is still blocked."""
@@ -63,14 +63,13 @@ class TestSession(TestCase):
         session.visit_phase("reviewing")
 
         with pytest.raises(QualityGateError, match="shipping requires: testing"):
-            session.check_gate("shipping")
+            session.check_gate_across_ticket("shipping")
 
-    def test_ignores_duplicate_phase_visits_and_force_bypasses_gate(self) -> None:
+    def test_ignores_duplicate_phase_visits(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
 
         session.visit_phase("testing")
         session.visit_phase("testing")
-        session.check_gate("shipping", force=True)
 
         assert session.visited_phases == ["testing"]
 
@@ -103,7 +102,7 @@ class TestSession(TestCase):
         session.visit_phase("reviewing", agent_id="agent-1")
         session.visit_phase("retro", agent_id="agent-1")
 
-        session.check_gate("shipping")  # phases present ⇒ no raise
+        session.check_gate_across_ticket("shipping")  # phases present ⇒ no raise
 
     def test_gate_passes_without_phase_visits_attribution(self) -> None:
         # #833: an empty phase_visits audit trail does not fail closed —
@@ -115,7 +114,7 @@ class TestSession(TestCase):
         session.visit_phase("reviewing")
         session.visit_phase("retro")
 
-        session.check_gate("shipping")  # no raise
+        session.check_gate_across_ticket("shipping")  # no raise
 
     def test_gate_blocks_when_required_phase_missing(self) -> None:
         session = Session.objects.create(ticket=Ticket.objects.create())
@@ -125,14 +124,7 @@ class TestSession(TestCase):
         # `reviewing` and `retro` never recorded.
 
         with pytest.raises(QualityGateError, match="reviewing"):
-            session.check_gate("shipping")
-
-    def test_gate_bypassed_with_force(self) -> None:
-        session = Session.objects.create(ticket=Ticket.objects.create())
-
-        session.visit_phase("testing", agent_id="agent-1")
-
-        session.check_gate("shipping", force=True)  # force bypasses all checks
+            session.check_gate_across_ticket("shipping")
 
     def test_visit_phase_normalizes_raw_spelling_at_write_boundary(self) -> None:
         """#782: ``visit_phase`` owns the canonical-phase invariant.
@@ -159,24 +151,7 @@ class TestSession(TestCase):
         # Stored canonical, regardless of the spelling the caller used.
         assert session.visited_phases == ["testing", "reviewing"]
         # The shipping gate must pass — not falsely block on a stale set.
-        session.check_gate("shipping")
-
-    def test_check_phases_normalizes_legacy_raw_rows_at_read_boundary(self) -> None:
-        """#782: the read boundary tolerates pre-existing raw-spelling rows.
-
-        Rows written before #782 (or by ``merge.execution`` / any path
-        that bypassed ``visit_phase``) may already hold a raw ``review``.
-        ``_check_phases`` must normalize membership so a legacy row still
-        satisfies the canonical ``reviewing`` requirement instead of
-        falsely blocking shipping forever.
-        """
-        session = Session.objects.create(ticket=Ticket.objects.create())
-
-        # Simulate a legacy row written verbatim, bypassing visit_phase.
-        Session.objects.filter(pk=session.pk).update(visited_phases=["test", "review"])
-        session.refresh_from_db()
-
-        session.check_gate("shipping")  # must not raise on legacy spellings
+        session.check_gate_across_ticket("shipping")
 
     def test_required_phases_vocabulary_cannot_drift_from_canonical(self) -> None:
         """#782: the second hand-maintained phase set stays in lockstep.
@@ -220,16 +195,3 @@ class TestSession(TestCase):
 
         session.refresh_from_db()
         assert session.ended_at is not None
-
-    def test_repo_tracking(self) -> None:
-        session = Session.objects.create(ticket=Ticket.objects.create())
-
-        session.mark_repo_modified("backend")
-        session.mark_repo_modified("frontend")
-        session.mark_repo_modified("backend")  # duplicate
-        session.mark_repo_tested("backend")
-
-        session.refresh_from_db()
-        assert session.repos_modified == ["backend", "frontend"]
-        assert session.repos_tested == ["backend"]
-        assert session.untested_repos() == ["frontend"]

@@ -1,24 +1,15 @@
-"""``manage.py loop_dispatch`` — read & claim pending agent dispatches.
-
-The DB is the dispatch queue: when ``run_tick`` produces a
-``kind="agent"`` action, ``teatree.loop.persistence`` creates a Ticket
-+ Task row. The ``/loop`` slot's session reads pending Tasks via
-``pending-spawn``, calls its ``Agent`` tool once per entry, then claims
-each via ``spawn-claim`` so the next tick doesn't see them as pending.
-"""
+"""``manage.py loop_dispatch`` — read & atomically claim pending agent dispatches."""
 
 import contextlib
 import logging
-from functools import partial
 from typing import IO, Annotated, Any, cast
 
 import typer
-from django.core.exceptions import ObjectDoesNotExist
 from django_typer.management import TyperCommand, command
 
 from teatree.config import UserSettings, cadence_seconds, get_effective_settings
 from teatree.core.machine_output import emit
-from teatree.core.managers_task_claim import claim_when_admitted, redispatch_window
+from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.task_claim import claim_generation
@@ -102,11 +93,8 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # user's default tier (no ``--model`` override).
         "model": model,
         "skill_bundle": skill_bundle,
-        # Per-phase fan-out directive (teatree#2229), resolved loop-side beside
-        # model/skill_bundle. Empty string by default (no opt-in) → the slot
-        # appends nothing → byte-identical to today; the chokepoint renders the
-        # directive only when the user opts the ``(role, phase)`` pair in via
-        # ``[agent.phase_fanout]``.
+        # Per-phase fan-out directive (teatree#2229), resolved from the registry
+        # beside model/skill_bundle. Unregistered pairs render an empty string.
         "fanout_directive": _resolve_fanout_directive(task),
         # Session that took the claim (empty until the worker session is known),
         # orthogonal to the role-label ``claimed_by``.
@@ -138,22 +126,8 @@ def _interactive_claim_lease_seconds() -> int:
 
 
 def _resolve_fanout_directive(task: Task) -> str:
-    """Resolve the fan-out directive for a dispatch, loop-side; empty by default.
-
-    The ``[agent]`` config is read here (the local import keeps ``teatree.core``
-    free of a top-level ``teatree.config.agent_spawn`` dependency edge — core is
-    the lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
-    ``resolve_agent_config`` itself fails-to-defaults on a missing/malformed
-    file (returning ``AgentConfig()`` with an empty ``phase_fanout``), so a
-    config read problem degrades to ``""`` without blocking the dispatch. The
-    chokepoint ``resolve_fanout_directive`` returns ``""`` when the pair has no
-    registered fan-out OR no opt-in — empty until a pair is opted in. An
-    explicitly out-of-range ``N`` raises ``ValueError`` (fail-loud), surfacing
-    the misconfiguration rather than silently dropping it.
-    """
-    from teatree.config.agent_spawn import resolve_agent_config  # noqa: PLC0415 — deferred: keep core import-light
-
-    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
+    """Resolve the fan-out directive for a dispatch from the phase registry."""
+    return resolve_fanout_directive(task.ticket.role, task.phase)
 
 
 def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
@@ -372,38 +346,3 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=human,
         )
-
-    @command(name="spawn-claim")
-    def spawn_claim(
-        self,
-        task_id: Annotated[int, typer.Argument(help="Task PK to claim.")],
-        *,
-        claimed_by: Annotated[
-            str,
-            typer.Option("--claimed-by", help="Worker identifier stored on the claim."),
-        ] = "loop-slot",
-    ) -> None:
-        """Mark the Task as claimed so the next tick doesn't surface it.
-
-        Called by the ``/loop`` slot immediately after it calls ``Agent``
-        for the entry. Claiming is the spawn boundary, NOT the finish: nothing
-        terminalizes the Task on its own. When the sub-agent returns, the slot
-        MUST record its outcome with ``t3 <overlay> tasks record-attempt
-        <task_id> <result_json> --claim-token <token>``, passing back the token
-        printed here — an unrecorded unit stays CLAIMED until its lease lapses,
-        is reclaimed to PENDING and re-offered forever.
-        """
-        try:
-            task = Task.objects.get(pk=task_id)
-        except ObjectDoesNotExist:
-            self.stderr.write(f"Task {task_id} not found.")
-            raise SystemExit(1) from None
-        try:
-            refusal = claim_when_admitted(partial(task.claim, claimed_by=claimed_by))
-        except Exception as exc:  # noqa: BLE001 — a claim failure surfaces as a clean SystemExit, never a traceback
-            self.stderr.write(f"Cannot claim task {task_id}: {exc}")
-            raise SystemExit(1) from None
-        if refusal:
-            self.stderr.write(f"Cannot claim task {task_id}: {refusal}")
-            raise SystemExit(1)
-        self.stdout.write(f"Claimed task {task_id} for {claimed_by}. claim_token={claim_generation(task)}")

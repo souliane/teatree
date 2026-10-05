@@ -43,18 +43,17 @@ from teatree.cli.slack.app_resolve import (
 )
 from teatree.cli.slack.channel_provisioning import ChannelJoinResult, join_review_channels, render_join_result
 from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel
-from teatree.cli.slack.manifest import _DM_ONLY_BOT_SCOPES
-from teatree.cli.slack.setup import (
-    _APP_ID_RE,
+from teatree.cli.slack.manifest import (
     _CONFIG_TOKEN_REF,
+    _DM_ONLY_BOT_SCOPES,
     SlackManifestError,
-    _export_with_rotation,
     app_install_url,
     app_manifest_editor_url,
     build_manifest,
     manifests_equivalent,
     update_manifest,
 )
+from teatree.cli.slack.setup import _APP_ID_RE, _export_with_rotation
 from teatree.cli.slack.user_token_setup import REQUIRED_USER_SCOPES
 from teatree.config import discover_overlays
 from teatree.core.overlay_loader import get_overlay

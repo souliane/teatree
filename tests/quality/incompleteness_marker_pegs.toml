@@ -49,13 +49,11 @@
 "src/teatree/config/agent_enums.py" = 1
 "src/teatree/config/settings_loop_flags.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
-"src/teatree/core/daily_digest.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 1
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/loop_dispatch.py" = 1
 "src/teatree/core/models/directive.py" = 2
 "src/teatree/core/models/rubric.py" = 1
-"src/teatree/loop/ci_eval_heal_fixer.py" = 1
 "src/teatree/loop/phases/scan.py" = 1
 "src/teatree/loop/self_improve/budget.py" = 1
 "src/teatree/loop/slack_answer/cycle.py" = 1

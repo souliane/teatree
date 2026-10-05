@@ -84,7 +84,7 @@ def read_setting(
     Fails open to `None` for every path: missing DB file, absent table (fresh
     install), locked DB (within `busy_timeout`), corrupt JSON, and a missing row.
     The open strategy (and the quiescent-WAL `immutable=1` fallback) lives in
-    `cold_db._execute_readonly`. A caller that must NOT fail open reads through
+    `cold_db.read_readonly`. A caller that must NOT fail open reads through
     `read_setting_confirmed`, of which this is the value half.
     """
     return read_setting_confirmed(key, scope=scope, env=env, db_path=db_path).value
@@ -119,7 +119,7 @@ def _unreadable_db_read(key: str, *, scope: str, env: Mapping[str, str], db_path
     is not evidence the key is unset — it is evidence the projection never saw it. Reporting
     `readable=True` for that gap is exactly the fail-open #4008 exists to close: it silently
     reopened it, letting a corrupt canonical DB collapse to "not configured" for
-    `banned_terms` (measured: `resolve_banned_terms` moved from a raised
+    `banned_term_registry` (measured: `resolve_banned_terms` moved from a raised
     `BannedTermsUnreadableError`, exit 2, to an allowed exit 0). This widens WHERE an answer
     may come from, never what counts as having read one.
     """

@@ -15,13 +15,11 @@ from teatree.utils.django_db.helpers import _local_db_url
 from teatree.utils.run import run_allowed_to_fail
 
 
-def find_dslr_cmd(tool_name: str, _main_repo_path: str = "") -> list[str]:
+def find_dslr_cmd(tool_name: str) -> list[str]:
     """Return a command prefix for invoking dslr.
 
     Uses ``uv run`` from the **host project** (where dslr + psycopg live as
-    hard dependencies), not from the target repo.  The *main_repo_path* arg
-    is accepted for backward compatibility but ignored — dslr must be in the
-    teatree host project's venv.
+    hard dependencies), not from the target repo.
 
     Honour ``DSLR_CMD`` env var as an explicit override.
     """

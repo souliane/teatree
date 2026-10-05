@@ -18,10 +18,8 @@ This is a two-stage hook:
     STOP and request explicit per-call authorization. Returns ``True`` to
     break the Stop chain (mirrors the consideration-gate pattern).
 
-Recovery: the marker is cleared by the next ``UserPromptSubmit``
-(``handle_clear_classifier_deny_marker``) — a fresh user turn re-arms the
-gate. This matches the "Recovery path: the gate auto-disarms when the next
-user message arrives" spec.
+Recovery: the Stop gate consumes the marker, so each recorded denial nags once
+and the next turn starts disarmed.
 
 Fail-safe-to-empty: the PostToolUse handler returns silently when the
 denial signal is absent or the data is malformed; the Stop gate returns
@@ -38,11 +36,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import (
-    handle_classifier_deny_stop_gate,
-    handle_clear_classifier_deny_marker,
-    handle_track_classifier_denial,
-)
+from hooks.scripts.hook_router import handle_classifier_deny_stop_gate, handle_track_classifier_denial
 
 
 @pytest.fixture
@@ -119,13 +113,6 @@ def _stop_event(*, session_id: str = "sess-1", transcript_path: str = "") -> dic
     return {
         "session_id": session_id,
         "transcript_path": transcript_path,
-    }
-
-
-def _user_prompt(*, session_id: str = "sess-1", prompt: str = "next thing") -> dict:
-    return {
-        "session_id": session_id,
-        "prompt": prompt,
     }
 
 
@@ -270,45 +257,42 @@ class TestClassifierDenyStopGate:
         capsys.readouterr()  # drain
 
 
-# ── UserPromptSubmit: recovery (auto-disarm) ─────────────────────────
+# ── Recovery: the Stop gate consumes its marker ──────────────────────
 
 
 class TestClassifierDenyRecovery:
-    """A new user turn clears the marker so the gate auto-disarms."""
+    """Each recorded denial nags exactly once, then the gate is disarmed."""
 
-    def test_user_prompt_clears_marker(self, gate_env: Path) -> None:
+    def test_the_nag_consumes_the_marker(self, gate_env: Path, capsys: pytest.CaptureFixture[str]) -> None:
         handle_track_classifier_denial(_denial_posttooluse())
-        marker = gate_env / "sess-1.classifier-deny"
-        assert marker.is_file()
 
-        handle_clear_classifier_deny_marker(_user_prompt())
+        assert handle_classifier_deny_stop_gate(_stop_event()) is True
+        capsys.readouterr()
 
-        assert not marker.exists(), "UserPromptSubmit must clear the marker"
+        assert not (gate_env / "sess-1.classifier-deny").exists()
+        assert handle_classifier_deny_stop_gate(_stop_event()) is None
+        assert capsys.readouterr().out == ""
 
-    def test_user_prompt_without_marker_is_noop(self, gate_env: Path) -> None:
-        # No marker to clear — handler must not crash.
-        handle_clear_classifier_deny_marker(_user_prompt())
-        assert not list(gate_env.glob("*.classifier-deny"))
-
-    def test_user_prompt_clears_only_own_session(self, gate_env: Path) -> None:
-        # Per-session: clearing session A leaves session B's marker intact.
+    def test_consuming_one_session_leaves_another_armed(
+        self, gate_env: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         handle_track_classifier_denial(_denial_posttooluse(session_id="sess-A"))
         handle_track_classifier_denial(_denial_posttooluse(session_id="sess-B"))
 
-        handle_clear_classifier_deny_marker(_user_prompt(session_id="sess-A"))
+        handle_classifier_deny_stop_gate(_stop_event(session_id="sess-A"))
+        capsys.readouterr()
 
         assert not (gate_env / "sess-A.classifier-deny").exists()
         assert (gate_env / "sess-B.classifier-deny").is_file()
 
-    def test_full_cycle_deny_stop_clear_stop_again(self, gate_env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        # End-to-end: denial → Stop fires → user prompt clears → Stop silent.
-        handle_track_classifier_denial(_denial_posttooluse())
-        assert handle_classifier_deny_stop_gate(_stop_event()) is True
-        capsys.readouterr()
-
-        handle_clear_classifier_deny_marker(_user_prompt())
+    def test_a_corrupt_marker_is_consumed_without_a_nag(
+        self, gate_env: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        marker = gate_env / "sess-1.classifier-deny"
+        marker.write_text("{not json", encoding="utf-8")
 
         assert handle_classifier_deny_stop_gate(_stop_event()) is None
+        assert not marker.exists()
         assert capsys.readouterr().out == ""
 
 
@@ -324,15 +308,12 @@ class TestRouterWiring:
     def test_stop_gate_registered_in_stop(self) -> None:
         assert handle_classifier_deny_stop_gate in router._HANDLERS["Stop"]
 
-    def test_clear_handler_registered_in_userpromptsubmit(self) -> None:
-        assert handle_clear_classifier_deny_marker in router._HANDLERS["UserPromptSubmit"]
-
 
 class TestHooksJsonRegistration:
     """Verify ``hooks/hooks.json`` wires the events used by the gate.
 
-    ``hooks/hooks.json`` must route PostToolUse + Stop + UserPromptSubmit
-    through ``hook_router.py`` — otherwise the in-process registration
+    ``hooks/hooks.json`` must route PostToolUse + Stop through ``hook_router.py`` — otherwise the
+    in-process registration
     above is unreachable from the running harness.
     """
 
@@ -344,7 +325,7 @@ class TestHooksJsonRegistration:
         config = json.loads(hooks_json.read_text(encoding="utf-8"))
         hooks = config.get("hooks", {})
 
-        for event in ("PostToolUse", "Stop", "UserPromptSubmit"):
+        for event in ("PostToolUse", "Stop"):
             assert event in hooks, f"hooks.json must register {event!r}"
             commands = " ".join(
                 hook.get("command", "") for matcher_group in hooks[event] for hook in matcher_group.get("hooks", [])

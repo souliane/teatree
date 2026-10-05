@@ -8,13 +8,27 @@ re-queues via its lease lapse. ``sleep`` / ``monotonic`` are injected so the wai
 driven without wall-clock time.
 """
 
+from datetime import datetime, timedelta
+from typing import cast
+from unittest.mock import patch
+
 import django.test
 import pytest
+from django.utils import timezone
 
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, WorkerGeneration
 from teatree.core.models.task import Task
-from teatree.loop.drain import DrainOutcome, DrainProgress, drain_worker, set_worker_quiescing
+from teatree.loop.drain import (
+    DrainOutcome,
+    DrainPacing,
+    DrainProgress,
+    GenerationNotDrainableError,
+    drain_worker,
+    set_worker_quiescing,
+)
 from tests.factories import TaskFactory
+
+_NO_WAIT = DrainPacing(sleep=lambda _seconds: None)
 
 
 class _FakeClock:
@@ -42,7 +56,7 @@ class TestSetWorkerQuiescing(django.test.TestCase):
 class TestDrainWorker(django.test.TestCase):
     def test_drains_immediately_when_nothing_in_flight(self) -> None:
         sleeps: list[float] = []
-        report = drain_worker(timeout=1800, sleep=sleeps.append)
+        report = drain_worker(timeout=1800, pacing=DrainPacing(sleep=sleeps.append))
 
         assert report.outcome is DrainOutcome.DRAINED
         assert report.still_claimed == []
@@ -59,7 +73,7 @@ class TestDrainWorker(django.test.TestCase):
         # monotonic: start=0, then an elapsed reading past the timeout on the first
         # in-flight loop — so the wait ends GRACE_EXCEEDED without ever sleeping.
         clock = _FakeClock([0.0, 50.0])
-        report = drain_worker(timeout=30, poll_interval=5, sleep=sleeps.append, monotonic=clock)
+        report = drain_worker(timeout=30, pacing=DrainPacing(poll_interval=5, sleep=sleeps.append, monotonic=clock))
 
         assert report.outcome is DrainOutcome.GRACE_EXCEEDED
         assert report.drained is False
@@ -80,7 +94,7 @@ class TestDrainWorker(django.test.TestCase):
             sleeps.append(seconds)
             Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED)
 
-        report = drain_worker(timeout=1800, poll_interval=5, sleep=_sleep)
+        report = drain_worker(timeout=1800, pacing=DrainPacing(poll_interval=5, sleep=_sleep))
 
         assert report.outcome is DrainOutcome.DRAINED
         assert sleeps == [5]
@@ -99,9 +113,7 @@ class TestDrainProgress(django.test.TestCase):
         clock = _FakeClock([0.0, 10.0, 20.0, 90.0])
         drain_worker(
             timeout=60,
-            poll_interval=5,
-            sleep=lambda _seconds: None,
-            monotonic=clock,
+            pacing=DrainPacing(poll_interval=5, sleep=lambda _seconds: None, monotonic=clock),
             on_progress=samples.append,
         )
 
@@ -110,7 +122,81 @@ class TestDrainProgress(django.test.TestCase):
 
     def test_a_quiet_worker_emits_no_progress(self) -> None:
         samples: list[DrainProgress] = []
-        report = drain_worker(timeout=1800, sleep=lambda _seconds: None, on_progress=samples.append)
+        report = drain_worker(timeout=1800, pacing=_NO_WAIT, on_progress=samples.append)
 
         assert report.outcome is DrainOutcome.DRAINED
         assert samples == []
+
+
+_N = "a" * 40
+_N1 = "b" * 40
+
+
+def _claimed_under(sha: str) -> Task:
+    task = cast("Task", TaskFactory(status=Task.Status.PENDING))
+    with patch.dict("os.environ", {"TEATREE_GENERATION": sha}):
+        task.claim(claimed_by="loop", lease_seconds=300)
+    return task
+
+
+class TestGenerationScopedDrain(django.test.TestCase):
+    def setUp(self) -> None:
+        WorkerGeneration.objects.boot(_N)
+        WorkerGeneration.objects.boot(_N1)
+
+    def test_a_live_claim_of_the_next_generation_does_not_hold_the_drain(self) -> None:
+        _claimed_under(_N1)
+
+        report = drain_worker(timeout=1800, generation=_N, pacing=_NO_WAIT)
+
+        assert report.outcome is DrainOutcome.DRAINED
+
+    def test_the_drain_waits_on_its_own_generations_claims(self) -> None:
+        own = _claimed_under(_N)
+        _claimed_under(_N1)
+
+        report = drain_worker(
+            timeout=30, generation=_N, pacing=DrainPacing(sleep=lambda _s: None, monotonic=_FakeClock([0.0, 50.0]))
+        )
+
+        assert report.outcome is DrainOutcome.GRACE_EXCEEDED
+        assert report.still_claimed == [own.pk]
+
+    def test_the_generation_is_draining_with_the_grace_as_its_deadline(self) -> None:
+        before = timezone.now()
+
+        drain_worker(timeout=600, generation=_N, pacing=_NO_WAIT)
+
+        row = WorkerGeneration.objects.get(sha=_N)
+        assert row.state == WorkerGeneration.State.DRAINING
+        assert row.drain_deadline is not None
+        assert row.drain_deadline >= before + timedelta(seconds=600)
+
+    def test_a_generation_drain_never_writes_the_global_gate(self) -> None:
+        drain_worker(timeout=1800, generation=_N, pacing=_NO_WAIT)
+
+        assert not ConfigSetting.objects.filter(key="worker_quiescing").exists()
+
+    def test_re_draining_a_draining_generation_is_idempotent(self) -> None:
+        drain_worker(timeout=1800, generation=_N, pacing=_NO_WAIT)
+
+        report = drain_worker(timeout=1800, generation=_N, pacing=_NO_WAIT)
+
+        assert report.drained
+
+    def test_a_drain_that_loses_the_race_to_a_concurrent_one_joins_it(self) -> None:
+        begin_drain = WorkerGeneration.begin_drain
+
+        def a_concurrent_drain_lands_first(row: WorkerGeneration, *, deadline: datetime) -> None:
+            begin_drain(WorkerGeneration.objects.get(pk=row.pk), deadline=deadline)
+            begin_drain(row, deadline=deadline)
+
+        with patch.object(WorkerGeneration, "begin_drain", a_concurrent_drain_lands_first):
+            report = drain_worker(timeout=1800, generation=_N, pacing=_NO_WAIT)
+
+        assert report.drained
+        assert WorkerGeneration.objects.state_of(_N) == WorkerGeneration.State.DRAINING
+
+    def test_an_unregistered_generation_cannot_be_drained(self) -> None:
+        with pytest.raises(GenerationNotDrainableError, match="cccccccccccc is not registered"):
+            drain_worker(timeout=1800, generation="c" * 40, pacing=_NO_WAIT)

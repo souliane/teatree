@@ -37,7 +37,11 @@ from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import (
+    record_merge_prerequisites_for_test,
+    record_owned_pr_for_test,
+    seed_merge_safe_verdict,
+)
 
 _DRAFT_PROBE = "teatree.backends.gitlab.client.GitLabCodeHost.fetch_pr_draft_state"
 
@@ -98,7 +102,9 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
         "blast_class": MergeClear.BlastClass.DOCS,
     }
     defaults.update(overrides)
-    return MergeClear.objects.create(**defaults)
+    clear = MergeClear.objects.create(**defaults)
+    record_merge_prerequisites_for_test(ticket, clear.reviewed_sha)
+    return clear
 
 
 def _response(status: int, body: str) -> httpx.Response:
@@ -329,6 +335,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
     def setUp(self) -> None:
         # The #2829 merge-verdict gate at the top of execute_bound_merge needs a
         # non-stale, independent merge_safe verdict at the bound head.
+        record_owned_pr_for_test(slug=_GITLAB_SLUG, pr_id=_PR_IID, head_sha=_SHA, host_kind="gitlab")
         seed_merge_safe_verdict(slug=_GITLAB_SLUG, pr_id=_PR_IID, sha=_SHA)
 
     def test_uses_the_put_merge_endpoint_bound_to_the_sha(self) -> None:

@@ -25,8 +25,7 @@ unreadable config store DENIES with an error naming the config-store problem and
 the fix. A readable store with no ids stays ALLOW (genuinely-empty is a real
 state, not an error). An ABSENT canonical DB is not unreadable on a host — the
 control DB lives in a container volume and the ids come from the published host
-projection, exactly as the id reads themselves resolve them. The ``[teatree]
-self_dm_gate_enabled`` kill-switch is the sanctioned explicit disable.
+projection, exactly as the id reads themselves resolve them.
 """
 
 import json
@@ -223,8 +222,8 @@ class TestPassesThroughColleagueAndUnrelated:
 class TestFailsClosedOnUnresolvableConfig:
     # User decision: config-free self-identification isn't reliably available
     # inside the PreToolUse hook (no token/network, schema text not in the input),
-    # so an unreadable/missing/malformed config DENIES — the kill-switch
-    # [teatree] self_dm_gate_enabled=false is the sanctioned escape hatch.
+    # so an unreadable/missing/malformed config DENIES. The bot-token route
+    # remains available for a legitimate self-DM.
 
     def test_missing_config_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -237,7 +236,7 @@ class TestFailsClosedOnUnresolvableConfig:
         assert verdict is True
         deny = _parse_deny(capsys)
         assert deny is not None
-        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+        assert "slack_dm_channel_id" in deny["permissionDecisionReason"]
 
     @pytest.mark.parametrize(
         "rows",
@@ -278,7 +277,7 @@ class TestFailsClosedOnUnresolvableConfig:
         assert verdict is True
         deny = _parse_deny(capsys)
         assert deny is not None
-        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+        assert "slack_dm_channel_id" in deny["permissionDecisionReason"]
 
 
 class TestResolvesFromTheHostProjection:
@@ -348,7 +347,7 @@ class TestStaysClosedWithoutAProjectionToReadFrom:
         assert verdict is True
         deny = _parse_deny(capsys)
         assert deny is not None
-        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+        assert "slack_dm_channel_id" in deny["permissionDecisionReason"]
 
     def test_corrupt_canonical_db_is_denied_even_with_a_projection_published(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -367,7 +366,7 @@ class TestStaysClosedWithoutAProjectionToReadFrom:
         assert verdict is True
         deny = _parse_deny(capsys)
         assert deny is not None
-        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
+        assert "slack_dm_channel_id" in deny["permissionDecisionReason"]
 
 
 class TestMalformedToolInputPassesThrough:
@@ -385,7 +384,7 @@ class TestMalformedToolInputPassesThrough:
 
 
 class TestKillSwitch:
-    def test_disabled_setting_allows_a_self_dm_write(
+    def test_disabled_setting_allows_a_false_self_dm_denial(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         rows = {**_ROWS_WITH_DM_CHANNELS, "self_dm_gate_enabled": False}
@@ -396,10 +395,9 @@ class TestKillSwitch:
         assert verdict is False
         assert capsys.readouterr().out.strip() == ""
 
-    def test_enabled_default_still_denies(
+    def test_self_dm_write_is_denied_by_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # No explicit flag → default ON → still denies (kill-switch is opt-out).
         _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="sk2")

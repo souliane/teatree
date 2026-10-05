@@ -104,6 +104,26 @@ class PREntrySerialized(TypedDict, total=False):
     draft_comments_count: int
 
 
+class DreamGapEntry(TypedDict, total=False):
+    gap_key: str
+    cluster_key: str
+    title: str
+    citation: str
+    theme: str
+    detail: str
+
+
+class DreamGapDisposition(TypedDict):
+    disposition: str
+    evidence: str
+
+
+class PlanningHandoff(TypedDict, total=False):
+    planning_task: int
+    phase: str
+    reason: str
+
+
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     # Self-improvement repair tickets need this marker to classify their own
@@ -122,6 +142,9 @@ class TicketExtra(TypedDict, total=False):
     # here is a cache-refresh gap, never a source of truth. Read-path
     # unification onto the rows is deferred.
     prs: dict[str, PREntrySerialized]
+    # Board reconciliation records the forge's actual merge commit for a PR
+    # attached to this ticket before it claims the ticket is merged.
+    forge_merge_evidence: dict[str, str | int]
     pr_title_override: str
     ship_invoking_branch: str
     ship_invoking_path: str
@@ -200,6 +223,9 @@ class TicketExtra(TypedDict, total=False):
     # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
     # ``AntiVacuityAttestation`` below).
     anti_vacuity_attestation: "AntiVacuityAttestation"
+    anti_vacuity_attestations: "dict[str, AntiVacuityAttestation]"
+    rubric_grades_by_head: "dict[str, dict[str, dict[str, str]]]"
+    rubric_grades_recorded: bool
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -224,21 +250,7 @@ class TicketExtra(TypedDict, total=False):
     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
     # ``TrivialPlanSkip``.
     trivial_plan_skip: "TrivialPlanSkip"
-    # Plan-skipped issue-implementer direct-coding marker: stamped by
-    # ``persistence._handle_orchestrator`` when it schedules a ``coding`` task
-    # directly on a fresh NOT_STARTED author ticket (no scope/plan phase). Read
-    # by ``auto_implement.is_auto_implement`` — the ``Ticket.code_direct``
-    # condition that lets a coding-completion advance the FSM from an early
-    # state without weakening the normal author flow's plan gate.
-    auto_implement: bool
-    # #2663 dream-promote = fix-and-merge: a Ticket scheduled to fix a grounded
-    # dream gap. ``dream_gap_key`` is the stable gap identity (also the umbrella
-    # checkbox marker); ``dream_memory_cluster_key`` links back to the
-    # ``ConsolidatedMemory`` row to retire on merge; ``dream_umbrella_url`` is the
-    # standing umbrella issue whose checkbox is checked when the fix merges. See
-    # ``teatree.loops.dream.umbrella_ledger``.
-    dream_gap_key: str
-    dream_memory_cluster_key: str
+    # The standing umbrella issue whose checkbox is checked when a gap fix merges.
     dream_umbrella_url: str
     # Idempotency stamp for the merged-gap reconcile: the ISO timestamp at which
     # this ticket's merged fix was folded back into the umbrella checkbox and its
@@ -246,19 +258,22 @@ class TicketExtra(TypedDict, total=False):
     # already-stamped ticket, so a merged gap is not re-read from the forge on
     # every pass. See ``teatree.loops.dream.umbrella_ledger``.
     dream_gap_reconciled_at: str
-    # Pk of the HOST ticket a duplicate gap was folded into. A folded member is retired
-    # IGNORED and never reaches MERGED, so the reconcile reads the host's merge instead —
-    # without it the member's umbrella box stays open forever. See ``umbrella_ledger``.
-    dream_gap_folded_into: int
-    # #4776 dream promotion batching: a ticket scheduled to fix an ENTIRE pass's
-    # collected gaps (replaces the per-gap ``dream_gap_key`` scheme above for NEW
-    # tickets; legacy in-flight tickets keep the old keys). ``dream_gap_batch`` is
+    # #4776 dream promotion batching: a ticket scheduled to fix a pass's
+    # collected gaps. ``dream_gap_batch`` is
     # the full manifest (``[{"gap_key": ..., "cluster_key": ...}, ...]``);
     # ``dream_gap_claimed_delivered`` is the coder/reviewer-recorded subset of gap
     # keys actually delivered, verified independently at review before the
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
     dream_gap_batch: "list[dict[str, str]]"
     dream_gap_claimed_delivered: list[str]
+    # The umbrella host's queue of a pass's collected gaps awaiting the backlog sweep's
+    # fold into an existing host, and a host's per-gap address/reject record.
+    # See ``teatree.core.models.dream_gap_ledger``.
+    dream_gap_pending: "list[DreamGapEntry]"
+    # The phase + reason ``schedule_implementing`` routed across the planning rung;
+    # ``schedule_planned_work`` mints it when ``plan()`` fires.
+    planning_handoff: "PlanningHandoff"
+    dream_gap_dispositions: "dict[str, DreamGapDisposition]"
     # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
     # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
@@ -334,8 +349,7 @@ class ReviewContext(TypedDict, total=False):
     schedule, requirement doc), and analyzed them against the
     diff (``analysis``: how the implementation was checked against the
     specified requirements + business rules). The reviewing-phase gate
-    (``teatree.core.gates.review_context_gate``) consumes it: when
-    ``require_review_context`` is on, entering ``reviewing`` is refused
+    (``teatree.core.gates.review_context_gate``) consumes it: entering ``reviewing`` is refused
     until this is recorded.
     """
 
@@ -409,7 +423,7 @@ class AntiVacuityAttestation(TypedDict, total=False):
     Recorded by ``Ticket.record_anti_vacuity_attestation`` once the maker has
     run the skilled self-review. The anti-vacuity gate
     (``teatree.core.gates.anti_vacuity_gate``) consumes it to refuse a request-review
-    or merge transition when ``require_anti_vacuity_attestation`` is on.
+    or merge transition when the proof is absent.
 
     ``head_sha`` is the full 40-char commit the attestation binds to; the gate
     drops the attestation when the live head moves off it (a new revision must

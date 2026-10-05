@@ -44,23 +44,14 @@ class TestDbTierDefaults(TestCase):
             "T3_OVERLAY_NAME",
             "T3_MODE",
             "T3_AUTOLOAD",
-            "T3_HOOK_FETCH_TITLES",
-            "T3_ORCHESTRATE_CLAIM_ENABLED",
-            "T3_NOTIFY_ON_POST_ON_BEHALF",
         ):
             monkeypatch.delenv(env, raising=False)
 
     def test_security_and_autonomy_gate_defaults(self) -> None:
-        # The shipped ``autonomy = full`` collapses the tier-governed gates and pins
-        # ``mode = auto``. Untouched by the tier: the merge gate (#3630), colleague
-        # egress (#3895), the safety floor (bash gate, agent-signature) and the
-        # on-behalf notify receipt.
         settings = get_effective_settings()
         assert settings.mode is Mode.AUTO
         assert settings.require_human_approval_to_answer is False
         assert settings.require_human_approval_to_merge is True
-        assert settings.notify_on_post_on_behalf is True
-        assert settings.agent_signature is False
         assert settings.orchestrator_bash_gate_enabled is True
 
     def test_loop_and_list_defaults(self) -> None:
@@ -77,17 +68,11 @@ class TestDbTierDefaults(TestCase):
     def test_opt_in_flag_defaults_off(self) -> None:
         settings = get_effective_settings()
         assert settings.autoload is False
-        assert settings.orchestrate_claim_enabled is False
-        assert settings.require_review_context is False
 
     def test_issue_implementer_defaults(self) -> None:
         settings = get_effective_settings()
-        assert settings.hook_fetch_titles is True
         assert settings.issue_implementer_label == ""
         assert settings.issue_implementer_max_concurrent == 3
-
-    def test_e2e_confidence_threshold_default(self) -> None:
-        assert get_effective_settings().e2e_confidence_threshold == 90
 
     def test_auto_update_requires_a_green_default_branch(self) -> None:
         assert get_effective_settings().auto_update_require_green_main is True
@@ -109,10 +94,6 @@ class TestDbTierGlobalResolution(TestCase):
         for env in ("T3_OVERLAY_NAME", "T3_MODE"):
             monkeypatch.delenv(env, raising=False)
 
-    def test_agent_signature_db_opt_in(self) -> None:
-        ConfigSetting.objects.set_value("agent_signature", value=True)
-        assert get_effective_settings().agent_signature is True
-
     def test_require_human_approval_to_merge_db_disable(self) -> None:
         ConfigSetting.objects.set_value("require_human_approval_to_merge", value=False)
         assert get_effective_settings().require_human_approval_to_merge is False
@@ -120,10 +101,6 @@ class TestDbTierGlobalResolution(TestCase):
     def test_require_human_approval_to_answer_db_disable(self) -> None:
         ConfigSetting.objects.set_value("require_human_approval_to_answer", value=False)
         assert get_effective_settings().require_human_approval_to_answer is False
-
-    def test_notify_on_post_on_behalf_db_false(self) -> None:
-        ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False)
-        assert get_effective_settings().notify_on_post_on_behalf is False
 
     def test_user_identity_aliases_db(self) -> None:
         ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"])
@@ -160,20 +137,6 @@ class TestEnvOverrides(TestCase):
     def test_autoload_env_enables(self) -> None:
         self.monkeypatch.setenv("T3_AUTOLOAD", "true")
         assert get_effective_settings().autoload is True
-
-    def test_issue_implementer_env_enables(self) -> None:
-        self.monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "true")
-        assert get_effective_settings().hook_fetch_titles is True
-
-    def test_orchestrate_claim_env_enables(self) -> None:
-        self.monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "true")
-        assert get_effective_settings().orchestrate_claim_enabled is True
-
-    def test_notify_on_post_on_behalf_has_no_env_layer(self) -> None:
-        # Anti-vacuity guard: ``notify_on_post_on_behalf`` is intentionally NOT in
-        # ENV_SETTING_OVERRIDES, so an env var has ZERO effect (stays default True).
-        self.monkeypatch.setenv("T3_NOTIFY_ON_POST_ON_BEHALF", "false")
-        assert get_effective_settings().notify_on_post_on_behalf is True
 
 
 class TestModeDbResolution(TestCase):

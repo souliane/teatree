@@ -17,9 +17,8 @@
 # `export` reaches only the ROLE's own process tree; `docker exec` starts from the
 # CONTAINER's environment, which is fixed at create time — so an exec'd process
 # saw an unset GITLAB_TOKEN while the role process had it the whole time. The
-# baked credential helper then interpolated the empty value and authenticated with
-# an EMPTY password, which GitLab reports as `HTTP Basic: Access denied` — read for
-# a whole day as a missing branch rather than a missing token. Declaring it here is
+# baked credential helper then answers nothing and git stops at `could not read
+# Username`, which names the missing credential. Declaring it here is
 # what a `docker exec` inherits; an explicitly named bootstrap pass entry remains
 # available to a container created without it (the watchdog cannot read the host's pass).
 # The value is interpolated from the deploying host, never written here: deploy.sh
@@ -42,8 +41,11 @@ name: teatree
 # covering a venue the others cannot (a bare `docker run`; the tree the entrypoint
 # seeds). tests/test_deploy_gnupg_lock_isolation.py holds the three in sync.
 x-teatree-create-env: &teatree-create-env
+  # Host launchers export uname; bare compose gets a nonempty fail-closed value.
+  TEATREE_HOST_OS: ${TEATREE_HOST_OS:-unknown}
   TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
   GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
+  TEATREE_TRANSCRIPT_SOURCE: ${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}
 
 # The PROJECT interpreter root every worktree virtualenv is built against: uv's
 # own default under the container HOME, bind-mounted from the host at path
@@ -84,7 +86,7 @@ x-teatree-common: &teatree-common
     - bash
     - ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh
   build:
-    context: ..
+    context: ${TEATREE_BUILD_CONTEXT:-..}
     dockerfile: deploy/Dockerfile
     # The container's runtime UID must equal the host deploy user's UID (path-
     # identity bind mounts — see deploy/README.md § UID invariant). deploy.sh
@@ -254,13 +256,8 @@ x-teatree-common: &teatree-common
     - teatree_claude_home:/home/teatree/.claude
     - teatree_codex_home:/home/teatree/.codex
     - teatree_agents_home:/home/teatree/.agents
-    # The one host path inside the Claude home: session transcripts and the per-project
-    # memory corpus, the dream pass's input and product. Without it the dream pass globs
-    # an empty projects dir and every nightly consolidation is a no-op. Scoped to
-    # projects/ so settings, plugins and credentials stay in the factory-owned volume.
-    - type: bind
-      source: ${TEATREE_HOST_HOME:-/home/teatree}/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
-      target: /home/teatree/.claude/projects  # privacy-scan:allow — the box's public, documented deploy home
+    # Transcript bind source comes from the Compose shell or deploy/.env; the named volume is the default.
+    - ${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}:/home/teatree/.claude/projects
     # Backing store for the CONTAINER-LOCAL GPG home — the ONE `GNUPGHOME` this file and
     # deploy/Dockerfile pin, seeded by deploy/entrypoint.sh's seed_container_gnupg_home.
     # The reason is the DOTLOCK, which is socket-independent: a keybox shared across two
@@ -558,7 +555,7 @@ services:
       - bash
       - ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/entrypoint.sh
     build:
-      context: ..
+      context: ${TEATREE_BUILD_CONTEXT:-..}
       dockerfile: deploy/Dockerfile
       # Same shared image, so the UID build arg must match the anchor's (see
       # deploy/README.md § UID invariant); default 1001 tracks the ARG default.
@@ -637,7 +634,7 @@ services:
       # deploy.sh's `exec 9>` on a directory fails — killing every later deploy.
       # Without this mount the probe degrades to the container-recreation signal.
       - type: bind
-        source: /tmp
+        source: ${TEATREE_HOST_TMP:-/tmp}
         target: /host-tmp
         read_only: true
     # NO depends_on — it must start even when init crash-loops (the whole point).
@@ -662,6 +659,7 @@ volumes:
   # The factory's agent configuration boundary. These volumes persist across
   # recreation without importing anything from the deploying user's home.
   teatree_claude_home:
+  teatree_claude_projects:
   teatree_codex_home:
   teatree_agents_home:
   # The container's OWN clone root — the source clones provisioning creates

@@ -5,7 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from teatree.cli.doctor.app import doctor_app
 from teatree.utils import bad_artifacts as mod
 
 
@@ -31,12 +33,36 @@ class TestMarkAndCheck:
         assert mod.is_bad("/tmp/b.pgsql") is False
 
     def test_unmark_nonexistent(self) -> None:
-        mod.unmark("/tmp/nope.pgsql")  # no error
+        assert mod.unmark("/tmp/nope.pgsql") is False
 
     def test_dslr_key(self) -> None:
         mod.mark_bad("dslr:20260326_development-acme")
         assert mod.is_bad("dslr:20260326_development-acme") is True
         assert mod.is_bad("dslr:20260320_development-acme") is False
+
+
+def test_doctor_can_list_unmark_and_clear_importer_quarantine() -> None:
+    runner = CliRunner()
+    mod.mark_bad("/tmp/broken.pgsql")
+    mod.mark_bad("dslr:broken")
+
+    listed = runner.invoke(doctor_app, ["bad-artifacts-list"])
+    assert listed.exit_code == 0, listed.output
+    assert "/tmp/broken.pgsql" in listed.output
+    assert "dslr:broken" in listed.output
+
+    unmarked = runner.invoke(doctor_app, ["bad-artifacts-unmark", "/tmp/broken.pgsql"])
+    assert unmarked.exit_code == 0, unmarked.output
+    assert mod.is_bad("/tmp/broken.pgsql") is False
+    assert mod.is_bad("dslr:broken") is True
+
+    absent = runner.invoke(doctor_app, ["bad-artifacts-unmark", "/tmp/never-marked.pgsql"])
+    assert absent.exit_code != 0
+    assert "was not marked" in absent.output
+
+    cleared = runner.invoke(doctor_app, ["bad-artifacts-clear"])
+    assert cleared.exit_code == 0, cleared.output
+    assert mod.list_bad() == []
 
 
 class TestListAndClear:

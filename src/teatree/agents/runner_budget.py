@@ -1,27 +1,14 @@
 """Per-ticket cumulative cost cap for the agent runner.
 
-Split out of :mod:`teatree.agents.runner` for the module-health LOC cap (the
-same reason ``_runner_options.py`` and ``runner_usage.py`` were split
-out). Re-exported from ``teatree.agents.runner`` so ``from
-teatree.agents.runner import TicketBudget`` stays valid.
+Split out of :mod:`teatree.agents.runner` for the module-health LOC cap.
 """
 
 from dataclasses import dataclass
 
-from django.conf import settings
 from django.db.models import Sum
 
-from teatree.config import UserSettings, get_effective_settings
+from teatree.config import get_effective_settings
 from teatree.core.models import TaskAttempt, Ticket
-
-# Conservative documented default (#885 / #398-4): the per-ticket cumulative
-# cost cap is opt-in. ``0.0`` = disabled, so installing this consumer changes
-# no behaviour until the user configures a ceiling — the same precedent #882
-# set for the watchdog's absolute cost dimension. The user picks a ceiling
-# that matches their budget appetite once they want batch runs bounded.
-_DEFAULT_TICKET_BUDGET = {
-    "max_cost_usd": 0.0,  # 0 = disabled
-}
 
 
 @dataclass(frozen=True)
@@ -42,20 +29,9 @@ class TicketBudget:
 
     @classmethod
     def from_settings(cls) -> "TicketBudget":
-        """Build the budget from the DB-home config tier; Django-settings as fallback.
-
-        The cap resolves through ``get_effective_settings()`` (the #1775 config tier), so
-        ``config_setting get`` sees it (F9.5). The legacy Django-settings
-        ``TEATREE_TICKET_BUDGET`` dict stays a documented fallback: it supplies the value
-        only while the config field is still at its dataclass default (unconfigured), so an
-        explicit DB / env config always wins.
-        """
+        """Build the budget from effective DB-home config."""
         effective = get_effective_settings()
-        fallback = getattr(settings, "TEATREE_TICKET_BUDGET", None) or _DEFAULT_TICKET_BUDGET
-        default = UserSettings().ticket_budget_max_cost_usd
-        configured = effective.ticket_budget_max_cost_usd
-        value = configured if configured != default else fallback.get("max_cost_usd", 0.0)
-        return cls(max_cost_usd=float(value))
+        return cls(max_cost_usd=float(effective.ticket_budget_max_cost_usd))
 
     def breach_reason(self, ticket: Ticket) -> str | None:
         """Return a reason string with the observed total, or ``None`` if healthy."""

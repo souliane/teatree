@@ -290,13 +290,8 @@ class ShipExecutor(RunnerBase):
         branch = resolve_and_reconcile_branch(ticket, worktree, repo_path)
 
         # #1263: short-circuit only when THIS branch already has a PR.
-        # The legacy truthiness check fired on any prior ``pr_urls`` entry,
-        # so on a reused-ticket multi-workstream flow a stale URL from an
-        # earlier workstream silently advanced the FSM without pushing or
-        # opening a PR for the current branch. ``pr_url_by_branch`` is the
-        # per-branch index; fall back to ``pr_urls[-1]`` only when no
-        # ``ship_invoking_branch`` hint is recorded (single-PR async-worker
-        # path with no multi-workstream context).
+        # A reused ticket can span multiple workstreams. Only the URL
+        # associated with this branch can short-circuit its PR creation.
         recorded_url = self._recorded_url_for_branch(extra, branch)
         if recorded_url:
             return RunnerResult(ok=True, detail=recorded_url)
@@ -427,7 +422,7 @@ class ShipExecutor(RunnerBase):
         try:
             host = code_host_for_repo_from_overlay(repo_path)
         except BackendResolutionError as exc:
-            return RunnerResult(ok=False, detail=str(exc))
+            return RunnerResult(ok=False, detail=str(authorized_pr_host(None, repo_path, generic=str(exc))))
         checked = authorized_pr_host(host, repo_path)
         return RunnerResult(ok=False, detail=checked) if isinstance(checked, str) else checked
 
@@ -545,21 +540,15 @@ class ShipExecutor(RunnerBase):
         #1263: short-circuit only when the *current* branch already has a
         PR. ``pr_url_by_branch`` is the per-branch index populated by
         ``_record_pr_url`` on each successful ship; it tells us reliably
-        whether the invoking branch's PR exists. The legacy single-PR
-        fallback (``pr_urls[-1]`` when no ``ship_invoking_branch`` hint
-        is set) preserves async-worker idempotency for tickets that
-        pre-date the per-branch index.
+        whether the invoking branch's PR exists. This index is the sole
+        source for branch-specific idempotency.
         """
         by_branch = extra.get("pr_url_by_branch")
         if isinstance(by_branch, Mapping):
             recorded = by_branch.get(branch)
             if isinstance(recorded, str) and recorded:
                 return recorded
-        invoking = str(extra.get("ship_invoking_branch") or "")
-        if invoking:
-            return ""
-        legacy_urls = list(extra.get("pr_urls") or [])
-        return legacy_urls[-1] if legacy_urls else ""
+        return ""
 
     @staticmethod
     def _build_pr_spec(

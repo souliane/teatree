@@ -29,7 +29,6 @@ from teatree.loop.statusline import (
 )
 from teatree.loop.statusline_loop_chunks import MiniLoopSchedule, _mini_loop_chunk, overdue_mini_loop_names
 from teatree.loop.statusline_loops import PresetLineHandles
-from teatree.loop.statusline_render import _format_duration
 
 
 def _active_ticket(num: str, state: str, *, url: str = "", overlay: str = "ov") -> DispatchAction:
@@ -492,22 +491,6 @@ class TestMiniLoopChunk:
 
     def test_future_next_fire_is_relative_minutes(self) -> None:
         assert _mini_loop_chunk("audit", datetime.now(UTC) + timedelta(seconds=300)) == "audit 5m"
-
-
-class TestFormatDuration:
-    """Pure helper — covered for completeness so the shape is locked."""
-
-    def test_seconds_only(self) -> None:
-        assert _format_duration(45) == "45s"
-
-    def test_minutes_and_seconds(self) -> None:
-        assert _format_duration(192) == "3m12s"
-
-    def test_whole_minutes(self) -> None:
-        assert _format_duration(120) == "2m"
-
-    def test_hours_and_minutes(self) -> None:
-        assert _format_duration(3900) == "1h05m"
 
 
 class TestAnchorStatePriorityOrder:

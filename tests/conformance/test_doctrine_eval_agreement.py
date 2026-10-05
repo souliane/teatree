@@ -21,7 +21,8 @@ behind by it.
 import dataclasses
 from pathlib import Path
 
-from teatree.eval.doctrine_agreement import (
+from teatree.eval.models import EvalSpec, Matcher, SuccessfulToolCallMatcher
+from tests.conformance._doctrine_agreement import (
     SeamMigration,
     seam_migrations,
     shipped_seam_migrations,
@@ -29,7 +30,6 @@ from teatree.eval.doctrine_agreement import (
     stale_matchers,
     unpinned_mandates,
 )
-from teatree.eval.models import EvalSpec, Matcher, SuccessfulToolCallMatcher
 
 #: No stale matcher is open. A matcher that demands a retired command is fixed
 #: where it is GENERATED (``scripts/eval/corpus_gen/``), never recorded here —

@@ -121,7 +121,10 @@ class TestFindPythonForgeRestUrls:
         # ``for ... return`` loop) -- a source carrying more than one forge URL
         # is the only way to observe the generator resume past its first yield.
         source = f"first at {_GITHUB_COMMENT_URL} then {_GITLAB_NOTE_URL}"
-        assert list(find_python_forge_rest_urls(source)) == [("github", "owner/repo"), ("gitlab", "42")]
+        assert list(find_python_forge_rest_urls(source)) == [
+            ("github", "github.com/owner/repo"),
+            ("gitlab", "gitlab.com/42"),
+        ]
 
     def test_yields_nothing_for_a_non_forge_url(self) -> None:
         assert list(find_python_forge_rest_urls("https://example.com/api/notes")) == []

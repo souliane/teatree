@@ -41,7 +41,9 @@ from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 
 @pytest.fixture(autouse=True)
@@ -368,6 +370,7 @@ class TestSlackBroadcastsConnectChannelEscalation(TestCase):
     """ConnectChannelBotRestrictedError still propagates through the per-message guard."""
 
     def test_connect_channel_error_propagates_out_of_scan(self) -> None:
+        allow_slack_channels(CHANNEL)
         # The scanner posts only the all-merged :white_check_mark: outcome
         # reaction now (no discovery-time :eyes:, #113/#86); a Connect-
         # restricted channel rejecting it must still propagate the escalation.
@@ -710,6 +713,7 @@ class TestIssueImplementerIsolation(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        FleetClaimStub().install(self)
 
     def _issue(self, url: str) -> RawAPIDict:
         return {
@@ -730,16 +734,16 @@ class TestIssueImplementerIsolation(TestCase):
         )
 
         call_count = [0]
-        original_claim = ImplementedIssueMarker.objects.claim
+        original_cache = ImplementedIssueMarker.objects.cache_from_fleet_claim
 
-        def _raising_claim(url: str, *, overlay: str) -> Any:
+        def _raising_cache(url: str, overlay: str, **claim: Any) -> Any:
             call_count[0] += 1
             if call_count[0] == 1:
                 msg = "simulated DB failure"
                 raise RuntimeError(msg)
-            return original_claim(url, overlay=overlay)
+            return original_cache(url, overlay, **claim)
 
-        with patch.object(ImplementedIssueMarker.objects, "claim", _raising_claim):
+        with patch.object(ImplementedIssueMarker.objects, "cache_from_fleet_claim", _raising_cache):
             signals = scanner.scan()
 
         assert len(signals) == 1, "second issue must still be claimed and emitted"

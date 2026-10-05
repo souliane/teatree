@@ -5,6 +5,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.loops import worker_health
+from teatree.loops.worker_health import ready_generation
+
+
+def test_ready_generation_is_public_downstream_api(tmp_path: Path) -> None:
+    marker = tmp_path / "boot-latest"
+    marker.write_text("status=ready\nstage=ready\ncause=ready\nmissing=\ngeneration=" + "a" * 32 + "\n")
+    assert ready_generation(tmp_path) == "a" * 32
+    marker.write_text("status=pending\nstage=ready\ncause=ready\nmissing=\ngeneration=" + "a" * 32 + "\n")
+    assert ready_generation(tmp_path) is None
 
 
 def test_heartbeat_is_atomic_private_and_generation_matched(tmp_path: Path) -> None:

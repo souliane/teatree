@@ -30,11 +30,16 @@ from teatree.core.review.critic_rubric import (
     done_not_done,
     item_for,
     llm_items,
-    rubric_items,
     spec_not_plan,
 )
 
 _FORTY_HEX = "a" * 40
+
+
+def _items_for(transition: str) -> tuple[CriticRubricItem, ...]:
+    """Read the live registry for assertions about transition scoping."""
+    return tuple(item for item in critic_rubric.CRITIC_RUBRIC if item.transition == transition)
+
 
 #: The north-star PR-5 design critic's four ``transition="plan"`` LLM items, in seeded order.
 _PLAN_DESIGN_SLUG_ORDER = ("generality", "sketch_conformance", "convention_fit", "refactor_honesty")
@@ -74,7 +79,7 @@ class TestRegistryConformance(TestCase):
         # append to the SAME registry, so assert the seeded count on the transition
         # subset and every slug's global uniqueness (a merge/plan item can never
         # collide with a seeded one).
-        seeded = rubric_items("mark_delivered")
+        seeded = _items_for("mark_delivered")
         assert len(seeded) == 8
         assert len({item.slug for item in seeded}) == 8
         all_slugs = [item.slug for item in CRITIC_RUBRIC]
@@ -193,11 +198,6 @@ class TestModuleExportsEveryDeterministicPredicate(TestCase):
             assert module == critic_rubric.__name__, item.slug
             assert hasattr(critic_rubric, attr), item.slug
 
-    def test_rubric_items_returns_the_mark_delivered_subset(self) -> None:
-        # The seeded registry all lives at mark_delivered, so the default-transition
-        # accessor is exactly those items — the merge pair is selected by its own transition.
-        assert rubric_items("mark_delivered") == tuple(i for i in CRITIC_RUBRIC if i.transition == "mark_delivered")
-
 
 class TestTransitionSelection:
     """Accessors return only the items keyed to the requested transition (the PR-1 seam)."""
@@ -216,7 +216,7 @@ class TestTransitionSelection:
         monkeypatch.setattr(critic_rubric, "CRITIC_RUBRIC", (*CRITIC_RUBRIC, self._PLAN_ITEM))
 
     def test_seeded_items_are_keyed_to_mark_delivered(self) -> None:
-        assert {item.slug for item in rubric_items("mark_delivered")} == {
+        assert {item.slug for item in _items_for("mark_delivered")} == {
             "spec_not_plan",
             "done_not_done",
             "completeness",
@@ -237,13 +237,13 @@ class TestTransitionSelection:
         self._mixed_rubric(monkeypatch)
         assert [item.slug for item in deterministic_items("plan")] == ["plan_only_probe"]
 
-    def test_llm_and_rubric_items_are_transition_scoped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_llm_items_and_registry_are_transition_scoped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._mixed_rubric(monkeypatch)
         assert len(llm_items("mark_delivered")) == 5
         # PR-5's four design items are the LLM items at transition="plan"; the probe is deterministic.
         assert {item.slug for item in llm_items("plan")} == _PLAN_DESIGN_SLUGS
-        assert len(rubric_items("mark_delivered")) == 8
-        assert [item.slug for item in rubric_items("plan")] == [*_PLAN_DESIGN_SLUG_ORDER, "plan_only_probe"]
+        assert len(_items_for("mark_delivered")) == 8
+        assert [item.slug for item in _items_for("plan")] == [*_PLAN_DESIGN_SLUG_ORDER, "plan_only_probe"]
 
     def test_item_for_is_scoped_to_its_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._mixed_rubric(monkeypatch)
@@ -266,7 +266,7 @@ class TestMergeTransitionItems(TestCase):
         assert all(item.kind is RubricKind.LLM and not item.blocking and item.transition == "merge" for item in merge)
 
     def test_merge_items_do_not_leak_into_mark_delivered(self) -> None:
-        seeded = {item.slug for item in rubric_items("mark_delivered")}
+        seeded = {item.slug for item in _items_for("mark_delivered")}
         assert "test_value" not in seeded
         assert "cleanliness" not in seeded
         assert deterministic_items("merge") == ()  # both merge items are LLM-advisory, none deterministic-blocking
@@ -295,7 +295,7 @@ class TestPlanTransitionItems(TestCase):
 
     def test_plan_items_do_not_leak_into_other_transitions(self) -> None:
         for other in ("mark_delivered", "merge"):
-            other_slugs = {item.slug for item in rubric_items(other)}
+            other_slugs = {item.slug for item in _items_for(other)}
             assert not (_PLAN_DESIGN_SLUGS & other_slugs), other
         assert deterministic_items("plan") == ()  # all four design items are LLM-advisory, none deterministic
 

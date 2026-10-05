@@ -1,6 +1,6 @@
 ---
 name: triaging-issues
-description: Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval run `gh issue close/edit/comment` then stamp the row. Use when user says "triage issues", "triaging issues", "review triage recommendations", "assess needs-triage", or catches up on the triage-assessor batch.
+description: Review and act on the needs-triage assessor's queued recommendations — list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval record the rationale in the issue description and run `gh issue close/edit` then stamp the row. Use when user says "triage issues", "triaging issues", "review triage recommendations", "assess needs-triage", or catches up on the triage-assessor batch.
 compatibility: macOS/Linux, git, gh CLI.
 requires:
   - rules
@@ -28,7 +28,13 @@ row and, only on your approval, act via `gh`.
    close-as-fixed needs the evidence bar in `t3:sweeping-tickets`
    § Non-Negotiables rule 6: the check the issue describes was executed,
    never a code read alone.
-3. **No AI signature** on issue comments or edits (per `t3:rules`).
+3. **No AI signature** on issue notes or edits (per `t3:rules`).
+3a. **The rationale goes in the DESCRIPTION, not a comment.** A lane reads the
+   body; a close reason, a duplicate cross-link or a needs-info ask posted as a
+   comment is invisible to it and to the next sweep. Record it with
+   `t3 <overlay> ticket comment <url> --purpose decision` (which appends a dated
+   description section), then close with no comment. This also means a sweep can
+   run over these issues without having to fold your own comments back out.
 4. **Stamp every decision.** After acting (or rejecting), record the outcome
    on the row so a re-assessment never re-queues the issue (dedup is by issue
    URL, and a decided row still blocks re-queue).
@@ -41,15 +47,20 @@ uv run python manage.py shell -c "from teatree.core.models import PendingTriageR
 
 # --- On APPROVAL, act per verdict, then stamp the row ---
 
-# close: close the issue with an audit-trail comment citing the rationale.
-gh --repo souliane/teatree issue close <number> --comment "<rationale> (triage-assessor, approved)"
+# close: record the rationale in the DESCRIPTION, then close with no comment.
+t3 <overlay> ticket comment <issue-url> --purpose decision \
+  --body "<rationale> (triage-assessor, approved)"
+gh --repo souliane/teatree issue close <number>
 
-# close-as-duplicate: cross-link the superseding issue.
-gh --repo souliane/teatree issue close <number> --comment "Duplicate of <duplicate_of> — closing (triage-assessor, approved)"
+# close-as-duplicate: cross-link the superseding issue, again in the description.
+t3 <overlay> ticket comment <issue-url> --purpose decision \
+  --body "Duplicate of <duplicate_of> — closing (triage-assessor, approved)"
+gh --repo souliane/teatree issue close <number>
 
-# needs_info: relabel off needs-triage and ask for detail (never auto-close).
+# needs_info: relabel off needs-triage and record the ask (never auto-close).
 gh --repo souliane/teatree issue edit <number> --remove-label needs-triage --add-label needs-info
-gh --repo souliane/teatree issue comment <number> --body "<what's missing before this can be worked>"
+t3 <overlay> ticket comment <issue-url> --purpose change_request \
+  --body "<what's missing before this can be worked>"
 
 # keep: usually a no-op (leave open); optionally drop needs-triage if it is now
 # clearly actionable and you want it in the normal queue.
@@ -78,10 +89,10 @@ are unsure about — a wrongly-closed issue is worse than one left triaged.
 
 ### 3. Act on approval
 
-Run the matching `gh` command for the verdict (close / needs_info relabel /
-keep). Every `close` gets an audit-trail comment citing the rationale so the
-close is explainable. A `close` with a `duplicate_of` cross-links the
-superseding issue.
+Run the matching command for the verdict (close / needs_info relabel / keep).
+Every `close` records its rationale in the issue's description first, so the
+close is explainable to the next reader and to a lane. A `close` with a
+`duplicate_of` cross-links the superseding issue in that same section.
 
 ### 4. Stamp the decision
 
@@ -93,9 +104,10 @@ prevents the next assessor tick from re-queuing the same issue.
 
 - Nothing acts without per-row user approval.
 - `close` is conservative — reject an uncertain close.
-- Every close carries an audit-trail comment citing the rationale.
+- Every close records its rationale in the description before closing; the
+  close itself carries no comment.
 - Stamp every decision (`approve`/`reject`) so the issue is not re-queued.
-- No AI signature on comments or edits.
+- No AI signature on notes or edits.
 
 ## Related skills
 

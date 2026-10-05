@@ -2,7 +2,7 @@
 
 The #117 done-criteria requires that EVERY outbound artifact — Slack DM/post/react
 and forge PR/MR/issue comment — passes through :func:`teatree.core.send_proxy.route_send`
-(so it is audited and, in enforce mode, allowlist-checked + redacted). This gate
+(so it is audited, allowlist-checked, and redacted). This gate
 pins each chokepoint module against silently regrowing a direct wire call that
 skips the proxy, plus one behavioural proof that a real send writes a
 ``SendAudit`` row.
@@ -15,9 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.config.enums import SendProxyMode
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import ConfigSetting, SendAudit
+from teatree.core.models import SendAudit
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.on_behalf_egress import OnBehalfSlackEgress
 from teatree.core.send_proxy import SendBlockedError
@@ -74,7 +73,7 @@ class TestNotifyUserRoutesThroughProxy(TestCase):
         row = SendAudit.objects.get()
         assert row.channel == SendAudit.Channel.SLACK.value
         assert row.action == "notify_user"
-        # A bot→user DM is a self-destination: always allowed under every mode.
+        # A bot→user DM is a self-destination: always allowed.
         assert row.allowlist_verdict == SendAudit.Verdict.ALLOWED.value
 
 
@@ -96,8 +95,7 @@ class _RouteAwareFake:
 
 
 class TestEnforceBlockHonouredAtTheChokepoint(TestCase):
-    def test_enforce_mode_colleague_post_is_refused_before_the_wire(self) -> None:
-        ConfigSetting.objects.set_value("send_proxy_mode", SendProxyMode.ENFORCE.value)
+    def test_colleague_post_is_refused_before_the_wire(self) -> None:
         backend = _RouteAwareFake()
         egress = OnBehalfSlackEgress(backend)
 

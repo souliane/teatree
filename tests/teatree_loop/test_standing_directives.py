@@ -1,20 +1,22 @@
 """Harness-neutral standing directives — the layer-1 contract (#4166 Phase 1).
 
-The three directives, their cadences, their per-slot scope and delivery cost, the
-``Prompt``-row override, and the ``{slot_id, cadence_seconds, text, scope,
-wakes_session}`` read surface every harness consumes. Nothing here knows about
+The three directives, their cadences, their per-slot scope, which of them drive
+work, the ``Prompt``-row override, the ``{slot_id, cadence_seconds, text, scope}``
+read surface every harness consumes, and the publication the Django-free hooks read. Nothing here knows about
 slash commands, hooks, or session markers — that is the adapter's layer, pinned
-separately in ``tests/test_standing_directives_adapter.py``.
+separately in ``tests/teatree_hooks/test_standing_directives_delivery.py``.
 """
 
 import logging
 import re
+import threading
 from unittest import mock
 
 import pytest
 from django.db.utils import OperationalError
 from django.test import TestCase
 
+from teatree import standing_directives_cache
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Mode, Prompt
 from teatree.loop.standing_directives import (
@@ -23,16 +25,21 @@ from teatree.loop.standing_directives import (
     SCOPE_ATTENDED_SINGLETON,
     SELF_PUMP_LOOP,
     STANDING_DIRECTIVES,
+    ResolvedDirective,
     StandingDirective,
-    StandingDirectivePayload,
     _self_pump_paused,
+    compiled_directives,
     golden_rule_cadence_seconds,
     override_prompt_name,
     pr_board_cadence_seconds,
+    publish,
     resolve_standing_directives,
-    self_woken_turns_per_hour,
     todo_consolidate_cadence_seconds,
 )
+from teatree.standing_directives_cache import StandingDirectivePayload
+
+_MODE_RESOLVER = "teatree.core.mode_resolution.resolve_active_mode"
+_EDIT_WINDOW_SECONDS = 1.0
 
 
 def _text(slot_id: str) -> str:
@@ -143,10 +150,11 @@ class TestTheThreeSlots:
         for directive in STANDING_DIRECTIVES:
             assert len(directive.default_text) <= MAX_DIRECTIVE_CHARS, directive.slot_id
 
-    def test_the_slot_table_is_the_scope_and_delivery_cost_contract(self) -> None:
-        # Cost follows the delivery shape: the zero-turn rule reaches every
-        # attended session, and the only global slot is delivered once per host.
-        by_slot = {d.slot_id: (d.scope, d.wakes_session) for d in STANDING_DIRECTIVES}
+    def test_the_slot_table_is_the_scope_and_work_contract(self) -> None:
+        # The golden rule costs nothing and reaches a deliberately idle session; the
+        # other two send the session to work, so the mode brake below may drop them,
+        # and the board is one board per host, so it reaches one session only.
+        by_slot = {d.slot_id: (d.scope, d.drives_work) for d in STANDING_DIRECTIVES}
 
         assert by_slot == {
             "standing-golden-rule": (SCOPE_ATTENDED, False),
@@ -195,10 +203,9 @@ class TestCadences:
         assert todo_consolidate_cadence_seconds() == 600
         assert pr_board_cadence_seconds() == 300
 
-    def test_the_old_self_waking_floors_are_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The floor is the real bound, and the shipped ones permitted a single
-        # session to wake itself ~100 times an hour. A configuration AT the old
-        # floors must now be clamped up, not honoured.
+    def test_the_old_floors_are_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The floor is the real bound on how often a slot is re-delivered. A
+        # configuration AT the old, tighter floors must now be clamped up, not honoured.
         monkeypatch.setenv("T3_TODO_CONSOLIDATE_CADENCE", "300")
         monkeypatch.setenv("T3_PR_BOARD_CADENCE", "120")
 
@@ -221,7 +228,15 @@ class TestResolveStandingDirectives(TestCase):
         assert [r.text for r in resolved] == [d.default_text for d in STANDING_DIRECTIVES]
         assert [r.cadence_seconds for r in resolved] == [300, 1800, 600]
         assert [r.scope for r in resolved] == [SCOPE_ATTENDED, SCOPE_ATTENDED, SCOPE_ATTENDED_SINGLETON]
-        assert [r.wakes_session for r in resolved] == [False, True, True]
+
+    def test_the_compiled_directives_are_the_defaults_without_any_store(self) -> None:
+        with mock.patch("teatree.loop.standing_directives._override_texts") as store:
+            compiled = compiled_directives()
+
+        store.assert_not_called()
+        assert [(r.slot_id, r.cadence_seconds, r.text, r.scope) for r in compiled] == [
+            (d.slot_id, d.cadence_seconds(), d.default_text, d.scope) for d in STANDING_DIRECTIVES
+        ]
 
     def test_prompt_row_override_wins_over_the_compiled_default(self) -> None:
         Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="Owner-edited board rule.")
@@ -258,41 +273,83 @@ class TestResolveStandingDirectives(TestCase):
 
         assert [r.text for r in resolved] == [d.default_text for d in STANDING_DIRECTIVES]
 
-    def test_as_dict_is_the_documented_five_key_contract(self) -> None:
+    def test_as_dict_is_the_documented_four_key_contract(self) -> None:
         payload = resolve_standing_directives()[0].as_dict()
 
         # The declared TypedDict IS the contract, so the emitted payload's keys
         # must equal its annotations — not merely a hand-copied literal set.
         assert set(payload) == set(StandingDirectivePayload.__annotations__)
+        assert set(payload) == {"slot_id", "cadence_seconds", "text", "scope"}
         assert payload["slot_id"] == "standing-golden-rule"
         assert payload["scope"] == "attended"
-        assert payload["wakes_session"] is False
 
 
-class TestTheSelfWokenTurnBudget(TestCase):
-    """The aggregate cost, pinned — the number the cadences and floors exist to bound."""
+class TestPublish(TestCase):
+    """The resolution is published for the Django-free hooks, which never read the store."""
 
-    def test_the_default_budget(self) -> None:
-        assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 6}
+    def test_publishes_exactly_what_resolves(self) -> None:
+        Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="Owner board rule.")
 
-    def test_the_worst_case_budget_at_the_floors(self) -> None:
-        with mock.patch.dict(
-            "os.environ",
-            {"T3_TODO_CONSOLIDATE_CADENCE": "1", "T3_PR_BOARD_CADENCE": "1"},
-        ):
-            assert self_woken_turns_per_hour() == {"per_session": 6, "per_host_singleton": 12}
+        assert publish() is True
+        assert standing_directives_cache.read() == [d.as_dict() for d in resolve_standing_directives()]
 
-    def test_a_disabled_slot_leaves_the_budget(self) -> None:
-        Prompt.objects.create(name=override_prompt_name("standing-pr-board"), body="")
+    def test_a_switched_off_slot_is_not_published(self) -> None:
+        Prompt.objects.create(name=override_prompt_name("standing-todo-consolidate"), body="")
 
-        assert self_woken_turns_per_hour() == {"per_session": 2, "per_host_singleton": 0}
+        publish()
+
+        published = standing_directives_cache.read()
+        assert published is not None
+        assert [d["slot_id"] for d in published] == ["standing-golden-rule", "standing-pr-board"]
+
+    def test_every_slot_off_publishes_an_empty_list_not_nothing(self) -> None:
+        for directive in STANDING_DIRECTIVES:
+            Prompt.objects.create(name=override_prompt_name(directive.slot_id), body="")
+
+        publish()
+
+        assert standing_directives_cache.read() == []
+
+    def test_an_unchanged_resolution_is_not_republished(self) -> None:
+        publish()
+
+        assert publish() is False
+
+    def test_a_resolution_read_before_an_owner_edit_never_lands_after_the_edit_is_published(self) -> None:
+        before_the_edit = compiled_directives()
+        after_the_edit = [d for d in before_the_edit if d.slot_id != "standing-todo-consolidate"]
+        chain_resolved = threading.Event()
+        owner_published = threading.Event()
+
+        def resolution() -> list[ResolvedDirective]:
+            if threading.current_thread().name != "publish-chain":
+                return after_the_edit
+            chain_resolved.set()
+            # The chain's read stays in flight across the owner's edit, for as long as the edit lets it.
+            owner_published.wait(timeout=_EDIT_WINDOW_SECONDS)
+            return before_the_edit
+
+        def owner_disables() -> None:
+            publish()
+            owner_published.set()
+
+        with mock.patch(f"{publish.__module__}.resolve_standing_directives", side_effect=resolution):
+            chain = threading.Thread(target=publish, name="publish-chain")
+            chain.start()
+            assert chain_resolved.wait(timeout=30)
+            owner = threading.Thread(target=owner_disables)
+            owner.start()
+            chain.join()
+            owner.join()
+
+        assert standing_directives_cache.read() == [d.as_dict() for d in after_the_edit]
 
 
 _DEGRADED_STORE = "no such table: core_modeoverride"
 
 
 class TestTheSelfPumpBrake(TestCase):
-    """A self-waking directive IS a self-pump, so a mode masking that loop off brakes it."""
+    """A mode masking the self-pump's loop off is one where nothing should be driving work."""
 
     @staticmethod
     def _resolved(*, pauses: bool, source: str = "override") -> ResolvedMode:
@@ -300,21 +357,22 @@ class TestTheSelfPumpBrake(TestCase):
         mode = Mode(name="off" if pauses else "present", entries=entries)
         return ResolvedMode(mode=mode, source=source, until=None, reason="test")
 
-    def test_a_paused_self_pump_drops_the_waking_slots_and_keeps_the_zero_turn_rule(self) -> None:
-        with mock.patch(
-            "teatree.loop.standing_directives.resolve_active_mode", return_value=self._resolved(pauses=True)
-        ):
+    def test_a_paused_self_pump_drops_the_work_driving_slots_and_keeps_the_golden_rule(self) -> None:
+        with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=True)):
             resolved = resolve_standing_directives()
-            budget = self_woken_turns_per_hour()
 
         assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
-        assert budget == {"per_session": 0, "per_host_singleton": 0}
+
+    def test_a_paused_self_pump_is_published_too(self) -> None:
+        with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=True)):
+            publish()
+
+        published = standing_directives_cache.read()
+        assert published is not None
+        assert [d["slot_id"] for d in published] == ["standing-golden-rule"]
 
     def test_a_mode_that_does_not_pause_the_pump_delivers_everything(self) -> None:
-        with mock.patch(
-            "teatree.loop.standing_directives.resolve_active_mode",
-            return_value=self._resolved(pauses=False, source="schedule"),
-        ):
+        with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=False, source="schedule")):
             braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 
@@ -331,20 +389,20 @@ class TestTheSelfPumpBrake(TestCase):
         assert braked is False
         assert len(resolved) == len(STANDING_DIRECTIVES)
 
-    def test_no_resolved_waking_slot_never_reads_the_mode(self) -> None:
+    def test_no_resolved_work_driving_slot_never_reads_the_mode(self) -> None:
         for directive in STANDING_DIRECTIVES:
-            if directive.wakes_session:
+            if directive.drives_work:
                 Prompt.objects.create(name=override_prompt_name(directive.slot_id), body="")
 
-        with mock.patch("teatree.loop.standing_directives.resolve_active_mode") as resolver:
+        with mock.patch(_MODE_RESOLVER) as resolver:
             resolved = resolve_standing_directives()
 
         assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
         resolver.assert_not_called()
 
-    def test_a_degraded_store_logs_no_traceback_on_this_silent_path(self) -> None:
+    def test_a_degraded_store_logs_no_traceback_on_every_poll(self) -> None:
         # Each resolver layer's own fail-open WARNING carries exc_info, and the
-        # only stderr this path has is a hook's, which the owner reads.
+        # publish chain resolves every minute.
         degraded = mock.patch(
             "teatree.core.mode_resolution._resolve_active_mode",
             side_effect=OperationalError(_DEGRADED_STORE),
@@ -356,9 +414,9 @@ class TestTheSelfPumpBrake(TestCase):
         assert braked is False
 
     def test_the_silence_is_scoped_to_the_resolvers_not_the_whole_process(self) -> None:
-        # CONTROL for the silencing above: `resolve_standing_directives` is a public
-        # export reachable from the worker's thread pool, so a process-global
-        # `logging.disable` would swallow a concurrent thread's unrelated records.
+        # CONTROL for the silencing above: `resolve_standing_directives` runs in the
+        # worker's thread pool, so a process-global `logging.disable` would swallow a
+        # concurrent thread's unrelated records.
         bystander = logging.getLogger("teatree.tests.bystander")
         outage = OperationalError(_DEGRADED_STORE)
 
@@ -377,10 +435,7 @@ class TestTheSelfPumpBrake(TestCase):
 
     def test_a_raising_mode_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.
-        with mock.patch(
-            "teatree.loop.standing_directives.resolve_active_mode",
-            side_effect=RuntimeError("no mode table"),
-        ):
+        with mock.patch(_MODE_RESOLVER, side_effect=RuntimeError("no mode table")):
             braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 

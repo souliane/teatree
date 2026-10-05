@@ -1,7 +1,7 @@
 r"""Read an Anthropic token's rate-limit health (``teatree.llm.rate_limits``).
 
 FOUNDATION-pure: HTTP + header parsing only — no DB, no teatree-domain import. One
-tiny ``POST /v1/messages`` (``claude-haiku-4-5``, ``max_tokens=1``) is signed with the
+tiny ``POST /v1/messages`` (``claude-sonnet-5-5``, ``max_tokens=1``) is signed with the
 token and its response is folded into a frozen result.
 
 Two credential shapes are probed differently, because Anthropic reports their headroom
@@ -45,7 +45,7 @@ from typing import Protocol
 import httpx
 
 _API_URL = "https://api.anthropic.com/v1/messages"
-_PROBE_MODEL = "claude-haiku-4-5"
+_PROBE_MODEL = "claude-sonnet-5-5"
 _ANTHROPIC_VERSION = "2023-06-01"
 _OAUTH_BETA = "oauth-2025-04-20"
 _PROBE_TIMEOUT_SECONDS = 20.0

@@ -17,7 +17,6 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
-from teatree.config import get_effective_settings
 from teatree.core.models import Loop, LoopLease, OuterLoopExperiment
 
 # The teatree.loops / teatree.loop imports below are DEFERRED to the method body on
@@ -68,7 +67,7 @@ class Command(TyperCommand):
         """Print the guard-chain verdict and the active experiment (read-only)."""
         from teatree.loops.outer_loop.guards import evaluate_guards  # noqa: PLC0415 — cross-layer import cycle
 
-        verdict = evaluate_guards(settings=get_effective_settings())
+        verdict = evaluate_guards()
         gate = "ALLOW" if verdict.ok else f"REFUSE ({verdict.reason})"
         self.stdout.write(f"outer_loop guard chain: {gate}")
         active = OuterLoopExperiment.objects.active().order_by("created_at", "pk").first()
@@ -84,12 +83,9 @@ class Command(TyperCommand):
         hypothesis: Annotated[str, typer.Option("--hypothesis", help="The operator hypothesis to test.")] = "",
         target: Annotated[str, typer.Option("--target", help="The signal provider_id to improve.")] = "",
     ) -> None:
-        """Record an operator hypothesis as a PROPOSED experiment (refused while off)."""
+        """Record an operator hypothesis as a PROPOSED experiment."""
         from teatree.loops.outer_loop.propose import operator_proposal  # noqa: PLC0415 — cross-layer import cycle
 
-        if not get_effective_settings().outer_loop_enabled:
-            self.stderr.write("  refusing: outer_loop_enabled is off (the shipped OFF state).")
-            raise SystemExit(2)
         if not hypothesis.strip() or not target.strip():
             self.stderr.write("  --hypothesis and --target are both required.")
             raise SystemExit(1)

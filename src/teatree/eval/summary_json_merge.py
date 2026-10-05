@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from teatree.eval.triage import ScenarioRecord
 
-_TOTALS_KEYS = ("total", "passed", "failed", "skipped")
+_TOTALS_KEYS = ("total", "passed", "failed", "skipped", "incomplete")
 
 
 def summary_json_files(inputs: list[str]) -> list[Path]:

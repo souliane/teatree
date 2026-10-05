@@ -59,7 +59,7 @@ _PLACEHOLDER = re.compile(r"^(\.\.\.|…|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\|.*|>.
 _COMMAND_WORD = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 # A slash/pipe-joined enumeration of command words — the doc shorthand for
-# several sibling subcommands (``t3 loop enable/disable``, ``t3 prompts
+# several sibling subcommands (``t3 loop resume/disable``, ``t3 prompts
 # list|render``). Each alternative is walked separately, so a real subcommand
 # hiding inside an enumeration is validated rather than skipped.
 _ALTERNATION = re.compile(r"^[a-z][a-z0-9_-]*(?:[|/][a-z][a-z0-9_-]*)+$")
@@ -190,7 +190,7 @@ def _resolve_overlay_placeholder(raw: str) -> str:
 def expand_alternations(raw: str) -> list[str]:
     """Every concrete invocation a slash/pipe enumeration in *raw* stands for.
 
-    ``t3 loop enable/disable`` documents two commands, not one path segment
+    ``t3 loop resume/disable`` documents two commands, not one path segment
     literally named ``enable/disable``. Only command-word enumerations expand
     (:data:`_ALTERNATION`), so a filesystem path or a JSON arg value is left
     alone. A trailing shell line-continuation is dropped first — it belongs to the

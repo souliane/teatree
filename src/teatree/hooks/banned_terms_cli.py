@@ -1,60 +1,15 @@
-"""File-scanning CLI for the banned-terms pre-commit hook.
+"""File-scanning CLI for the banned-term hook.
 
-``scripts/hooks/check-banned-terms.sh`` used to embed its OWN copy of the
-whole-token tokenizer/matcher in bash-inlined Python. That copy could drift
-from :mod:`teatree.hooks.term_match` (the matcher the in-process gates use)
-without anything noticing — the #1839 migration claimed the shell hook
-"mirrored" ``term_match`` but the duplicated bash implementation was a second
-source of truth. This module removes that duplication: the shell hook now
-shells out here, so EVERY banned-terms entry point (the shell hook, the
-``banned_terms_scanner`` posting gate, and the ``check_no_overlay_leak``
-core-leak gate) runs the SAME :mod:`teatree.hooks.term_match` code. A parity
-meta-test pins them to identical verdicts on a golden corpus so they cannot
-drift again.
-
-The term list is DB-home: it is read from the canonical ``ConfigSetting`` store
-via the Django-free :mod:`teatree.config.cold_reader` (the DB is PRIVATE to the
-operator). The ``T3_BANNED_TERMS`` env value (comma-separated) still WINS over
-the DB. Set the list with
-``t3 <overlay> config_setting set banned_terms '["acme","globex"]'``::
-
-    python -m teatree.hooks.banned_terms_cli <file> [<file> ...]
-
-- exit 0: no file contains a banned term (or an explicit empty list ⇒ no-op), OR
-the term list is genuinely UNSET and ``banned_terms_required`` is False (the
-default) — an unset list WARNS loud on stderr but ALLOWS the commit, since an
-unset list is not a banned-term violation on a dev/solo box (#3247).
-- exit 1: at least one file contains a banned term. The same
-``BANNED TERM in <file>:`` report the shell hook printed is emitted, so the
-``banned_terms_scanner`` report parser keeps working unchanged.
-- exit 2: the term list is genuinely UNSET (no ``banned_terms`` row AND no env
-value) AND ``banned_terms_required`` is True — a deployment that MUST scrub
-customer names keeps the fail-LOUD behaviour (an unset list is indistinguishable
-from a load bug). An explicit ``banned_terms = []`` is the deliberate no-op
-(exit 0), not an unset. Also exit 2, whatever ``banned_terms_required`` says,
-when the store could not be READ at all (``BannedTermsUnreadableError``): a
-locked or corrupt DB says nothing about what the operator configured, and reading
-that silence as "unset" is what let a busy DB open the gate (#4008).
-
-``--diff-only`` scopes the scan to the staged DIFF's ADDED lines per file (the
-pre-commit hook entry passes it). Without it, the whole file is scanned — the
-mode the posting gate (``banned_terms_scanner`` writes the body to a temp file
-and scans it whole) and the parity meta-test rely on. The diff-only mode fixes
-the #1415 over-block: staging a one-line edit to a file that ALREADY carries a
-committed banned term used to block the commit on the untouched committed line.
-The pre-push public-leak gate (``refuse-public-push-with-leak.sh``) re-scans
-commit messages before they reach a public remote, so a pre-existing committed
-term is still caught before it leaves the machine.
+The diff gate reads the classed ``banned_term_registry`` through the shared
+resolver. An unset or unreadable registry always fails closed.
 """
 
 import argparse
 import os
 import sys
-from enum import StrEnum
 from pathlib import Path
 
-from teatree.config import cold_reader
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
 from teatree.hooks.term_match import line_matches, matched_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
@@ -67,181 +22,30 @@ _GIT_DIFF_TIMEOUT_S = 10
 # The variables that tell git WHERE the repository is; git exports them to hooks.
 _GIT_REPO_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE"})
 
-# The REQUIRED term-list key: an unset value fails loud (the optional allowlist
-# carve-out is read via ``banned_term_registry.allowlist_terms``, empty when unset).
-_TERMS_KEY = "banned_terms"
 
-# The env override (comma-separated) that WINS over the DB — the
-# secret-from-CI-secret path where the DB row is not populated.
-_TERMS_ENV = "T3_BANNED_TERMS"
+def resolve_banned_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
+    from teatree.hooks.banned_term_registry import terms_for_gate  # noqa: PLC0415 — cold-path import
 
-# Whether an UNSET term list must FAIL CLOSED (exit 2) rather than WARN-and-allow
-# (exit 0). Default False: an unset list is not a banned-term violation on a
-# dev/solo box, so the clean diff proceeds (#3247). A deployment that MUST scrub
-# customer names sets ``banned_terms_required`` true (DB) / the env override to
-# keep the fail-closed behaviour. The env override WINS over the DB, mirroring
-# the term list's own ``T3_BANNED_TERMS`` precedence.
-_TERMS_REQUIRED_KEY = "banned_terms_required"
-_TERMS_REQUIRED_ENV = "T3_BANNED_TERMS_REQUIRED"
-_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+    return terms_for_gate("diff", db_path=db_path)
 
 
-class UnsetVerdict(StrEnum):
-    """What a term list that did not resolve means for the gate."""
-
-    ALLOW = "allow"
-    REQUIRED = "required"
-    UNREADABLE = "unreadable"
-
-
-def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
-    """Return the DB-home ``key`` list, or ``None`` when the row is genuinely UNSET.
-
-    ``None`` is the distinct "unset" signal — no ``key`` row, or a wrong-typed
-    value — that the caller turns into a LOUD failure for the REQUIRED
-    ``banned_terms`` key while leaving the OPTIONAL allowlist at its empty
-    default. An explicit empty list returns ``()`` (set, but deliberately empty),
-    never ``None``. Reads the canonical ``ConfigSetting`` store via the
-    Django-free :mod:`teatree.config.cold_reader`; *db_path* overrides the DB
-    path (else the canonical DB / ``T3_CONFIG_DB``).
-
-    A store that could not be READ at all raises
-    :class:`BannedTermsUnreadableError` rather than returning the unset ``None``:
-    an errored read says nothing about what the operator configured, and reading
-    it as "unset" is what let a busy DB open the gate (#4008).
-    """
-    read = cold_reader.read_setting_confirmed(key, db_path=db_path)
-    if not read.readable:
-        raise BannedTermsUnreadableError.for_store(key, _TERMS_ENV)
-    if not isinstance(read.value, list):
-        return None
-    return tuple(str(e).strip() for e in read.value if str(e).strip())
-
-
-def legacy_banned_terms(*, env_value: str = "", db_path: Path | None = None) -> tuple[str, ...]:
-    """The PRE-registry ``banned_terms`` source: the env secret, else the DB row.
-
-    The registry-free half of :func:`resolve_banned_terms`, so the registry
-    MIGRATION has a source that is genuinely the old config. Reading the
-    dual-read resolver there made the rebuild copy the registry back onto itself
-    and its verification compare the registry with itself, which passes for any
-    registry including a lossy one.
-    """
-    env = env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")
-    if env.strip():
-        return tuple(t.strip() for t in env.split(",") if t.strip())
-    terms = _db_array(_TERMS_KEY, db_path)
-    if terms is None:
-        raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
-    return terms
-
-
-def resolve_banned_terms(
-    config_path: Path | None = None, *, env_value: str = "", db_path: Path | None = None
-) -> tuple[str, ...]:
-    """Resolve the canonical banned-terms list for a fail-closed scanner.
-
-    The single source-resolution every banned-terms scanner shares, so they
-    cannot diverge on WHERE the term list comes from. Resolution order:
-    ``T3_BANNED_TERMS`` env override → the consolidated ``banned_term_registry``
-    (its diff-gate classes) → the legacy DB-home ``banned_terms`` row.
-
-    A non-empty *env_value* (or the ``T3_BANNED_TERMS`` process env) wins,
-    comma-split — the CI-secret path stays authoritative through the registry
-    transition. Else the consolidated registry when it is present (dual-read,
-    ``banned_term_registry``); else the ``banned_terms`` DB list, which RAISES
-    :class:`BannedTermsUnsetError` when BOTH the registry and the row are unset —
-    the fail-closed signal that an unreadable source must never silently degrade
-    to an empty ban list. An explicit ``banned_terms = []`` is a deliberate no-op
-    and returns ``()``.
-
-    *config_path* is accepted for the legacy pre-DB caller (``scripts/privacy_scan``)
-    and is not consulted — the term list is DB-home now. *db_path* overrides the
-    DB path (else the canonical DB / ``T3_CONFIG_DB``).
-    """
-    del config_path  # legacy pre-DB arg; the term list is DB-home now
-    if not (env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")).strip():
-        from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
-
-        registry_terms = registry_terms_for_gate("diff", db_path=db_path)
-        if registry_terms is not None:
-            return registry_terms
-    return legacy_banned_terms(env_value=env_value, db_path=db_path)
-
-
-def banned_terms_required(*, db_path: Path | None = None) -> bool:
-    """Return True iff an UNSET banned-terms list must FAIL CLOSED rather than warn-allow.
-
-    Default False: an unset ``banned_terms`` list on a plain dev/solo box is a
-    FALSE POSITIVE, not a leak — the clean diff proceeds with a loud warning
-    (#3247). A deployment that MUST scrub customer names opts back into the
-    fail-closed exit 2 by setting ``banned_terms_required`` true in the DB-home
-    ``ConfigSetting`` store, or ``T3_BANNED_TERMS_REQUIRED=1`` in the env (the env
-    WINS, mirroring the ``T3_BANNED_TERMS`` term-list precedence). *db_path*
-    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``).
-    """
-    env_val = os.environ.get(_TERMS_REQUIRED_ENV, "").strip().lower()
-    if env_val:
-        return env_val in _TRUTHY_ENV
-    return cold_reader.bool_setting(_TERMS_REQUIRED_KEY, default=False, db_path=db_path)
-
-
-def _unset_warning() -> str:
-    """Render the loud stderr warning for an UNSET, not-required banned-terms list (#3247)."""
-    return (
-        "WARNING: banned_terms is UNSET (no banned_terms row in the DB and no T3_BANNED_TERMS env). "
-        "Allowing the commit (exit 0) — an unset list is not a banned-term violation on a dev/solo box. "
-        "Configure the list with `t3 <overlay> config_setting set banned_terms '[\"term1\"]'`, or make an "
-        "unset list fail closed on a deployment that MUST scrub with "
-        "`t3 <overlay> config_setting set banned_terms_required true`.\n"
-    )
-
-
-def resolve_unset_verdict(exc: BannedTermsUnsetError, *, db_path: Path | None = None) -> UnsetVerdict:
-    """Why a term list that did not resolve allows or fails closed — the ONE shared disposition.
-
-    Both no-list gates read it — the pre-commit scanner (:func:`report_unset`) and the
-    publication gate (``privacy_gate._db_banned_terms``) — so they cannot drift into
-    disagreeing about when a missing list is safe. ``UNREADABLE`` is decided by the
-    exception's own type, since readability travelled with the failed read.
-    """
-    if isinstance(exc, BannedTermsUnreadableError):
-        return UnsetVerdict.UNREADABLE
-    return UnsetVerdict.REQUIRED if banned_terms_required(db_path=db_path) else UnsetVerdict.ALLOW
-
-
-def report_unset(exc: BannedTermsUnsetError, *, db_path: Path | None = None) -> int:
-    """Write the unresolved-list message and return the process exit code (#3247, #4008).
-
-    An unset ``banned_terms`` list warns LOUD and returns 0 (the clean diff
-    proceeds) UNLESS :func:`banned_terms_required` — then it keeps the fail-loud
-    exit 2 (the ``exc`` message, indistinguishable from a load bug on a
-    deployment that must scrub). A store that could not be READ fails closed the
-    same way whatever ``banned_terms_required`` says. A CONFIGURED list is never
-    routed here; it always enforces (a real term still exits 1).
-    """
-    if resolve_unset_verdict(exc, db_path=db_path) is UnsetVerdict.ALLOW:
-        sys.stderr.write(_unset_warning())
-        return 0
+def report_unset(exc: BannedTermsUnsetError) -> int:
+    """Refuse to scan when the registry is absent or unreadable."""
     sys.stderr.write(f"{exc}\n")
     return 2
 
 
 def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
-    """Return the DB-home ``banned_terms_allowlist`` carve-out array.
+    """Return the registry ``allow`` carve-out array.
 
     The allow-list names the company's OWN identifiers (synthetic example:
     ``myorg-engineering`` / ``myorg-product``, internal-URL namespaces) that are
     NEVER a leak — they are the org's own org/repo names, not customer PII. Each
     entry's token-run is removed from a line before banned-term matching, so a
     shorter banned term (a bare org slug) can no longer surface inside a longer
-    company-owned identifier. Unlike ``banned_terms`` the allow-list is OPTIONAL:
-    an absent row defaults to empty (preserving the prior behaviour), never a
-    raise. Dual-read: the consolidated ``banned_term_registry`` ``allow`` class
-    when present, else the legacy ``banned_terms_allowlist`` row. Reads the
-    canonical ``ConfigSetting`` store via :mod:`teatree.config.cold_reader`.
+    company-owned identifier. The allow-list is optional and defaults to empty.
     """
-    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-path import
 
     return allowlist_terms(db_path)
 
@@ -421,16 +225,8 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     try:
         terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:
-        # A genuinely UNSET list (no banned_terms row AND no env) WARNS loud and
-        # allows the commit (exit 0) by default — an unset list is not a
-        # banned-term violation on a dev/solo box (#3247), unless the deployment
-        # set ``banned_terms_required``. A store that could not be READ at all
-        # (``BannedTermsUnreadableError``) fails CLOSED (exit 2) regardless of
-        # ``banned_terms_required`` (#4008) — see ``report_unset``. An explicit
-        # ``banned_terms = []`` does not raise and is a no-op.
+        # An absent or unreadable registry cannot prove the scan was clean.
         return report_unset(exc)
-    if not terms:
-        return 0  # explicit empty list ⇒ deliberate no-op
     allowlist = _load_allowlist()
 
     if args.diff_only:

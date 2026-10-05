@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
-from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, PrReviewBackend, SendProxyMode, Wip
+from teatree.config.enums import Autonomy, Mode, PrReviewBackend, Wip
 from teatree.config.mr_reminder import MrReminderConfig
 from teatree.config.settings_loop_flags import _LoopFlagAndCredentialSettings
 from teatree.config.settings_loop_owned import (
@@ -20,19 +20,16 @@ from teatree.config.settings_loop_owned import (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
-    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
-    _IssueDispositionLoopSettings,
+    _InboxLoopSettings,
     _IssueImplementerLoopSettings,
     _NewsLoopSettings,
-    _OuterLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
-    _ShipLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )
-from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
+from teatree.types import DEFAULT_MR_TITLE_REGEX, SpeakConfig
 
 
 @dataclass
@@ -51,9 +48,8 @@ class OverlayEntry:
         sub-apps are routed and deduplicated so the pair cannot register two
         sub-apps.
 
-        This is the CLI-routing key only — distinct from the legacy-alias fold
-        in :func:`_match_canonical_ep`, which maps a bare ``[overlays.<alias>]``
-        table onto an installed entry point. Keep the two separate.
+        This is the CLI-routing key only; stored overlay names use the full
+        entry-point name.
         """
         return name.removeprefix("t3-")
 
@@ -74,13 +70,12 @@ class _WorkspaceCoreSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Workspace", "Engagement & identity")
 
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
-    check_updates: bool = True
     # #256 Default-OFF teatree engagement. When false (the default) a fresh
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
     # auto-activate every session. DB-home (DB-home cutover): the cold
-    # SessionStart / UserPromptSubmit hooks read it DB-ONLY pre-Django via the
+    # SessionStart hook and the PreToolUse gates read it DB-ONLY pre-Django via the
     # Django-free ``cold_reader`` (``teatree_settings._cold_db_bool``) and the bash
     # ``statusline.sh._autoload_db_value`` (sqlite3 CLI); ``T3_AUTOLOAD`` env wins, a
     # ``[teatree] autoload`` TOML value is ignored on read. Explicitly calling
@@ -105,8 +100,8 @@ class _WorkspaceCoreSettings:
 #: global ceiling merged into every request (:func:`teatree.agents.pydantic_ai_config.build_model_settings`)
 #: whatever tier the dispatched phase resolved to, and the Anthropic Messages API rejects a
 #: ``max_tokens`` above the addressed model's own limit with a 400 rather than clamping. The
-#: ``cheap`` tier (Haiku 4.5) caps at 64K output while ``frontier``/``balanced`` (Opus 5 /
-#: Sonnet 5) allow 128K, so 64K is the largest ceiling every tier accepts. Raising past it
+#: shipped tiers (Opus / Sonnet) allow 128K output, but a tier overridden to Haiku caps at
+#: 64K, so 64K is the largest ceiling every Claude tier model accepts. Raising past it
 #: requires making the ceiling per-tier first. Safe at this size because the lane STREAMS its
 #: provider request (``event_stream_handler`` in
 #: :meth:`teatree.agents.pydantic_ai_session.PydanticAiHarnessSession.receive_response`), so a
@@ -126,9 +121,9 @@ class _ModeHarnessSettings:
     # Skill selectors are also read by the cross-cutting skill-supply inventory,
     # so they belong with the agent harness rather than below any one loop.
     scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "eval"
+    eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
-    dogfood_smoke_skill: str = "dogfood-smoke"
+    dogfood_smoke_skill: str = "dogfooding"
     # Layer 1 of the two-layer harness config model (#2887): which in-process
     # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
@@ -157,23 +152,10 @@ class _ModeHarnessSettings:
     # carries no enum member yet. Per-overlay overridable;
     # ``T3_AGENT_HARNESS_PROVIDER`` env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
-    # Whether this overlay's headless lane is the REGULATED path — carrying client/
-    # bank data under EU data-residency & regulatory compliance (GDPR, data
-    # residency, processor jurisdiction) (#2887). Default ``False``: the teatree
-    # factory lane carries no regulated data, so it runs unrestricted (any model,
-    # incl. cheap open-source ones). A regulated lane sets this ``True``,
-    # restricting inference to the models on ``regulated_path_model_allowlist``.
-    # Enforced by ``teatree.agents.model_tiering.assert_model_allowed_on_regulated_path``,
-    # called from ``PydanticAiHarness`` before a resolved model name is used
-    # (CLIENT-SIDE, best-effort — the provider's own allowed-models policy is the
-    # hard boundary). Per-overlay overridable; ``T3_ENFORCE_REGULATED_PATH`` env wins.
-    enforce_regulated_path: bool = False
-    # The EXPLICIT allowlist of model-id patterns eligible to run on the regulated
-    # path (matched case-insensitively as substrings). A BYOK / residency-controlled
-    # set the operator enumerates for their regulated lane; empty (the default) makes
-    # nothing eligible, so a lane with ``enforce_regulated_path`` on and an empty
-    # allowlist refuses every model (fail-closed). Inert while ``enforce_regulated_path``
-    # is ``False`` (the teatree factory default). Per-overlay overridable.
+    # The EXPLICIT allowlist of model-id patterns eligible on a regulated lane
+    # (matched case-insensitively as substrings). Empty means this installation
+    # has no regulated model restriction; a nonempty list enforces membership.
+    # Per-overlay overridable. The provider must also constrain routing handles.
     regulated_path_model_allowlist: list[str] = field(default_factory=list)
     # Per-run sequential-request cap for the ``pydantic_ai`` harness
     # (the metered-lane guardrail). Passed as pydantic_ai
@@ -239,24 +221,16 @@ class _ModeHarnessSettings:
     # session-affinity and cost headers); ``{session}`` in a value becomes the run's session id.
     # Inert until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable.
     openai_compatible_extra_headers: dict[str, str] = field(default_factory=dict)
-    # Whether the OpenAI-compatible endpoint accepts ``prompt_cache_key``; a standard-strict upstream 400s on it,
-    # so it is sent only when declared. Per-overlay overridable.
-    openai_compatible_sends_prompt_cache_key: bool = False
     # Absolute per-RUN watchdog ceilings for the headless ``claude_sdk`` lane (#882,
-    # F9.5). Folded off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` dict into
-    # the DB-home config tier so ``config_setting get`` sees them (the third config
-    # plane #1775 partitioned away); ``LoopWatchdog.from_settings`` reads these and
-    # the Django ``TEATREE_LOOP_WATCHDOG`` value stays a documented fallback consulted
-    # only when the config value is still at its default. ``0`` disables a dimension —
+    # F9.5). ``LoopWatchdog.from_settings`` reads these through the DB-home config
+    # tier. ``0`` disables a dimension —
     # matching the shipped-off turn/cost caps (only the generous runtime ceiling is
     # armed by default). Per-overlay overridable.
     watchdog_max_runtime_seconds: int = 3 * 60 * 60
     watchdog_max_turns: int = 0
     watchdog_max_cost_usd: float = 0.0
-    # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5), folded
-    # off the former Django-settings ``TEATREE_TICKET_BUDGET`` dict into the DB-home
-    # config tier for the same #1775 provenance reason. ``TicketBudget.from_settings``
-    # reads it; the Django ``TEATREE_TICKET_BUDGET`` value stays the documented fallback.
+    # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5).
+    # ``TicketBudget.from_settings`` reads it through the DB-home config tier.
     # ``0.0`` disables the cap. Per-overlay overridable.
     ticket_budget_max_cost_usd: float = 0.0
     # Deterministic ceiling on how many sub-agents ONE headless run may spawn
@@ -398,71 +372,6 @@ class _OnBehalfSettings:
     # re-gate evidence under a forbidding posture. Per-overlay overridable; env
     # ``T3_ON_BEHALF_AUTO_ACTIONS`` (comma-separated) wins over both.
     on_behalf_auto_actions: list[str] = field(default_factory=lambda: ["post_e2e_evidence"])
-    # Whether agent-driven review-request posting is BLOCKED for this overlay
-    # (#2579). Resolved off the autonomy TIER by ``_apply_autonomy``: the
-    # ``notify`` tier (collaborative/customer surface) sets it ``True`` so
-    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even under a
-    # permitting posture; the ``full`` tier (solo tooling surface) leaves it
-    # ``False`` so review-request PROCEEDs; ``babysit`` keeps the default
-    # ``False`` and review-request follows the active posture like any other
-    # colleague-visible post. This is the customer-overlay
-    # done-definition gate: an overlay running ``notify`` stops at "MR is mergeable
-    # + review-requestable" and never auto-requests review. An explicit per-overlay
-    # pin always wins over the tier (Option A — the per-overlay escape): a ``full``
-    # overlay can pin ``True`` to suppress auto-request, and a ``notify`` overlay
-    # can pin ``False`` to opt back in. Orthogonal to ``require_human_approval_to_merge``
-    # (which gates merge, not the review-request post). Default off; per-overlay
-    # overridable (DB-home).
-    review_request_post_disabled: bool = False
-    # Pass --chrome to every spawned `claude` session to attach the legacy
-    # Claude-in-Chrome extension. Default OFF — chrome-devtools-mcp
-    # (`chrome_devtools_mcp_enabled`) is the default browser tool now: it needs no
-    # claude.ai account or extension pairing and covers navigation, interaction,
-    # and inspection. Turn ON only to opt a host back into the Chrome extension.
-    claude_chrome: bool = False
-    # Whether the loopback admin dashboard auto-logs-in the first superuser
-    # (`teatree.core.middleware.LocalAdminAutoLoginMiddleware`). Default ON so
-    # `t3 admin` and the deploy's loopback admin need no password on their own
-    # single-operator tool. This flag alone never opens the admin: the
-    # middleware ALSO requires the request to originate from loopback
-    # (`127.0.0.1` / `::1` / `INTERNAL_IPS`), so a non-loopback deployment is
-    # ineffective even with the flag on — auto-login can never fire off-loopback.
-    # DB-home, per-overlay overridable; set false to force Django's auth wall.
-    admin_autologin_enabled: bool = True
-    # Whether teatree should append an agent identity (`Co-Authored-By`,
-    # "Sent using …", "Generated with …") to artifacts published on the
-    # user's behalf — git commits, PR descriptions and comments, Slack
-    # messages, issue bodies. Default off: the user is the author, the agent
-    # is the typist. Honored by every teatree post-on-behalf code path; the
-    # rule for ad-hoc agent posting (MCP Slack, gh comment, etc.) lives in
-    # `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
-    # Behalf".
-    agent_signature: bool = False
-    # Bot→user Slack notification channel (#963). When true, the helper
-    # `teatree.core.notify.notify_user(...)` posts agent answers / questions /
-    # important-info to the user's configured Slack DM via the bot identity,
-    # auditing each send in the `BotPing` ledger. Out of scope of the
-    # on-behalf gates (#960/#949): those govern posts the agent makes *as*
-    # the user to colleagues/customers; this is the bot talking to its own
-    # operator. Default on; turn off to keep notifications CLI-only.
-    notify_user_via_bot: bool = True
-    # After-receipt visibility DM (#949). When true (default), every
-    # colleague-visible post the agent makes under the user's identity is
-    # followed by a bot→user DM naming the destination, a clickable
-    # artifact link, and a one-line summary — durable enforcement that
-    # retires the per-session memory `notify-user-on-every-post-on-behalf`.
-    # Distinct from the posture pre-gate (which decides
-    # *whether* a post may publish): this fires *after* a successful
-    # publish and never blocks or rolls back the post. DB-home: flip off via
-    # `t3 <overlay> config_setting set notify_on_post_on_behalf false`
-    # (a `[teatree] notify_on_post_on_behalf` TOML value is ignored on read);
-    # per-overlay overridable; intentionally NO env var (notify_user_via_bot,
-    # its sibling, has none — a copied-by-analogy env layer would be a lie).
-    # Out of scope: internal orchestration writes (bot→user DMs, the
-    # loop's own bookkeeping) — only colleague-visible on-behalf posts.
-    notify_on_post_on_behalf: bool = True
-    # Derived under the ``notify`` tier by ``_apply_autonomy``; ORed with the field above.
-    notify_on_behalf: bool = False
     # Notion ids the integration token may write under; with none configured every write is refused.
     notion_write_allowed_roots: list[str] = field(default_factory=list)
     # Notion ids never written under, even when an allowed root sits above them.
@@ -476,11 +385,6 @@ class _IdentityRoutingSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Communication", "Identity & routing")
 
     statusline_chain: list[str] = field(default_factory=list)
-    # Opt-in (#3502): render the loop statusline in a session the owner explicitly
-    # engaged by hand (an engage marker present) even with autoload off. Read DB-only
-    # by the bash statusline (statusline.sh._statusline_engaged_render_db_value); default
-    # OFF keeps the #256 colleague guarantee unchanged when unset.
-    statusline_engaged_render: bool = False
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
     # Two consumers:
@@ -502,17 +406,6 @@ class _IdentityRoutingSettings:
     # ask-first-vs-fix-proactively decision lives in one place, not in
     # every skill.
     repo_mode: str = ""
-    # What to do when a commit/MR needs an issue reference and the agent has
-    # none. Default ``FIND_EXISTING_THEN_ASK``: always recover the ORIGINAL
-    # existing issue first; if none is found, ASK the user on a colleague-
-    # facing/external repo and CREATE on the user's own repo — never a dummy
-    # ref. ``CREATE`` / ``DUMMY`` are opt-in tiers that authorise auto-create /
-    # placeholder-ref on a colleague-facing repo too. Per-overlay overridable
-    # via ``[overlays.<name>].missing_issue_ref_policy``; ``T3_MISSING_ISSUE_POLICY``
-    # env wins over both. Resolved by
-    # ``teatree.missing_issue_policy.resolve_missing_issue_verdict``; the agent
-    # prose lives in ``skills/ship/SKILL.md`` § "Missing Issue Reference Policy".
-    missing_issue_ref_policy: MissingIssuePolicy = MissingIssuePolicy.FIND_EXISTING_THEN_ASK
 
 
 @dataclass
@@ -525,7 +418,7 @@ class _ArchitecturalReviewSettings:
     # per-overlay opt-in). The cadence applies uniformly to every overlay's
     # worktrees because it is a teatree-platform behaviour; the ``arch_review``
     # Loop row (and any preset masking it) is what turns the scanner off.
-    architectural_review_skill: str = "ac-reviewing-codebase"
+    architectural_review_skill: str = "architectural-review"
 
 
 @dataclass
@@ -571,85 +464,14 @@ class _ReviewGateSettings:
     # an exhausted account keeps getting reviews. An explicit ``claude`` /
     # ``codex`` pin is honoured as written and never silently degrades.
     pr_review_backend: PrReviewBackend = PrReviewBackend.AUTO
-    # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
-    # default false = NO-OP. Per-overlay overridable.
-    require_review_context: bool = False
-    # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
-    # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
-    require_anti_vacuity_attestation: bool = False
-    # PR-08 Opt-in review-state gate on the review-request broadcast
-    # (``review_request_state_gate``): a broadcast is refused unless the ticket
-    # is SELF_REVIEWED with a recorded review-evidence artifact (a ``ReviewEvidence``
-    # cold-review row or a ``ReviewVerdict`` from the cold-review step). Default
-    # false = NO-OP so a normal reviewed-and-cleared flow is never blocked.
-    # Per-overlay overridable.
-    require_reviewed_state_for_review_request: bool = False
-    # PR-08 Opt-in cross-repo integration-review DoD gate on ``mark_delivered``
-    # (``integration_review_gate``): a ticket touching ≥ 2 repos cannot reach
-    # DELIVERED without an integration-review ``ReviewEvidence`` covering the
-    # combined changeset. A single-repo ticket never trips it. Default false =
-    # NO-OP. Per-overlay overridable.
-    require_integration_review: bool = False
 
 
 @dataclass
 class _MergeGateSettings:
-    """The opt-in gates a ticket must clear to reach MERGED — evidence, plan, repro, debt."""
+    """The gates a ticket must clear to reach MERGED — evidence, plan, repro, debt."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Merge & done")
 
-    # #4a Opt-in merge-evidence FSM gate on ``mark_merged`` / ``reconcile_merged``
-    # (``merge_evidence_gate``): the terminal MERGED state is unreachable without
-    # real merged-SHA evidence — a keystone ``MergeAudit`` row OR the forge itself
-    # confirming the PR merged (fail-closed live probe). Kills "believe work is
-    # done when it's not" at the FSM root: the ungated ``_advance_ticket`` walk
-    # can no longer mark an unpushed/unmerged ticket done. Default false = NO-OP so
-    # the generic FSM never blocks; flipped ON for the teatree overlay so it bites
-    # real teatree tickets. Its OWN kill-switch (never another gate's) — setting it
-    # back off is the operator's audited escape if a forge outage would otherwise
-    # wedge a genuinely-merged ticket the forge cannot confirm. Per-overlay overridable.
-    require_merge_evidence: bool = False
-    # #118 Opt-in forced-repro gate on ``ship()`` for FIX-kind tickets
-    # (``repro_gate``): a fix cannot ship without a harness-recorded, provenance-
-    # verified RED->GREEN reproduction — a failing command captured against the
-    # pre-fix tree (``merge-base --is-ancestor red green`` with ``red != green``),
-    # then the SAME command passing once the fix is applied. The harness runs both
-    # commands and stamps both SHAs, so exit codes and provenance cannot be forged
-    # in prose. A genuinely repro-less failure (race/heisenbug) is unblocked by a
-    # HUMAN-authorized ``ReproWaiver`` (maker != checker — the agent can never
-    # self-waive). Default false = NO-OP so the generic ship chain never blocks;
-    # the operator flips it ON per-overlay
-    # (``config_setting set require_executed_repro true --overlay <name>``). Its OWN
-    # kill-switch (setting it back false) is the audited never-lockout escape. A
-    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
-    require_executed_repro: bool = False
-    # North-star PR-3 The deterministic no-new-tech-debt MERGE gate on ``pr create``
-    # (``debt_delta_gate`` in ``_run_ship_gates``): a ship diff that introduces
-    # NET-NEW debt — a new ``noqa`` / ``type-ignore`` / ``pragma-no-cover`` comment,
-    # an unreferenced ``pytest.mark.skip`` / ``xfail``, a new ``per-file-ignores``
-    # entry, or a lowered ``fail_under`` coverage floor — is refused unless the plan
-    # manifest records an ``approved_debt`` waiver naming the pattern + reason.
-    # Delta, not absolute: only diff-ADDED lines are scanned, so pre-existing debt
-    # is never flagged and removing debt is always allowed (the shrink-only ratchet).
-    # Mechanizes CLAUDE.md's "no tech debt without explicit approval" — the approval
-    # becomes a recorded, audited artifact. Default false = NO-OP so the generic ship
-    # chain never blocks; the operator flips it ON per-overlay
-    # (``config_setting set require_debt_delta true --overlay <name>``). Its OWN
-    # kill-switch (setting it back false) is the audited never-lockout escape. A
-    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
-    require_debt_delta: bool = False
-    # north-star PR-4 The merge-quality critic's ENFORCEMENT switch for ORDINARY
-    # tickets on the keystone merge precondition (``merge_quality_gate``): a
-    # ``transition="merge"`` ``CriticVerdict`` (``test_value`` + ``cleanliness``)
-    # covering the exact shipped head must exist and carry zero FAILs, or the merge
-    # is refused. DIRECTIVE tickets are held to this bar UNCONDITIONALLY (self-
-    # modification gets no benefit of the doubt) — this flag governs only whether
-    # ORDINARY tickets are gated too. Default false = NO-OP for ordinary tickets:
-    # they merge unchanged. Flip true per-overlay once the merge critic has proven
-    # non-vacuous. Its OWN kill-switch (setting it back false) is the audited
-    # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
-    # Per-overlay overridable.
-    require_merge_quality_verdict: bool = False
     # The branch-protection required-status-check contexts the operator KNOWS must
     # gate a merge on this overlay's repos (e.g. ``["test (3.13)"]``). A fail-closed
     # floor: when the forge reports a DETERMINATE-EMPTY required set (branch
@@ -667,34 +489,15 @@ class _CriticGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Critic & send proxy")
 
-    # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
-    # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
-    # enforcement flag. The critic ALWAYS records the cheap deterministic
-    # ``CriticFinding`` per failing rubric item; this tri-state decides whether the
-    # EXPENSIVE async LLM critic is armed and whether a blocking finding refuses the
-    # delivery. ``off`` (default) = dark: no async dispatch, no block. ``advisory`` =
-    # arm the async critic + record ``CriticVerdict`` rows, never raise (the mode that
-    # accumulates critic-liveness evidence pre-enablement). ``blocking`` = arm + refuse
-    # the delivery on a blocking deterministic finding (fail-closed, the ticket stays
-    # RETRO_RECORDED). Setting it back to ``advisory`` (recording continues) is the
-    # audited never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
-    # Per-overlay overridable.
-    critic_gate_mode: CriticGateMode = CriticGateMode.OFF
     # #117 send-proxy — every outbound artifact (Slack post/DM/react, forge
     # PR/MR/issue comment) routes through ``teatree.core.send_proxy``, which
     # redaction-scans the payload and checks the destination against
-    # ``send_proxy_allowlist``. ``send_proxy_mode`` is the enforcement posture:
-    # ``warn`` (default, audit-only — records a ``SendAudit`` row, never blocks,
-    # never mutates the live payload) accumulates the destination soak; ``enforce``
-    # deterministically refuses a non-allowlisted destination and redacts the
-    # payload. Flip to ``enforce`` only after seeding the allowlist from a WARN
-    # soak. A feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
-    send_proxy_mode: SendProxyMode = SendProxyMode.WARN
-    # The per-overlay destination allowlist the send-proxy checks in ``enforce``
-    # mode: ``fnmatch`` globs over the raw destination (Slack channel id, ``org/repo``
-    # slug, forge host) and the channel-qualified ``<channel>:<destination>`` form.
-    # Empty by default; seeded from the WARN-soak's ``SendAudit`` destinations before
-    # any enforce flip. The user's own DM is always allowed (never-lockout carve-out),
+    # ``send_proxy_allowlist``. It refuses a non-allowlisted destination and
+    # redacts matching terms from the payload.
+    # The per-overlay destination allowlist: ``fnmatch`` globs over the raw
+    # destination (Slack channel id or ``org/repo`` slug) and the
+    # channel-qualified ``<channel>:<destination>`` form.
+    # Empty by default. The user's own DM is always allowed (never-lockout carve-out),
     # so an empty allowlist can never gate the bot→user notify path. Per-overlay overridable.
     send_proxy_allowlist: list[str] = field(default_factory=list)
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
@@ -702,24 +505,6 @@ class _CriticGateSettings:
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is
     # always allowed. Per-overlay overridable.
     bulk_close_threshold: int = 5
-
-
-@dataclass
-class _DoneCriteriaSettings:
-    """The acceptance-criteria done-gates — E2E confidence."""
-
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Definition of done")
-
-    # E2E confidence threshold (0-100): the rubric score a Playwright spec must
-    # reach to be VERIFIED by the verify<->review loop. The single knob both the
-    # `e2e-review` rubric (`/t3:e2e-review` § "E2E Confidence Rubric") and the
-    # `e2e` loop (`/t3:e2e` § "Verify-Review Loop to Threshold") read, so "the
-    # threshold" is one resolved value. Default 90; a stricter client overlay
-    # raises it, a fast dogfood overlay lowers it. Documentation-only knob today
-    # (the loop is agent-driven prose, not a deterministic gate) — this field is
-    # the typed home so the doc value and any future programmatic consumer share
-    # one source of truth. Per-overlay overridable.
-    e2e_confidence_threshold: int = 90
 
 
 @dataclass
@@ -732,11 +517,6 @@ class _ScannerSettings:
     #: A property of the BOX, not of whichever preset is active — it answers "whose repos
     #: does this factory look after", and that does not change when the operator goes AFK.
     scanner_overlay_scope: list[str] = field(default_factory=list)
-    # #3901 The deploy-order gate on the other side of that hot pull: while the
-    # control DB is BEHIND the running code's migration graph — or the probe cannot
-    # tell — the claim chokepoint admits ZERO new work rather than execute against a
-    # schema the DB does not have. Default ON: this is the guarantee, not an opt-in.
-    # The flag is the never-lockout escape for a box where the probe itself misfires.
     schema_readiness_gate_enabled: bool = True
 
 
@@ -766,7 +546,6 @@ class _ResourcePressureSettings:
     # #3992 The resource loop derives issue-intake concurrency from observed headroom
     # instead of it being a hand-set constant. Flipping this OFF is the kill-switch:
     # ``issue_implementer_max_concurrent`` is then used verbatim, as before.
-    adaptive_intake_concurrency_enabled: bool = True
     # Allow-LIST only (never a denylist): exactly these regenerable cache dirs
     # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
@@ -790,30 +569,13 @@ class _ResourcePressureSettings:
 
 
 @dataclass
-class _DestructiveLeverSettings:
-    """The irreversible auto-free levers — worktree GC and process SIGTERM — each opt-in OFF."""
-
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Destructive levers")
-
-    # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
-    # ``worktree_stale_days``) at CRITICAL, capped per pass (see
-    # `loop/worktree_gc.py`) and never the active session's worktree.
-    # Always logged + DM.
-    allow_destructive_disk: bool = False
-    worktree_stale_days: int = 30
-    # Opt-in: enables SIGTERM (never SIGKILL) of allow-listed renderer
-    # processes after >= 2 consecutive CRITICAL-RAM ticks, never a process in
-    # the active-session ancestry. Empty ``ram_kill_allowlist`` means no
-    # process is ever killed even when ``allow_destructive_ram = true``.
-    allow_destructive_ram: bool = False
-    ram_kill_allowlist: list[str] = field(default_factory=list)
-
-
-@dataclass
 class _RetentionSettings:
     """Task-sweep, stack concurrency, control-DB retention windows, and session staleness."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Retention & sweeps")
+
+    # Read by the dream pass, the backlog-sweep scanner and retro, so it belongs to no one loop.
+    dream_umbrella_url: str = "https://github.com/souliane/teatree/issues/2663"
 
     # The branch every shipped PR targets when the ticket does not name one
     # itself. Empty (the default) keeps the historical behaviour — the repo's
@@ -841,12 +603,6 @@ class _RetentionSettings:
     # overridable: a heavy overlay can cap to ``1`` while a cheap dogfood
     # overlay stays unbounded (``0``).
     max_concurrent_local_stacks: int = 1
-    # #3952 Advisory occupancy claim over a checkout — one agent in one working
-    # tree at a time. The gate refuses a SECOND requester naming the incumbent;
-    # it never evicts, kills or deletes. ``false`` is the never-lockout kill
-    # switch (every requester is handed the checkout ungated, the pre-#3952
-    # behaviour). Per-overlay overridable.
-    worktree_occupancy_gate_enabled: bool = True
     # #3693 retention window for the high-churn ``TaskAttempt`` table. A ``prune``
     # deletes rows OLDER than the window whose owning ticket/task is TERMINAL —
     # never a live/in-flight row, and never within the window. Days, not a byte
@@ -860,7 +616,6 @@ class _RetentionSettings:
     # and a reopened ticket does not need it. Every real state edge is kept for as
     # long as the ticket exists (~410 rows on the measured box), so no age bound
     # applies to them. Per-overlay overridable.
-    ticket_transition_prune_disabled: bool = False
     # #3871 window for ``django_tasks_db``' own ``DBTaskResult`` table. The delete is
     # the library's shipped ``prune_db_task_results`` command; this is only how far
     # back it is told to go. Short because nothing in teatree reads a FINISHED
@@ -929,7 +684,6 @@ class _ProvisioningSettings:
     # static concurrency settings become CEILINGS rather than targets. Setting it false
     # is the KILL-SWITCH and the rollback lever: admission reverts byte-for-byte to the
     # pre-governor static behaviour. Per-overlay overridable.
-    admission_governor_enabled: bool = True
     # #4508 The admission-pressure scalar at which the EXPENSIVE agent class is refused
     # while the CHEAP review/ship lanes keep draining. 1.0 collapses SHED into HALT —
     # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
@@ -938,11 +692,8 @@ class _ProvisioningSettings:
     # #4816 Whether the TOKEN brakes (the subscription quota family and the metered
     # one) apply at all. False drops both and leaves load + memory, so an operator
     # standing down a quota signal their lane does not answer to keeps the brakes that
-    # protect the box. ONE switch for the family: which lane a dispatch rides is not
-    # something the operator should have to know to turn the token brake off. Distinct
-    # from ``admission_governor_enabled``, which is the whole-governor kill switch.
+    # protect the box.
     # Per-overlay overridable.
-    admission_quota_brake_enabled: bool = True
     # #4816 The metered lane's own spend ceiling, in TOKENS over
     # ``metered_spend_window_hours``. Tokens because they are MEASURED; the lane's
     # cost_usd is price-table arithmetic whose error is unknown. Ships 0 = UNSET: the
@@ -1056,17 +807,6 @@ class _PrePublishGateSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Pre-publish")
 
-    # #1395 Slack voice/token mismatch classifier. The pre-publish gate
-    # between ``chat.postMessage`` and the Slack API refuses (or warns)
-    # when the body's voice ("PR merged" / "evidence" → agent vs "please
-    # review" / "RR for" → user) and the token kind it would go out under
-    # (``xoxp-`` = user, ``xoxb-`` = bot) disagree on a confident case
-    # (the recurrence: agent-voice DM via the personal token to the user's
-    # own DM channel, which Slack does not notify on). ``warn`` is the
-    # backward-compat default — log the mismatch but allow the post;
-    # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
-    # ``off`` disables the classifier entirely.
-    slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
     # #2060 The resolved speak config — a local playback enum (off/dm/all) + a
     # slack bool. DB-home (#1775, DB-home cutover): stored as a JSON dict
     # ConfigSetting (``parse_speak_setting``), rebuilt bespoke by the resolver; the
@@ -1091,7 +831,7 @@ class _PrePublishGateSettings:
     # Repo patterns whose merge requests need no review request: the user asks for
     # review in person there, so a posted request is noise a colleague has to dismiss.
     # Matched by ``teatree.core.review.repo_exemption`` on the same host-stripped
-    # leading-segment-prefix grammar ``private_repos`` uses. This is the PIN layer over
+    # leading-segment-prefix grammar ``slug_namespace_matches`` uses. This is the PIN layer over
     # the overlay's derived ``review_exempt_repo_slugs()`` and it wins in BOTH
     # directions — an entry ADDS an exemption, a ``!``-prefixed one SUBTRACTS one the
     # overlay declared, so a changed policy is a config edit rather than a merge. The
@@ -1102,10 +842,6 @@ class _PrePublishGateSettings:
     # ``True`` is the conservative reading — an exempt member keeps holding the group,
     # so the bias is toward NOT broadcasting a partial batch.
     review_exempt_repos_count_toward_group_readiness: bool = True
-    # Turns the work-group batch gate from ADVISORY (surface the group, broadcast
-    # anyway) into a hard refusal: no member is broadcast while a sibling is not yet
-    # review-ready. Default false = INERT, the advisory behaviour. Per-overlay overridable.
-    require_work_group_batch: bool = False
     # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
     # enabled (default), the main agent is blocked from running a HEAVY /
     # long-running foreground Bash command (test suite, build, dev
@@ -1116,25 +852,6 @@ class _PrePublishGateSettings:
     # ``_orchestrator_bash_gate_enabled`` so a `t3 update` that reinstalls
     # the gate stays off until the user flips it back).
     orchestrator_bash_gate_enabled: bool = True
-    # Mandatory-E2E FSM gate for customer-display-impacting changes (#1967).
-    # When enabled (default), `pr create` and the §17.4 `ticket clear` refuse a
-    # change the active overlay classifies as customer-display-impacting unless
-    # recorded green E2E evidence exists at the reviewed tree OR a single-use
-    # user-recorded `E2EBypassApproval` exists. Its OWN kill-switch — never a
-    # reuse of another gate's switch: `[teatree] e2e_mandatory_gate_enabled =
-    # false` (per-overlay overridable via `[overlays.<name>]`) disables it
-    # entirely. The bypass is satisfiable per-tree only by the human user; a
-    # maker/coding-agent/loop approver id is refused (maker≠checker).
-    e2e_mandatory_gate_enabled: bool = True
-    # Pre-flight attachment-fetch gate (PR-15, M5). When enabled (default), the
-    # intake FSM step refuses to hand a ticket to the planner while any
-    # attachment the ticket references (a GitLab upload, a linked Notion file, a
-    # Slack-thread file) is still un-fetched under `<ticket_dir>/.attachments/`.
-    # Its OWN kill-switch — `[teatree] attachment_gate_enabled = false`
-    # (per-overlay overridable, DB-first) — lifts the hold so a stuck ticket is
-    # never a lockout; the operator otherwise clears it with
-    # `t3 <overlay> ticket attachments <ref> --fetch`.
-    attachment_gate_enabled: bool = True
     # Snapshot-baseline pre-commit gate (§17.6). When enabled (default), a
     # commit that stages a Playwright visual baseline (a file under
     # `__snapshots__/` / `<spec>-snapshots/`) is refused unless the ticket
@@ -1158,7 +875,6 @@ class _PrePublishGateSettings:
     # default flipped to ON after the CI `selection-audit` soak showed the scoped
     # selection never missed a whole-tree finding. The flag survives as a per-overlay
     # escape hatch; the CI whole-tree backstop is never removed regardless.
-    incremental_push_gate: bool = True
     # chrome-devtools-mcp is teatree's DEFAULT browser tool (navigation,
     # interaction, and network / console / DOM inspection over CDP — no claude.ai
     # account or extension pairing). When true, `t3 mcp browser-diagnosis` emits
@@ -1167,11 +883,9 @@ class _PrePublishGateSettings:
     # for browser-visible breakage. Default ON; perf/trace *enforcement* stays in
     # the deterministic Playwright lane, never this server. Per-overlay
     # overridable (DB-home) — turn OFF only on a host that cannot run the server.
-    chrome_devtools_mcp_enabled: bool = True
     # Upstream chrome-devtools-mcp launches a VISIBLE Chrome by default. teatree runs
     # 100% headless, so the registration line passes `--headless=true` unless an
     # operator explicitly opts into a headed browser. Per-overlay overridable (DB-home).
-    chrome_devtools_headless: bool = True
     colleague_repo_url_pattern: str = ""
     # Names THIS box in the dashboard header. Empty ships as the default because a
     # machine name cannot be a shipped constant; the header resolves empty to the
@@ -1205,10 +919,8 @@ class UserSettings(
     _ReviewGateSettings,
     _MergeGateSettings,
     _CriticGateSettings,
-    _DoneCriteriaSettings,
     _ScannerSettings,
     _ResourcePressureSettings,
-    _DestructiveLeverSettings,
     _RetentionSettings,
     _ProvisioningSettings,
     _PrePublishGateSettings,
@@ -1218,15 +930,12 @@ class UserSettings(
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
-    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
-    _IssueDispositionLoopSettings,
+    _InboxLoopSettings,
     _IssueImplementerLoopSettings,
     _NewsLoopSettings,
-    _OuterLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
-    _ShipLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 ):

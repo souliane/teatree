@@ -62,11 +62,10 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
 }
 
 #: Seed fields the shipped file carries that the row interchange deliberately excludes.
-#: ``default_enabled`` is one because it no longer round-trips: the shipped posture is a
-#: PRESET opinion, and ``Loop.enabled`` is the manual override — an incident state a box
-#: should never carry into another box's config.
+#: The shipped loop posture is a preset opinion, and ``Loop.enabled`` is the
+#: manual override — an incident state a box should never carry into another box's config.
 SHIPPED_ONLY_FIELDS: dict[str, tuple[str, ...]] = {
-    "loops": ("prompt_body", "default_enabled"),
+    "loops": ("prompt_body",),
     "schedules": ("slots",),
 }
 

@@ -44,13 +44,17 @@ class TestClassifyPrProvenanceStrictFork(TestCase):
         # a push-access account not in the trust set (an added collaborator, a
         # compromised token) still holds for human approval.
         with _public():
-            result = classify_pr_provenance(_PUBLIC, "app/github-actions", same_repo=True)
+            result = classify_pr_provenance(
+                _PUBLIC, "app/github-actions", same_repo=True, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.untrusted is True
         assert result.trusted is False
 
     def test_same_repo_trusted_author_is_trusted(self) -> None:
         with _public():
-            result = classify_pr_provenance(_PUBLIC, "souliane", same_repo=True)
+            result = classify_pr_provenance(
+                _PUBLIC, "souliane", same_repo=True, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.trusted is True
         assert result.untrusted is False
 
@@ -58,22 +62,30 @@ class TestClassifyPrProvenanceStrictFork(TestCase):
         # On a private/internal repo the user owns access control — same-repo trusts
         # any author (the internal-repo branch of classify_author).
         with patch.object(author_trust, "repo_is_internal", return_value=True):
-            result = classify_pr_provenance(_PUBLIC, "app/github-actions", same_repo=True)
+            result = classify_pr_provenance(
+                _PUBLIC, "app/github-actions", same_repo=True, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.trusted is True
         assert result.internal_repo is True
 
     def test_fork_holds_even_for_a_trusted_author(self) -> None:
         with _public():
-            result = classify_pr_provenance(_PUBLIC, "souliane", same_repo=False)
+            result = classify_pr_provenance(
+                _PUBLIC, "souliane", same_repo=False, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.untrusted is True
         assert result.trusted is False
 
     def test_unknown_provenance_falls_back_to_trusted_author(self) -> None:
         with _public():
-            result = classify_pr_provenance(_PUBLIC, "souliane", same_repo=None)
+            result = classify_pr_provenance(
+                _PUBLIC, "souliane", same_repo=None, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.trusted is True
 
     def test_unknown_provenance_fails_closed_on_unknown_author(self) -> None:
         with _public():
-            result = classify_pr_provenance(_PUBLIC, "evilhacker", same_repo=None)
+            result = classify_pr_provenance(
+                _PUBLIC, "evilhacker", same_repo=None, pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+            )
         assert result.untrusted is True

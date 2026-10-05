@@ -13,6 +13,7 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
+from tests.teatree_core.conftest import record_review_context_for_test
 
 _PR_URL = "https://github.com/o/r/pull/90"
 
@@ -51,6 +52,7 @@ class TestHandleSelfPrReview(TestCase):
     def test_second_call_same_sha_is_deduped(self) -> None:
         first = handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91"))
         assert first is not None
+        record_review_context_for_test(first.ticket)
         first.complete()
         assert handle_self_pr_review(_action(pr_id=91, head_sha="selfsha-91")) is None
         assert Task.objects.filter(ticket__issue_url=_PR_URL, phase="reviewing").count() == 1
@@ -64,6 +66,7 @@ class TestHandleSelfPrReview(TestCase):
         first = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-a"))
         assert first is not None
         assert first.ticket.extra["reviewed_sha"] == "selfsha-93-a"
+        record_review_context_for_test(first.ticket)
         first.complete()
         second = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-b"))
         assert second is not None

@@ -21,7 +21,6 @@ from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
-from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
@@ -211,13 +210,11 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
         # are legitimately scattered across the ticket lifecycle.
         session.check_gate_across_ticket("shipping")
     except QualityGateError as exc:
-        # #1118: normalize the visited list before comparing — ``_check_phases``
-        # normalizes both sides (#782), so an unnormalized comparison here
-        # would name a phase as missing that the gate itself accepted.
+        # Only canonical phase visits satisfy the gate. A legacy raw spelling
+        # cannot make the refusal report claim that no phase is missing.
         visited, _ = ticket.aggregate_phase_records()
-        canonical_visited = {normalize_phase(phase) for phase in visited}
         required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
-        missing = [p for p in required if p not in canonical_visited]
+        missing = [p for p in required if p not in visited]
         return ShippingGateFailure(
             allowed=False,
             error=f"Gate check failed: {exc}",
@@ -378,11 +375,10 @@ def _resolve_host_for_repo(repo_path: str) -> CodeHostBackend | None:
 class DebtDeltaGateFailure(TypedDict):
     """Pre-ship net-new-tech-debt refusal (north-star PR-3).
 
-    Returned when ``require_debt_delta`` is on and the ship diff introduces a
+    Returned when the ship diff introduces a
     net-new suppression (``# noqa`` / ``# type: ignore`` / ``# pragma: no cover``
     / unreferenced skip / new ``per-file-ignores`` / lowered coverage floor) that
-    no plan-manifest ``approved_debt`` waiver covers. Inert (never returned) at the
-    DARK default. ``error`` names each offending line and the operator escape.
+    no plan-manifest ``approved_debt`` waiver covers. ``error`` names each offending line.
     """
 
     allowed: bool
@@ -407,12 +403,12 @@ def run_debt_delta_gate(ticket: Ticket, worktree: Worktree) -> DebtDeltaGateFail
 class FleetClaimFenceFailure(TypedDict):
     """Pre-ship fleet-claim fence refusal (fleet-safety Stage 2).
 
-    Returned when ``fleet_claim_enabled`` is on, the ship's ticket carries a
+    Returned when the ship's ticket carries a
     fleet-claim (an issue-implementer marker with a fencing sha), and the claim
     ref no longer points at that sha — the claim was stolen by another instance,
     or the ref infra is unreachable so ownership cannot be confirmed. Either way
     pushing under a lost claim is the double-work the mutex exists to prevent, so
-    the ship is refused. Inert (never returned) at the default-OFF kill-switch.
+    the ship is refused.
     """
 
     allowed: bool
@@ -422,12 +418,12 @@ class FleetClaimFenceFailure(TypedDict):
 def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaimFenceFailure | None:
     """Refuse to open the PR for a claimed work item this instance no longer holds.
 
-    The fence: when the kill-switch is on and the ticket was claimed through the
+    The fence: when the ticket was claimed through the
     Stage 2 mutex, re-read ``refs/teatree/claims/<slug>`` and confirm it still
     points at the fencing sha this instance recorded. A mismatch (stolen) or an
     unreachable ref (cannot confirm) blocks the ship — pushing under a lost claim
     is exactly the double-claim the mutex prevents. A ticket with no fleet-claim,
-    or the kill-switch OFF, is a no-op.
+    is a no-op.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 
@@ -439,7 +435,6 @@ def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaim
         error=(
             "Refusing to ship: the fleet claim ref is no longer held by this instance "
             "(stolen by another instance, or the ref infra is unreachable so ownership cannot be confirmed). "
-            "Another instance is doing this work. Disable the kill-switch "
-            "(`config_setting set fleet_claim_enabled false`) to restore local-only claims."
+            "Another instance is doing this work."
         ),
     )

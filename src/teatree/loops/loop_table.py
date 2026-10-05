@@ -56,8 +56,7 @@ whose cadence) moves from code into the DB rows + the unified verdict.
 **Every refusal carries its reason (#3843).** The fan-out's primary form is
 :func:`dispatch_loop_table`, which returns one :class:`LoopDispatch` per
 considered loop — its jobs, or a one-line reason it did not run.
-:func:`build_loop_table_jobs` is the flat-job-list projection of it. The
-distinction is load-bearing, not cosmetic: a refused loop and a loop that fanned
+The distinction is load-bearing: a refused loop and a loop that fanned
 out and found no work BOTH contribute zero jobs, so a caller reading only the
 list renders a control-plane hold as a healthy quiet tick. That is precisely how
 a force-OFF ``review`` loop reported ``ran … 0 signal(s), 0 action(s)`` for hours
@@ -218,7 +217,6 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
     :class:`~teatree.loops.enable_verdict.EnablePlanes` admits it — not held (the bulk
     ``LoopState`` read, #2584), then the manual override, then the active preset. Those
     planes are the SAME object chain membership reads (#4185),
-    so :func:`build_loop_table_jobs`, :func:`admitted_loop_names` and
     :func:`teatree.loops.chain_membership.timer_chain_loop_names` cannot drift.
 
     Derived from :func:`_admission_block` (admitted ⇔ no block), so the boolean
@@ -231,7 +229,6 @@ def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[st
     """Names of every loop the unified verdict admits (enabled + due + un-held) — NO cadence claim.
 
     The loop-timer chain's admission pre-filter (#1796): it asks the SAME unified
-    verdict :func:`build_loop_table_jobs` uses (via :func:`_loop_admitted`) but never
     claims the cadence anchor. The atomic ``mark_run_if_unchanged`` CAS stays in the
     per-loop tick the timer runs, so an at-least-once double delivery is a no-op
     there — the timer's admission step only ASKS whether the row is due, it never
@@ -246,19 +243,6 @@ def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[st
         for loop in iter_loops()
         if (only is None or loop.name == only) and _loop_admitted(rows.get(loop.name), loop, admission)
     ]
-
-
-def build_loop_table_jobs(
-    scanner_context: BuildJobsContext, *, now: dt.datetime, only: str | None = None
-) -> list[_ScannerJob]:
-    """The flat scanner-job list of :func:`dispatch_loop_table` — the wire-compatible form.
-
-    Every gate, cadence claim and dispatch rule lives in
-    :func:`dispatch_loop_table`; this is the projection callers that only need
-    the jobs consume. A caller that must also tell "the control plane refused
-    this loop" from "the loop ran and found nothing" reads the outcomes instead.
-    """
-    return [job for outcome in dispatch_loop_table(scanner_context, now=now, only=only) for job in outcome.jobs]
 
 
 def dispatch_loop_table(
@@ -334,3 +318,36 @@ def dispatch_loop_table(
             continue
         outcomes.append(LoopDispatch(name=loop.name, jobs=tuple(built)))
     return outcomes
+
+
+def preview_loop_jobs(name: str, scanner_context: BuildJobsContext) -> list[_ScannerJob]:
+    """The jobs *name* WOULD fan out — built with NO admission gate and NO cadence claim.
+
+    The selection half of ``t3 loops tick --loop followup --dry-run``. It reuses
+    :func:`_resolve_dispatch_loop`, so a **script** row still dispatches the loop its
+    column names and the preview cannot answer for a different loop than the live tick
+    would; a loop with no ``Loop`` row previews its own registered mini-loop.
+
+    Deliberately NOT gated on admission, and deliberately claiming nothing. The whole
+    point of previewing ``followup`` is that it is masked OFF — the manual override the
+    operator wants to lift is exactly what makes the live path unobservable, so running
+    the preview through the live gate answers "0 candidates" and reads as a clean bill
+    of health for a scan that never happened. The gate is reported instead, by the
+    caller, from :func:`loop_block_reasons` — the read-only projection of the very
+    :func:`_admission_block` the live tick applies. This function therefore combines no
+    enable planes of its own (``tests/conformance/test_enable_verdict_seam.py``).
+
+    Everything downstream of selection is the live path unchanged: ``build_jobs`` runs
+    the same ``_followup_jobs_for_overlay``, so the ``Mode.egress`` posture still
+    selects the colleague scanners (or selects none), and the preview REPORTS that
+    rather than bypassing it.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    registry_by_name = {loop.name: loop for loop in iter_loops()}
+    if name not in registry_by_name:
+        msg = f"no mini-loop named {name!r} is registered"
+        raise KeyError(msg)
+    row = Loop.objects.filter(name=name).first()
+    target = registry_by_name[name] if row is None else _resolve_dispatch_loop(row, registry_by_name)
+    return list(target.build_jobs(**scanner_context))

@@ -52,6 +52,10 @@ None — this is the foundation skill.
 
 ## Configuration
 
+When pushing from a worker container, use `t3 push`: it resolves the configured
+credential and refuses a remote URL that embeds a token. The recovery details
+are in [troubleshooting](references/troubleshooting.md).
+
 Key environment variables used by this skill (see `/t3:setup` for the full config reference):
 
 | Variable | Required | Purpose |
@@ -62,7 +66,7 @@ Key environment variables used by this skill (see `/t3:setup` for the full confi
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
 | `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
-### One Agent Per Checkout (`worktree_occupancy_gate_enabled`, #3952)
+### One Agent Per Checkout (#3952)
 
 Two agents in one working tree interleave commits and stage each other's
 in-progress files. A dispatched agent therefore CLAIMS its checkout for the
@@ -88,9 +92,8 @@ than walking into it.
 When a request is refused, the answer is to wait, work a different ticket, or —
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
 the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
-occupied checkout too; `--take-over` is the explicit override. The DB-home
-`worktree_occupancy_gate_enabled` is the kill switch, and a fixed 30-minute
-lease bounds a claim whose holder died without releasing.
+occupied checkout too; `--take-over` is the explicit override. A fixed
+30-minute lease bounds a claim whose holder died without releasing.
 
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 
@@ -150,7 +153,7 @@ All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for 
 
 Worktrees regroup under a dedicated dir PER OVERLAY. Two DISTINCT roots — conflating them breaks provisioning:
 
-- **WORKTREE root** `config.worktree_root()` (where NEW worktrees are created) resolves, first match wins: the `T3_WORKSPACE_DIR` env var / Django setting (explicit back-compat override), then a DB-home `ConfigSetting` `workspace_dir` row (overlay scope, then global — set with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`), then the sound default `~/workspace/t3-workspaces/<overlay>/`. A `[teatree] workspace_dir` TOML value is DB-home and ignored on read — it is warned about on load and migrated once with `config_setting import`. The `<overlay>` segment comes from the caller when it knows one (`worktree_root(overlay=ticket.overlay or None)` — what the provisioner and the `workspace ticket` summary pass), and only otherwise from the process: resolved ambiently, the segment is present under the CLI and absent in the container, which splits one ticket's worktrees across two roots. `overlay=""` is a caller declaring itself genuinely overlay-less and is DISTINCT from omitting the argument.
+- **WORKTREE root** `config.worktree_root()` (where NEW worktrees are created) resolves a DB-home `ConfigSetting` `workspace_dir` row (overlay scope, then global — set with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`), then the default `~/workspace/t3-workspaces/<overlay>/`. A `[teatree] workspace_dir` TOML value is DB-home and ignored on read — it is warned about on load and migrated once with `config_setting import`. The `<overlay>` segment comes from the caller when it knows one (`worktree_root(overlay=ticket.overlay or None)` — what the provisioner and the `workspace ticket` summary pass), and only otherwise from the process: resolved ambiently, the segment is present under the CLI and absent in the container, which splits one ticket's worktrees across two roots. `overlay=""` is a caller declaring itself genuinely overlay-less and is DISTINCT from omitting the argument.
 - **CLONE root** `config.clone_root()` (`~/workspace`, where main repo clones live) is what `find_clone_path` and every clone-discovery caller use. It resolves: `T3_WORKSPACE_DIR` env / Django setting, then `~/workspace`. Provisioning DISCOVERS clones under this root and CREATES the worktree under the worktree root — passing the worktree root to `find_clone_path` would scan the wrong dir and fail "No git clone found".
 
 **One canonical root, alternates drained (#3583).** `core/worktree/worktree_roots.py` is the single answer to "which roots hold teatree worktrees?". Only the canonical worktree root is ever written to; the SCANNED set additionally covers every root existing registered worktrees actually live in, so an alternate root an ad-hoc `git worktree add` created is DRAINED by `clean-all` rather than left to accumulate — and once drained it is never written to again, collapsing the split with no manual migration. `t3 doctor check` reports the state: it FAILs on a registered worktree PROVED never to have been a checkout, WARNs UNVERIFIED on one this venue simply cannot resolve, and WARNs on a namespace split across roots — all over the same three-valued `probe_checkout` the reapers use, so the reaper, the doctor and the setup-time warning can never disagree about which dirs are broken. Physically deleting an emptied alternate root directory is a deployment action, not something `clean-all` does.
@@ -188,7 +191,7 @@ Read-only, works on any local branch (no `Worktree` row needed), and the sweep a
 
 A fourth field, `content_present_on_target`, is the present-tense question the other three structurally cannot ask: `git cherry` reads a patch's PRIOR appearance on the target, and a REVERT there does not erase it, so a squash-merged-then-reverted branch reads `redundant` on every patch-id layer. The report carries both, and the human line says so; the boolean `branch_is_landed` (what `ship`'s duplicate-PR refusal consumes) requires BOTH, so a reverted branch ships a fresh PR instead of being refused one. Post-merge drift on unrelated files stays LANDED; drift that re-edits the same region reads NOT LANDED — an unmergeable region is not proof of presence, and a needless PR is the cheap direction to be wrong in.
 
-`workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory (`t3 <overlay> gate merged-detect`) nudges a hand-rolled probe back here.
+`workspace landscape` cannot answer this: its `has_unpushed` is SHA-based and deliberately fail-open (it asks "might something be in flight?"). `workspace emit` signals a landed branch only by ABSENCE. A `PreToolUse` advisory nudges a hand-rolled probe back here.
 
 **For ONE change rather than a whole branch, read the CONTENT.** `branch-verdict` answers about a branch; "did this fix land?" is a different question, and the same squash defeats every sha spelling of it. Read what is on the target instead:
 
@@ -340,17 +343,43 @@ safety, and an off-by-default one only guarantees the reclaim never happens.
   agents. The same refusal now governs the heuristic worktree GC, which until
   [#4244](https://github.com/souliane/teatree/issues/4244) read an unusable table's empty
   answer as "nobody is inside".
-- **An enumeration gap refuses the whole pass.** The symlink-target set is built from the
-  same scan, so an unreadable region can hide the only link protecting a shared target.
-  Linked and standalone `--separate-git-dir` checkouts are enumerated. A submodule records
-  a gap until its parent-process liveness and nested links can be proved by the same guard.
-- **The whole guard is re-read before EACH deletion, not once per batch.** Minutes of walks
-  and prunes separate plan from delete, and the delete loop is longer still — up to 50
-  `rmtree` calls over multi-GB trees — so a per-batch snapshot is stalest exactly where the
-  risk is highest. Both the process table and the symlink-target set are re-read per
-  candidate; a checkout is matched under both its written and its resolved spelling, since a
-  symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`. What the delete-time
-  guard stopped is named in the persisted plan.
+- **What may be deleted and what protects it are two populations.** CANDIDATES are the
+  checkouts under the roots this venue provisions into (`clone_root()`, the worktree root) —
+  never home, never a registered row's parent — found by a walk that stops at each checkout,
+  plus the worktrees each clone there registers under those roots (compared on resolved
+  paths). PROTECTORS are every checkout whose artifact link could point at a candidate: the
+  candidates, every worktree a clone registers wherever it lives, and the standalone clones
+  nested inside a candidate (found through `git ls-files --others --directory`). A link
+  protects its target and every ancestor, matched by inode, so a host-spelled link protects
+  a container-spelled candidate. A registered row outside the roots is reported in the plan
+  as resolved to its venue checkout or skipped. Linked and standalone
+  `--separate-git-dir` checkouts are enumerated.
+- **An enumeration gap refuses the whole pass.** An unreadable protector, a link that fails
+  to resolve for any reason but a missing target, a clone whose registry or untracked listing
+  will not answer, a registered worktree absent here that is `git worktree lock`ed or whose
+  parent this venue cannot read, or a walk the budget cut short can hide the only link
+  protecting a shared target. A submodule named in a checkout's `.gitmodules` records a gap
+  until its parent-process liveness can be proved by the same guard. What is NOT a gap: an
+  empty `.git` file (git refuses it too), a directory tagged `CACHEDIR.TAG` (uv's sdist
+  cache carries `.git` entries), a registered worktree genuinely gone under a readable
+  parent, and a dangling link — it protects the nearest ancestor of its target that exists.
+- **One residual is accepted.** A standalone clone made by hand INSIDE an existing checkout
+  during a batch is only seen next pass: the per-deletion refresh watches checkout roots,
+  clone registries and the directories between checkouts, not every source tree. Provisioned
+  links take `artifact_source_lock` and registered worktrees are seen at once.
+- **The pass runs on a 120 s budget, under the 300 s tick deadline.** The walk, the probes,
+  the sizing and the deletions share it. A walk it cuts short is a gap, sizing it cuts short
+  is deferred, and a batch it cuts short stops with the rest untouched. An artifact is renamed
+  aside (`.t3-evicted-*`) before it is cleared, so a delete the budget interrupts never leaves a
+  half-deleted `.venv` in place — the next pass finishes the leftover first. The sweep stamps
+  `last_artifact_sweep_at` BEFORE it surveys, so even a pass the tick kills consumes its
+  30-minute cadence instead of retrying on every tick.
+- **The guard is re-read before EACH deletion, without re-walking.** The process table is
+  re-read and the protector links refreshed per candidate, re-reading only what moved: a
+  checkout whose directory mtime changed, a clone whose worktree registry changed, and a
+  directory between checkouts where a new checkout appeared. A checkout is matched under both
+  its written and its resolved spelling, since a symlinked one never matched the kernel's
+  canonical `/proc/<pid>/cwd`. What the delete-time guard stopped is named in the persisted plan.
 - **The sweep is its own cadence-gated job, NOT gated on the disk-CRIT band.** The reclaim
   loses nothing at any fullness, so pressure-gating it only delayed it; it also stamps
   `last_artifact_sweep_at` rather than `last_freed_at`, so a loss-free pass never
@@ -388,9 +417,9 @@ for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-
 done
 ```
 
-**The `cd` crosses the container boundary as data.** The branch and stash passes read the invocation cwd `deploy/t3` exports (see "`clean-all` prunes the checkout you ran it FROM" above), so each iteration prunes its own `$repo` — provided the repo sits under a root the container mounts. For a checkout outside every mounted root, `deploy/t3` refuses the run rather than letting it resolve against the container's own tree. Commands that take `--repo` instead — `t3 push`, `pr ensure-pr` — still default to `.`, so name the tree from a host shell (`/t3:ship` § 4a).
+**The `cd` selects the branch and stash target.** `deploy/t3` maps the host invocation cwd into the container, so each iteration prunes the checkout named by `$repo` when that checkout is mounted. It refuses a checkout outside every mounted root. Worktree, database and snapshot cleanup remain global and need only one invocation.
 
-Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
+Branch and stash pruning needs to run **per repo**.
 
 ### Triage of "WARNING: branch X has N unpushed commits" output
 
@@ -479,6 +508,27 @@ t3 <overlay> worktree diagnose              # confirm which invariant is red
 # ...locate + fix the failing provision step in the overlay/core code, add a test...
 t3 <overlay> worktree provision             # re-run; now green end-to-end
 ```
+
+#### A checkout `t3` does not know yet — `worktree adopt`, never `provision`
+
+`WorktreeNotFoundError: Cannot auto-detect worktree from <path>` means the checkout has
+no `Worktree` row, not that you are standing in the wrong place. Registration used to
+happen only as a side effect of resolving something else, so a worktree cut by
+`git worktree add`, by another session, or one whose row was reaped, had no verb at all
+— and `provision` is the wrong answer (it runs tenant-DB provisioning many overlays
+forbid for unit-test work).
+
+```bash
+t3 <overlay> worktree adopt <path>              # row only: no provisioning, no DSLR, no DB
+t3 <overlay> worktree adopt <path> --ticket 42  # pin attribution when the branch encodes no number
+```
+
+It resolves repo and branch from the checkout, and refuses — naming the cause — a path
+that is not a linked worktree, one on a default branch, and one any row already records.
+A refusal naming an **unreachable gitdir** is the one case adoption cannot fix: the
+checkout's clone is not visible in this venue (a host `git worktree add` tree whose clone
+the container never mounts), so mount that clone at the same path or re-cut the worktree
+from one that is visible.
 
 ### Never Hand-Edit Generated Files
 

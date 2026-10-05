@@ -25,8 +25,15 @@ from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
 
-from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolUseBlock
-from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    RateLimitEvent,
+    ResultMessage,
+    TextBlock,
+    ToolUseBlock,
+)
+from claude_agent_sdk.types import PreCompactHookInput, RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
@@ -57,6 +64,22 @@ def result_message(**overrides: Any) -> ResultMessage:
         "model_usage": None,
     }
     return ResultMessage(**{**defaults, **overrides})
+
+
+def pre_compact_input(trigger: str) -> PreCompactHookInput:
+    return PreCompactHookInput(
+        hook_event_name="PreCompact",
+        trigger="auto" if trigger == "auto" else "manual",
+        custom_instructions=None,
+        session_id="s1",
+        transcript_path="",
+        cwd="",
+    )
+
+
+def assert_uncompacted(options: ClaudeAgentOptions) -> None:
+    assert options.env.get("DISABLE_COMPACT") == "1"
+    assert "PreCompact" in (options.hooks or {})
 
 
 def assistant_text(text: str) -> AssistantMessage:

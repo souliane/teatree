@@ -5,16 +5,11 @@ scanner polls the overlay's :class:`MessagingBackend.fetch_dms` for new
 user messages and records one :class:`PendingChatInjection` row per
 unique Slack ``ts``, carrying the event's ``thread_ts`` — a reply's only piece
 of binding identity, and what :mod:`teatree.loop.question_binding` joins on to
-find the question it answers. The matching ``UserPromptSubmit`` handler
-(``hook_router.handle_inject_pending_chat``) drains unconsumed rows into
-the agent's next ``additionalContext`` block — so a Slack DM reaches the
-agent as if the user had typed it in Claude Code chat (BLUEPRINT §17.1
-invariant 2 / §5.6).
+find the question it answers. The reactive Slack-answer cycle is the rows'
+consumer.
 
-The scanner applies two write-side filters so both downstream consumers
-— the reactive Slack-answer cycle and the ``UserPromptSubmit`` injection
-handler, which both read from :class:`PendingChatInjection` — inherit
-them for free without either consumer re-implementing the check:
+The scanner applies two write-side filters so that consumer inherits them for
+free without re-implementing the check:
 
 * :func:`teatree.loop.scanners.slack_self_filter.filter_self_messages`
     drops rows that came from the bot's OWN outbound DMs, keyed on the
@@ -38,11 +33,9 @@ the dedicated reactive Slack-answer loop — the third ``/loop`` slot
 (``teatree.loop.slack_answer``, ``manage.py loop_slack_answer``). That
 loop reads the rows this scanner records and stamps its own orthogonal
 ``loop_replied_at`` / ``eyes_reacted_at`` columns — deliberately
-distinct from #1069's ``answered_at`` turn-end gate (#1075 / Option B),
-so a token-cheap loop reply never satisfies the "agent personally
-replied" Stop-hook gate. ``consumed_at`` (the prompt-drain) stays
-independent of both, so a row can be drained, loop-replied, and
-agent-answered without a double reply (#1014).
+distinct from #1069's ``answered_at`` (#1075 / Option B), so a token-cheap
+loop reply never reads as the agent personally replying, and a row can be
+loop-replied and agent-answered without a double reply (#1014).
 """
 
 import logging

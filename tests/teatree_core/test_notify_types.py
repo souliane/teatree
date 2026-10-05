@@ -4,12 +4,12 @@ from teatree.core.notify_types import NotifyOutcome, NotifyReason, blocked
 
 
 def test_blocked_names_its_reason_as_a_not_sent_outcome() -> None:
-    outcome = blocked(NotifyReason.FEATURE_DISABLED)
+    outcome = blocked(NotifyReason.NO_USER_ID)
     assert isinstance(outcome, NotifyOutcome)
     assert outcome.sent is False
-    assert outcome.reason is NotifyReason.FEATURE_DISABLED
+    assert outcome.reason is NotifyReason.NO_USER_ID
     # detail falls through to the reason's canonical description
-    assert outcome.detail == NotifyReason.FEATURE_DISABLED.detail
+    assert outcome.detail == NotifyReason.NO_USER_ID.detail
     assert outcome.detail != ""
 
 

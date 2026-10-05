@@ -1,11 +1,10 @@
 """Tests for teatree.skill_support.ref_validator — dangling skill-reference detection.
 
 Mirrors the real ``ac-reviewing-skills`` → ``ac-reviewing-codebase`` incident:
-a ``$HOME/.teatree-skills.yml`` keyword→skill routing entry named a skill that
-does not exist in the canonical (installed/remote) skill set. The validator
-enumerates every reference site, resolves each name against the canonical
-set, and flags any name that does not resolve — naming file:line, the bad
-name, and the nearest valid matches.
+a reference named a skill that does not exist in the canonical (installed/remote)
+skill set. The validator resolves each agent-frontmatter name against the
+canonical set and flags any name that does not resolve — naming file:line, the
+bad name, and the nearest valid matches.
 """
 
 import os
@@ -22,7 +21,6 @@ from teatree.skill_support.ref_validator import (
     validate_agent_frontmatter,
     validate_repo_refs,
     validate_skill_refs,
-    validate_supplementary_config,
 )
 from tests._unreadable_file import skip_if_root
 
@@ -84,60 +82,6 @@ class TestCanonicalSkillNames:
             blocked.chmod(0o755)
 
 
-class TestSupplementaryConfig:
-    def _write_config(self, path: Path, body: str) -> Path:
-        path.write_text(body, encoding="utf-8")
-        return path
-
-    def test_dangling_reference_flagged(self, tmp_path: Path) -> None:
-        canonical = {"ac-reviewing-codebase", "ac-django", "ac-python"}
-        config = self._write_config(
-            tmp_path / ".teatree-skills.yml",
-            "# routing\nac-reviewing-skills: '\\breview skills?\\b'\nac-django: '.'\n",
-        )
-        findings = validate_supplementary_config(config, canonical)
-        bad = [f for f in findings if f.name == "ac-reviewing-skills"]
-        assert len(bad) == 1
-        assert bad[0].path == config
-        assert bad[0].line == 2
-        assert "ac-reviewing-codebase" in bad[0].suggestions
-
-    def test_clean_config_passes(self, tmp_path: Path) -> None:
-        canonical = {"ac-reviewing-codebase", "ac-django", "ac-python"}
-        config = self._write_config(
-            tmp_path / ".teatree-skills.yml",
-            "ac-reviewing-codebase: '\\breview skills?\\b'\nac-django: '.'\nac-python: '.'\n",
-        )
-        assert validate_supplementary_config(config, canonical) == []
-
-    def test_comments_and_blank_lines_ignored(self, tmp_path: Path) -> None:
-        canonical = {"ac-django"}
-        config = self._write_config(
-            tmp_path / ".teatree-skills.yml",
-            "# a comment naming ac-reviewing-skills should not be flagged\n\nac-django: '.'\n",
-        )
-        assert validate_supplementary_config(config, canonical) == []
-
-    def test_missing_config_is_not_a_failure(self, tmp_path: Path) -> None:
-        canonical = {"ac-django"}
-        assert validate_supplementary_config(tmp_path / "absent.yml", canonical) == []
-
-    def test_malformed_line_ignored(self, tmp_path: Path) -> None:
-        config = self._write_config(
-            tmp_path / ".teatree-skills.yml",
-            "this line has no colon mapping\nac-django: '.'\n",
-        )
-        assert validate_supplementary_config(config, {"ac-django"}) == []
-
-    def test_unreadable_config_fails_open(self, tmp_path: Path) -> None:
-        config = self._write_config(tmp_path / ".teatree-skills.yml", "ac-django: '.'\n")
-        config.chmod(0o000)
-        try:
-            assert validate_supplementary_config(config, {"ac-django"}) == []
-        finally:
-            config.chmod(0o644)
-
-
 class TestAgentFrontmatter:
     def _write_agent(self, path: Path, skills: list[str]) -> Path:
         lines = ["---", "name: agent", "skills:"]
@@ -192,68 +136,38 @@ class TestAgentFrontmatter:
 
 
 class TestValidateSkillRefs:
-    def test_aggregates_across_sites_and_reports_red(self, tmp_path: Path) -> None:
+    def test_a_dangling_agent_ref_is_reported_and_a_resolving_one_is_not(self, tmp_path: Path) -> None:
         canonical_root = _seed_canonical(tmp_path / "skills", ["ac-reviewing-codebase", "ac-django"])
-        config = tmp_path / ".teatree-skills.yml"
-        config.write_text("ac-reviewing-skills: '\\breview\\b'\nac-django: '.'\n", encoding="utf-8")
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         (agents_dir / "coder.md").write_text(
-            "---\nname: coder\nskills:\n  - ac-django\n---\n# C",
+            "---\nname: coder\nskills:\n  - ac-reviewing-skills\n  - ac-django\n---\n# C",
             encoding="utf-8",
         )
-        findings = validate_skill_refs(
-            search_dirs=[canonical_root],
-            supplementary_config=config,
-            agents_dir=agents_dir,
-        )
-        assert any(f.name == "ac-reviewing-skills" for f in findings)
-        assert all(f.name != "ac-django" for f in findings)
+        findings = validate_skill_refs(search_dirs=[canonical_root], agents_dir=agents_dir)
+        assert [f.name for f in findings] == ["ac-reviewing-skills"]
 
     def test_clean_set_passes(self, tmp_path: Path) -> None:
         canonical_root = _seed_canonical(tmp_path / "skills", ["ac-reviewing-codebase", "ac-django"])
-        config = tmp_path / ".teatree-skills.yml"
-        config.write_text("ac-reviewing-codebase: '\\breview\\b'\n", encoding="utf-8")
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         (agents_dir / "coder.md").write_text(
             "---\nname: coder\nskills:\n  - ac-django\n---\n# C",
             encoding="utf-8",
         )
-        assert (
-            validate_skill_refs(
-                search_dirs=[canonical_root],
-                supplementary_config=config,
-                agents_dir=agents_dir,
-            )
-            == []
-        )
-
-    def test_defaults_resolve_supplementary_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        canonical_root = _seed_canonical(tmp_path / "skills", ["ac-django"])
-        config = tmp_path / "custom-skills.yml"
-        config.write_text("bogus-skill: '.'\n", encoding="utf-8")
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        monkeypatch.setenv("T3_SUPPLEMENTARY_SKILLS", str(config))
-        findings = validate_skill_refs(search_dirs=[canonical_root], agents_dir=agents_dir)
-        assert [f.name for f in findings] == ["bogus-skill"]
+        assert validate_skill_refs(search_dirs=[canonical_root], agents_dir=agents_dir) == []
 
     def test_defaults_search_dirs_and_agents(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         canonical_root = _seed_canonical(tmp_path / "skills", ["ac-django"])
-        config = tmp_path / "empty.yml"
-        config.write_text("ac-django: '.'\n", encoding="utf-8")
         monkeypatch.setattr(
             "teatree.skill_support.ref_validator.default_search_dirs",
             lambda: [canonical_root],
         )
-        assert validate_skill_refs(supplementary_config=config, agents_dir=tmp_path / "no-agents") == []
+        assert validate_skill_refs(agents_dir=tmp_path / "no-agents") == []
 
-    def test_default_agents_dir_is_the_repo_agents(self, tmp_path: Path) -> None:
-        config = tmp_path / "empty.yml"
-        config.write_text("rules: '.'\n", encoding="utf-8")
-        findings = validate_skill_refs(supplementary_config=config)
-        assert all(f.site != "supplementary-config" for f in findings)
+    def test_default_agents_dir_is_the_repo_agents(self) -> None:
+        findings = validate_skill_refs()
+        assert all(f.path.parent.name == "agents" for f in findings)
 
 
 class TestResolvesToCanonical:
@@ -320,13 +234,13 @@ class TestMain:
 class TestDanglingReferenceRendering:
     def test_render_names_file_line_and_suggestions(self) -> None:
         finding = DanglingReference(
-            path=Path("/tmp/.teatree-skills.yml"),
+            path=Path("/tmp/agents/coder.md"),
             line=2,
             name="ac-reviewing-skills",
-            site="supplementary-config",
+            site="agent-frontmatter",
             suggestions=["ac-reviewing-codebase"],
         )
         rendered = finding.render()
-        assert "/tmp/.teatree-skills.yml:2" in rendered
+        assert "/tmp/agents/coder.md:2" in rendered
         assert "ac-reviewing-skills" in rendered
         assert "ac-reviewing-codebase" in rendered

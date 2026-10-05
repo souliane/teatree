@@ -46,6 +46,24 @@ def _plan_args(ticket: Ticket, plan_text: str) -> tuple[str, ...]:
     )
 
 
+def _manifest_json() -> str:
+    return json.dumps(TEST_ADEQUACY)
+
+
+def _plan_args(ticket: Ticket, plan_text: str) -> tuple[str, ...]:
+    """The full `ticket plan` argv — base_sha and the manifest are BOTH required."""
+    return (
+        "ticket",
+        "plan",
+        str(ticket.pk),
+        plan_text,
+        "--base-sha",
+        _FORTY_HEX,
+        "--adequacy-json",
+        _manifest_json(),
+    )
+
+
 class TicketPlanCommandTest(TestCase):
     def test_plan_records_artifact_and_advances_to_planned(self) -> None:
         ticket = _started_ticket()

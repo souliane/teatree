@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
 from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalToolCall, FinalStateMatcher
 from teatree.eval.report import evaluate
@@ -724,7 +725,7 @@ class TestJudgeBlock:
         spec = load_eval_yaml(_write(tmp_path, body))[0]
         assert spec.judge is not None
         assert spec.judge.rubric == "The explanation is faithful to the diff."
-        assert spec.judge.model == "claude-sonnet-5"
+        assert spec.judge.model == TIER_MODELS[DEFAULT_TIER]
         assert spec.matchers == ()
 
     def test_judge_overrides_the_model(self, tmp_path: Path) -> None:

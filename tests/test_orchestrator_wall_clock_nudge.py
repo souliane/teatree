@@ -9,7 +9,7 @@ the count one: once the elapsed wall-clock since the last user-visible action
 — independent of how many tool calls have been made.
 
 Both dimensions are advisory (never a deny), config-driven, fail-open, and
-reset every user turn. These tests exercise the two dimensions independently.
+reset at every turn end, or at the first tool call after a new owner prompt.
 """
 
 import json
@@ -64,6 +64,14 @@ def _bash(session_id: str, command: str = "git status") -> dict:
     return {"session_id": session_id, "tool_name": "Bash", "tool_input": {"command": command}}
 
 
+def _model_visible_nudge(stdout: str) -> str:
+    """The nudge as Claude Code reads it: ONE object, nested under ``hookSpecificOutput`` for PreToolUse."""
+    payload = json.loads(stdout)
+    assert set(payload) == {"hookSpecificOutput"}
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    return payload["hookSpecificOutput"]["additionalContext"]
+
+
 def _set_turn_start(session_id: str, monotonic_value: float) -> None:
     """Force the turn-start timestamp file so elapsed wall-clock is deterministic."""
     (router.STATE_DIR / f"{session_id}.{router._TURN_START_SUFFIX}").write_text(str(monotonic_value), encoding="utf-8")
@@ -97,8 +105,7 @@ class TestWallClockDimensionFiresIndependentOfCount:
         handle_orchestrator_turn_budget_nudge(_bash(sid))
         out = capsys.readouterr().out
         assert out.strip(), "wall-clock nudge must emit additionalContext when elapsed exceeds the threshold"
-        payload = json.loads(out)
-        assert "responsiveness" in payload["additionalContext"].lower()
+        assert "responsiveness" in _model_visible_nudge(out).lower()
 
     def test_no_nudge_when_elapsed_below_threshold(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -163,6 +170,51 @@ class TestCountDimensionStillFiresIndependently:
         handle_orchestrator_turn_budget_nudge(_bash(sid))  # count 2, hits budget
         out = capsys.readouterr().out.strip()
         assert out, "count dimension must still fire when the wall-clock dimension is off"
+
+
+class TestATurnThatNeverReachedStopDoesNotBleedIntoTheNext:
+    """An interrupted turn fires no Stop, so the owner's next prompt re-arms both dimensions."""
+
+    @staticmethod
+    def _interrupted_turn(tmp_path: Path, session_id: str) -> Path:
+        transcript = tmp_path / "transcript.jsonl"
+        working = {"type": "assistant", "message": {"role": "assistant", "content": "working"}}
+        transcript.write_text(json.dumps(working) + "\n", encoding="utf-8")
+        _set_turn_start(session_id, 5_000.0)
+        cursor = router.STATE_DIR / f"{session_id}.turn-transcript-cursor"
+        cursor.write_text(str(transcript.stat().st_size), encoding="utf-8")
+        return transcript
+
+    @staticmethod
+    def _append(transcript: Path, role: str, content: str) -> None:
+        with transcript.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"type": role, "message": {"role": role, "content": content}}) + "\n")
+
+    def test_a_prompt_typed_since_the_last_tool_call_opens_a_fresh_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 60})
+        sid = "sess-interrupted"
+        monkeypatch.setattr(router.time, "monotonic", lambda: 10_000.0)
+        transcript = self._interrupted_turn(tmp_path, sid)
+        self._append(transcript, "user", "carry on")
+
+        handle_orchestrator_turn_budget_nudge({**_bash(sid), "transcript_path": str(transcript)})
+
+        assert capsys.readouterr().out.strip() == "", "the interrupted turn's clock ran on into the new one"
+
+    def test_a_turn_with_no_new_prompt_keeps_its_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _seed_config_db(_config_db(), {"orchestrator_turn_budget": 1000, "orchestrator_turn_wall_clock_seconds": 60})
+        sid = "sess-long-turn"
+        monkeypatch.setattr(router.time, "monotonic", lambda: 10_000.0)
+        transcript = self._interrupted_turn(tmp_path, sid)
+        self._append(transcript, "assistant", "still working")
+
+        handle_orchestrator_turn_budget_nudge({**_bash(sid), "transcript_path": str(transcript)})
+
+        assert "responsiveness" in _model_visible_nudge(capsys.readouterr().out).lower()
 
 
 class TestTurnResetReArmsBothDimensions:

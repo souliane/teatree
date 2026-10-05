@@ -121,10 +121,11 @@ class TestDslrSnapName:
 
 
 class TestLocalDbUrl:
-    def test_builds_url_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_builds_url_from_pass_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("POSTGRES_HOST", "db.local")
         monkeypatch.setenv("POSTGRES_USER", "u")
-        monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss")
+        monkeypatch.setenv("POSTGRES_PASSWORD_PASS_KEY", "teatree/wt/1/postgres")
+        monkeypatch.setattr("teatree.utils.postgres_secret.secrets.read_pass", lambda _key: "p@ss")
         url = _local_db_url("mydb")
         assert "db.local" in url
         assert "mydb" in url
@@ -145,10 +146,11 @@ class TestSplitPasswordFromUrl:
 
 
 class TestPgArgs:
-    def test_reads_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_reads_host_and_password_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("POSTGRES_HOST", "h")
         monkeypatch.setenv("POSTGRES_USER", "u")
-        monkeypatch.setenv("POSTGRES_PASSWORD", "p")
+        monkeypatch.setenv("POSTGRES_PASSWORD_PASS_KEY", "teatree/wt/1/postgres")
+        monkeypatch.setattr("teatree.utils.postgres_secret.secrets.read_pass", lambda _key: "p")
         monkeypatch.setenv("POSTGRES_PORT", "5433")
         host, user, env = _pg_args()
         assert host == "h"
@@ -194,12 +196,6 @@ class TestFindDslrCmd:
         monkeypatch.delenv("DSLR_CMD", raising=False)
         monkeypatch.setattr(dslr_mod.shutil, "which", lambda _: None)
         assert _find_dslr_cmd("dslr") == []
-
-    def test_ignores_main_repo_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Dslr runs from the host project venv, not the target repo."""
-        monkeypatch.delenv("DSLR_CMD", raising=False)
-        monkeypatch.setattr(dslr_mod.shutil, "which", lambda p: p)
-        assert _find_dslr_cmd("dslr", "/repo/main") == ["uv", "run", "dslr"]
 
 
 class TestDslrEnv:

@@ -109,10 +109,10 @@ class TestScopeCacheDedup:
         cache = ScopeCache(notifier=_BannerRecorder())
         token_id = token_scope_id("xoxb-4")
         cache.record_missing(token_id, "chat:write")
-        assert cache.is_missing(token_id, "chat:write")
+        assert (token_id, "chat:write") in cache.entries()
         assert cache.clear(token_id, "chat:write") is True
         assert cache.clear(token_id, "chat:write") is False
-        assert not cache.is_missing(token_id, "chat:write")
+        assert (token_id, "chat:write") not in cache.entries()
 
 
 class TestScopeFailureSimulation:
@@ -177,9 +177,9 @@ class TestScopeCacheReset:
     def test_reset_clears_every_entry(self) -> None:
         cache = ScopeCache(notifier=_BannerRecorder())
         cache.record_missing("tok", "scope")
-        assert cache.is_missing("tok", "scope")
+        assert ("tok", "scope") in cache.entries()
         cache.reset()
-        assert not cache.is_missing("tok", "scope")
+        assert ("tok", "scope") not in cache.entries()
 
 
 class TestProcessSingleton:

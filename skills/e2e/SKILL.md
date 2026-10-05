@@ -33,7 +33,7 @@ Agentic browser work — driving a deployed page (navigate/click/fill/upload) an
 
 **Always headless, never headed (non-negotiable).** Every browser teatree drives — chrome-devtools-mcp *and* Playwright — runs headless. A visible window on the user's desktop is never acceptable from a background/headless agent.
 
-- **chrome-devtools-mcp:** upstream's `--headless` option defaults to `false`, so a registration that omits the flag pops a visible Chrome window on **every** navigation. `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) appends `--headless=true` off the default-on `chrome_devtools_headless` setting, so the line `t3 mcp browser-diagnosis` prints is headless unless an operator deliberately opts into a headed browser. Never turn that setting off, and re-register any server you find registered without the flag.
+- **chrome-devtools-mcp:** `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) registers a headless browser server. Run `t3 mcp browser-diagnosis` for the `claude mcp add` line and re-register any server missing `--headless=true`. Performance and trace enforcement remains in Playwright.
 - **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
 
 The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` line and the tools it surfaces, the `~/.claude/settings.json` pre-authorization entry, and the finding that MCP allow-rules carry no domain form are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
@@ -276,8 +276,6 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 
 **Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
 
-The deterministic primitive for this rule is `teatree.core.evidence.doc_evidence` (#2296) — route doc-export evidence checks through it rather than hand-rolling a substring scan. Parse the document into a `StructuredDoc` (named `fields` + labelled table `rows`) and verify with `check_doc_evidence(doc, FieldClaim(term=…, field_label=…))` or `ColumnClaim(term=…, column_label=…)`. The probe binds the assertion to the field/column the AC constrains and **fails loud** (`DocEvidenceError`) when that anchor is absent — never falling back to an incidental free-text match. A bare page-wide substring is rejected outright (`reject_page_wide_substring`); it is not evidence. It is an available primitive, not a globally-enforced gate yet — wiring a specific call site (e.g. an overlay's doc-export verification step) into it is the follow-up.
-
 ## Writing the Test Plan
 
 The test plan is a FILE IN THE E2E REPO, never a forge comment: `test-plans/<repo>-<gitlab-ticket>.md` at the repo root, a sibling of `e2e/`, in the ticket's checkout of the repo that owns the specs. It is reviewed and merged with the specs it describes. There is ONE canonical command — do not hand-craft a GitLab/GitHub note, do not hand-write the file, and do not explore for an alternative path:
@@ -445,7 +443,7 @@ A single E2E pass is not self-driving: it can go green vacuously, miss an accept
 
 > `/next` = the orchestrator advancing the FSM to the next phase and spawning that phase's sub-agent. The e2e ↔ e2e-review chaining IS this `/next` edge fired repeatedly: `e2e --/next--> e2e_reviewing`, and on HOLD, `e2e_reviewing --/next--> e2e` again.
 
-The five FSM edges (test → e2e_reviewing → VERIFIED / BLOCKED / HOLD), the three terminal states with their max-5-iteration stop, and the `e2e_confidence_threshold` setting are in [`skills/e2e/references/verify-review-loop.md`](references/verify-review-loop.md).
+The five FSM edges (test → e2e_reviewing → VERIFIED / BLOCKED / HOLD), the three terminal states with their max-5-iteration stop, and the rubric pass bar are in [`skills/e2e/references/verify-review-loop.md`](references/verify-review-loop.md).
 
 ## Re-Read Before Debugging
 

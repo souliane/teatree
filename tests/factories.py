@@ -73,7 +73,7 @@ def waive_rubric(ticket: Ticket) -> PlanArtifact:
 def planned_ticket(**kwargs: object) -> Ticket:
     """A ticket carrying the recorded plan every real implementing dispatch has.
 
-    The plan-before-dispatch gate (``core.gates.plan_dispatch_gate``) refuses a
+    The plan-before-dispatch gate (``core.models.plan_decision``) refuses a
     coder / tester / e2e / debugger on a ticket where nobody recorded a decision
     about scope, so a bare ``Ticket.objects.create()`` is a state no production
     implementing dispatch is ever in. Tests whose subject is something ELSE — a

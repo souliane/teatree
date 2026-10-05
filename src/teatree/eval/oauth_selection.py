@@ -131,11 +131,6 @@ class OAuthSelection:
         """The freshest eligible candidate, or ``None`` when none is eligible."""
         return self.ranked[0] if self.ranked else None
 
-    @property
-    def all_ineligible(self) -> bool:
-        """Whether candidates were probed but NONE is eligible (the fail-loud/fallback case)."""
-        return bool(self.candidates) and not self.ranked
-
 
 def parse_tokens(raw: str) -> list[str]:
     """Split a newline-separated token blob into stripped, non-blank, deduped tokens.

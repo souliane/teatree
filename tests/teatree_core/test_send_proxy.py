@@ -1,18 +1,14 @@
 """Behaviour of the outbound send-proxy chokepoint (#117).
 
-The proxy ships in ``warn`` mode (audit-only): it records a ``SendAudit`` row for
-every send with the would-be allowlist verdict and redaction matches, but never
-blocks a send and never mutates the live payload. ``enforce`` mode (opt-in, after
-an operator seeds the allowlist from a WARN soak) is where a non-allowlisted
-destination is denied and the payload is redacted — the attack surface these
-tests pin.
+The proxy enforces the destination allowlist and redacts matching terms on
+every send. The operator's own DM remains allowed with an empty allowlist.
 """
 
+import logging
 from unittest.mock import patch
 
 import pytest
 
-from teatree.config.enums import SendProxyMode
 from teatree.core.models import ConfigSetting, SendAudit
 from teatree.core.models.provenance import Provenance
 from teatree.core.send_proxy import (
@@ -33,10 +29,6 @@ from teatree.core.send_proxy import (
 pytestmark = pytest.mark.django_db
 
 
-def _set_mode(mode: SendProxyMode) -> None:
-    ConfigSetting.objects.set_value("send_proxy_mode", mode.value)
-
-
 def _set_allowlist(entries: list[str]) -> None:
     ConfigSetting.objects.set_value("send_proxy_allowlist", entries)
 
@@ -52,61 +44,31 @@ def _request(**overrides: object) -> SendRequest:
     return SendRequest(**base)
 
 
-class TestWarnModeIsAuditOnly:
-    def test_warn_never_blocks_a_non_allowlisted_destination(self) -> None:
-        # Ship default: warn. An unseeded allowlist must NOT block a real send.
-        verdict = route_send(_request(destination="C_UNKNOWN"))
-        assert verdict.mode is SendProxyMode.WARN
-        assert verdict.allowed is True
-        assert verdict.allowlist_ok is False
-
-    def test_warn_never_mutates_the_live_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"])
-        verdict = route_send(_request(payload="note about SECRETCORP internals"))
-        assert verdict.payload == "note about SECRETCORP internals"
-        assert verdict.payload_redacted is False
-        # The match is still SURFACED for the audit soak, just not applied.
-        assert verdict.redaction_matches == ("SECRETCORP",)
-
-    def test_warn_records_a_warned_audit_row_for_a_non_allowlisted_destination(self) -> None:
-        route_send(_request(destination="C_UNKNOWN", target="thread/1"))
-        row = SendAudit.objects.get()
-        assert row.channel == SendChannel.SLACK.value
-        assert row.destination == "C_UNKNOWN"
-        assert row.mode == SendProxyMode.WARN.value
-        assert row.allowlist_verdict == SendAudit.Verdict.WARNED.value
-        assert row.redaction_applied is False
-
-    def test_warn_records_an_allowed_audit_row_for_an_allowlisted_destination(self) -> None:
+class TestUnconditionalEnforcement:
+    def test_records_an_allowed_audit_row_for_an_allowlisted_destination(self) -> None:
         _set_allowlist(["C_TEAM"])
         verdict = route_send(_request(destination="C_TEAM"))
         assert verdict.allowlist_ok is True
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.ALLOWED.value
 
-
-class TestEnforceModeAllowlistDeny:
-    def test_enforce_denies_a_non_allowlisted_destination(self) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
+    def test_denies_a_non_allowlisted_destination(self) -> None:
         _set_allowlist(["C_TEAM"])
         verdict = route_send(_request(destination="C_ATTACKER"))
         assert verdict.allowed is False
         assert "not on the send-proxy allowlist" in verdict.reason
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.DENIED.value
 
-    def test_enforce_allows_an_allowlisted_destination(self) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
+    def test_allows_an_allowlisted_destination(self) -> None:
         _set_allowlist(["C_TEAM"])
         verdict = route_send(_request(destination="C_TEAM"))
         assert verdict.allowed is True
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.ALLOWED.value
 
-    def test_enforce_with_empty_allowlist_denies_every_non_self_destination(self) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
+    def test_empty_allowlist_denies_every_non_self_destination(self) -> None:
         verdict = route_send(_request(destination="C_ANY"))
         assert verdict.allowed is False
 
     def test_send_blocked_error_carries_the_verdict(self) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
         verdict = route_send(_request(destination="C_ANY"))
         err = SendBlockedError(verdict)
         assert err.verdict is verdict
@@ -114,17 +76,15 @@ class TestEnforceModeAllowlistDeny:
 
 
 class TestSelfDmNeverLockout:
-    def test_self_dm_is_allowed_even_in_enforce_with_empty_allowlist(self) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
+    def test_self_dm_is_allowed_with_empty_allowlist(self) -> None:
         verdict = route_send(_request(destination="D_USER", is_self_dm=True))
         assert verdict.allowed is True
         assert verdict.allowlist_ok is True
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.ALLOWED.value
 
 
-class TestEnforceModeRedaction:
-    def test_enforce_redacts_a_matching_term_in_the_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _set_mode(SendProxyMode.ENFORCE)
+class TestUnconditionalRedaction:
+    def test_redacts_a_matching_term_in_the_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_allowlist(["C_TEAM"])
         monkeypatch.setattr("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"])
         verdict = route_send(_request(destination="C_TEAM", payload="leak SECRETCORP here"))
@@ -133,6 +93,31 @@ class TestEnforceModeRedaction:
         assert verdict.payload_redacted is True
         assert verdict.redaction_matches == ("SECRETCORP",)
         assert SendAudit.objects.get().redaction_applied is True
+
+
+class TestAllowlistFailure:
+    def test_unreadable_allowlist_denies_the_send(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _unreadable(*_args: object, **_kwargs: object) -> bool:
+            raise OSError
+
+        monkeypatch.setattr("teatree.core.send_proxy.destination_allowed", _unreadable)
+        verdict = route_send(_request())
+        assert verdict.allowed is False
+        assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.DENIED.value
+
+
+class TestAnUnreadableAllowlistIsLoud:
+    def test_the_failure_is_a_warning_that_names_the_overlay(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("teatree.core.send_proxy.get_effective_settings", side_effect=RuntimeError("settings store down")),
+            caplog.at_level(logging.WARNING, logger="teatree.core.send_proxy"),
+        ):
+            assert destination_allowed(SendChannel.SLACK, "C-eng", overlay="acme") is False
+
+        [record] = [r for r in caplog.records if r.name == "teatree.core.send_proxy"]
+        assert record.levelno == logging.WARNING
+        assert "acme" in record.getMessage()
+        assert record.exc_info is not None
 
 
 class TestRedactPayloadUnit:
@@ -205,6 +190,7 @@ class TestNeverRaise:
 
         monkeypatch.setattr(SendAudit.objects, "create", _boom)
         # The send still resolves a verdict — the audit is a side ledger.
+        _set_allowlist(["C_TEAM"])
         verdict = route_send(_request())
         assert verdict.allowed is True
         assert SendAudit.objects.count() == 0

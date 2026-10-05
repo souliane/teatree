@@ -3,15 +3,12 @@
 
 Two static invariants keep the consolidation from silently regressing:
 
-* **Single resolver** — the four legacy term keys (``banned_terms`` /
-    ``banned_brands`` / ``banned_terms_allowlist`` / ``overlay_leak_terms``) are read
-    from the ``ConfigSetting`` store ONLY by the registry module and the legacy
-    resolvers it delegates to. Every scanning gate resolves through
-    :mod:`teatree.hooks.banned_term_registry` instead of reading a legacy row itself,
-    so a new consumer that bypasses the registry is caught here rather than in a leak.
-* **Secret/defaults boundary** — the term keys are ``SECRET_SETTINGS`` (DB-only,
-    empty in code), so if a ``config/defaults.toml`` ever ships it must carry none of
-    them. A forward guard, inert until such a file exists.
+* **Single resolver** — the four retired term keys (``banned_terms`` /
+    ``banned_brands`` / ``banned_terms_allowlist`` / ``overlay_leak_terms``) have
+    no direct non-test readers. Every scanning gate resolves through
+    :mod:`teatree.hooks.banned_term_registry`.
+* **Secret/defaults boundary** — the consolidated registry is a secret setting,
+    so a shipped ``config/defaults.toml`` must not contain it.
 """
 
 import ast
@@ -24,25 +21,12 @@ from teatree.config.secret_settings import SECRET_SETTINGS
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: The four DB-home lists the registry folds together. A direct ``cold_reader`` read of
-#: any of these outside the sanctioned resolvers bypasses the registry's dual-read.
+#: The four retired DB-home lists. A direct ``cold_reader`` read of any is a regression.
 _LEGACY_KEYS: frozenset[str] = frozenset(
     {"banned_terms", "banned_brands", "banned_terms_allowlist", "overlay_leak_terms"}
 )
 
-#: The modules allowed to read a legacy key directly: the registry itself
-#: (``banned_terms_allowlist`` / ``overlay_leak_terms``) plus the three legacy
-#: resolvers it delegates to — ``banned_terms_cli`` (``banned_terms``),
-#: ``banned_terms_tree_scan`` (``banned_brands``), and ``banned_terms_scanner``'s
-#: configured-check (``banned_terms``). No other consumer may read a legacy row.
-_SANCTIONED_RESOLVERS: frozenset[str] = frozenset(
-    {
-        "src/teatree/hooks/banned_term_registry.py",
-        "src/teatree/hooks/banned_terms_cli.py",
-        "src/teatree/hooks/banned_terms_tree_scan.py",
-        "src/teatree/hooks/banned_terms_scanner.py",
-    }
-)
+_SANCTIONED_RESOLVERS: frozenset[str] = frozenset()
 
 _READERS: frozenset[str] = frozenset({"read_setting", "list_setting"})
 
@@ -126,12 +110,7 @@ class TestLegacyKeysHaveASingleResolver:
 
 
 class TestTermKeysNeverInDefaultsToml:
-    """SECRET term keys are DB-only: a shipped defaults.toml must carry none of them.
-
-    Forward guard — inert until ``config/defaults.toml`` exists. The term keys are the
-    intersection of the four legacy keys, the consolidated ``banned_term_registry``,
-    and ``SECRET_SETTINGS``, all of which must stay out of any committed defaults file.
-    """
+    """The secret registry key must stay out of shipped defaults.toml."""
 
     def _all_keys(self, table: object, prefix: str = "") -> set[str]:
         keys: set[str] = set()
@@ -149,14 +128,7 @@ class TestTermKeysNeverInDefaultsToml:
         data = tomllib.loads(defaults.read_text(encoding="utf-8"))
         assert SECRET_SETTINGS.isdisjoint(self._all_keys(data))
 
-    def test_the_five_term_keys_are_all_secret(self) -> None:
-        # The keys this PR routes through the registry are ALL export-guarded secrets,
-        # so the forward guard above genuinely covers them.
-        term_keys = {
-            "banned_terms",
-            "banned_terms_allowlist",
-            "banned_brands",
-            "overlay_leak_terms",
-            "banned_term_registry",
-        }
+    def test_the_registry_key_is_secret(self) -> None:
+        # The consolidated registry remains export-guarded.
+        term_keys = {"banned_term_registry"}
         assert term_keys <= SECRET_SETTINGS

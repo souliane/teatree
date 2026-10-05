@@ -10,8 +10,11 @@ import webbrowser
 from typing import TYPE_CHECKING
 
 import typer
+from django.core.exceptions import ImproperlyConfigured
 
 from teatree.cli.notion_support import fail, notion_client, page_verdict
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlays.notion_identity import notion_overlay, route_notion_token_command
 from teatree.utils.secrets import SecretStoreError, read_pass, write_pass_with_backup
 
 if TYPE_CHECKING:  # pragma: no cover — import-time cost stays off the CLI startup path
@@ -32,7 +35,7 @@ def notion_setup(
     reset: bool = typer.Option(False, "--reset", help="Overwrite a stored token without confirming."),
 ) -> None:
     """Open Notion's integrations page, store the pasted secret, then verify it end to end."""
-    pass_key = _target_pass_key(overlay)
+    overlay, pass_key = _target_pass_key(overlay)
     _announce_integration()
     if not _confirm_overwrite(pass_key, reset=reset):
         typer.echo("Aborted — the stored token was left in place.")
@@ -47,35 +50,26 @@ def notion_setup(
         raise typer.Exit(code=unshared.exit_code)
 
 
-def _target_pass_key(overlay: str) -> str:
+def _target_pass_key(requested: str) -> tuple[str, str]:
+    """The overlay whose entry receives the token — resolved as every reader resolves it — and that entry."""
     from teatree.backends.notion.credentials import overlay_notion_pass_key  # noqa: PLC0415 — lazy CLI import
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: lazy CLI import
 
     ensure_django()
-    _reject_unresolvable(overlay)
+    try:
+        overlay = notion_overlay(requested) or ""
+        if overlay:  # a typo must fail here, not store the token under an entry no reader resolves
+            get_overlay(overlay)
+    except ImproperlyConfigured as exc:
+        raise fail(exc) from exc
     if pass_key := overlay_notion_pass_key(overlay or None):
-        return pass_key
-    scope = overlay or "<overlay>"
+        return overlay, pass_key
     typer.echo(
         "FAIL  No `pass` entry is routed for the Notion token on this venue, so there is nowhere to store it. "
-        f"Route it first: `t3 {scope} config_setting set notion_token_pass_key '\"<entry>\"' --overlay {scope}`.",
+        f"Route it first: `{route_notion_token_command(overlay or '<overlay>')}`.",
         err=True,
     )
     raise typer.Exit(code=1)
-
-
-def _reject_unresolvable(overlay: str) -> None:
-    """A typo must not resolve to "" and store the token under the default key instead."""
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: lazy CLI import
-
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: lazy CLI import
-
-    if not overlay:
-        return
-    try:
-        get_overlay(overlay)
-    except ImproperlyConfigured as exc:
-        raise fail(exc) from exc
 
 
 def _announce_integration() -> None:

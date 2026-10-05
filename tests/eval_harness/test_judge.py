@@ -8,21 +8,32 @@ format and reads the ``{verdict, reason}`` off ``ResultMessage.structured_output
 
 import asyncio
 import dataclasses
+import json
 import os
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import httpx2
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from django.test import TestCase
+from pydantic_ai.models import override_allow_model_requests
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.providers.anthropic import AnthropicProvider
 
+from teatree.eval.cost_observation import ConservativeSuiteBudget
 from teatree.eval.judge import (
     JUDGE_DEFAULT_BUDGET_USD,
     ClaudeJudge,
     JudgeBudget,
     JudgeBudgetExceededError,
+    JudgeVerdict,
+    ModelSeamJudge,
     build_judge_prompt,
     resolve_judge_budget_usd,
 )
@@ -115,6 +126,77 @@ class TestJudgeBudget:
         budget.consume()
         with pytest.raises(JudgeBudgetExceededError):
             budget.consume()
+
+
+_PASS_REPLY = json.dumps({"verdict": "PASS", "reason": "explains it"})
+
+
+def _offline_model() -> TestModel:
+    return TestModel(custom_output_text=_PASS_REPLY, profile=ModelProfile(supports_json_schema_output=True))
+
+
+def _messages_api_refusing_forced_tool_choice(request: httpx2.Request) -> httpx2.Response:
+    if json.loads(request.content).get("tool_choice", {}).get("type") in {"any", "tool"}:
+        refusal = {"type": "invalid_request_error", "message": "forced tool_choice is not supported by this model"}
+        return httpx2.Response(400, json={"type": "error", "error": refusal})
+    return httpx2.Response(
+        200,
+        json={
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-5",
+            "content": [{"type": "text", "text": _PASS_REPLY}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        },
+    )
+
+
+def test_model_seam_judge_grades_a_model_that_refuses_a_forced_tool_choice() -> None:
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(_messages_api_refusing_forced_tool_choice))
+    model = AnthropicModel("claude-sonnet-5-5", provider=AnthropicProvider(api_key="offline", http_client=client))
+    with override_allow_model_requests(allow_model_requests=True):
+        verdict = ModelSeamJudge(model=model).grade(_spec(judge=JudgeSpec(rubric="x")), _run())
+    assert verdict == JudgeVerdict(passed=True, skipped=False, rationale="explains it")
+
+
+def test_model_seam_judge_runs_with_injected_offline_model() -> None:
+    spec = _spec(judge=JudgeSpec(rubric="The reply explains the change"))
+    verdict = ModelSeamJudge(model=_offline_model()).grade(spec, _run())
+    assert verdict == JudgeVerdict(passed=True, skipped=False, rationale="explains it")
+
+
+def test_model_seam_judge_reserves_from_the_suite_budget() -> None:
+    budget = ConservativeSuiteBudget(limit_usd=0.000001)
+    spec = _spec(judge=JudgeSpec(rubric="The reply explains the change"))
+    with patch("teatree.eval.judge.suite_budget_from_env", return_value=budget):
+        verdict = ModelSeamJudge(model=_offline_model()).grade(spec, _run())
+    assert verdict.skipped
+    assert "coverage incomplete" in verdict.rationale
+    assert budget.exhausted
+
+
+def test_model_seam_judge_times_out_a_model_that_never_returns() -> None:
+    async def never_return(*_args: object, **_kwargs: object) -> Any:
+        await asyncio.Event().wait()
+
+    results: list[JudgeVerdict] = []
+
+    def grade() -> None:
+        results.append(ModelSeamJudge(model=_offline_model()).grade(_spec(judge=JudgeSpec(rubric="x")), _run()))
+
+    worker = threading.Thread(target=grade, daemon=True)
+    with (
+        patch("teatree.eval.judge.WATCHDOG_SECONDS", 0.02),
+        patch.object(TestModel, "request", never_return),
+    ):
+        worker.start()
+        worker.join(timeout=20)
+
+    assert not worker.is_alive(), "the judge call exceeded its watchdog"
+    assert results == [JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")]
 
 
 class TestResolveJudgeBudget:

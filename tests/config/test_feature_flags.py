@@ -7,14 +7,11 @@ functions keep it honest. They go RED the moment an entry names a field that is
 not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ``OVERLAY_OVERRIDABLE_SETTINGS`` (the registration-drift class), lacks a
 ``tracking_issue`` or a valid ``stage``, or lets a ``DARK`` flag default to its
-ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
-without a code-reviewed stage demotion.
+ON value — a guard that keeps dark features from silently graduating without a
+code-reviewed stage change.
 
-The live registry is seeded with several real flags — mostly ``DARK`` plus a few
-``SETTLING`` (``incremental_push_gate``, graduated by #122;
-``directive_loop_enabled``, by #3895). ``REMOVE`` is not represented live, so
-the stage-discrimination invariants are proven non-vacuously over a MIXED FIXTURE rather
-than the live set's accidental composition.
+The live registry is empty after the gate switches became unconditional. Stage
+discrimination is proven over a mixed fixture.
 """
 
 import dataclasses
@@ -24,7 +21,6 @@ from teatree.config import (
     DURABLE_GATE_SETTINGS,
     FEATURE_FLAGS,
     OVERLAY_OVERRIDABLE_SETTINGS,
-    CriticGateMode,
     FeatureFlag,
     FlagStage,
     UserSettings,
@@ -58,20 +54,17 @@ def _mixed_stage_fixture() -> dict[str, FeatureFlag]:
 
 
 class TestRegistrySeededNonVacuously:
-    """The registry is seeded so every invariant below has real entries to bite on."""
+    """The retired live registry and fixture-based lifecycle checks stay explicit."""
 
-    def test_at_least_three_flags_registered(self) -> None:
-        assert len(FEATURE_FLAGS) >= 3
+    def test_no_retired_gate_remains_a_live_flag(self) -> None:
+        assert FEATURE_FLAGS == {}
 
     def test_stage_machinery_spans_every_stage_over_a_fixture(self) -> None:
-        # The live registry spans DARK + SETTLING but not REMOVE, so the multi-stage
+        # The live registry currently contains DARK flags, so the multi-stage
         # guard bites on a MIXED FIXTURE — proving the stage type exercises every stage
         # without pinning the live set's accidental composition.
         stages = {flag.stage for flag in _mixed_stage_fixture().values()}
         assert stages == set(FlagStage)
-
-    def test_canonical_seed_flag_present(self) -> None:
-        assert {"outer_loop_enabled", "factory_score_enabled"} <= set(FEATURE_FLAGS)
 
 
 class TestRegisteredHome:
@@ -92,9 +85,8 @@ class TestRegisteredHome:
         assert unknown == [], f"feature flags naming no UserSettings field: {unknown}"
 
     def test_every_flag_field_is_bool_or_a_typed_mode(self) -> None:
-        # The #104 non-bool extension: a flag field is a bool on/off toggle OR a
-        # StrEnum multi-state mode (``critic_gate_mode`` is tri-state
-        # off|advisory|blocking). A flag naming a plain int/float/str field is
+        # A flag field is a bool on/off toggle or a StrEnum mode.
+        # A flag naming a plain int/float/str field is
         # still registration drift.
         defaults = UserSettings()
         unsupported = sorted(key for key in FEATURE_FLAGS if not isinstance(getattr(defaults, key), (bool, StrEnum)))
@@ -162,26 +154,12 @@ class TestDarkDefaultsOff:
 
     def test_every_dark_flag_default_equals_off_value(self) -> None:
         defaults = UserSettings()
+        assert dark_flags() == {}
         for key, flag in dark_flags().items():
             assert getattr(defaults, key) == flag.off_value, (
                 f"DARK flag {key!r} defaults to {getattr(defaults, key)!r} but its off_value is "
                 f"{flag.off_value!r} — a dark feature must ship OFF by default"
             )
-
-    def test_outer_loop_enabled_pinned_dark_and_off(self) -> None:
-        flag = FEATURE_FLAGS["outer_loop_enabled"]
-        assert flag.stage is FlagStage.DARK
-        assert flag.off_value is False
-        assert UserSettings().outer_loop_enabled is False
-
-    def test_critic_gate_mode_pinned_dark_and_off(self) -> None:
-        # #104: the re-typed tri-state critic flag ships OFF by default — its
-        # off_value is the OFF member and the dataclass default matches it, so the
-        # critic gate can never ship armed/blocking without a deliberate config set.
-        flag = FEATURE_FLAGS["critic_gate_mode"]
-        assert flag.stage is FlagStage.DARK
-        assert flag.off_value is CriticGateMode.OFF
-        assert UserSettings().critic_gate_mode is CriticGateMode.OFF
 
     def test_off_value_is_load_bearing_for_the_invariant(self) -> None:
         # The dark-defaults-off invariant compares ``default == off_value`` — NOT a
@@ -201,65 +179,17 @@ class TestDarkDefaultsOff:
             assert (not ships_off_default) != off_value
 
 
-class TestSafetyPostureGatesStayDark:
-    """A resilience default graduating must never carry a safety-posture gate with it."""
+class TestSafetyPostureStages:
+    """Safety gates no longer depend on dark flags."""
 
-    def test_safety_posture_gates_stay_dark(self) -> None:
-        # The deep-merge / safety-posture dark gates MUST NOT graduate alongside the
-        # resilience-recovery flag: they stay OFF by default, each equal to its off_value.
-        defaults = UserSettings()
-        safety_posture_flags = {
-            "critic_gate_mode",
-            "send_proxy_mode",
-            "require_debt_delta",
-            "require_executed_repro",
-            "require_merge_quality_verdict",
-            "ci_eval_heal_autofix_enabled",
-        }
-        for key in safety_posture_flags:
-            flag = FEATURE_FLAGS[key]
-            assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it is a safety-posture gate"
-            assert getattr(defaults, key) == flag.off_value, f"{key!r} must ship OFF by default"
-
-
-class TestDirectiveIntakeGraduation:
-    """``directive_loop_enabled`` graduated DARK -> SETTLING (default ON) — #3895.
-
-    The owner-authorised autonomous-by-default posture: a captured directive is
-    interpreted with no operator opt-in, and the intake arc terminates at the structural
-    human ratify gate. The EXECUTION arc's own guards (``factory_score_enabled``, a live
-    critic) did NOT graduate with it, so nothing self-modifies at default resolution.
-    """
-
-    def test_directive_loop_graduated_to_settling(self) -> None:
-        flag = FEATURE_FLAGS["directive_loop_enabled"]
-        assert flag.stage is FlagStage.SETTLING
-        assert flag.off_value is False
-
-    def test_directive_loop_defaults_on_for_a_fresh_deploy(self) -> None:
-        assert UserSettings().directive_loop_enabled is True
-
-    def test_the_graduated_flag_left_the_dark_set(self) -> None:
-        # The stage move is what lets the key ship default-ON — `TestDarkDefaultsOff` holds
-        # every DARK flag equal to its own off_value. It does NOT release the key from
-        # `pinned_fail_closed_keys()`: a graduated flag's ON default is a code-reviewed
-        # decision, and a snapshot carrying a live box's OFF back into the shipped file
-        # would undo that graduation for every fresh install.
-        assert "directive_loop_enabled" not in dark_flags()
-
-    def test_the_execution_arc_guards_did_not_graduate(self) -> None:
-        # The bound on self-modification: the score metric and the critic gate stay DARK
-        # and OFF, so intake being live never reaches a config write or a merge.
-        defaults = UserSettings()
-        for key in ("factory_score_enabled", "critic_gate_mode"):
-            flag = FEATURE_FLAGS[key]
-            assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it bounds self-modification"
-            assert getattr(defaults, key) == flag.off_value
+    def test_no_safety_posture_gate_stays_dark(self) -> None:
+        assert FEATURE_FLAGS == {}
 
 
 class TestQueryHelpers:
     def test_is_feature_flag_true_for_flag_false_for_setting(self) -> None:
-        assert is_feature_flag("outer_loop_enabled") is True
+        assert is_feature_flag("critic_gate_mode") is False
+        assert is_feature_flag("send_proxy_allowlist") is False
         assert is_feature_flag("mode") is False
         assert is_feature_flag("not_a_setting_at_all") is False
 
@@ -290,8 +220,8 @@ class TestAuditRenderSurfacesRemoveLoud:
         assert "legacy_toggle" in rendered
 
     def test_dark_and_settling_flags_are_not_shouted(self) -> None:
-        rendered = render_flags_audit(FEATURE_FLAGS)
-        # The live registry has no REMOVE flag, so the loud banner must not appear.
+        fixture = {key: flag for key, flag in _mixed_stage_fixture().items() if flag.stage is not FlagStage.REMOVE}
+        rendered = render_flags_audit(fixture)
         assert REMOVE_STAGE_BANNER not in rendered
 
 
@@ -325,14 +255,16 @@ class TestATrackingIssueThatResolvesToNothingIsSaidSo:
     def test_the_audit_stays_quiet_for_a_resolvable_one(self) -> None:
         assert UNTRACKED_BANNER not in render_flags_audit({"governed": _flag("souliane/teatree#118")})
 
-    def test_the_live_registry_reports_exactly_the_entries_that_resolve_to_nothing(self) -> None:
-        rendered = render_flags_audit(FEATURE_FLAGS)
-        assert set(untracked_flags()) < set(FEATURE_FLAGS), "a mixed live registry is what makes this non-vacuous"
-        assert rendered.count(UNTRACKED_BANNER) == len(untracked_flags())
+    def test_a_mixed_registry_reports_exactly_the_entries_that_resolve_to_nothing(self) -> None:
+        fixture = {"tracked": _flag("#118"), "untracked": _flag("north-star PR-3 debt_delta_gate")}
+        rendered = render_flags_audit(fixture)
+        assert set(untracked_flags(fixture)) == {"untracked"}
+        assert rendered.count(UNTRACKED_BANNER) == 1
 
-    def test_audit_lists_every_live_flag(self) -> None:
-        rendered = render_flags_audit(FEATURE_FLAGS)
-        for key in FEATURE_FLAGS:
+    def test_audit_lists_every_fixture_flag(self) -> None:
+        fixture = _mixed_stage_fixture()
+        rendered = render_flags_audit(fixture)
+        for key in fixture:
             assert key in rendered
 
     def test_empty_registry_renders_a_placeholder_not_a_crash(self) -> None:

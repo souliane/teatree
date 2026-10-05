@@ -1172,7 +1172,6 @@ class TestE2eExternal(_ResolvedSpecsDir):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=None),
-                patch.object(e2e_mod, "_detect_local_port", return_value=None),
                 pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("e2e", "external")
@@ -1423,7 +1422,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
-                e2e_mod._clone_or_update_e2e_repo(self._make_repo())
+                e2e_runners_mod.clone_or_update_e2e_repo(self._make_repo())
 
             call_args = mock_run.call_args[0][0]
             assert "clone" in call_args
@@ -1447,7 +1446,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=capture_run),
             ):
-                e2e_mod._clone_or_update_e2e_repo(self._make_repo())
+                e2e_runners_mod.clone_or_update_e2e_repo(self._make_repo())
 
             assert any("fetch" in cmd for cmd in calls)
             assert any("reset" in cmd for cmd in calls)
@@ -1462,21 +1461,21 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)),
             ):
-                result = e2e_mod._clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
+                result = e2e_runners_mod.clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
 
             assert (
                 result == e2e_specs_mod.checkout_path(tmp_path / "e2e-repos", "demo-svc", "feature/e2e") / "playwright"
             )
 
     def test_default_ref_is_repo_branch(self) -> None:
-        """With no override, the cloned ref is ``repo.branch`` (back-compat)."""
+        """With no override, the cloned ref is ``repo.branch``."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
-                e2e_mod._clone_or_update_e2e_repo(self._make_repo())
+                e2e_runners_mod.clone_or_update_e2e_repo(self._make_repo())
             call_args = mock_run.call_args[0][0]
             assert "feature/e2e" in call_args
 
@@ -1488,7 +1487,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 
             repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
             with patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"):
-                root = e2e_mod._clone_or_update_e2e_repo(repo, "mr/working-branch")
+                root = e2e_runners_mod.clone_or_update_e2e_repo(repo, "mr/working-branch")
 
             head = subprocess.run(
                 [_GIT, "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1507,9 +1506,9 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
-                pytest.raises(e2e_mod.E2eBranchNotFoundError) as exc_info,
+                pytest.raises(e2e_runners_mod.E2eBranchNotFoundError) as exc_info,
             ):
-                e2e_mod._clone_or_update_e2e_repo(repo, "no-such-branch")
+                e2e_runners_mod.clone_or_update_e2e_repo(repo, "no-such-branch")
             assert "no-such-branch" in str(exc_info.value)
 
     def _clone_cmd_for(self, *, url: str, ssh_on_path: str | None, ssh_identity: bool = False) -> list[str]:
@@ -1536,7 +1535,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
                 os.environ.pop("SSH_AUTH_SOCK", None)
-                e2e_mod._clone_or_update_e2e_repo(repo)
+                e2e_runners_mod.clone_or_update_e2e_repo(repo)
             return list(mock_run.call_args[0][0])
 
     def test_ssh_url_resolves_to_https_when_the_host_has_no_ssh_client(self) -> None:
@@ -1591,9 +1590,9 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             repo = config_mod.E2ERepo(name="specs-repo", url=str(unreachable), branch="feature/e2e")
             with (
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
-                pytest.raises(e2e_mod.E2eSpecsRemoteUnreachableError) as exc_info,
+                pytest.raises(e2e_runners_mod.E2eSpecsRemoteUnreachableError) as exc_info,
             ):
-                e2e_mod._clone_or_update_e2e_repo(repo, "ac/us03-bdd-scenario-realign")
+                e2e_runners_mod.clone_or_update_e2e_repo(repo, "ac/us03-bdd-scenario-realign")
 
             message = str(exc_info.value)
             assert "AUTHENTICATION" in message
@@ -1621,7 +1620,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 pytest.raises(utils_run_mod.CommandFailedError),
             ):
-                e2e_mod._clone_or_update_e2e_repo(repo)
+                e2e_runners_mod.clone_or_update_e2e_repo(repo)
 
     def test_ensure_external_e2e_dependencies_runs_npm_ci_for_locked_project(self) -> None:
         """Managed external clones install their Playwright project deps before running."""
@@ -2033,7 +2032,7 @@ class TestE2eExternalRepo(TestCase):
             patch.object(
                 e2e_runners_mod,
                 "clone_or_update_e2e_repo",
-                side_effect=e2e_mod.E2eBranchNotFoundError(name="demo-svc", ref="gone", url="git@x:o/s.git"),
+                side_effect=e2e_runners_mod.E2eBranchNotFoundError(name="demo-svc", ref="gone", url="git@x:o/s.git"),
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2147,7 +2146,7 @@ class TestE2EResolveTarget(TestCase):
             patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
             get_overlay.return_value.e2e.env_extras.return_value = {}
-            env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", target="qa")
+            env = e2e_runners_mod.build_e2e_env("https://tenant-qa.example.com", target="qa")
         assert env["T3_E2E_TARGET"] == "qa"
         assert env["BASE_URL"] == "https://tenant-qa.example.com"
         assert env["CI"] == "1"

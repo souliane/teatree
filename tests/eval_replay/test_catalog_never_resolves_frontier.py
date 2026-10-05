@@ -3,7 +3,7 @@
 souliane/teatree run 28515055436 (the CI workflow's failing weekly dispatch)
 surfaced that a scenario declaring ``phase: coding``/``reviewing``/``planning``
 silently resolves through ``DEFAULT_PHASE_MODELS`` to the ``frontier`` tier —
-contradicting the "the automated eval lane defaults to Sonnet 5" goal even
+contradicting the "the automated eval lane defaults to the balanced tier" goal even
 though no scenario declares ``tier: frontier`` directly. This pins the fix at
 the CATALOG level: not "no scenario says frontier" but "no scenario CAN reach
 frontier by any resolution path" (``model`` / ``tier`` / ``phase`` / default).

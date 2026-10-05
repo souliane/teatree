@@ -1,19 +1,8 @@
 """SessionStart skill injection for an autoloaded session (#3869).
 
-``autoload`` ENGAGES a session, but engagement is not loading. The only skill-selection
-path was wired to ``UserPromptSubmit`` and returns early without a prompt, so with
-``autoload = true`` the skills arrived only AFTER the first message had been answered —
-and a session that never receives a ``UserPromptSubmit`` (a dispatched worker, a session
-whose first act is a tool call) got nothing at all. The first turn is usually the one that
-sets the approach for the whole session, so "suggested afterwards" is the wrong time.
-
-This module answers the SAME question with the SAME resolver
-(``scripts/lib/skill_loader.suggest_skills`` → ``SkillLoadingPolicy.select_for_prompt_hook``)
-at the SessionStart moment instead. It is deliberately not a second selection path: a
-second answer to "which skills apply" is the #3854 duplication class, and the two answers
-would drift. The prompt is passed EMPTY, which is honest rather than lossy — the resolver
-uses the prompt only for the loose supplementary keyword regexes, and there is no task
-intent to scan before the first turn.
+``autoload`` ENGAGES a session, but engagement is not loading: the skills must arrive
+before the first turn, which usually sets the approach for the whole session. This is the
+one skill-selection path (``scripts/lib/skill_loader.suggest_skills``).
 
 The result is written to ``<session>.pending``, the same demand set the PreToolUse
 skill-loading gate reads, so the injection and the enforcement cannot disagree.
@@ -55,7 +44,7 @@ def session_start_skill_context(session_id: str) -> str:
     """The load-these-skills directive for *session_id*, or ``""`` when there is nothing to say.
 
     Writes the hard demand set to ``<session>.pending`` as a side effect — the SAME file the
-    ``UserPromptSubmit`` path writes and the PreToolUse gate enforces.
+    PreToolUse gate enforces.
 
     MUST be called BEFORE the statusline skill seed (``engagement.engage(seed_skills=True)``).
     That seed writes the lifecycle-core names into ``<session>.skills``, which is the LOADED
@@ -68,6 +57,7 @@ def session_start_skill_context(session_id: str) -> str:
     if not session_id:
         return ""
     try:
+        from hooks.scripts.engagement import autoload_skill_demand  # noqa: PLC0415 — deferred: cold-hook import
         from hooks.scripts.hook_router import (  # noqa: PLC0415 deferred back-import: avoids an import cycle
             _ensure_state_dir,
             _state_file,
@@ -81,16 +71,15 @@ def session_start_skill_context(session_id: str) -> str:
         )
 
         _ensure_state_dir()
-        result = _suggest(build_skill_loader_input("", session_id))
-        if not result:
-            return ""
+        loader_input = build_skill_loader_input(session_id)
+        try:
+            result = _suggest(loader_input)
+        except Exception:  # noqa: BLE001 — the autoload demand must not depend on the suggester surviving
+            result = {}
+        result["suggestions"] = [*autoload_skill_demand(loader_input["loaded_skills"]), *result.get("suggestions", [])]
         return render_skill_suggestion_message(
             result,
             pending=_state_file(session_id, "pending"),
-            # The ``t3`` CLI reminder is keyed off workspace/infrastructure INTENT in the
-            # prompt. There is no prompt here, so there is no intent to key off, and
-            # emitting it unconditionally would put a reminder on every single session.
-            t3_reminder="",
             normalize=normalize_skill_name,
         )
     except Exception:  # noqa: BLE001 — crash-proof hook: never let a skill hint break SessionStart

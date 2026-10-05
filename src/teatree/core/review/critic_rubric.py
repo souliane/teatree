@@ -26,8 +26,7 @@ LLM (the semantic net, advisory)
     the gate records findings from the verdict, never blocks on it — and they do
     NOT read any self-declared ``extra`` key that no producer writes.
 
-The registry is the frozen-dataclass + dotted-path-resolve + registry-walk-test
-idiom of :mod:`teatree.core.factory.chokepoint_registry`: a conformance test resolves every
+A conformance test resolves every
 DETERMINISTIC item's ``predicate_path`` and asserts every LLM item's slug is one the
 critic dispatch prompt actually asks for — a renamed predicate or an LLM item the
 prompt forgets fails the build instead of going phantom.
@@ -255,8 +254,7 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     ),
     # The design critic (north-star PR-5): four LLM items judged at
     # ``transition="plan"`` for directive tickets — the generic-vs-hack judgment the
-    # deterministic ``mechanism_placement`` section can't make. Advisory-first, armed by
-    # the ``directive_loop_enabled`` flag; the deterministic ``mechanism_conforms``
+    # deterministic ``mechanism_placement`` section can't make. Advisory-first; the deterministic ``mechanism_conforms``
     # section is the blocking teeth, these are the semantic net. The full judging
     # rubric (the ratified sketch, the N=2 litmus) lives in
     # ``design_critic_gate.build_design_contract``.
@@ -300,11 +298,6 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
         transition=_PLAN_TRANSITION,
     ),
 )
-
-
-def rubric_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, ...]:
-    """The active critic rubric for *transition*, in seeded order."""
-    return tuple(item for item in CRITIC_RUBRIC if item.transition == transition)
 
 
 def deterministic_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, ...]:

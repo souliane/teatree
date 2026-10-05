@@ -17,7 +17,12 @@ from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostErro
 from teatree.core.gates.orphan_guard import classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
-from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr, skip_for_classified
+from teatree.core.management.commands._ensure_pr import (
+    EnsurePrResult,
+    create_or_defer_pr,
+    discharge_if_settled,
+    skip_for_classified,
+)
 from teatree.core.management.commands._pending_pr_commands import PendingPrCommands
 from teatree.core.management.commands._pr_control_db import ControlDbUnreachableError, unreachable_control_db_reason
 from teatree.core.management.commands._pr_preview import (
@@ -179,7 +184,7 @@ def _run_ship_gates(
         return precheck_error
     # Fleet-safety Stage 2: refuse to open a PR for a claimed work item this
     # instance no longer holds (stolen claim, or ref infra unreachable). Inert
-    # unless ``fleet_claim_enabled`` is on and the ticket carries a fleet-claim.
+    # when the ticket carries no fleet claim.
     fence_error = _run_fleet_claim_fence_gate(ticket, worktree)
     if fence_error is not None:
         return fence_error
@@ -455,11 +460,8 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
                 error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
             )
 
-        already_answered = skip_for_classified(report, repo_path, branch_name)
-        if already_answered is not None:
-            return already_answered
-
-        return create_or_defer_pr(repo_path, branch_name)
+        result = skip_for_classified(report, repo_path, branch_name) or create_or_defer_pr(repo_path, branch_name)
+        return discharge_if_settled(repo_path, branch_name, result)
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
@@ -599,8 +601,6 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         creation — which is not an on-behalf colleague-facing post — remains
         ungated.
 
-        The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
-        for one release so existing scripts keep working.
         """
         host = code_host_from_overlay()
         if host is None:
@@ -620,15 +620,3 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
             )
         except (OnBehalfPostBlockedError, OutboundBlockedError, BlockedTestPlanPostError, _TestPlanMediaError) as err:
             return {"error": str(err)}
-
-    @command(name="post-evidence", hidden=True, deprecated=True)
-    def post_evidence(
-        self,
-        mr_iid: int,
-        repo: str = "",
-        title: str = "Test Plan",
-        body: str = "",
-        files: list[str] | None = None,
-    ) -> CommentResult:
-        """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
-        return self.post_test_plan(mr_iid, repo=repo, title=title, body=body, files=files)

@@ -51,9 +51,18 @@ def _seed_config_db(tmp_path: Path, **rows: object) -> Path:
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         for key, value in rows.items():
+            stored_value = (
+                [
+                    f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+                    for entry in value
+                    for host in (("github.com", "gitlab.com") if "." not in entry.split("/", 1)[0] else ("",))
+                ]
+                if key == "private_repos" and isinstance(value, list)
+                else value
+            )
             conn.execute(
                 "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-                (key, json.dumps(value)),
+                (key, json.dumps(stored_value)),
             )
         conn.commit()
     finally:
@@ -135,20 +144,19 @@ def config(tmp_path: Path) -> Path:
     return _seed_config_db(
         tmp_path,
         private_repos=["acme-internal", "internalcorp"],
-        internal_publish_namespaces=["acme-internal", "internalcorp"],
-        banned_terms=["acmecorp", "acmewidget"],
+        banned_term_registry={"leak": [], "prose_collider": ["acmecorp", "acmewidget"]},
     )
 
 
 @pytest.fixture
 def private_repos_only_config(tmp_path: Path) -> Path:
     # Fix 3: the user's CURRENT config has only ``private_repos`` (no
-    # ``internal_publish_namespaces`` key). The destination skip must still
+    # ``private_repos`` key). The destination skip must still
     # fire for those namespaces by reusing the existing allowlist.
     return _seed_config_db(
         tmp_path,
         private_repos=["acme-internal", "internalcorp"],
-        banned_terms=["acmecorp", "acmewidget"],
+        banned_term_registry={"leak": [], "prose_collider": ["acmecorp", "acmewidget"]},
     )
 
 
@@ -161,7 +169,7 @@ def host_qualified_config(tmp_path: Path) -> Path:
     return _seed_config_db(
         tmp_path,
         private_repos=["github.com/internalcorp/private-svc"],
-        banned_terms=["acmecorp"],
+        banned_term_registry={"leak": [], "prose_collider": ["acmecorp"]},
     )
 
 
@@ -183,9 +191,7 @@ def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
     payload = banned_terms_scanner.extract_publish_payload("Bash", tool_input)
     if payload is None:
         return "allow"
-    skipped = banned_terms_scanner.has_override("Bash", tool_input) or public_visibility.gate_skips_for_visibility(
-        command, cwd, config_path=config_path
-    )
+    skipped = public_visibility.gate_skips_for_visibility(command, cwd, config_path=config_path)
     if skipped or banned_terms_scanner.scan_text(payload, config_path=config_path) is None:
         return "allow"
     if publish_surface.carve_out_applies("Bash", command, payload, cwd, config_path=config_path):
@@ -470,7 +476,7 @@ class TestMustDeny:
 
 
 class TestPrivateReposAllowlistReuse:
-    """Fix 3: a ``private_repos``-only config (no ``internal_publish_namespaces``) skips internal posts."""
+    """Fix 3: a ``private_repos``-only config (no ``private_repos``) skips internal posts."""
 
     def test_private_repos_only_skips_internal_post(self, private_repos_only_config: Path) -> None:
         cmd = 'glab mr create -R acme-internal/x --title "feat: acmecorp" --description "acmecorp acmewidget"'
@@ -568,9 +574,11 @@ class TestProbeResolvedTargetVisibility:
 
     @pytest.fixture
     def empty_allowlist_config(self, tmp_path: Path) -> Path:
-        # No private_repos / internal_publish_namespaces entry: a target is
+        # No private_repos / private_repos entry: a target is
         # provably private ONLY through the live probe, never the allowlist.
-        return _seed_config_db(tmp_path, banned_terms=["acmecorp", "acmewidget"])
+        return _seed_config_db(
+            tmp_path, banned_term_registry={"leak": [], "prose_collider": ["acmecorp", "acmewidget"]}
+        )
 
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -677,7 +685,7 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         return _seed_config_db(
             tmp_path,
             private_repos=["ownoverlay-org", "customer-org"],
-            banned_terms=["customercorp", "customerwidget"],
+            banned_term_registry={"leak": [], "prose_collider": ["customercorp", "customerwidget"]},
         )
 
     @pytest.fixture(autouse=True)
@@ -749,7 +757,7 @@ class TestLeakGateEnforcesOnPublicTargetsOnly:
         # must-ALLOW: a colleague repo NOT in the offline allowlist, proven
         # private ONLY by the live probe, still skips -- the visibility is
         # resolved from the command target via the probe.
-        cfg = _seed_config_db(tmp_path, banned_terms=["customercorp"])
+        cfg = _seed_config_db(tmp_path, banned_term_registry={"leak": [], "prose_collider": ["customercorp"]})
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PRIVATE")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")

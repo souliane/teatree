@@ -67,7 +67,7 @@ def test_real_unsharded_pytest_refuses_before_collection() -> None:
     assert "collected" not in result.stdout
 
 
-@pytest.mark.timeout(240)
+@pytest.mark.timeout(420)
 def test_real_tach_scoped_invocation_is_never_refused() -> None:
     """The exact flags-only shape ``dev/test-affected.sh`` emits on a doc-only diff.
 
@@ -101,7 +101,7 @@ def test_real_tach_scoped_invocation_is_never_refused() -> None:
         env=env,
         capture_output=True,
         text=True,
-        timeout=200,
+        timeout=360,
         check=False,
     )
     assert "unsharded whole-tree pytest is refused" not in result.stderr

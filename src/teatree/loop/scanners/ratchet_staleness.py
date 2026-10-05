@@ -19,8 +19,7 @@ fast-forward, trading one stale artifact for another.
 
 Observe-only, mirroring :mod:`teatree.loop.scanners.ci_eval_heal` (which flags
 open sessions and never fixes them). Opening the repair PR by itself would be the
-sibling half — the shape ``ci_eval_heal`` puts behind its own dark
-``ci_eval_heal_autofix_enabled`` flag — and is deliberately not built here.
+sibling half and is deliberately not built here.
 """
 
 import logging

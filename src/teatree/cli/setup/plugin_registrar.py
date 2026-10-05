@@ -117,7 +117,6 @@ class PluginRegistrar:
         the operator's own file is worth more than this registration.
         """
         try:
-            self._cleanup_legacy()
             self._register_marketplace()
             self.register_installed()
             self.enable()
@@ -162,29 +161,6 @@ class PluginRegistrar:
             return
         plugins[PLUGIN_ID] = True
         _write_json(resolved, data)
-
-    @staticmethod
-    def _cleanup_legacy() -> None:
-        """Remove legacy symlink-based plugin setup from before marketplace-style registration."""
-        plugins_dir = Path.home() / ".claude" / "plugins"
-        link = plugins_dir / PLUGIN_NAME
-        if link.is_symlink():
-            link.unlink()
-            typer.echo(f"OK    Removed legacy plugin symlink: {link}")
-
-        resolved = _settings_path()
-        data = _read_json(resolved)
-        enabled = data.get("enabledPlugins", {})
-        legacy_keys = [k for k in enabled if k.startswith("/") and k.endswith(f"/{PLUGIN_NAME}")]
-        if legacy_keys:
-            for key in legacy_keys:
-                del enabled[key]
-            _write_json(resolved, data)
-            typer.echo(f"OK    Removed {len(legacy_keys)} legacy enabledPlugins path entry(ies).")
-
-        cache_root = plugins_dir / "cache" / MARKETPLACE_NAME / PLUGIN_NAME
-        if cache_root.is_dir():
-            shutil.rmtree(cache_root)
 
     def ensure_marketplace_symlink(self) -> None:
         """Create ``plugins/t3 -> ..`` inside the repo for marketplace source resolution."""

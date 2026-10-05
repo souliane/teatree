@@ -1,11 +1,14 @@
 """``select_specs`` — the one chokepoint composing name / lane / surface / shard."""
 
+import json
 from pathlib import Path
 from unittest import mock
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
+from teatree.cli import app
 from teatree.cli.eval.catalog_selection import select_specs
 from teatree.eval.models import EvalSpec
 
@@ -60,7 +63,7 @@ def test_a_well_formed_shard_partitions_the_catalog() -> None:
 
 def test_a_rotating_shard_reports_which_shard_it_resolved_and_why(capsys: pytest.CaptureFixture[str]) -> None:
     select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/3")
-    reported = capsys.readouterr().out
+    reported = capsys.readouterr().err
     assert "rotate/3" in reported
     assert "/3 (UTC " in reported
 
@@ -69,7 +72,7 @@ def test_a_rotating_shard_selects_exactly_the_subset_it_reported(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     selected = select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/3")
-    resolved = capsys.readouterr().out.split("->")[1].split("(")[0].strip()
+    resolved = capsys.readouterr().err.split("->")[1].split("(")[0].strip()
     assert [s.name for s in selected] == [
         s.name for s in select_specs(_CATALOG, None, lane=None, surface=None, shard=resolved)
     ]
@@ -85,3 +88,21 @@ def test_a_malformed_rotating_total_exits_two(capsys: pytest.CaptureFixture[str]
         select_specs(_CATALOG, None, lane=None, surface=None, shard="rotate/0")
     assert exc.value.exit_code == 2
     assert "rotate" in capsys.readouterr().err
+
+
+def test_scheduled_json_command_keeps_shard_announcement_out_of_stdout(tmp_path: Path) -> None:
+    output = tmp_path / "eval.json"
+    with (
+        mock.patch("teatree.cli.eval.app.ensure_django"),
+        mock.patch("teatree.cli.eval.app.discover_specs", return_value=_CATALOG),
+        mock.patch(
+            "teatree.cli.eval.app.dispatch_resolved_run", side_effect=lambda *_, **__: typer.echo('{"scenarios": []}')
+        ),
+    ):
+        result = CliRunner().invoke(
+            app, ["eval", "run", "--lane", "clean_room", "--shard", "rotate/16", "--format", "json", "--no-persist"]
+        )
+    assert result.exit_code == 0, result.output
+    output.write_text(result.stdout, encoding="utf-8")
+    assert json.loads(output.read_text(encoding="utf-8")) == {"scenarios": []}
+    assert "eval shard:" in result.stderr

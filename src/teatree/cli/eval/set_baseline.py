@@ -41,9 +41,10 @@ from teatree.eval.matrix_payload import MatrixCell, MatrixPayloadError, load_mat
 from teatree.eval.presets import BASELINE_HEADER, BASELINE_PRESET_PATH
 from teatree.utils.django_bootstrap import ensure_django
 
-#: model id -> abstract tier name, the reverse of TIER_MODELS — a matrix column
-#: not one of these three shipped ids cannot be mapped back to a tier at all.
-_TIER_BY_MODEL: dict[str, str] = {model: tier for tier, model in TIER_MODELS.items()}
+#: Model id -> strongest matching abstract tier, so shared ids never imply a cheaper pass.
+_TIER_BY_MODEL: dict[str, str] = {
+    model: tier for tier, model in sorted(TIER_MODELS.items(), key=lambda entry: tier_rank(entry[0]))
+}
 
 _FRONTIER_TIER = "frontier"
 
@@ -169,8 +170,8 @@ def _cheapest_passing_tier(passing_models: list[str]) -> str | None:
 
 
 def _model_tier_rank(model: str) -> int:
-    """``tier_rank`` narrowed to a required model id, so ``min`` still returns ``str``."""
-    return tier_rank(model)
+    """Rank a matrix column by its preserved abstract tier."""
+    return tier_rank(_TIER_BY_MODEL[model])
 
 
 def _write_baseline(path: Path, scenario_tiers: dict[str, str], frontier_ok: set[str]) -> None:

@@ -16,13 +16,11 @@ sits in ``ship()``.
 Short-circuits cheapest / most-permissive first, mirroring
 ``check_fix_record_dod`` and ``check_e2e_mandatory``:
 
-1. ``require_executed_repro`` OFF for the overlay -> pass (DARK default: a total
-no-op at ``ship()`` for every ticket until an overlay opts in).
-2. not a FIX ticket -> pass (reuses ``fix_dod_gate.is_fix`` — the #86 SSOT, so
+1. not a FIX ticket -> pass (reuses ``fix_dod_gate.is_fix`` — the #86 SSOT, so
 kind classification never diverges).
-3. a human-authorized ``ReproWaiver`` -> pass (logged for audit).
-4. a provenance-verified RED->GREEN pair -> pass.
-5. otherwise -> raise :class:`ForcedReproGateError` (naming both remedies).
+2. a human-authorized ``ReproWaiver`` -> pass (logged for audit).
+3. a provenance-verified RED->GREEN pair -> pass.
+4. otherwise -> raise :class:`ForcedReproGateError` (naming both remedies).
 
 Because it is an :class:`InvalidTransitionError` subclass, a ``ship()`` that
 hits it rolls the advance back and the FSM stays put (identical to
@@ -32,7 +30,6 @@ hits it rolls the advance back and the FSM stays put (identical to
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
 from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
@@ -55,10 +52,6 @@ class ForcedReproGateError(InvalidTransitionError):
     """
 
 
-def _require_executed_repro(overlay_name: str | None) -> bool:
-    return bool(get_effective_settings(overlay_name).require_executed_repro)
-
-
 def _deny_message(ticket: "Ticket") -> str:
     return (
         f"Refusing to ship FIX ticket {ticket.pk} — a fix cannot ship without an EXECUTED, provenance-verified "
@@ -70,15 +63,12 @@ def _deny_message(ticket: "Ticket") -> str:
         f"  2. OR a human-authorized waiver for a genuinely repro-less failure (a race/heisenbug):\n"
         f"       t3 <overlay> repro waive {ticket.pk} --approver <user-id> --reason '<why repro-less>'\n"
         f"     the waiver requires the human user — a maker/coding-agent/loop id is refused.\n"
-        f"The operator can disable the gate entirely: "
-        f"t3 <overlay> config_setting set require_executed_repro false --overlay <name>."
+        f"Record a verified reproduction or a human-authorized waiver, then retry."
     )
 
 
 def check_forced_repro(ticket: "Ticket") -> None:
     """Refuse the ship transition when a FIX ticket lacks an executed repro (#118)."""
-    if not _require_executed_repro(ticket.overlay or None):
-        return
     if not is_fix(ticket):
         return
     if ReproWaiver.objects.filter(ticket=ticket).exists():
@@ -89,4 +79,18 @@ def check_forced_repro(ticket: "Ticket") -> None:
     raise ForcedReproGateError(_deny_message(ticket))
 
 
+def check_red_repro(ticket: "Ticket") -> None:
+    """Refuse FIX coding completion unless the pre-fix failing run was recorded."""
+    if not is_fix(ticket) or ReproWaiver.objects.filter(ticket=ticket).exists():
+        return
+    if ReproEvidence.objects.filter(ticket=ticket).exclude(red_exit_code=0).exists():
+        return
+    msg = (
+        f"Refusing to complete coding for FIX ticket {ticket.pk}: record an executed RED reproduction "
+        "against the pre-fix HEAD with `repro record-red` before applying the fix."
+    )
+    raise ForcedReproGateError(msg)
+
+
 register_gate("forced_repro", check_forced_repro)
+register_gate("red_repro", check_red_repro)

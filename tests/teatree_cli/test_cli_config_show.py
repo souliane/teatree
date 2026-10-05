@@ -9,6 +9,9 @@ invariant turns on.
 """
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest import mock
 
 from django.test import TestCase
 from typer.testing import CliRunner
@@ -16,9 +19,17 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.config_view import build_config_view
 from teatree.config import FEATURE_FLAGS
+from teatree.config.feature_flags import FeatureFlag, FlagStage
 from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
+
+
+@contextmanager
+def _fixture_flag() -> Iterator[None]:
+    flag = FeatureFlag(field="contribute", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture")
+    with mock.patch.dict(FEATURE_FLAGS, {"contribute": flag}):
+        yield
 
 
 class TestBuildConfigView(TestCase):
@@ -65,18 +76,16 @@ class TestBuildConfigView(TestCase):
         assert "control DB" in names
 
     def test_feature_flags_are_partitioned_out_of_intent(self) -> None:
-        view = build_config_view()
-        # A governed feature flag is NOT a durable setting: it must not appear in the
-        # user-facing intent dump — it lives in its own stage-labelled flags section.
-        for key in FEATURE_FLAGS:
-            assert key not in view.intent, f"feature flag {key!r} leaked into the intent dump"
-        flag_names = {entry["name"] for entry in view.flags}
-        assert set(FEATURE_FLAGS) <= flag_names
+        with _fixture_flag():
+            view = build_config_view()
+        assert "contribute" not in view.intent
+        assert {entry["name"] for entry in view.flags} == {"contribute"}
 
     def test_flags_section_carries_stage_and_tracking(self) -> None:
-        view = build_config_view()
+        with _fixture_flag():
+            view = build_config_view()
         by_name = {entry["name"]: entry for entry in view.flags}
-        outer = by_name["outer_loop_enabled"]
+        outer = by_name["contribute"]
         assert outer["stage"] == "dark"
         assert outer["tracking_issue"]
         assert outer["value"] is False

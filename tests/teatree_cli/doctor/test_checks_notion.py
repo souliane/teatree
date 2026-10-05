@@ -121,6 +121,13 @@ class TestEachStateNamesItsOwnRemedy:
         assert "config_setting set notion_token_pass_key" in credential.line()
         assert notion.requests == [], "nothing is asked of Notion before the entry is even named"
 
+    def test_the_route_command_uses_the_prefix_the_cli_accepts(self, notion: FakeNotion) -> None:
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("NOTION_TOKEN", None)
+            credential = probe_notion_credential("t3-acme", StubOverlayConfig(""))
+
+        assert "`t3 acme config_setting set notion_token_pass_key '\"<entry>\"' --overlay t3-acme`" in credential.line()
+
     def test_no_token_names_the_setup_command(self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("NOTION_TOKEN", raising=False)
         monkeypatch.setattr("teatree.llm.credentials.read_pass", lambda _key: "")
@@ -165,6 +172,9 @@ class TestAWorkingTokenIsCheckedAgainstTrackedPages(TestCase):
         self.monkeypatch.setattr(
             "teatree.backends.notion.credentials.overlay_notion_pass_key", lambda _name=None: _PASS_KEY
         )
+        self.monkeypatch.setattr(
+            "teatree.backends.notion.credentials.overlay_notion_pass_key", lambda _name=None: _PASS_KEY
+        )
 
     def test_every_ungranted_page_an_in_flight_ticket_tracks_is_named(self) -> None:
         ticket = TicketFactory(overlay="acme", extra={"notion_url": f"https://www.notion.so/Spec-{_UNSHARED_PAGE}"})
@@ -177,6 +187,23 @@ class TestAWorkingTokenIsCheckedAgainstTrackedPages(TestCase):
         assert credential.state is NotionCredentialState.UNGRANTED
         assert credential.ungranted == (f"page {_UNSHARED_PAGE} (ticket {ticket.pk})",)
         assert "Connections" in credential.line()
+
+    def test_the_ungranted_line_says_what_the_404_cannot_prove(self) -> None:
+        TicketFactory(overlay="acme", extra={"notion_url": f"https://www.notion.so/Spec-{_UNSHARED_PAGE}"})
+        self.notion.unshared_pages = {_UNSHARED_PAGE}
+
+        line = _probe().line()
+
+        for fragment in (
+            "this bot cannot see these required pages/databases",
+            "not shared with the integration",
+            "a deleted id",
+            "another workspace's object",
+            "Connections (or its teamspace)",
+            "the id is current",
+        ):
+            assert fragment in line, fragment
+        assert "are not shared with it" not in line
 
     def test_a_configured_database_missing_from_the_integration_grants_is_named(self) -> None:
         self.notion.unshared_databases.add(_UNSHARED_DATABASE)

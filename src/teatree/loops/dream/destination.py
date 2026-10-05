@@ -188,10 +188,10 @@ def _walk_case_insensitively(relative: PurePosixPath, tree: Path) -> Path | str:
     """
     current = tree
     for index, part in enumerate(relative.parts):
-        if (current / part).exists():
+        matches = _case_insensitive_matches(current, part)
+        if part in matches:
             current /= part
             continue
-        matches = _case_insensitive_matches(current, part)
         if len(matches) > 1:
             return f"{str(relative)!r} is ambiguous: {part!r} matches {sorted(matches)} case-insensitively"
         if not matches:

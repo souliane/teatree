@@ -7,14 +7,12 @@ adversarial questions the human had to ask all session. Two halves:
 Deterministic blocking teeth (no LLM in the blocking path)
     ``done_not_done`` / ``spec_not_plan`` / ``completeness`` are pure predicates over
     REAL artifacts (they REUSE ``merge_evidence_gate`` / ``plan_currency`` /
-    ``rubric_gate``). A FAIL is recorded as a ``CriticFinding`` and, when
-    ``critic_gate_mode`` is ``blocking``, raises :class:`CriticGateError` so the delivery
-    is refused. These are the ONLY items that can block.
+    ``rubric_gate``). A FAIL is recorded as a ``CriticFinding`` and raises
+    :class:`CriticGateError` so delivery is refused. These are the only items that block.
 
 Async LLM semantic net (advisory)
     ``coherence`` / ``duplication`` / ``deferred`` / ``ignored_input`` /
-    ``unenforced_guarantee`` cannot be judged by determinism. When ``critic_gate_mode``
-    is armed (``advisory`` or ``blocking``) and no fresh
+    ``unenforced_guarantee`` cannot be judged by determinism. When no fresh
     :class:`~teatree.core.models.critic_verdict.CriticVerdict` covers the delivered head,
     the gate ENQUEUES a headless critic on its OWN phase
     (:class:`~teatree.core.models.critic_dispatch.CriticDispatch`,
@@ -23,17 +21,7 @@ Async LLM semantic net (advisory)
     (maker≠checker). The gate mirrors the verdict's FAIL items into ``CriticFinding`` —
     advisory, never blocking.
 
-Tri-state posture, cost-safe while off (#104)
-    ``critic_gate_mode`` (DARK, default ``off``) is the tri-state enforcement posture.
-    ``off`` records the cheap deterministic findings but arms no async critic and never
-    blocks — a customer overlay that never opts in creates no Session/Task/CriticDispatch.
-    ``advisory`` arms the async ``claude -p`` critic and records its verdict, still never
-    blocking (the mode that accumulates critic-liveness evidence pre-enablement).
-    ``blocking`` is today's enforcing posture. Enablement is per-overlay, the
-    teatree/dogfood overlay first. Dropping back to ``advisory`` (which keeps advisory
-    recording) is the never-lockout escape.
-
-Enforcing-mode rollback safety
+Rollback safety
     ``mark_delivered`` runs inside ``transaction.atomic()``; a blocking raise would
     roll back the ``CriticFinding`` rows the gate just wrote. :class:`CriticGateError`
     therefore CARRIES the computed specs so the caller (``execute_retrospect``)
@@ -44,7 +32,6 @@ Enforcing-mode rollback safety
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import CriticGateMode, get_effective_settings
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.attachment_manifest import AttachmentManifest
@@ -61,20 +48,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TRANSITION = "mark_delivered"
-
-
-def critic_armed(overlay_name: str | None) -> bool:
-    """Whether the EXPENSIVE async LLM critic dispatches for *overlay_name* — advisory OR blocking.
-
-    ``off`` (default) leaves it un-armed (no Session/Task/CriticDispatch); ``advisory``
-    and ``blocking`` both arm it (overlay -> global).
-    """
-    return get_effective_settings(overlay_name).critic_gate_mode is not CriticGateMode.OFF
-
-
-def critic_blocking(overlay_name: str | None) -> bool:
-    """Whether a BLOCKING critic finding REFUSES delivery for *overlay_name* — ``blocking`` only (overlay -> global)."""
-    return get_effective_settings(overlay_name).critic_gate_mode is CriticGateMode.BLOCKING
 
 
 def delivered_head_sha(ticket: "Ticket") -> str:
@@ -152,7 +125,7 @@ def run_critic(ticket: "Ticket") -> list[CriticFindingSpec]:
 
     Deterministic items are evaluated live; LLM items are mirrored from the freshest
     recorded verdict. Returned so the caller decides how to persist them (inside the
-    delivery atomic for the advisory path, or re-recorded outside it after a block).
+    delivery atomic on success, or re-recorded outside it after a block).
     """
     head_sha = delivered_head_sha(ticket)
     return _deterministic_specs(ticket, head_sha) + _llm_specs(ticket, head_sha)
@@ -200,8 +173,9 @@ def build_critic_contract(ticket: "Ticket", head_sha: str) -> str:
     )
 
 
-def _enqueue_llm_critic(ticket: "Ticket", head_sha: str) -> None:
+def enqueue_llm_critic(ticket: "Ticket") -> None:
     """Arm the async critic when no fresh verdict covers the delivered head (best-effort)."""
+    head_sha = delivered_head_sha(ticket)
     if CriticVerdict.objects.latest_for(ticket=ticket, transition=_TRANSITION, head_sha=head_sha) is not None:
         return
     try:
@@ -254,31 +228,10 @@ def blocking_specs(specs: list[CriticFindingSpec]) -> list[CriticFindingSpec]:
 
 
 def check_critic(ticket: "Ticket") -> None:
-    """Run the critic at ``mark_delivered``; enforce per the tri-state ``critic_gate_mode`` (#104).
-
-    Always records the cheap deterministic findings (advisory). ``off`` (default) stops
-    there — no async dispatch, no block. ``advisory`` additionally arms the EXPENSIVE
-    async LLM critic and records its verdict, but never raises. ``blocking`` arms the
-    critic AND raises :class:`CriticGateError` on a BLOCKING deterministic item — carrying
-    the specs so the caller re-records them outside the rolled-back delivery atomic.
-    """
-    overlay = ticket.overlay or None
+    """Record findings, dispatch the LLM critic, and refuse blocking deterministic findings."""
     specs = run_critic(ticket)
     record_critic_findings(ticket, specs)
-    if not critic_armed(overlay):
-        # OFF (default): the deterministic findings above are cheap advisory
-        # evidence, but the async LLM critic is EXPENSIVE (a headless `claude -p`
-        # reading plan+diff+attachments). Ship it truly inert — no Session/Task/
-        # CriticDispatch created — until an overlay opts into `advisory`/`blocking`
-        # (the per-overlay mode scopes enablement to the teatree/dogfood overlay
-        # first, exactly like `require_merge_evidence`).
-        return
-    _enqueue_llm_critic(ticket, delivered_head_sha(ticket))
-    if not critic_blocking(overlay):
-        # ADVISORY: the async critic is armed and its verdict recorded, but a
-        # blocking finding never refuses the delivery — the mode that accumulates
-        # critic-liveness evidence before an overlay flips to `blocking`.
-        return
+    enqueue_llm_critic(ticket)
     blockers = blocking_specs(specs)
     if not blockers:
         return
@@ -286,9 +239,7 @@ def check_critic(ticket: "Ticket") -> None:
     msg = (
         f"Refusing to mark ticket {ticket.pk} DELIVERED — the critic found {len(blockers)} unresolved "
         f"blocking issue(s): {items}. Each is recorded as a CriticFinding naming the offending artifact — "
-        f"resolve them, then re-run delivery. If a finding is a genuine false positive the operator's audited "
-        f"escape is to drop enforcement to advisory: `t3 <overlay> config_setting set critic_gate_mode advisory "
-        f"--overlay <name>` (advisory recording continues)."
+        f"resolve the findings and re-run delivery."
     )
     raise CriticGateError(msg, specs=specs)
 

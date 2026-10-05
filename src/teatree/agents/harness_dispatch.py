@@ -18,7 +18,13 @@ from teatree.agents.harness_registry import (
     select_harness,
     valid_providers_for,
 )
-from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_harness
+from teatree.agents.model_tiering import (
+    HARNESS_EFFORT_SCALE,
+    SpawnModelSelection,
+    _resolve_spawn_model_selection,
+    resolve_phase_harness,
+)
+from teatree.agents.session_lineage import honesty_subject
 from teatree.agents.skill_routing import resolve_skill_route
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolve_agent_config
@@ -61,6 +67,7 @@ class DispatchHarness:
     name: str
     provider: AgentHarnessProvider | None
     model: str | None = None
+    spawn_selection: SpawnModelSelection | None = None
     effort: str | None = None
     route_source_skill: str = ""
     route_candidate_index: int | None = None
@@ -256,6 +263,7 @@ def resolve_dispatch_harness(
         candidate_context = replace(
             context,
             model=route.candidate.model,
+            tier=route.candidate.tier,
             provider=(
                 provider.value
                 if provider is not None
@@ -290,4 +298,15 @@ def resolve_dispatch_harness(
     provider = None
     if spec.allows_provider:
         provider = resolve_credential_provider(provider_under(settings, name, phase), scope=overlay or "")
-    return DispatchHarness(harness=spec.factory(context), name=name, provider=provider)
+    spawn_selection = None
+    if phase is not None:
+        subject = honesty_subject(task) if task is not None else None
+        task_id = subject.task_id if subject else int(task.pk) if task is not None else None
+        spawn_selection = _resolve_spawn_model_selection(
+            phase,
+            skills=skills or [],
+            session_id=subject.session_id if subject else None,
+            task_id=task_id,
+        )
+        context = replace(context, tier=spawn_selection.tier)
+    return DispatchHarness(harness=spec.factory(context), name=name, provider=provider, spawn_selection=spawn_selection)

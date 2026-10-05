@@ -18,10 +18,12 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing, IncomingEvent
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyReason
+from teatree.types import RawAPIDict
 
 _DB_LOCKED = OperationalError("database is locked")
 
@@ -465,24 +467,29 @@ class TestNotifyUser(TestCase):
         assert row.status == BotPing.Status.SENT
         assert row.permalink == ""
 
-    def test_feature_disabled_returns_false_without_calling_backend(self) -> None:
-        backend = _backend()
-        fake_settings = MagicMock()
-        fake_settings.notify_user_via_bot = False
 
-        with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
-            sent = notify_user(
-                "shh",
+class TestNotifyUserUnderAnEgressSuppressor(TestCase):
+    def test_owner_dm_reaches_the_suppressor_and_never_the_backend(self) -> None:
+        backend = _backend()
+        suppressed: list[tuple[str, str, EgressKind]] = []
+
+        def record(target: str, action: str, kind: EgressKind) -> RawAPIDict:
+            suppressed.append((target, action, kind))
+            return {"ok": True, "ts": "dry-run"}
+
+        with suppress_on_behalf_egress(record):
+            notify_user(
+                "posted on your behalf",
                 kind=NotifyKind.INFO,
-                idempotency_key="disabled",
+                idempotency_key="preview-owner-dm",
                 audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id="U_ME",
             )
 
-        assert sent is False
+        assert suppressed == [("U_ME", "owner_dm_post", EgressKind.POST)]
         backend.open_dm.assert_not_called()
-        assert not BotPing.objects.filter(idempotency_key="disabled").exists()
+        backend.post_message.assert_not_called()
 
 
 class TestNotifyUserNeverRaises(TestCase):

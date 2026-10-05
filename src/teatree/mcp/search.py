@@ -246,8 +246,7 @@ def factory_score(*, overlay: str | None = None, window_days: int = DEFAULT_WIND
     ``t3 <overlay> recipe score`` uses. Returns the score payload: the aggregate
     (``None`` when untrustworthy), the ``ok`` / ``regressing`` / ``red`` verdict,
     coverage vs floor, the recipe provenance (``recipe_sha`` + ``recipe_approved``),
-    the snapshot deltas, and the per-signal contributions. Registered only when
-    ``factory_score_enabled`` is on — absent otherwise (the shipped OFF state).
+    the snapshot deltas, and the per-signal contributions.
     """
     settings = get_effective_settings(overlay or None)
     result = factory_score_compute(

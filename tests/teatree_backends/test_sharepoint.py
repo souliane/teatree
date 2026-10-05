@@ -11,9 +11,31 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.backends.sharepoint import SharePointClient
+from teatree.backends.sharepoint import (
+    SharePointAuthError,
+    SharePointClient,
+    SharePointCredentialsError,
+    SharePointPathNotFoundError,
+    SharePointReadError,
+    SharePointToolMissingError,
+    SharePointUnreachableError,
+)
 from teatree.types import SharePointRemoteSpec
 from teatree.utils.run import CommandFailedError
+
+
+def test_sharepoint_errors_are_public_downstream_api() -> None:
+    for error_type in (
+        SharePointReadError,
+        SharePointPathNotFoundError,
+        SharePointCredentialsError,
+        SharePointToolMissingError,
+        SharePointAuthError,
+        SharePointUnreachableError,
+    ):
+        failure = error_type(["rclone"], 1, "", "failed")
+        assert isinstance(failure, SharePointReadError)
+        assert failure.reason
 
 
 def _ok(stdout: str = "") -> SimpleNamespace:

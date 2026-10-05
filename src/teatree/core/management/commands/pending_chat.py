@@ -8,10 +8,9 @@ replied, else the ``answer_kind`` it settled on (``ack`` / ``simple`` /
 one still waiting for the loop.
 ``t3 <overlay> pending-chat mark-answered <slack_ts>`` stamps
 ``answered_at`` on the row(s) matching ``slack_ts``; the agent calls
-this once per direct reply to a queued user question, so the Stop hook
-stops nagging on already-answered rows. The stamp keys on ``slack_ts``
-alone — symmetric with the unscoped Stop-hook gate — so it clears the
-question regardless of which overlay recorded it (the concurrent
+this once per direct reply to a queued user question. The stamp keys on
+``slack_ts`` alone, so it clears the question regardless of which overlay
+recorded it (the concurrent
 multi-overlay case, where the recording overlay and the answering
 session routinely differ).
 
@@ -50,8 +49,6 @@ def _format_row(row: PendingChatInjection) -> str:
     if row.is_question:
         flags.append("question")
     flags.append(_loop_flag(row))
-    if row.consumed_at is not None:
-        flags.append("consumed")
     if row.answered_at is not None:
         flags.append("answered")
     snippet = row.text.strip().replace("\n", " ")[:120]
@@ -91,9 +88,8 @@ class Command(TyperCommand):
     ) -> str:
         """Stamp ``answered_at = now`` on rows matching ``slack_ts``.
 
-        The stamp keys on ``slack_ts`` alone — the unique idempotency key,
-        symmetric with the unscoped Stop-hook gate — so it clears the
-        question regardless of which overlay recorded it (the concurrent
+        The stamp keys on ``slack_ts`` alone — the unique idempotency key —
+        so it clears the question regardless of which overlay recorded it (the concurrent
         multi-overlay case). Idempotent: zero rows is a successful no-op.
         Empty ``slack_ts`` is rejected.
         """

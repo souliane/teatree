@@ -13,7 +13,6 @@ from django.test import SimpleTestCase, TestCase, override_settings
 
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
 import teatree.core.management.commands._e2e_runners as e2e_runners_mod
-import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.utils.run as utils_run_mod
 import teatree.utils.singleton as singleton_mod
@@ -566,13 +565,13 @@ class TestRunServices(TestCase):
 
 class TestPlaywrightOptions:
     def test_update_snapshots_flag(self) -> None:
-        opts = e2e_mod.PlaywrightOptions(update_snapshots=True)
+        opts = e2e_runners_mod.PlaywrightOptions(update_snapshots=True)
         args = opts.to_args()
         assert "--update-snapshots" in args
         assert "--reporter=list" in args
 
     def test_no_update_snapshots(self) -> None:
-        opts = e2e_mod.PlaywrightOptions()
+        opts = e2e_runners_mod.PlaywrightOptions()
         args = opts.to_args()
         assert "--update-snapshots" not in args
 

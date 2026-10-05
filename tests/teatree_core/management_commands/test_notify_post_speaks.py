@@ -32,6 +32,7 @@ from django.core.management import call_command
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.types import LocalPlayback, SpeakConfig
+from tests._send_gate import allow_slack_channels
 from tests._speak_thread_sentinel import join_speak_threads
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -122,6 +123,7 @@ class TestNotifyPostSpeaks:
         assert "spoke" in marker.read_text()
 
     def test_colleague_post_does_not_speak(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        allow_slack_channels("C_TEAM")
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         marker = tmp_path / "spoke.txt"

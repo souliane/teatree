@@ -46,7 +46,7 @@ from teatree.hooks import (
     _repo_visibility,
     publish_surface,
 )
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
 
 
 class _FakeHomePath:
@@ -86,6 +86,11 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 
 
 def _config(tmp_path: Path, private_repos: list[str]) -> Path:
+    private_repos = [
+        f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+        for entry in private_repos
+        for host in (("github.com", "gitlab.com") if "." not in entry.split("/", 1)[0] else ("",))
+    ]
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:
@@ -454,30 +459,21 @@ class TestPrivateRepoAllowlist:
 
 
 class TestAllowlistHostQualificationSymmetry:
-    """A host-qualified ``private_repos`` entry must match a bare ``--repo`` slug.
+    """Only host-qualified repo identities may match ``private_repos``."""
 
-    The carve-out doc states an entry is matched against a repo's origin slug
-    ``host/owner/repo``, and ``slug_for_cwd`` emits exactly that host-qualified
-    form -- so a user (or the cwd/commit path) supplies ``host/owner/repo``. But
-    ``gh pr create --repo`` takes a BARE ``owner/repo`` slug. The plain
-    ``entry in slug`` substring check is asymmetric: a host-qualified entry is a
-    substring of a host-qualified slug but NOT of a bare one, so the SAME private
-    repo downgrades on commit (cwd slug) yet hard-blocks on pr-create (#2067).
-    The match must normalize the host prefix on BOTH sides.
-    """
-
-    def test_host_qualified_entry_matches_bare_repo_flag_slug(self, tmp_path: Path) -> None:
+    def test_host_qualified_entry_does_not_match_ambiguous_bare_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
-        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is False
 
     def test_host_qualified_entry_still_matches_host_qualified_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
         assert _repo_visibility.slug_is_allowlisted_private("github.com/acmecorp-engineering/product", cfg) is True
 
-    def test_bare_org_entry_matches_both_slug_forms(self, tmp_path: Path) -> None:
+    def test_installed_org_entry_matches_each_qualified_host_only(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
-        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is False
         assert _repo_visibility.slug_is_allowlisted_private("github.com/acmecorp-engineering/product", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("gitlab.com/acmecorp-engineering/product", cfg) is True
 
     def test_unrelated_public_slug_still_not_allowlisted(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
@@ -527,35 +523,37 @@ class TestAllowlistSshAliasAndSupersetSlug:
 
     def test_genuine_private_org_namespace_still_matches(self, tmp_path: Path) -> None:
         # The must-MATCH side: a real private repo under the configured namespace
-        # still downgrades, in every slug form, host-qualified and bare.
+        # still downgrades on either configured host, never on an unqualified slug.
         cfg = _config(tmp_path, ["acme-engineering"])
         assert _repo_visibility.slug_is_allowlisted_private("github.com/acme-engineering/secret", cfg) is True
-        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is False
         assert _repo_visibility.slug_is_allowlisted_private("gitlab.com/acme-engineering/secret", cfg) is True
 
     def test_whole_owner_repo_entry_still_matches(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acme-engineering/secret"])
-        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is False
         assert _repo_visibility.slug_is_allowlisted_private("github.com/acme-engineering/secret", cfg) is True
         # A different repo under the same owner is NOT covered by a whole-repo entry.
         assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/other", cfg) is False
 
 
 class TestSlugForCwdSshAliasNormalization:
-    """``slug_for_cwd`` normalizes an SSH config Host ALIAS remote (#1953).
+    """An SSH alias resolves to a network host or fails closed."""
 
-    A standard SSH remote ``git@host:owner/repo`` already normalizes to
-    ``host/owner/repo`` because it carries a ``user@`` part. An SSH *alias*
-    remote ``alias:owner/repo`` (the ``Host alias`` form from ``~/.ssh/config``,
-    no ``user@``) was previously returned verbatim (``alias:owner/repo``) with
-    the ``:`` glued in -- a non-canonical slug whose alias segment then tripped
-    the substring matcher. The alias is a local config name with no canonical
-    identity, so it is dropped; the canonical slug is the bare ``owner/repo``.
-    """
-
-    def test_ssh_alias_remote_drops_alias_and_keeps_owner_repo(self, tmp_path: Path) -> None:
+    def test_unknown_ssh_alias_does_not_claim_a_repo_host(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
-        assert _repo_visibility.slug_for_cwd(repo) == "someorg/public-repo"
+        assert _repo_visibility.slug_for_cwd(repo) == ""
+
+    def test_configured_ssh_alias_resolves_to_qualified_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        ssh = home / ".ssh"
+        ssh.mkdir(parents=True)
+        (ssh / "config").write_text("Host gitlab-acmecorp\n  HostName gitlab.example.com\n")
+        monkeypatch.setenv("HOME", str(home))
+        repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
+        assert _repo_visibility.slug_for_cwd(repo) == "gitlab.example.com/someorg/public-repo"
 
     def test_standard_ssh_remote_still_keeps_real_host(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme-engineering/secret.git")
@@ -565,15 +563,19 @@ class TestSlugForCwdSshAliasNormalization:
         repo = _repo_with_remote(tmp_path / "r", "https://github.com/souliane/teatree.git")
         assert _repo_visibility.slug_for_cwd(repo) == "github.com/souliane/teatree"
 
-    def test_useratalias_ssh_alias_drops_dotless_host_alias(self, tmp_path: Path) -> None:
+    def test_useratalias_ssh_alias_resolves_real_host(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # FM2 (#1415): a per-account SSH config Host ALIAS carried WITH a ``user@``
         # part (``git@gh-acct:owner/repo`` from a ``Host gh-acct`` block) was kept
         # verbatim as ``gh-acct/owner/repo`` -- the dotless ``gh-acct`` glued in as
         # the leading slug segment. The downstream dot-keyed host-strip / probe
         # could not recognise it, so the canonical key was wrong. A dotless host
-        # is an alias with no canonical identity, so it is dropped -> ``owner/repo``.
+        # resolves to its canonical HostName before any private-entry match.
+        home = tmp_path / "home"
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
-        assert _repo_visibility.slug_for_cwd(repo) == "owner-org/private-product"
+        assert _repo_visibility.slug_for_cwd(repo) == "github.com/owner-org/private-product"
 
     def test_useratalias_dotted_host_alias_resolves_to_owner_repo_after_strip(self, tmp_path: Path) -> None:
         # FM2 (#1415): the exact reported remote shape -- a per-account SSH alias
@@ -604,6 +606,10 @@ class TestSlugForCwdSshAliasNormalization:
         # alias segment, so the ``owner-org`` allowlist entry did not match the
         # leading segment and the own private repo over-blocked.
         cfg = _config(tmp_path, ["owner-org"])
+        home = tmp_path / "home"
+        (home / ".ssh").mkdir(parents=True)
+        (home / ".ssh" / "config").write_text("Host gh-acct\n  HostName github.com\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
@@ -2719,7 +2725,7 @@ class TestProbeEnvResolution:
         slug = publish_surface.visibility_unknown_for_block(
             f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
         )
-        assert slug == _PRIV_SLUG
+        assert slug == f"github.com/{_PRIV_SLUG}"
 
     def test_visibility_unknown_returns_none_when_allowlisted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

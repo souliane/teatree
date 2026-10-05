@@ -11,14 +11,21 @@ from contextlib import AbstractAsyncContextManager, suppress
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
-from teatree.agents.codex_app_server import CodexAppServerSession, _StreamFailure, _thread_params
+from teatree.agents.codex_app_server import (
+    CodexAppServerSession,
+    _StreamFailure,
+    _thread_params,
+    transport_close_seconds,
+)
 from teatree.agents.codex_app_server_errors import transport_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_auth_cache import CodexAuthCache
+from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
 from teatree.agents.harness_registry import HarnessFallbackError
 
 _T = TypeVar("_T")
 _IDLE_SECONDS = 5.0
+UNSUBSCRIBE_SECONDS = 5.0
 _OWNER_JOIN_SECONDS = 10.0
 _OWNER_STAGE = "shared worker"
 type AppServerPayload = dict[str, Any]
@@ -186,29 +193,55 @@ class SharedCodexAppServer:
             with suppress(InvalidStateError):
                 future.set_exception(transport_error(_OWNER_STAGE))
 
+    async def _unsubscribe(self, thread_id: str) -> None:
+        """Best effort, so Codex can unload a refused thread and the MCP processes it started (expected, unverified)."""
+        with suppress(CodexAppServerError, HarnessFallbackError, TimeoutError):
+            await asyncio.wait_for(
+                self._required_transport().request_protocol("thread/unsubscribe", {"threadId": thread_id}),
+                timeout=UNSUBSCRIBE_SECONDS,
+            )
+
+    async def _open_thread(
+        self, options: CodexAppServerOptions, resume: str | None, refused_threads: list[str]
+    ) -> tuple[str, str]:
+        async with self._session_state_lock:
+            if self._retiring.is_set():
+                raise CodexAppServerError.stopped()
+            if self._idle_task is not None:
+                self._idle_task.cancel()
+                self._idle_task = None
+            method = "thread/resume" if resume else "thread/start"
+            params = _thread_params(options)
+            if resume:
+                params = {"threadId": resume, **params}
+            response = await self._required_transport().request_protocol(method, params)
+            thread = response.get("thread")
+            thread_id = str(thread.get("id", "")) if isinstance(thread, dict) else ""
+            if not thread_id:
+                raise CodexAppServerError.missing_thread_id()
+            if thread_id in self._events:
+                msg = f"Codex thread {thread_id!r} is already active in this worker"
+                raise CodexAppServerError(msg)
+            try:
+                await refuse_unjudged_mcp_servers(self._required_transport().request_protocol, thread_id, options)
+            except HarnessFallbackError:
+                refused_threads.append(thread_id)
+                raise
+            self._required_transport().register_thread(thread_id, options)
+            self._events[thread_id] = asyncio.Queue()
+            model = str(response.get("model") or options.core.model or "codex")
+            return thread_id, model
+
     async def open_session(self, options: CodexAppServerOptions, resume: str | None) -> tuple[str, str]:
+        refused_threads: list[str] = []
+
         async def open_on_owner() -> tuple[str, str]:
-            async with self._session_state_lock:
-                if self._retiring.is_set():
-                    raise CodexAppServerError.stopped()
-                if self._idle_task is not None:
-                    self._idle_task.cancel()
-                    self._idle_task = None
-                method = "thread/resume" if resume else "thread/start"
-                params = _thread_params(options)
-                if resume:
-                    params = {"threadId": resume, **params}
-                response = await self._required_transport().request_protocol(method, params)
-                thread = response.get("thread")
-                thread_id = str(thread.get("id", "")) if isinstance(thread, dict) else ""
-                if not thread_id:
-                    raise CodexAppServerError.missing_thread_id()
-                if thread_id in self._events:
-                    msg = f"Codex thread {thread_id!r} is already active in this worker"
-                    raise CodexAppServerError(msg)
-                self._events[thread_id] = asyncio.Queue()
-                model = str(response.get("model") or options.core.model or "codex")
-                return thread_id, model
+            try:
+                return await self._open_thread(options, resume, refused_threads)
+            except HarnessFallbackError:
+                for thread_id in refused_threads:
+                    await self._unsubscribe(thread_id)
+                raise
 
         with self._opens_lock:
             self._opens_in_flight += 1
@@ -233,6 +266,7 @@ class SharedCodexAppServer:
             event = await queue.get()
             if isinstance(event, _StreamFailure):
                 raise event.error
+            await self._required_transport().settle_turn(event)
             return event
 
         try:
@@ -261,6 +295,7 @@ class SharedCodexAppServer:
         async def close_on_owner() -> None:
             async with self._session_state_lock:
                 queue = self._events.pop(thread_id, None)
+                self._required_transport().unregister_thread(thread_id)
                 if queue is not None:
                     queue.put_nowait(_StreamFailure(CodexAppServerError.stopped()))
                 try:
@@ -308,7 +343,7 @@ class SharedCodexAppServer:
         loop, stop, thread = self._loop, self._stop, self._thread
         if loop is not None and not loop.is_closed() and stop is not None and thread is not None and thread.is_alive():
             loop.call_soon_threadsafe(stop.set)
-            thread.join(timeout=10)
+            thread.join(timeout=transport_close_seconds())
 
     @property
     def failed(self) -> bool:

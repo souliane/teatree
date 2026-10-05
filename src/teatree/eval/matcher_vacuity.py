@@ -32,6 +32,7 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 
 
@@ -46,6 +47,8 @@ def is_positive_anchor(matcher: ExpectItem) -> bool:
         matcher, AnyOf | FinalStateMatcher | AssistantTextMatcher | PlanBeforeToolMatcher | SuccessfulToolCallMatcher
     ):
         return True
+    if isinstance(matcher, ToolCallCountMatcher):
+        return matcher.equals > 0
     return isinstance(matcher, Matcher) and matcher.kind == "positive"
 
 

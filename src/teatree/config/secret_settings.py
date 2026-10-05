@@ -35,13 +35,8 @@ import re
 # Membership == the ``private`` flag. Keep alphabetised.
 SECRET_SETTINGS: frozenset[str] = frozenset(
     {
-        "banned_brands",
         "banned_term_registry",
-        "banned_terms",
-        "banned_terms_allowlist",
         "github_token_pass_key",
-        "internal_publish_namespaces",
-        "overlay_leak_terms",
         "private_repos",
         "slack_token_ref",
         "user_token_ref",

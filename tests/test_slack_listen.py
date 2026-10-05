@@ -18,6 +18,7 @@ from teatree.cli.slack.listen import (
     slack_app,
 )
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 runner = CliRunner()
@@ -396,6 +397,7 @@ class TestReactCommand:
         from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
         ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+        allow_slack_channels("C_COLLEAGUE")
         seed_forbidding_posture() if forbidding else seed_permitting_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 

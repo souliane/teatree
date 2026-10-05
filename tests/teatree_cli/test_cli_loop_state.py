@@ -1,4 +1,4 @@
-"""``t3 loop pause/resume/disable/enable/status`` delegate to the mgmt command (#1913)."""
+"""``t3 loop pause/resume/disable/status`` delegate to the mgmt command (#1913)."""
 
 from unittest.mock import patch
 
@@ -41,12 +41,6 @@ class TestLoopStateCli:
             result = runner.invoke(loop_app, ["disable", "ship", "--emergency"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "disable", "ship")
-
-    def test_enable_delegates_with_name(self) -> None:
-        with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["enable", "ship", "--emergency"])
-        assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loop_state", "enable", "ship")
 
     def test_pause_passes_json_flag(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:

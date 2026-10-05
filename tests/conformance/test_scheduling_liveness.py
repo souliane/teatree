@@ -18,7 +18,7 @@ invariant names nothing — on either side of the flip. The assertions here were
 opposite before the fix, and the inversion is the evidence the defect closed rather
 than moved.
 
-``off_live_tick`` loops (``directive_loop``, ``dream``, ``outer_loop``) are excluded
+``off_live_tick`` loops (``directive_loop``, ``dream``) are excluded
 deliberately: :mod:`teatree.loops.off_live_tick_driver` fires their own tick command,
 so carrying no timer row is their correct steady state, and exposing them would be a
 permanent false alarm.

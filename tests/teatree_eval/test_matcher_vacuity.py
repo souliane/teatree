@@ -18,14 +18,14 @@ assistant message to carry specific content).
 
 from pathlib import Path
 
-from teatree.eval.matcher_vacuity import (
+from teatree.eval.matcher_vacuity import is_positive_anchor
+from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
+from tests.teatree_eval._matcher_vacuity import (
     has_negative_matcher,
     has_positive_anchor,
     is_negative_only,
-    is_positive_anchor,
     negative_only_specs,
 )
-from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
 
 _POSITIVE = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="git push")
 _NEGATIVE = Matcher(kind="negative", tool="Bash", arg_path="command", operator="~", value="--no-verify")

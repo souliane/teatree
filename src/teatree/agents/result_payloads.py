@@ -6,7 +6,6 @@ if TYPE_CHECKING:
     from teatree.agents.result_schema import (
         AnswerEnvelope,
         ArticleSuggestion,
-        DirectiveCandidateEnvelope,
         DirectiveInterpretationEnvelope,
         ReviewVerdictEnvelope,
         TriageRecommendation,
@@ -44,14 +43,6 @@ def recommendation_persists(item: object) -> bool:
         return False
     verdict = str(cast("TriageRecommendation", item).get("verdict") or "").strip().lower()
     return verdict in VALID_TRIAGE_VERDICTS
-
-
-def candidate_carries_payload(envelope: object) -> bool:
-    """Whether a directive-candidate envelope carries something the recorder persists (#116)."""
-    if not isinstance(envelope, dict):
-        return False
-    typed = cast("DirectiveCandidateEnvelope", envelope)
-    return typed.get("is_directive") is True and bool(str(typed.get("normalized_constraint") or "").strip())
 
 
 def interpretation_carries_payload(envelope: object) -> bool:

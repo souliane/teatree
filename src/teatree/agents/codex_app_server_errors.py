@@ -7,7 +7,7 @@ from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbac
 _STRING_KINDS = {
     "unauthorized": HarnessFallbackKind.AUTH,
     "sessionBudgetExceeded": HarnessFallbackKind.QUOTA,
-    "usageLimitExceeded": HarnessFallbackKind.QUOTA,
+    "usageLimitExceeded": HarnessFallbackKind.QUOTA_EXHAUSTED,
     "rateLimitExceeded": HarnessFallbackKind.QUOTA,
     "cyberPolicy": HarnessFallbackKind.ACCESS,
     "misalignmentPolicyViolation": HarnessFallbackKind.ACCESS,

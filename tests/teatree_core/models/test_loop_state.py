@@ -23,21 +23,18 @@ class TestLoopStateDefault(TestCase):
 
     def test_absent_loop_is_runnable_and_not_paused_not_disabled(self) -> None:
         assert LoopState.objects.is_runnable("review") is True
-        assert LoopState.objects.is_paused("review") is False
-        assert LoopState.objects.is_disabled("review") is False
+        assert LoopState.objects.status_of("review") is LoopStatus.ENABLED
 
 
 class TestLoopStateTransitions(TestCase):
     def test_pause_then_status_is_paused(self) -> None:
         LoopState.objects.pause("review")
         assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
-        assert LoopState.objects.is_paused("review") is True
         assert LoopState.objects.is_runnable("review") is False
 
     def test_disable_then_status_is_disabled(self) -> None:
         LoopState.objects.disable("ship")
         assert LoopState.objects.status_of("ship") is LoopStatus.DISABLED
-        assert LoopState.objects.is_disabled("ship") is True
         assert LoopState.objects.is_runnable("ship") is False
 
     def test_resume_from_paused_returns_to_enabled(self) -> None:

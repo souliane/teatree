@@ -14,16 +14,14 @@ job); Test C's subject is the teeth downstream of admission.
 import pytest
 from django.test import TestCase
 
-from teatree.config import get_effective_settings
 from teatree.core.gates.debt_delta_gate import DebtDeltaExceededError, check_debt_delta
 from teatree.core.gates.merge_quality_gate import (
     MergeQualityVerdictError,
     assert_merge_quality_verdict,
     is_directive_ticket,
-    merge_quality_enforced,
     ratified_test_strategy,
 )
-from teatree.core.models import ConfigSetting, CriticDispatch, CriticVerdict, DeferredQuestion, PullRequest, Task
+from teatree.core.models import CriticDispatch, CriticVerdict, DeferredQuestion, PullRequest, Task
 from teatree.core.models.directive import Directive
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.quality.debt_delta import DebtWaiver
@@ -32,8 +30,6 @@ from tests.integration.directive_dogfood.exemplar import (
     EXEMPLAR_ENVELOPE,
     PROOF_CASE_TEXT,
     SCOPE,
-    enable_directive_loop_in_test_db,
-    seed_critic_liveness,
     tick,
 )
 
@@ -77,26 +73,24 @@ def _admitted_setting_policy_gate() -> Directive:
 
 
 class TestQualityTeethEngaged(TestCase):
-    def setUp(self) -> None:
-        enable_directive_loop_in_test_db()
-        seed_critic_liveness()
-
     def test_merge_and_debt_teeth_gate_the_loop_created_ticket(self) -> None:
         directive = _admitted_setting_policy_gate()
 
-        # 1 — the loop anchors a real synthetic mechanism ticket + coding task + baseline.
+        # 1 — the loop anchors a real synthetic mechanism ticket + its planning task + baseline;
+        # coding is minted only once that plan lands.
         assert tick().action == "implementing"
         directive.refresh_from_db()
         ticket = directive.ticket
         assert ticket is not None
         assert ticket.extra["directive_id"] == directive.pk
-        assert Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists()
+        assert Task.objects.pending_in_phase("planning").filter(ticket=ticket).exists()
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        assert ticket.extra["planning_handoff"]["phase"] == "coding"
         assert directive.baseline_snapshot is not None
         assert directive.state == Directive.State.IMPLEMENTING
 
         # 2 — the implement↔merge-gate seam: a directive ticket is gated UNCONDITIONALLY.
         assert is_directive_ticket(ticket) is True
-        assert merge_quality_enforced(ticket) is True
         assert ACCEPTANCE_NODE_ID in ratified_test_strategy(ticket)
 
         # 3 — the merge tooth is fail-closed then satisfiable at the EXACT shipped head.
@@ -118,9 +112,7 @@ class TestQualityTeethEngaged(TestCase):
         )
         assert_merge_quality_verdict(slug=_PR_REPO, pr_id=_PR_IID, head_sha=_HEAD)  # now clean → no raise
 
-        # 4 — the debt tooth flows through the SAME per-overlay resolver the activation uses.
-        ConfigSetting.objects.set_value("require_debt_delta", value=True, scope=SCOPE)
-        assert get_effective_settings(SCOPE).require_debt_delta is True
+        # 4 — the debt tooth is always live.
         with pytest.raises(DebtDeltaExceededError):
             check_debt_delta(ticket, _NEW_NOQA, waivers=())
         waiver = DebtWaiver(pattern="noqa: F821", reason="upstream stub gap, tracked separately")

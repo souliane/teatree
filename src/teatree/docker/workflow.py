@@ -9,9 +9,7 @@ control DB (:data:`teatree.paths.DEFAULT_CONTROL_DB_DIR` exists only inside the
 container) and silently resolves every setting from shipped defaults.
 
 One executable on ``PATH`` reaches every caller — an interactive shell, a script,
-a git hook, cron, a sub-agent — so no shell alias is installed. A managed alias a
-previous version wrote is retired instead (:func:`remove_alias_block`); it was
-the split-brain, reaching interactive shells only.
+a git hook, cron, a sub-agent — so no shell alias is installed.
 
 Because the retired host CLI is also what used to WRITE the launcher, the
 container writes it now, through a bind mount of the host's ``PATH`` bin dir at
@@ -35,13 +33,6 @@ WRAPPER_REL = Path("deploy") / "t3"
 # The service the wrapper execs into (kept in sync with deploy/t3's default).
 DOCKER_CLI_SERVICE = "teatree-worker"
 
-# Marker-delimited managed block a pre-launcher `t3 setup` wrote into the shell
-# rc files. Only ever REMOVED now — kept in sync with deploy/t3's own retirement
-# of the same block, which is what reaches the host rc from inside a container
-# (tests/test_deploy_alias_retirement.py pins the two spellings).
-ALIAS_MARKER_BEGIN = "# >>> teatree docker t3 alias >>>"
-ALIAS_MARKER_END = "# <<< teatree docker t3 alias <<<"
-
 # Stamped into the generated launcher so a re-run recognises its own file and
 # refuses to overwrite anything it did not write.
 LAUNCHER_MARKER = "# >>> teatree docker t3 launcher >>>"
@@ -63,14 +54,6 @@ _UV_TOOL_LINK_FRAGMENT = f"{os.sep}uv{os.sep}tools{os.sep}"
 
 _EXEC_PREFIX = 'exec "'
 _EXEC_SUFFIX = '" "$@"'
-
-
-class AliasRemoval(StrEnum):
-    """Outcome of a :func:`remove_alias_block` call."""
-
-    REMOVED = "removed"
-    ABSENT = "absent"
-    UNWRITABLE = "unwritable"
 
 
 class LauncherInstall(StrEnum):
@@ -134,11 +117,6 @@ def read_managed_launcher(path: Path) -> str | None:
     except (OSError, UnicodeDecodeError):
         return None
     return text if LAUNCHER_MARKER in text else None
-
-
-def is_managed_launcher(path: Path) -> bool:
-    """True when *path* is a teatree-written ``t3`` launcher."""
-    return read_managed_launcher(path) is not None
 
 
 def launcher_wrapper_target(script: str) -> Path | None:
@@ -235,34 +213,3 @@ def is_running_in_container(
     """
     resolved = env if env is not None else os.environ
     return bool(resolved.get("TEATREE_ROLE")) or dockerenv.exists()
-
-
-def remove_alias_block(rc_path: Path) -> AliasRemoval:
-    """Drop the managed alias block from *rc_path*, leaving every other byte alone.
-
-    The alias was the split-brain a ``PATH`` launcher makes unnecessary, so setup
-    retires it rather than refreshing it. Only the fenced region goes: the rc
-    files hold the operator's own functions, and one of them is commonly a
-    symlink into a dotfiles repo, so the rewrite goes THROUGH the path rather
-    than renaming over it. A missing rc, an rc without the markers, and an
-    unreadable one are all left untouched.
-    """
-    if not rc_path.is_file():
-        return AliasRemoval.ABSENT
-    try:
-        text = rc_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return AliasRemoval.UNWRITABLE
-    if ALIAS_MARKER_BEGIN not in text or ALIAS_MARKER_END not in text:
-        return AliasRemoval.ABSENT
-
-    begin = text.index(ALIAS_MARKER_BEGIN)
-    end = text.index(ALIAS_MARKER_END, begin) + len(ALIAS_MARKER_END)
-    # Absorb the newline the end marker's own line carries, so removing the block
-    # does not leave the blank line it used to occupy.
-    remainder = text[end:].removeprefix("\n")
-    try:
-        rc_path.write_text(text[:begin] + remainder, encoding="utf-8")
-    except OSError:
-        return AliasRemoval.UNWRITABLE
-    return AliasRemoval.REMOVED

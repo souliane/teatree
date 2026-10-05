@@ -36,6 +36,7 @@ from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TAS
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from tests._ansi import strip_ansi as _strip_ansi
 from tests._pr_open_state_stub import mint_open_pr_review
+from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
@@ -71,7 +72,7 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 COMMAND_SETTINGS: dict[str, object] = {}
 
-_NO_SESSION_ENV = {"CLAUDE_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
+_NO_SESSION_ENV = {"CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
 
 
 class TestLifecycleCommands(TestCase):
@@ -446,7 +447,7 @@ class TestTasksListSession(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_scopes_rows_to_the_active_claude_session(self) -> None:
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             ticket = Ticket.objects.create(overlay="test")
             mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             other = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-xyz")
@@ -486,7 +487,7 @@ class TestTasksListSession(TestCase):
                 json.dumps({"id": "1", "subject": "STALE harness todo on disk", "status": "pending"}),
                 encoding="utf-8",
             )
-            env = {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": "", "CLAUDE_TASKS_DIR": tasks_dir}
+            env = {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": "", "CLAUDE_TASKS_DIR": tasks_dir}
             captured: dict[str, object] = {}
 
             def _capture(rows: object, **kwargs: object) -> None:
@@ -636,7 +637,7 @@ class TestReconcileChecklist(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_emits_the_reconcile_discipline_steps(self) -> None:
         out = io.StringIO()
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             call_command("tasks", "reconcile-checklist", stdout=out)
         printed = _strip_ansi(out.getvalue())
         # The agent must drive the live list with its OWN tools — the checklist
@@ -652,7 +653,7 @@ class TestReconcileChecklist(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_lists_open_teatree_tasks_for_this_session_as_completion_anchors(self) -> None:
         out = io.StringIO()
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             ticket = Ticket.objects.create(overlay="test", short_description="fix the widget")
             mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             open_task = Task.objects.create(
@@ -679,7 +680,7 @@ class TestReconcileChecklist(TestCase):
 
         from django.utils import timezone  # noqa: PLC0415
 
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             ticket = Ticket.objects.create(overlay="test")
             mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             pending = Task.objects.create(ticket=ticket, session=mine, phase="coding")
@@ -709,7 +710,7 @@ class TestReconcileChecklist(TestCase):
 
         from django.utils import timezone  # noqa: PLC0415
 
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             ticket = Ticket.objects.create(overlay="test")
             mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
             stale = Task.objects.create(
@@ -1109,7 +1110,7 @@ class TestTasksCreateCommand(TestCase):
         assert task.session.ticket_id == ticket.pk
 
     def test_create_accepts_a_loop_dispatched_phase(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
+        ticket = planned_ticket(overlay="test")
         result = cast(
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
@@ -1121,7 +1122,7 @@ class TestTasksCreateCommand(TestCase):
         assert task.execution_reason == "Implement X."
 
     def test_create_reuses_latest_session(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
+        ticket = planned_ticket(overlay="test")
         existing = Session.objects.create(ticket=ticket, overlay="test")
         result = cast(
             "dict[str, object]",
@@ -1131,7 +1132,7 @@ class TestTasksCreateCommand(TestCase):
         assert task.session_id == existing.pk
 
     def test_create_reason_from_file(self) -> None:
-        ticket = Ticket.objects.create(overlay="test")
+        ticket = planned_ticket(overlay="test")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as fh:
             fh.write("Long multiline prompt.\nWith details.")
             reason_path = Path(fh.name)
@@ -1142,6 +1143,15 @@ class TestTasksCreateCommand(TestCase):
         )
         task = Task.objects.get(pk=result["task_id"])
         assert task.execution_reason == "Long multiline prompt.\nWith details."
+
+    def test_an_implementing_phase_on_an_unplanned_ticket_is_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        stderr = io.StringIO()
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X.", stderr=stderr)
+        assert exc.value.code == 1
+        assert "plan_missing" in stderr.getvalue()
+        assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_create_requires_non_blank_reason(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -1160,13 +1170,13 @@ class TestTasksCreateCommand(TestCase):
     def test_create_kind_fix_records_ticket_kind(self) -> None:
         # #17: `tasks create --kind fix` classifies the ticket (RED before the
         # option existed — the ticket stayed FEATURE).
-        ticket = Ticket.objects.create(overlay="test")
+        ticket = planned_ticket(overlay="test")
         call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="fix")
         ticket.refresh_from_db()
         assert ticket.kind == Ticket.Kind.FIX
 
     def test_create_without_kind_leaves_ticket_unchanged(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX)
+        ticket = planned_ticket(overlay="test", kind=Ticket.Kind.FIX)
         call_command("tasks", "create", ticket.pk, phase="coding", reason="x")
         ticket.refresh_from_db()
         assert ticket.kind == Ticket.Kind.FIX
@@ -1329,7 +1339,7 @@ class TestTasksCompleteCommand(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(overlay="test", state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,

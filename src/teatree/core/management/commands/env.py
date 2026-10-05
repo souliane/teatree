@@ -7,26 +7,19 @@ config), never the cache file.
 
 import json
 import sys
-from dataclasses import dataclass
 
 import typer
 from django.core.management import execute_from_command_line
 from django_typer.management import TyperCommand, command
 
 from teatree.core.intake.resolve import resolve_worktree
-from teatree.core.models import Worktree, WorktreeEnvOverride
+from teatree.core.models import WorktreeEnvOverride
 from teatree.core.worktree.worktree_env import (
     detect_drift,
-    env_cache_path,
     load_overrides,
     render_env_cache,
     set_override,
     write_env_cache,
-)
-from teatree.utils.postgres_secret import (
-    PostgresPasswordUnavailableError,
-    ensure_postgres_pass_entry,
-    extract_literal_from_cache,
 )
 
 
@@ -138,82 +131,6 @@ class Command(TyperCommand):
             raise SystemExit(1)
         self.stdout.write(f"  {worktree.repo_path}: env cache in sync with DB")
         return 0
-
-    @command(name="migrate-secrets")
-    def migrate_secrets(
-        self,
-        path: str = typer.Option(
-            "",
-            help="Worktree path (migrates only this worktree). Empty = migrate every worktree.",
-        ),
-    ) -> int:
-        """Move ``POSTGRES_PASSWORD`` literals out of ``.t3-env.cache`` into ``pass``.
-
-        For each targeted worktree this command:
-
-        1. Reads the literal ``POSTGRES_PASSWORD=`` line from the on-disk cache.
-        2. Stores it in ``pass`` under the canonical key for that worktree.
-        3. Regenerates the cache so it now contains only the symbolic
-            ``POSTGRES_PASSWORD_PASS_KEY`` reference.
-
-        Idempotent — caches that already lack a literal are reported as
-        ``already migrated`` and left alone.  Exits 0 when every targeted
-        worktree finished successfully, non-zero when at least one needs
-        attention (no pass installed, cache missing, etc.).
-        """
-        targets = [resolve_worktree(path)] if path else list(Worktree.objects.all())
-        if not targets:
-            self.stdout.write("  no worktrees found — nothing to migrate")
-            return 0
-
-        unmigrated: list[str] = []
-        for worktree in targets:
-            outcome = self._migrate_single_worktree(worktree)
-            self.stdout.write(f"  {worktree.repo_path}: {outcome.message}")
-            if not outcome.ok:
-                unmigrated.append(worktree.repo_path)
-        if unmigrated:
-            self.stderr.write(f"  not migrated, needs attention: {', '.join(unmigrated)}")
-            raise SystemExit(1)
-        return 0
-
-    def _migrate_single_worktree(self, worktree: Worktree) -> "_MigrationOutcome":
-        cache_path = env_cache_path(worktree)
-        if cache_path is None:
-            return _MigrationOutcome(ok=True, message="not provisioned — skipped")
-
-        literal = extract_literal_from_cache(cache_path)
-        ticket = worktree.ticket
-        if ticket is None:
-            return _MigrationOutcome(ok=False, message="no ticket attached — cannot derive pass key")
-
-        if not literal:
-            write_env_cache(worktree)
-            return _MigrationOutcome(ok=True, message="already migrated (no literal in cache)")
-
-        try:
-            # Keyed on the ticket pk (the canonical, unique key), matching
-            # ``Worktree.pass_key`` the env render writes into the cache.
-            pass_key = ensure_postgres_pass_entry(ticket.pk, literal)
-        except PostgresPasswordUnavailableError as exc:
-            return _MigrationOutcome(ok=False, message=str(exc))
-
-        # Regenerate the cache from the DB so the literal is replaced with the
-        # symbolic reference.  The render layer already drops POSTGRES_PASSWORD.
-        write_env_cache(worktree)
-        return _MigrationOutcome(ok=True, message=f"migrated to pass key {pass_key}")
-
-
-@dataclass(frozen=True, slots=True)
-class _MigrationOutcome:
-    """Outcome of migrating one worktree — used by ``migrate-secrets``.
-
-    Replaces ad-hoc tuples so each line of code reads ``outcome.ok`` and
-    ``outcome.message`` instead of indexed access.
-    """
-
-    ok: bool
-    message: str
 
 
 def main() -> int:  # pragma: no cover — module entry point (Django dispatch glue)

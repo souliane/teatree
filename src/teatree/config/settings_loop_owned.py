@@ -9,8 +9,8 @@ disagree about how they are spelled.
 Membership is not a judgement call: :mod:`teatree.quality.loop_setting_ownership` derives
 it from the read sites, and ``tests/quality/test_loop_settings_grouped_by_owning_loop.py``
 fails when a base here and the source stop agreeing. A key read anywhere else as well —
-``review_skill`` in the review gate, ``fleet_claim_enabled`` in intake — belongs to that
-concern and stays where it is declared.
+``review_skill`` in the review gate — belongs to that concern and stays where it
+is declared.
 
 Split out of ``teatree.config.settings`` for the module-health LOC cap, and imported back
 as declaration bases of ``UserSettings`` — see that module's docstring for why the groups
@@ -56,7 +56,7 @@ class _DirectiveLoopSettings:
     # reaches the owner in a bounded number of ticks. Execution stays one per tick.
     directive_intake_per_tick: int = 25
     # North-star PR-7 — how long after a ratified activation the five evidence classes are
-    # judged. Inert while ``directive_loop_enabled`` is off (nothing reaches VERIFYING).
+    # judged.
     directive_verify_days: int = 7
 
 
@@ -83,37 +83,11 @@ class _DreamLoopSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "dream")
 
-    # The six phases that only READ and rewrite memory ship ON: they file nothing and
-    # spend nothing metered, so the pass is useful out of the box.
-    dream_propose_evals: bool = True
-    dream_cross_link: bool = True
-    dream_merge: bool = True
-    dream_reindex: bool = True
-    dream_decay: bool = True
-    # Phase 3c MEASUREMENT persists a compliance snapshot and files nothing, so the root
-    # KPI is actually measured on every pass.
-    dream_compliance_measure: bool = True
+    # Dream's derivation and live validation run on every admitted pass; the
+    # pass budget bounds their metered work.
 
     # A pass batches its memory promotions into ONE ticket, so this ships ON.
     dream_memory_promote: bool = True
-    # Every other phase that FILES a ticket or makes a metered model call ships OFF, so
-    # opting in is a decision rather than a surprise on the first nightly pass.
-    dream_derive_evals: bool = False
-    dream_compliance_escalate: bool = False
-    dream_automation_asks: bool = False
-    # Without the live validator every clearing candidate is WITHHELD, which is the
-    # nightly tick's key safety property — so this is the one that must ship OFF.
-    dream_validate_live: bool = False
-
-
-@dataclass
-class _FollowupLoopSettings:
-    """Whether the follow-up pass replies on a colleague's thread when a review resumes."""
-
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "followup")
-
-    # Acts on colleagues, so it ships off until the owner decides.
-    review_resume_reply_enabled: bool = False
 
 
 @dataclass
@@ -125,26 +99,22 @@ class _HousekeepingLoopSettings:
     # #1249 Fast-forwards the editable teatree clone + every registered overlay clone to
     # ``origin/<default>`` once the cadence has elapsed. Hourly keeps the orchestrator
     # current without spamming the upstream remote on every tick.
-    self_update_disabled: bool = False
     # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
     auto_update_require_green_main: bool = True
     # The same fast-forward over each WORK repo's main clone under ``$T3_WORKSPACE_DIR``,
     # so a clone never drifts behind after a merge and poisons a ``git show`` / ``grep``
     # investigation. Hourly keeps the clones current without spamming each remote.
-    pull_main_clone_disabled: bool = False
     pull_main_clone_cadence_hours: int = 1
-    # Ships off: reinstalling mid-run is the owner's call. ``T3_LOOP_AUTO_UPDATE`` env wins.
-    auto_update_reinstall: bool = False
 
 
 @dataclass
-class _IssueDispositionLoopSettings:
-    """Whether the disposition pass acts on the issues it classifies."""
+class _InboxLoopSettings:
+    """The GitLab group-webhook pull — which Pub/Sub subscription the inbox loop drains."""
 
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "issue_disposition")
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "inbox")
 
-    # Writes to the forge, so it ships off until the owner decides.
-    auto_disposition_enabled: bool = False
+    # The relay's pull subscription as ``projects/<project>/subscriptions/<name>``; empty is OFF (no job built).
+    gitlab_events_subscription: str = ""
 
 
 @dataclass
@@ -171,19 +141,9 @@ class _NewsLoopSettings:
     # auto-filing is the failure mode this gate forecloses.
     ask_before_creating_news_tickets: bool = True
 
-
-@dataclass
-class _OuterLoopSettings:
-    """The autoresearch runtime's bounds (guard chain G4) — inert while its flag is off."""
-
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "outer_loop")
-
     # T4-PR-3 — the measurement horizon after an experiment merges, the experiments
     # admitted per rolling 7-day window, and the convergence brake: after this many
     # consecutive non-KEPT decisions the loop parks itself rather than propose a fourth.
-    outer_loop_measure_days: int = 7
-    outer_loop_max_per_week: int = 1
-    outer_loop_stop_after_consecutive_failures: int = 3
 
 
 @dataclass
@@ -219,18 +179,6 @@ class _ReviewLoopSettings:
 
 
 @dataclass
-class _ShipLoopSettings:
-    """The forge-facing scans the ship loop runs over open merge requests."""
-
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "ship")
-
-    # Each acts on a forge, so each ships off until the owner decides.
-    gitlab_approval_scanner_enabled: bool = False
-    mr_conflict_scan_enabled: bool = False
-    mr_triage_enabled: bool = False
-
-
-@dataclass
 class _SnapshotWarmerLoopSettings:
     """When a reference-DB snapshot counts as stale enough to re-warm."""
 
@@ -249,7 +197,6 @@ class _TicketsLoopSettings:
     # #129 Verifies open teatree Task rows against their artifact's terminal state (issue
     # closed / PR merged) and completes only on durable proof, never in bulk and never on
     # a stale read.
-    task_sweep_disabled: bool = False
     # The per-task window a swept task is skipped within, and the idempotency window for
     # the atomic ``last_sweep_check_ts`` stamp.
     task_sweep_recheck_interval_hours: int = 1
@@ -262,15 +209,12 @@ LOOP_OWNED_SETTING_BASES: tuple[type, ...] = (
     _DirectiveLoopSettings,
     _DogfoodLoopSettings,
     _DreamLoopSettings,
-    _FollowupLoopSettings,
     _HousekeepingLoopSettings,
-    _IssueDispositionLoopSettings,
+    _InboxLoopSettings,
     _IssueImplementerLoopSettings,
     _NewsLoopSettings,
-    _OuterLoopSettings,
     _ResourcePressureLoopSettings,
     _ReviewLoopSettings,
-    _ShipLoopSettings,
     _SnapshotWarmerLoopSettings,
     _TicketsLoopSettings,
 )

@@ -18,8 +18,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
-from teatree.docker.workflow import ALIAS_MARKER_BEGIN, ALIAS_MARKER_END
 from tests._deploy_wrapper_paths import container_worktree_root
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
@@ -81,7 +81,7 @@ def wrapper(tmp_path: Path) -> Path:
     deploy = tmp_path / "checkout" / "deploy"
     deploy.mkdir(parents=True, exist_ok=True)
     entry = deploy / "t3"
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     return entry
 
@@ -150,40 +150,3 @@ class TestBootstrapAndRepairFromNothingButTheCheckout:
         # non-root container out of the one directory it writes the launcher through.
         self._run_setup(tmp_path, bare_bin, wrapper)
         assert (tmp_path / "home" / ".local" / "bin").is_dir()
-
-    def test_setup_retires_a_managed_alias_block_it_finds(self, tmp_path: Path, bare_bin: Path, wrapper: Path) -> None:
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        (home / ".bashrc").write_text(
-            f'export EDITOR=emacs\n{ALIAS_MARKER_BEGIN}\nalias t3="/old/deploy/t3"\n{ALIAS_MARKER_END}\n',
-            encoding="utf-8",
-        )
-
-        proc = subprocess.run(
-            [str(wrapper), "setup"],
-            capture_output=True,
-            text=True,
-            env={"PATH": str(bare_bin), "HOME": str(home), "TEATREE_HOST_HOME": str(home)},
-            cwd=tmp_path,
-            check=False,
-        )
-
-        assert proc.returncode == 0, proc.stderr
-        assert (home / ".bashrc").read_text(encoding="utf-8") == "export EDITOR=emacs\n"
-
-    def test_an_ordinary_command_leaves_the_rc_files_alone(self, tmp_path: Path, bare_bin: Path, wrapper: Path) -> None:
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        rc = f'{ALIAS_MARKER_BEGIN}\nalias t3="/old/deploy/t3"\n{ALIAS_MARKER_END}\n'
-        (home / ".bashrc").write_text(rc, encoding="utf-8")
-
-        subprocess.run(
-            [str(wrapper), "info"],
-            capture_output=True,
-            text=True,
-            env={"PATH": str(bare_bin), "HOME": str(home), "TEATREE_HOST_HOME": str(home)},
-            cwd=tmp_path,
-            check=False,
-        )
-
-        assert (home / ".bashrc").read_text(encoding="utf-8") == rc

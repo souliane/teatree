@@ -10,11 +10,10 @@ ENFORCES the binding escalation rule.
 
 THE BINDING RULE. When a rule that ALREADY has a durable memory is violated AGAIN
 (``is_recurrence``), the remediation MUST be a gate or an eval, NEVER another
-memory. :func:`escalate_recurrences` drives ONE deduped umbrella checkbox +
-scheduled coding task per recurring rule (via ``umbrella_ledger.promote_gap``) that
+memory. :func:`escalate_recurrences` queues ONE deduped gap per recurring rule that
 PRESCRIBES the structural fix (a PreToolUse/Stop gate, a deterministic config
-self-check, or an anti-vacuous ``under_load`` eval) and carries it to a MERGED fix
-under the standing umbrella issue — it never proposes writing more prose. That is
+self-check, or an anti-vacuous ``under_load`` eval), which the backlog sweep folds into
+an existing host — it never proposes writing more prose. That is
 the operationalisation of ``feedback_instruction_compliance_is_the_root_kpi``.
 
 The detector reuses :func:`teatree.loops.dream.transcript_extract.looks_like_user_correction`
@@ -42,6 +41,7 @@ from django.db import transaction
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.loops.dream.compliance_attribution import (
     _backing_memory,
     _correction_lines,
@@ -50,7 +50,6 @@ from teatree.loops.dream.compliance_attribution import (
 )
 from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.engine import DistilledCluster
-from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
 from teatree.loops.dream.replay import ConsolidationExtract
 
 if TYPE_CHECKING:
@@ -59,8 +58,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Where a reclassified recurring MEMORY_ONLY cluster is sent instead of a memory
-#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and drives an
-#: umbrella checkbox + scheduled gate/eval fix rather than re-promoting another memory.
+#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and queues a
+#: gate/eval fix rather than re-promoting another memory.
 _RECURRENCE_CORE_DESTINATION = "src/teatree/loops/dream/compliance.py"
 
 #: The gap-key namespace for a compliance recurrence on the umbrella ledger, keyed
@@ -226,10 +225,9 @@ def reclassify_recurring_memory_clusters(
     audit ledger AND is in *rule_slugs* is reclassified to a teatree-core destination.
     The intersection is load-bearing: the ledger holds rows minted before the rule
     universe was bounded, so an unfiltered recurrence redirects a legitimate
-    keep-as-memory cluster forever. Pass-2 triage then
-    reads it as a core gap and drives an umbrella checkbox + scheduled gate/eval fix
-    instead of re-promoting a memory. A cluster already destined for a core path, or
-    whose rule has no recurrence on record, is returned untouched.
+    keep-as-memory cluster forever. Pass-2 triage then reads it as a core gap and
+    queues a gate/eval fix instead of re-promoting a memory. A cluster already destined
+    for a core path, or whose rule has no recurrence on record, is returned untouched.
     """
     recurring = _recurring_rule_slugs() & set(rule_slugs)
     if not recurring:
@@ -284,7 +282,7 @@ def escalate_recurrences(
     findings: Sequence[ComplianceFinding],
     *,
     batch: "PromotionBatch",
-    umbrella_url: str = UMBRELLA_ISSUE_URL,
+    umbrella_url: str,
     dry_run: bool = False,
 ) -> list[EscalationOutcome]:
     """Queue ONE gap per recurring rule into this pass's promotion batch (#2663, #4776).
@@ -294,10 +292,9 @@ def escalate_recurrences(
     rule collapse to one gap (deduped by ``rule_identity``). Each recurrence is
     considered against the standing umbrella (*umbrella_url*) with a title that
     PRESCRIBES the structural fix — a gate, a config self-check, or an anti-vacuous
-    eval — and NEVER proposes writing another memory. The checkbox + scheduled coding
-    task are minted once, for the WHOLE pass's batch, by
-    :func:`~teatree.loops.dream.batch_promote.promote_batch` after every promoting
-    phase has run — not here (#4776).
+    eval — and NEVER proposes writing another memory. The WHOLE pass's batch is queued
+    once, by :func:`~teatree.loops.dream.batch_promote.promote_batch`, after every
+    promoting phase has run — not here (#4776).
 
     Promotion only — stamping the audit rows is :func:`stamp_escalations`, which the
     phase entry point runs over the returned outcomes.
@@ -386,7 +383,7 @@ def run_compliance_escalation(
         return ""
     if host is None:
         return "; WARN compliance escalation skipped — no teatree code host resolved"
-    outcomes = escalate_recurrences(findings, batch=batch, dry_run=dry_run)
+    outcomes = escalate_recurrences(findings, batch=batch, umbrella_url=dream_umbrella_url(), dry_run=dry_run)
     stamp_escalations(snapshot, outcomes, dry_run=dry_run)
     filed = sum(1 for o in outcomes if o.filed)
     return f"; escalated {filed}/{recurrences} compliance recurrence(s)"

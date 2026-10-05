@@ -19,6 +19,7 @@ from teatree.backends.slack import http as slack_http
 from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_nag import ReviewNagScanner
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core.test_review_request_guard import _HUMAN_AUTHOR, FakeClient
 from tests.teatree_loop.test_review_nag_scanner import FakeHost, FakeSlack, _PermittingPostureMixin
 
@@ -51,6 +52,7 @@ def _point_the_guard_at(mp: pytest.MonkeyPatch, fake: FakeClient) -> None:
 class TestTheNagDoesNotReconcileAgainstItsOwnRoot(_PermittingPostureMixin, TestCase):
     def setUp(self) -> None:
         super().setUp()
+        allow_slack_channels(_CHANNEL)
         self.root_ts = _ts_days_ago(3)
         self.post = ReviewRequestPost.objects.create(
             mr_url=_MR_URL,

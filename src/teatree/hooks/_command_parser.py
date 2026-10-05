@@ -2,8 +2,8 @@ r"""Bash command surface parsing for the quote-scanner gate (#1213).
 
 Extracted from :mod:`teatree.hooks.quote_scanner` to keep that module
 under the project's per-file LOC ceiling. The public quote-scanner API
-(scan_text, format_*, log_decision, extract_publish_payload,
-has_quote_ok_override) lives in ``quote_scanner.py`` and delegates the
+(scan_text, format_*, log_decision, extract_publish_payload)
+lives in ``quote_scanner.py`` and delegates the
 shell-grammar work to the helpers here.
 
 The parser walks a Bash command string in two passes:
@@ -34,6 +34,7 @@ classifiers there, so an interspersed persistent flag cannot break detection
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+from teatree.hooks import _parser_primitives as _primitives
 from teatree.hooks._body_file_resolution import (
     BodyFileContext,
     command_body_file_base,
@@ -45,19 +46,6 @@ from teatree.hooks._body_file_resolution import (
 )
 from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
 from teatree.hooks._inline_body_resolution import resolve_inline_body_value
-from teatree.hooks._parser_primitives import (
-    BODY_FIELD_NAMES,
-    BODY_LONG_OPTION_FIELDS,
-    FAIL_CLOSED_SENTINEL,
-    UNAVAILABLE_BODY_SOURCE_SENTINEL,
-    attached_api_field,
-    attached_value,
-    canonical_forge_leader,
-    is_fail_closed_sentinel,
-    is_unavailable_body_source_sentinel,
-    read_file_arg,
-    wrapper_prefix_len,
-)
 from teatree.hooks._publish_detection import (
     command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
@@ -72,25 +60,6 @@ from teatree.hooks._python_rest_detection import (
     segment_is_python_rest_publish,
 )
 from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokenize
-
-# Re-exported for backward compatibility: several sibling gates import these
-# primitives from ``_command_parser`` (their historical home). They now live in
-# the dependency-free ``_parser_primitives`` leaf (which breaks the
-# ``_command_parser`` ⇄ ``_body_file_resolution`` cycle, #F7.9); re-exporting
-# keeps every ``from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL``
-# (and siblings) resolving unchanged.
-__all__ = [
-    "FAIL_CLOSED_SENTINEL",
-    "UNAVAILABLE_BODY_SOURCE_SENTINEL",
-    "attached_value",
-    "extract_bash_payload",
-    "extract_secret_scan_text",
-    "first_segment_words",
-    "is_fail_closed_sentinel",
-    "is_publish_command",
-    "is_unavailable_body_source_sentinel",
-    "read_file_arg",
-]
 
 # ── Publish-surface substring catalogues ────────────────────────────
 
@@ -109,7 +78,6 @@ _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "notify send",
     "notify dm",
     "review post-comment",
-    "review post-draft-note",
     "ticket create-issue",
     "t3 slack react",
 )
@@ -181,10 +149,10 @@ def is_publish_command(command: str) -> bool:
 # Per-command argument-walker dispatch tables --------------------------
 
 # Body-bearing long options (value follows the flag as next token or attached via
-# ``=``), spelled from :data:`BODY_LONG_OPTION_FIELDS` — the deliberately narrower
+# ``=``), spelled from :data:`_primitives.BODY_LONG_OPTION_FIELDS` — the deliberately narrower
 # half of the body catalogue, because this walker runs on EVERY segment rather
 # than under a forge leader.
-_BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(f"--{name}" for name in BODY_LONG_OPTION_FIELDS)
+_BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(f"--{name}" for name in _primitives.BODY_LONG_OPTION_FIELDS)
 
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
@@ -254,7 +222,7 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
             continue
         attached_handled = False
         for flag in _BODY_FLAG_NAMES:
-            attached = attached_value(word, flag + "=")
+            attached = _primitives.attached_value(word, flag + "=")
             if attached is not None:
                 payloads.append(resolve_inline_body_value(attached, base, raws[i]))
                 attached_handled = True
@@ -273,17 +241,17 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
     """Read a ``--input`` argument: stdin or missing file → fail closed.
 
     A literal ``-`` is a STDIN body the PreToolUse hook cannot read before the
-    command runs, so it carries :data:`UNAVAILABLE_BODY_SOURCE_SENTINEL` and the
+    command runs, so it carries :data:`_primitives.UNAVAILABLE_BODY_SOURCE_SENTINEL` and the
     gate renders the actionable "write the body to an absolute file" message
     (#2369). A NAMED file that does not exist is a missing FILE, so it keeps the
-    generic :data:`FAIL_CLOSED_SENTINEL` whose "body file is missing" advice fits.
+    generic :data:`_primitives.FAIL_CLOSED_SENTINEL` whose "body file is missing" advice fits.
     """
     if arg == "-":
-        payloads.append(UNAVAILABLE_BODY_SOURCE_SENTINEL)
+        payloads.append(_primitives.UNAVAILABLE_BODY_SOURCE_SENTINEL)
         return
-    content = read_file_arg(arg)
+    content = _primitives.read_file_arg(arg)
     if content is None:
-        payloads.append(FAIL_CLOSED_SENTINEL)
+        payloads.append(_primitives.FAIL_CLOSED_SENTINEL)
         return
     payloads.append(content)
     payloads.extend(_json_body_fields(content))
@@ -300,7 +268,7 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
 
     Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
     and ``--input <missing>`` (fail closed). Field names outside
-    :data:`BODY_FIELD_NAMES` are ignored. ``raws`` (parallel to ``words``)
+    :data:`_primitives.BODY_FIELD_NAMES` are ignored. ``raws`` (parallel to ``words``)
     carries each token's verbatim source span so a single-quoted INERT
     ``$(...)`` in a body field is scanned rather than fail-closed.
     """
@@ -322,10 +290,10 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
             _handle_api_input(words[i + 1], payloads)
             i += 2
             continue
-        attached = attached_value(word, "--input=")
+        attached = _primitives.attached_value(word, "--input=")
         if attached is not None:
             _handle_api_input(attached, payloads)
-        attached_field = attached_api_field(word)
+        attached_field = _primitives.attached_api_field(word)
         if attached_field is not None and (prose_name or not attached_field.startswith("name=")):
             _handle_field_assignment(attached_field, payloads, base, raws[i], reads_file=_field_flag_reads_file(word))
         i += 1
@@ -364,7 +332,7 @@ def _handle_field_assignment(
 ) -> None:
     """Parse a ``-F <name>=value`` style argument and append the resolved value.
 
-    The name must be one of :data:`BODY_FIELD_NAMES` — GitLab's own field for an
+    The name must be one of :data:`_primitives.BODY_FIELD_NAMES` — GitLab's own field for an
     issue/MR body is ``description``, so keying on ``body`` alone extracted an
     EMPTY payload from ``-f description=<leak>`` and every body-based leak gate
     scanned nothing while detection still called the command a publish.
@@ -392,7 +360,7 @@ def _handle_field_assignment(
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
-    if name not in BODY_FIELD_NAMES:
+    if name not in _primitives.BODY_FIELD_NAMES:
         return
     if reads_file and value.startswith("@"):
         _handle_api_input(value[1:], payloads)
@@ -436,12 +404,12 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # body that merely MENTIONS a ``$(...)`` snippet is no longer mis-classified
     # as an unreadable source (#1415).
     all_raws = [tok.raw for tok in word_tokens]
-    skip = wrapper_prefix_len(all_words)
+    skip = _primitives.wrapper_prefix_len(all_words)
     words = all_words[skip:]
     raws = all_raws[skip:]
     if not words:
         return
-    first = canonical_forge_leader(all_words)
+    first = _primitives.canonical_forge_leader(all_words)
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``. The canonical
     # leader selects glab's extra ``-d`` description short flag.
@@ -542,7 +510,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     # wrapper (``xargs gh``, ``/usr/bin/gh``) is NOT opaque: its leader
     # canonicalises to the forge tool and its body is extracted above.
     if command_has_opaque_forge_transport(command):
-        parts.append(FAIL_CLOSED_SENTINEL)
+        parts.append(_primitives.FAIL_CLOSED_SENTINEL)
     return "\n".join(parts)
 
 
@@ -569,7 +537,7 @@ def _api_field_values(words: list[str]) -> list[str]:
             values.append(words[i + 1].partition("=")[2] or words[i + 1])
             i += 2
             continue
-        attached = attached_api_field(word)
+        attached = _primitives.attached_api_field(word)
         if attached is not None:
             values.append(attached.partition("=")[2] or attached)
         i += 1
@@ -593,22 +561,19 @@ def extract_secret_scan_text(command: str) -> str:
         # Canonicalise the leader (transparent wrapper stripped, basename taken)
         # so a secret in a ``xargs gh api -f title=…`` / ``/usr/bin/gh api …``
         # field is scanned too, not just the bare ``gh api`` form (#F7.1).
-        if canonical_forge_leader(words) in {"gh", "glab"}:
+        if _primitives.canonical_forge_leader(words) in {"gh", "glab"}:
             parts.extend(_api_field_values(words))
     return "\n".join(part for part in parts if part)
 
 
-# ── Quote-OK override detection ─────────────────────────────────────
+# ── First-segment words ─────────────────────────────────────────────
 
 
 def first_segment_words(command: str) -> list[str]:
     """Return the WORD-value list of the FIRST command segment.
 
-    Used by the override-detection: a ``--quote-ok`` token is only
-    honoured when it appears as a CLI token in the first segment of the
-    bash command. Anything after the first command-separator operator
-    is a separate command and must not bypass the gate (codex round-2
-    #1, round-3 #2).
+    Anything after the first command-separator operator is a separate command
+    (codex round-2 #1, round-3 #2).
     """
     tokens = tokenize(command)
     segments = split_commands(tokens)

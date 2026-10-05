@@ -1158,6 +1158,9 @@ class TestLifecycleVisitPhase(TestCase):
     @override_settings(**SETTINGS)
     def test_reuses_existing_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/vp2")
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(ticket)
         session = Session.objects.create(ticket=ticket)
         session.visit_phase("testing")
 
@@ -1189,6 +1192,9 @@ class TestLifecycleVisitPhase(TestCase):
         ticket = Ticket.objects.create(
             overlay="test", issue_url="https://example.com/issues/vp4", state=Ticket.State.NOT_STARTED
         )
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(ticket)
         cast(
             "str",
             call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer"),

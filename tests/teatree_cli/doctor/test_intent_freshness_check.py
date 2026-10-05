@@ -11,7 +11,6 @@ runs against the real Loop table + directive/question queues.
 import io
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from unittest import mock
 
 from django.test import TestCase
@@ -26,8 +25,7 @@ from teatree.cli.doctor.checks_intent import (
 from teatree.core.factory.factory_signals import FactorySignalsReport, SignalVerdict
 from teatree.core.models import DeferredQuestion, Directive, Loop
 from teatree.loop.self_improve.budget import BudgetVerdict
-from teatree.loops.directive_loop.guards import DirectiveLoopSettings
-from teatree.loops.outer_loop.guards import MIN_CRITIC_SAMPLE, CriticLiveness, GuardSeams
+from teatree.loops.shared.guards import GuardSeams
 
 _NOW = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
 
@@ -40,7 +38,7 @@ def _queue(*, live: bool, pending: tuple[IntentItem, ...]) -> IntentQueue:
     return IntentQueue(
         label="directive",
         consumer_loop="directive_loop",
-        remediation="unmask it: t3 loop enable directive_loop --emergency",
+        remediation="unmask it: t3 loop resume directive_loop --emergency",
         consumer_live=live,
         pending=pending,
     )
@@ -56,7 +54,7 @@ class TestIntentFreshnessFindings:
         assert findings[0].gating is True
         assert "FAIL" in findings[0].message
         assert "directive #12" in findings[0].message
-        assert "t3 loop enable directive_loop --emergency" in findings[0].message
+        assert "t3 loop resume directive_loop --emergency" in findings[0].message
 
     def test_dead_consumer_finding_subsumes_staleness_one_finding_only(self) -> None:
         # A dead consumer with BOTH a stale and a fresh item still emits exactly one
@@ -102,50 +100,25 @@ class TestIntentFreshnessFindings:
         assert "directive #19" not in message
 
 
-def _live_critic() -> CriticLiveness:
-    return CriticLiveness(live=True, verdict_count=MIN_CRITIC_SAMPLE)
-
-
-def _open_directive_consumer(*, factory_score_enabled: bool = True) -> tuple[DirectiveLoopSettings, GuardSeams]:
-    """Settings + seams that make the directive guard chain allow, as its tick would."""
-    settings = SimpleNamespace(
-        directive_loop_enabled=True,
-        factory_score_enabled=factory_score_enabled,
-        directive_verify_days=7,
-        directive_intake_per_tick=25,
-    )
+def _open_directive_consumer() -> GuardSeams:
+    """Seams that make the directive guard chain allow, as its tick would."""
     report = FactorySignalsReport(
         window_days=28, generated_at=datetime(2026, 1, 1, tzinfo=UTC), signals=[], verdict=SignalVerdict.OK
     )
-    seams = GuardSeams(critic_probe=_live_critic, signal_report=report, budget=BudgetVerdict.allow())
-    return settings, seams
-
-
-def _closed_directive_consumer() -> tuple[DirectiveLoopSettings, GuardSeams]:
-    """Settings whose master flag is OFF — the guard chain refuses at G1, no live consumer."""
-    settings, seams = _open_directive_consumer()
-    return SimpleNamespace(**{**vars(settings), "directive_loop_enabled": False}), seams
+    return GuardSeams(signal_report=report, budget=BudgetVerdict.allow())
 
 
 def _run(
     *,
     open_directive_consumer: bool = False,
-    closed_directive_consumer: bool = False,
-    factory_score_enabled: bool = True,
 ) -> tuple[bool, str]:
-    if closed_directive_consumer:
-        settings, seams = _closed_directive_consumer()
-    elif open_directive_consumer:
-        settings, seams = _open_directive_consumer(factory_score_enabled=factory_score_enabled)
-    else:
-        # Settings stay None so the SHIPPED default flag is what answers. The budget
-        # seam is still pinned: unpinned it samples the RUNNING box's RAM, so a machine
-        # past the 85% ceiling refuses the guard chain and reds this suite for a reason
-        # no part of it is about.
-        settings, seams = None, GuardSeams(budget=BudgetVerdict.allow())
+    # The budget seam is always pinned: unpinned it samples the RUNNING box's RAM, so a
+    # machine past the 85% ceiling refuses the guard chain and reds this suite for a
+    # reason no part of it is about.
+    seams = _open_directive_consumer() if open_directive_consumer else GuardSeams(budget=BudgetVerdict.allow())
     buf = io.StringIO()
     with redirect_stdout(buf):
-        ok = _check_intent_freshness(settings=settings, seams=seams)
+        ok = _check_intent_freshness(seams=seams)
     return ok, buf.getvalue()
 
 
@@ -175,23 +148,8 @@ class TestCheckIntentFreshness(TestCase):
         assert f"directive #{directive.pk}" in out
         assert "directive_loop" in out
 
-    def test_directive_guard_refusal_is_unconsumed_even_with_an_unmasked_loop(self) -> None:
-        # Unmasking the loop is NOT enough when the master flag is off: the fail-closed
-        # guard chain still refuses every tick, so the queue has no live consumer and the
-        # remediation must name the FLAG, not the mask. The flag is stated because #3895
-        # ships it ON — inheriting the default would make this the live-consumer case.
-        Loop.objects.filter(name="directive_loop").update(enabled=True)
-        directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
-        ok, out = _run(closed_directive_consumer=True)
-        assert ok is False
-        assert "FAIL" in out
-        assert f"directive #{directive.pk}" in out
-        assert "directive_loop_enabled" in out
-
-    def test_the_shipped_flag_makes_an_unmasked_loop_a_live_consumer(self) -> None:
-        # #3895's consequence for this gate: with the loop unmasked, the shipped
-        # default-ON flag means the queue HAS a consumer, so a fresh directive is silent
-        # rather than a hard FAIL.
+    def test_an_unmasked_loop_is_a_live_consumer(self) -> None:
+        # With the loop unmasked, the queue has a consumer and a fresh directive is silent.
         Loop.objects.filter(name="directive_loop").update(enabled=True)
         Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
         ok, out = _run()
@@ -206,19 +164,6 @@ class TestCheckIntentFreshness(TestCase):
         assert ok is True
         assert "WARN" in out
         assert f"directive #{directive.pk}" in out
-
-    def test_dark_factory_score_does_not_mark_the_intake_consumer_dead(self) -> None:
-        # The queue holds the PRE-admission arc, whose chain is `evaluate_intake_guards`
-        # — it drops the `factory_score_enabled` gate that only the post-admission
-        # `evaluate_execution_guards` chain applies. Probing the execution chain here
-        # would report a draining consumer as dead the moment scoring ships dark.
-        Loop.objects.filter(name="directive_loop").update(enabled=True)
-        directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
-        _backdate_directive(directive, hours=30)
-        ok, out = _run(open_directive_consumer=True, factory_score_enabled=False)
-        assert ok is True
-        assert "FAIL" not in out
-        assert "WARN" in out
 
     def test_fresh_directive_with_live_consumer_is_silent(self) -> None:
         Loop.objects.filter(name="directive_loop").update(enabled=True)

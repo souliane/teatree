@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from teatree.agents.model_aliases import family_alias_models
+from teatree.core.billed_model import dominant_model
 from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
 
 #: Cap on the captured ``output`` snippet of a hook_response event — enough to
@@ -390,12 +391,7 @@ def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
     for event in reversed(events):
         if event.type != "result":
             continue
-        model_usage = event.raw.get("model_usage")
-        if not isinstance(model_usage, dict) or not model_usage:
-            return None
-        # On a volume tie, max() keeps the first-seen key (Python's stable max) —
-        # harmless, since a real fallback is lopsided, not a near-even split.
-        return max(model_usage, key=lambda key: _model_usage_volume(model_usage[key]))
+        return dominant_model(event.raw.get("model_usage"))
     return None
 
 
@@ -494,10 +490,3 @@ def _int_or_zero(value: object) -> int:
 def _token_fields(raw: dict[Any, Any]) -> dict[str, int]:
     """Map the four wire keys of a ``usage``/``model_usage`` entry onto field ints."""
     return {field: _int_or_zero(raw.get(key)) for key, field in _USAGE_KEY_TO_FIELD}
-
-
-def _model_usage_volume(per_model: object) -> int:
-    """Total token volume of one ``model_usage`` entry — the dominance key."""
-    if not isinstance(per_model, dict):
-        return 0
-    return sum(_token_fields(per_model).values())

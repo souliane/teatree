@@ -5,11 +5,9 @@ the scoping never hides a real finding: it runs the WHOLE-TREE ast-grep scan and
 the WHOLE-TREE doctest sweep, then asserts every finding/failure lies INSIDE the
 scoped set the gate would have run for the same diff. Any whole-tree
 finding/failure the scoped gate would have SKIPPED is a measured false negative —
-the job fails LOUD (and the workflow files a tracking issue). Scoping earns trust
-from evidence before the operator flips ``incremental_push_gate`` on per-overlay.
+the job fails LOUD (and the workflow files a tracking issue).
 
-The audit always evaluates the SCOPED plan (``enabled=True``) regardless of the
-flag: it measures whether scoping WOULD be safe, independent of whether it is live.
+The audit always evaluates the SCOPED plan: it measures whether scoping is safe.
 A FULL plan can never miss (it scans everything), so the audit passes trivially.
 """
 
@@ -108,7 +106,7 @@ def _render(misses: list[AuditMiss]) -> str:
 def main() -> int:
     base_ref = os.environ.get("BASE_REF", "origin/main")
     root = teatree_source_root()
-    plan = resolve_plan(base_ref, enabled=True, cwd=root)
+    plan = resolve_plan(base_ref, cwd=root)
     print(plan.report())
     print(f"reason: {plan.reason}")
     misses = audit_scope(plan, _whole_tree_findings(root), _whole_tree_doctest_failures(root))

@@ -12,6 +12,7 @@ caller reads as "there was nothing to file".
 """
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,13 +20,19 @@ from teatree.core.answering.work_item_filing import WorkItemFilingError, file_wo
 from teatree.core.models import Ticket
 from teatree.core.send_proxy import OutboundBlockedError
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_forge_repos
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
 
 _REPO = "souliane/teatree"
 _Refused = OutboundBlockedError("banned term in outbound text")
 _ANCHOR = "https://github.com/souliane/teatree/issues/3009#slack=D-owner/1.0/dm"
+
+
+@pytest.fixture(autouse=True)
+def _allow_filing_repo() -> None:
+    allow_forge_repos(_REPO)
 
 
 @dataclass
@@ -90,6 +97,23 @@ class TestANewRequestBecomesAnAdmissibleIssue:
         work = Ticket.objects.get(issue_url=filed.url)
         assert work.is_admissible(), "the filed row is still not something intake could discover"
         assert work.short_description == "Detect the open-PR bottleneck"
+
+    def test_issue_write_uses_the_overlay_forge(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        routed_forges: list[str] = []
+
+        def route(*, forge: str, repo: str, text: str, action: str, target: str) -> str:
+            _ = (repo, action, target)
+            routed_forges.append(forge)
+            return text
+
+        monkeypatch.setattr(
+            "teatree.core.answering.work_item_filing.get_overlay",
+            lambda _name: SimpleNamespace(config=SimpleNamespace(code_host="gitlab")),
+        )
+        monkeypatch.setattr("teatree.core.answering.work_item_filing.route_forge_write", route)
+        file_work_item(_conversation_ticket(), {"title": "t", "body": "b"}, host=RecordingHost(), repo=_REPO)
+
+        assert routed_forges == ["gitlab", "gitlab"]
 
     def test_every_filed_issue_is_withheld_behind_needs_triage(self) -> None:
         """Nobody dictated this text, so the maintainer clears it before the factory claims it."""

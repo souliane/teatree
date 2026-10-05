@@ -87,15 +87,7 @@ class TestListSubcommand:
 
         assert "queued" in out
         assert "delegated" not in out
-
-    def test_list_marks_consumed_rows(self) -> None:
-        row = PendingChatInjection.record(channel="D", slack_ts="1", text="status update")
-        assert row is not None
-        assert row.consume() is True
-
-        out = _call("pending_chat", "list")
-
-        assert "consumed" in out
+        assert "consumed" not in out
 
 
 class TestMarkAnsweredSubcommand:

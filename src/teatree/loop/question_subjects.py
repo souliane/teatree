@@ -13,13 +13,12 @@ that is applicable to the row owns it:
     :func:`~teatree.loop.repair_halt_reconcile.repair_marker_subject_tickets`.
 2. ``parked_task`` — an explicit FK to the ``Task`` whose park raised the question,
     so its ticket IS the subject. The headless needs-input lane sets it.
-3. ``session_id`` when it is a ``Session`` pk. The column holds EITHER a harness
-    session UUID (the away-mode ``AskUserQuestion`` hook) or ``str(task.session_id)``
-    from the task-derived producers. Only an all-digit value that resolves to a real
-    ``Session`` row is accepted, so a harness UUID never derives a subject.
+3. ``task_session`` — the ``Session`` of the task a task-derived producer raised the
+    question from, so its ticket is the subject. ``session_id`` names only an asking
+    Claude session and never derives a subject.
 
 Applicability is why the answer is a typed three-way rather than ``list | None``.
-The repair escalation stamps ``session_id=str(task.session_id)``, so every repair row
+The repair escalation stamps ``task_session``, so every repair row
 also carries source 3 — and a falsy ``no subject`` from source 1 would hand the row to
 a source that answers about the ASKING session instead of the marker's own subjects.
 An applicable source that cannot name a subject therefore STOPS the chain, which is
@@ -194,8 +193,7 @@ _SUBJECT_SOURCES: tuple[SubjectSource, ...] = (
 
 
 def _session_pk(question: DeferredQuestion) -> int | None:
-    """The ``Session`` pk *question* names, or ``None`` for a harness UUID / blank."""
-    return int(question.session_id) if question.session_id.isdigit() else None
+    return question.task_session_id
 
 
 def _session_pks(questions: Sequence[DeferredQuestion]) -> set[int]:

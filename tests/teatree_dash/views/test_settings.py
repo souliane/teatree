@@ -127,14 +127,14 @@ class TestSettingsPageContext(TestCase):
 
     def test_a_configured_secret_value_never_appears_in_the_response_bytes(self) -> None:
         # THE critical guarantee: a stored secret is masked before the context is built.
-        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
-        section = _section_slug("banned_terms")
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
+        section = _section_slug("banned_term_registry")
         response = self.client.get(f"{reverse('dash:settings')}?section={section}", **_LOOPBACK)
         body = response.content.decode()
         assert response.status_code == 200
         assert "supersecretcodename" not in body
         # the row is still present, masked
-        assert "banned_terms" in body
+        assert "banned_term_registry" in body
 
 
 class TestTheLeftNavAndRightPane(TestCase):
@@ -157,7 +157,7 @@ class TestTheLeftNavAndRightPane(TestCase):
         assert 'id="settings-pane"' in body
 
     def test_selecting_a_section_answers_that_section_alone(self) -> None:
-        slug = _section_slug("require_merge_evidence")
+        slug = _section_slug("expected_required_contexts")
         body = self.client.get(reverse("dash:settings_group", args=[slug]), **_LOOPBACK).content.decode()
         assert "<html" not in body
         assert set(_ROW_ID.findall(body)) == set(_pane_keys(slug))
@@ -171,7 +171,7 @@ class TestTheLeftNavAndRightPane(TestCase):
         assert len(reachable) == len(set(reachable))
 
     def test_the_section_query_parameter_selects_the_pane(self) -> None:
-        slug = _section_slug("require_merge_evidence")
+        slug = _section_slug("expected_required_contexts")
         body = self._body(f"?section={slug}")
         assert set(_ROW_ID.findall(body)) == set(_pane_keys(slug))
 
@@ -359,14 +359,14 @@ class TestSettingsSet(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_set_rejects_an_invalid_value(self) -> None:
-        response = self._set("adaptive_intake_concurrency_enabled", {"value": '"false"'})
+        response = self._set("admit_colleague_prs_to_board", {"value": '"false"'})
         assert response.status_code == 400
         assert ConfigSetting.objects.count() == 0
 
     def test_a_secret_is_settable_but_its_value_stays_off_the_page(self) -> None:
-        self._set("banned_terms", {"value": '["hushword"]'})
-        assert ConfigSetting.objects.get_effective("banned_terms") == ["hushword"]
-        section = _section_slug("banned_terms")
+        self._set("banned_term_registry", {"value": '{"leak": ["hushword"]}'})
+        assert ConfigSetting.objects.get_effective("banned_term_registry") == {"leak": ["hushword"]}
+        section = _section_slug("banned_term_registry")
         body = self.client.get(f"{reverse('dash:settings')}?section={section}", **_LOOPBACK).content.decode()
         assert "hushword" not in body
 
@@ -452,13 +452,13 @@ class TestSafetyPostureConfirm(TestCase):
         return self.client.post(reverse("dash:settings_set", args=[key]), data, **_LOOPBACK)
 
     def test_a_safety_posture_key_is_refused_without_the_confirm_phrase(self) -> None:
-        response = self._set("enforce_regulated_path", {"value": "true"})
+        response = self._set("regulated_path_model_allowlist", {"value": '["anthropic/"]'})
         assert response.status_code == 400
-        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is None
+        assert ConfigSetting.objects.get_effective("regulated_path_model_allowlist") is None
 
     def test_a_safety_posture_key_writes_with_the_confirm_phrase(self) -> None:
-        self._set("enforce_regulated_path", {"value": "true", "confirm": SAFETY_CONFIRM_PHRASE})
-        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is True
+        self._set("regulated_path_model_allowlist", {"value": '["anthropic/"]', "confirm": SAFETY_CONFIRM_PHRASE})
+        assert ConfigSetting.objects.get_effective("regulated_path_model_allowlist") == ["anthropic/"]
 
 
 class TestSettingsRestore(TestCase):
@@ -466,14 +466,14 @@ class TestSettingsRestore(TestCase):
         return self.client.post(reverse("dash:settings_restore", args=[key]), data or {}, **_LOOPBACK)
 
     def test_restore_refuses_a_safety_posture_key_without_the_confirm_phrase(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
-        assert self._restore("enforce_regulated_path").status_code == 400
-        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is True
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
+        assert self._restore("regulated_path_model_allowlist").status_code == 400
+        assert ConfigSetting.objects.get_effective("regulated_path_model_allowlist") == ["anthropic/"]
 
     def test_restore_deletes_a_safety_posture_key_with_the_confirm_phrase(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
-        self._restore("enforce_regulated_path", {"confirm": SAFETY_CONFIRM_PHRASE})
-        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is None
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
+        self._restore("regulated_path_model_allowlist", {"confirm": SAFETY_CONFIRM_PHRASE})
+        assert ConfigSetting.objects.get_effective("regulated_path_model_allowlist") is None
 
     def test_restore_deletes_the_db_row(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -592,8 +592,10 @@ class TestHtmxRowSwap(TestCase):
         assert reverse("dash:settings_restore", args=["mode"]) not in body  # no row left to delete
 
     def test_a_secret_never_reaches_the_swapped_fragment(self) -> None:
-        body = self._post("dash:settings_set", "banned_terms", {"value": '["hushword"]'}).content.decode()
-        assert ConfigSetting.objects.get_effective("banned_terms") == ["hushword"]
+        body = self._post(
+            "dash:settings_set", "banned_term_registry", {"value": '{"leak": ["hushword"]}'}
+        ).content.decode()
+        assert ConfigSetting.objects.get_effective("banned_term_registry") == {"leak": ["hushword"]}
         assert "hushword" not in body
         assert "***" in body
 
@@ -606,10 +608,10 @@ class TestHtmxRowSwap(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_a_safety_posture_key_still_needs_the_confirm_phrase_over_htmx(self) -> None:
-        response = self._post("dash:settings_set", "enforce_regulated_path", {"value": "true"})
+        response = self._post("dash:settings_set", "regulated_path_model_allowlist", {"value": '["anthropic/"]'})
         assert response.status_code == 400
         assert SAFETY_CONFIRM_PHRASE in response.content.decode()
-        assert ConfigSetting.objects.get_effective("enforce_regulated_path") is None
+        assert ConfigSetting.objects.get_effective("regulated_path_model_allowlist") is None
 
     def test_a_scoped_htmx_write_keeps_the_scope_on_the_swapped_row(self) -> None:
         body = self._post("dash:settings_set", "mode", {"value": '"auto"'}, scope="proj").content.decode()
@@ -668,13 +670,13 @@ class TestShippedDefaultColumn(TestCase):
     def test_a_secret_shipped_default_never_reaches_the_response_bytes(self) -> None:
         # The masking contract extends to this column. The shipped table is forced to carry
         # a value for a secret key, so an unmasked column would serialise it.
-        ConfigSetting.objects.set_value("banned_terms", ["supersecretcodename"])
-        leaky = {**shipped_defaults_table(), "banned_terms": ["anotherhushword"]}
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["supersecretcodename"]})
+        leaky = {**shipped_defaults_table(), "banned_term_registry": {"leak": ["anotherhushword"]}}
         with patch("teatree.dash.settings_editor.shipped_defaults_table", return_value=leaky):
-            body = self._body("banned_terms")
+            body = self._body("banned_term_registry")
         assert "supersecretcodename" not in body
         assert "anotherhushword" not in body
-        assert "banned_terms" in body
+        assert "banned_term_registry" in body
 
 
 class SettingsScopeControlTestCase(TestCase):

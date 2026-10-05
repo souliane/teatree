@@ -374,37 +374,6 @@ def _check_project_venv_editable_pths() -> bool:
     return ok
 
 
-def _check_legacy_overlay_alias() -> None:
-    """Warn (never rewrite) on a stale legacy alias entry in the DB overlays registry.
-
-    souliane/teatree#1108: older ``slack-bot`` runs recorded a short overlay entry
-    (e.g. ``teatree``) for an overlay whose canonical entry-point name is
-    ``t3-<alias>``. Discovery now folds such a bare config-only alias entry into
-    its canonical overlay so it is no longer listed twice — but the stale entry is
-    confusing to read. Surface it as a WARN with the corrective rename; the
-    agent/user does the edit (no auto-rewrite of the user's registry).
-    """
-    try:
-        from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        config = load_config()
-        ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
-        for name, overlay_cfg in config.raw.get("overlays", {}).items():
-            if name in ep_names or overlay_cfg.get("class") or overlay_cfg.get("path"):
-                continue
-            canonical = _match_canonical_ep(name, ep_names)
-            if canonical is not None:
-                typer.echo(
-                    f"WARN  Stale overlay entry '{name}' in the DB overlays registry — "
-                    f"the canonical overlay is '{canonical}'. Rename it to "
-                    f"'{canonical}' (discovery folds it for now)."
-                )
-    except Exception:  # noqa: BLE001 — doctor warnings must never crash the run
-        return
-
-
 def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
     import os  # noqa: PLC0415 — deferred: loaded only when this command runs
 
@@ -446,8 +415,8 @@ def _configured_review_skill_gaps() -> list[str]:
     :mod:`teatree.skill_support.ref_validator` uses for dangling references. A name
     that will actually be dispatched/gated but resolves to nothing is the exact
     ``ac-reviewing-skills`` → ``ac-reviewing-codebase`` incident class, at the live
-    config site rather than the ``.teatree-skills.yml`` / ``agents/*.md`` sites the
-    reference validator already covers. Alternates are checked for the same reason
+    config site rather than the ``agents/*.md`` sites the reference validator
+    already covers. Alternates are checked for the same reason
     the primary is: a dangling one is a reviewer the gate would accept evidence for
     and nobody could ever run. Empty == clean.
     """

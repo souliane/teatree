@@ -25,10 +25,6 @@ revision must be re-attested. This mirrors ``MergeClear.reviewed_sha`` and close
 the replay window where an attestation for an old, reviewed tree authorizes a
 later, unreviewed one.
 
-``require_anti_vacuity_attestation`` is ``False`` unless configured. With it
-unset the gate is a NO-OP — projects that do not require the proof keep
-requesting review / merging unchanged.
-
 The gate is a pure function over durable ``extra`` state plus the live head
 SHA, mirroring ``teatree.core.gates.review_skill_gate`` /
 ``teatree.core.gates.review_context_gate``. On a block it raises
@@ -39,7 +35,7 @@ review-request post command) surface it as a non-zero exit / refusal.
 
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
+from teatree.core.models.ticket_evidence import anti_vacuity_is_complete, recorded_anti_vacuity_attestation
 from teatree.core.models.types import AntiVacuityAttestation
 
 if TYPE_CHECKING:
@@ -50,20 +46,9 @@ class AntiVacuityAttestationError(RuntimeError):
     """A review-request / merge lacked a SHA-bound anti-vacuity attestation."""
 
 
-def anti_vacuity_required(overlay: str | None = None) -> bool:
-    """Whether the anti-vacuity gate is in force for *overlay* (overlay -> global).
-
-    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
-    when the evaluating process has no ambient ``T3_OVERLAY_NAME`` (the merge
-    keystone runs env-less). ``None`` resolves the ambient overlay as before.
-    """
-    return get_effective_settings(overlay).require_anti_vacuity_attestation
-
-
-def recorded_attestation(ticket: "Ticket") -> AntiVacuityAttestation:
+def recorded_attestation(ticket: "Ticket", head_sha: str = "") -> AntiVacuityAttestation:
     """The recorded anti-vacuity attestation, or an empty mapping."""
-    raw = (ticket.extra or {}).get("anti_vacuity_attestation") or {}
-    return AntiVacuityAttestation(**{k: v for k, v in raw.items() if k in AntiVacuityAttestation.__annotations__})
+    return recorded_anti_vacuity_attestation(ticket, head_sha)
 
 
 def is_complete(attestation: AntiVacuityAttestation) -> bool:
@@ -76,11 +61,7 @@ def is_complete(attestation: AntiVacuityAttestation) -> bool:
     forgotten test must never pass as "none to prove". This does not check the
     SHA bind; :func:`is_bound_to` does.
     """
-    ac_coverage = str(attestation.get("ac_coverage", "")).strip()
-    proven = attestation.get("proven_tests") or []
-    has_proven = isinstance(proven, list) and any(str(t).strip() for t in proven)
-    no_new_tests = bool(attestation.get("no_new_tests"))
-    return bool(ac_coverage) and (has_proven or no_new_tests)
+    return anti_vacuity_is_complete(attestation)
 
 
 def is_bound_to(attestation: AntiVacuityAttestation, head_sha: str) -> bool:
@@ -99,23 +80,20 @@ def is_bound_to(attestation: AntiVacuityAttestation, head_sha: str) -> bool:
 def check_anti_vacuity_attestation(ticket: "Ticket", head_sha: str, *, transition: str) -> None:
     """Refuse a ``transition`` lacking a SHA-bound, complete anti-vacuity attestation.
 
-    NO-OP when ``require_anti_vacuity_attestation`` is off (the opt-in
-    default). Otherwise the durable ``anti_vacuity_attestation`` artifact must
+    The durable ``anti_vacuity_attestation`` artifact must
     be complete (AC-mapping + anti-vacuity proof) AND bound to ``head_sha`` —
     a stale-SHA attestation is treated as absent so a new revision is
     re-attested. ``transition`` names the gated action (e.g. ``"request
     review"`` / ``"merge"``) for the remediation message.
     """
-    if not anti_vacuity_required(ticket.overlay or None):
-        return
-    attestation = recorded_attestation(ticket)
+    attestation = recorded_attestation(ticket, head_sha)
     if is_complete(attestation) and is_bound_to(attestation, head_sha):
         return
-    reason = _block_reason(attestation, head_sha)
+    reason = _block_reason(attestation or recorded_attestation(ticket), head_sha)
     short_sha = head_sha.strip()[:8] or head_sha.strip()
     msg = (
         f"refusing the '{transition}' transition for ticket {ticket.pk} at head "
-        f"{short_sha}: {reason} (require_anti_vacuity_attestation). The maker's "
+        f"{short_sha}: {reason}. The maker's "
         f"skilled self-review must prove the diff is AC-mapped and every NEW "
         f"regression test is anti-vacuous (revert the production fix -> the test "
         f"goes RED). Record it with `lifecycle record-anti-vacuity {ticket.pk} "
@@ -130,14 +108,16 @@ def _block_reason(attestation: AntiVacuityAttestation, head_sha: str) -> str:
     """The precise why-blocked clause for the remediation message."""
     if not attestation:
         return "no anti-vacuity attestation is recorded"
+    recorded = str(attestation.get("head_sha", "")).strip()
+    if recorded and recorded.lower() != head_sha.strip().lower():
+        return (
+            f"the recorded attestation binds to head {recorded[:8]!r}, not "
+            f"the current head {head_sha.strip()[:8] or head_sha.strip()!r} — it is "
+            f"stale (force-push / new commits); re-attest at the current SHA"
+        )
     if not is_complete(attestation):
         return (
             "the recorded attestation is incomplete (missing AC-coverage, or an "
             "empty proven-tests list without the explicit no-new-tests claim)"
         )
-    recorded = str(attestation.get("head_sha", "")).strip()
-    return (
-        f"the recorded attestation binds to head {recorded[:8] or recorded!r}, not "
-        f"the current head {head_sha.strip()[:8] or head_sha.strip()!r} — it is "
-        f"stale (force-push / new commits); re-attest at the current SHA"
-    )
+    return "the recorded attestation has no head SHA binding"

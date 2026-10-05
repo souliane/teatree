@@ -9,9 +9,12 @@ parser in isolation.
 import pytest
 
 from teatree.config.enums import Mode
-from teatree.config.resolution import env_setting_overrides, get_effective_settings, read_env_setting_overrides
-from teatree.config.setting_parsers import _parse_env_bool, _parse_env_bool_default_on
-from teatree.config.setting_registries import env_pin
+from teatree.config.resolution import env_setting_overrides, read_env_setting_overrides
+from teatree.config.setting_parsers import _parse_env_bool, _parse_env_bool_default_on, _parse_private_repos
+
+
+def test_private_repo_suffix_canonicalises_after_case_fold() -> None:
+    assert _parse_private_repos(["GitLab.com/Owner/Repo.GIT/"]) == ["gitlab.com/owner/repo"]
 
 
 class TestEnvBoolRejectsWhatItCannotRead:
@@ -33,51 +36,6 @@ class TestEnvBoolRejectsWhatItCannotRead:
     def test_unrecognised_tokens_raise(self, token: str) -> None:
         with pytest.raises(ValueError, match="Invalid boolean env value"):
             _parse_env_bool(token)
-
-
-class TestAnEmptyVarIsNotAnOpinion:
-    """``T3_FOO=`` clears an inherited pin; it does not resolve the setting to ``False``.
-
-    Reading it as a pin resolved every ``T3_DREAM_*`` phase OFF, so the memory phases
-    stopped running on any box (or CI job) whose environment exported them empty.
-    """
-
-    def test_an_empty_var_supplies_no_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_DREAM_CROSS_LINK", "")
-
-        assert "dream_cross_link" not in env_setting_overrides()
-
-    def test_a_whitespace_only_var_supplies_no_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_DREAM_CROSS_LINK", "   ")
-
-        assert "dream_cross_link" not in env_setting_overrides()
-
-    def test_the_setting_falls_through_to_its_shipped_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_DREAM_CROSS_LINK", "")
-
-        assert get_effective_settings().dream_cross_link is True
-
-    def test_no_surface_reports_a_pin_the_resolver_does_not_apply(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_DREAM_CROSS_LINK", "")
-
-        assert env_pin("dream_cross_link") == ""
-
-    def test_a_var_carrying_a_value_still_pins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_DREAM_CROSS_LINK", "0")
-
-        assert env_setting_overrides()["dream_cross_link"] is False
-        assert env_pin("dream_cross_link") == "T3_DREAM_CROSS_LINK"
-
-    def test_a_typo_never_silently_disables_a_safety_control(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ENFORCE_REGULATED_PATH", "treu")
-
-        with pytest.raises(ValueError, match="Invalid boolean env value"):
-            env_setting_overrides()
-
-    def test_a_spelled_out_value_still_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_ENFORCE_REGULATED_PATH", "false")
-
-        assert env_setting_overrides()["enforce_regulated_path"] is False
 
 
 class TestEnvBoolDefaultOn:

@@ -9,19 +9,23 @@ stay in ``test_pr_command`` because they drive ``call_command("pr",
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import override
+from typing import NoReturn, override
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.authoring_credential import reset_authoring_credential_cache
-from teatree.core.backend_protocols import PrOpenState, PullRequestSpec
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState, PullRequestSpec
 from teatree.core.identity_wiring import AuthoringIdentity
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
-from teatree.core.management.commands._ensure_pr import _ticket_extra_for_branch, create_or_defer_pr
+from teatree.core.management.commands._ensure_pr import (
+    AUTHOR_UNRESOLVABLE_DEFERRAL,
+    _ticket_extra_for_branch,
+    create_or_defer_pr,
+)
 from teatree.core.merge.pr_url_record import record_pr_url
-from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.models import PendingPullRequest, PullRequest, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError, run_checked
@@ -29,6 +33,10 @@ from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 
 ORPHAN_BRANCH = "fix/3100-x"
+
+
+def _raise(error: Exception) -> NoReturn:
+    raise error
 
 
 class TestTicketExtraForBranch(TestCase):
@@ -389,6 +397,76 @@ class TestAnUnresolvableBotCredentialRefusesLoudly(TestCase):
 
         assert "cannot approve" in error
         assert "group/bot-authored" in error
+
+    def _create_with_ambient_overlay(self, repo: Path, *overlays: tuple[str, OverlayConfig]) -> tuple[dict, list[str]]:
+        """The result and the tokens any MR was opened under; no host built here can reach the network."""
+        opened_by: list[str] = []
+
+        class RecordingHost(AssignableHost):
+            def __init__(self, *, token: str, base_url: str) -> None:
+                self._token = token
+
+            def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+                opened_by.append(self._token)
+                return super().create_pr(spec)
+
+        ambient = CommandOverlay()
+        ambient.config = _OwnerAuthoredConfig()
+        registered = {"ambient": ambient}
+        for name, config in overlays:
+            declaring = CommandOverlay()
+            declaring.config = config
+            registered[name] = declaring
+        self._monkeypatch.setenv("T3_OVERLAY_NAME", "ambient")
+        reset_authoring_credential_cache()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=registered),
+            patch("teatree.backends.loader.GitLabCodeHost", RecordingHost),
+        ):
+            result = dict(create_or_defer_pr(str(repo), ORPHAN_BRANCH))
+        reset_authoring_credential_cache()
+        return result, opened_by
+
+    def _bot_authored_repo(self) -> Path:
+        repo = _orphan_repo(self._tmp_path)
+        run_checked(["git", "remote", "set-url", "origin", "git@gitlab.com:group/bot-authored.git"], cwd=repo)
+        return repo
+
+    def test_an_ambient_overlay_declaring_nothing_opens_no_mr_as_the_owner(self) -> None:
+        """The hook is pinned to one overlay prefix, and the owner's token is not a stand-in for the bot's."""
+        result, opened_by = self._create_with_ambient_overlay(
+            self._bot_authored_repo(), ("declaring", _UnreachableBotConfig())
+        )
+
+        assert opened_by == []
+        assert "cannot approve" in result["error"]
+        assert "group/bot-authored" in result["error"]
+
+    def test_the_refusal_is_owed_so_the_drain_retries_it_where_the_bot_resolves(self) -> None:
+        """A refused hook push lands with no MR, and the hook's venue may see no credential the drain's does."""
+        repo = self._bot_authored_repo()
+
+        result, _ = self._create_with_ambient_overlay(repo, ("declaring", _UnreachableBotConfig()))
+
+        assert result["owed"] is True
+        row = PendingPullRequest.objects.get(branch=ORPHAN_BRANCH)
+        assert row.repo_path == str(repo.resolve())
+        assert row.reason == AUTHOR_UNRESOLVABLE_DEFERRAL
+
+    def test_a_resolution_failure_with_no_author_cause_owes_nothing(self) -> None:
+        repo = _orphan_repo(self._tmp_path)
+        run_checked(["git", "remote", "set-url", "origin", "git@gitlab.com:group/bot-authored.git"], cwd=repo)
+        self._monkeypatch.setattr(
+            ensure_pr_mod,
+            "code_host_for_repo_from_overlay",
+            lambda _repo_path: _raise(BackendResolutionError("no token")),
+        )
+
+        result, _ = self._create_with_ambient_overlay(repo)
+
+        assert result["error"] == "no token"
+        assert "owed" not in result
+        assert not PendingPullRequest.objects.exists()
 
     def test_it_owes_nothing_because_no_retry_can_discharge_it(self) -> None:
         """A missing credential is not a transient race — a deferral would retry forever."""

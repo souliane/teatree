@@ -10,6 +10,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.service import _find_added_line
+from tests._send_gate import allow_forge_repos
 from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import arm_on_behalf_gate, disable_on_behalf_gate, posture_forbids_cm
 
@@ -25,7 +26,12 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
-def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_on_behalf_gate(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    db: None,
+    configured_banned_term_registry: None,
+) -> None:
     """Pin a permitting posture for these mechanics tests.
 
     The CLI's on-behalf gate is exercised by its own dedicated suite in
@@ -34,6 +40,7 @@ def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: py
     the gate OFF so the HTTP call actually happens and the mocked GitLabAPI sees it.
     """
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    allow_forge_repos("org/repo")
 
 
 def _readback_404(_endpoint: str) -> object:
@@ -225,7 +232,7 @@ class TestGetGitlabToken:
 
 class TestReviewService:
     def test_post_general(self, monkeypatch):
-        """post-draft-note posts a general note when ``--general`` is explicit."""
+        """post-comment posts a general note without an inline anchor."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.post_json.return_value = {"id": 42, "position": None}
@@ -233,7 +240,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "looks good", "--general"],
+                ["review", "post-comment", "org/repo", "1", "looks good"],
             )
             assert result.exit_code == 0
             assert "OK draft_note_id=42" in result.output
@@ -246,7 +253,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "fix this", "--file", "a.py", "--line", "5"],
+                ["review", "post-comment", "org/repo", "1", "fix this", "--file", "a.py", "--line", "5"],
             )
             assert result.exit_code == 0
             assert "OK draft_note_id=99" in result.output
@@ -260,7 +267,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "msg", "--file", "a.py", "--line", "1"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "1"],
             )
             assert result.exit_code == 1
             assert "not an added" in result.output
@@ -278,7 +285,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "msg", "--file", "a.py", "--line", "1"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "1"],
             )
             assert result.exit_code == 1
             assert "not changed in MR" in result.output
@@ -296,7 +303,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
             )
             assert result.exit_code == 1
             assert "no diff content" in result.output
@@ -310,7 +317,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
             )
             assert result.exit_code == 1
             assert "refused to anchor" in result.output
@@ -318,7 +325,7 @@ class TestReviewService:
             mock_api.delete.assert_called_once()
 
     def test_post_mr_fetch_fails(self, monkeypatch):
-        """post-draft-note fails when MR data cannot be fetched."""
+        """post-comment fails when MR data cannot be fetched."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.get_json.return_value = None
@@ -326,13 +333,13 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
+                ["review", "post-comment", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
             )
             assert result.exit_code == 1
             assert "Could not fetch MR" in result.output
 
     def test_post_no_diff_refs(self, monkeypatch):
-        """post-draft-note fails when MR has no diff_refs."""
+        """post-comment fails when MR has no diff_refs."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.get_json.return_value = {"diff_refs": None}
@@ -340,7 +347,7 @@ class TestReviewService:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-draft-note", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
+                ["review", "post-comment", "org/repo", "1", "note", "--file", "a.py", "--line", "1"],
             )
             assert result.exit_code == 1
             assert "no diff_refs" in result.output
@@ -448,13 +455,13 @@ class TestPostComment:
             mock_api.post_json.assert_not_called()
 
     def test_post_fails(self, monkeypatch):
-        """post-draft-note fails when the POST returns empty (general path)."""
+        """post-comment fails when the POST returns empty (general path)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.post_json.return_value = None
 
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "note", "--general"])
+            result = runner.invoke(app, ["review", "post-comment", "org/repo", "1", "note"])
             assert result.exit_code == 1
             assert "Failed to post" in result.output
 
@@ -624,141 +631,6 @@ class TestPostComment:
             assert result.exit_code == 1
             assert "Failed (draft): HTTP 403" in result.output
             assert mock_api.put_status.call_count == 1
-
-
-# -- post-draft-note --general flag (silent-degradation guard) ----------------
-
-
-class TestPostDraftNoteGeneralFlag:
-    """Inline by default, general only with explicit ``--general`` (#72).
-
-    The pre-#72 default silently degraded a missing ``--file``/``--line``
-    pair to a general MR-wide note — observed in !6220 where 4 of 5
-    cold-review drafts intended as inline became general. The fix makes
-    the inline-vs-general decision explicit at the typer wrapper:
-
-    * Without ``--general``: both ``--file`` and ``--line`` are required.
-    * With ``--general``: both ``--file`` and ``--line`` must be absent.
-
-    Validation lives in the wrapper, not the service body — the service
-    contract stays ``post_draft_note(..., file: str = '', line: int = 0)``
-    so the existing service-level tests stay green.
-    """
-
-    def test_inline_with_file_and_line_succeeds(self, monkeypatch):
-        """Sanity: a normal inline draft still works."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        diff = "@@ -0,0 +5,1 @@\n+added content\n"
-        mock_api = _inline_api(diff, post_result={"id": 99, "line_code": "abc_0_5"})
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
-            )
-            assert result.exit_code == 0, result.output
-
-    def test_general_flag_with_no_file_or_line_succeeds(self, monkeypatch):
-        """``--general`` posts the general (MR-wide) draft note."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        mock_api.post_json.return_value = {"id": 42}
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "general", "--general"])
-            assert result.exit_code == 0, result.output
-            assert "OK draft_note_id=42" in result.output
-
-    def test_missing_file_and_line_refused_without_general(self, monkeypatch):
-        """Omitting both ``--file`` and ``--line`` without ``--general`` is refused.
-
-        Foot-gun the change closes: pre-#72 this silently posted as a
-        general MR-wide note, degrading 4 of 5 intended-inline drafts on
-        !6220. The HTTP call MUST NOT happen — refusal is upfront.
-        """
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(app, ["review", "post-draft-note", "org/repo", "1", "body only"])
-            assert result.exit_code == 1
-            assert "--file" in result.output
-            assert "--line" in result.output
-            assert "--general" in result.output
-            mock_api.post_json.assert_not_called()
-
-    def test_only_file_without_line_refused(self, monkeypatch):
-        """``--file`` without ``--line`` is refused (incomplete inline target)."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "body", "--file", "a.py"],
-            )
-            assert result.exit_code == 1
-            assert "--line" in result.output
-            mock_api.post_json.assert_not_called()
-
-    def test_only_line_without_file_refused(self, monkeypatch):
-        """``--line`` without ``--file`` is refused (incomplete inline target)."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "body", "--line", "5"],
-            )
-            assert result.exit_code == 1
-            assert "--file" in result.output
-            mock_api.post_json.assert_not_called()
-
-    def test_general_with_file_refused(self, monkeypatch):
-        """``--general`` is mutually exclusive with ``--file``."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "body", "--general", "--file", "a.py"],
-            )
-            assert result.exit_code == 1
-            assert "mutually exclusive" in result.output or "--general" in result.output
-            mock_api.post_json.assert_not_called()
-
-    def test_general_with_line_refused(self, monkeypatch):
-        """``--general`` is mutually exclusive with ``--line``."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "body", "--general", "--line", "5"],
-            )
-            assert result.exit_code == 1
-            assert "mutually exclusive" in result.output or "--general" in result.output
-            mock_api.post_json.assert_not_called()
-
-    def test_general_with_file_and_line_refused(self, monkeypatch):
-        """``--general`` is mutually exclusive with both ``--file`` and ``--line`` together."""
-        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        mock_api = MagicMock()
-        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
-            result = runner.invoke(
-                app,
-                [
-                    "review",
-                    "post-draft-note",
-                    "org/repo",
-                    "1",
-                    "body",
-                    "--general",
-                    "--file",
-                    "a.py",
-                    "--line",
-                    "5",
-                ],
-            )
-            assert result.exit_code == 1
-            assert "mutually exclusive" in result.output or "--general" in result.output
-            mock_api.post_json.assert_not_called()
 
 
 # -- delete-discussion (published note removal) -------------------------------
@@ -1058,18 +930,6 @@ class TestApprove:
 
 
 class TestRequireToken:
-    def test_post_draft_note_rejected(self, monkeypatch):
-        """No GitLab token → refusal even when ``--general`` is passed."""
-        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = MagicMock(stderr="", returncode=1)
-            result = runner.invoke(
-                app,
-                ["review", "post-draft-note", "org/repo", "1", "note", "--general"],
-            )
-            assert result.exit_code == 1
-            assert "No GitLab token" in result.output
-
     def test_delete_draft_note_rejected(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)

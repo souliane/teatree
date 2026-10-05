@@ -15,6 +15,7 @@ and glab are the unstoppable externals here; nothing else is stubbed.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from _deploy_forwarded_env import CREDENTIAL_PROBE, ENV_REPORT, argv, forwarded
+from _deploy_wrapper_paths import copy_wrapper
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 
@@ -81,9 +83,20 @@ def _write_stub(path: Path, body: str) -> None:
 def _install_wrapper(tmp_path: Path) -> Path:
     entry = tmp_path / "teatree-deploy" / "deploy" / "t3"
     entry.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     return entry
+
+
+def _forwarded_names() -> set[str]:
+    """The names the wrapper forwards when set, read from its own list so a new one is stripped too."""
+    block = re.search(r"^FORWARD_ENV_NAMES=\((.*?)^\)", WRAPPER.read_text(encoding="utf-8"), re.DOTALL | re.MULTILINE)
+    assert block, "deploy/t3 must keep declaring FORWARD_ENV_NAMES as a bash array"
+    return {line.strip() for line in block.group(1).splitlines() if line.strip() and not line.lstrip().startswith("#")}
+
+
+def test_the_forwarded_name_list_is_read_whole() -> None:
+    assert {"GITLAB_TOKEN", "T3_OVERLAY_NAME", "CLAUDE_CODE_SESSION_ID"} <= _forwarded_names()
 
 
 def _run(
@@ -98,7 +111,12 @@ def _run(
     if with_glab:
         _write_stub(stub_dir / "glab", GLAB_STUB)
 
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("GITLAB_", "GITHUB_", "T3_", "TEATREE_"))}
+    forwarded_names = _forwarded_names()
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("GITLAB_", "GITHUB_", "T3_", "TEATREE_")) and k not in forwarded_names
+    }
     env["PATH"] = f"{stub_dir}{os.pathsep}{SYSTEM_PATH}"
     env["TEATREE_HOST_HOME"] = str(tmp_path / "home")
     env["GLAB_STUB_CALLS"] = str(tmp_path / "glab-calls.log")

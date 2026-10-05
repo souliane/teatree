@@ -75,10 +75,13 @@ def _fold_continuations(text: str) -> str:
 
 
 def _dockerfile_env() -> dict[str, str]:
-    """Every ``KEY=VALUE`` the Dockerfile's ``ENV`` instructions declare."""
+    """Every ``KEY=VALUE`` the ``ENV`` instructions of the DEFAULT target declare — the generation stage is its own."""
     env: dict[str, str] = {}
+    in_generation = False
     for line in _fold_continuations(DOCKERFILE.read_text(encoding="utf-8")).splitlines():
-        if not line.startswith("ENV "):
+        if line.startswith("FROM "):
+            in_generation = line.endswith(" AS generation")
+        if in_generation or not line.startswith("ENV "):
             continue
         for token in line.removeprefix("ENV ").split():
             key, sep, value = token.partition("=")

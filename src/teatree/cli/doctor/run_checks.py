@@ -24,6 +24,7 @@ from teatree.cli.doctor.checks_admission_pressure import (
     _check_starved_intake_candidates,
 )
 from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
+from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
@@ -44,7 +45,6 @@ from teatree.cli.doctor.checks_environment import (
     _check_dangling_editable_pth,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
-    _check_legacy_overlay_alias,
     _check_project_venv_editable_pths,
     _check_single_db,
     _check_skills,
@@ -110,6 +110,7 @@ from teatree.cli.doctor.checks_runtime import (
     _check_worker_running,
     _check_worker_singleton_holder,
 )
+from teatree.cli.doctor.checks_send_proxy import _check_malformed_private_repos, _check_send_proxy_allowlist
 from teatree.cli.doctor.checks_session import (
     _check_account_switch,
     _check_agent_session_pins,
@@ -128,6 +129,7 @@ from teatree.cli.doctor.checks_test_durations import (
     check_test_durations_freshness,
     check_test_timeout_headroom,
 )
+from teatree.cli.doctor.checks_ticket_hygiene import _check_ticket_sweep_trend
 from teatree.cli.doctor.checks_ticket_state_values import check_unknown_ticket_states
 from teatree.cli.doctor.checks_unshipped_work import check_unshipped_work
 from teatree.cli.doctor.checks_worktree_health import check_worktree_health
@@ -342,7 +344,18 @@ def _check_enabled_but_unprovisioned() -> bool:
     dispatched_skills = _check_dispatched_overlay_skills()
     skill_drift = _check_skill_source_drift()
     notion = _check_notion_credentials()
-    return declared and review_skills and pyright_lsp and dispatched_skills and skill_drift and notion
+    send_proxy = _check_send_proxy_allowlist()
+    private_repos = _check_malformed_private_repos()
+    return (
+        declared
+        and review_skills
+        and pyright_lsp
+        and dispatched_skills
+        and skill_drift
+        and notion
+        and send_proxy
+        and private_repos
+    )
 
 
 def _run_daily_advisories() -> None:
@@ -354,7 +367,8 @@ def _run_daily_advisories() -> None:
     spin, cost-per-delivery, dead-ticket spend, loop freeze, vacuous eval gates, halt
     count, open-question age, duplicate execution) checked against production telemetry
     and DM'd loud to the owner via the notify seam under a per-day idempotency key (so
-    the watchdog's frequent doctor runs fire at most one DM per finding per day). All
+    the watchdog's frequent doctor runs fire at most one DM per finding per day), plus
+    the ticket-sweep changed-count trend (#162 Rule 4 — threshold-free by design). All
     read the ORM, so this runs after ``ensure_django``; every one is surfacing-only, so
     its return value is deliberately discarded and none can redden the exit code.
     """
@@ -362,6 +376,7 @@ def _run_daily_advisories() -> None:
     _check_dream_transcript_visibility()
     _check_compose_output_root_pinned()
     _check_reconciliation_ledger()
+    _check_ticket_sweep_trend()
 
 
 def _run_config_posture_advisories() -> None:
@@ -398,7 +413,6 @@ def _run_advisory_finalisers(*, repair: bool) -> None:
     ``~/.claude/settings.json`` on every session start regardless.
     """
     _check_singletons()
-    _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)
     _ensure_plugin_registered(repair=repair)
 
@@ -521,6 +535,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
         all(
             (
                 check_worktree_health(),
+                check_blank_work_overlays(),
                 check_pending_pull_requests(),
                 check_reviewing_ledger(),
                 _check_dream_consolidation_blocked(),

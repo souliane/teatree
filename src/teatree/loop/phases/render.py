@@ -18,8 +18,6 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
-from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.phases.orchestrate import orchestrate_phase
@@ -27,6 +25,7 @@ from teatree.loop.rendering import _populate_dashboard_head, zones_for
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.statusline import StatuslineZones, render
 from teatree.loop.tick_freshness import _write_tick_meta
+from teatree.loop.tick_resolvers import _identity_alias_groups_for_overlay
 
 if TYPE_CHECKING:
     from teatree.loop.scanners.base import ScanSignal
@@ -119,19 +118,11 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
     persists it as a BUDGET ceiling to the tick-meta sidecar for the live
     claimer to read.
 
-    The DB-home ``orchestrate_claim_enabled`` toggle (default OFF; ``t3
-    <overlay> config_setting set orchestrate_claim_enabled true``) gates the
-    planner:
+    At a clamping wip the target is persisted as a budget. At medium the key is
+    cleared. The phase never claims work.
 
-    *   **OFF (default)** — no budget key is written (any prior one is cleared),
-        so the claimer reads UNCLAMPED. Byte-identical to before the arm.
-    *   **ON** — at a clamping wip (``full``/``boost``/``slow``) the computed
-        cap is persisted as the budget; at ``medium`` no budget key is written
-        (absence = unclamped = today's throughput). The phase never claims, so
-        there is no orphan window.
-
-    Fully fail-open — any config read, planner, or sidecar error degrades to a
-    no-op (and the toggle resolves to OFF on a settings-read error), like every
+    Fully fail-open — any planner or sidecar error degrades to a
+    no-op, like every
     other tick phase. A failed budget write leaves the sidecar without the key,
     which the reader treats as unclamped: fail-safe by construction.
     """
@@ -141,9 +132,6 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
         from teatree.loop.statusline import default_path  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         target = statusline_path or default_path()
-        if not _orchestrate_claim_enabled():
-            clear_admit_budget(statusline_path=target)
-            return
         manifest = orchestrate_phase(backends=request.backends, claim=False)
         if manifest.wip is Wip.MEDIUM:
             clear_admit_budget(statusline_path=target)
@@ -156,19 +144,6 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
         logger.exception("orchestrate_phase budget planning failed — tick continues")
 
 
-def _orchestrate_claim_enabled() -> bool:
-    """Resolve the ``orchestrate_claim_enabled`` toggle; fail OFF.
-
-    Reads the effective setting (env -> DB -> per-overlay -> global -> default).
-    Any settings-read error degrades to ``False`` so the dormant ``claim=False``
-    path is the fail-safe — the arm can never fire on a broken config read.
-    """
-    try:
-        return get_effective_settings().orchestrate_claim_enabled
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a settings-read failure degrades to disabled
-        return False
-
-
 def _identity_aliases_for_request(request: "TickRequest") -> tuple[tuple[str, ...], ...]:
     """Union the identity-alias groups across every overlay in *request*.
 
@@ -176,16 +151,12 @@ def _identity_aliases_for_request(request: "TickRequest") -> tuple[tuple[str, ..
     human and collapses each handle to its group's canonical name. Fails
     open: any config-read error degrades to no suppression.
 
-    Routes through :func:`_identity_groups_for_overlay` (not the raw resolver)
-    so the self-group fallback applies on the render path too: when no explicit
-    ``identity_aliases`` is configured, the operator's ``backend.identities``
-    form one implicit self-group. Without it the render-side group was empty
-    and intra-self reassigns leaked as ``reassigned`` churn.
+    Reads the same explicit groups as the disposition scanner.
     """
     groups: list[tuple[str, ...]] = []
     try:
         for backend in request.backends or []:
-            groups.extend(_identity_groups_for_overlay(backend))
+            groups.extend(_identity_alias_groups_for_overlay(backend.name, backend))
     except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no groups
         return ()
     return tuple(groups)

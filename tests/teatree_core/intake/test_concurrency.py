@@ -28,7 +28,6 @@ from teatree.core.intake.concurrency import (
     adapt_concurrency,
     resolve_intake_concurrency,
 )
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 
 #: The box the issue measured: 8 cores, ~6.2 GB per agent in full verification.
@@ -173,11 +172,5 @@ class TestResolveAgainstTheLedger(TestCase):
 
     def test_a_stale_reading_keeps_the_static_setting(self) -> None:
         self._record(4, age=ADAPTIVE_FRESHNESS + timedelta(minutes=1))
-
-        assert resolve_intake_concurrency(2) == 2
-
-    def test_the_kill_switch_keeps_the_static_setting(self) -> None:
-        self._record(4)
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
 
         assert resolve_intake_concurrency(2) == 2

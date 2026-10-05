@@ -25,6 +25,12 @@
 #   shard of the cheap clean_room lane per night, advancing a shard per UTC day so
 #   the catalog is covered over a 16-day cycle (~14 scenarios — the weekly per-shard
 #   ceiling, teatree.eval.lane_shard.MAX_SCENARIOS_PER_SHARD), at a SINGLE trial.
+#   The shard ROTATES one per UTC day (`day.toordinal() % 16`) instead of being
+#   pinned to `1/16`, which metered the same sixteenth forever and left fifteen
+#   sixteenths of the catalog untouched by any nightly. Same cost per night; the
+#   catalog is covered over a 16-day cycle. The run prints the shard it resolved
+#   and the date arithmetic behind it, so it is reproducible by replaying that
+#   reported `index/total` token.
 #   clean_room scenarios are seconds-to-a-minute each (one skill into an empty
 #   context), so the slice finishes fast and cheap. The expensive under_load lane
 #   (10-45 min/scenario) is deliberately NOT in the smoke set — that is the
@@ -111,6 +117,7 @@ jobs:
             fi
           fi
 
+
   # EVAL: the smoke slice (clean_room, today's rotating shard of 16, single trial), in the CI
   # container. Skipped entirely when prepare gated it out (no merge that day).
   eval:
@@ -123,6 +130,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -145,7 +155,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.283
+          npm install -g @anthropic-ai/claude-code@2.1.284
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -179,7 +189,10 @@ jobs:
       # flaky-but-passing, not red). `--require-executed` + the asserted CLI keep a
       # no-coverage run from passing green; `--docker` routes through the CI image
       # (auth forwarded via docker `-e`). The private transcript is uploaded; the
-      # sanitized summary goes to the run's step summary.
+      # sanitized summary goes to the run's step summary. The output streams through
+      # `python -m teatree.eval.artifact_redaction tee`, so the job log carries no
+      # credential value (`pipefail` keeps the eval's exit code and turns a filter
+      # crash red).
       - name: Nightly smoke behavioral eval (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
@@ -200,25 +213,48 @@ jobs:
               --escalate-on-fail --escalate-trials 3 \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary.md"
+              --summary-md "$RUNNER_TEMP/eval-summary.md" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee
       # Append the sanitized summary to the run's step summary (the in-container
-      # run could not write $GITHUB_STEP_SUMMARY directly — the container's
-      # writable mount is $RUNNER_TEMP). The summary is publish-safe; the
-      # transcript stays private.
+      # run could not write $GITHUB_STEP_SUMMARY directly — the container's only
+      # writable mount is a fresh staging dir the reports are copied out of, redacted,
+      # into $RUNNER_TEMP). The summary is publish-safe; the
+      # transcript stays private. It runs before the in-place redaction pass, so it
+      # goes through the redacting filter with every credential this job holds.
       - name: Publish the sanitized summary to the step summary
         if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
         run: |
+          set -o pipefail
           if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
-            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/eval-summary.md" | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Defense in depth: one last in-place redaction pass over exactly the files
+      # the upload below publishes, holding every credential this job holds, so
+      # a file that reached them without the redacting writer still leaves redacted.
+      # It deletes any file it cannot prove clean on disk and then fails, and each
+      # upload below runs only when it succeeded (`steps.redact.outcome`).
+      - name: Redact the uploaded files in place
+        id: redact
+        if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+        run: >-
+          uv run python -m teatree.eval.artifact_redaction in-place
+          "$RUNNER_TEMP/eval-transcripts.html"
       # Upload the PRIVATE per-trial transcript as an artifact a maintainer reads
       # to diagnose a red nightly smoke. `if: always()` so a red run still
       # publishes it. A red nightly is surfaced by GitHub's native failed-run
       # email to the maintainer (no extra secret, no bot).
       - name: Upload the per-trial transcript report (private)
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-nightly-transcripts
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
+          retention-days: 7

@@ -173,7 +173,6 @@ def test_truncated_inline_skill_requires_explicit_load_of_the_full_file(tmp_path
         required_explicit=set(),
         rendered_context="--- SKILL: code ---\n# code\n[…truncated]",
         skills_dirs=[tmp_path],
-        can_load=True,
     )
 
     assert inline == set()

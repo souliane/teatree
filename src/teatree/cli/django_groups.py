@@ -91,6 +91,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("occupancy", "Show every checkout a live agent currently holds."),
             ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
             ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
+            ("adopt", "Register an existing on-disk checkout as a Worktree row."),
         ],
     ),
     "workspace": DjangoGroup(
@@ -219,7 +220,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
             ("post-test-plan", "Post a test plan as a PR comment."),
-            ("post-evidence", "[Deprecated] Alias for post-test-plan (renamed; kept one release for back-compat)."),
             ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
         ],
         # `create` gate-validates against the teatree-core control DB the
@@ -355,7 +355,6 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("unset", "Delete an override row and refresh the cache."),
             ("overrides", "List user-declared overrides for this worktree."),
             ("check", "Exit non-zero if the on-disk cache diverges from the DB render."),
-            ("migrate-secrets", "Move POSTGRES_PASSWORD literals out of .t3-env.cache into pass."),
         ],
     ),
     "ticket": DjangoGroup(
@@ -385,10 +384,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
             ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
             ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),
+            ("attach-gaps", "Fold pending dream gaps into an existing host ticket, proved on the forge."),
             ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
             ("reconcile-overlay", "Backfill `overlay` for rows whose attribution disagrees with inference."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("create-sub", "Create a child work item nested under a parent issue/work item."),
+            ("sweep-begin", "Open a ticket-hygiene sweep run and print its id (#162 Rule 4)."),
+            ("sweep-finish", "Close a sweep run, persisting its changed-ticket count — zero included."),
+            ("sweep-trend", "Report the changed-ticket count series, the zero streak, and any unfinished runs."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
             ("show", "Show a ticket's state plus the per-phase attempt counts."),
             ("expedite", "Flag a ticket as an expedite/release-blocker."),

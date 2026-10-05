@@ -22,8 +22,9 @@ from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.types import RawAPIDict
 
-#: ``/<group>/.../<repo>/-/issues/<iid>`` — the canonical GitLab issue web path.
-ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
+#: ``/<group>/.../<repo>/-/issues/<iid>`` or the newer ``-/work_items/<iid>`` —
+#: both address the same issue IID (subissues.py and sync_prs.py already accept both).
+ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +60,25 @@ def search_open_issues(client: GitLabAPI, project: ProjectInfo | None, *, query:
     if project is None:
         return []
     endpoint = f"projects/{project.project_id}/issues?state=opened&search={quote_plus(query)}&per_page=100"
+    return client.get_json_paginated(endpoint)
+
+
+def list_repo_open_issues(client: GitLabAPI, project: ProjectInfo | None) -> list[RawAPIDict]:
+    """Every OPEN issue on the project, all pages — the create-dedupe landscape (#162).
+
+    Unlike :func:`search_open_issues` this takes no query: Rule 1 requires the
+    filer to see the whole open backlog before it decides nothing fits, and a
+    search term is exactly the thing that hides the near-duplicate phrased
+    differently. ``get_json_paginated`` exhausts the pages, so a backlog past the
+    first page cannot read as "no candidates".
+
+    Returns an empty list when the project cannot resolve; the facade treats an
+    unresolvable repo as a hard failure rather than an empty landscape, so this
+    stays a plain read.
+    """
+    if project is None:
+        return []
+    endpoint = f"projects/{project.project_id}/issues?state=opened&per_page=100"
     return client.get_json_paginated(endpoint)
 
 

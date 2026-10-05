@@ -4,15 +4,16 @@ PR1 (#2723) moved the lowest-signal memories — including ~130 BINDING / Non-Ne
 rules of the ~693-entry corpus — out of the session-loaded hot ``MEMORY.md`` into a
 COLD tier: the full restorable bodies under ``archive/`` plus a one-line-per-entry,
 NOT-session-loaded ``MEMORY_ARCHIVE.md`` cold index. Those cold rules stop influencing
-behaviour. RECALL closes that gap: when the user's prompt is topically relevant to a
+behaviour. RECALL closes that gap: when the owner's prompt is topically relevant to a
 cold rule, this pure core scores the cold index against the prompt and returns the top
-hits so a thin hook can inject them for that one turn.
+hits, which the ``PostToolUse`` hook ``hooks/scripts/owner_turn_context.py`` injects on
+the first tool call after that prompt (``t3 <overlay> memory recall`` is the manual lookup).
 
 The scoring is deterministic and reads ONLY the cold index (``MEMORY_ARCHIVE.md``) and
 the hot index (``MEMORY.md``) — never the ~540 archived bodies, because the cold-index
 line carries the lesson signature (stronger after #2746 nit-4). DB-free and stdlib-only
 at the top level (it imports two sibling-module FILENAME constants, both DB-free) so the
-``UserPromptSubmit`` hook can import it without ``django.setup()``.
+hook can import it without ``django.setup()``.
 
 Relevance floor: a hit needs at least :data:`RECALL_MIN_TOKEN_MATCHES` distinct token
 matches (name + signature) before any BINDING / user boost applies, so an irrelevant

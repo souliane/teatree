@@ -5,15 +5,23 @@ module-health LOC cap. The metered ``api`` lane runs in-container, never on the
 host; the container is ephemeral (``--rm``), so the durable-history flags
 (``--baseline`` / ``--gate-regressions``) are unsupported and the in-container run
 is forced ``--no-persist``.
+
+The container — and the agent under test running inside it — gets a fresh, empty
+staging directory as its only writable mount, never the reports' own directory:
+on CI that is ``$RUNNER_TEMP``, which also holds the uploaded run log and the
+checkout's credentials. Only the reports the run asked for leave the staging
+directory, each redacted on the way out; anything else written there is discarded.
 """
 
 import dataclasses
+import tempfile
 from pathlib import Path
 
 import typer
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT, DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import TRANSCRIPT_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
 
@@ -55,10 +63,10 @@ class RunDockerArgs:
     def _container_transcript_path(self) -> str:
         """The in-container path the transcript artifact is written to.
 
-        The host ``--transcript-html`` path's PARENT is bind-mounted writable at
-        :data:`ARTIFACTS_MOUNT`, so the in-container run writes to
-        ``/artifacts/<filename>`` and the file lands back on the host. ``""``
-        when no artifact was requested.
+        A fresh staging directory beside the host ``--transcript-html`` path is
+        bind-mounted writable at :data:`ARTIFACTS_MOUNT`, so the in-container run
+        writes to ``/artifacts/<filename>`` and :meth:`dispatch` copies the file back
+        to the host path, redacted. ``""`` when no artifact was requested.
         """
         if self.transcript_html is None:
             return ""
@@ -67,9 +75,9 @@ class RunDockerArgs:
     def _container_summary_path(self) -> str:
         """The in-container path the sanitized summary markdown is written to.
 
-        Like the transcript artifact, the host ``--summary-md`` file lands in the
-        single writable bind-mount, so it is redirected to ``/artifacts/<filename>``
-        in-container and lands back on the host. The artifacts dir is the shared
+        Like the transcript artifact, the host ``--summary-md`` file is written to the
+        single writable staging mount, redirected to ``/artifacts/<filename>``
+        in-container, and copied back to the host. The staging dir sits in the shared
         parent of the transcript and summary (the workflows put both in
         ``$RUNNER_TEMP``), so the one bind-mount carries both.
         """
@@ -81,24 +89,24 @@ class RunDockerArgs:
         """The in-container path the publish-safe per-scenario JSON is written to.
 
         Redirected to ``/artifacts/<filename>`` like the summary/transcript, so the
-        host ``--summary-json`` file lands back on the host via the writable
-        bind-mount. ``""`` when no JSON was requested.
+        host ``--summary-json`` file is copied back from the writable staging mount.
+        ``""`` when no JSON was requested.
         """
         if self.summary_json is None:
             return ""
         return f"{ARTIFACTS_MOUNT}/{self.summary_json.name}"
 
-    def _requested_report_parents(self) -> list[Path]:
-        return [p.parent for p in (self.transcript_html, self.summary_md, self.summary_json) if p is not None]
+    def _requested_reports(self) -> list[Path]:
+        return [p for p in (self.transcript_html, self.summary_md, self.summary_json) if p is not None]
 
     def _artifacts_dir(self) -> Path | None:
-        """The single writable bind-mount every report is redirected into.
+        """The host directory the reports land in, which hosts the one staging mount.
 
         One mount can only serve one host directory, so reports requested under
         DIFFERENT parents are rejected upfront rather than silently all landing
         under the first one.
         """
-        parents = self._requested_report_parents()
+        parents = [report.parent for report in self._requested_reports()]
         if not parents:
             return None
         distinct = {p.resolve() for p in parents}
@@ -155,12 +163,31 @@ class RunDockerArgs:
         return ["run", *(arg for group in groups for arg in group), "--no-persist"]
 
     def dispatch(self) -> None:
-        artifacts_dir = self._artifacts_dir()
+        reports_dir = self._artifacts_dir()
+        if reports_dir is None:
+            raise typer.Exit(code=self._run_in_image(None))
+        with tempfile.TemporaryDirectory(prefix=".eval-staging-", dir=reports_dir) as staging:
+            code = self._run_in_image(Path(staging))
+            self._copy_reports_out(Path(staging))
+        raise typer.Exit(code=code)
+
+    def _run_in_image(self, artifacts_dir: Path | None) -> int:
         try:
-            raise typer.Exit(code=run_eval_in_docker(self.passthrough(), artifacts_dir=artifacts_dir))
+            return run_eval_in_docker(self.passthrough(), artifacts_dir=artifacts_dir)
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
+
+    def _copy_reports_out(self, staging: Path) -> None:
+        """Copy each requested report the run wrote back to its host path, redacted.
+
+        A symlink is never followed: it would let the agent point a report at a host
+        file outside the staging mount and have this copy publish it.
+        """
+        for report in self._requested_reports():
+            staged = staging / report.name
+            if staged.is_file() and not staged.is_symlink():
+                write_artifact(report, staged.read_text(encoding="utf-8", errors="replace"))
 
 
 def run_in_docker_or_exit(

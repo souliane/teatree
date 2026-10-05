@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import IncomingEvent
+from teatree.core.models import ConfigSetting, IncomingEvent
 from teatree.core.reply_transport import SlackReplier
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -24,6 +24,7 @@ from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    ConfigSetting.objects.set_value("send_proxy_allowlist", ["slack:C-eng"])
 
 
 def _event(key: str) -> IncomingEvent:

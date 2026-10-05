@@ -26,15 +26,16 @@ def _normalize(identity: str) -> str:
 
 def _backfill_and_dedup(apps, schema_editor):
     review_verdict = apps.get_model("core", "reviewverdict")
+    rows = review_verdict.objects.using(schema_editor.connection.alias)
 
-    for row in review_verdict.objects.all().only("pk", "reviewer_identity", "reviewer_identity_normalized"):
+    for row in rows.all().only("pk", "reviewer_identity", "reviewer_identity_normalized"):
         normalized = _normalize(row.reviewer_identity)
         if row.reviewer_identity_normalized != normalized:
-            review_verdict.objects.filter(pk=row.pk).update(reviewer_identity_normalized=normalized)
+            rows.filter(pk=row.pk).update(reviewer_identity_normalized=normalized)
 
     seen: set[tuple[str, int, str, str]] = set()
     to_delete: list[int] = []
-    ordered = review_verdict.objects.order_by("-recorded_at", "-pk").only(
+    ordered = rows.order_by("-recorded_at", "-pk").only(
         "pk", "slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized"
     )
     for row in ordered:
@@ -44,7 +45,7 @@ def _backfill_and_dedup(apps, schema_editor):
         else:
             seen.add(key)
     if to_delete:
-        review_verdict.objects.filter(pk__in=to_delete).delete()
+        rows.filter(pk__in=to_delete).delete()
 
 
 def _noop_reverse(apps, schema_editor):

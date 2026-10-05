@@ -10,9 +10,7 @@ the box is the SUM of both — measured at load 58 on 8 cores with 1 GB free whi
 the factory's own ``issue_implementer_max_concurrent = 3`` was in force.
 
 This is the third caller. It routes through the SAME pure decision function, so
-the three lanes can never diverge on the quota/machine/ceiling verdict, and it
-reuses the ``admission_governor_enabled`` kill-switch rather than minting a
-second flag.
+the three lanes can never diverge on the quota/machine/ceiling verdict.
 
 **The ceiling counts the population it admits (#4129).** It was compared against
 ``Task.objects.active_claims()`` alone — durable, and the right shape — but an
@@ -55,7 +53,7 @@ is never silent: the caller emits the returned reason.
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.core.admission_governor import decide_admission, governor_enabled, read_machine_signal, read_quota_signal
+from teatree.core.admission_governor import decide_admission, read_machine_signal, read_quota_signal
 
 if TYPE_CHECKING:
     from teatree.core.models import InteractiveDispatch, InteractiveDispatchManager, Task
@@ -182,8 +180,6 @@ def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: 
     ``ahead`` exactly, and their sum is guaranteed >= the ceiling by
     construction — the same number the refusal was decided on.
     """
-    if not governor_enabled():
-        return None
     try:
         decision = decide_admission(
             quota=read_quota_signal(),

@@ -19,6 +19,15 @@ class RuntimeSkillSettings(Protocol):
     dogfood_smoke_skill: str
 
 
+LOOP_SKILL_FIELDS: tuple[str, ...] = (
+    "architectural_review_skill",
+    "scanning_news_skill",
+    "eval_local_skill",
+    "backlog_sweep_skill",
+    "dogfood_smoke_skill",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SkillDemand:
     source: str
@@ -45,14 +54,9 @@ def enumerate_skill_demands(
     if review_skill := getattr(settings, "review_skill", "").strip():
         demands.append(SkillDemand("review_skill", review_skill))
         demands.extend(_field_demands("review_skill_alternates", getattr(settings, "review_skill_alternates", [])))
-    fields = (
-        "architectural_review_skill",
-        "scanning_news_skill",
-        "eval_local_skill",
-        "backlog_sweep_skill",
-        "dogfood_smoke_skill",
+    demands.extend(
+        SkillDemand(field, skill) for field in LOOP_SKILL_FIELDS if (skill := getattr(settings, field, "").strip())
     )
-    demands.extend(SkillDemand(field, skill) for field in fields if (skill := getattr(settings, field, "").strip()))
     return tuple(demands)
 
 

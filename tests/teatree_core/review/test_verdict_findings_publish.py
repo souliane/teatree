@@ -14,6 +14,7 @@ from teatree.core.review.verdict_findings import marker_for
 from teatree.core.review.verdict_findings_publish import ACTION, FindingsPublishError, publish_verdict_findings
 from teatree.core.send_proxy import OutboundLeakError
 from teatree.types import RawAPIDict
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -51,8 +52,10 @@ class _PublishBase(TestCase):
 
     @pytest.fixture(autouse=True)
     def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS", "TEATREE_TERM_REGISTRY"):
             monkeypatch.delenv(env, raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [f"github:{_PRIVATE_SLUG}"])
         self.monkeypatch = monkeypatch
 
     @staticmethod
@@ -71,7 +74,7 @@ class _PublishBase(TestCase):
     @staticmethod
     def _allow_posting() -> None:
         seed_permitting_posture()
-        ConfigSetting.objects.set_value("private_repos", [_PRIVATE_SLUG])
+        ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
 
 
 class TestPublishReachesThePr(_PublishBase):
@@ -129,7 +132,7 @@ class TestPublishFailsLoud(_PublishBase):
 
     def test_a_banned_term_bound_for_a_public_repo_is_refused_and_never_posted(self) -> None:
         seed_permitting_posture()
-        self.monkeypatch.setenv("T3_BANNED_TERMS", "democorp")
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":[],"prose_collider":["democorp"]}')
         verdict = self._verdict([{"severity": "blocker", "summary": "democorp secret in the log"}], slug="pub/repo")
         host = _FakeHost()
 
@@ -140,7 +143,7 @@ class TestPublishFailsLoud(_PublishBase):
 
 class TestOnBehalfGate(_PublishBase):
     def test_the_shipped_default_withholds_the_post_and_names_both_ways_out(self) -> None:
-        ConfigSetting.objects.set_value("private_repos", [_PRIVATE_SLUG])
+        ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
         verdict = self._verdict()
         host = _FakeHost()
 
@@ -151,7 +154,7 @@ class TestOnBehalfGate(_PublishBase):
         assert ACTION in outcome.blocked_reason
 
     def test_the_block_is_reported_not_swallowed(self) -> None:
-        ConfigSetting.objects.set_value("private_repos", [_PRIVATE_SLUG])
+        ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
         outcome = publish_verdict_findings(self._verdict(), backend=_FakeHost())
         assert outcome.blocked_reason
         assert not outcome.skipped_existing

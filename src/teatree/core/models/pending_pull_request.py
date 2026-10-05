@@ -20,6 +20,7 @@ doctor FAIL that names the intended PR (:attr:`PendingPullRequest.intended_title
 instead of a bare branch. It stays empty when the deferral preceded the spec.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar, TypedDict
 
@@ -48,6 +49,11 @@ class SerializedPrSpec(TypedDict):
     assignee: str
     reviewers: list[str]
     draft: bool
+
+
+def settles_obligation(result: Mapping[str, object]) -> bool:
+    """An ``ensure-pr`` result that neither owes nor errored answers the branch for good."""
+    return not (result.get("owed") or result.get("error"))
 
 
 class RelativeRepoPathError(ValueError):
@@ -93,7 +99,10 @@ class PendingPullRequestManager(models.Manager["PendingPullRequest"]):
         return row
 
     def discharge(self, *, repo_path: str, branch: str) -> None:
-        self.filter(repo_path=repo_path, branch=branch).delete()
+        """Retire the row for *branch*; a branch that owes nothing costs a read, never the write lock."""
+        owed = self.filter(repo_path=repo_path, branch=branch)
+        if owed.exists():
+            owed.delete()
 
     def retire_absent(self) -> list[tuple[int, str, str]]:
         """Drop every obligation whose checkout is gone, returning ``(pk, branch, repo_path)`` each.
@@ -135,10 +144,6 @@ class PendingPullRequest(models.Model):
 
     def __str__(self) -> str:
         return f"pending-pr<{self.pk}:{self.branch}@{self.repo_path}>"
-
-    @property
-    def is_overdue(self) -> bool:
-        return self.drain_attempts >= MAX_DRAIN_ATTEMPTS
 
     @property
     def intended_title(self) -> str:

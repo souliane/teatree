@@ -55,10 +55,10 @@
 #   (1 + margin). It therefore needs the durable run-history ledger and CANNOT
 #   run inside the ephemeral `--docker` container this workflow uses (the
 #   in-container run is forced `--no-persist`). The cost gate is wired into the
-#   PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), where the ledger
-#   lives on the runner via `--local` — keeping the cost gate weekly/manual and
-#   off the per-PR path. A maintainer can also run it on the host against the
-#   accumulated ledger: `t3 eval run --backend api --local --gate-cost-bounds`.
+#   local persisted metered path (no `--docker`), where the ledger lives on
+#   the host via `--local`; the weekly workflow does not run this gate.
+#   A maintainer can run it against the accumulated ledger:
+#   `t3 eval run --backend api --local --gate-cost-bounds`.
 #
 # AUTH — `agent_harness_provider` selects the eval credential
 #   The `credential` input picks which credential the eval lane rides, wired into
@@ -111,7 +111,7 @@
 #   by firing another one. Three artifacts back that, all uploaded `if: always()` and
 #   all named per matrix leg (`<lane>-<shard>-<effort>`, so the fan-out's legs cannot
 #   collide or overwrite each other):
-#     * `eval-run-log-*`   — the raw teed stdout/stderr of EVERY attempt. Exists from
+#     * `eval-run-log-*`   — the redacted, teed stdout/stderr of EVERY attempt. Exists from
 #       the first byte, so it is the only one that survives a leg that dies mid-run.
 #     * `eval-report-*`    — the per-trial transcripts (rendered at end of run).
 #     * `eval-summary-*`   — the sanitized publish-safe summary (ditto).
@@ -309,6 +309,9 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -338,7 +341,7 @@ jobs:
       - name: Install and assert the Claude CLI
         if: ${{ (inputs.backend || 'api') == 'api' }}
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.283
+          npm install -g @anthropic-ai/claude-code@2.1.284
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -363,15 +366,18 @@ jobs:
       # selectable via the `credential` input.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
-      # The end-of-run cost summary (report.py `_cost_summary`) prints the spend ($0 on
-      # the subscription lane; API spend on an api_key run).
+      # The end-of-run cost summary (report.py `_cost_summary`) prints the spend: the
+      # transport's own bill on an api_key run, otherwise the figure derived from the
+      # run's token usage at list price. A run reporting neither reads `unknown`, never
+      # `$0.00` — a measured zero and an absent measurement must stay distinguishable.
       #
       # `--transcript-html` makes THIS run emit the per-trial transcript report
       # itself, written from its own in-memory results — NO separate render step
       # that re-runs the whole suite (the old `t3 eval all --html` step re-graded
       # all ~181 scenarios for ~64min AFTER this step), and NO read-only-mount
-      # write failure (the report lands in $RUNNER_TEMP via the docker runner's
-      # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
+      # write failure (the report is written to the docker runner's writable
+      # /artifacts staging mount, never the `:ro` repo mount, and copied out, redacted,
+      # into $RUNNER_TEMP). The artifact
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
       # (reasoning + tool calls) so a maintainer can diagnose a red shard.
       # A filesystem-safe per-lane-shard-and-EFFORT suffix, computed BEFORE the eval
@@ -483,8 +489,8 @@ jobs:
           # staleness.
           # `--summary-md` writes the SANITIZED publish-safe dashboard (counts +
           # a scenario|lane|verdict|trials|cost table, NO transcript) alongside the
-          # private transcript — both land in $RUNNER_TEMP (the writable artifacts
-          # mount). The `publish` job merges every shard's summary into the public
+          # private transcript — both land in $RUNNER_TEMP (copied out of the docker
+          # staging mount). The `publish` job merges every shard's summary into the public
           # dashboard; the transcript stays in the private `eval-report-*` artifact.
           #
           # FAILURE OBSERVABILITY (#3744). A red leg used to emit ONLY the retry
@@ -505,13 +511,17 @@ jobs:
           # So the run is teed to a durable $RUNNER_TEMP log (uploaded as its own
           # per-leg artifact below, and the ONLY artifact that survives a pre-summary
           # death), and on non-zero exit the tail + the summary are re-printed from
-          # that file into the job log — the first diagnosis needs no download.
-          # `set -o pipefail` keeps `tee` from masking the eval's exit code, and the
-          # block ends in `exit "$rc"`: this adds visibility, it never swallows the
-          # failure. Printing INSIDE the command block is what makes EACH attempt
-          # visible — attempt 1's tail lands before the retry's "Attempt 1 failed"
-          # line, instead of being discarded when attempt 2 starts. `tee -a` keeps
-          # both attempts in the one uploaded log.
+          # that file into the job log — the first diagnosis needs no download. The tee
+          # is `python -m teatree.eval.artifact_redaction tee`, which redacts every
+          # credential value from each line before it reaches the job log or the
+          # uploaded file; the re-printed tail and summary go through it too, since they
+          # reach the job log before the in-place redaction pass runs.
+          # `set -o pipefail` keeps the filter from masking the eval's exit code (and
+          # turns a filter crash red), and the block ends in `exit "$rc"`: this adds
+          # visibility, it never swallows the failure. Printing INSIDE the command block
+          # is what makes EACH attempt visible — attempt 1's tail lands before the
+          # retry's "Attempt 1 failed" line, instead of being discarded when attempt 2
+          # starts. The filter appends, so both attempts stay in the one uploaded log.
           command: |
             set -o pipefail
             EFFORT_FLAG=""
@@ -523,26 +533,45 @@ jobs:
             TAIL_LINES=400
             SUMMARY="$RUNNER_TEMP/eval-summary-$EVAL_SUFFIX.md"
             LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"
-            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" >> "$LOG"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" \
+              | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend "$EVAL_BACKEND" \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG $PRESET_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$SUMMARY" \
-              $MODEL_FLAG 2>&1 | tee -a "$LOG"
+              $MODEL_FLAG 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
-            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
             if [ -s "$SUMMARY" ]; then
               echo "::group::leg $EVAL_SUFFIX FAILED — eval summary"
-              cat "$SUMMARY"
+              cat "$SUMMARY" | uv run python -m teatree.eval.artifact_redaction tee
               echo "::endgroup::"
             else
               echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
+      # Defense in depth: one last in-place redaction pass over exactly the files
+      # the three uploads below publish, holding every credential this job holds, so
+      # a file that reached them without the redacting writer still leaves redacted.
+      # It deletes any file it cannot prove clean on disk and then fails, and each
+      # upload below runs only when it succeeded (`steps.redact.outcome`).
+      - name: Redact the uploaded files in place
+        id: redact
+        if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.EVAL_OAUTH_TOKENS }}
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
+        run: >-
+          uv run python -m teatree.eval.artifact_redaction in-place
+          "$RUNNER_TEMP/eval-transcripts.html"
+          "$RUNNER_TEMP/eval-summary-$SUFFIX.md"
+          "$RUNNER_TEMP/eval-run-$SUFFIX.log"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
@@ -551,38 +580,41 @@ jobs:
       # artifact (the `/` in the shard token is replaced — artifact names forbid it).
       # The `artifact` suffix step runs earlier, just before the eval run.
       - name: Upload the per-trial transcript report
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
+          # Private, and the weekly dashboard links it, so it outlives the run logs by a week.
+          retention-days: 14
       # The SANITIZED publish-safe summary (counts + a scenario|lane|verdict|trials|cost
       # table, NO transcript) — a SEPARATE artifact from the private transcript so
       # the `publish` job can download just these and merge them into the public
       # dashboard. `if: always()` so a red shard still publishes its summary.
       - name: Upload the sanitized summary (publish-safe)
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-summary-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
           if-no-files-found: warn
-      # The RAW captured stdout/stderr of every attempt (the `tee -a` target in the
-      # eval command). Unlike the transcript and the summary — both rendered only if
+      # The captured, redacted stdout/stderr of every attempt (the `artifact_redaction tee` target
+      # in the eval command). Unlike the transcript and the summary — both rendered only if
       # the run reaches its end — this file exists from the first byte, so it is the
       # one artifact that survives a leg that died mid-run, which is precisely the
       # failure class that used to leave a maintainer with nothing but "exit code 1".
       # `if: always()` because a GREEN leg needs none of this; a red one needs all of
-      # it. NOT downloaded by the `publish` job — it is unsanitized, so it stays out
-      # of the public dashboard alongside the private transcript.
+      # it. NOT downloaded by the `publish` job — beyond the credential redaction it is
+      # unsanitized, so it stays out of the public dashboard alongside the private transcript.
       - name: Upload the raw eval run log
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
           if-no-files-found: warn
+          retention-days: 7
 
   # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
   # open a PR carrying it against main. `needs: [prepare, eval]` + `if: always() &&
@@ -632,17 +664,19 @@ jobs:
           merge-multiple: true
       # Merge into the public dashboard. The run-url / sha / generated-at are
       # INJECTED here (the script never calls datetime.now()), so the merge is
-      # deterministic. `date -u` supplies the UTC timestamp.
+      # deterministic. `date -u` supplies the UTC timestamp. The step-summary copy
+      # goes through the redacting filter like every other print of an eval artifact.
       - name: Merge the shard summaries into the public dashboard
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
         run: |
+          set -o pipefail
           GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
             --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
             --out docs/evals/index.md
-          cat docs/evals/index.md >> "$GITHUB_STEP_SUMMARY"
+          cat docs/evals/index.md | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
       # Commit the dashboard ONLY when it changed (an unchanged file is a clean
       # no-op — no empty commit, no PR) and open (or update) a PR against main —
       # main's branch protection requires PRs + required status checks, so a direct

@@ -22,8 +22,6 @@ charter:
   docs/blueprint/configuration.md:
   - teatree.Gates.Quality
   - teatree.log
-  docs/blueprint/loop-topology.md:
-  - teatree.loops.master.build_loop_table_jobs
 python_prose:
   hooks/scripts/session_start_skills.py:
   - scripts/lib/skill_loader.suggest_skills
@@ -107,8 +105,6 @@ python_prose:
   - teatree.util.money
   src/teatree/eval/models.py:
   - teatree.eval.api_runner.resolve_max_turns_override
-  src/teatree/hooks/publish_destination.py:
-  - public_visibility._destination_visibility
   src/teatree/loop/rendering.py:
   - teatree.loop.rendering.X
   src/teatree/loop/scanners/issue_disposition.py:
@@ -122,8 +118,6 @@ python_prose:
   src/teatree/quality/affected_tests.py:
   - src/teatree/foo/bar.py
   - teatree.foo.bar
-  src/teatree/quality/full_suite_invocation.py:
-  - tests/foo.py
   src/teatree/quality/mutation_run.py:
   - src/teatree/x.py
   - teatree.x

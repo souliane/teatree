@@ -216,21 +216,20 @@ jobs:
       # detected`` (exit 1) on a forked graph, failing the PR before it lands.
       - name: prek (all hooks, all files) + makemigrations --check — locked runner, in Docker
         env:
-          SKIP: pytest,uv-audit,cyclonedx-sbom
-          # Dual-env during the banned-term-registry transition: the legacy
-          # T3_BANNED_TERMS secret stays authoritative; the consolidated
-          # TEATREE_TERM_REGISTRY is read only once the operator populates it at
-          # cutover (empty until then ⇒ no behaviour change).
-          T3_BANNED_TERMS: ${{ secrets.TEATREE_BANNED_TERMS }}
+          SKIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pytest,uv-audit,cyclonedx-sbom,banned-terms,no-overlay-leak' || 'pytest,uv-audit,cyclonedx-sbom' }}
+          # The classed registry is the sole term source for the leak hooks.
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
         run: >
           docker run --rm
           -v "$PWD":/app
           -e SKIP
-          -e T3_BANNED_TERMS
           -e TEATREE_TERM_REGISTRY
           ${{ needs.build-image.outputs.image_lint }}
           bash -c "uv run prek run --all-files && uv run python manage.py makemigrations --check --dry-run"
+      - name: Term scans unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
 
   # GATE (PR-only): catches two concurrent PRs both adding the same §17.N
   # invariant number — local pre-commit can't see sibling PRs.
@@ -1373,47 +1372,39 @@ jobs:
     # job scans every git-tracked file's content for the high-confidence
     # brand list on push-to-main, on a daily schedule, and on PRs, failing
     # CI if a brand is present. The public repo ships with no brands; the
-    # list is supplied from the TEATREE_BANNED_BRANDS secret so no tenant
+    # list is supplied from the TEATREE_TERM_REGISTRY secret so no tenant
     # name is ever committed.
     #
-    # push/schedule keep ``--require-brands`` so a MISSING secret stays a LOUD
-    # exit-2 failure on main. The PR step drops it and adds a fork-safe
-    # explicit-empty fallback: a same-repo PR reads the secret (full brand +
-    # terminology coverage), while a fork PR — which cannot read secrets —
-    # still runs the always-on terminology pass instead of false-redding on
-    # the unset-list refusal.
+    # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
-      - run: uv sync
-      - name: Full-tree banned-brand scan (push/schedule — require brands)
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv sync
+      - name: Full-tree banned-brand scan (push/schedule)
         if: github.event_name != 'pull_request'
         env:
-          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-          # Dual-env during the banned-term-registry transition: the legacy brand
-          # secret stays authoritative; the consolidated registry is read only
-          # once the operator populates it at cutover (empty until then).
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
-        run: uv run t3 banned-terms scan-tree --repo-root . --require-brands
-      - name: Full-tree banned-brand + terminology scan (PR — brands optional)
-        if: github.event_name == 'pull_request'
+        run: uv run t3 banned-terms scan-tree --repo-root .
+      - name: Full-tree banned-brand + terminology scan (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
-          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
           TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
-        # A fork PR cannot read $TEATREE_BANNED_BRANDS, so the brand list is
-        # genuinely unset. --allow-unset is the EXPLICIT, fail-closed-by-default
-        # opt-in that runs the always-on terminology pass instead of the exit-2
-        # refusal. It replaces the dead T3_BANNED_TERMS_CONFIG file fallback
-        # (which no code ever consumed). Same-repo PRs read the secret and get
-        # the full brand backstop; push/schedule keep --require-brands.
-        run: uv run t3 banned-terms scan-tree --repo-root . --allow-unset
+        run: uv run t3 banned-terms scan-tree --repo-root .
 
   # GATE (push + schedule + PR): full-tree overlay-leak scan. The pre-commit
   # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a
@@ -1424,33 +1415,36 @@ jobs:
   # too (#44) so a leak introduced by a PR is caught BEFORE merge instead of
   # turning main RED on landing.
   #
-  # push/schedule keep ``--require-terms`` so a MISSING
-  # TEATREE_OVERLAY_LEAK_TERMS secret stays a LOUD exit-2 failure on main. The
-  # PR step drops it: a same-repo PR reads the secret (full term + opaque-ID
-  # coverage), while a fork PR — which cannot read secrets — still runs the
-  # always-on opaque-ID pass (term pass inert, never a false exit-2). Local dev
-  # omits the flag and stays green.
+  # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   overlay-leak-tree:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
       - uses: actions/checkout@v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
       - uses: astral-sh/setup-uv@v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
       - uses: actions/setup-python@v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
-      - run: uv sync
-      - name: Full-tree overlay-leak scan (push/schedule — require terms)
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv sync
+      - name: Full-tree overlay-leak scan (push/schedule)
         if: github.event_name != 'pull_request'
         env:
-          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
-        run: uv run python scripts/hooks/check_no_overlay_leak.py --require-terms
-      - name: Full-tree overlay-leak scan (PR — terms optional)
-        if: github.event_name == 'pull_request'
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run python scripts/hooks/check_no_overlay_leak.py
+      - name: Full-tree overlay-leak scan (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
-          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
         run: uv run python scripts/hooks/check_no_overlay_leak.py
 
   # GATE (push + schedule + PR): the two tree gates above scan whatever list
@@ -1465,39 +1459,39 @@ jobs:
   # No `uv sync`: `check-ci` reads only the env vars and the fingerprint file, so
   # it runs on the stdlib and stays a seconds-long job.
   #
-  # push/schedule omit `--allow-unset` so a MISSING secret is a LOUD exit-2 on
-  # main. The PR step passes it: a fork PR cannot read secrets, so it skips
-  # cleanly instead of false-redding, while a same-repo PR gets the full check.
+  # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   term-source-drift:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
       - name: Term-source drift (push/schedule — require the secrets)
         if: github.event_name != 'pull_request'
         env:
-          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
         run: python scripts/term_source_drift.py check-ci
-      - name: Term-source drift (PR — fork-safe)
-        if: github.event_name == 'pull_request'
+      - name: Term-source drift (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
-          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
-        run: python scripts/term_source_drift.py check-ci --allow-unset
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: python scripts/term_source_drift.py check-ci
 
   # GATE (PR-only, NON-required): ground-truth anti-vacuity audit for the
   # incremental push gate (souliane/teatree#122). Runs the WHOLE-TREE ast-grep scan
   # + WHOLE-TREE doctest sweep, then asserts every finding/failure is INSIDE the
   # SCOPED set the push gate would have run for this diff. A whole-tree
   # finding/failure the scoped gate would have SKIPPED is a measured false negative
-  # -> the job fails LOUD and files a tracking issue. Scoping earns trust from
-  # evidence before `incremental_push_gate` is flipped on per-overlay. NOT a merge
-  # gate: the required `test (3.13)` whole-tree lane is the hard backstop; this is
-  # the rollout soak-window trust-builder.
+  # -> the job fails LOUD and files a tracking issue. The required `test (3.13)`
+  # whole-tree lane is the hard backstop; this audit measures scoped coverage.
   selection-audit:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -1527,17 +1521,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+        # Through the #162 hygiene facade, never a bare `gh issue create`: the facade
+        # judges the open backlog first, so a miss recurring on ten PRs extends ONE
+        # ticket instead of filing ten. `migrate` is load-bearing — the leak gate
+        # fails CLOSED on an unreadable banned-terms source, which an unmigrated DB is.
         run: |
-          existing="$(gh issue list --search 'in:title "push-gate selection-audit: measured false negative"' \
-            --state open --json number --jq '.[0].number')"
-          if [ -n "$existing" ]; then
-            echo "Tracking issue #$existing is already open — skipping duplicate filing."
-          else
-            gh issue create \
-              --title "push-gate selection-audit: measured false negative (#122)" \
-              --body "The incremental push gate would have SKIPPED a whole-tree ast-grep finding or doctest failure on PR #${PR_NUMBER} (${PR_URL}). See the failed selection-audit job logs for the offending path(s). Do NOT enable \`incremental_push_gate\` until resolved." \
-              --label needs-triage || true
-          fi
+          uv run python manage.py migrate --noinput
+          uv run python scripts/ci/file_selection_audit_issue.py
 
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 

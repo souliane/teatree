@@ -89,7 +89,6 @@ T3_MCP_COVERED: Mapping[str, str] = {
     "questions answer": "question_answer",
     "questions list": "question_list",
     "review post-comment": "review_post_comment",
-    "review post-draft-note": "review_post_draft_note",
     "review-request check": "review_request_check",
     "review-request post": "review_request_post",
     "slack react": "slack_react",

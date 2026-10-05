@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,9 +10,12 @@ from unittest.mock import MagicMock, patch
 import django.test
 import pytest
 
-from teatree.config import Mode, PrReviewBackend, UserSettings
+from teatree.config import Mode, PrReviewBackend, UserSettings, Wip
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
+from teatree.core.management.commands import loop_dispatch
+from teatree.core.models import Session, Task, Ticket
+from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.tick import (
     TickRequest,
@@ -22,6 +26,7 @@ from teatree.loop.tick import (
     run_tick,
 )
 from tests._git_repo import make_git_repo
+from tests.factories import planned_ticket
 
 
 @dataclass(slots=True)
@@ -320,43 +325,12 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
-class TestUserIdentityAliasWiring(django.test.TestCase):
-    """``user_identity_aliases`` is DB-home (#1775): global + per-overlay rows wire it."""
+class TestUserIdentityAliasSettings(django.test.TestCase):
+    """``user_identity_aliases`` remains an overlay-scoped identity setting."""
 
     @pytest.fixture(autouse=True)
     def _fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.monkeypatch = monkeypatch
-
-    def test_build_default_jobs_propagates_user_identity_aliases(self) -> None:
-        """``user_identity_aliases`` lands on TicketDispositionScanner.
-
-        Wiring proof for #975 — the loop reads the global setting and hands
-        it to every overlay's disposition scanner so the reassign-suppression
-        branch fires in production. #1775: the setting is DB-home, so the global
-        value is a ``ConfigSetting`` row (``[teatree]`` TOML is ignored on read).
-        """
-        from unittest.mock import MagicMock  # noqa: PLC0415
-
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415
-        from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-        ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "acme.work"])
-        self.monkeypatch.setattr("teatree.config.discover_overlays", list)
-        self.monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
-
-        backends = [
-            OverlayBackends(
-                name="teatree",
-                hosts=(MagicMock(spec=CodeHostBackend),),
-                messaging=None,
-                ready_labels=(),
-            ),
-        ]
-        jobs = build_default_jobs(backends=backends)
-        disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
-        assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane", "acme.work")
 
     def test_user_identity_aliases_no_override_inherits_global(self) -> None:
         """An overlay with no per-overlay override sees the global setting.
@@ -377,38 +351,6 @@ class TestUserIdentityAliasWiring(django.test.TestCase):
             lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
         )
         assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
-
-    def test_build_default_jobs_per_overlay_alias_override(self) -> None:
-        """Per-overlay override beats the global ``user_identity_aliases`` for that overlay.
-
-        The setting is registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (#975),
-        so a tracker-scoped overlay can carry tracker-specific handles
-        without flipping the global default. #1775: the override is now an
-        OVERLAY-scoped ``ConfigSetting`` row that beats the GLOBAL-scope row.
-        """
-        from unittest.mock import MagicMock  # noqa: PLC0415
-
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415
-        from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
-
-        ConfigSetting.objects.set_value("user_identity_aliases", ["global-only"])
-        ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane"], scope="scoped")
-        self.monkeypatch.setattr("teatree.config.discover_overlays", list)
-        self.monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
-
-        backends = [
-            OverlayBackends(
-                name="scoped",
-                hosts=(MagicMock(spec=CodeHostBackend),),
-                messaging=None,
-                ready_labels=(),
-            ),
-        ]
-        jobs = build_default_jobs(backends=backends)
-        disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
-        assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane")
 
 
 def test_identity_alias_groups_reads_overlay_config_first(
@@ -840,7 +782,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
 
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         Task.objects.create(
             ticket=ticket,
@@ -890,7 +832,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         )
 
         # Healthy ticket: half-advanced coding task that replay should recover.
-        healthy_ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
+        healthy_ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
         healthy_session = Session.objects.create(ticket=healthy_ticket, agent_id="code-agent")
         Task.objects.create(
             ticket=healthy_ticket,
@@ -1018,36 +960,6 @@ def test_repos_from_toml_returns_empty_without_overlays() -> None:
     fake_cfg = SimpleNamespace(raw={})
     with patch("teatree.config.load_config", return_value=fake_cfg):
         assert _repos_from_toml() == {}
-
-
-def test_canonical_overlay_names_maps_registry_keys() -> None:
-    from types import SimpleNamespace  # noqa: PLC0415
-    from unittest.mock import patch  # noqa: PLC0415
-
-    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
-
-    fake_cfg = SimpleNamespace(raw={"overlays": {"teatree": {}, "acme": {}}})
-    overlays = {"t3-teatree": object(), "acme": object()}
-    with (
-        patch("teatree.config.load_config", return_value=fake_cfg),
-        patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
-    ):
-        mapping = _canonical_overlay_names()
-    assert mapping == {"teatree": "t3-teatree"}
-
-
-def test_canonical_overlay_names_returns_empty_without_overlays() -> None:
-    from types import SimpleNamespace  # noqa: PLC0415
-    from unittest.mock import patch  # noqa: PLC0415
-
-    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
-
-    fake_cfg = SimpleNamespace(raw={})
-    with (
-        patch("teatree.config.load_config", return_value=fake_cfg),
-        patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}),
-    ):
-        assert _canonical_overlay_names() == {}
 
 
 def test_issue_ref_from_falls_back_to_ticket_number() -> None:
@@ -1178,7 +1090,7 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-sess")
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
+            with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
             # t3-master is excluded from the shared consolidated loop line;
             # its badge is rendered per-session in statusline.sh instead
@@ -1200,7 +1112,7 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
         scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder"}):
+            with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "intruder"}):
                 run_tick(TickRequest(scanners=[scanner]), statusline_path=sl, colorize=False)
             assert "t3-master=session other-se (NOT this session)" in sl.read_text(encoding="utf-8")
 
@@ -1241,7 +1153,7 @@ def _backend_with_overlay(
     from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata  # noqa: PLC0415
 
     config = MagicMock(spec=OverlayConfig)
-    config.get_review_channel = lambda: review_channel
+    config.get_review_broadcast_channels = lambda: [review_channel] if review_channel[1] else []
     config.get_gitlab_token = lambda: ""
     config.get_github_token = lambda: ""
     config.identity_aliases = []
@@ -1439,16 +1351,10 @@ def test_run_tick_still_dispatches_sweep_scanner_signals_after_the_split(tmp_pat
     assert {s.kind for s in report.signals} == {"pr_sweep.merged", "my_pr.open"}
 
 
-class TestRunTickOrchestrateIsDormant(django.test.TestCase):
-    """#1796: ``run_tick`` wires ``orchestrate_phase`` but never claims (dormant)."""
+class TestRunTickOrchestrateBudget(django.test.TestCase):
+    """The active tick plans the sidecar ceiling; the live claimer applies it."""
 
     def test_run_tick_at_full_wip_does_not_claim_pending_tasks(self) -> None:
-        import tempfile  # noqa: PLC0415
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from teatree.config import UserSettings, Wip  # noqa: PLC0415
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="d")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
@@ -1461,198 +1367,20 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
                 return_value=UserSettings(wip=Wip.FULL),
             ),
         ):
-            run_tick(TickRequest(scanners=[scanner]), statusline_path=Path(d) / "sl.txt")
+            sl = Path(d) / "sl.txt"
+            run_tick(
+                TickRequest(scanners=[scanner], backends=[OverlayBackends(name="acme", max_concurrent_auto_starts=2)]),
+                statusline_path=sl,
+            )
+
+            ceiling = read_admit_budget(statusline_path=sl, cadence_seconds=720)
+            assert ceiling == 3
+            with (
+                patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
+                patch("teatree.core.management.commands.loop_dispatch.governor_verdict", return_value=None),
+                patch.object(Task.objects, "in_flight_claimed_count", return_value=ceiling),
+            ):
+                assert loop_dispatch._admit_budget_exhausted() is True
 
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
-
-    def test_run_tick_survives_an_orchestrate_phase_error(self) -> None:
-        # Arm the toggle so the planner is actually reached, then make it raise:
-        # the tick must swallow it (fail-open) and leave no budget key → unclamped.
-        import tempfile  # noqa: PLC0415
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from teatree.config import UserSettings, Wip  # noqa: PLC0415
-        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
-
-        settings = UserSettings(wip=Wip.FULL, orchestrate_claim_enabled=True)
-        scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
-        with (
-            tempfile.TemporaryDirectory() as d,
-            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
-            patch("teatree.loop.phases.render.orchestrate_phase", side_effect=RuntimeError("config blew up")),
-        ):
-            sl = Path(d) / "sl.txt"
-            report = run_tick(TickRequest(scanners=[scanner]), statusline_path=sl)
-            assert sl.exists()
-            assert report.signal_count == 1
-            # A failed planner writes no budget → the reader fails open to unclamped.
-            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) is None
-
-
-class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
-    """#1796 (WI-1): ``orchestrate_claim_enabled`` arms a read-only BUDGET planner.
-
-    The reconciled fan-out keeps exactly ONE claim point — the live
-    ``claim_next`` CAS. When the toggle is ON and the wip clamps
-    (``full``/``boost``/``slow``), the tick runs ``orchestrate_phase`` read-only
-    (``claim=False``) to *compute* the cap and persists an admit BUDGET to the
-    tick-meta sidecar — it never claims in the tick, so the orphan window is
-    closed. At ``medium`` OR with the toggle OFF, NO budget key is written
-    (absence = unclamped = today's throughput).
-    """
-
-    def _full_wip_dispatchable_task(self):
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
-        session = Session.objects.create(ticket=ticket, agent_id="d")
-        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
-
-    def _run(self, *, toggle: bool, sl: Path, wip=None) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from teatree.config import UserSettings, Wip  # noqa: PLC0415
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-
-        settings = UserSettings(wip=wip or Wip.FULL, orchestrate_claim_enabled=toggle)
-        backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=2)]
-        with (
-            patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
-            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
-        ):
-            scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
-            run_tick(TickRequest(scanners=[scanner], backends=backends), statusline_path=sl)
-
-    def _read_budget(self, sl: Path):
-        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
-
-        return read_admit_budget(statusline_path=sl, cadence_seconds=720)
-
-    def test_toggle_off_never_claims_and_writes_no_budget(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        from teatree.core.models import Task  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "sl.txt"
-            task = self._full_wip_dispatchable_task()
-            self._run(toggle=False, sl=sl)
-            task.refresh_from_db()
-            assert task.status == Task.Status.PENDING  # tick never claims
-            assert self._read_budget(sl) is None  # no budget key → unclamped
-
-    def test_toggle_on_full_writes_budget_and_does_not_claim_in_tick(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        from teatree.core.models import Task  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "sl.txt"
-            task = self._full_wip_dispatchable_task()
-            self._run(toggle=True, sl=sl)
-            task.refresh_from_db()
-            # The tick PLANS, it does not claim — claiming is the live claimer's job.
-            assert task.status == Task.Status.PENDING
-            # The admit budget is persisted for the live claimer to read: the
-            # WRITE lane's ceiling plus the single-flight MERGE lane (#3634).
-            assert self._read_budget(sl) == 3
-
-    def test_toggle_on_medium_writes_no_budget(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        from teatree.config import Wip  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "sl.txt"
-            self._full_wip_dispatchable_task()
-            self._run(toggle=True, wip=Wip.MEDIUM, sl=sl)
-            assert self._read_budget(sl) is None  # medium → no clamp
-
-    def test_budget_clears_when_toggle_flips_off_between_ticks(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "sl.txt"
-            self._full_wip_dispatchable_task()
-            self._run(toggle=True, sl=sl)
-            assert self._read_budget(sl) == 3
-            # Operator disarms the toggle — the next tick must clear the budget
-            # so a stale ceiling never throttles dispatch after disarm.
-            self._run(toggle=False, sl=sl)
-            assert self._read_budget(sl) is None
-
-
-class TestBoostPoolRefillBudget(django.test.TestCase):
-    """PR-13: boost persists the pool-refill TARGET so the claimer refills to N.
-
-    The crux: with ``N`` workers and one exited, the sidecar budget the live
-    claimer reads must be the standing target ``N`` (its gate is
-    ``in_flight >= budget``), NOT the marginal ``target - in_flight``. Writing
-    the marginal would wedge the pool below ``N`` because ``in_flight`` already
-    meets the smaller marginal ceiling.
-    """
-
-    def _claimed_dispatchable_task(self):
-        from datetime import timedelta  # noqa: PLC0415
-
-        from django.utils import timezone  # noqa: PLC0415
-
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        url = f"https://x/c/{Ticket.objects.count()}"
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
-        session = Session.objects.create(ticket=ticket, agent_id=f"c-{ticket.pk}")
-        now = timezone.now()
-        return Task.objects.create(
-            ticket=ticket,
-            session=session,
-            phase="coding",
-            status=Task.Status.CLAIMED,
-            claimed_by="w",
-            claimed_at=now,
-            heartbeat_at=now,
-            lease_expires_at=now + timedelta(seconds=300),
-        )
-
-    def _pending_dispatchable_task(self):
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        url = f"https://x/p/{Ticket.objects.count()}"
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
-        session = Session.objects.create(ticket=ticket, agent_id=f"p-{ticket.pk}")
-        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
-
-    def _run_boost(self, *, sl: Path, n: int) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        from teatree.config import UserSettings, Wip  # noqa: PLC0415
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-
-        settings = UserSettings(
-            wip=Wip.BOOST, boost_concurrency=n, provision_max_concurrency=64, orchestrate_claim_enabled=True
-        )
-        backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=1)]
-        with (
-            patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
-            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
-        ):
-            scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
-            run_tick(TickRequest(scanners=[scanner], backends=backends), statusline_path=sl)
-
-    def test_boost_writes_target_not_marginal_so_claimer_refills(self) -> None:
-        import tempfile  # noqa: PLC0415
-
-        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "sl.txt"
-            # Two live workers (one of a target of 3 has exited) + a pending unit.
-            self._claimed_dispatchable_task()
-            self._claimed_dispatchable_task()
-            self._pending_dispatchable_task()
-            self._run_boost(sl=sl, n=3)
-            # The sidecar carries the TARGET (3 WRITE + 1 MERGE), not the
-            # marginal — so the claimer's ``in_flight(2) >= budget`` is False and
-            # it refills.
-            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) == 4

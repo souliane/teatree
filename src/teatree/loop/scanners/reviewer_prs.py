@@ -6,9 +6,7 @@ last review pass, OR when the reviewer's prior approval was dismissed
 (e.g. invalidated on force-push, re-requested after a dismissal).
 
 The cache lives on ``Ticket(role="reviewer")`` rows in ``extra``
-(`reviewed_sha`, `last_review_state`). On first run, any legacy
-``loop/reviewer_prs.json`` file is imported into matching tickets and
-then deleted — no migration command required.
+(`reviewed_sha`, `last_review_state`).
 """
 
 import logging
@@ -52,48 +50,6 @@ def _ticket_model() -> "TicketModel | None":
         return None
 
 
-def _migrate_legacy_json_cache_once() -> None:
-    """Import legacy ``loop/reviewer_prs.json`` into reviewer tickets, then delete.
-
-    Idempotent: after the file is removed, subsequent runs are no-ops. Keeps the
-    upgrade silent — users never run a migration command.
-    """
-    import json  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    from teatree.paths import DATA_DIR  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    path = DATA_DIR / "loop" / "reviewer_prs.json"
-    if not path.is_file():
-        return
-    ticket_model = _ticket_model()
-    if ticket_model is None:
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        path.unlink(missing_ok=True)
-        return
-    if not isinstance(data, dict):
-        path.unlink(missing_ok=True)
-        return
-    for url, value in data.items():
-        if not isinstance(url, str) or not url:
-            continue
-        if isinstance(value, str):
-            entry = CacheEntry(sha=value, state="")
-        elif isinstance(value, dict):
-            sha = value.get("sha")
-            state = value.get("state")
-            entry = CacheEntry(
-                sha=sha if isinstance(sha, str) else "",
-                state=state if isinstance(state, str) else "",
-            )
-        else:
-            continue
-        _persist_entry(ticket_model, url, entry)
-    path.unlink(missing_ok=True)
-
-
 def _persist_entry(
     ticket_model: "TicketModel",
     url: str,
@@ -103,9 +59,8 @@ def _persist_entry(
 ) -> None:
     """Upsert a reviewer-role ticket's cached SHA/state in its ``extra`` dict.
 
-    ``drop_review_state`` is opt-in per call site because the legacy-JSON import
-    and :func:`mark_reviewed` share this helper and must never pop a state they
-    are not replacing.
+    ``drop_review_state`` is opt-in per call site so a review-state update does
+    not remove the cached state unless requested.
     """
     ticket, _ = ticket_model.objects.get_or_create(
         role="reviewer",
@@ -324,12 +279,8 @@ class ReviewerPrsScanner:
     trusted_authors: tuple[str, ...] = field(default_factory=tuple)
     admit_label: str = ""
     name: str = "reviewer_prs"
-    _migrated: bool = field(default=False, init=False)
 
     def scan(self) -> list[ScanSignal]:
-        if not self._migrated:
-            _migrate_legacy_json_cache_once()
-            self._migrated = True
         reviewers = self._resolve_identities()
         if not reviewers:
             return []
@@ -518,24 +469,3 @@ class ReviewerPrsScanner:
                     seen_urls.add(url)
                 prs.append(pr)
         return prs
-
-
-def mark_reviewed(*, url: str, sha: str, state: str = "") -> None:
-    """Module-level entry point to update the reviewer cache without owning a scanner instance.
-
-    Called from ``Ticket.mark_reviewed_externally`` when a reviewer-role
-    ticket's reviewing task completes — the model layer doesn't need to
-    instantiate a backend just to record one observation.
-
-    ``state`` is a FORGE observation and nothing else, and is REQUIRED: defaulting it
-    to APPROVED let the next scan read an approval nobody made back as one it could
-    then see dismissed, on every tick, forever. A local disposition belongs in
-    ``extra["discharged_sha"]``, written by the model's own discharge transitions.
-    """
-    ticket_model = _ticket_model()
-    if ticket_model is None:
-        return
-    if not state:
-        msg = "mark_reviewed records an OBSERVED forge state; it cannot default to one"
-        raise ValueError(msg)
-    _persist_entry(ticket_model, url, CacheEntry(sha=sha, state=state))

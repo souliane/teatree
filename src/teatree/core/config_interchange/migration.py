@@ -27,10 +27,9 @@ from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
-from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, RENAMED_CONFIG_SETTINGS
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
-from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
@@ -369,16 +368,14 @@ class _ImportPolicy:
 def _unstorable_reason(key: str, value: ConfigValue, policy: _ImportPolicy) -> str | None:
     """Why this row has no home in the store at all, else None.
 
-    A removed key (loud, no home), an unknown key, and a secret/personal-identifier row
+    An unknown key and a secret/personal-identifier row
     (reusing the export withhold rule so a shared TOML never smuggles customer data back in).
     ``policy.allow_private`` lifts only that last class, and only for a file that declared
     itself a personal backup — it is what makes ``--include-private`` restorable (#4156).
     """
-    if key in REMOVED_SETTING_KEYS:
-        entry = removed_setting(key)
-        return f"removed ({entry.reason if entry is not None else 'the setting was removed'})"
     if key not in ALL_KNOWN_CONFIG_SETTINGS and known_pass_key_credential(key) is None:
-        return "unknown key"
+        replacement = RENAMED_CONFIG_SETTINGS.get(key)
+        return f"unknown key; renamed to {replacement}" if replacement else "unknown key"
     if policy.allow_private:
         return None
     if (secret := redaction_reason(key, value, policy.terms)) is not None:
@@ -444,8 +441,8 @@ def import_toml_to_db(
 ) -> ConfigImport:
     """Load a ``config_setting export`` TOML dump into the ``ConfigSetting`` store — the export inverse.
 
-    Retired aliases fold onto their live key; unknown keys and secret/personal-identifier
-    rows are REJECTED (the whole import is refused if any row is rejected, so a bad key never
+    Unknown keys and secret/personal-identifier rows are REJECTED (the whole
+    import is refused if any row is rejected, so a bad key never
     leaves a partial store); every value is validated through the same registry parser the
     resolver applies on read. A value equal to the shipped default writes NO row (the #3676
     zero-seed + ``restore = delete row`` property), so a dump of ``defaults.toml`` imports to
@@ -489,12 +486,8 @@ def import_toml_to_db(
     )
     stored: dict[str, dict[str, ConfigValue]] = {}
     by_kind: dict[str, list[ImportedRow]] = {"write": [], "skip": [], "unchanged": []}
-    folded: list[tuple[str, str]] = []
     rejected: list[RejectedRow] = []
-    for scope, raw_key, value in import_candidates(doc):
-        key = RENAMED_SETTING_KEYS.get(raw_key, raw_key)
-        if key != raw_key:
-            folded.append((raw_key, key))
+    for scope, key, value in import_candidates(doc):
         rows = stored.setdefault(scope, ConfigSetting.objects.overrides_for_scope(scope))
         kind, payload = _classify_import_row(key, value, stored=rows.get(key), policy=policy)
         if kind == "reject":
@@ -515,9 +508,7 @@ def import_toml_to_db(
     to_write, skipped, unchanged = by_kind["write"], by_kind["skip"], by_kind["unchanged"]
     seed_writes = _file_seed_dispositions(doc, skipped=skipped, unchanged=unchanged, rejected=rejected)
     if rejected:
-        return ConfigImport(
-            (), tuple(skipped), tuple(folded), tuple(rejected), dry_run, tuple(unchanged), policy.private_backup
-        )
+        return ConfigImport((), tuple(skipped), tuple(rejected), dry_run, tuple(unchanged), policy.private_backup)
     if not dry_run:
         with transaction.atomic():
             ConfigSetting.objects.set_values([(row.key, row.value, row.scope) for row in to_write])
@@ -526,7 +517,7 @@ def import_toml_to_db(
     # Seed rows keep the default is_private=False deliberately: `redaction_reason` is a rule
     # about SETTINGS keys, and a seed field is a [loops]/[modes]/[schedules] entry, not one.
     written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))
-    return ConfigImport(written, tuple(skipped), tuple(folded), (), dry_run, tuple(unchanged), policy.private_backup)
+    return ConfigImport(written, tuple(skipped), (), dry_run, tuple(unchanged), policy.private_backup)
 
 
 def _file_seed_dispositions(

@@ -48,7 +48,12 @@ ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-li
 # the watchdog runs the same revision the stack was deployed from. The path is
 # the SAME variable the compose bind mount uses, defaulting to the box checkout;
 # a hard-coded box path here would exec a file that exists on no other host.
+# An image generation runs the watchdog baked into it, like every other role.
+GENERATION="${TEATREE_GENERATION:-}"
 if [ "$ROLE" = watchdog ]; then
+    if [ -n "$GENERATION" ]; then
+        exec bash "$TEATREE_CLONE_DIR/deploy/watchdog.sh" --loop
+    fi
     exec bash "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/watchdog.sh" --loop
 fi
 
@@ -291,7 +296,7 @@ setup_disk_tmpdir
 # keeping the plaintext out of teatree.env and off argv/logs (#3454). An env
 # value always wins (eval/CI paths and a deliberate literal override); the pass
 # store is the fallback that lets a rotated secret be picked up at boot without
-# rewriting teatree.env. `pass show` writes only to the captured stdout here.
+# updating teatree.env. `pass show` writes only to the captured stdout here.
 source_secret_from_pass() {
     local var="$1" path="$2" value
     [ -n "${!var:-}" ] && return 0
@@ -337,7 +342,7 @@ fi
 # only the token is runtime state, and only it belongs here. Without this the
 # container authenticates to GitHub but not to GitLab, so provisioning cannot clone
 # a private overlay repo into its own workspace volume — every clone dies on
-# "HTTP Basic: Access denied" while the operator's host glab is logged in the whole
+# "could not read Username" while the operator's host glab is logged in the whole
 # time.
 #
 # This export reaches only THIS role's process tree. A `docker exec` starts from the
@@ -770,10 +775,8 @@ require_install_headroom() {
 # scope. `--frozen` reads the committed lock and never re-resolves it, so this is
 # network-free and runs on the offline path too.
 #
-# A failed export writes a COMMENT-ONLY file rather than none: `uv tool install` errors
-# outright on a missing `--constraints` path, so the fallback has to be a file that
-# constrains nothing. The install then degrades to today's unconstrained resolve — the
-# bug — instead of taking the boot down with it.
+# A failed export stops init before any install: an empty constraints file would make
+# the skew check vacuous and let long-lived roles start on an unverified tool venv.
 CONSTRAINTS_FILE="${CLONE_DIR}/uv-constraints.txt"
 
 # The image's `ENV UV_CONSTRAINT` is a BUILD-time expansion of $TEATREE_CLONE_DIR, so a fork
@@ -786,15 +789,42 @@ export UV_CONSTRAINT="$CONSTRAINTS_FILE"
 
 ensure_uv_constraints() {
     local tmp="${CONSTRAINTS_FILE}.tmp"
+    # A vendored core is installed with the host project beside it, so the host's lock pins
+    # every workspace package; the members themselves are installed editable, never pinned.
+    set -- --directory "$CLONE_DIR"
+    [ -z "${HOST_ROOT:-}" ] || set -- --directory "$HOST_ROOT" --all-packages --no-emit-workspace
     if uv export --no-hashes --no-emit-project --frozen --no-default-groups --all-extras \
-        --directory "$CLONE_DIR" -o "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ]; then
+        "$@" -o "$tmp" >/dev/null 2>&1 && [ -s "$tmp" ]; then
         mv -f "$tmp" "$CONSTRAINTS_FILE"
         echo "entrypoint: lockfile constraints regenerated at $CONSTRAINTS_FILE ($(grep -cE '^[a-zA-Z0-9]' "$CONSTRAINTS_FILE") pins)" >&2
         return 0
     fi
     rm -f "$tmp"
-    echo "entrypoint: WARNING could not export $CLONE_DIR/uv.lock as constraints - the install will RE-RESOLVE from the index (see #4049 class: an undeclared transitive dep can vanish under you)" >&2
-    printf '# uv export failed at boot - no constraints applied.\n' >"$CONSTRAINTS_FILE"
+    echo "entrypoint: FATAL could not export ${HOST_ROOT:-$CLONE_DIR}/uv.lock as boot constraints; refusing init because dependency skew cannot be checked. Repair the lockfile or restore index access, then redeploy." >&2
+    exit 1
+}
+
+# Init refuses a tool venv that is off its boot constraints before any long-lived role
+# starts. Init has restart disabled, so an offline install failure is reported once.
+# The check runs under the tool venv's own interpreter.
+refuse_on_constraint_skew() {
+    local role="$1" tool_python skew rc=0
+    tool_python="$(dirname "$(readlink -f "$(command -v t3)")")/python"
+    skew="$("$tool_python" "$CLONE_DIR/src/teatree/utils/constraint_skew.py" "$CONSTRAINTS_FILE" 2>&1)" || rc=$?
+    case "$rc" in
+    0) return 0 ;;
+    1)
+        echo "entrypoint: FATAL $role refusing to start: the installed tool venv does not match the boot constraints in $CONSTRAINTS_FILE:" >&2
+        printf 'entrypoint:   %s\n' "$skew" >&2
+        echo "entrypoint: restore index access and re-run init to reinstall the venv against those constraints, or redeploy." >&2
+        exit 1
+        ;;
+    *)
+        echo "entrypoint: FATAL $role refusing to start: could not compare the tool venv with $CONSTRAINTS_FILE (exit $rc): $skew" >&2
+        echo "entrypoint: repair the tool venv and re-run init, or redeploy." >&2
+        exit 1
+        ;;
+    esac
 }
 
 ensure_clone() {
@@ -882,11 +912,11 @@ ensure_clone() {
 # including the one an operator would reach for to diagnose it. The two modules
 # checked here are exactly what the `t3` console script imports.
 assert_core_source() {
-    local missing=""
-    [ -f "$CLONE_DIR/src/teatree/__init__.py" ] || missing="src/teatree/__init__.py"
-    [ -f "$CLONE_DIR/src/t3_bootstrap/__init__.py" ] || missing="${missing:+$missing, }src/t3_bootstrap/__init__.py"
-    [ -z "$missing" ] || {
-        echo "entrypoint: TEATREE_CLONE_DIR='$CLONE_DIR' is not a teatree core source tree (missing: $missing) - refusing the editable install, which would publish a broken 't3' into the shared /opt/teatree/uv volume for EVERY container. A fork vendoring core must export TEATREE_CLONE_DIR=<mount>/vendor/teatree (deploy/t3 and deploy/deploy.sh do; a bare 'docker compose up' does not)." >&2
+    local missing_files=""
+    [ -f "$CLONE_DIR/src/teatree/__init__.py" ] || missing_files="src/teatree/__init__.py"
+    [ -f "$CLONE_DIR/src/t3_bootstrap/__init__.py" ] || missing_files="${missing_files:+$missing_files, }src/t3_bootstrap/__init__.py"
+    [ -z "$missing_files" ] || {
+        echo "entrypoint: TEATREE_CLONE_DIR='$CLONE_DIR' is not a teatree core source tree (missing: $missing_files) - refusing the editable install, which would publish a broken 't3' into the shared /opt/teatree/uv volume for EVERY container. A fork vendoring core must export TEATREE_CLONE_DIR=<mount>/vendor/teatree (deploy/t3 and deploy/deploy.sh do; a bare 'docker compose up' does not)." >&2
         exit 1
     }
 }
@@ -894,7 +924,12 @@ assert_core_source() {
 case "$ROLE" in
 init)
     init_preflight
-    ensure_clone
+    # An image generation bakes its source, venv, prek and constraints read-only: there is
+    # nothing to fetch, fast-forward or install, so init only migrates, sets up and seeds.
+    if [ -n "$GENERATION" ]; then
+        echo "entrypoint: image generation ${GENERATION:0:12} - baked source and runtime, skipping the clone refresh and every install" >&2
+    fi
+    [ -n "$GENERATION" ] || ensure_clone
     # Do not let setup/runtime reads inherit the bootstrap identity. From here on,
     # GitHub credentials are bound to the repository's owning overlay.
     unset GH_TOKEN GITHUB_TOKEN TEATREE_GH_TOKEN
@@ -902,7 +937,7 @@ init)
     # Before ANY uv install: the image exports UV_CONSTRAINT at this path, and uv errors
     # outright when a constraints file is missing, so it must exist for every role that
     # later runs `t3 update` off this shared volume.
-    ensure_uv_constraints
+    [ -n "$GENERATION" ] || ensure_uv_constraints
     # The TOOL plane, named explicitly rather than inherited (#4642). Compose points
     # the ambient UV_PYTHON_INSTALL_DIR at the shared PROJECT root, so a bare
     # `uv tool install --reinstall` below would rebuild the tool venvs against a
@@ -913,7 +948,9 @@ init)
     # (#3451) BAKES all three (and seeds them onto the teatree_uv volume on a fresh
     # box), so this is a fast no-op refresh when online and is skipped entirely when
     # offline — first boot never cold-resolves the dependency graph from PyPI/astral.
-    if network_up; then
+    if [ -n "$GENERATION" ]; then
+        :
+    elif network_up; then
         uv python install 3.13
         # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
         # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
@@ -950,7 +987,12 @@ init)
         # PATH; install it as a standalone uv tool (pinned to the lockfile) into the
         # shared teatree_uv volume so every role sees it. Runtime (not Dockerfile):
         # /opt/teatree/uv is a named volume that shadows any image-baked install.
-        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" uv tool install prek==0.4.10
+        prek_version="$(bash "$(dirname "${BASH_SOURCE[0]}")/locked-version.sh" "${HOST_ROOT:-$CLONE_DIR}/uv.lock" prek)"
+        if [ -z "$prek_version" ]; then
+            echo "entrypoint: FATAL ${HOST_ROOT:-$CLONE_DIR}/uv.lock pins no prek - cannot install the hook runner the gates need." >&2
+            exit 1
+        fi
+        UV_PYTHON_INSTALL_DIR="$TOOL_PYTHON_ROOT" uv tool install "prek==$prek_version"
     else
         # OFFLINE: the interpreter, editable install, and prek are baked into the
         # image, so init proceeds with no cold fetch. Fail loud only if the image
@@ -973,6 +1015,7 @@ init)
         echo "entrypoint: FATAL the shared interpreter root $UV_PYTHON_INSTALL_DIR holds no cpython-* interpreter. It is a bind of the host's uv python root, so it is empty until something installs there. Run 'uv python install $(cat "${CLONE_DIR}/.python-version")' on the host (or restore connectivity and re-run Deploy), then restart this container." >&2
         exit 1
     fi
+    refuse_on_constraint_skew init
     # Install the commit/push gate hooks on the base clone's SHARED hooks dir
     # (git links every worktree to it), so the privacy leak gate (#685), the
     # foreign-MR guard, banned-terms, and the push gates actually fire on the
@@ -985,12 +1028,13 @@ init)
     # below runs `t3 setup`, whose `harden_hooks` probes candidates and reaches this
     # very dir — the installed-clone walk passes `.git`-less `vendor/teatree` up to
     # the fork root, whose common git dir is the one `prek install` just wrote.
-    (cd "$CLONE_DIR" && prek install -f)
+    [ -n "$GENERATION" ] || (cd "$CLONE_DIR" && prek install -f)
+    # Setup reads ConfigSetting, so the schema must exist first.
+    t3 teatree db migrate
     # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
     # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
     # merges into (never clobbers) the file the seed writes (#3359).
     prepare_agent_homes
-    t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
     # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
@@ -1002,9 +1046,6 @@ init)
     seed_setting provision_max_concurrency 0
     seed_setting provision_ram_ceiling_percent 75
     seed_setting max_concurrent_local_stacks 1
-    # The admin binds the box loopback (host networking), so auto-login fires for
-    # the SSH-tunnelled 127.0.0.1 request — no admin password behind the tunnel.
-    seed_setting admin_autologin_enabled true
     # Clear any drain-set quiescing flag so the FRESH worker RESUMES admission after a
     # rolling deploy (drain-then-deploy). This is a HARD `set false`, NOT a provenance
     # `seed`: `t3 worker drain` writes worker_quiescing via `config_setting set` (a
@@ -1043,7 +1084,7 @@ slack-listener)
 admin)
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
-    exec t3 admin --host 127.0.0.1 --port 8000 --no-browser
+    exec t3 admin --host 127.0.0.1 --port "${TEATREE_ADMIN_PORT:-8000}" --no-browser
     ;;
 *)
     echo "entrypoint: unknown TEATREE_ROLE '$ROLE' (expected init|worker|admin|slack-listener|watchdog)" >&2

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from teatree.config.resolution import worker_is_quiescing
-from teatree.loop.drain import DrainProgress, DrainReport, drain_worker, set_worker_quiescing
+from teatree.loop.drain import DrainPacing, DrainProgress, DrainReport, drain_worker, set_worker_quiescing
 from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path, flock_is_held, read_pid
 
 #: The default drain grace, mirroring ``t3 worker drain --timeout``.
@@ -180,9 +180,11 @@ class WorkerStopper:
     def _drain(self) -> DrainReport:
         return drain_worker(
             timeout=self._request.drain_timeout,
-            poll_interval=self._request.drain_poll_seconds,
-            sleep=self._seams.sleep,
-            monotonic=self._seams.monotonic,
+            pacing=DrainPacing(
+                poll_interval=self._request.drain_poll_seconds,
+                sleep=self._seams.sleep,
+                monotonic=self._seams.monotonic,
+            ),
             on_progress=self._on_drain_progress,
         )
 

@@ -21,6 +21,7 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import ConfigSetting, ReviewVerdict
 from teatree.core.review.verdict_findings import marker_for
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -54,12 +55,13 @@ class _FakeHost:
 
 class _FindingsSurfaceBase(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
+    def _config(self, monkeypatch: pytest.MonkeyPatch, configured_banned_term_registry: None) -> None:
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
         self.host = _FakeHost()
-        ConfigSetting.objects.set_value("private_repos", [_SLUG])
+        ConfigSetting.objects.set_value("private_repos", [f"github.com/{_SLUG}"])
+        allow_forge_repos(_SLUG)
 
     def _allow_posting(self) -> None:
         seed_permitting_posture()

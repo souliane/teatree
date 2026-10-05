@@ -2,11 +2,11 @@ r"""Body extraction for ``t3 review`` posting verbs (#2278/#32).
 
 Split out of :mod:`teatree.hooks._command_parser` to keep that module under
 the module-health LOC cap. This module owns one concern: given a ``t3 ...
-review post-comment`` / ``post-draft-note`` command segment, locate the
+review post-comment`` command segment, locate the
 posting verb and extract the published body — so the banned-terms / quote
 gates scan it.
 
-``t3 review post-comment REPO MR NOTE`` (and ``post-draft-note``) carry the
+``t3 review post-comment REPO MR NOTE`` carries the
 body as the positional ``NOTE``, not a ``--body``/``--message`` flag, so the
 generic body-flag walkers found nothing. Two defects followed: a clean general
 note's body was never scanned (a banned term in it slipped through, #2270) and
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 # The ``t3 review`` posting verbs whose BODY is the positional ``NOTE``
 # argument rather than a ``--body``/``--message`` flag.
-_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
+_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment"})
 
 # Positional count consumed before the ``NOTE`` body of a ``t3 ... review
 # <verb> REPO MR NOTE`` invocation: REPO and MR precede it.
@@ -88,10 +88,10 @@ def _t3_review_post_verb_index(words: list[str]) -> int | None:
     The segment is a ``t3 review`` post iff its leader is the ``t3`` executable
     (env-prefixed and path-form leaders are canonicalised by
     :func:`_t3_leader_index`) and a ``review`` word is immediately followed by
-    ``post-comment`` / ``post-draft-note``. The overlay word between ``t3`` and
+    ``post-comment``. The overlay word between ``t3`` and
     ``review`` is arbitrary, so ``review`` is located by scan rather than fixed
     position. Returns the index of the verb word
-    (``post-comment``/``post-draft-note``).
+    (``post-comment``).
     """
     leader = _t3_leader_index(words)
     if leader is None:
@@ -156,7 +156,7 @@ def _t3_review_body_file_payload(words: list[str], payloads: list[str], ctx: "Bo
     spellings are handled.
     """
     from teatree.hooks._body_file_resolution import _append_file_payload  # noqa: PLC0415 — deferred: call-time import
-    from teatree.hooks._command_parser import attached_value  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.hooks._parser_primitives import attached_value  # noqa: PLC0415 — deferred: call-time import
 
     i = 0
     n = len(words)
@@ -177,8 +177,8 @@ def append_t3_review_note_payload(
 ) -> bool:
     """Append a ``t3 review`` post's body and report handling.
 
-    Returns ``True`` when ``words`` is a ``t3 review post-comment`` /
-    ``post-draft-note`` segment — the caller then SKIPS the generic body-file
+    Returns ``True`` when ``words`` is a ``t3 review post-comment`` segment —
+    the caller then SKIPS the generic body-file
     walker so the segment's inline ``--file`` anchor is never scanned as the
     published body (#2278/#2270). The published body is appended to ``payloads``
     from whichever source carries it: the positional ``NOTE`` (via

@@ -36,7 +36,7 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _UNSTORED_KEY = "merge_wip"
 
 #: A setting the fixtures DO store, in a scope the older record is made never to have used.
-_STORED_KEY = "admin_autologin_enabled"
+_STORED_KEY = "require_human_approval_to_merge"
 _STORED_SCOPE = "solo"
 
 

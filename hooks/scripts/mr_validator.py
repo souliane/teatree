@@ -18,12 +18,11 @@ the stdlib-only ``gate_result`` / ``t3_invocation`` siblings.
 
 import json
 import os
-import subprocess  # noqa: S404 — the CompletedProcess return type; the spawn itself is the seam's
 import sys
 from pathlib import Path
 
-from hooks.scripts.gate_result import GateSkipped, ValidatorTimedOut, validator_timeout_seconds
-from hooks.scripts.t3_invocation import run_t3, t3_argv
+from hooks.scripts.gate_result import CompletedRun, GateSkipped, ValidatorTimedOut, run_validator
+from hooks.scripts.t3_invocation import t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities so the helpers the router
 # imports and a test patching one here operate on ONE module object.
@@ -53,7 +52,7 @@ _EXEC_FAILED_REASON = (
 
 def run_mr_validator(
     argv: list[str], title: str, description: str, target_repo: str | None = None, *, sections_optional: bool = False
-) -> "subprocess.CompletedProcess[str] | ValidatorTimedOut | GateSkipped | None":
+) -> "CompletedRun | ValidatorTimedOut | GateSkipped | None":
     """Run the validator; a marker when it rendered no verdict, ``None`` if absent.
 
     The title/description pair goes on STDIN as one JSON object; only the short, bounded
@@ -73,16 +72,9 @@ def run_mr_validator(
     """
     repo_args = ["--repo", target_repo] if target_repo else []
     section_args = ["--sections-optional"] if sections_optional else []
-    allowance = validator_timeout_seconds()
     try:
-        return run_t3(
-            [*argv, *repo_args, *section_args],
-            timeout=allowance,
-            stdin_text=json.dumps({"title": title, "description": description}),
+        return run_validator(
+            [*argv, *repo_args, *section_args], stdin_text=json.dumps({"title": title, "description": description})
         )
-    except subprocess.TimeoutExpired:
-        return ValidatorTimedOut(allowance_seconds=allowance)
-    except FileNotFoundError:
-        return None
     except OSError as exc:
         return GateSkipped(reason=_EXEC_FAILED_REASON.format(exc=exc))

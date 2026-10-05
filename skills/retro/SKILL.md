@@ -91,7 +91,7 @@ git -C "$real_path" rev-parse --git-dir >/dev/null 2>&1 && echo "editable" || ec
 | Editability | Where to write improvements |
 |---|---|
 | **Editable** (symlink → local git repo) | Improve the skill files directly (following the write rules in § Fix Skills) |
-| **Read-only** (no git repo, installed copy, or remote-only) | Record the finding with `t3 <overlay> retro finding`, naming the read-only skill in `--destination`. It lands on the gap ledger as a deduped umbrella checkbox plus a scheduled coding fix. |
+| **Read-only** (no git repo, installed copy, or remote-only) | Record the finding with `t3 <overlay> retro finding`, naming the read-only skill in `--destination`. It lands on the gap ledger, queued for the backlog sweep to fold into an existing ticket. |
 
 When writing to a repo-level fallback, clearly mark the entry as originating from a retro finding: include the skill name and a brief rationale so the entry can be promoted to the skill later if it becomes editable.
 
@@ -241,7 +241,7 @@ The three-step gate-failures lane — read the transcript's gate BLOCKs, classif
 
 #### Tooling: `t3 <overlay> retro finding`
 
-The lane retro persists a lesson WITH when no skill edit can hold it — a read-only skill, a missing config knob, an enforcement gap. It records the rule plus its cited mistake in the consolidation ledger and drives it onto the standing umbrella as a deduped checkbox and a scheduled coding fix; the prose retires itself when that fix merges. The dedup is over the rule's text, so re-emitting a lesson whose fix is still open rides the existing gap rather than scheduling a second one. `--dry-run` previews without writing.
+The lane retro persists a lesson WITH when no skill edit can hold it — a read-only skill, a missing config knob, an enforcement gap. It records the rule plus its cited mistake in the consolidation ledger and queues it on the umbrella host for the backlog sweep, which folds it into an existing ticket; the prose retires itself when that ticket merges. The dedup is over the rule's text, so re-emitting a lesson that is still open rides the existing gap rather than queueing a second one. `--dry-run` previews without writing.
 
 `--destination` must name a teatree fix path (`skills/`, `src/teatree`, `scripts/`, `BLUEPRINT.md`); anything else is refused, because the ledger row is stamped a core gap and a user-specific home would make that stamp a lie. The umbrella write itself is the default-OFF `memory_promote` mechanism ([`skills/dreaming/SKILL.md`](../dreaming/SKILL.md)), so on an installation that has not opted in the finding is still recorded and the result reports `deferred` — the gap waits in the drain queue the next enabled pass reads, and nothing lands on the umbrella.
 

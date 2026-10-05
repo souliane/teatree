@@ -71,9 +71,6 @@ def _run_bash(preamble: str, script: str, env: dict[str, str] | None = None) -> 
     )
 
 
-# ── the single-call route probe ───────────────────────────────────────
-
-
 def test_compose_project_default_matches_the_compose_file_name() -> None:
     """The label filter's project MUST be the project compose itself would derive.
 
@@ -85,11 +82,9 @@ def test_compose_project_default_matches_the_compose_file_name() -> None:
     """
     declared = re.search(r"^name:\s*(\S+)\s*$", COMPOSE_FILE.read_text(encoding="utf-8"), re.MULTILINE)
     assert declared is not None, "docker-compose.yml declares no top-level `name:`"
-    wrapper_default = re.search(
-        r'^COMPOSE_PROJECT="\$\{COMPOSE_PROJECT_NAME:-([^}]+)\}"', _wrapper_text(), re.MULTILINE
-    )
-    assert wrapper_default is not None, "deploy/t3 no longer defines COMPOSE_PROJECT"
-    assert wrapper_default.group(1) == declared.group(1)
+    helper = (DEPLOY / "generation-topology.sh").read_text(encoding="utf-8")
+    assert f"${{1:-{declared.group(1)}}}" in helper
+    assert 'COMPOSE_PROJECT="$(generation_compose_project "${COMPOSE_PROJECT_NAME:-teatree}")"' in _wrapper_text()
 
 
 def test_route_resolution_no_longer_shells_out_to_compose_ps() -> None:
@@ -149,8 +144,6 @@ def test_running_service_container_reads_the_table(table: str, service: str, exp
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
 
-
-# ── bounded, loud credential reads ────────────────────────────────────
 
 CRED_PREAMBLE = _slice("SECRET_READ_DEADLINE_SECONDS=", "# Everything from here on resolves the credential")
 

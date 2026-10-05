@@ -192,7 +192,7 @@ def _offending_exit_contract_returns(source: str) -> list[tuple[str, int, str]]:
 #: fixed one fails ``test_no_known_exit_contract_offender_is_stale`` until deleted.
 #:
 #: #4234 drained the 4 ``env.py`` bare-int sites (now ``raise SystemExit(N)``) plus
-#: ``env.py migrate_secrets`` and ``retro.py review_findings`` (neither of which this
+#: ``retro.py review_findings`` (which this
 #: AST-only detector could see — see ``tests/teatree_core/management_commands/
 #: test_exit_contract_seam.py``). The remaining sites below still literally
 #: ``return {"error": …}`` — converting them to a bare raise would destroy the value
@@ -211,7 +211,6 @@ _KNOWN_EXIT_CONTRACT_OFFENDERS: frozenset[tuple[str, str]] = frozenset(
         ("core/management/commands/pr.py", "sweep"),
         ("core/management/commands/review.py", "lock_acquire"),
         ("core/management/commands/review.py", "record_evidence"),
-        ("core/management/commands/ticket.py", "comment"),
         ("core/management/commands/ticket.py", "create_sub"),
         ("core/management/commands/ticket.py", "e2e_bypass"),
     },

@@ -113,7 +113,6 @@ class OverlayConfig(BaseModel):
     # Setup-time provisioned IM channel id between the per-overlay bot and
     # the user (#1342). Populated by ``t3 setup`` calling ``conversations.open``.
     slack_dm_channel_id: str = ""
-    require_ticket: bool = False
     ready_labels: list[str] = Field(default_factory=list)
     exclude_labels: list[str] = Field(default_factory=list)
     max_concurrent_auto_starts: int = 1
@@ -121,9 +120,6 @@ class OverlayConfig(BaseModel):
     notion_database_id: str = ""
     # The Notion page property teatree reads for a ticket's status; non-secret.
     notion_status_property: str = "Status"
-    # WRITE-back gate (default OFF): ``core.sync.push_notion_status`` PATCHes the
-    # Notion Status property only when this is True. Read-only otherwise.
-    notion_write_back: bool = False
     mr_close_ticket: bool = False
     # When True the pre-push ship gate REJECTS any auto-close keyword instead of
     # silently rewriting it (#1012); teatree's own overlay leaves it False.
@@ -197,11 +193,11 @@ class OverlayConfig(BaseModel):
     # ``overlay_settings.py`` (``REVIEW_SKILL``).
     review_skill: str = ""
     review_skill_alternates: list[str] = Field(default_factory=list)
-    architectural_review_skill: str = "ac-reviewing-codebase"
+    architectural_review_skill: str = "architectural-review"
     scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "eval"
+    eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
-    dogfood_smoke_skill: str = "dogfood-smoke"
+    dogfood_smoke_skill: str = "dogfooding"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
     # The dashboard header mark, as a static path; an overlay ships its own logo in
     # its package's ``static/`` dir and names it here.
@@ -418,9 +414,6 @@ class OverlayConfig(BaseModel):
 
     def get_stage_skills(self, phase: str) -> list[str]:
         return list(self.stage_skills.get(normalize_phase(phase), []))
-
-    def get_factory_phase_harness_candidates(self, phase: str) -> list[str]:
-        return list(self.factory_phase_harness_candidates.get(normalize_phase(phase), []))
 
 
 # ── Overlay facets ───────────────────────────────────────────────────

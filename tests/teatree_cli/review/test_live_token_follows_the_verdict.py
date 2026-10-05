@@ -15,6 +15,7 @@ from teatree.cli.review.authorize import resolve_live_authorization
 from teatree.cli.review.default_draft import publish_live_post
 from teatree.cli.review.service import ReviewService
 from teatree.core.models import ConfigSetting, LivePostApproval, OnBehalfApproval
+from tests._send_gate import allow_forge_repos
 from tests.teatree_cli.review.conftest import OutboundHttpBan
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
@@ -72,9 +73,17 @@ class TestTheWaiverBelongsToThePostureNotTheVerdict(TestCase):
     live-post gate retired by a setting that never mentions it.
     """
 
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos(_REPO)
+
     @pytest.fixture(autouse=True)
     def _env(
-        self, monkeypatch: pytest.MonkeyPatch, no_outbound_http: OutboundHttpBan, forge_reads_stubbed: None
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_outbound_http: OutboundHttpBan,
+        forge_reads_stubbed: None,
+        configured_banned_term_registry: None,
     ) -> None:
         del forge_reads_stubbed
         _clear_env(monkeypatch)
@@ -136,9 +145,17 @@ class TestPublishLivePostHonoursTheRequirement(TestCase):
 
 
 class TestTheServiceThreadsTheRequirementThrough(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos(_REPO)
+
     @pytest.fixture(autouse=True)
     def _env(
-        self, monkeypatch: pytest.MonkeyPatch, no_outbound_http: OutboundHttpBan, forge_reads_stubbed: None
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        no_outbound_http: OutboundHttpBan,
+        forge_reads_stubbed: None,
+        configured_banned_term_registry: None,
     ) -> None:
         del forge_reads_stubbed
         _clear_env(monkeypatch)

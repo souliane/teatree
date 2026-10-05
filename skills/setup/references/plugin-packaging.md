@@ -43,10 +43,7 @@ main clone:
 ```
 
 Claude Code reads hooks, skills, and agents directly from the clone — no cache,
-no version pinning, always live. There is **no** `~/.claude/plugins/t3` symlink;
-`t3 setup`'s `_cleanup_legacy_plugin` removes any leftover one from the old
-symlink model. This replaced both the symlink approach and the older marketplace
-approach (which copied to `~/.claude/plugins/cache/` and went stale).
+no version pinning, always live.
 
 ## Codex Local Marketplace Registration
 

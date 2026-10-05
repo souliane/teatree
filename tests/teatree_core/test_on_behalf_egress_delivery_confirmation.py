@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import OnBehalfApproval, PendingChatInjection
+from teatree.core.models import ConfigSetting, OnBehalfApproval, PendingChatInjection
 from teatree.core.models.on_behalf_approval import OnBehalfAudit
 from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfSlackEgress
 from teatree.on_behalf_gate import OnBehalfContext
@@ -31,6 +31,11 @@ _TARGET = "https://github.com/o/r/pull/1"
 _CANON = "o/r!1"
 _APPROVER = "U-OPERATOR"
 _QUESTION_TS = "1780757338.674389"
+
+
+@pytest.fixture(autouse=True)
+def _allow_expected_colleague_channel() -> None:
+    ConfigSetting.objects.set_value("send_proxy_allowlist", [f"slack:{_COLLEAGUE}"])
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

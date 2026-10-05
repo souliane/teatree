@@ -5,7 +5,7 @@
     a customer E2E plan whose declared BDD scenario source is still PREFLIGHT
     receives an immediate HOLD under H0 and is never scored around
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   cli_stubs: [t3]
   fixture: git_repo
@@ -28,7 +28,7 @@
     reviewer runs `e2e verify-plan-captures`, whose gate re-checks the FINAL BDD
     source and every committed capture, and records no merge_safe verdict first
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   cli_stubs: [t3]
   fixture: git_repo
@@ -66,7 +66,7 @@
     e2e-review reviewer records a HOLD verdict (HARD GATE H3 — evidence
     legibility), it does NOT record a merge_safe/VERIFIED verdict or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # The correct verdict command is `t3 <overlay> review record … --verdict hold`
   # bound to the reviewed head SHA. In a clean room the overlay CLI is unwired and
@@ -120,7 +120,7 @@
     verdict (HARD GATE H4 — test-plan completeness), it does NOT record a
     merge_safe/VERIFIED verdict or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # Same clean-room wiring as the H3 scenario above: the inert `t3` stub + a git
   # repo let the correct `review record … --verdict hold` call succeed so the
@@ -173,7 +173,7 @@
     verdict (HARD GATE H5 — PRD alignment from the live SSOT), it does NOT record
     a merge_safe/VERIFIED verdict or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # Same clean-room wiring as the H3/H4 scenarios above: the inert `t3` stub + a
   # git repo let the correct `review record … --verdict hold` call succeed so the
@@ -209,7 +209,7 @@
     an outward plan with neutral numbered procedure but a customer-owned verdict
     slot receives HOLD under H6; the neutral procedure is not itself reader ownership
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   cli_stubs: [t3]
   fixture: git_repo
@@ -253,7 +253,7 @@
     the agreed test concept), it does NOT record a merge_safe/VERIFIED verdict
     or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # Same clean-room wiring as the H3/H4/H5 scenarios above: the inert `t3` stub
   # + a git repo let the correct `review record … --verdict hold` call succeed so
@@ -306,7 +306,7 @@
     (HARD GATE H6 — conformance to the agreed test concept), it does NOT record a
     merge_safe/VERIFIED verdict or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # Same clean-room wiring as the H3/H4/H5 scenarios above.
   cli_stubs: [t3]
@@ -362,7 +362,7 @@
     concision), it does NOT record a merge_safe/VERIFIED verdict or approve the
     PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-5
+  tier: balanced
   max_turns: 4
   # Same clean-room wiring as the H3/H4/H5/H6 scenarios above: the inert `t3`
   # stub + a git repo let the correct `review record … --verdict hold` call

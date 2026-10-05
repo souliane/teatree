@@ -99,7 +99,6 @@ class ConcreteBackendProvider:
                 channel_id=spec.channel_id,
                 channel_name=spec.channel_name,
                 pr_urls=spec.pr_urls,
-                max_pages=spec.max_pages,
                 oldest_ts=spec.oldest_ts,
                 timeout=spec.timeout,
             ),

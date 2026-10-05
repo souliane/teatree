@@ -1,6 +1,6 @@
 """Closed-issue dispatch gate: an implementing dispatch needs a live issue (#2663).
 
-Symmetric must-refuse / must-allow, mirroring ``test_plan_dispatch_gate.py``: the
+Symmetric must-refuse / must-allow, mirroring ``test_plan_decision.py``: the
 gate is useless if it only ever passes, and harmful if it refuses a reviewer, a
 planner, or — the failure mode that would freeze the whole board — every dispatch
 on the box the moment the forge stops answering.
@@ -19,7 +19,7 @@ from teatree.core.gates.closed_issue_dispatch_gate import (
     closed_reason_from_payload,
     open_state_from_payload,
 )
-from teatree.core.gates.plan_dispatch_gate import IMPLEMENTING_PHASES
+from teatree.core.modelkit.phases import IMPLEMENTING_PHASES
 from teatree.core.models import Ticket
 
 _URL = "https://github.com/souliane/teatree/issues/4045"

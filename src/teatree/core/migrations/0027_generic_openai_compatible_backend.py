@@ -1,11 +1,13 @@
 from django.db import migrations
 
-from teatree.config.retired_settings import RENAMED_SETTING_KEYS
-
 # The #3666 retirements this migration carries, and the provider VALUE that moved
-# with them. Read off the one retired-settings registry rather than re-listed, so a
-# renamed key cannot be recorded there and forgotten here.
+# with them. The mapping is frozen so this migration keeps its original behavior.
 _BACKEND_KEYS = ("orca_router_pass_path", "orca_router_name", "orca_router_lane")
+RENAMED_SETTING_KEYS = {
+    "orca_router_pass_path": "openai_compatible_credential_entry",
+    "orca_router_name": "openai_compatible_model",
+    "orca_router_lane": "openai_compatible_lane",
+}
 _PROVIDER_KEY = "agent_harness_provider"
 _OLD_PROVIDER = "orca_router_byok"
 _NEW_PROVIDER = "openai_compatible"

@@ -32,3 +32,14 @@ ALL_KNOWN_CONFIG_SETTINGS: dict[str, Callable[[Any], Any]] = {
     **OVERLAY_OVERRIDABLE_SETTINGS,
     **{key: entry.parse for key, entry in SETTING_ENTRIES.items()},
 }
+
+RENAMED_CONFIG_SETTINGS = {
+    "speed": "wip",
+    "headless_max_turns": "agent_max_turns",
+    "low_power_auto_engage": "token_outage_auto_engage",
+    "low_power_preset_name": "token_outage_preset_name",
+    "orca_router_pass_path": "openai_compatible_credential_entry",
+    "orca_router_name": "openai_compatible_model",
+    "orca_router_lane": "openai_compatible_lane",
+    "todo_sweep_recheck_interval_hours": "task_sweep_recheck_interval_hours",
+}

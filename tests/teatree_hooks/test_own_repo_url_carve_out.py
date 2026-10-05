@@ -6,6 +6,11 @@ from teatree.hooks.own_repo_url_carve_out import term_only_inside_own_repo_urls
 
 
 def _config(tmp_path: Path, private_repos: list[str]) -> Path:
+    private_repos = [
+        f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+        for entry in private_repos
+        for host in (("github.com", "gitlab.com") if "." not in entry.split("/", 1)[0] else ("",))
+    ]
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:

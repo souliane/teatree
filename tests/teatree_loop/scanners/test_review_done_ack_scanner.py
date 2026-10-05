@@ -34,6 +34,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.loop.review_done_reactions import _egress_react, _slack_message_for_pr, emit_review_done_reactions
 from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
 MR_URL = "https://gitlab.example.com/team/project/-/merge_requests/6613"
@@ -78,6 +79,7 @@ def _seed_reviewed_ticket(*, url: str = MR_URL, overlay: str = "team-overlay") -
 
 
 def _seed_broadcast_post(url: str = MR_URL) -> ReviewRequestPost:
+    allow_slack_channels(CHANNEL)
     return ReviewRequestPost.objects.create(mr_url=url, slack_channel_id=CHANNEL, slack_thread_ts=TS)
 
 

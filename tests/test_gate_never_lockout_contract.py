@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Final
 
 import hooks.scripts.hook_router as router
+from tests.conformance.test_hook_gate_ids import deny_site_functions, hook_sources
 
 _HOOK_ROUTER_SRC: Final[Path] = Path(router.__file__)
 
@@ -55,6 +56,7 @@ _HOOK_ROUTER_SRC: Final[Path] = Path(router.__file__)
 # calls ``_write_pretooluse_deny(...)`` DIRECTLY (bypassing the wrapper) still
 # emits a real hard-lock AND is caught by this contract instead of evading it.
 _DENY_WRITER: Final[str] = "_write_pretooluse_deny"
+_DENY_WRITERS: Final[frozenset[str]] = frozenset({_DENY_WRITER, "write_pretooluse_deny"})
 _DENY_EMITTER: Final[str] = "emit_pretooluse_deny"
 _FAIL_OPEN_ROUTER: Final[str] = "_fail_open_or_deny"
 
@@ -65,8 +67,7 @@ _FAIL_OPEN_ROUTER: Final[str] = "_fail_open_or_deny"
 #   1. PUBLIC-EGRESS LEAK PATH (hard safety, intentionally fail-closed) — the
 #      quote / banned-terms scanners. Relaxing a public leak is
 #      a privacy regression, NOT a lockout rescue; they MUST NEVER read
-#      ``danger_gate_fail_open`` (the HARD INVARIANT in hook_router). They carry their
-#      own per-call ``[quote-ok:]`` / ``[banned-ok:]`` / ``--quote-ok`` escapes.
+#      ``danger_gate_fail_open`` (the HARD INVARIANT in hook_router).
 #   2. NARROW TARGETED-COMMAND gates — deny only a specific dangerous command
 #      (a bypass of the t3 CLI, a raw merge, a raw review-post), never arbitrary
 #      Bash, so they cannot wedge a session doing unrelated work.
@@ -84,14 +85,18 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     "handle_block_verbatim_operator_paste": (
         "public-egress republication of the operator's own messages; fail-closed by design, "
-        "ALLOW_VERBATIM_PASTE=1 escape + gate kill-switch"
+        "owner escalation + gate kill-switch"
     ),
     # Narrow targeted-command gates — deny one specific command, never arbitrary Bash.
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",
+    "handle_block_raw_issue_write": (
+        "denies only an invoked `gh issue comment`/`glab issue note` that bypasses the #162 "
+        "issue-hygiene facade, never arbitrary Bash; reads pass, and unexpected errors deny"
+    ),
     "handle_block_self_dm_via_mcp": (
         "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
-        "own self_dm_gate_enabled kill-switch"
+        "bot-token self-DM path and self_dm_gate_enabled kill-switch remain available"
     ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
@@ -170,18 +175,18 @@ def _reexport_sibling_sources(tree: ast.Module, handler_names: set[str]) -> list
     sibling's functions — the sibling reaches the deny writer through a lazy
     ``from hook_router import emit_pretooluse_deny`` back-import.
     """
-    scripts_dir = _HOOK_ROUTER_SRC.parent
-    sources: list[ast.Module] = []
+    return [ast.parse(path.read_text(encoding="utf-8")) for path in _reexport_sibling_paths(tree, handler_names)]
+
+
+def _reexport_sibling_paths(tree: ast.Module, handler_names: set[str]) -> list[Path]:
+    paths: list[Path] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
             continue
         if not any(alias.name in handler_names for alias in node.names):
             continue
-        sources.extend(
-            ast.parse(path.read_text(encoding="utf-8"))
-            for path in _module_source_paths(node.module, handler_names, scripts_dir)
-        )
-    return sources
+        paths.extend(_module_source_paths(node.module, handler_names, _HOOK_ROUTER_SRC.parent))
+    return paths
 
 
 def _module_source_paths(module: str, handler_names: set[str], scripts_dir: Path) -> list[Path]:
@@ -229,6 +234,20 @@ def _call_graph_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
     for sibling_tree in _reexport_sibling_sources(tree, handler_names):
         funcs.update(_module_functions(sibling_tree))
     funcs.update(_module_functions(tree))
+    if _DENY_WRITER not in funcs:
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom) or node.module is None:
+                continue
+            for alias in node.names:
+                if alias.asname != _DENY_WRITER:
+                    continue
+                for path in _module_source_paths(node.module, {alias.name}, _HOOK_ROUTER_SRC.parent):
+                    imported = _module_functions(ast.parse(path.read_text(encoding="utf-8")))
+                    if alias.name in imported:
+                        funcs[_DENY_WRITER] = imported[alias.name]
+    writer = next((funcs[name] for name in sorted(_DENY_WRITERS) if name in funcs), None)
+    if writer is not None:
+        funcs.update(dict.fromkeys(_DENY_WRITERS - funcs.keys(), writer))
     return funcs
 
 
@@ -252,7 +271,7 @@ def _never_lockout_offenders(tree: ast.Module) -> list[str]:
     offenders: list[str] = []
     for handler in handlers:
         reachable = _reachable_callees(handler, funcs)
-        if _DENY_WRITER not in reachable:
+        if not reachable & _DENY_WRITERS:
             continue  # never emits a deny — not a deny gate
         if _FAIL_OPEN_ROUTER in reachable:
             continue  # routes through the fail-open / self-rescue chokepoint
@@ -293,7 +312,7 @@ def test_plan_edit_gate_routes_through_fail_open() -> None:
     tree = _module_tree()
     funcs = _call_graph_functions(tree)
     reachable = _reachable_callees("handle_block_edit_before_planned", funcs)
-    assert _DENY_WRITER in reachable, "the plan-edit gate must still be able to deny"
+    assert reachable & _DENY_WRITERS, "the plan-edit gate must still be able to deny"
     assert _FAIL_OPEN_ROUTER in reachable, (
         "handle_block_edit_before_planned must route its deny through "
         f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
@@ -317,7 +336,7 @@ def test_out_of_band_merge_gate_routes_through_fail_open() -> None:
     tree = _module_tree()
     funcs = _call_graph_functions(tree)
     reachable = _reachable_callees("handle_block_out_of_band_merge", funcs)
-    assert _DENY_WRITER in reachable, "the raw-merge gate must still be able to deny"
+    assert reachable & _DENY_WRITERS, "the raw-merge gate must still be able to deny"
     assert _FAIL_OPEN_ROUTER in reachable, (
         "handle_block_out_of_band_merge must route its deny through "
         f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
@@ -344,7 +363,7 @@ def test_exemption_allowlist_has_no_stale_entries() -> None:
             stale.append(f"{handler} (not a registered PreToolUse handler)")
             continue
         reachable = _reachable_callees(handler, funcs)
-        if _DENY_WRITER not in reachable:
+        if not reachable & _DENY_WRITERS:
             stale.append(f"{handler} (no longer reaches {_DENY_WRITER})")
 
     assert not stale, (
@@ -365,9 +384,11 @@ def test_write_pretooluse_deny_has_single_funnel() -> None:
     """
     tree = _module_tree()
     funcs = _call_graph_functions(tree)
-    assert _DENY_WRITER in funcs, f"{_DENY_WRITER} not found in hook_router — writer rename regression"
+    assert funcs.keys() >= _DENY_WRITERS, (
+        f"{_DENY_WRITER} not found in router or imported sibling — writer rename regression"
+    )
 
-    callers = _callers_of(_DENY_WRITER, funcs)
+    callers = set().union(*(_callers_of(name, funcs) for name in _DENY_WRITERS))
     assert callers == {_DENY_EMITTER}, (
         f"{_DENY_WRITER} must have exactly one caller ({_DENY_EMITTER}); found {sorted(callers)}.\n"
         f"A direct caller of {_DENY_WRITER} bypasses the circuit breaker and the never-lockout "
@@ -413,6 +434,26 @@ def test_contract_flags_direct_write_pretooluse_deny_bypass() -> None:
     )
 
 
+_PUBLIC_WRITER_BYPASS_SOURCE: Final[str] = """
+def write_pretooluse_deny(reason):
+    return True
+
+
+def handle_sneaky_public_writer(data):
+    return write_pretooluse_deny("BLOCKED: arbitrary hard-lock")
+
+
+_HANDLERS = {
+    "PreToolUse": [handle_sneaky_public_writer],
+}
+"""
+
+
+def test_contract_flags_a_handler_calling_the_public_writer() -> None:
+    offenders = _never_lockout_offenders(ast.parse(_PUBLIC_WRITER_BYPASS_SOURCE))
+    assert "handle_sneaky_public_writer" in offenders
+
+
 _BARE_EMIT_BYPASS_SOURCE: Final[str] = '''
 def _write_pretooluse_deny(reason):
     return True
@@ -446,3 +487,42 @@ def test_contract_flags_bare_emit_handler() -> None:
         "a bare emit_pretooluse_deny handler (no fail-open routing, not allowlisted) "
         "must be flagged by the never-lockout contract"
     )
+
+
+# The fail-closed banned-terms deny helper: its handler is exempt from never-lockout by design.
+_DENY_SITES_OUTSIDE_THE_GRAPH: Final[frozenset[tuple[str, str]]] = frozenset(
+    {("banned_terms/deny.py", "emit_banned_term_deny")}
+)
+
+
+def _sites_outside_the_graph(sites: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    tree = _module_tree()
+    funcs = _call_graph_functions(tree)
+    reachable = set().union(*(_reachable_callees(handler, funcs) for handler in _pretooluse_handler_names(tree)))
+    graph_paths = [_HOOK_ROUTER_SRC, *_reexport_sibling_paths(tree, set(_pretooluse_handler_names(tree)))]
+    defined = {
+        (str(path.relative_to(_HOOK_ROUTER_SRC.parent)), name)
+        for path in graph_paths
+        for name in _module_functions(ast.parse(path.read_text(encoding="utf-8")))
+    }
+    return {site for site in sites if site not in defined or site[1] not in reachable}
+
+
+def _callers(function: str) -> set[tuple[str, str]]:
+    callers: set[tuple[str, str]] = set()
+    for module, source in hook_sources().items():
+        for caller in ast.walk(ast.parse(source)):
+            if isinstance(caller, ast.FunctionDef | ast.AsyncFunctionDef) and function in _callee_names(caller):
+                callers.add((module, caller.name))
+    return callers
+
+
+def test_every_hook_deny_site_is_inside_the_contract_graph() -> None:
+    assert _sites_outside_the_graph(deny_site_functions(hook_sources())) == _DENY_SITES_OUTSIDE_THE_GRAPH
+    assert _callers("emit_banned_term_deny") == {("banned_terms/gate.py", "_run_banned_terms_pretool")}
+
+
+def test_a_deny_site_outside_the_graph_is_caught_even_under_a_reachable_name() -> None:
+    orphan = ("zz_orphan_helper.py", "_deny_foreground_agent_dispatch")
+
+    assert _sites_outside_the_graph({orphan, ("hook_router.py", "_deny_foreground_agent_dispatch")}) == {orphan}

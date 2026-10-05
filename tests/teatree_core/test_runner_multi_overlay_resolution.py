@@ -78,9 +78,9 @@ class TestGetOverlayForTicket(_MultiOverlayTest):
         ticket = Ticket.objects.create(overlay=OVERLAY_A, issue_url="https://example.com/t")
         assert get_overlay_for_ticket(ticket) is self.overlay_a
 
-    def test_blank_overlay_is_still_ambiguous(self) -> None:
+    def test_blank_overlay_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay="", issue_url="https://example.com/blank-t")
-        with pytest.raises(ImproperlyConfigured, match="Multiple overlays found"):
+        with pytest.raises(ImproperlyConfigured, match="has no overlay"):
             get_overlay_for_ticket(ticket)
 
 
@@ -89,7 +89,7 @@ class TestGetOverlayForWorktree(_MultiOverlayTest):
         worktree = self._worktree(overlay=OVERLAY_B)
         assert get_overlay_for_worktree(worktree) is self.overlay_b
 
-    def test_falls_back_to_ticket_overlay_when_field_blank(self) -> None:
+    def test_blank_worktree_overlay_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay=OVERLAY_A, issue_url="https://example.com/blank")
         worktree = Worktree.objects.create(
             ticket=ticket,
@@ -98,7 +98,8 @@ class TestGetOverlayForWorktree(_MultiOverlayTest):
             branch="feat-x",
             extra={"worktree_path": "/tmp/wt"},
         )
-        assert get_overlay_for_worktree(worktree) is self.overlay_a
+        with pytest.raises(ImproperlyConfigured, match="has no overlay"):
+            get_overlay_for_worktree(worktree)
 
 
 class TestRunnersResolveWorktreeOverlay(_MultiOverlayTest):

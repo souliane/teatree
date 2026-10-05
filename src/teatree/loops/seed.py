@@ -15,14 +15,13 @@ a re-pointed cadence). Each script-backed loop points at its OWN on-disk module
 — the ``script`` column is PER-LOOP and load-bearing, never a value shared across
 rows (the loop XOR: exactly one of script/prompt). ``arch_review`` is the one
 prompt-backed default; its prompt instructs a sub-agent to run an architectural
-review using the ``ac-reviewing-codebase`` skill.
+review using the ``architectural-review`` skill.
 
 **No orphan rows (#2584).** Every name in :data:`DEFAULT_LOOPS` has a registry
 ``MiniLoop`` (a ``teatree.loops.<name>.loop`` package exposing ``MINI_LOOP``), so
 the seeded ``Loop``-table set equals :func:`teatree.loops.registry.iter_loops`.
 The reactive infra loops (``slack_answer``, ``self_improve``, ``drain_queue``)
 are intentionally NOT default Loop rows: they have no registry ``MiniLoop`` — the
-per-loop ``build_loop_table_jobs`` / ``iter_loops`` fan-out can never run them.
 Each runs as a WORKER maintenance chain (``teatree.loops.timer_reconciler``), behind
 its own dedicated ``LoopLease`` (``loop-slack-answer`` / ``loop-self-improve`` /
 ``loop-drain-queue``); a session registers a dedicated native Claude ``/loop`` firing
@@ -66,10 +65,8 @@ class LoopSeedSpec:
     ``colleague`` reach tag every loop declares in code (#3959): ``review`` reaches
     colleagues and deliberately keeps running while the owner is away.
 
-    ``default_enabled`` records which loops are the local/read-only operational core.
-    It is DECLARATIVE only — no live seed path writes it, because the shipped posture is
-    a preset opinion and ``Loop.enabled`` is the manual override. The frozen
-    ``0001_initial`` still carries its inlined copy, pinned against this table.
+    The shipped run posture comes from the ``present`` mode; ``Loop.enabled`` is
+    the manual override. Historical migrations retain their frozen seed data.
     """
 
     name: str
@@ -78,7 +75,6 @@ class LoopSeedSpec:
     daily_at: dt.time | None = None
     prompt_body: str | None = None
     colleague_facing: bool = False
-    default_enabled: bool = False
 
     @property
     def is_prompt_backed(self) -> bool:
@@ -106,7 +102,6 @@ def load_loop_specs(path: Path | None = None) -> tuple[LoopSeedSpec, ...]:
             daily_at=entry.get("daily_at"),
             prompt_body=entry.get("prompt_body"),
             colleague_facing=entry.get("colleague_facing", False),
-            default_enabled=entry.get("default_enabled", False),
         )
         for name, entry in shipped_seed_table(_LOOPS_TABLE, path).items()
     )
@@ -117,7 +112,7 @@ def load_loop_specs(path: Path | None = None) -> tuple[LoopSeedSpec, ...]:
 DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = load_loop_specs()
 
 #: The architectural-review prompt body — a real instruction telling the sub-agent to run
-#: an architectural review using the ``ac-reviewing-codebase`` skill (owner's explicit
+#: an architectural review using the ``architectural-review`` skill (owner's explicit
 #: decision). Shared with the data migration so the install-seed and the migrate-time seed
 #: agree; shipped in ``[loops.arch_review] prompt_body``.
 ARCH_REVIEW_PROMPT_BODY: str = next(spec.prompt_body or "" for spec in DEFAULT_LOOPS if spec.is_prompt_backed)

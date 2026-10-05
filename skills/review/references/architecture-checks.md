@@ -25,7 +25,7 @@ The Module-Level Architectural Check above asks *what's inside* each touched fil
 4. **Diffs that worsen module cohesion or scoping.** Flag a change that widens a module's responsibility (an unrelated concern bolted onto an existing file), leaks a private helper across a package boundary, or imports across a layer the architecture keeps separate — point at the boundary the change crosses.
 5. **Obvious reorg opportunities the change reveals.** When implementing the change makes a misplacement plain (e.g. the file you just edited clearly belongs next to the collaborators it now calls), surface the concrete move — but only for files this diff touches.
 
-Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
+Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `architectural-review` skill's job (the periodic holistic review dispatched by its loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
 
 ## The One-Place Test — Count the Files (Non-Negotiable)
 

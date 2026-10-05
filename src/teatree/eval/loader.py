@@ -9,7 +9,7 @@ Supported operators: ``contains`` (substring match) and ``~`` (regex match).
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
@@ -366,18 +367,9 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
     if not isinstance(item, Mapping):
         raise EvalSpecError(path, None, f"spec {spec_name!r}: each `expect` entry must be a mapping")
     item_map: Mapping[str, Any] = {str(k): v for k, v in item.items()}
-    if "any_of" in item_map:
-        return _parse_any_of(item_map, spec_name, path)
-    if "tool_call" in item_map:
-        return _parse_positive(item_map, spec_name, path)
-    if "tool_call_succeeded" in item_map:
-        return _parse_successful(item_map, spec_name, path)
-    if "no_tool_call_matching" in item_map:
-        return _parse_negative(item_map, spec_name, path)
-    if "final_state" in item_map:
-        return _parse_final_state(item_map, spec_name, path)
-    if "assistant_text" in item_map:
-        return _parse_assistant_text(item_map, spec_name, path)
+    for key, parse in _MATCHER_PARSERS:
+        if key in item_map:
+            return parse(item_map, spec_name, path)
     kinds = ", ".join(f"`{kind}`" for kind in MATCHER_KINDS)
     raise EvalSpecError(path, None, f"spec {spec_name!r}: expect entry must have one of {kinds}")
 
@@ -480,6 +472,18 @@ def _parse_successful(item: Mapping[str, Any], spec_name: str, path: Path) -> Su
     )
 
 
+def _parse_tool_call_count(item: Mapping[str, Any], spec_name: str, path: Path) -> ToolCallCountMatcher:
+    if set(item) != {"tool_call_count", "args.command", "equals", "until_edit_outside"}:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: invalid `tool_call_count` fields")
+    operator, pattern = _parse_op_expr(str(item["args.command"]), spec_name, path)
+    files = item["until_edit_outside"]
+    count = item["equals"]
+    valid_files = isinstance(files, list) and bool(files) and all(isinstance(f, str) and f for f in files)
+    if operator != "~" or not isinstance(count, int) or count < 0 or not valid_files:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: invalid `tool_call_count` values")
+    return ToolCallCountMatcher(str(item["tool_call_count"]), "command", pattern, count, tuple(files))
+
+
 def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matcher:
     inner = item["no_tool_call_matching"]
     if not isinstance(inner, Mapping) or len(inner) != 1:
@@ -510,6 +514,17 @@ def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
         unless_operator=unless_operator,
         unless_value=unless_value,
     )
+
+
+_MATCHER_PARSERS: tuple[tuple[str, Callable[[Mapping[str, Any], str, Path], ExpectItem]], ...] = (
+    ("any_of", _parse_any_of),
+    ("tool_call", _parse_positive),
+    ("tool_call_succeeded", _parse_successful),
+    ("tool_call_count", _parse_tool_call_count),
+    ("no_tool_call_matching", _parse_negative),
+    ("final_state", _parse_final_state),
+    ("assistant_text", _parse_assistant_text),
+)
 
 
 def _parse_exemption(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str, str]:

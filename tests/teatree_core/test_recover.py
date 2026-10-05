@@ -69,6 +69,14 @@ class TestGatherRecoverReport(TestCase):
         assert [o.branch for o in report.open_pr_pending] == ["b-pr"]
         assert report.open_pr_pending[0].open_pr_url == "https://x/pull/9"
 
+    def test_an_orphan_whose_remote_could_not_be_read_counts_as_a_data_loss_risk(self) -> None:
+        orphans = [BranchReport(repo="/r", branch="b-unknown", status=BranchStatus.REMOTE_UNKNOWN, ahead_count=1)]
+        with _mocked_probes(orphans=orphans):
+            report = gather_recover_report()
+
+        assert [o.branch for o in report.data_loss_risk] == ["b-unknown"]
+        assert report.open_pr_pending == []
+
     def test_surfaces_outage_failed_task_as_requeue_candidate(self) -> None:
         task = _failed_outage_task()
         with _mocked_probes():

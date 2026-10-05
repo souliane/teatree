@@ -222,8 +222,8 @@
   # metered 2026-07-08): the hooked lane's shipped PreToolUse chain interacts with
   # the credited alternatives — the default-ON orchestrator-boundary Agent gate
   # DENIES a foreground Task/Agent dispatch (one of the matcher's valid paths) and
-  # the deny->background-retry arc costs extra turns, on top of the SessionStart/
-  # UserPromptSubmit context turns. At cap 3 the observed trial satisfied EVERY
+  # the deny->background-retry arc costs extra turns, on top of the SessionStart
+  # context turns. At cap 3 the observed trial satisfied EVERY
   # matcher (an evidence-shaped ask, no local-evidence claim) yet #2192
   # force-failed it as max_turns-tainted. The teeth are UNCHANGED and trajectory-
   # anchored: the two negatives red a local-evidence done claim or a CI-probe

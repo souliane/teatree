@@ -138,15 +138,6 @@ class TestRegistration:
         assert [name for name in dir(gate) if name.endswith("_on_task_create")] == []
 
 
-class TestKillSwitchParity:
-    def test_the_gate_owns_no_second_flag(self) -> None:
-        # #4107 asks for the existing admission_governor_enabled to be the ONE
-        # kill-switch; a second flag would let the two drift.
-        source = gate.__doc__ or ""
-        assert "admission_governor_enabled" in source
-        assert "_gate_enabled" not in dir(gate)
-
-
 class TestDeniedReasonSeam:
     """The one place the hook reaches core — the seam every other test patches out."""
 
@@ -155,7 +146,6 @@ class TestDeniedReasonSeam:
         assert _REAL_DENIED_REASON(apply_ceiling=True) is None
 
     def test_it_forwards_the_ceiling_flag_to_core(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(core, "governor_enabled", lambda: False)
         seen: list[bool] = []
         monkeypatch.setattr(
             core,

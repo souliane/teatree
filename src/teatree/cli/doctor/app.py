@@ -11,6 +11,7 @@ below so existing ``from teatree.cli.doctor import _x`` /
 """
 
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
 
 import typer
 
@@ -35,7 +36,6 @@ from teatree.cli.doctor.checks_environment import (
     _check_dangling_editable_pth,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
-    _check_legacy_overlay_alias,
     _check_single_db,
     _check_skills,
     _check_stale_path_t3,
@@ -169,7 +169,6 @@ __all__ = (
     "_check_intake_pass_incomplete",
     "_check_intent_freshness",
     "_check_interactive_permission_mode",
-    "_check_legacy_overlay_alias",
     "_check_loop_classification_drift",
     "_check_loop_presets",
     "_check_loop_schedule_liveness",
@@ -234,6 +233,43 @@ __all__ = (
     "doctor_app",
     "run_doctor_checks",
 )
+
+
+@doctor_app.command()
+def bad_artifacts_list() -> None:
+    """List database snapshots the importer has quarantined."""
+    from teatree.utils.bad_artifacts import list_bad  # noqa: PLC0415 — doctor-only cache access
+
+    for path in list_bad():
+        typer.echo(path)
+
+
+@doctor_app.command()
+def bad_artifacts_unmark(path: str) -> None:
+    """Allow the importer to retry one repaired snapshot."""
+    from teatree.utils.bad_artifacts import unmark  # noqa: PLC0415 — doctor-only cache access
+
+    if not unmark(path):
+        typer.echo(f"FAIL  {path} was not marked", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"OK    Unmarked {path}")
+
+
+@doctor_app.command()
+def bad_artifacts_clear() -> None:
+    """Allow the importer to retry every quarantined snapshot."""
+    from teatree.utils.bad_artifacts import clear_all  # noqa: PLC0415 — doctor-only cache access
+
+    clear_all()
+    typer.echo("OK    Cleared bad-artifact marks")
+
+
+@doctor_app.command()
+def cleanup_editable_sources(
+    project_root: Path = typer.Argument(..., help="Host project containing .t3-dev-sources."),
+) -> None:
+    """Restore files changed by the doctor's editable-source repair."""
+    DoctorService.restore_sources(project_root)
 
 
 @doctor_app.command()

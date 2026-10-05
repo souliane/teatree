@@ -91,6 +91,22 @@ class TestRecordGreen(TestCase):
             self._green(ticket, exit_code=1)
         assert "did not fix it" in str(exc.value)
 
+    def test_failed_replay_is_recorded_without_satisfying_the_gate(self) -> None:
+        ticket = _fix_ticket()
+        _record_red(ticket)
+        failed = ReproEvidence.record_failed_green(
+            ticket=ticket,
+            command=_CMD,
+            run=HarnessRun(head_sha=_SHA_GREEN, exit_code=124, output="GREEN replay timed out"),
+        )
+        assert failed.green_exit_code == 124
+        assert failed.green_output_tail == "GREEN replay timed out"
+        assert ReproEvidence.objects.has_valid_repro(ticket) is False
+
+        passed = self._green(ticket)
+        assert passed.green_exit_code == 0
+        assert ReproEvidence.objects.has_valid_repro(ticket) is True
+
     def test_no_matching_red_is_refused(self) -> None:
         with pytest.raises(ReproEvidenceError) as exc:
             self._green(_fix_ticket())

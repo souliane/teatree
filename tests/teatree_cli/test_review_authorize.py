@@ -39,10 +39,11 @@ from teatree.cli.review.authorize import resolve_live_authorization
 from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
 
 _runner = CliRunner()
 
@@ -55,6 +56,7 @@ def _write_cfg(
     user_id: str = "U-OPERATOR",
 ) -> None:
     ConfigSetting.objects.set_value("slack_user_id", user_id)
+    allow_forge_repos(OWNED_REPO)
     if permitting:
         seed_permitting_posture()
     else:

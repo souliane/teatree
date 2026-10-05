@@ -42,8 +42,10 @@ Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`)
 ```bash
 t3 loop start                         # Spawn the loop-owner session (registers each enabled loop's /loop)
 t3 loops tick --loop <name>           # Run one enabled loop's tick (per-loop only; bare `t3 loops tick` is a hard error, #2650)
+t3 loops tick --loop followup --dry-run  # Preview the followup posts without posting; exits 1 on a guard breach, 3 if nothing was selected
 t3 loop status                        # Show the loop's last-rendered statusline
 t3 <overlay> resetdb                  # Drop and recreate the SQLite database
+t3 <overlay> worktree adopt <path>       # Register an existing checkout — row only, no provisioning
 t3 <overlay> worktree provision          # Provision worktree (ports, DB, overlay steps)
 t3 <overlay> worktree start          # Start dev servers
 t3 <overlay> worktree status         # Show worktree state
@@ -58,8 +60,8 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 The claude.ai Notion connector is interactively authenticated, so it does not exist in a
 cron/headless run. `t3 notion` is the replacement: the public Notion API under an internal
 **integration token** (env `NOTION_TOKEN`, else the `pass` entry `notion_token_pass_key` routes on this venue;
-there is no default entry). Agents call `t3`, never the API directly. `t3 setup` and `t3 doctor` run the same
-probe: routed entry, token, identity, and every page an in-flight ticket tracks that is not shared yet.
+there is no default entry). Unnamed, a call runs as the overlay that routes Notion (`whoami` prints which); two overlays routing different entries refuse rather than pick. Agents call `t3`, never the API directly. `t3 setup` and `t3 doctor` run the same
+probe: routed entry, token, identity, and every page an in-flight ticket tracks that the bot cannot see.
 
 ```bash
 t3 notion setup --page <url>           # mint, store and verify the token; then report each page's sharing
@@ -68,10 +70,15 @@ t3 notion doctor <page>                # triage one page: token present? valid? 
 t3 notion fetch <page> --comments      # page as Markdown, plus its open discussions (--json for raw blocks)
 t3 notion audit-fetch <page> --reason '<why>'     # audit-read a page refused as dead; stamps the output
 t3 notion append <page> --body-file f  # append at the end, verified by a re-fetch
+t3 notion create <parent> --title T --body-file f   # new child page; the parent must already be shared with the integration
+t3 notion replace <page> --old-file o --new-file n --dry-run   # anchored edit: exact text, once, in one block; drop --dry-run to write
+t3 notion replace <page> --old-text 'a' --new-text 'b' --dry-run   # the same with inline text, no file (also --body-text on create/append/comment/section replace)
 t3 notion append <page> --body-file f --after-heading 'Design'   # insert after that section instead
 t3 notion section show <page> --heading '## 🔧 …'      # which blocks the owned section covers
-t3 notion section replace <page> --heading '## 🔧 …' --body-file f --legacy '## 🔧 …old…'
+t3 notion section replace <page> --heading '## 🔧 …' --body-file f
 t3 notion comment post <page> --body-file f --marker '[t3:…]'   # post once per marker; re-post needs --allow-duplicate
+t3 notion comment on <page> --quote '<exact text>' --body-file f   # discussion on the block holding the quote
+t3 notion comment reply <page> --discussion <id> --body-file f     # reply in a discussion `comments` listed
 t3 notion property get <page> --name 'GitLab Reference'         # the poll a block fetch cannot answer (--json for raw)
 t3 notion property set <page> --name Status --value Merged      # payload shaped by the property's OWN live type
 t3 notion query <database-id> [--data-source] [--filter-file f]
@@ -79,8 +86,11 @@ t3 notion query <database-id> [--data-source] [--filter-file f]
 
 **One-time human setup** (no code can do it): create an internal integration, store its
 secret in `pass`, and **share the integration onto each page/database** (page ••• →
-Connections). Until that grant exists Notion answers 404 — reported as "not shared with this
-integration", distinct from "not a Notion object".
+Connections). Until that grant exists Notion answers 404 — and answers the same 404 for a
+deleted id or a page in another workspace, so exit 6 names the bot (name and bot id), lists
+those three causes and the checks that separate them (the page's Connections includes this
+integration; the URL's id is current; the page's parent is visible to the bot). Distinct from
+"not a Notion object".
 
 **`section replace` is the idempotency primitive** the `/prd-agent` and `/bdd-test-creation`
 skills own a named H2 section with. It is **block-scoped**: it appends the new body under the
@@ -98,6 +108,26 @@ check for their own marker first, so the marker already being in the page's open
 reports `duplicate` at exit 0 having written nothing — a forgotten flag under-posts, never
 double-posts, and `--allow-duplicate` is the deliberate second copy. Notion exposes only
 *unresolved* discussions, so a marker whose thread a human resolved is posted again.
+
+**Inline text, because `t3` runs in a container.** Every verb that takes a body file also takes it inline
+(`--body-text`; `replace` takes `--old-text` / `--new-text`), exactly one of the file or the text, so a host
+path the container cannot see needs no copying. Inline text is verbatim. `replace` prints ONE JSON document on
+stdout, a dry run included, and the human diff on stderr.
+
+**The MCP surface writes too, behind a recorded approval.** When a registered overlay declares Notion,
+`notion_replace`, `notion_create`, `notion_comment` and `notion_property_set` take their text inline and are dry runs
+by default, and so is `notion_archive`, which trashes a page or database row or, with `archived=false`, restores it;
+`notion_discussions` reads. Replace previews show a text diff; create previews show the title and block count;
+comment previews show the destination and marker; archive previews show the direction and direct child-page count;
+property-set previews show the previous value, property type and requested value. A pending change includes an `approval` block; an already-applied change does not. The owner records it with
+`t3 review approve-on-behalf '<approval.target>' <approval.action> --approver <owner-id>`, then the agent calls
+again with `dry_run=false`. An archive uses `notion_archive`, a restore uses `notion_restore`, and the audit records that action. Their approval binds the page and direction; property-set approval also binds its prior value and type. Every approval binds the overlay it runs as, is single-use, and is needed whatever the
+posture or `on_behalf_auto_actions` says: none recorded exits 23, one recorded for other text exits 20. Every
+failure reads `notion exit <N> (<Class>): …` with the code `t3 notion` would exit with. `t3 notion` itself
+stays ungated, because the headless PRD and BDD skills post notification comments through it. The gate is
+tamper-evident, not tamper-proof: an agent with Bash can record an approval with `--approver <owner>` (a
+self-asserted id) or write through the ungated CLI, the owner approves an opaque hash so the diff they see is
+what the agent relays, and an unused approval has no expiry.
 
 **`property get`/`set` reach what `fetch` cannot.** A property hangs off the page object rather
 than its blocks, so a block-tree render can never answer "what is this page's GitLab Reference?".
@@ -117,12 +147,14 @@ successor. **UNKNOWN refuses** — a parent database this integration cannot que
 bare OK it did not establish). The only escape is a READ escape for a genuine audit —
 `t3 notion audit-fetch <page> --reason '<why>'`, its own command rather than a flag on
 `fetch` so it cannot be reached by habit. It needs written prose, announces itself on stderr,
-and stamps the emitted Markdown; there is no audited write.
+and stamps the emitted Markdown; there is no audited write. The one write a dead page takes is `notion_archive` with
+`archived=false`: it proceeds only when the page itself says it is archived, and any liveness it cannot prove refuses.
 
 Every write re-fetches and refuses to report success unless the change landed. Failures exit
 with their own codes so an unattended caller can branch: `3` no token, `4` bad token,
-`5` capability not granted, `6` page not shared, `7` not a Notion object, `8` rate-limited,
-`9` write reported but not landed, `10` ambiguous section, `11` unrepresentable Markdown,
+`5` capability not granted, `6` the bot cannot see the id (not shared, gone, or another
+workspace), `7` not a Notion object, `8` rate-limited, `9` write reported but not landed,
+`10` ambiguous section, `11` unrepresentable Markdown,
 `14` page archived/superseded or its liveness unprovable.
 
 ## Key Models

@@ -12,7 +12,7 @@ import contextlib
 import os
 from collections.abc import Iterator
 
-from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_bounded_group, run_checked
 
 
 def run(*, repo: str = ".", args: list[str]) -> str:
@@ -55,8 +55,14 @@ def run_with_status(
     :func:`run` collapses both onto ``""``, which is fatal for a remote probe:
     "the ref is not there" and "the remote could not be reached" demand opposite
     conclusions, and only the return code separates them.
+
+    A *timeout* ends the whole process group: a remote read spawns its transport
+    (ssh), which a kill of git alone would leave running.
     """
-    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env, timeout=timeout)
+    argv = ["git", "-C", repo, *args]
+    if timeout is None:
+        return run_allowed_to_fail(argv, expected_codes=None, env=env)
+    return run_bounded_group(argv, expected_codes=None, env=env, timeout=timeout)
 
 
 def git_env_without_overrides() -> dict[str, str]:

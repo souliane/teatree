@@ -63,6 +63,7 @@ nav:
       - Installation: install.md
   - User Guide:
       - Management Commands: generated/management-commands.md
+      - Codex App Server: codex-app-server.md
       - Testing Skill Evals: testing-skill-evals.md
       - Evals:
           - Dashboard: evals/index.md

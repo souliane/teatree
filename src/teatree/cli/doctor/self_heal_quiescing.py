@@ -155,7 +155,7 @@ def check_stranded_quiescing_gate() -> bool:
         if not worker_is_quiescing():
             return True
         age = _gate_age_seconds()
-        liveness = probe_deploy_liveness(record_max_age=quiescing_deploy_budget_seconds())
+        liveness = probe_deploy_liveness()
         if not _is_stranded(age, liveness):
             return True
         blocked = _clear_the_gate() if _repair_authorised(liveness) else _why_not_cleared(liveness)

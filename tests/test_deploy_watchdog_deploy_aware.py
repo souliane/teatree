@@ -87,6 +87,7 @@ def _write_docker_stub(bin_dir: Path) -> None:
         "    shift || true\n"
         '    case "$*" in\n'
         "      true) exit 0 ;;\n"
+        '      *"pgrep -f t3 doctor check"*) exit 1 ;;\n'
         '      *"pgrep -f [t]3 doctor check"*) exit 1 ;;\n'
         '      *"doctor check --json"*) printf "%s\\n" "$STUB_DOCTOR_JSON"; exit 1 ;;\n'
         '      *"notify send"*) cat >"$STUB_NOTIFY_FILE"; exit 0 ;;\n'
@@ -321,8 +322,9 @@ class TestACrashLoopIsNotADeploy:
 
 
 def _record(*, age_seconds: int = 0) -> str:
-    """The `<pid> <epoch>` in-progress record deploy.sh writes into the lock file."""
-    return f"4242 {int(time.time()) - age_seconds}\n"
+    """The `<pid> <heartbeat> <deadline>` in-progress record deploy.sh writes into the lock file."""
+    now = int(time.time())
+    return f"4242 {now - age_seconds} {now + 3600}\n"
 
 
 class TestTheDeployRecordIsTheCrossVenueSignal:

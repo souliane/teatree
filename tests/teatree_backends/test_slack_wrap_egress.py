@@ -1,7 +1,7 @@
 """The 90-char wrap is enforced at the Slack transport, not at a composition seam (#3809).
 
 ``normalize_slack_message`` is the documented formatting seam but only four
-senders call it; ``daily_digest``, ``speak``, ``slack_answer``, ``self_improve``
+senders call it; ``speak``, ``slack_answer``, ``self_improve``
 and the on-behalf egress all post without it. So the rule is applied one level
 lower — in ``SlackBotBackend._post``, the single funnel every in-app
 ``chat.postMessage`` passes through — and a new sender inherits it by

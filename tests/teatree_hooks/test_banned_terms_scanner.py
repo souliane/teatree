@@ -33,9 +33,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
-from teatree.hooks._command_parser import (
+from teatree.hooks._parser_primitives import (
     FAIL_CLOSED_SENTINEL,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    is_fail_closed_sentinel,
     is_unavailable_body_source_sentinel,
 )
 from teatree.hooks._publish_detection import command_has_opaque_forge_transport
@@ -56,10 +57,26 @@ def _seed_config_db(tmp_path: Path, *, filename: str = "config.sqlite3", **setti
         "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
+    if "terms" in settings or "allowlist" in settings:
+        terms = settings.pop("terms", [])
+        registry = {"leak": terms, "prose_collider": terms, "allow": settings.pop("allowlist", [])}
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
     for key, values in settings.items():
+        stored_values = (
+            [
+                f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+                for entry in values
+                for host in (("github.com", "gitlab.com") if "." not in entry.split("/", 1)[0] else ("",))
+            ]
+            if key == "private_repos"
+            else values
+        )
         conn.execute(
             "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-            (key, json.dumps(values)),
+            (key, json.dumps(stored_values)),
         )
     conn.commit()
     conn.close()
@@ -76,9 +93,8 @@ def config(tmp_path: Path) -> Path:
     """
     return _seed_config_db(
         tmp_path,
-        banned_terms=["acmecorp"],
-        private_repos=["acmecorp-engineering"],
-        internal_publish_namespaces=["internalcorp", "acme-internal"],
+        terms=["acmecorp"],
+        private_repos=["acmecorp-engineering", "internalcorp", "acme-internal"],
     )
 
 
@@ -86,20 +102,16 @@ def config(tmp_path: Path) -> Path:
 def _pin_config(config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the scanner's DB-home reader at the test config DB."""
     monkeypatch.setenv("T3_CONFIG_DB", str(config))
-    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
 
 @pytest.fixture(autouse=True)
-def _confirm_public_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The leak gate enforces ONLY on an affirmatively-PUBLIC target (#1415), so the
-    # must-BLOCK rows post to a resolvable target the probe confirms public. The
-    # config-allowlisted (``private_repos``) and internal-namespace targets resolve
-    # NON-public BEFORE the probe, so their must-SKIP rows are unaffected by this
-    # pin. Isolate the visibility cache so a stale entry never masks the pin. A
-    # per-test ``probe_visibility`` setattr (the commit-path visibility rows)
-    # overrides this default.
+def _unavailable_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default installation fixture has no reachable forge. Unknown targets
+    # still scan; configured private targets skip. Tests of a reachable PUBLIC
+    # verdict set their own probe result because PUBLIC overrides private_repos.
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
-    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
 
 
 def _bash(command: str) -> dict[str, object]:
@@ -170,8 +182,11 @@ class TestScanText:
     def test_empty_text_returns_none(self, config: Path) -> None:
         assert banned_terms_scanner.scan_text("", config_path=config) is None
 
-    def test_missing_config_returns_none(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
+    def test_missing_config_fails_closed(self, tmp_path: Path) -> None:
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3")
+            == banned_terms_scanner.TERMS_UNSET_MARKER
+        )
 
     def test_fail_closed_sentinel_blocks(self, config: Path) -> None:
         # An unresolvable body (the sentinel) is not a configured term, so
@@ -194,7 +209,7 @@ class TestWholeTokenMatching:
 
     @pytest.fixture
     def short_term_config(self, tmp_path: Path) -> Path:
-        return _seed_config_db(tmp_path, filename="short_terms.sqlite3", banned_terms=["acme", "acme-corp", "foo_bar"])
+        return _seed_config_db(tmp_path, filename="short_terms.sqlite3", terms=["acme", "acme-corp", "foo_bar"])
 
     @pytest.mark.parametrize("text", ["a cooperative effort", "pacme builds", "an acmeology lecture"])
     def test_single_word_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
@@ -231,7 +246,7 @@ class TestWholeTokenMatching:
         assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
 
     def test_isolated_multi_token_term_blocks_and_is_reported(self, tmp_path: Path) -> None:
-        cfg = _seed_config_db(tmp_path, filename="acme_corp.sqlite3", banned_terms=["acme-corp"])
+        cfg = _seed_config_db(tmp_path, filename="acme_corp.sqlite3", terms=["acme-corp"])
         assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
 
 
@@ -260,8 +275,8 @@ class TestCompanyIdentifierAllowlistGate:
         return _seed_config_db(
             tmp_path,
             filename="allowlist.sqlite3",
-            banned_terms=["acme", "customercodename", "acme-engineering", "acme-product"],
-            banned_terms_allowlist=["acme-engineering", "acme-product", "acme-client-workspace"],
+            terms=["acme", "customercodename", "acme-engineering", "acme-product"],
+            allowlist=["acme-engineering", "acme-product", "acme-client-workspace"],
         )
 
     @pytest.mark.parametrize(
@@ -298,7 +313,7 @@ class TestCompanyIdentifierAllowlistGate:
     def test_no_allowlist_preserves_over_block(self, tmp_path: Path) -> None:
         # Without the allow-list key the prior behaviour is unchanged: the short
         # term DOES surface inside the company identifier (the bug, opt-in fix).
-        cfg = _seed_config_db(tmp_path, filename="no_allowlist.sqlite3", banned_terms=["acme", "acme-product"])
+        cfg = _seed_config_db(tmp_path, filename="no_allowlist.sqlite3", terms=["acme", "acme-product"])
         assert banned_terms_scanner.scan_text("the acme-product repo", config_path=cfg) == "acme"
 
 
@@ -445,7 +460,7 @@ class TestExtractPublishPayload:
 
 
 class TestT3ReviewPostBodyIsPositionalNote:
-    """``t3 review post-comment`` / ``post-draft-note`` body is the positional NOTE.
+    """``t3 review post-comment`` body is the positional NOTE.
 
     Both verbs carry the body as the positional ``NOTE`` argument (``review
     <verb> REPO MR NOTE``), not a ``--body``/``--message`` flag. The body
@@ -459,7 +474,7 @@ class TestT3ReviewPostBodyIsPositionalNote:
         return banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
 
     def test_general_note_positional_body_is_extracted(self) -> None:
-        payload = self._payload('t3 teatree review post-comment my-org/repo 7 "clean general note" --general')
+        payload = self._payload('t3 teatree review post-comment my-org/repo 7 "clean general note" ')
         assert payload is not None
         assert "clean general note" in payload
 
@@ -467,14 +482,12 @@ class TestT3ReviewPostBodyIsPositionalNote:
         # Bug 1 / #2270 RED guard: a banned term in the POSITIONAL body must be
         # in the extracted payload so the scanner can block it. Pre-fix the
         # payload was empty and the term slipped through.
-        payload = self._payload(
-            't3 teatree review post-comment my-org/repo 7 "this names acmecorp internally" --general'
-        )
+        payload = self._payload('t3 teatree review post-comment my-org/repo 7 "this names acmecorp internally" ')
         assert payload is not None
         assert "acmecorp" in payload
 
     def test_post_draft_note_general_banned_positional_body_is_surfaced(self) -> None:
-        payload = self._payload('t3 teatree review post-draft-note my-org/repo 7 "acmecorp wants this" --general')
+        payload = self._payload('t3 teatree review post-comment my-org/repo 7 "acmecorp wants this" ')
         assert payload is not None
         assert "acmecorp" in payload
 
@@ -1068,7 +1081,7 @@ class TestInertSingleQuotedSubstitutionBodyIsScanned:
         # Case 1: a multiline positional NOTE on a ``t3 review`` post that mentions
         # a ``$(...)`` snippet is scanned verbatim, not denied as unresolvable.
         note = "Review note.\n\nThe helper calls $(date) for the timestamp."
-        cmd = f"t3 teatree review post-comment o/r 5 '{note}' --general"
+        cmd = f"t3 teatree review post-comment o/r 5 '{note}' "
         payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert FAIL_CLOSED_SENTINEL not in payload
@@ -1078,7 +1091,7 @@ class TestInertSingleQuotedSubstitutionBodyIsScanned:
         # ANTI-VACUOUS for the NOTE path: a banned term in an inert-subst NOTE is
         # surfaced, proving the NOTE is scanned rather than bypassed.
         note = "Review note.\n\nrun $(make) before shipping to acmecorp"
-        cmd = f"t3 teatree review post-comment o/r 5 '{note}' --general"
+        cmd = f"t3 teatree review post-comment o/r 5 '{note}' "
         payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert FAIL_CLOSED_SENTINEL not in payload
@@ -1283,41 +1296,13 @@ class TestReadOnlyCommandsAreNotPublishes:
         assert _command_parser.is_publish_command(command) is True
 
 
-class TestOverride:
-    def test_flag_in_first_segment_bypasses(self) -> None:
-        cmd = 'gh issue create --title t --body "acmecorp" --allow-banned-term'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
-
-    def test_env_var_bypasses(self) -> None:
-        tool_input = {"command": "gh issue create", "env": {"ALLOW_BANNED_TERM": "1"}}
-        assert banned_terms_scanner.has_override("Bash", tool_input) is True
-
-    def test_clean_command_has_no_override(self) -> None:
-        assert banned_terms_scanner.has_override("Bash", {"command": "gh issue create --body x"}) is False
-
-    def test_flag_after_metacharacter_does_not_bypass(self) -> None:
-        # A flag smuggled into a second chained command must not bypass.
-        cmd = 'gh issue create --body "acmecorp"; echo --allow-banned-term'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
-    def test_non_bash_tool_has_no_flag_override(self) -> None:
-        # A non-Bash tool can only override via the env mapping.
-        assert banned_terms_scanner.has_override("Write", {"env": {"ALLOW_BANNED_TERM": "1"}}) is True
-        assert banned_terms_scanner.has_override("Write", {}) is False
-
-
-class TestScanTextNoOpWhenNothingToScan:
-    """A genuine no-op (nothing CONFIGURED) returns None — there is nothing to scan.
-
-    This is NOT a scanner failure: with no ``banned_terms`` configured the gate
-    mirrors ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0). A
-    scanner *crash* — and a MISSING script while banned-terms IS configured (HLG-7)
-    — are the opposite case and must fail CLOSED; see
-    ``TestScanTextScannerCrashFailsClosed``.
-    """
-
-    def test_missing_config_is_a_noop(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
+class TestScanTextRefusesMissingTerms:
+    def test_malformed_registry_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", "not-json")
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3")
+            == banned_terms_scanner.TERMS_UNSET_MARKER
+        )
 
 
 class TestScanTextScannerCrashFailsClosed:
@@ -1661,13 +1646,11 @@ class TestUnreadableStoreFailsClosedOnThePublishSurface:
         return db
 
     def test_configured_check_raises_unreadable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         with pytest.raises(banned_terms_scanner.BannedTermsUnreadableError):
             banned_terms_scanner._banned_terms_configured(self._corrupt_db(tmp_path))
 
     def test_scan_text_fails_closed_not_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         assert (
             banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=self._corrupt_db(tmp_path))
@@ -1675,7 +1658,6 @@ class TestUnreadableStoreFailsClosedOnThePublishSurface:
         )
 
     def test_table_less_store_also_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         db = tmp_path / "notable.sqlite3"
         sqlite3.connect(str(db)).close()
@@ -1686,21 +1668,10 @@ class TestUnreadableStoreFailsClosedOnThePublishSurface:
 
 
 class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
-    """No canonical DB, no projection, no row: nothing to read is an ANSWER, not a failure.
-
-    ``_absent_db_read`` reports ``readable=True`` for that gap because a fresh install
-    genuinely has nothing configured, and the two are the same bytes. Reading the gap as
-    unreadable made the gate inject its own fail-closed sentinel into every scan, so every
-    publish matched it: a fresh install, CI (which isolates ``HOME``, so the store is absent
-    by construction), and every issue the factory files. The deployment that MUST scrub says
-    so with ``banned_terms_required``, which the branch below honours — and whose env
-    spelling is the one channel that survives a store this side cannot read.
-    """
+    """A readable but absent registry and an unreadable store get distinct refusals."""
 
     def _isolate(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
         monkeypatch.delenv("T3_CONFIG_DB", raising=False)  # the module fixture pins one
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
@@ -1708,28 +1679,12 @@ class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
         self._isolate(monkeypatch, tmp_path)
         assert banned_terms_scanner._banned_terms_configured(None) is False
 
-    def test_scan_text_is_a_clean_no_op(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_scan_text_fails_closed_when_unset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._isolate(monkeypatch, tmp_path)
-        assert banned_terms_scanner.scan_text("a perfectly ordinary line") is None
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line") == banned_terms_scanner.TERMS_UNSET_MARKER
 
-    def test_the_required_flag_still_fails_the_same_gap_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The deployment that must scrub keeps its refusal on the very gap above."""
-        self._isolate(monkeypatch, tmp_path)
-        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
-        assert banned_terms_scanner.scan_text("a perfectly ordinary line") == (
-            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
-        )
-
-    def test_an_errored_read_still_fails_closed_without_the_flag(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The other direction: a blanket relaxation would pass every assertion above.
-
-        Absence is an answer; a read that ERRORED is not, and it keeps failing closed with
-        no flag set — which is what makes the branch above a fix rather than a relaxation.
-        """
+    def test_an_errored_read_still_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An unreadable store has a distinct diagnostic."""
         self._isolate(monkeypatch, tmp_path)
         corrupt = tmp_path / "corrupt.sqlite3"
         corrupt.write_bytes(b"this is not a sqlite database")
@@ -1738,10 +1693,7 @@ class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
             banned_terms_scanner.STORE_UNREADABLE_MARKER
         )
 
-    def test_a_readable_store_with_no_terms_is_still_a_clean_no_op(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A present, readable, empty store is the same no-op as an absent one."""
+    def test_a_readable_store_with_no_terms_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._isolate(monkeypatch, tmp_path)
         db = tmp_path / "empty.sqlite3"
         with closing(sqlite3.connect(str(db))) as con:
@@ -1749,7 +1701,9 @@ class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
                 "CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, key TEXT, value TEXT, scope TEXT)"
             )
             con.commit()
-        assert banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=db) is None
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=db) == (
+            banned_terms_scanner.TERMS_UNSET_MARKER
+        )
 
     def test_the_deny_message_names_a_store_that_is_here_and_will_not_read(self) -> None:
         message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.STORE_UNREADABLE_MARKER)
@@ -1758,60 +1712,14 @@ class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
         assert "absent" not in message
 
 
-class TestRequiredFlagReachesThePublishGate:
-    """``banned_terms_required`` is the deployment that MUST scrub, so it must reach this gate.
-
-    It is read only inside ``banned_terms_cli`` — i.e. inside the shell scanner that
-    ``_run_shell_scanner`` short-circuits past when nothing is configured — so the flag was
-    inert on exactly the path it exists for: no term list, publish allowed.
-    """
-
-    def _store(self, tmp_path: Path, *, required: bool) -> Path:
-        db = tmp_path / "required.sqlite3"
-        with closing(sqlite3.connect(str(db))) as con:
-            con.execute(
-                "CREATE TABLE teatree_config_setting ("
-                "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-            )
-            con.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms_required', ?)",
-                (json.dumps(required),),
-            )
-            con.commit()
-        return db
-
-    @pytest.fixture(autouse=True)
-    def _no_term_sources(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
-        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
-
-    def test_required_with_no_terms_fails_closed(self, tmp_path: Path) -> None:
-        db = self._store(tmp_path, required=True)
-        assert banned_terms_scanner._banned_terms_configured(db) is False
-        assert banned_terms_scanner.scan_text("ship next week", config_path=db) == (
-            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
-        )
-
-    def test_not_required_with_no_terms_is_a_clean_no_op(self, tmp_path: Path) -> None:
-        """The other direction: blocking on every unset list would pass the assertion above."""
-        db = self._store(tmp_path, required=False)
-        assert banned_terms_scanner.scan_text("ship next week", config_path=db) is None
-
-    def test_the_env_override_reaches_the_gate_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
-        db = self._store(tmp_path, required=False)
-        assert banned_terms_scanner.scan_text("ship next week", config_path=db) == (
-            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
-        )
-
-    def test_the_deny_message_names_the_flag(self) -> None:
-        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER)
+class TestUnsetRegistryReachesThePublishGate:
+    def test_the_deny_message_names_the_required_installation_value(self) -> None:
+        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.TERMS_UNSET_MARKER)
         assert message is not None
-        assert "banned_terms_required" in message
+        assert "banned_term_registry" in message
 
     def test_a_configured_list_still_enforces_the_term(self, config: Path) -> None:
-        """Anti-vacuity: the required flag must not be what makes a real term block."""
+        """A configured term still blocks a publish."""
         assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
 
 
@@ -1916,7 +1824,7 @@ class TestHookHandlerEndToEnd:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Over-block guard: the SAME ``-F`` file posted to a provably-private
-        # ``-R`` target (in the internal_publish_namespaces allowlist) is
+        # ``-R`` target (in the private_repos allowlist) is
         # skipped by the destination gate before the payload is scanned, so a
         # private repo's own domain words are allowed.
         body_file = tmp_path / "issue_body.md"
@@ -1960,10 +1868,16 @@ class TestHookHandlerEndToEnd:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_override_flag_bypasses_block(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "acmecorp" --allow-banned-term'))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
+    def test_override_flag_does_not_bypass_public_block(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R souliane/teatree --title t --body "acmecorp" --allow-banned-term')
+        )
+        assert blocked is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "ALLOW_BANNED_TERM" not in reason
 
     def test_non_publish_command_is_noop(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(_bash("ls -la"))
@@ -1975,25 +1889,8 @@ class TestHookHandlerEndToEnd:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_missing_config_no_ops(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-        """A config DB that is not there has nothing to scan against, so the hook stands aside."""
-        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+    def test_missing_config_denies(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
         monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-
-    def test_missing_config_denies_once_the_deployment_says_it_must_scrub(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """The same absent store, on the box that declares it MUST scrub, denies the publish.
-
-        This is the whole safety property of the branch above: standing aside is the DEFAULT,
-        never the only available answer, and the flag that changes it travels in the env — the
-        one channel that survives a store this side cannot read.
-        """
-        monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
-        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -2236,14 +2133,14 @@ class TestT3ReviewPostGateEndToEnd:
 
     def test_clean_general_note_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('t3 teatree review post-comment my-org/repo 7 "this looks good, ship it" --general')
+            _bash('t3 teatree review post-comment my-org/repo 7 "this looks good, ship it" ')
         )
         assert blocked is False
         assert capsys.readouterr().out == ""
 
     def test_banned_term_general_note_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('t3 teatree review post-comment my-org/repo 7 "ping acmecorp before merge" --general')
+            _bash('t3 teatree review post-comment my-org/repo 7 "ping acmecorp before merge" ')
         )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -2252,7 +2149,7 @@ class TestT3ReviewPostGateEndToEnd:
 
     def test_post_draft_note_banned_general_body_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('t3 teatree review post-draft-note my-org/repo 7 "acmecorp wants this" --general')
+            _bash('t3 teatree review post-comment my-org/repo 7 "acmecorp wants this" ')
         )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -2331,51 +2228,16 @@ class TestLeadingEnvOverride:
     command itself.
     """
 
-    def test_leading_env_assignment_bypasses(self) -> None:
-        cmd = 'ALLOW_BANNED_TERM=1 glab mr note 5 --message "ship to acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
-
-    def test_leading_env_assignment_zero_does_not_bypass(self) -> None:
-        cmd = 'ALLOW_BANNED_TERM=0 glab mr note 5 --message "acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
-    def test_env_assignment_after_command_name_does_not_bypass(self) -> None:
-        # Once the command name is reached, a later ``KEY=val``-shaped token
-        # is an argument, not an inline env assignment.
-        cmd = 'gh issue create --body "acmecorp" --field ALLOW_BANNED_TERM=1'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
-    def test_env_assignment_after_separator_does_not_bypass(self) -> None:
-        cmd = 'gh issue create --body "acmecorp"; ALLOW_BANNED_TERM=1 echo done'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
-    def test_leading_env_assignment_behind_cd_prefix_bypasses(self) -> None:
-        # The common sub-agent shape: cd into the worktree, THEN commit with the
-        # override. Bash applies the assignment to the second segment's command,
-        # so the override leads the segment that actually carries the publish.
-        cmd = 'cd /work/ticket && ALLOW_BANNED_TERM=1 git commit -m "ship to acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
-
-    def test_leading_env_assignment_behind_env_nav_prefix_bypasses(self) -> None:
-        cmd = 'GIT_PAGER=cat ALLOW_BANNED_TERM=1 git commit -m "acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
-
-    def test_override_segment_zero_value_does_not_bypass(self) -> None:
-        cmd = 'cd /work && ALLOW_BANNED_TERM=0 git commit -m "acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
-    def test_chained_segment_without_override_does_not_bypass(self) -> None:
-        # The override leads ONLY the first (harmless echo) segment; the publish
-        # segment carries no override, so the gate must still fire on it.
-        cmd = 'ALLOW_BANNED_TERM=1 echo hi && gh issue create --body "acmecorp"'
-        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
-
     @pytest.mark.integration
-    def test_leading_env_assignment_bypasses_block_end_to_end(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'ALLOW_BANNED_TERM=1 gh issue create --title t --body "ship to acmecorp"'
+    def test_leading_env_assignment_does_not_bypass_public_block_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = 'ALLOW_BANNED_TERM=1 gh issue create -R souliane/teatree --title t --body "ship to acmecorp"'
         blocked = handle_banned_terms_pretool(_bash(cmd))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
+        assert blocked is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "ALLOW_BANNED_TERM" not in reason
 
 
 @pytest.mark.integration
@@ -2519,14 +2381,16 @@ class TestPythonRestPublishGate:
 
 
 class TestFormatBlockMessage:
-    def test_message_names_the_term_and_the_override(self) -> None:
+    def test_message_names_the_term_without_an_agent_override(self) -> None:
         message = banned_terms_scanner.format_block_message("acmecorp")
         assert "acmecorp" in message
-        # The escape names the env PREFIX that works on every command, never a
-        # ``--allow-banned-term`` CLI flag a ``t3 review post-comment`` subcommand
-        # would reject as an unknown option (#1415).
-        assert "ALLOW_BANNED_TERM=1" in message
+        assert "Rephrase without the matched term" in message
+        assert "ask the owner" in message
+        assert "Ask the owner to review the blocked publication" in message
+        assert "ALLOW_BANNED_TERM" not in message
         assert "--allow-banned-term" not in message
+        assert "re-issue" not in message
+        assert "set ALLOW_BANNED_TERM=1" not in message
 
     def test_unresolvable_body_message_is_distinct_from_banned_term_message(self) -> None:
         message = banned_terms_scanner.format_unresolvable_body_message()
@@ -3579,25 +3443,25 @@ class TestSentinelRecognition:
     """
 
     def test_generic_sentinel_line_is_fail_closed(self) -> None:
-        assert _command_parser.is_fail_closed_sentinel(FAIL_CLOSED_SENTINEL)
+        assert is_fail_closed_sentinel(FAIL_CLOSED_SENTINEL)
         assert not is_unavailable_body_source_sentinel(FAIL_CLOSED_SENTINEL)
 
     def test_unavailable_sentinel_line_is_both(self) -> None:
-        assert _command_parser.is_fail_closed_sentinel(UNAVAILABLE_BODY_SOURCE_SENTINEL)
+        assert is_fail_closed_sentinel(UNAVAILABLE_BODY_SOURCE_SENTINEL)
         assert is_unavailable_body_source_sentinel(UNAVAILABLE_BODY_SOURCE_SENTINEL)
 
     def test_unavailable_sentinel_as_one_joined_line_is_recognised(self) -> None:
         payload = f"t\n{UNAVAILABLE_BODY_SOURCE_SENTINEL}"
-        assert _command_parser.is_fail_closed_sentinel(payload)
+        assert is_fail_closed_sentinel(payload)
         assert is_unavailable_body_source_sentinel(payload)
 
     def test_inert_prose_naming_either_sentinel_mid_line_is_not_a_match(self) -> None:
         prose = f"the gate emits the {UNAVAILABLE_BODY_SOURCE_SENTINEL} marker when unavailable"
-        assert not _command_parser.is_fail_closed_sentinel(prose)
+        assert not is_fail_closed_sentinel(prose)
         assert not is_unavailable_body_source_sentinel(prose)
 
     def test_clean_text_is_neither_sentinel(self) -> None:
-        assert not _command_parser.is_fail_closed_sentinel("a normal clean body")
+        assert not is_fail_closed_sentinel("a normal clean body")
         assert not is_unavailable_body_source_sentinel("a normal clean body")
 
 
@@ -3627,7 +3491,6 @@ class TestConfiguredCheckHonoursTheRegistry:
         return db
 
     def test_registry_only_store_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         db = self._seed_registry_only(tmp_path, {"leak": ["democorp"], "prose_collider": ["widget-margin"]})
         assert banned_terms_scanner._banned_terms_configured(db) is True
@@ -3635,13 +3498,12 @@ class TestConfiguredCheckHonoursTheRegistry:
     def test_neither_registry_nor_legacy_row_is_not_configured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         db = _seed_config_db(tmp_path, filename="empty_store.sqlite3")
         assert banned_terms_scanner._banned_terms_configured(db) is False
 
     def test_env_registry_counts_as_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
-        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["democorp"]}))
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["democorp"], "prose_collider": []}))
         db = _seed_config_db(tmp_path, filename="empty_for_env.sqlite3")
         assert banned_terms_scanner._banned_terms_configured(db) is True

@@ -25,7 +25,7 @@
   prompt: >-
     You are about to cold-review merge request !4120 in the overlay-managed repo
     `widget-le-service`. Skill prose does not auto-load into a review context and
-    the `UserPromptSubmit` loader did not fire, so per `/t3:rules` § "Invoke
+    no skill loader fired, so per `/t3:rules` § "Invoke
     Skills Before ANY Response" you must self-load the overlay's playbook skill
     (`/t3-widget`) alongside the dev skill BEFORE reading any diff — the overlay
     skill carries the repo's review/run/test wiring without which the review is
@@ -55,8 +55,8 @@
   tools: [Skill, Bash, Edit]
   prompt: >-
     You are about to implement a backend change in the overlay-managed repo
-    `widget-product` (a Django service). The `UserPromptSubmit` loader did not
-    fire. Per `/t3:rules` § "Invoke Skills Before ANY Response", self-load the
+    `widget-product` (a Django service). No skill loader fired.
+    Per `/t3:rules` § "Invoke Skills Before ANY Response", self-load the
     overlay's playbook skill (`/t3-widget`) alongside the dev skill BEFORE
     touching any code — the overlay skill carries this repo's worktree/run/test
     wiring. Take the first actions you would take now, before editing any file.

@@ -10,6 +10,7 @@ operator action — a gate that reddens the moment one is picked is one people l
 ignore — so it fires only once the fleet that posture stopped is provably frozen.
 """
 
+import base64
 import datetime as dt
 import io
 from collections.abc import Callable
@@ -128,7 +129,10 @@ class FrozenFleetPostureWiringTest(django.test.TestCase):
     def test_the_detector_is_reached_by_the_doctor_self_heal_run(self) -> None:
         # An unwired detector is a check that never runs — the same vacuity class this
         # detector exists to catch, so the wiring itself needs a control.
-        assert self_heal.run_self_heal_checks() is True
+        healthy_services = "\n".join(f"{service}\trunning\tUp" for service in self_heal._LONG_RUNNING_SERVICES)
+        handoff = base64.b64encode(healthy_services.encode()).decode()
+        with mock.patch.dict("os.environ", {self_heal._COMPOSE_STATES_ENV: handoff}):
+            assert self_heal.run_self_heal_checks() is True
         with (
             mock.patch.object(self_heal, "check_frozen_fleet_under_kill_switch", return_value=False),
             redirect_stdout(io.StringIO()),

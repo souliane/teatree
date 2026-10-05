@@ -20,8 +20,9 @@ from django.db.models import F, Q
 from django.db.models.expressions import BaseExpression
 
 from teatree.config import worker_is_quiescing
+from teatree.core.admission.generation_admission import generation_admission_refusal, reopen_own_stranded_drain
 from teatree.core.process_freshness import code_behind_schema as _process_code_behind_schema
-from teatree.core.schema_readiness import schema_admission_block_reason
+from teatree.core.schema_readiness import schema_admission_block_reason, schema_readiness_gate_enabled
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,8 @@ def code_behind_schema() -> bool:
     because the in-memory model class predates a ``NOT NULL`` column. Never re-add only
     one of the two.
     """
+    if not schema_readiness_gate_enabled():
+        return False
     reason = _process_code_behind_schema()
     if reason:
         warn_throttled(logger, "task-claim:code-behind", "task claim deferred: %s", reason)
@@ -121,6 +124,8 @@ def claim_admission_block_reason() -> str:
         return "the control DB is behind this code"
     if code_behind_schema():
         return "this process is behind the applied schema"
+    if generation_refusal := generation_admission_refusal():
+        return generation_refusal
     return _fleet_admission_refusal()
 
 
@@ -157,6 +162,7 @@ def claim_window() -> Iterator[ClaimWindow]:
     """The admission re-read and the claim in one transaction, fenced against a quiesce that commits in between."""
     with transaction.atomic():
         generation = quiesce_fence_generation(lock=True)
+        reopen_own_stranded_drain()
         yield ClaimWindow(refusal=claim_admission_block_reason(), fence_generation=generation)
 
 

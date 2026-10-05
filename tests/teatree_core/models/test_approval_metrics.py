@@ -64,25 +64,20 @@ class TestQuestionMetrics:
 
 class TestSendMetrics:
     def test_denied_verdict_is_a_defect_escape(self) -> None:
-        SendAudit.objects.create(
-            channel="github", action="post_comment", mode="enforce", allowlist_verdict=SendAudit.Verdict.DENIED
-        )
+        SendAudit.objects.create(channel="github", action="post_comment", allowlist_verdict=SendAudit.Verdict.DENIED)
         assert compute_metrics(ON_BEHALF_POST).defect_escapes == 1
 
     def test_redaction_is_rework(self) -> None:
         SendAudit.objects.create(
             channel="slack",
             action="post_comment",
-            mode="enforce",
             allowlist_verdict=SendAudit.Verdict.ALLOWED,
             redaction_applied=True,
         )
         assert compute_metrics(ON_BEHALF_POST).rework == 1
 
     def test_issue_action_maps_to_public_issue_create(self) -> None:
-        SendAudit.objects.create(
-            channel="github", action="issue_create", mode="enforce", allowlist_verdict=SendAudit.Verdict.DENIED
-        )
+        SendAudit.objects.create(channel="github", action="issue_create", allowlist_verdict=SendAudit.Verdict.DENIED)
         assert compute_metrics(PUBLIC_ISSUE_CREATE).defect_escapes == 1
         assert compute_metrics(ON_BEHALF_POST).defect_escapes == 0
 
@@ -99,7 +94,5 @@ class TestBreach:
         assert metrics_breached(OUTER_LOOP_KEEP) is True
 
     def test_any_defect_escape_breaches(self) -> None:
-        SendAudit.objects.create(
-            channel="github", action="post_comment", mode="enforce", allowlist_verdict=SendAudit.Verdict.DENIED
-        )
+        SendAudit.objects.create(channel="github", action="post_comment", allowlist_verdict=SendAudit.Verdict.DENIED)
         assert metrics_breached(ON_BEHALF_POST) is True

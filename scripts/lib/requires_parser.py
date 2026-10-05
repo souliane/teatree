@@ -1,7 +1,7 @@
 """Parse the ``requires:`` and ``companions:`` lists from SKILL.md frontmatter.
 
 Standalone module with no Django or teatree imports — safe to use from both
-the UserPromptSubmit hook (``skill_loader.py``) and any cold hook context.
+the SessionStart hook (``skill_loader.py``) and any cold hook context.
 ``requires`` is the hard, transitive skill-dependency edge; ``companions`` is
 its SOFT counterpart — a suggested-not-mandatory list, surfaced but never
 enforced. There is no free-text trigger frontmatter to parse.

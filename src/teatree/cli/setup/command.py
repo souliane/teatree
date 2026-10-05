@@ -23,7 +23,6 @@ from teatree.cli.doctor.checks_notion import report_notion_connections
 from teatree.cli.setup.apm import strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.codex_plugin_registrar import CodexPluginRegistrar
-from teatree.cli.setup.docker_alias import retire_alias
 from teatree.cli.setup.docker_launcher import DockerLauncherInstaller
 from teatree.cli.setup.git_hooks_installer import GitHooksInstaller
 from teatree.cli.setup.mandated_skills import MandatedSkillProvisioner
@@ -319,11 +318,8 @@ def run(
     # mechanism — an executable `t3` on PATH that execs `deploy/t3`, so scripts,
     # git hooks, cron and sub-agents resolve the same containerized CLI an
     # interactive shell does. A container writes it through the host bin mount; a
-    # host writes it directly. The alias a previous version installed is retired,
-    # never refreshed. Both are best-effort — a refusal or an unwritable path
-    # WARNs, never aborts.
+    # host writes it directly. An unwritable path WARNs without aborting.
     DockerLauncherInstaller(repo).install(echo=typer.echo)
-    retire_alias(echo=typer.echo)
 
     # Ahead of every in-process settings read below: `ConfigSetting` is the DB override
     # tier, and a fresh install has no table for it until this runs — a read before it

@@ -7,7 +7,6 @@ bootstrapped here (the ORM-touching server import is deferred until after
 ``ensure_django``, the same shape as ``t3 cost``).
 """
 
-import os
 from collections.abc import Callable
 
 import typer
@@ -66,8 +65,10 @@ def serve() -> None:
     start_parent_death_watch()
     ensure_django()
 
+    from teatree.cli.notion_mcp_seam import register as register_notion_seam  # noqa: PLC0415 — deferred: loads the SDK
     from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+    register_notion_seam()
     build_server().run("stdio")
 
 
@@ -131,5 +132,5 @@ def browser_diagnosis() -> None:
         resolve_browser_diagnosis,
     )
 
-    registration = resolve_browser_diagnosis(os.environ.get("T3_OVERLAY_NAME") or None)
+    registration = resolve_browser_diagnosis()
     typer.echo(registration.message)

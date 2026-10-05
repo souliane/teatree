@@ -8,16 +8,19 @@ from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
+from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
 if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
-    from teatree.core.models.session import Session
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
+
+#: ``Ticket.extra`` key carrying the phase and reason a producer asked for across the planning rung.
+PLANNING_HANDOFF_KEY = "planning_handoff"
 
 
 def _auto_ship_enabled() -> bool:
@@ -35,13 +38,14 @@ class TicketSchedulingModel(TicketFacet):
     class Meta:
         abstract = True
 
-    def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
+    def schedule_planning(self: "Ticket", *, parent_task: "Task | None" = None, intent: str = "") -> "Task":
         """Create a fresh headless planning task after provisioning completes."""
-        return self._schedule_phase_task(
-            "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
-        )
+        reason = "Auto-scheduled planning — produce a plan before coding"
+        if intent.strip():
+            reason = f"{reason}\n\nThe work this plan is for:\n{intent.strip()}"
+        return self._schedule_phase_task("planning", reason, parent_task, require_author=True)
 
-    def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
+    def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None, intent: str = "") -> "Task":
         """Walk an early-state author ticket up to WORK_STARTED and schedule its planning task.
 
         The transitions are load-bearing, not decoration: ``Ticket.plan``'s FSM source is
@@ -65,26 +69,70 @@ class TicketSchedulingModel(TicketFacet):
         the snapshot's ``extra`` back over a key another writer has since recorded —
         hence ``merge_extra``, whose own locked re-read carries the state.
         """
-        early = (self.State.NOT_STARTED, self.State.SCOPED, self.State.WORK_STARTED)
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
-            if locked.state not in early:
-                msg = f"begin_planning requires an early state {early!r} (got state={locked.state!r})"
+            if locked.state not in self.EARLY_STATES:
+                msg = (
+                    f"begin_planning requires an early state {sorted(self.EARLY_STATES)!r} (got state={locked.state!r})"
+                )
                 raise InvalidTransitionError(msg)
             if locked.state == self.State.NOT_STARTED:
                 locked.scope()
             if locked.state == self.State.SCOPED:
                 locked.start()
             locked.merge_extra(also_set={"state": locked.state})
-            return locked.schedule_planning(parent_task=parent_task)
+            return locked.schedule_planning(parent_task=parent_task, intent=intent)
 
-    def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
+    def schedule_implementing(self: "Ticket", phase: str, *, reason: str, parent_task: "Task | None" = None) -> "Task":
+        """Mint *phase* on a planned ticket; route an unplanned early one to planning carrying *reason*.
+
+        The routed request is recorded as the planning task's hand-off, so ``plan()``
+        mints *phase* with *reason* — a debugging or e2e fix keeps its own agent through
+        planning. Past the early states an unplanned ticket has no planning rung left to
+        take, so the mint seam refuses it with ``NoPlanArtifactError``.
+        """
+        if has_plan_decision(self) or self.state not in self.EARLY_STATES:
+            return self._schedule_phase_task(phase, reason, parent_task)
+        planning = self.begin_planning(parent_task=parent_task, intent=reason)
+        handoff = (self.extra or {}).get(PLANNING_HANDOFF_KEY) or {}
+        if handoff.get("planning_task") != planning.pk:
+            self.merge_extra(
+                set_keys={
+                    PLANNING_HANDOFF_KEY: {
+                        "planning_task": planning.pk,
+                        "phase": normalize_phase(phase),
+                        "reason": reason,
+                    }
+                }
+            )
+        return planning
+
+    def schedule_planned_work(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
+        """The first implementing task after planning: the phase a producer routed here for, else coding.
+
+        The hand-off is spent by the mint, so a later re-plan starts from generic coding.
+        """
+        handoff = (self.extra or {}).get(PLANNING_HANDOFF_KEY)
+        if not handoff or not handoff.get("phase"):
+            return self.schedule_coding(parent_task=parent_task)
+        phase = str(handoff["phase"])
+        task = self._schedule_phase_task(
+            phase,
+            str(handoff.get("reason") or f"Auto-scheduled {phase} — carry out the planned work"),
+            parent_task,
+            require_author=True,
+            gate="plan_currency" if normalize_phase(phase) == "coding" else None,
+        )
+        self.merge_extra(pop_keys=[PLANNING_HANDOFF_KEY])
+        return task
+
+    def schedule_coding(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after planning completes.
 
         Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLAN_RECORDED→CODED flow
         (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
         plan. Synthetic corrective re-entries that mint a coding task directly are
-        exempt (they carry no plan).
+        exempt; they route through :meth:`schedule_implementing`.
         """
         return self._schedule_phase_task(
             "coding",
@@ -95,7 +143,7 @@ class TicketSchedulingModel(TicketFacet):
         )
 
     def _schedule_phase_task(
-        self,
+        self: "Ticket",
         phase: str,
         reason: str,
         parent_task: "Task | None",
@@ -108,6 +156,8 @@ class TicketSchedulingModel(TicketFacet):
         Optionally enforces ``role=author`` and runs an FSM ``gate`` (the
         plan-currency leak-close), then mints the ``phase`` Session + headless Task.
         The session ``agent_id`` is the ``phase`` (``reviewing`` uses ``review``).
+        An implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``
+        before anything is written.
 
         **Idempotent in its side effects, not merely in the state it converges to**
         (#3903). An in-flight sibling — a PENDING or CLAIMED Task on the same
@@ -119,8 +169,8 @@ class TicketSchedulingModel(TicketFacet):
         scanners read, consulted here at the write.
 
         Callers keep their own pre-checks (``loop/persistence.py``,
-        ``loops/outer_loop/implement.py``, ``loops/directive_loop/implement.py``,
-        ``loops/dream/umbrella_ledger.py``): they short-circuit before doing useless
+        ``loops/outer_loop/implement.py``, ``loops/directive_loop/implement.py``):
+        they short-circuit before doing useless
         setup work, which is worth having. What changed is that they are no longer
         load-bearing for CORRECTNESS — a caller that forgets one, or whose
         read-then-write races, can no longer mint a rival task, because this seam
@@ -142,6 +192,7 @@ class TicketSchedulingModel(TicketFacet):
         if require_author and self.role != self.Role.AUTHOR:
             msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
             raise InvalidTransitionError(msg)
+        refuse_unplanned_mint(self, phase=phase)
         if gate is not None:
             get_gate(gate)(self)
         with transaction.atomic():
@@ -166,26 +217,14 @@ class TicketSchedulingModel(TicketFacet):
                 parent_task=parent_task,
             )
 
-    def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
+    def schedule_testing(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless testing task after coding completes."""
         return self._schedule_phase_task("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
 
-    def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
+    def schedule_review(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
         return self._schedule_phase_task(
             "reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task
-        )
-
-    def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
-        """Create a review task within an existing session (sub-agent, not a new session)."""
-        from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
-
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="reviewing",
-            execution_reason="Auto-review before shipping — sub-agent in current session",
-            parent_task=parent_task,
         )
 
     def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":

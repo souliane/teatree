@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from hooks.scripts.hook_budget import bounded_timeout_s
+from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities to ONE module object, as every
@@ -35,11 +35,11 @@ sys.modules.setdefault("hooks.scripts.existing_artifact", sys.modules[__name__])
 
 # One forge round trip, on a deny that is already terminal — asked for, never
 # assumed: it shares the hook's 30s ceiling with the measurement that preceded
-# it, so ``bounded_timeout_s`` shrinks it to whatever that leaves (#4305).
+# it, so ``remaining_timeout_s`` shrinks it to whatever that leaves (#4305).
 _PROBE_TIMEOUT_S: Final[int] = 15
 
 
-def with_open_pr_note(finding: str | None, repo_dir: Path | None, branch: str, *, elapsed: float) -> str | None:
+def with_open_pr_note(finding: str | None, repo_dir: Path | None, branch: str) -> str | None:
     """Decorate a real *finding* with :func:`open_pr_note`; pass ``None`` straight through.
 
     Deliberately a decoration rather than a branch inside the gate's own
@@ -50,11 +50,11 @@ def with_open_pr_note(finding: str | None, repo_dir: Path | None, branch: str, *
     """
     if finding is None:
         return None
-    note = open_pr_note(repo_dir, branch, elapsed=elapsed)
+    note = open_pr_note(repo_dir, branch)
     return f"{finding}\n{note}" if note else finding
 
 
-def open_pr_note(repo_dir: Path | None, branch: str, *, elapsed: float) -> str:
+def open_pr_note(repo_dir: Path | None, branch: str) -> str:
     """A line naming the OPEN PR that already backs *branch*, or ``""``.
 
     An empty *branch* lets ``t3 tool open-pr`` resolve the checked-out branch,
@@ -63,23 +63,19 @@ def open_pr_note(repo_dir: Path | None, branch: str, *, elapsed: float) -> str:
     timeout, an UNKNOWN tri-state — yields ``""``, so a missing credential can
     never turn into a claim about an artifact nobody saw.
 
-    *elapsed* is what the handler has already spent of the shared hook ceiling.
-    A budget it exhausts is one more unanswerable case: the note is dropped and
-    the deny goes out undecorated, rather than the whole decision being lost to
-    a cancelled hook (#4305).
+    A hook budget already spent is one more unanswerable case: the note is
+    dropped and the deny goes out undecorated, rather than the whole decision
+    being lost to a cancelled hook (#4305).
     """
     if repo_dir is None:
         return ""
     argv = t3_argv("tool", "open-pr", "--repo", str(repo_dir))
     if argv is None:
         return ""
-    timeout = bounded_timeout_s(_PROBE_TIMEOUT_S, elapsed)
-    if timeout is None:
-        return ""
     if branch:
         argv += ["--branch", branch]
     try:
-        result = run_t3(argv, timeout=timeout, cwd=str(repo_dir))
+        result = run_t3(argv, timeout=_PROBE_TIMEOUT_S, cwd=str(repo_dir), budget=remaining_timeout_s)
         probe = json.loads(result.stdout or "")
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
         return ""

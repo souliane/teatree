@@ -13,8 +13,8 @@ hard-blocking via ``decision: block`` (the soft-block intent both Stop
 gates document in their comments).
 
 This module asserts the POSITIVE shape — top-level ``systemMessage``
-that contains the BLOCKING REMINDER / CONSIDERATION GATE body — and is
-designed to flip RED if either Stop handler ever regresses back to the
+that contains the CONSIDERATION GATE body — and is
+designed to flip RED if the Stop handler ever regresses back to the
 ``hookSpecificOutput.additionalContext`` envelope.
 """
 
@@ -25,8 +25,7 @@ from typing import Any
 
 import pytest
 
-from hooks.scripts.hook_router import handle_consideration_gate, handle_enforce_answered_questions
-from teatree.core.models import PendingChatInjection
+from hooks.scripts.hook_router import handle_consideration_gate
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -66,44 +65,6 @@ def _assistant_edit(file_path: str) -> dict[str, Any]:
             ],
         },
     }
-
-
-class TestAnsweredQuestionsGateUsesSystemMessage:
-    """``handle_enforce_answered_questions`` must emit top-level ``systemMessage``."""
-
-    def test_payload_has_top_level_system_message_with_blocking_reminder(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The positive-shape assertion: schema-valid Stop output.
-
-        Anti-vacuous: revert the fix (emit ``hookSpecificOutput.additionalContext``
-        for Stop) and this turns RED on three independent assertions —
-        ``systemMessage`` is missing, ``hookSpecificOutput`` is present, and
-        the body text moves into the wrong field.
-        """
-        PendingChatInjection.record(
-            channel="D",
-            slack_ts="1700000000.0001",
-            text="why are some tests skipped?",
-        )
-
-        out = _run_handler(handle_enforce_answered_questions, {"session_id": "s1"}, monkeypatch)
-
-        payload = json.loads(out)
-        # POSITIVE: schema-valid top-level systemMessage carrying the nag.
-        assert "systemMessage" in payload, (
-            "Stop handler must emit top-level `systemMessage` — "
-            "`hookSpecificOutput.additionalContext` is rejected by the Claude Code schema."
-        )
-        system_message = payload["systemMessage"]
-        assert isinstance(system_message, str)
-        assert system_message, "systemMessage must be non-empty"
-        assert "BLOCKING REMINDER" in system_message
-        assert "why are some tests skipped?" in system_message
-        # NEGATIVE: must NOT carry the rejected envelope.
-        assert "hookSpecificOutput" not in payload, (
-            "Stop schema rejects `hookSpecificOutput.additionalContext`; the body belongs in top-level `systemMessage`."
-        )
-        # Soft-block intent: never hard-block via `decision: block`.
-        assert "decision" not in payload
 
 
 class TestConsiderationGateUsesSystemMessage:

@@ -36,7 +36,7 @@ from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions
-from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments, _review_post_draft_note
+from teatree.mcp.review_write_tools import _review_post_comment, _review_post_comments
 from teatree.mcp.write_tool_run import run_command, run_emitting_command
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -48,18 +48,14 @@ _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 # heuristics the conformance test walks (``*allowlist``, ``*_threshold``…) but whose
 # EFFECT is an ordinary local-maintenance / quality tuning knob, NOT an authorization,
 # an intake/egress boundary, or an autonomy-posture change — so the MCP surface may set
-# them. Each entry is a DELIBERATE, human-reviewed classification: ``disk_cache_allowlist``
-# / ``ram_kill_allowlist`` bound the LOCAL resource-pressure reaper (already gated behind
-# their own ``allow_destructive_*`` opt-in, no delegation of authority); ``e2e_confidence_threshold``
-# is a quality/telemetry tunable. The conformance test
+# them. ``disk_cache_allowlist`` bounds local cache cleanup and delegates no authority.
+# The conformance test
 # (``tests/teatree_mcp/test_write_tools_refusals.py``) fails CLOSED if a heuristic-matched
 # field is in NEITHER this set NOR :data:`~teatree.config.SAFETY_POSTURE_KEYS`, so adding a
 # new authorization-shaped field forces an explicit reviewed classification here or there.
 MCP_SETTABLE_OK: frozenset[str] = frozenset(
     {
         "disk_cache_allowlist",
-        "ram_kill_allowlist",
-        "e2e_confidence_threshold",
     }
 )
 
@@ -213,10 +209,10 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
 
     A non-delivery ALWAYS names itself: ``reason`` is the machine-readable
     :class:`~teatree.core.notify.NotifyReason` (``no_messaging_backend``,
-    ``no_user_id``, ``feature_disabled``, ``delivery_failed``, …) and ``detail``
+    ``no_user_id``, ``delivery_failed``, …) and ``detail``
     the human sentence. A bare ``sent=false`` with no reason is what let five
-    completed reviews go unannounced for a day — the caller could not tell a
-    disabled feature from a dead transport, so nothing escalated.
+    completed reviews go unannounced for a day — the caller could not tell one
+    non-delivery from another, so nothing escalated.
 
     Every call here is a DIRECTLY REQUESTED DM: this surface is reachable only from
     an agent's deliberate tool call, never from a recurring alarm site, so the
@@ -479,17 +475,6 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "resolves to (every worktree in it; refuses live or dirty trees unless forced).",
     ),
     _WriteTool(
-        "review_post_draft_note",
-        _review_post_draft_note,
-        _WRITE,
-        "teatree.mcp.review_seam (ReviewService.post_draft_note)",
-        "- review_post_draft_note(repo, mr, finding): colleague-INVISIBLE draft note — always "
-        "safe, gate-exempt by design. finding={note, anchor='path/to/file.py:LINE', evidence, "
-        "force_general, allow_bloat}; a blank anchor posts a general note, and evidence is the "
-        "#1280 record as a JSON object or its JSON string, required by the gate for a "
-        "'X is wrong/broken/missing' body.",
-    ),
-    _WriteTool(
         "review_post_comment",
         _review_post_comment,
         _WRITE,
@@ -535,16 +520,20 @@ _TOOLS: tuple[_WriteTool, ...] = (
 # The forge/slack write tools live in the sibling service modules (registered
 # conditionally on their `Service` declaration), but their seams are declared here
 # so the transport-boundary fitness test pins EVERY write tool's seam in one map.
+_NOTION_WRITE_SEAM = "cli.notion_write_service.NotionWrites via the services_notion seam — WriteGuard + approval"
 _CROSS_MODULE_SEAMS: dict[str, str] = {
     "slack_react": "OnBehalfSlackEgress.react — #117 send-proxy + on-behalf gate + notify receipt",
     "github_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "github_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
-    "github_issue_close": "code_host_from_overlay().close_issue via the leak scrub + #117 send-proxy",
-    "github_issue_update": "code_host_from_overlay().update_issue via the leak scrub + #117 send-proxy",
+    "github_issue_note": "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub",
+    "github_issue_close": "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub",
     "gitlab_issue_create": "code_host_from_overlay().create_issue via the leak scrub + #117 send-proxy",
-    "gitlab_issue_comment": "code_host_from_overlay().post_issue_comment via the leak scrub + #117 send-proxy",
-    "gitlab_issue_close": "code_host_from_overlay().close_issue via the public-repo leak scrub + send-proxy",
-    "gitlab_issue_update": "code_host_from_overlay().update_issue via the public-repo leak scrub + send-proxy",
+    "gitlab_issue_note": "core.issue_hygiene.record_issue_note — purpose routing + self-author guard + leak scrub",
+    "gitlab_issue_close": "core.issue_hygiene.close_with_rationale — self-author guard + leak scrub",
+    "notion_replace": _NOTION_WRITE_SEAM,
+    "notion_create": _NOTION_WRITE_SEAM,
+    "notion_comment": _NOTION_WRITE_SEAM,
+    "notion_archive": _NOTION_WRITE_SEAM,
+    "notion_property_set": _NOTION_WRITE_SEAM,
 }
 
 TOOL_SEAMS: dict[str, str] = {tool.name: tool.seam for tool in _TOOLS if tool.seam} | _CROSS_MODULE_SEAMS

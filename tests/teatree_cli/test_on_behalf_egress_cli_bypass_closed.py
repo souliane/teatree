@@ -16,6 +16,7 @@ from django.core.management import call_command
 
 from teatree.core.models import ConfigSetting
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -59,6 +60,7 @@ class _RouteAwareFake:
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
     ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+    allow_slack_channels(_COLLEAGUE)
     seed_forbidding_posture() if forbidding else seed_permitting_posture()
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 

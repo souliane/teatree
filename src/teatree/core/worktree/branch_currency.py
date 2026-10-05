@@ -283,17 +283,6 @@ def _attempt_merge(repo: str, branch: str, target: str) -> _MergeAttempt:
     return _MergeAttempt(MergeOutcome.CONFLICTED, paths)
 
 
-def auto_merge_target(repo: str, branch: str, target: str = "origin/main") -> MergeOutcome:
-    """Attempt to merge ``target`` into the currently-checked-out ``branch``.
-
-    Fast-forward is preferred (the default ``git merge`` posture). On
-    conflict the worktree is restored with ``git merge --abort`` —
-    never leaves a half-merged tree. The caller decides how to report
-    the outcome; this returns a typed verdict only.
-    """
-    return _attempt_merge(repo, branch, target).outcome
-
-
 def _ok(
     *,
     auto_merged: bool = False,

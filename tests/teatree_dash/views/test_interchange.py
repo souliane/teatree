@@ -63,7 +63,7 @@ class TestThePageStatesItsScope(TestCase):
 
 class TestExport(TestCase):
     def test_export_downloads_a_dump_withholding_secrets(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
         response = self.client.get(reverse("dash:interchange_export"), **_LOOPBACK)
         body = response.content.decode()
@@ -87,7 +87,7 @@ class TestExport(TestCase):
         assert body.startswith("# teatree shipped defaults")
         assert "merge_wip" in body
 
-    def test_the_retired_settings_route_still_downloads_with_its_filters(self) -> None:
+    def test_the_old_settings_route_still_downloads_with_its_filters(self) -> None:
         url = f"{reverse('dash:settings_export')}?default_keys_only=1&include_defaults=1"
         response = self.client.get(url, follow=True, **_LOOPBACK)
         assert response.redirect_chain[0][0].startswith(reverse("dash:interchange_export"))

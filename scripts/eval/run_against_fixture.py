@@ -32,6 +32,7 @@ from teatree.eval.models import (
     FinalStateMatcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 from teatree.eval.report import evaluate
 
@@ -99,8 +100,12 @@ def _describe(matcher: ExpectItem) -> str:
     if isinstance(matcher, PlanBeforeToolMatcher):
         tools = ", ".join(matcher.governed_tools)
         return f"assistant_text.before_first_tool tools=[{tools}] patterns={len(matcher.patterns)}"
-    if isinstance(matcher, SuccessfulToolCallMatcher):
-        return f"tool_call_succeeded {matcher.tool}.{matcher.arg_path} {matcher.operator}"
+    if isinstance(matcher, (SuccessfulToolCallMatcher, ToolCallCountMatcher)):
+        if isinstance(matcher, ToolCallCountMatcher):
+            description = f"tool_call_count {matcher.tool}.{matcher.arg_path} ~ {matcher.pattern!r} == {matcher.equals}"
+        else:
+            description = f"tool_call_succeeded {matcher.tool}.{matcher.arg_path} {matcher.operator}"
+        return description
     return f"{matcher.kind} {matcher.tool}.{matcher.arg_path} {matcher.operator}"
 
 

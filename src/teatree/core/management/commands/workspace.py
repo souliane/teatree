@@ -14,6 +14,7 @@ from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
 from teatree.core.intake.issue_ref import InvalidIssueRefError, canonicalize_issue_ref
+from teatree.core.intake.landscape_gather import LandscapeReport, run_landscape
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.anchor import resolve_workspace_ticket
@@ -24,7 +25,6 @@ from teatree.core.management.commands._workspace.docker import reap_stale_local_
 from teatree.core.management.commands._workspace.drift_report import run_drift_report
 from teatree.core.management.commands._workspace.finalize import run_finalize
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
-from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace.owner_stamps import backfill_owner_stamps
 from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
@@ -348,9 +348,11 @@ class Command(TyperCommand):
         return run_stamp_identity(repo)
 
     @command(name="list-orphans")
-    def list_orphans(self) -> list[_wh.OrphanEntry]:
-        """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace."""
-        return _wh.list_orphan_entries()
+    def list_orphans(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
+        """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none."""
+        entries = _wh.list_orphan_entries()
+        out, err = cast("IO[str]", self.stdout), cast("IO[str]", self.stderr)
+        emit(entries, json_output=json_output, out=out, err=err, human=_wh.render_orphans(entries))
 
     @command()
     def landscape(self) -> LandscapeReport:

@@ -240,10 +240,11 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
 
         from teatree.core.review import author_trust  # noqa: PLC0415
         from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
-        from tests.teatree_core.conftest import seed_merge_safe_verdict  # noqa: PLC0415
+        from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict  # noqa: PLC0415
 
         expected = "c" * 40
         # The bound merge runs the #2829 review-verdict gate; seed the verdict.
+        record_owned_pr_for_test(slug="owner/repo", pr_id=42, head_sha=expected)
         seed_merge_safe_verdict(slug="owner/repo", pr_id=42, sha=expected)
 
         def _gh(argv: list[str]) -> tuple[int, str, str]:

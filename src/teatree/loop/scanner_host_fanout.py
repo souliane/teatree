@@ -13,11 +13,7 @@ import logging
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.scanner_factory_config import (
-    _user_identity_aliases_for_overlay,
-    gitlab_approvals_enabled,
-    stranger_pr_admission,
-)
+from teatree.loop.scanner_factory_config import stranger_pr_admission
 from teatree.loop.scanners import (
     GitLabApprovalsScanner,
     MyPrsScanner,
@@ -55,15 +51,6 @@ def _jobs_for_backend_hosts(
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
     identity_groups = _identity_alias_groups_for_overlay(tag, backend)
-    # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
-    # #976) is an implicit self-group when no explicit ``identity_aliases``
-    # config overrides it. Without this union, ``user_identity_aliases`` and
-    # ``identity_alias_groups`` both resolve to empty in the user's deployment
-    # → ``_is_self_handoff`` short-circuits to False → same-human reassigns
-    # between ``backend.identities`` members (the multi-identity operator set)
-    # render as ``reassigned`` churn. Explicit groups still take precedence.
-    if not identity_groups and len(backend.identities) > 1:
-        identity_groups = (tuple(backend.identities),)
     reviewer_trusted, reviewer_admit_label = stranger_pr_admission(tag)
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
@@ -102,7 +89,6 @@ def _jobs_for_backend_hosts(
                         overlay=backend.overlay,
                         ready_labels=backend.ready_labels,
                         overlay_name=tag,
-                        user_identity_aliases=_user_identity_aliases_for_overlay(tag),
                         identity_alias_groups=identity_groups,
                     ),
                     overlay=tag,
@@ -123,17 +109,16 @@ def _jobs_for_backend_hosts(
         # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path (#936);
         # a tick whose head SHA matches the last emission is a no-op, so a deployment
         # that also wires the GitLab webhook does not double-emit.
-        if gitlab_approvals_enabled(tag):
-            jobs.append(
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        allowed_url_prefixes=url_prefixes,
-                    ),
-                    overlay=tag,
+        jobs.append(
+            _ScannerJob(
+                scanner=GitLabApprovalsScanner(
+                    host=code_host,
+                    identities=backend.identities,
+                    allowed_url_prefixes=url_prefixes,
                 ),
-            )
+                overlay=tag,
+            ),
+        )
     return jobs
 
 

@@ -10,7 +10,7 @@ self-rescheduling loop-timer chain drives (:mod:`teatree.loops.timer_chains`, th
 sole driver since PR-28 retired the native-``/loop`` cron mirror). There is NO
 master tick: ``t3 loops tick`` with no ``--loop`` is a hard error. Per-loop
 management — add / edit / enable / disable —
-is via ``t3 loop enable`` / ``t3 loop disable`` + the Django admin (``Loop`` rows: name /
+is via ``t3 loop resume`` / ``t3 loop disable`` + the Django admin (``Loop`` rows: name /
 prompt / delay / enabled). ORM access lives in the ``loops_tick`` / ``loops_list``
 management commands, not a plain typer command.
 """
@@ -122,6 +122,7 @@ def tick_command(
     ),
     overlay: str = typer.Option("", "--overlay", help="Restrict scanning to the named overlay (default: all)."),
     json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview followup decisions without posting or writing."),
 ) -> None:
     """Run ONE enabled, due loop by name — the per-loop primitive the loop-timer chain drives.
 
@@ -141,6 +142,8 @@ def tick_command(
         kwargs["overlay"] = overlay
     if json_output:
         kwargs["json_output"] = True
+    if dry_run:
+        kwargs["dry_run"] = True
     call_command("loops_tick", **kwargs)
 
 

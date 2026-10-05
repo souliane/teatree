@@ -7,14 +7,18 @@ from django_fsm import FSMField, transition
 from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models.auto_implement import is_auto_implement
-from teatree.core.models.ticket_evidence import TicketEvidenceModel
+from teatree.core.models.plan_decision import has_plan_decision
+from teatree.core.models.ticket_evidence import (
+    TicketEvidenceModel,
+    anti_vacuity_is_complete,
+    recorded_anti_vacuity_attestation,
+)
 from teatree.core.models.ticket_introspection import TicketIntrospectionModel
 from teatree.core.models.ticket_ledger import retire_phase_ledger
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_overlay import TicketOverlayModel
 from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
-from teatree.core.models.ticket_scheduling import TicketSchedulingModel
+from teatree.core.models.ticket_scheduling import PLANNING_HANDOFF_KEY, TicketSchedulingModel
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_status import TicketStatusModel
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
@@ -52,10 +56,24 @@ def _review_context_satisfied(ticket: object) -> bool:
     return cast("Ticket", ticket).review_context_satisfied()
 
 
+def _anti_vacuity_satisfied(ticket: object) -> bool:
+    """Maker review cannot complete without its recorded anti-vacuity proof."""
+    row = cast("Ticket", ticket)
+    return (
+        row.role == Ticket.Role.REVIEWER
+        or not row.has_shippable_diff()
+        or anti_vacuity_is_complete(recorded_anti_vacuity_attestation(row))
+    )
+
+
 def _reviewer_with_completed_review(ticket: object) -> bool:
     """Reviewer-role guard — a REVIEWER ticket whose reviewing task has completed."""
     row = cast("Ticket", ticket)
     return row.role == Ticket.Role.REVIEWER and row.tasks.completed_in_phase("reviewing").exists()
+
+
+def _has_plan_decision(ticket: object) -> bool:
+    return has_plan_decision(cast("Ticket", ticket))
 
 
 def _is_reviewer(ticket: object) -> bool:
@@ -122,6 +140,8 @@ class Ticket(
     _SETTLED_STATES: ClassVar[frozenset[str]] = frozenset(
         {State.PR_OPENED, State.MERGED, State.DELIVERED, State.REVIEW_DELIVERED, State.IGNORED},
     )
+    #: The rungs before PLANNED: an unplanned ticket here can still be routed to planning.
+    EARLY_STATES: ClassVar[frozenset[str]] = frozenset({State.NOT_STARTED, State.SCOPED, State.WORK_STARTED})
     # The linear author work-state progression (excludes the terminal set and the
     # off-ladder REVIEW_REQUESTED/RETRO_RECORDED branch states). A ticket at index i has
     # produced every phase output up to and including index i — the ordering
@@ -304,11 +324,12 @@ class Ticket(
     def plan(self, *, parent_task: "Task | None" = None) -> None:
         """Advance WORK_STARTED → PLAN_RECORDED after a PlanArtifact record exists."""
         self._consume_pending_phase_tasks("planning")
-        self.schedule_coding(parent_task=parent_task)
+        self.schedule_planned_work(parent_task=parent_task)
 
     @transition(field="state", source=State.PLAN_RECORDED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
         get_gate("plan_currency")(self)  # SELFCATCH-3: refuse a thin/stale plan (NO-OP unless flag on).
+        get_gate("red_repro")(self)
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)
@@ -317,16 +338,18 @@ class Ticket(
         field="state",
         source=[State.NOT_STARTED, State.SCOPED, State.WORK_STARTED],
         target=State.CODED,
-        conditions=[is_auto_implement],
+        conditions=[_has_plan_decision],
     )
     def code_direct(self, *, parent_task: "Task | None" = None) -> None:
-        """Advance a plan-skipped auto-implement ticket straight to CODED."""
+        """Advance an early ticket whose plan was recorded off the STARTED rung straight to CODED."""
+        get_gate("red_repro")(self)
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)
 
     @transition(field="state", source=State.CODED, target=State.TESTED)
     def test(self, *, passed: bool = True, parent_task: "Task | None" = None) -> None:
+        get_gate("forced_repro")(self)
         self._refuse_if_worktree_dirty("testing")
         extra = self._extra()
         extra["tests_passed"] = passed
@@ -341,6 +364,7 @@ class Ticket(
         conditions=[
             _reviewing_task_completed,
             _review_context_satisfied,
+            _anti_vacuity_satisfied,
         ],
     )
     def review(self, *, parent_task: "Task | None" = None) -> None:
@@ -483,6 +507,7 @@ class Ticket(
     def rework(self) -> None:
         extra = self._extra()
         extra.pop("tests_passed", None)
+        extra.pop(PLANNING_HANDOFF_KEY, None)
         self.extra = extra
         self._cancel_pending_tasks()
 
@@ -502,6 +527,7 @@ class Ticket(
         """
         extra = self._extra()
         extra.pop("tests_passed", None)
+        extra.pop(PLANNING_HANDOFF_KEY, None)
         extra["reopened_from"] = self.state
         self.extra = extra
         self._cancel_pending_tasks()

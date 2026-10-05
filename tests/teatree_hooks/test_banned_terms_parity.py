@@ -83,8 +83,7 @@ _ALLOWLIST: tuple[str, ...] = ("acme-engineering", "acme-product")
 @pytest.fixture(autouse=True)
 def _no_ambient_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop any ambient term/brand env so the seeded DB is the only source."""
-    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
-    monkeypatch.delenv("TEATREE_BANNED_BRANDS", raising=False)
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
 
 def _seed_db(tmp_path: Path) -> Path:
@@ -100,15 +99,11 @@ def _seed_db(tmp_path: Path) -> Path:
         "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
-    for key, value in (
-        ("banned_terms", list(_TERMS)),
-        ("banned_brands", list(_TERMS)),
-        ("banned_terms_allowlist", list(_ALLOWLIST)),
-    ):
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-            (key, json.dumps(value)),
-        )
+    registry = {"leak": list(_TERMS), "prose_collider": list(_TERMS), "allow": list(_ALLOWLIST)}
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps(registry),),
+    )
     conn.commit()
     conn.close()
     return db

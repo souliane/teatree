@@ -75,6 +75,19 @@ class PendingPrDrainScannerTestCase(TestCase):
         assert [signal.kind for signal in signals] == ["pending_pr.drained"]
         assert not PendingPullRequest.objects.filter(branch=branch).exists()
 
+    def test_an_obligation_stored_under_a_symlinked_path_is_still_retired(self) -> None:
+        _origin, repo, branch = _first_push_repo(self._tmp_path)
+        link = self._tmp_path / "clone-link"
+        link.symlink_to(repo)
+        PendingPullRequest.objects.owe(repo_path=str(link), branch=branch, reason="branch not on remote yet")
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("merge", "--ff-only", branch, cwd=repo)
+        _run_git("push", "origin", "main", cwd=repo)
+
+        PendingPrDrainScanner().scan()
+
+        assert not PendingPullRequest.objects.filter(branch=branch).exists()
+
     def test_work_that_reached_the_base_under_a_different_path_discharges(self) -> None:
         """#3977: the same bytes landed while a refactor moved them — the branch owes nothing.
 

@@ -9,7 +9,6 @@ import typer
 from django_typer.management import command
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_in_tree as _in_tree
 from teatree.core.management.commands import _e2e_lanes as _lanes
 from teatree.core.management.commands import _e2e_resolvers as _resolvers
@@ -24,20 +23,6 @@ from teatree.core.management.refusal_exit import RefusalExitTyperCommand
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.utils.run import run_streamed
-
-# Re-exports for back-compat with tests and external callers (#1322 split).
-_ticket_frontend_projects = _disc.ticket_frontend_projects
-_discover_frontend_port = _disc.discover_frontend_port
-_resolve_linked_worktree = _disc.resolve_linked_worktree
-_linked_env_cache = _disc.linked_env_cache
-_compose_frontend_port = _disc.compose_frontend_port
-_detect_local_port = _disc.detect_local_port
-_clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
-_build_e2e_env = _runners.build_e2e_env
-E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
-E2eSpecsRemoteUnreachableError = _runners.E2eSpecsRemoteUnreachableError
-PlaywrightOptions = _runners.PlaywrightOptions
-
 
 # Shared typer.Option declarations for ``write-test-plan``.
 _SKIP_HELP = "User-authorised bypass of the capture preflight (red-box / duplicate gates). Not for routine use."
@@ -310,12 +295,12 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         # shlex.split, not str.split: a quoted flag value (``--grep "smoke test"``)
         # must stay ONE Playwright argument, not fracture on the inner space (F3.6).
         caller_args = shlex.split(playwright_args) if playwright_args else []
-        opts = PlaywrightOptions(
+        opts = _runners.PlaywrightOptions(
             test_path=test_path,
             update_snapshots=update_snapshots,
             extra=[*overlay_args, *caller_args],
         )
-        env = _build_e2e_env(
+        env = _runners.build_e2e_env(
             frontend_url,
             target=_resolvers.resolve_spec_target(resolved_target),
             context=_runners.E2eEnvContext(

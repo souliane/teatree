@@ -28,7 +28,7 @@ from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -94,6 +94,7 @@ def _clear(ticket: Ticket) -> MergeClear:
     # The rubric done-gate runs at this chokepoint; the real path has an independent
     # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
     waive_rubric(ticket)
+    record_merge_prerequisites_for_test(ticket, _SHA)
     clear = MergeClear.objects.create(
         ticket=ticket,
         pr_id=2380,

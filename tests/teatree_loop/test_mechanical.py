@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import Session, Task, Ticket
 from teatree.loop import mechanical
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
@@ -108,10 +108,6 @@ class TestCompleteTicketMidChainRefusal(TestCase):
     refusal is now caught: the partial progress persists (as the CLI sweep does),
     but no exception escapes the tick.
     """
-
-    def setUp(self) -> None:
-        # The merge-evidence gate must bite so ``mark_merged`` genuinely refuses.
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
 
     def test_mid_chain_gate_refusal_does_not_escape_the_tick(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/9", state="pr_opened")
@@ -250,6 +246,7 @@ class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
         assert attempt.exit_code == 0
         assert "no verdict" in attempt.result["summary"]
         assert "no review is owed (PR merged)" in attempt.result["summary"]
+        assert "reviewing" not in Session.objects.get(pk=task.session_id).visited_phases
 
     def test_the_self_authored_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
         url = "https://github.com/souliane/teatree/pull/4309"

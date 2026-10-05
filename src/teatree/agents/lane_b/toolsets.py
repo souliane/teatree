@@ -5,7 +5,7 @@ wrapper, the soft-gate approval, and the MCP toolsets are composed into the list
 ``PydanticAiHarness`` passes as ``Agent(toolsets=...)``. Composition order (inner
 to outer): capabilities → phase filter → hard-deny wrapper → soft-gate approval;
 the read-only MCP toolsets ride alongside, EXCEPT for an empty (non-``None``)
-phase allowance — a ``_NONE`` phase (``short_describe``, ``directive_reading``)
+phase allowance — a ``_NONE`` phase (``short_describe``)
 may call nothing, so no MCP attaches past the phase filter.
 """
 

@@ -104,9 +104,10 @@ _PRE_SQUASH_CHAIN: tuple[str, ...] = (
 
 # ``setUp`` and every case reverse-migrate ``core`` to ``zero`` and re-apply on the
 # shared ``default`` connection — several seconds single-core, exceeding the global
-# 60s ``pytest-timeout`` under ``-n auto --cov`` contention. Scoped 240s bump
+# 60s ``pytest-timeout`` under ``-n auto --cov`` contention. Scoped bump
 # mirrors the sibling migrate test; the global 60s stays the hang-detector (#1189).
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 143 s, 9 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class TestSquashMigratesCleanBothWays(TransactionTestCase):
     """A fresh DB and a recorded-old-chain DB both migrate to head with no brick."""
 

@@ -187,14 +187,6 @@ class TicketCheckoutTests(_OccupancyCase):
         with occupy_ticket_checkout(bare, holder="task:1", holder_session="s1") as path:
             assert path == ""
 
-    def test_the_kill_switch_hands_out_the_checkout_ungated(self) -> None:
-        acquire(self.worktree, holder="task:1", holder_session="s1")
-        with occupy_ticket_checkout(self.ticket, holder="task:2", holder_session="s2", enabled=False) as path:
-            assert path == str(self.checkout)
-        held = occupancy_holder(self.fresh())
-        assert held is not None
-        assert held.holder == "task:1"
-
 
 class RefuseIfOccupiedTests(_OccupancyCase):
     def test_a_free_checkout_is_handed_over(self) -> None:

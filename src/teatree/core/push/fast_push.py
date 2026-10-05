@@ -6,7 +6,7 @@ in-process here so bypassing the hooks never bypasses leak protection. The
 four gates mirror the hook chain's four leak checks, consulting the SAME
 canonical matchers and sources — banned terms (``term_match`` /
 ``terms_for_gate("core")``); the privacy/secret scan (``scripts/privacy_scan.py``);
-overlay-leak terms + opaque IDs (``overlay_leak_terms`` / ``find_opaque_ids``);
+overlay-leak terms + opaque IDs (``banned_term_registry`` / ``find_opaque_ids``);
 and the public-repo commit-author identity gate (#730). Author/committer email
 is commit metadata a diff never shows, so that fourth gate refuses a non-noreply
 identity on a PUBLIC GitHub remote exactly as the ``refuse-public-push-with-leak``
@@ -47,6 +47,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
 
+from teatree.core.authoring_credential import (
+    UnapprovableAuthorError,
+    authoring_credential_for_remote,
+    unapprovable_author_refusal,
+)
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
@@ -72,13 +77,15 @@ LEAK_GATES: Final[tuple[str, str, str, str]] = (
 #: ``pr_action`` for a push whose branch could only open a zero-file pull request (#4551).
 EMPTY_DELTA_PR_SKIP: Final = "skipped-empty-delta"
 
+#: ``pr_action`` for a push whose MR would be authored by an identity the forge bars from approving it.
+UNAPPROVABLE_AUTHOR_PR_REFUSAL: Final = "refused-unapprovable-author"
+
 _NON_PUBLIC_VERDICTS: Final = frozenset({"PRIVATE", "INTERNAL"})
 
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _RANGE_MESSAGE_PATH = "<unpushed-commit-messages>"
 _REF_NAME_PATH = "<ref-name>"
-_OVERLAY_TERMS_ENV = "TEATREE_OVERLAY_LEAK_TERMS"
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
 
@@ -101,6 +108,10 @@ class FastPushOutcome:
     pr_action: str = ""
     pr_skip_reason: str = ""
     message: str = ""
+
+    @property
+    def author_refusal(self) -> str:
+        return self.pr_skip_reason if self.pr_action == UNAPPROVABLE_AUTHOR_PR_REFUSAL else ""
 
 
 class ForgeClient(Protocol):
@@ -136,6 +147,15 @@ class GhForge:
         run_checked(["gh", "pr", "edit", url, "--body", body], cwd=self._repo, env=env)
 
 
+@dataclass(frozen=True, slots=True)
+class _GlabIdentity:
+    repo: Path
+    env: dict[str, str]
+
+    def current_user(self) -> str:
+        return str(json.loads(run_checked(["glab", "api", "user"], cwd=self.repo, env=self.env).stdout)["username"])
+
+
 class GlabForge:
     def __init__(self, repo: Path) -> None:
         self._repo = repo
@@ -144,9 +164,15 @@ class GlabForge:
         return probe_gitlab_open_pr(self._repo, branch).url_or_empty()
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
-        env = self._env()
+        remote = git.remote_url(repo=str(self._repo))
+        credential = authoring_credential_for_remote(remote, fallback=self._owner_token)
+        if credential.refusal:
+            raise UnapprovableAuthorError(credential.refusal)
+        env = self._env(credential.token)
         if env is None:
             return ""
+        if refusal := unapprovable_author_refusal(_GlabIdentity(self._repo, env), remote):
+            raise UnapprovableAuthorError(refusal)
         result = run_checked(
             ["glab", "mr", "create", "--source-branch", branch, "--title", title, "--description", body, "--yes"],
             cwd=self._repo,
@@ -156,7 +182,7 @@ class GlabForge:
         return urls[-1] if urls else ""
 
     def update_pr(self, *, url: str, body: str) -> None:
-        env = self._env()
+        env = self._env(self._owner_token())
         if env is None:
             return
         run_checked(
@@ -165,13 +191,13 @@ class GlabForge:
             env=env,
         )
 
-    def _env(self) -> dict[str, str] | None:
+    def _owner_token(self) -> str:
         resolution = resolve_repo_token(str(self._repo), credential="gitlab_token")
-        if resolution.state is not ForgeTokenState.TOKEN:
-            return None
-        env = dict(os.environ)
-        env["GITLAB_TOKEN"] = resolution.token
-        return env
+        return resolution.token if resolution.state is ForgeTokenState.TOKEN else ""
+
+    @staticmethod
+    def _env(token: str) -> dict[str, str] | None:
+        return {**os.environ, "GITLAB_TOKEN": token} if token else None
 
 
 def _empty_delta_reason(branch: str, target: str) -> str:
@@ -209,7 +235,7 @@ def _identity_gate_target(repo: Path) -> str | None:
     slug = git_remote.slug_from_remote(remote) or "<remote>"
     if verdict == "PUBLIC":
         return f"public repo {slug}"
-    return f"repo {slug} (visibility could not be confirmed — treated as public)"
+    return f"repo {slug} (visibility could not be confirmed — refusing public-bound push)"
 
 
 def _push_identities(repo: Path, push_range: PushRange) -> list[str]:
@@ -309,10 +335,7 @@ class LeakGateScan:
         try:
             terms = terms_for_gate("core")
         except BannedTermsUnsetError:
-            detail = (
-                "the banned_terms list is UNSET — fail closed: set T3_BANNED_TERMS or "
-                "`t3 <overlay> config_setting set banned_terms '[...]'` (explicit [] opts out)"
-            )
+            detail = "banned_term_registry is UNSET — configure its leak and prose_collider lists"
             return [LeakFinding(gate="banned-terms", path="", detail=detail)]
         allowlist = allowlist_terms()
         return [
@@ -371,10 +394,7 @@ class LeakGateScan:
 
     @staticmethod
     def _overlay_leak(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
-        env = os.environ.get(_OVERLAY_TERMS_ENV, "")
-        # Registry-first dual-read via terms_for_gate("overlay"); the overlay env
-        # override still WINS, matching check_no_overlay_leak.
-        terms = tuple(t.strip() for t in env.split(",") if t.strip()) if env else terms_for_gate("overlay")
+        terms = terms_for_gate("overlay")
         findings = [
             LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term '{term}'")
             for path, lines in lines_by_path.items()
@@ -541,5 +561,10 @@ class FastPusher:
             outcome.pr_skip_reason = _empty_delta_reason(outcome.branch, target)
             return
         title = outcome.message.splitlines()[0]
-        outcome.pr_url = forge.create_pr(branch=outcome.branch, title=title, body=body)
+        try:
+            outcome.pr_url = forge.create_pr(branch=outcome.branch, title=title, body=body)
+        except UnapprovableAuthorError as refusal:
+            outcome.pr_action = UNAPPROVABLE_AUTHOR_PR_REFUSAL
+            outcome.pr_skip_reason = str(refusal)
+            return
         outcome.pr_action = "created"

@@ -9,6 +9,14 @@
 
 [intra_core]
 "src/teatree/core/_checking_gather.py" = 5
+# 1: the dedupe-audit facade defers `from teatree.core.models import
+# TicketSweepRun` (#162) — an ORM import that must resolve after the app
+# registry is ready, so it stays call-time.
+"src/teatree/core/issue_hygiene.py" = 1
+# 3: `comment` (#162) lazily imports `issue_hygiene`, `overlay_loader`, and
+# `self_forge_identities` to keep the management-command import light — the
+# established lazy-command-import convention this file's siblings use.
+"src/teatree/core/management/commands/_note_commands.py" = 3
 # souliane/teatree#3526: the load-time conformance checker resolves `OverlayBase` at
 # call time because `teatree.core.overlay` reaches back into the loader that imports
 # this module — a genuine cycle, not a lazy-import convenience.
@@ -43,11 +51,10 @@
 # wire layer defers `from teatree.core.models import ImplementedIssueMarker` in its
 # three claim-lifecycle functions (ticket_claim_is_lost / heartbeat_inflight_claims
 # / _heartbeat_one) to keep the sibling claim module Django-free and the wire out
-# of the app-load cycle; the fence call sites below each defer `from
-# teatree.core.fleet import wire` for the same reason (leaf import kept out of the
-# app-load cycle). Nesting the two modules under core/fleet/ does not change these
-# runtime edges, so the deferrals stay and are pegged here.
-"src/teatree/core/fleet/wire.py" = 3
+# of the app-load cycle. Six fault-path imports for health, notify policy, known
+# issue, and user notification also stay call-time: their Django graph is needed
+# only after the app registry is ready and only if the fleet fault fires.
+"src/teatree/core/fleet/wire.py" = 9
 # 1: `t3 push` (#3927) must work in a bare clone with no Django settings, no DB,
 # and no registered overlay, so `_overlay_github_token` defers `from
 # teatree.core.overlay_loader import get_overlay` and degrades to the ambient
@@ -73,11 +80,6 @@
 # keeps both deferred rather than moving one to module scope and leaving the other.
 "src/teatree/core/gates/open_questions_gate.py" = 2
 "src/teatree/core/gates/owned_repo_guard.py" = 2
-# 2: mirrors plan_gate.py's own pair — `PlanArtifact` (an ORM read) and
-# `is_trivial_plan_skip` (imports the model module) both must resolve after the
-# app registry is ready, so `unplanned_dispatch_refusal` keeps both deferred.
-"src/teatree/core/gates/plan_dispatch_gate.py" = 2
-"src/teatree/core/gates/plan_gate.py" = 2
 "src/teatree/core/gates/review_request_draft_gate.py" = 1
 "src/teatree/core/gates/review_request_guard.py" = 7
 # 7: overlay_for_mr_url resolves the ambient overlay at call time like resolve_guard_target; the edge is already eager.
@@ -172,8 +174,10 @@
 # twice (`_pr_landed` / `_has_open_pr`) — peer models in this package, so each stays
 # call-time for the same reason the `Ticket` deferral already does.
 "src/teatree/core/models/implemented_issue_marker.py" = 3
-# 1: `_ticket_carrying_pr` walks `Ticket` rows, and `Ticket` reaches back into this
+# 1: `_tickets_with_extra` reads `Ticket` rows, and `Ticket` reaches back into this
 # module's package — a genuine model cycle, so the sibling import stays call-time.
+# 1: plan_artifact imports Ticket, and every Ticket facet imports this predicate.
+"src/teatree/core/models/plan_decision.py" = 1
 "src/teatree/core/models/pull_request.py" = 1
 "src/teatree/core/models/task.py" = 7
 # FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_
@@ -244,8 +248,7 @@
 # deferred-question drain — cycle-safe and app-registry-safe (mode_resolution is
 # imported by early hooks via speak.py before Django apps are ready).
 # 8 -> 5 (#3826): the fast-hook mirror is deleted (three of its deferrals with it) and
-# the presence heartbeat moved to the foundation leaf teatree.live_presence, which
-# needs no deferral at all — it is Django-free.
+# the presence heartbeat left this module — it needs no deferral at all.
 "src/teatree/core/mode_resolution.py" = 5
 # #61: stop_snapshot's resume-plan defers `resolve_active_mode` + `ConfigSetting`
 # (ORM/app-registry) to render the mode/schedule lines.

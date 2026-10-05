@@ -31,8 +31,8 @@ from teatree.agents.model_tiering import (
     UnconfiguredOpenAICompatibleModelError,
     _resolve_pydantic_ai_tier,
     model_supports_thinking,
+    resolve_fallback_model,
     resolve_phase_harness,
-    resolve_phase_model,
     resolve_pydantic_ai_model,
     resolve_spawn_effort,
     resolve_spawn_model,
@@ -71,9 +71,13 @@ class TestTierConstantIsSingleSource:
     def test_three_named_tiers(self) -> None:
         assert set(TIER_MODELS) == {"frontier", "balanced", "cheap"}
 
-    def test_frontier_tier_is_opus_5(self) -> None:
-        assert TIER_MODELS["frontier"] == "claude-opus-5"
-        assert resolve_tier("frontier") == "claude-opus-5"
+    def test_shipped_tier_models(self) -> None:
+        assert TIER_MODELS == {
+            "frontier": "claude-opus-5-5",
+            "balanced": "claude-sonnet-5-5",
+            "cheap": "claude-sonnet-5-5",
+        }
+        assert resolve_tier("frontier") == "claude-opus-5-5"
 
     def test_resolve_tier_reads_the_constant(self) -> None:
         for tier, model in TIER_MODELS.items():
@@ -109,70 +113,6 @@ class TestDefaultPhaseTiers:
             "requesting_review": "cheap",
         }
 
-    @pytest.mark.parametrize("phase", ["planning", "coding", "debugging", "reviewing", "retrospecting"])
-    def test_frontier_phases_resolve_to_frontier_model(self, phase: str) -> None:
-        assert resolve_phase_model(phase) == TIER_MODELS["frontier"]
-
-    @pytest.mark.parametrize("phase", ["testing", "shipping"])
-    def test_balanced_phases_resolve_to_balanced_model(self, phase: str) -> None:
-        assert resolve_phase_model(phase) == TIER_MODELS["balanced"]
-
-    def test_requesting_review_resolves_to_cheap_model(self) -> None:
-        assert resolve_phase_model("requesting_review") == TIER_MODELS["cheap"]
-
-    def test_unknown_phase_resolves_to_default_tier(self) -> None:
-        # An unmapped phase (e.g. scoping) falls back to DEFAULT_TIER (balanced).
-        assert resolve_phase_model("scoping") == TIER_MODELS[DEFAULT_TIER]
-
-
-class TestPhaseModelOverrides:
-    def test_override_to_a_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_phase_models={"reviewing": "cheap"})
-        assert resolve_phase_model("reviewing") == TIER_MODELS["cheap"]
-
-    def test_override_to_a_concrete_model_id_passes_through(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_phase_models={"coding": "some-pinned-model-id"})
-        assert resolve_phase_model("coding") == "some-pinned-model-id"
-
-    def test_override_honours_tier_models_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _seeded_db(
-            tmp_path,
-            monkeypatch,
-            agent_phase_models={"testing": "frontier"},
-            agent_tier_models={"frontier": "sentinel-x"},
-        )
-        assert resolve_phase_model("testing") == "sentinel-x"
-
-    @pytest.mark.parametrize("bogus", ["", "   ", "default", "inherit"])
-    def test_sentinel_override_inherits(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bogus: str) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_phase_models={"testing": bogus})
-        assert resolve_phase_model("testing") is None
-
-
-class TestMalformedAndMissing:
-    def test_absent_phase_models_key_falls_back_to_tier_defaults(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _seeded_db(tmp_path, monkeypatch, mode="interactive")
-        assert resolve_phase_model("retrospecting") == TIER_MODELS["frontier"]
-        assert resolve_phase_model("requesting_review") == TIER_MODELS["cheap"]
-
-    def test_missing_db_falls_back_to_tier_defaults(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "nope.sqlite3"))
-        assert resolve_phase_model("testing") == TIER_MODELS["balanced"]
-
-    def test_non_dict_phase_models_falls_back_to_tier_defaults(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_phase_models="oops")
-        assert resolve_phase_model("retrospecting") == TIER_MODELS["frontier"]
-
-    def test_env_pointed_db_drives_phase_model_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _seeded_db(tmp_path, monkeypatch, agent_phase_models={"shipping": "frontier"})
-        assert resolve_phase_model("shipping") == TIER_MODELS["frontier"]
-
 
 class TestSingleSourceProof:
     """Overriding TIER_MODELS["frontier"] flows to BOTH production and eval.
@@ -195,14 +135,6 @@ class TestSingleSourceProof:
         self._cfg(tmp_path, monkeypatch)
         assert resolve_tier("frontier") == self._SENTINEL
 
-    def test_mutation_check_indirection_not_bypassed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # If resolution bypassed resolve_tier (hard-coded the model id), the
-        # override would NOT take effect and the result would equal the shipped
-        # default. Assert it does NOT — proving the indirection is live.
-        self._cfg(tmp_path, monkeypatch)
-        assert resolve_spawn_model("planning", skills=[]) != TIER_MODELS["frontier"]
-        assert resolve_phase_model("planning") != TIER_MODELS["frontier"]
-
 
 class TestResolveSpawnModel:
     """`resolve_spawn_model(phase, *, skills)` — most-capable-wins floor merge.
@@ -216,16 +148,12 @@ class TestResolveSpawnModel:
         _seeded_db(tmp_path, monkeypatch, agent_phase_models={"reviewing": "balanced"})
         assert resolve_spawn_model("reviewing", skills=[]) == TIER_MODELS["balanced"]
 
-    def test_absent_config_equals_phase_model_default(self) -> None:
-        for phase in ("reviewing", "testing", "shipping", "retrospecting", "planning", "requesting_review"):
-            assert resolve_spawn_model(phase, skills=["code-review"]) == resolve_phase_model(phase)
-
     def test_skill_floor_raises_above_phase_model(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seeded_db(
             tmp_path,
             monkeypatch,
             agent_phase_models={"requesting_review": "cheap"},
-            agent_skill_models={"code-review": "frontier"},
+            agent_skill_models={"code-review": [{"floor": "frontier"}]},
         )
         # cheap phase floor + a frontier skill floor → frontier model (most capable wins).
         assert resolve_spawn_model("requesting_review", skills=["code-review"]) == TIER_MODELS["frontier"]
@@ -235,7 +163,7 @@ class TestResolveSpawnModel:
             tmp_path,
             monkeypatch,
             agent_phase_models={"planning": "frontier"},
-            agent_skill_models={"code-review": "cheap"},
+            agent_skill_models={"code-review": [{"floor": "cheap"}]},
         )
         # A weaker skill floor never downgrades the stronger phase model.
         assert resolve_spawn_model("planning", skills=["code-review"]) == TIER_MODELS["frontier"]
@@ -245,7 +173,7 @@ class TestResolveSpawnModel:
             tmp_path,
             monkeypatch,
             agent_phase_models={"requesting_review": "cheap"},
-            agent_skill_models={"a": "cheap", "b": "frontier", "c": "balanced"},
+            agent_skill_models={"a": [{"floor": "cheap"}], "b": [{"floor": "frontier"}], "c": [{"floor": "balanced"}]},
         )
         # Most-capable floor wins regardless of skill order.
         assert resolve_spawn_model("requesting_review", skills=["a", "b", "c"]) == TIER_MODELS["frontier"]
@@ -258,7 +186,7 @@ class TestResolveSpawnModel:
             tmp_path,
             monkeypatch,
             agent_phase_models={"requesting_review": "cheap"},
-            agent_skill_models={"code-review": "frontier"},
+            agent_skill_models={"code-review": [{"floor": "frontier"}]},
         )
         # A loaded skill with no floor entry does not raise capability.
         assert resolve_spawn_model("requesting_review", skills=["unlisted-skill"]) == TIER_MODELS["cheap"]
@@ -268,7 +196,7 @@ class TestResolveSpawnModel:
             tmp_path,
             monkeypatch,
             agent_phase_models={"requesting_review": "cheap"},
-            agent_skill_models={"code-review": "inherit"},
+            agent_skill_models={"code-review": []},
         )
         # An inherit-sentinel floor is a no-op; the phase model stands.
         assert resolve_spawn_model("requesting_review", skills=["code-review"]) == TIER_MODELS["cheap"]
@@ -278,37 +206,28 @@ class TestResolveSpawnModel:
             tmp_path,
             monkeypatch,
             agent_phase_models={"requesting_review": "cheap"},
-            agent_skill_models={"code-review": "frontier"},
+            agent_skill_models={"code-review": [{"floor": "frontier"}]},
         )
         assert resolve_spawn_model("requesting_review", skills=["code-review"]) == TIER_MODELS["frontier"]
 
 
-class TestNoFableDefault:
-    """Pinning test (#2237 removal): nothing routes to Fable without explicit opt-in.
+class TestFallbackNeverRepeatsTheSpawnModel:
+    def test_a_cheap_tier_on_the_balanced_model_has_no_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seeded_db(tmp_path, monkeypatch, agent_tier_models={"cheap": TIER_MODELS["balanced"]})
+        assert resolve_fallback_model(TIER_MODELS["balanced"]) is None
 
-    The standalone ``fable_enabled`` kill-switch is gone — the safety property it
-    protected is now structural: :data:`TIER_MODELS` never NAMES a Fable model id
-    for any tier, so a phase can only ever reach Fable via an EXPLICIT
-    ``agent_tier_models`` / ``agent_skill_models`` / ``agent_honesty_model``
-    override the operator writes themselves — never a shipped default.
-    """
 
-    def test_tier_models_never_names_a_fable_model_id(self) -> None:
-        assert all("fable" not in model.lower() for model in TIER_MODELS.values())
+class TestConcreteDefaultModels:
+    """Every default phase and spawn resolves through the shipped tier catalog."""
 
-    def test_default_phase_models_never_resolve_to_fable(self) -> None:
-        for phase in DEFAULT_PHASE_MODELS:
-            resolved = resolve_phase_model(phase)
-            assert resolved is not None
-            assert "fable" not in resolved.lower()
-
-    def test_absent_config_spawn_model_never_defaults_to_fable(self) -> None:
+    def test_absent_config_spawn_model_uses_shipped_models(self) -> None:
         for phase in (*DEFAULT_PHASE_MODELS, "scoping"):
             resolved = resolve_spawn_model(phase, skills=[])
-            assert resolved is not None
-            assert "fable" not in resolved.lower()
+            assert resolved in TIER_MODELS.values()
 
-    def test_default_honesty_model_is_opus_not_fable(self) -> None:
+    def test_default_honesty_model_is_opus(self) -> None:
         from teatree.config.agent_spawn import AgentConfig  # noqa: PLC0415 — deferred: test-local
 
         assert AgentConfig().honesty_model == "opus"
@@ -323,9 +242,9 @@ class TestModelSupportsThinking:
     def test_balanced_model_supports_thinking(self) -> None:
         assert model_supports_thinking(TIER_MODELS["balanced"]) is True
 
-    def test_cheap_haiku_model_does_not_support_thinking(self) -> None:
+    def test_a_haiku_model_does_not_support_thinking(self) -> None:
         # Haiku rejects the thinking/effort levers, so the guard withholds the pin.
-        assert model_supports_thinking(TIER_MODELS["cheap"]) is False
+        assert model_supports_thinking("claude-haiku-4-5") is False
 
     def test_unrecognised_model_supports_thinking(self) -> None:
         # An unrecognised id falls back to the conservative reasoning tier
@@ -374,7 +293,7 @@ class TestTierEffortConstantIsSingleSource:
 
 
 class TestResolveSpawnEffort:
-    """`resolve_spawn_effort(phase)` — phase → tier → effort, mirroring resolve_phase_model."""
+    """`resolve_spawn_effort(phase)` maps a phase to its tier's effort."""
 
     @pytest.mark.parametrize("phase", ["planning", "coding", "debugging", "reviewing", "retrospecting"])
     def test_frontier_phases_resolve_to_frontier_effort(self, phase: str) -> None:
@@ -556,10 +475,20 @@ class TestResolvePydanticAiModel:
         _seeded_db(
             tmp_path,
             monkeypatch,
-            agent_pydantic_ai_tier_models={"frontier": "vendor/hard", "cheap": "vendor/mundane"},
+            agent_pydantic_ai_tier_models={"frontier": "vendor/hard", "balanced": "vendor/mundane"},
         )
         assert resolve_pydantic_ai_model(TIER_MODELS["frontier"]) == "vendor/hard"
-        assert resolve_pydantic_ai_model(TIER_MODELS["cheap"]) == "vendor/mundane"
+        assert resolve_pydantic_ai_model(TIER_MODELS["balanced"]) == "vendor/mundane"
+
+    def test_shipped_cheap_tier_keeps_its_pydantic_handle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seeded_db(
+            tmp_path,
+            monkeypatch,
+            agent_pydantic_ai_tier_models={"cheap": "vendor/cheap", "balanced": "vendor/balanced"},
+        )
+        assert resolve_pydantic_ai_model(TIER_MODELS["cheap"], tier="cheap") == "vendor/cheap"
 
     @pytest.mark.parametrize(
         "backend_native_id",

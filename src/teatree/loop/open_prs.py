@@ -63,16 +63,9 @@ def _as_str(value: object) -> str:
 
 
 def _is_draft(raw: RawAPIDict) -> bool:
-    """Read the draft flag across host shapes.
-
-    GitHub search-issues PRs and GitLab MRs both expose ``draft`` (bool);
-    older GitLab payloads carry the legacy ``work_in_progress`` alias.
-    """
-    for key in ("draft", "work_in_progress"):
-        value = raw.get(key)
-        if isinstance(value, bool):
-            return value
-    return False
+    """Read the draft flag shared by GitHub PRs and GitLab MRs."""
+    value = raw.get("draft")
+    return value if isinstance(value, bool) else False
 
 
 def open_prs_from_signals(signals: list[ScanSignal]) -> list[OpenPr]:

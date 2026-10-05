@@ -80,11 +80,6 @@ def _tmpfs_warn_percent(raw: str | None, *, default: int = _DEFAULT_TMPFS_WARN_P
     return value if 1 <= value <= _PERCENT_MAX else default
 
 
-def _disk_percent_threshold(raw: str | None, *, default: int) -> int:
-    """Parse a percent-threshold env override into 1..100; fall back to *default* on garbage."""
-    return disk_probe.disk_percent_threshold(raw, default=default)
-
-
 def _used_percent(path: str) -> float | None:
     """Percent of *path*'s filesystem in use, or ``None`` when it cannot be measured."""
     return disk_probe.read_disk_used_percent(path)

@@ -57,7 +57,7 @@ from teatree.account_headroom import AccountHeadroom, headroom_at, rank
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
-from teatree.credential_readings import reading_from, reading_from_metered, unverified_exhaustion
+from teatree.credential_readings import reading_from, unverified_exhaustion
 from teatree.llm.anthropic_limits import ALL_TOKENS_EXHAUSTED_SIGNATURE
 from teatree.llm.credentials import (
     AnthropicApiKeyCredential,
@@ -65,14 +65,7 @@ from teatree.llm.credentials import (
     Credential,
     CredentialError,
 )
-from teatree.llm.rate_limits import (
-    MeteredKeyReader,
-    RateLimitProbeError,
-    RateLimitReader,
-    read_api_key_status,
-    read_rate_limits,
-    used_fraction,
-)
+from teatree.llm.rate_limits import RateLimitProbeError, RateLimitReader, read_rate_limits, used_fraction
 from teatree.utils.eval_container import in_container
 from teatree.utils.secrets import SecretReader, SecretStoreError, read_pass
 
@@ -121,17 +114,9 @@ class AllTokensExhaustedError(CredentialError):
 class PassPathSelector:
     """Route a credential *kind* to a healthy account's ``pass`` entry.
 
-    The reader is injectable (default: :func:`~teatree.llm.rate_limits.read_rate_limits`)
-    so selector tests drive canned health with no network. All DB reads/writes go
-    through the health cache and sticky pointer, so the steady-state hot path (a fresh
-    sticky pick) never probes.
+    Selection reads only the stored health cache and sticky pointer; it never
+    probes a provider while choosing a credential.
     """
-
-    def __init__(
-        self, *, reader: RateLimitReader | None = None, api_key_reader: MeteredKeyReader | None = None
-    ) -> None:
-        self._reader = reader
-        self._api_key_reader = api_key_reader
 
     def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE) -> str | None:
         """The ``pass_path`` override for *kind* in *scope*, or ``None`` for the built-in.
@@ -236,19 +221,6 @@ class PassPathSelector:
         if measured:
             return rank(measured)[0].account
         return usable[0] if usable else None
-
-    def _health_reading(self, kind: TokenKind, token: str) -> TokenHealthReading:
-        """Probe *token* the way its *kind* authenticates and fold it into a cache reading.
-
-        OAuth reads the unified 5h/7d windows; a metered API key reads its credit state
-        (funded / out-of-credits), mapped onto the same exhaustion signal so routing
-        refuses a depleted key.
-        """
-        if kind is TokenKind.API_KEY:
-            api_key_reader = self._api_key_reader or read_api_key_status
-            return reading_from_metered(api_key_reader(token))
-        reader = self._reader or read_rate_limits
-        return reading_from(reader(token, is_oauth=True))
 
     @staticmethod
     def _configured_paths(kind: TokenKind, scope: str) -> list[str]:

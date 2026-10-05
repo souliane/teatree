@@ -91,9 +91,6 @@ class Quarantine:
     def names(self) -> frozenset[str]:
         return frozenset(entry.scenario for entry in self.entries)
 
-    def entry_for(self, scenario: str) -> QuarantineEntry | None:
-        return next((entry for entry in self.entries if entry.scenario == scenario), None)
-
     def suppressed(self, *, as_of: datetime.date | None = None) -> frozenset[str]:
         """The scenario names the bounded PR lane drops — every entry not past its expiry."""
         today = as_of or utc_today()

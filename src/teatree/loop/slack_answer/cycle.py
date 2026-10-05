@@ -1,20 +1,14 @@
 """One reactive Slack-answer cycle (#1014).
 
-The reactive, token-cheap complement to the inbound drain: where
-``slack_dm_inbound`` only records user DMs and the prompt-drain surfaces
-them in-band, this cycle *answers* them out-of-band — event-driven off the
-inbound-event wake (~1s), with a 5m fallback timer — so a quick ack / status
-question gets a reply in seconds, not at the next slower per-loop tick, and at
-near-zero token cost.
+Where ``slack_dm_inbound`` only records user DMs, this cycle *answers* them
+out-of-band — event-driven off the inbound-event wake (~1s), with a 5m fallback
+timer — so a quick ack / status question gets a reply in seconds, not at the next
+slower per-loop tick, and at near-zero token cost.
 
-It is **complementary to the drain, not a double-answer**: ``consume()``
-stamps ``consumed_at`` (prompt-drain), this cycle stamps
-``loop_replied_at`` (loop reply posted, #1075 / Option B). It
-deliberately does NOT touch ``answered_at`` — that column is #1069's
-strict "the agent personally replied" turn-end gate, kept fully
-decoupled from this loop's work-queue so a token-cheap loop reply never
-silently satisfies the #1063 Stop-hook gate. The columns are orthogonal
-single-use CAS transitions, so a row can be drained, loop-replied, and
+This cycle stamps ``loop_replied_at`` (loop reply posted, #1075 / Option B) and
+deliberately does NOT touch ``answered_at`` — #1069's strict "the agent personally
+replied" record, so a token-cheap loop reply never reads as one. The columns are
+orthogonal single-use CAS transitions, so a row can be loop-replied and
 agent-answered independently with no race and no double reply.
 
 Per unit, oldest-first, bounded to :data:`_BATCH` per cycle. First a
@@ -208,8 +202,7 @@ def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
     creates the side effect). The follow-up rows are stamped best-effort
     so they drop out of ``loop_unreplied()`` together with the lead — one
     logical turn, one loop reply, no orphaned follow-up re-processed alone.
-    Stamps only ``loop_replied_at`` (#1075); never ``answered_at`` so the
-    #1063 turn-end gate stays decoupled from this loop.
+    Stamps only ``loop_replied_at`` (#1075); never ``answered_at``, the agent's own reply.
     """
     if not unit.lead.mark_loop_replied(kind):
         return False

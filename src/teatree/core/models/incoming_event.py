@@ -75,19 +75,6 @@ class IncomingEvent(models.Model):
         """True iff this event is a reply under a parent message (#2230)."""
         return bool(self.parent_ts)
 
-    @property
-    def is_untrusted(self) -> bool:
-        """True iff this content is NOT from an operator identity (#116).
-
-        Everything except :attr:`Provenance.OWNER` is untrusted — a colleague, a public
-        stranger, an unstamped row. The firewall's leg-B test.
-        """
-        return self.provenance != Provenance.OWNER
-
-    @property
-    def is_dead_lettered(self) -> bool:
-        return self.dead_lettered_at is not None
-
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
         self.save(update_fields=["processed_at"])

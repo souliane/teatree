@@ -2,9 +2,7 @@
 
 Four small defects of the same family:
 
-*   ``overlay_scope_q`` admitted a task as a pre-multi-overlay legacy row whenever
-    EITHER relation was blank, so an ``acme`` ticket's task — whose session is
-    never stamped — was visible and claimable by every other overlay;
+*   ``overlay_scope_q`` must scope a task through its attributed ticket or session;
 *   ``reap_pre_gate`` read the ACTIVE overlay's ownership settings while judging
     another overlay's worktree, so an all-overlay sweep could delete a
     colleague-owned worktree the row's own overlay protects;
@@ -32,7 +30,7 @@ from teatree.core.waiting import WaitingKind, gather_waiting
 pytestmark = pytest.mark.django_db
 
 
-class TestTaskOverlayScopeAdmitsOnlyTrueLegacyRows(TestCase):
+class TestTaskOverlayScope(TestCase):
     def _task(self, *, ticket_overlay: str, session_overlay: str) -> Task:
         ticket = Ticket.objects.create(
             overlay=ticket_overlay,
@@ -51,10 +49,10 @@ class TestTaskOverlayScopeAdmitsOnlyTrueLegacyRows(TestCase):
         assert list(Task.objects.for_overlay("t3-teatree")) == []
         assert list(Task.objects.for_overlay("acme")) == [task]
 
-    def test_a_genuinely_legacy_row_is_still_visible_everywhere(self) -> None:
-        task = self._task(ticket_overlay="", session_overlay="")
-        assert list(Task.objects.for_overlay("t3-teatree")) == [task]
-        assert list(Task.objects.for_overlay("acme")) == [task]
+    def test_a_blank_row_is_not_visible_to_a_named_overlay(self) -> None:
+        self._task(ticket_overlay="", session_overlay="")
+        assert list(Task.objects.for_overlay("t3-teatree")) == []
+        assert list(Task.objects.for_overlay("acme")) == []
 
 
 class TestSessionInheritsItsTicketsOverlay(TestCase):

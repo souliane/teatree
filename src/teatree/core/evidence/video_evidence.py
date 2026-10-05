@@ -9,9 +9,7 @@ media-kind), but had ZERO quality check on the recorded video, and
 ``scripts/analyze_video.py`` only dumped frames for manual viewing with no
 verdict.
 
-This module is the deterministic substitute, mirroring the
-:mod:`teatree.core.evidence.test_plan_validation` / :mod:`teatree.core.evidence.doc_evidence`
-shape — a dedicated error subclass, a frozen report dataclass, and pure logic
+This module is the deterministic substitute: a dedicated error subclass, a frozen report dataclass, and pure logic
 over an on-disk path with a clear refusal message. It is NOT an LLM check: it
 shells ``ffprobe``/``ffmpeg`` to measure the LEADING static-or-blank run from
 ``t=0`` (the dead pre-roll an author records when they start the capture before

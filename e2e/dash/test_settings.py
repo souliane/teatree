@@ -155,8 +155,8 @@ def test_the_old_config_url_lands_on_the_settings_page_with_no_config_nav_entry(
 
 @pytest.mark.usefixtures("seeded_board")
 def test_a_configured_secret_never_reaches_the_browser(live_server: LiveServer, page: Page) -> None:
-    ConfigSetting.objects.set_value("banned_terms", ["sentinel-marker-xyz"])
+    ConfigSetting.objects.set_value("banned_term_registry", {"prose_collider": ["sentinel-marker-xyz"]})
     section = _section(("Registries", "Term scanning, agent tables & cold reads"))
     page.goto(f"{live_server.url}/dash/settings/?section={section.slug}")
-    expect(page.locator("#setting-banned_terms")).to_contain_text("***")
+    expect(page.locator("#setting-banned_term_registry")).to_contain_text("***")
     expect(page.locator("body")).not_to_contain_text("sentinel-marker-xyz")

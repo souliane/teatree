@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -5,6 +7,7 @@ from unittest.mock import Mock, patch
 from django.test import Client, TestCase
 from django.urls import reverse
 
+from teatree.core.models import ConfigSetting
 from teatree.dash.skill_control import SkillDashboardSource, build_skill_dashboard
 from teatree.dash.views.skills import DashboardState
 from teatree.harness_skills import SkillsHarness
@@ -84,6 +87,57 @@ def _state(tmp_path: Path) -> DashboardState:
 
 
 class SkillsPageTestCase(TestCase):
+    def test_excluded_skill_can_be_reenabled_for_the_next_install(self) -> None:
+        ConfigSetting.objects.set_value("harness_skill_exclusions", ["codex:optional"])
+        state = replace(_state(Path("/tmp/skills-page")), exclusions=["codex:optional"])
+        with patch("teatree.dash.views.skills._load_state", return_value=state):
+            page = self.client.get(reverse("dash:skills"))
+        assert b"Re-enable" in page.content
+        assert b"codex:optional" in page.content
+
+        response = self.client.post(reverse("dash:skills_enable", args=["codex", "optional"]))
+
+        assert response.status_code == 302
+        assert ConfigSetting.objects.get(key="harness_skill_exclusions").value == []
+
+    def test_enable_reads_and_writes_under_the_remove_lock(self) -> None:
+        ConfigSetting.objects.set_value("harness_skill_exclusions", ["codex:optional", "codex:other"])
+        locked = False
+
+        @contextmanager
+        def _lock(_path: Path):
+            nonlocal locked
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+
+        def _read() -> list[str]:
+            assert locked
+            return ["codex:optional", "codex:other"]
+
+        def _write(exclusions: list[str]) -> None:
+            assert locked
+            assert exclusions == ["codex:other"]
+
+        with (
+            patch("teatree.dash.views.skills.file_operation_lock", _lock),
+            patch("teatree.dash.views.skills._current_exclusions", side_effect=_read),
+            patch("teatree.dash.views.skills._persist_exclusions", side_effect=_write),
+        ):
+            response = self.client.post(reverse("dash:skills_enable", args=["codex", "optional"]))
+        assert response.status_code == 302
+        assert locked is False
+
+    def test_enable_requires_exact_exclusion_membership(self) -> None:
+        ConfigSetting.objects.set_value("harness_skill_exclusions", ["codex:other"])
+        with patch("teatree.dash.views.skills.remove_harness_skill_exclusion") as remove:
+            response = self.client.post(reverse("dash:skills_enable", args=["codex", "optional"]))
+        assert response.status_code == 400
+        remove.assert_not_called()
+        assert ConfigSetting.objects.get(key="harness_skill_exclusions").value == ["codex:other"]
+
     def test_collision_rows_and_nav_badge_have_danger_styling(self) -> None:
         stylesheet = (
             Path(__file__).resolve().parents[3] / "src" / "teatree" / "dash" / "static" / "dash" / "css" / "dash.css"

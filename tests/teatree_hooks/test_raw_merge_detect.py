@@ -52,6 +52,7 @@ _STILL_BLOCKED = [
     pytest.param("result=`gh pr merge 5`", id="command-substitution-backtick-assigned"),
     pytest.param('echo "$(gh pr merge 5)"', id="command-substitution-in-double-quotes"),
     pytest.param("cat <<EOF\n$(gh pr merge 5)\nEOF", id="command-substitution-in-heredoc-body"),
+    pytest.param("cat <<A <<B\na\nA\nb\nB\ngh pr merge 5", id="after-two-heredocs-opened-on-one-line"),
     pytest.param("( gh pr merge 5 )", id="subshell-group"),
     pytest.param("{ gh pr merge 5; }", id="brace-group"),
     pytest.param("if true; then gh pr merge 5; fi", id="compound-if-then"),

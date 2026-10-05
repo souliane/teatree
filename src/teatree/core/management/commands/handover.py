@@ -474,6 +474,8 @@ class Command(TyperCommand):
             "committed": bool(outcome and outcome.committed),
             "pushed": bool(outcome and outcome.pushed),
             "pr_url": outcome.pr_url if outcome else "",
+            "pr_action": outcome.pr_action if outcome else "",
+            "pr_skip_reason": outcome.pr_skip_reason if outcome else "",
             "error": push.error,
         }
 
@@ -486,6 +488,8 @@ class Command(TyperCommand):
             findings = "; ".join(f.detail for f in outcome.findings) if outcome else "no outcome"
             return f"REFUSED ({findings})"
         pr = f" PR {outcome.pr_url}" if outcome.pr_url else ""
+        if outcome.author_refusal:
+            pr = f" PR REFUSED: {outcome.author_refusal}"
         return f"pushed (committed={outcome.committed}){pr}"
 
     @command()

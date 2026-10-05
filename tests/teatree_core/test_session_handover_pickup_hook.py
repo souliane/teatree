@@ -20,6 +20,7 @@ from django.test import TestCase
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _claim_session_handover, handle_session_start_bootstrap
 from teatree.core.models import SessionHandover
+from tests._unread_pipe import unread_stdout
 
 
 def _bootstrap_stdout(data: dict) -> str:
@@ -50,11 +51,11 @@ class _RegistryIsolation(TestCase):
 
 class TestClaimSessionHandover(_RegistryIsolation):
     def test_returns_none_when_nothing_to_claim(self) -> None:
-        assert _claim_session_handover("fresh") is None
+        assert _claim_session_handover("fresh", router.StartClaims()) is None
 
     def test_claims_handover_targeted_at_session(self) -> None:
         SessionHandover.objects.create_handover(from_session="prev", to_session="me", payload="WORK STATE")
-        directive = _claim_session_handover("me")
+        directive = _claim_session_handover("me", router.StartClaims())
         assert directive is not None
         assert "WORK STATE" in directive
         assert "from session `prev`" in directive
@@ -62,14 +63,40 @@ class TestClaimSessionHandover(_RegistryIsolation):
 
     def test_claims_parked_for_next_session(self) -> None:
         SessionHandover.objects.create_handover(from_session="prev", to_session="", payload="PARKED")
-        directive = _claim_session_handover("whoever")
+        directive = _claim_session_handover("whoever", router.StartClaims())
         assert directive is not None
         assert "PARKED" in directive
 
     def test_injects_once_only(self) -> None:
         SessionHandover.objects.create_handover(from_session="prev", to_session="me", payload="WORK")
-        assert _claim_session_handover("me") is not None
-        assert _claim_session_handover("me") is None
+        assert _claim_session_handover("me", router.StartClaims()) is not None
+        assert _claim_session_handover("me", router.StartClaims()) is None
+
+    def test_a_start_whose_write_never_reaches_the_session_hands_the_handover_back(self) -> None:
+        SessionHandover.objects.create_handover(from_session="prev", to_session="me", payload="WORK")
+        claims = router.StartClaims()
+        directive = _claim_session_handover("me", claims)
+        assert directive is not None
+
+        with unread_stdout():
+            claims.deliver(directive)
+
+        assert "WORK" in (_claim_session_handover("me", router.StartClaims()) or "")
+
+    def test_a_failed_start_hands_back_only_what_it_claimed_itself(self) -> None:
+        SessionHandover.objects.create_handover(from_session="prev", to_session="me", payload="DELIVERED EARLIER")
+        assert _claim_session_handover("me", router.StartClaims()) is not None
+        SessionHandover.objects.create_handover(from_session="prev", to_session="me", payload="LOST NOW")
+        claims = router.StartClaims()
+        directive = _claim_session_handover("me", claims)
+        assert directive is not None
+
+        with unread_stdout():
+            claims.deliver(directive)
+
+        again = _claim_session_handover("me", router.StartClaims()) or ""
+        assert "LOST NOW" in again
+        assert "DELIVERED EARLIER" not in again
 
 
 class TestSessionStartInjectsHandover(_RegistryIsolation):

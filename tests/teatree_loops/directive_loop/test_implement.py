@@ -63,17 +63,19 @@ class TestScheduleDirectiveImplementation(TestCase):
         assert directive.ticket.extra["directive_id"] == directive.pk
         assert directive.baseline_snapshot is not None
         assert task is not None
-        assert task.phase == "coding"
+        assert task.phase == "planning"
+        assert f"Directive {directive.pk} mechanism — {implementation_brief(directive)}" in task.execution_reason
 
-    def test_ticket_url_carries_the_directive_fragment_and_one_coding_task(self) -> None:
+    def test_ticket_url_carries_the_directive_fragment_and_one_planning_task(self) -> None:
         directive = _admitted()
         schedule_directive_implementation(directive)
         directive.refresh_from_db()
         assert f"directive-impl={directive.pk}" in directive.ticket.issue_url
-        assert Task.objects.pending_in_phase("coding").filter(ticket=directive.ticket).count() == 1
+        assert Task.objects.pending_in_phase("planning").filter(ticket=directive.ticket).count() == 1
+        assert not Task.objects.filter(ticket=directive.ticket, phase="coding").exists()
 
     def test_does_not_double_schedule_or_re_write_an_existing_ticket(self) -> None:
-        # A pre-existing synthetic ticket already carrying the directive_id + a coding
+        # A pre-existing synthetic ticket already carrying the directive_id + a planning
         # task (a re-tick after a crash) is neither double-scheduled nor re-written: the
         # directive still advances, task returns None.
         directive = _admitted()
@@ -81,7 +83,7 @@ class TestScheduleDirectiveImplementation(TestCase):
             issue_url=f"{DIRECTIVE_IMPL_UMBRELLA_URL}#directive-impl={directive.pk}",
             defaults={"role": Ticket.Role.AUTHOR, "short_description": "pre", "extra": {"directive_id": directive.pk}},
         )
-        ticket.schedule_coding()
+        ticket.begin_planning()
         task = schedule_directive_implementation(directive)
         assert task is None
         directive.refresh_from_db()

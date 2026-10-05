@@ -1,8 +1,7 @@
 """Meeting-aware presence — the LOCAL-TTS auto-mute abstraction (#2171).
 
-Distinct from :class:`teatree.live_presence.PresenceHeartbeat`, which tracks
-KEYBOARD activity (a prompt seen recently → the user is at the machine → ``away``
-is downgraded to ``present``). This module answers a different question: is the
+Distinct from the live-turn question routing, which reads the session transcript
+for the owner's recent keystrokes. This module answers a different question: is the
 user CURRENTLY IN A MEETING, so local text-to-speech should stay silent rather
 than talk over a call.
 

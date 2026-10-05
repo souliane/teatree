@@ -25,6 +25,7 @@ regression — the liveness corpus and ``test_block_uncovered_diff_hook.py``.
 import ast
 import json
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -34,11 +35,12 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts import coverage_gate
+from hooks.scripts import coverage_gate, hook_budget
 from hooks.scripts.coverage_gate import diff_coverage_finding
 from hooks.scripts.hook_budget import HOOK_CEILING_S
 from hooks.scripts.hook_router import handle_block_uncovered_diff
 from tests._git_repo import make_git_repo, run_git
+from tests._hook_clock import HookClock
 
 _SKIP_MARKER = "coverage gate 12 skipped"
 _SHIP_BRANCH = "feat/widget"
@@ -104,19 +106,6 @@ def t3_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
 
 
-class _StepClock:
-    """A monotonic clock that jumps *step* seconds between reads — a spent budget, instantly."""
-
-    def __init__(self, step: float) -> None:
-        self._now = 0.0
-        self._step = step
-
-    def monotonic(self) -> float:
-        now = self._now
-        self._now += self._step
-        return now
-
-
 class TestEveryUnmeasuredDeclineAnnouncesItself:
     """Every fail-open branch, driven through the real handler."""
 
@@ -171,10 +160,25 @@ class TestEveryUnmeasuredDeclineAnnouncesItself:
         Starting a measurement anyway does not merely waste time — the harness
         cancels the overrunning hook and no decision is emitted at all.
         """
-        monkeypatch.setattr(coverage_gate, "time", _StepClock(step=float(HOOK_CEILING_S)))
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(HOOK_CEILING_S))
         with _t3_reports(_FAILING_REPORT, returncode=1):
             assert handle_block_uncovered_diff(_create_in(_shipping_repo(tmp_path))) is False
         assert _SKIP_MARKER in capsys.readouterr().err
+
+    def test_a_git_read_takes_no_more_than_the_hook_has_left(self, tmp_path: Path, hook_clock: HookClock) -> None:
+        hook_clock.now = 26.0
+        answered = subprocess.CompletedProcess(args=[], returncode=0, stdout="main\n", stderr="")
+        with patch.object(coverage_gate.subprocess, "run", return_value=answered) as run:
+            assert coverage_gate._git_probe(tmp_path, ["symbolic-ref", "--short", "HEAD"]) == "main"
+        assert run.call_args.kwargs["timeout"] == pytest.approx(3.0)
+
+    def test_no_git_read_starts_once_the_hook_budget_is_spent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(HOOK_CEILING_S))
+        with patch.object(coverage_gate.subprocess, "run") as run:
+            assert coverage_gate._git_probe(tmp_path, ["symbolic-ref", "--short", "HEAD"]) is None
+        assert run.call_count == 0
 
     def test_unparsable_report_notes_the_skip(
         self, tmp_path: Path, t3_on_path: None, capsys: pytest.CaptureFixture[str]

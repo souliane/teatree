@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
+from teatree.core.intake.auto_ticket import synthetic_branch_ticket
+from teatree.core.intake.worktree_refusal import unresolvable_worktree_message
 from teatree.core.invocation_cwd import declared_invocation_cwd
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
@@ -182,8 +183,8 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
     O(all tickets) Python scan as an indexed lookup.
 
     When *overlay* is known (inferred from the resolving repo's remote) the
-    candidates are narrowed to that overlay (plus blank-overlay ambient-default
-    tickets), so a same-number ticket in a DIFFERENT overlay never competes.
+    candidates are narrowed to that overlay, so a same-number ticket in a
+    DIFFERENT overlay never competes.
     Critically, a resolved overlay with NO same-overlay candidate is treated as
     NO MATCH — the branch number belongs to a foreign overlay's ticket, so
     returning that foreign ticket would silently cross-attach the worktree to the
@@ -205,11 +206,10 @@ def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | No
         # a row already matched above, whose ``issue_number`` is non-blank).
         matches += list(real.filter(issue_number="", pk=int(number)))
     if overlay:
-        # Narrow to this overlay (plus blank-overlay ambient-default tickets) and
-        # NEVER fall back to the global list: a resolved overlay whose scoped set
+        # Narrow to this overlay and NEVER fall back to the global list: a resolved overlay whose scoped set
         # is empty means only foreign-overlay tickets share the number, so no
         # match is the correct answer — never a silent cross-overlay attach.
-        matches = [ticket for ticket in matches if ticket.overlay in {overlay, ""}]
+        matches = [ticket for ticket in matches if ticket.overlay == overlay]
     if len(matches) > 1:
         msg = (
             f"ticket_number {number!r} resolves to {len(matches)} tickets "
@@ -307,20 +307,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
         _refresh_reused_row(existing, branch, cwd_path)
         return existing
 
-    # A synthetic ``auto:<branch>`` URL names no repo, so ``Ticket.save()``'s
-    # ``infer_overlay`` can never attribute this row. Stamping the CWD's own
-    # overlay here is the only signal there is, and a blank ``overlay`` makes
-    # ``get_overlay_for_ticket`` fall through to the ambiguous
-    # ``get_overlay(None)`` on a multi-overlay install (souliane/teatree#1814).
-    ticket = Ticket.objects.get_or_create(
-        issue_url=f"auto:{branch}",
-        defaults={
-            "overlay": overlay_name or "",
-            "variant": "",
-            "repos": [repo_name],
-            "kind": classify_ticket_kind(title=branch),
-        },
-    )[0]
+    ticket = synthetic_branch_ticket(branch, repo_name=repo_name, overlay_name=overlay_name or "")
     return _get_or_refresh_worktree(ticket, repo_name, branch, cwd_path)
 
 
@@ -587,5 +574,4 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
     if wt is not None:
         return wt
 
-    msg = f"Cannot auto-detect worktree from {cwd}.\nMake sure you are running t3 from inside a worktree directory."
-    raise WorktreeNotFoundError(msg)
+    raise WorktreeNotFoundError(unresolvable_worktree_message(cwd))

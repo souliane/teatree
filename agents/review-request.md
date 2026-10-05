@@ -25,3 +25,5 @@ Terminate at the posted (or drafted) request; posting is your deliverable.
 
 Follow the loaded skills for the review-request batch flow, platform API
 recipes, and cross-cutting rules.
+
+For the CLI fallback, use `t3 review-request post --mr-url <PR_URL> --approver <user-id> --ticket-id <ticket-id> --head-sha <full-40-char-head-sha> --title "<type(scope): description>"`. The ticket must carry a complete anti-vacuity attestation bound to that head.

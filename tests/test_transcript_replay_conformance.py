@@ -281,14 +281,11 @@ def _edit_events(file_path: str, tool_name: str = "Edit") -> list[tc.SessionEven
 
 # Legitimate edits the invariant must NOT flag: the canonical t3 ticket-worktree
 # layout is ``<workspace>/<ticket>-<slug>/<repo>/...`` — a numeric-ticket-prefixed
-# container dir immediately enclosing the repo checkout — plus the legacy
-# ``-wt-`` / ``/worktrees/`` / ``/wt-`` markers that already passed.
+# container dir immediately enclosing the repo checkout.
 _NO_EDIT_CLEAN = [
     "/Users/u/workspace/2614-loop-blocked-by-a-staged-duplicate-edit-/teatree/tests/test_x.py",
     "/Users/u/workspace/2648-eval-transcript-replay-no-edit/teatree/src/teatree/eval/mod.py",
     "/home/u/workspace/42-fix-foo/teatree/src/mod.py",
-    "/private/home/widget-user/worktrees/teatree/wt-acme/src/mod.py",
-    "/private/tmp/teatree-wt-foo/src/mod.py",
 ]
 
 # Genuine main-clone edits the invariant must STILL flag: the repo checkout sits

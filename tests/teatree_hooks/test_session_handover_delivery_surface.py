@@ -20,6 +20,7 @@ from unittest import mock
 import pytest
 
 import hooks.scripts.session_handover_pickup as pickup
+from hooks.scripts.session_start_delivery import StartClaims
 from teatree.core.models import SessionHandover
 from teatree.paths import ControlDb
 
@@ -33,7 +34,9 @@ def mirror(db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_MIRROR_BODY, encoding="utf-8")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.setattr(pickup, "claim_session_handover_from_file", lambda: (path.read_text(encoding="utf-8"), ""))
+    monkeypatch.setattr(
+        pickup, "claim_session_handover_from_file", lambda _claims: (path.read_text(encoding="utf-8"), "")
+    )
     return path
 
 
@@ -45,7 +48,7 @@ class TestTheDatabaseIsTheDeliverySurface:
                 from_session=f"author-{index}", to_session="", payload=f"payload-{index}"
             )
 
-        directive = pickup.claim_session_handover("the-fresh-session")
+        directive = pickup.claim_session_handover("the-fresh-session", StartClaims())
 
         assert directive is not None
         for index in range(4):
@@ -56,7 +59,7 @@ class TestTheDatabaseIsTheDeliverySurface:
 
     def test_a_readable_but_empty_database_delivers_nothing(self, mirror: Path) -> None:
         """The #4194 mechanism: 'the queue is empty' is an ANSWER, not a reason to read a file."""
-        assert pickup.claim_session_handover("the-fresh-session") is None
+        assert pickup.claim_session_handover("the-fresh-session", StartClaims()) is None
         assert mirror.read_text(encoding="utf-8") == _MIRROR_BODY, "the mirror must not be consumed"
 
     def test_an_unimportable_django_still_bootstraps_off_the_mirror(
@@ -65,7 +68,7 @@ class TestTheDatabaseIsTheDeliverySurface:
         monkeypatch.setattr(pickup, "bootstrap_teatree_django", lambda: False)
 
         with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
-            directive = pickup.claim_session_handover("the-fresh-session")
+            directive = pickup.claim_session_handover("the-fresh-session", StartClaims())
 
         assert directive is not None
         assert _MIRROR_BODY in directive
@@ -80,7 +83,7 @@ class TestTheDatabaseIsTheDeliverySurface:
             mock.patch("teatree.core.handover.claim_handovers", side_effect=RuntimeError("db is locked")),
             caplog.at_level(logging.WARNING, logger="teatree.hook_router"),
         ):
-            directive = pickup.claim_session_handover("the-fresh-session")
+            directive = pickup.claim_session_handover("the-fresh-session", StartClaims())
 
         assert directive is not None
         assert _MIRROR_BODY in directive
@@ -106,7 +109,7 @@ class TestADivergedControlDbIsLoudRatherThanExtendingTheFallback:
         monkeypatch.setattr(ControlDb, "divergence_message", lambda _self, _root: "resolves /a/x vs primary /b/y")
 
         with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
-            directive = pickup.claim_session_handover("the-fresh-session")
+            directive = pickup.claim_session_handover("the-fresh-session", StartClaims())
 
         assert directive is None
         assert mirror.read_text(encoding="utf-8") == _MIRROR_BODY, "a diverged DB must not reach for the mirror"
@@ -120,7 +123,7 @@ class TestADivergedControlDbIsLoudRatherThanExtendingTheFallback:
         monkeypatch.setattr(ControlDb, "divergence_message", lambda _self, _root: None)
 
         with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
-            assert pickup.claim_session_handover("the-fresh-session") is None
+            assert pickup.claim_session_handover("the-fresh-session", StartClaims()) is None
 
         assert caplog.text == "", "an ordinary empty drain against the primary DB has nothing to say"
 
@@ -131,4 +134,4 @@ class TestADivergedControlDbIsLoudRatherThanExtendingTheFallback:
 
         monkeypatch.setattr(ControlDb, "divergence_message", _boom)
 
-        assert pickup.claim_session_handover("the-fresh-session") is None
+        assert pickup.claim_session_handover("the-fresh-session", StartClaims()) is None

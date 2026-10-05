@@ -9,6 +9,7 @@ behaviour under test.
 """
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -22,14 +23,10 @@ from teatree.cli.teatree_gate import (
     GATE_KEY,
     GATE_RELAXATION_GATE_KEY,
     MAIN_CLONE_GATE_KEY,
-    MEMORY_RECALL_GATE_KEY,
     _gate_key_is_enabled,
-    completion_claim_gate_is_enabled,
-    config_overwrite_gate_is_enabled,
     gate_is_enabled,
-    memory_recall_gate_is_enabled,
 )
-from teatree.config import cold_reader
+from teatree.config import cold_reader, cold_writer
 
 # The exact ``teatree_config_setting`` shape Django's migration emits — the
 # NOT-NULL timestamp columns and the (scope, key) unique constraint the cold
@@ -93,6 +90,26 @@ class TestGateStatus:
 
 
 class TestGateDisableEnable:
+    def test_disable_fails_loudly_when_the_canonical_db_is_missing(self, app: typer.Typer) -> None:
+        result = CliRunner().invoke(app, ["gate", "disable"])
+        assert result.exit_code == 1
+        assert "did NOT take" in result.output
+
+    def test_disable_fails_loudly_when_a_seeded_row_stays_enabled(
+        self, app: typer.Typer, canonical_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with closing(sqlite3.connect(canonical_db)) as conn, conn:
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
+                "VALUES ('', ?, 'true', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
+                (GATE_KEY,),
+            )
+        monkeypatch.setattr(cold_writer, "write_setting", lambda *_args, **_kwargs: None)
+        result = CliRunner().invoke(app, ["gate", "disable"])
+        assert result.exit_code == 1
+        assert "did NOT take" in result.output
+        assert _gate_value(canonical_db, GATE_KEY) is True
+
     def test_disable_writes_false(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "disable"])
         assert result.exit_code == 0, result.output
@@ -138,17 +155,17 @@ class TestConfigOverwriteGate:
         result = CliRunner().invoke(app, ["gate", "config-overwrite", "disable"])
         assert result.exit_code == 0, result.output
         assert _gate_value(canonical_db, CONFIG_OVERWRITE_GATE_KEY) is False
-        assert config_overwrite_gate_is_enabled() is False
+        assert _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY) is False
 
     def test_enabled_by_default_when_no_db(self) -> None:
-        assert config_overwrite_gate_is_enabled() is True
+        assert _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY) is True
 
     def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "config-overwrite", "disable"]).exit_code == 0
-        assert config_overwrite_gate_is_enabled() is False
+        assert _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY) is False
         assert runner.invoke(app, ["gate", "config-overwrite", "enable"]).exit_code == 0
-        assert config_overwrite_gate_is_enabled() is True
+        assert _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY) is True
 
 
 class TestCompletionClaimGate:
@@ -158,37 +175,17 @@ class TestCompletionClaimGate:
         result = CliRunner().invoke(app, ["gate", "completion-claim", "disable"])
         assert result.exit_code == 0, result.output
         assert _gate_value(canonical_db, COMPLETION_CLAIM_GATE_KEY) is False
-        assert completion_claim_gate_is_enabled() is False
+        assert _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY) is False
 
     def test_enabled_by_default_when_no_db(self) -> None:
-        assert completion_claim_gate_is_enabled() is True
+        assert _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY) is True
 
     def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "completion-claim", "disable"]).exit_code == 0
-        assert completion_claim_gate_is_enabled() is False
+        assert _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY) is False
         assert runner.invoke(app, ["gate", "completion-claim", "enable"]).exit_code == 0
-        assert completion_claim_gate_is_enabled() is True
-
-
-class TestMemoryRecallGate:
-    """``t3 <overlay> gate memory-recall disable|enable`` — the #2746 self-rescue."""
-
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
-        result = CliRunner().invoke(app, ["gate", "memory-recall", "disable"])
-        assert result.exit_code == 0, result.output
-        assert _gate_value(canonical_db, MEMORY_RECALL_GATE_KEY) is False
-        assert memory_recall_gate_is_enabled() is False
-
-    def test_enabled_by_default_when_no_db(self) -> None:
-        assert memory_recall_gate_is_enabled() is True
-
-    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
-        runner = CliRunner()
-        assert runner.invoke(app, ["gate", "memory-recall", "disable"]).exit_code == 0
-        assert memory_recall_gate_is_enabled() is False
-        assert runner.invoke(app, ["gate", "memory-recall", "enable"]).exit_code == 0
-        assert memory_recall_gate_is_enabled() is True
+        assert _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY) is True
 
 
 class TestMainCloneGate:

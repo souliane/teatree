@@ -16,14 +16,19 @@ import datetime as dt
 import hashlib
 import itertools
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import TestCase
 from django.utils import timezone
 
+from teatree import answer_handback
 from teatree.core import notify as notify_module
-from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection
+from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
@@ -31,6 +36,7 @@ from teatree.core.notify_question_drains import (
     reask_escalated_questions,
 )
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 
@@ -458,3 +464,57 @@ class TestReplyThreadedUnderANonQuestion:
         assert only.is_pending, "an instruction threaded under a non-question was applied as its answer"
         assert reply.loop_replied_at is None, "the instruction was claimed, so the cycle never dispatched it"
         assert backend.react_calls == [], "the owner was ✅-acked for an answer nobody recorded"
+
+
+class TestABoundAnswerSurvivesARefusedResume(TestCase):
+    def test_the_answer_is_applied_and_no_resume_is_minted(self) -> None:
+        ticket = Ticket.objects.create()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked)
+
+        assert apply_bound_answer(BoundAnswer(question=question, answer="use postgres-1")) is True
+
+        question.refresh_from_db()
+        assert question.answer_text == "use postgres-1"
+        assert not parked.child_tasks.exists()
+
+
+class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):
+    def setUp(self) -> None:
+        self.data_home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data_home)}))
+
+    def test_the_committed_answer_lands_in_the_sessions_mailbox_and_is_marked_applied(self) -> None:
+        question = _question("Which DB host?", slack_ts="100.0")
+        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+
+        with self.captureOnCommitCallbacks(execute=True):
+            _scan()
+
+        assert answer_handback.collect("s") == [{"id": question.pk, "answer": "use postgres-1"}]
+        question.refresh_from_db()
+        assert question.applied_at is not None
+
+    def test_nothing_is_handed_back_until_the_answer_commits(self) -> None:
+        question = _question("Which DB host?", slack_ts="100.0")
+        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+
+        with self.captureOnCommitCallbacks(execute=False):
+            _scan()
+
+        assert answer_handback.collect("s") == []
+        question.refresh_from_db()
+        assert question.applied_at is None
+
+    def test_an_unreachable_mailbox_leaves_the_answer_recorded_and_unapplied(self) -> None:
+        blocked = self.data_home / "not-a-dir"
+        blocked.write_text("", encoding="utf-8")
+        question = _question("Which DB host?", slack_ts="100.0")
+        _reply("use postgres-1", slack_ts="400.0", thread_ts="100.0")
+
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(blocked)}), self.captureOnCommitCallbacks(execute=True):
+            _scan()
+
+        question.refresh_from_db()
+        assert question.answer_text == "use postgres-1"
+        assert question.applied_at is None

@@ -85,7 +85,12 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 
 
 def _config(tmp_path: Path, namespaces: list[str]) -> Path:
-    return _seed_setting(tmp_path, "internal_publish_namespaces", namespaces)
+    entries = [
+        f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+        for entry in namespaces
+        for host in (("github.com", "gitlab.com", "gitlab.example") if "." not in entry.split("/", 1)[0] else ("",))
+    ]
+    return _seed_setting(tmp_path, "private_repos", entries)
 
 
 class TestResolvePublishDestination:
@@ -138,6 +143,13 @@ class TestResolvePublishDestination:
         assert dest is not None
         assert dest.slug == "internalcorp/team/private-svc"
 
+    def test_full_api_url_keeps_its_actual_host(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api https://gitlab.example/api/v4/projects/internalcorp%2Fprivate-svc/issues -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "gitlab.example/internalcorp/private-svc"
+
     def test_gh_api_non_repos_path_is_none(self) -> None:
         assert publish_destination.resolve_publish_destination("gh api user/repos") is None
 
@@ -146,7 +158,7 @@ class TestResolvePublishDestination:
             "gh issue comment https://github.com/owner/repo/issues/5 --body x"
         )
         assert dest is not None
-        assert dest.slug == "owner/repo"
+        assert dest.slug == "github.com/owner/repo"
         assert dest.via == "url"
 
     def test_gitlab_mr_url_positional_with_dash_infix_resolves_nested_namespace(self) -> None:
@@ -154,12 +166,19 @@ class TestResolvePublishDestination:
             "glab mr note https://gitlab.com/group/sub/repo/-/merge_requests/3 --message x"
         )
         assert dest is not None
-        assert dest.slug == "group/sub/repo"
+        assert dest.slug == "gitlab.com/group/sub/repo"
+
+    def test_url_positional_keeps_a_custom_host(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab mr note https://gitlab.example:443/group/repo/-/merge_requests/3 --message x"
+        )
+        assert dest is not None
+        assert dest.slug == "gitlab.example/group/repo"
 
     def test_bare_repo_url_positional_strips_git_suffix(self) -> None:
         dest = publish_destination.resolve_publish_destination("gh pr create https://github.com/owner/repo.git")
         assert dest is not None
-        assert dest.slug == "owner/repo"
+        assert dest.slug == "github.com/owner/repo"
 
     def test_url_positional_wins_over_cwd_remote(self, tmp_path: Path) -> None:
         # A forge URL positional is more specific than the cwd remote, so it
@@ -169,7 +188,7 @@ class TestResolvePublishDestination:
             "gh issue comment https://github.com/owner/repo/issues/5 --body x", repo
         )
         assert dest is not None
-        assert dest.slug == "owner/repo"
+        assert dest.slug == "github.com/owner/repo"
 
     def test_gh_pr_create_no_flag_resolves_current_repo(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
@@ -238,57 +257,35 @@ class TestIsPublicDestination:
     def test_empty_allowlist_treats_internal_looking_slug_as_public(self, tmp_path: Path) -> None:
         # DEFAULT (key absent / empty) → behaviour unchanged, everything PUBLIC.
         cfg = _config(tmp_path, [])
-        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is True
 
     def test_missing_config_treats_everything_as_public(self, tmp_path: Path) -> None:
-        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.sqlite3") is True
 
     def test_allowlisted_namespace_is_internal(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
-        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
     def test_host_prefixed_slug_matches_namespace(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["gitlab.example/internalcorp"])
-        dest = publish_destination.Destination(slug="gitlab.example/internalcorp/private-svc", via="cwd")
+        dest = publish_destination.Destination(
+            slug="gitlab.example/internalcorp/private-svc", via="cwd", forge="github"
+        )
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
-
-    def test_internal_namespace_match_is_host_qualification_symmetric(self, tmp_path: Path) -> None:
-        # Unifying onto the host-stripping slug_namespace_matches (#1953) makes the
-        # internal_publish_namespaces gate host-symmetric too: a bare entry now
-        # matches a host-qualified slug, and a host-qualified entry matches a bare
-        # slug. Both treat the destination as INTERNAL (leak-relaxing direction),
-        # so pin them. The host segment never participates in the match.
-        bare_dir = tmp_path / "bare"
-        bare_dir.mkdir()
-        bare_entry = _config(bare_dir, ["internalcorp"])
-        host_qualified_slug = publish_destination.Destination(slug="github.com/internalcorp/svc", via="cwd")
-        assert publish_destination.is_public_destination(host_qualified_slug, config_path=bare_entry) is False
-
-        host_dir = tmp_path / "host"
-        host_dir.mkdir()
-        host_entry = _config(host_dir, ["gitlab.example/internalcorp"])
-        bare_slug = publish_destination.Destination(slug="internalcorp/svc", via="flag")
-        assert publish_destination.is_public_destination(bare_slug, config_path=host_entry) is False
 
     def test_genuinely_public_slug_stays_public(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
-        dest = publish_destination.Destination(slug="souliane/teatree", via="flag")
+        dest = publish_destination.Destination(slug="souliane/teatree", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is True
 
     def test_segment_boundary_prevents_prefix_false_match(self, tmp_path: Path) -> None:
         # ``internalcorp`` must NOT match an unrelated ``internalcorp-public``.
         cfg = _config(tmp_path, ["internalcorp"])
-        dest = publish_destination.Destination(slug="internalcorp-public/app", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp-public/app", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is True
-
-    def test_env_var_namespace_is_internal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = _config(tmp_path, [])
-        monkeypatch.setenv("T3_INTERNAL_PUBLISH_NAMESPACES", "internalcorp, acme-internal")
-        dest = publish_destination.Destination(slug="acme-internal/app", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
     def test_empty_slug_is_public(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
@@ -298,7 +295,7 @@ class TestIsPublicDestination:
     def test_exact_slug_match_is_internal(self, tmp_path: Path) -> None:
         # A whole-slug allowlist entry matches the slug exactly.
         cfg = _config(tmp_path, ["internalcorp/private-svc"])
-        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
     def test_full_work_item_url_in_internal_namespace_is_internal(self, tmp_path: Path) -> None:
@@ -341,12 +338,12 @@ class TestIsPublicDestination:
         conn = sqlite3.connect(str(db))
         conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'internal_publish_namespaces', ?)",
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
             ("{ not json",),
         )
         conn.commit()
         conn.close()
-        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag", forge="github")
         assert publish_destination.is_public_destination(dest, config_path=db) is True
 
 
@@ -501,7 +498,7 @@ class TestGateSkipsDestination:
 class TestInternalDenylistScoping:
     """#1415/#1213 scope: SKIP only a PROVABLY non-public target (#3442 fail closed).
 
-    A private internal namespace in ``internal_publish_namespaces`` (the
+    A private internal namespace in ``private_repos`` (the
     denylist) SKIPS; an affirmatively-PUBLIC probe verdict SCANS; and a resolvable
     target whose probe cannot confirm visibility FAILS CLOSED and SCANS too (#3442
     -- a probe error is not a licence to skip). A non-repo surface (a Slack
@@ -510,7 +507,7 @@ class TestInternalDenylistScoping:
 
     def test_denylisted_internal_target_skips(self, tmp_path: Path) -> None:
         # MUST-NOT-FIRE: the reported over-block, fixed via the denylist. A
-        # private internal namespace named in ``internal_publish_namespaces`` is
+        # private internal namespace named in ``private_repos`` is
         # provably internal, so the gate skips.
         cfg = _config(tmp_path, ["internal-eng"])
         cmd = 'glab mr note 5 -R internal-eng/internal-product --message "customercorp note"'
@@ -626,7 +623,7 @@ class TestForgeAwareVisibility:
 
 
 class TestT3ReviewDestination:
-    """Fix A: ``t3 [overlay] review post-comment/post-draft-note`` resolves to its repo slug.
+    """Fix A: ``t3 [overlay] review post-comment`` resolves to its repo slug.
 
     The destination resolver early-returned ``None`` for any non-``gh``/``glab``
     leader, so a ``t3 review post-comment <repo> ...`` segment resolved to no
@@ -649,7 +646,7 @@ class TestT3ReviewDestination:
 
     def test_resolve_post_draft_note_records_slug(self) -> None:
         dest = publish_destination.resolve_publish_destination(
-            "t3 review post-draft-note internalcorp/svc 6378 --body-file /x"
+            "t3 review post-comment internalcorp/svc 6378 --body-file /x"
         )
         assert dest is not None
         assert dest.slug == "internalcorp/svc"
@@ -683,7 +680,7 @@ class TestT3ReviewDestination:
         cfg = _config(tmp_path, ["internalcorp"])
         assert (
             public_visibility.gate_skips_for_visibility(
-                "t3 review post-draft-note internalcorp/svc 6378 --body-file /x", None, config_path=cfg
+                "t3 review post-comment internalcorp/svc 6378 --body-file /x", None, config_path=cfg
             )
             is True
         )
@@ -755,18 +752,22 @@ class TestApiEndpointNormalization:
             "https://gitlab.com/api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
         )
         assert dest is not None
-        assert dest.slug == "internalcorp/svc"
+        assert dest.slug == "gitlab.com/internalcorp/svc"
         assert dest.via == "api"
 
     def test_resolve_gh_full_url_repos_path(self) -> None:
-        # The same normalisation strips the GitHub API host so a full-URL ``gh
-        # api`` endpoint resolves its ``repos/owner/repo`` slug too.
+        # The API host denotes the same repo visibility as github.com.
         dest = publish_destination.resolve_publish_destination(
             "gh api --method POST https://api.github.com/repos/internalcorp/svc/issues -f body=x"
         )
         assert dest is not None
-        assert dest.slug == "internalcorp/svc"
+        assert dest.slug == "github.com/internalcorp/svc"
         assert dest.via == "api"
+
+    def test_private_gh_api_url_uses_canonical_repo_host(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["github.com/internalcorp"])
+        cmd = "gh api --method POST https://api.github.com/repos/internalcorp/svc/issues -f body=x"
+        assert public_visibility.gate_skips_for_visibility(cmd, None, config_path=cfg) is True
 
     def test_internal_versioned_write_is_skipped(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
@@ -798,7 +799,7 @@ class TestApiEndpointNormalization:
 
 
 def _private_repos_config(tmp_path: Path, namespaces: list[str]) -> Path:
-    return _seed_setting(tmp_path, "private_repos", namespaces)
+    return _config(tmp_path, namespaces)
 
 
 class TestRestrictedPathCwdResolution:
@@ -881,13 +882,13 @@ class TestPythonRestScriptDestination:
     def test_resolve_gitlab_projects_path_from_python_script(self) -> None:
         dest = publish_destination.resolve_publish_destination(_python_post_command(_GITLAB_PRIVATE_NOTE_URL))
         assert dest is not None
-        assert dest.slug == "internalcorp/private-svc"
+        assert dest.slug == "gitlab.com/internalcorp/private-svc"
         assert dest.forge == "gitlab"
 
     def test_resolve_github_repos_path_from_python_script(self) -> None:
         dest = publish_destination.resolve_publish_destination(_python_post_command(_GITHUB_PRIVATE_COMMENT_URL))
         assert dest is not None
-        assert dest.slug == "internalcorp/private-svc"
+        assert dest.slug == "github.com/internalcorp/private-svc"
         assert dest.forge == "github"
 
     def test_read_only_script_still_resolves_a_destination(self) -> None:
@@ -899,7 +900,7 @@ class TestPythonRestScriptDestination:
         command = "python3 -c \"import requests; requests.get('https://api.github.com/repos/o/r')\""
         dest = publish_destination.resolve_publish_destination(command)
         assert dest is not None
-        assert dest.slug == "o/r"
+        assert dest.slug == "github.com/o/r"
 
     def test_dynamically_built_url_resolves_no_destination(self) -> None:
         # No literal URL in the segment -- the target is genuinely unresolvable,

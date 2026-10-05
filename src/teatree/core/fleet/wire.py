@@ -4,24 +4,22 @@
 git CAS out). This thin layer supplies the two things the claim + ship-fence call
 sites need from the Django world and nowhere else:
 
-*   the ``fleet_claim_enabled`` kill-switch (per-overlay effective setting), and
 *   the *fail-safe* policy — resolve the local clone whose ``origin`` hosts the
     work item, run the mutex, and on any unreachable-infra outcome do NOT claim /
-    do NOT confirm the fence, logging loudly. Turning the switch OFF restores
-    today's local-only behaviour.
+    do NOT confirm the fence. A refused claim reaches health and owner notification.
 
 Keeping this here (not in ``claim``) preserves that module's Django-free
 property so the concurrency proof can run in bare subprocesses.
 """
 
 import contextlib
+import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from teatree.config import get_effective_settings
 from teatree.config.loader import clone_root
 from teatree.core.fleet import claim
 from teatree.core.worktree.clone_paths import find_clone_path
@@ -37,10 +35,6 @@ logger = logging.getLogger(__name__)
 
 #: An ssh-alias expansion is a local config read; it must never stall a claim.
 _SSH_PROBE_TIMEOUT = 5.0
-
-
-def fleet_claim_enabled(overlay: str) -> bool:
-    return get_effective_settings(overlay or None).fleet_claim_enabled
 
 
 def repo_name_from_issue_url(issue_url: str) -> str:
@@ -199,24 +193,81 @@ def acquire_issue_claim(issue_url: str) -> claim.Claim | None:
     shared forge, so two instances must not both implement it regardless of which
     local overlay drives them. ``None`` covers three cases the caller handles
     identically (do not claim): a live rival holds it, no local clone resolved, or
-    the ref infra is unreachable (logged loudly). A ref held by a *dead* holder
+    the ref infra is unreachable (surfaced through health and owner notification). A ref held by a *dead* holder
     (past TTL) is reclaimed via :func:`claim.steal_if_expired` so a crashed
     instance never wedges the work item forever.
     """
     repo = resolve_claim_repo(issue_url)
     if not repo:
         logger.warning("fleet_claim ON but no local clone resolves for %s — failing safe (not claiming)", issue_url)
+        _record_claim_fault(issue_url, f"missing local clone for {owner_repo_from_issue_url(issue_url)}")
         return None
+    _clear_claim_fault(issue_url)
     try:
         acquired = claim.acquire(issue_url, repo=repo)
-        if acquired is not None:
-            return acquired
-        return claim.steal_if_expired(issue_url, repo=repo)
-    except claim.FleetClaimUnavailableError:
+        if acquired is None:
+            acquired = claim.steal_if_expired(issue_url, repo=repo)
+    except claim.FleetClaimUnavailableError as exc:
         logger.warning(
             "fleet_claim ref infra unreachable for %s — failing safe (not claiming)", issue_url, exc_info=True
         )
+        _record_claim_fault(issue_url, str(exc))
         return None
+    _clear_claim_fault(issue_url)
+    return acquired
+
+
+def _claim_fault_fingerprint(issue_url: str) -> str:
+    identity = f"{host_from_issue_url(issue_url)}:{owner_repo_from_issue_url(issue_url)}"
+    return f"fleet-claim-push:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _record_claim_fault(issue_url: str, detail: str) -> None:
+    from django.db import transaction  # noqa: PLC0415 — Django-only fault path
+
+    from teatree.core.factory.health_signal import HealthSignal  # noqa: PLC0415 — Django-only fault path
+    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — Django-only fault path
+    from teatree.core.models.known_issue import KnownIssue  # noqa: PLC0415 — Django-only fault path
+    from teatree.core.notify import notify_user  # noqa: PLC0415 — Django-only fault path
+    from teatree.core.notify_types import NotifyKind  # noqa: PLC0415 — Django-only fault path
+
+    fingerprint = _claim_fault_fingerprint(issue_url)
+    remedy = (
+        f"Create the local clone for {owner_repo_from_issue_url(issue_url)}."
+        if detail.startswith("missing local clone")
+        else "Check refs/teatree/claims/* rules, token write scope, and pre-push hooks."
+    )
+    summary = f"Fleet claim for {issue_url} was refused: {detail}. {remedy}"
+    try:
+        with transaction.atomic():
+            issue = KnownIssue.objects.record_signal(
+                HealthSignal(fingerprint, KnownIssue.Severity.CRITICAL, summary[:500], kind="fleet_claim_push")
+            )
+            KnownIssue.objects.filter(pk=issue.pk).update(auto_resolve=False)
+    except Exception:
+        logger.exception("fleet_claim could not persist critical health issue for %s", issue_url)
+    try:
+        notify_user(
+            summary,
+            kind=NotifyKind.INFO,
+            idempotency_key=fingerprint,
+            audience=NotifyAudience.OWNER_ESCALATION,
+        )
+    except Exception:
+        logger.exception("fleet_claim could not notify owner about refused claim for %s", issue_url)
+
+
+def _clear_claim_fault(issue_url: str) -> None:
+    from django.utils import timezone  # noqa: PLC0415 — Django-only success path
+
+    from teatree.core.models.known_issue import KnownIssue  # noqa: PLC0415 — Django-only success path
+
+    try:
+        KnownIssue.objects.filter(fingerprint=_claim_fault_fingerprint(issue_url), resolved_at__isnull=True).update(
+            resolved_at=timezone.now()
+        )
+    except Exception:
+        logger.exception("fleet_claim could not clear recovered claim fault for %s", issue_url)
 
 
 def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
@@ -242,11 +293,10 @@ def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
 def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
     """The outward-write fence shared by the ship gate, ``execute_ship`` and ``ensure-pr``.
 
-    ``True`` (= ABORT the write) iff the kill-switch is ON for the ticket's overlay,
-    the ticket carries a fleet claim (an issue-implementer marker with a fencing
+    ``True`` (= ABORT the write) iff the ticket carries a fleet claim (an issue-implementer marker with a fencing
     sha), and the claim ref no longer confirms this instance holds it — stolen, or
     the ref infra is unreachable so ownership cannot be confirmed (fail CLOSED).
-    ``False`` when the switch is off, no claim exists, or we still hold it — so a
+    ``False`` when no claim exists or we still hold it — so a
     non-fleet ship is never affected.
 
     The marker is resolved by its own natural key ``(issue_url, overlay)`` — the key
@@ -254,8 +304,6 @@ def ticket_claim_is_lost(ticket: "Ticket", repo: str) -> bool:
     path. The marker's ``ticket`` FK is never set in production, so keying the fence
     on ``ticket`` would find nothing and leave the fence a permanent no-op.
     """
-    if not fleet_claim_enabled(ticket.overlay):
-        return False
     if not ticket.issue_url:
         return False
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
@@ -286,8 +334,6 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     operator cancelled it, #4105) — because a refreshed claim ref on work nobody is
     doing keeps a sibling instance out of an issue this one has let go.
     """
-    if not fleet_claim_enabled(overlay):
-        return
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
 
     live = (

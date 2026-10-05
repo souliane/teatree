@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.setting_taxonomy import SettingClass, classify
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConfigSetting
@@ -50,13 +49,9 @@ class TestAStoredExistenceScalarNoLongerDecides(TestCase):
         assert _mr_triage_scanner_for(hostless, ci_enricher=MagicMock()) is None
 
 
-class TestTheScalarsAreRetiredNotMerelyUnread(TestCase):
-    """Deleting the field without recording the retirement reverts the operator's value in silence."""
+class TestTheScalarsAreAbsent(TestCase):
+    """The preset is the only switch for the loop's existence."""
 
     def test_neither_scalar_is_a_live_key(self) -> None:
         for key in RETIRED_EXISTENCE_SCALARS:
             assert key not in ALL_KNOWN_CONFIG_SETTINGS, key
-
-    def test_each_scalar_answers_as_retired(self) -> None:
-        for key in RETIRED_EXISTENCE_SCALARS:
-            assert classify(key).classes == {SettingClass.RETIRED}, key

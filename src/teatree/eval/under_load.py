@@ -74,17 +74,6 @@ def _skill_sections(skills_dir: Path) -> list[tuple[str, str]]:
     return sections
 
 
-def load_skill_bundle(*, skills_dir: Path = SKILLS_DIR) -> str:
-    """Concatenate every shipped ``skills/<name>/SKILL.md`` into one bundle.
-
-    Each skill's body is prefixed with a ``## skill: <name>`` header so the
-    bundle reads as the model's complete, multi-skill operating ruleset (the
-    drift-inducing overload condition). Skills are sorted for a deterministic,
-    reproducible bundle. A skill directory with no ``SKILL.md`` is skipped.
-    """
-    return _SKILL_BUNDLE_SEPARATOR.join(section for _, section in _skill_sections(skills_dir))
-
-
 def load_budgeted_skill_bundle(
     *,
     keep_skill: str | None = None,

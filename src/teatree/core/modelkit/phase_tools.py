@@ -40,13 +40,11 @@ ALL_TOOLS: Final[frozenset[str]] = frozenset(
 )
 
 # Reusable capability bundles, composed into per-phase allowances below.
-#: The EMPTY toolset — the quarantined ``directive_reading`` reader profile (#116).
+#: The EMPTY toolset for phases with no tool access.
 #: A phase mapped to ``_NONE`` may call NOTHING: Lane B filters its toolset to
 #: empty, and Lane A injects the FULL complement (``ALL_TOOLS``) as
 #: ``disallowed_tools`` — every SDK built-in (Read/Write/Edit/Grep/Glob/Bash/
-#: WebFetch/WebSearch/Agent/Task) is denied. The reader that ingests untrusted
-#: content physically cannot read a file, shell out, fetch a URL, write, or spawn a
-#: sub-agent — it cannot act or exfiltrate regardless of what the content tells it.
+#: WebFetch/WebSearch/Agent/Task) is denied.
 _NONE: Final[frozenset[str]] = frozenset()
 _READ_ONLY: Final[frozenset[str]] = frozenset({"read_file", "search_files", "recall_memory"})
 _WEB: Final[frozenset[str]] = frozenset({"web_fetch", "web_search"})
@@ -131,12 +129,6 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # North-star PR-6 directive interpreter: read-only + codebase search only — it
     # finds the real core seam and drafts a sketch, never edits or shells out.
     "directive_interpreting": _READ_ONLY | _WEB,
-    # #116 context firewall: the quarantined reader that ingests UNTRUSTED content
-    # gets the EMPTY toolset (no tools of any kind). This MUST be an explicit entry —
-    # the deny-by-default fallback is the NON-empty read-only bundle, so an
-    # unregistered ``directive_reading`` would silently grant the reader file reads.
-    # The totality lane (``test_registry_parity``) requires it be explicit.
-    "directive_reading": _NONE,
     "bughunt": _READ_ONLY | {"shell", "dispatch_subtask"},
     "shipping": _READ_ONLY | {"shell", "record_attempt"},
     "answering": _READ_ONLY | _WEB,
@@ -147,7 +139,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # producers, so an EXPLICIT entry here is REQUIRED, never the deny-by-default
     # read-only fallback resolving a dispatchable phase silently.
     #
-    # ``architectural_review`` (the periodic ``ac-reviewing-codebase`` pass) walks the
+    # ``architectural_review`` (the periodic ``architectural-review`` pass) walks the
     # whole tree, then IMPLEMENTS what it finds and pushes one PR — so it needs the
     # read+search+web+shell a review takes AND write/edit to author the fix. It is not
     # a :data:`VERDICT_REVIEW_PHASES` member: those record a verdict on someone else's

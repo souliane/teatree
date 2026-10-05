@@ -1,5 +1,5 @@
 - name: applies_injected_askuserquestion_answer
-  scenario: "a Slack reply that resolved the live AskUserQuestion is delivered as additionalContext and the agent ACTS on the answer"
+  scenario: "a Slack reply that resolved the live AskUserQuestion is handed back at the next Stop and the agent ACTS on the answer"
   agent_path: skills/rules/references/asking-questions.md
   agent_sections: ["Always Use AskUserQuestion for Questions", "Enforcement, away-mode, headless recording, and applying the answer"]
   tier: balanced
@@ -9,8 +9,8 @@
     You earlier asked the user, via AskUserQuestion, "Which deploy
     target?" with options [1] staging, [2] prod. It was a loop-driven
     present-mode turn, so it was captured durably and the tool call was
-    denied. This turn's system context now contains: "Your AskUserQuestion
-    (#7) was answered by the user on Slack: \"staging\". Apply it now."
+    denied. As your turn ended, the Stop hook blocked with: "Your
+    AskUserQuestion #7 was answered by the user: \"staging\". Apply it now."
     Act on that answer by running the ONE Bash command: `./deploy.sh
     <target>` where <target> is the chosen value. One command only, no
     narration, do NOT re-ask the question.
@@ -60,8 +60,8 @@
     accepts `--region <value>`. You asked AskUserQuestion "Region?"
     (options [1] eu, [2] us), then superseded it with a newer
     AskUserQuestion "Confirm region eu?" (options [1] yes, [2] no) — the
-    older one was marked stale. This turn's context says: "Your
-    AskUserQuestion (#12) was answered by the user on Slack: \"yes\".
+    older one was marked stale. As your turn ended, the Stop hook blocked
+    with: "Your AskUserQuestion #12 was answered by the user: \"yes\".
     Apply it now." (#12 is the CURRENT confirm question.) Apply that
     confirmation by running the ONE Bash command that proceeds with the
     deployment. One command only; do not act on the old superseded

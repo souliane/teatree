@@ -53,6 +53,13 @@ MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 #: one-shot corrective retry rather than being paged as a genuine defect.
 MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 
+#: Prefix the recorder stamps on a returned ``ticket_sweep`` that names no persisted
+#: run — an unknown id, a run still open, or a count that disagrees with the URLs the
+#: hygiene facade recorded (#162 Rule 4). Same classification as the two above: a sweep
+#: that mis-cited its run earns the corrective retry rather than paging a human, because
+#: the run it was supposed to name usually exists and it named the wrong thing.
+MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
+
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
 #: failure, a review verdict the reviewer legitimately withheld).
@@ -63,6 +70,7 @@ _RECORDER_REFUSAL_MARKERS = (
     "result must be a json object",
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+    MALFORMED_TICKET_SWEEP_PREFIX.strip().casefold(),
 )
 
 
@@ -79,11 +87,6 @@ def is_recorder_refusal(error: str) -> bool:
     """Whether *error* is a RECORDER-side refusal of a parsed-but-unusable envelope."""
     haystack = error.casefold()
     return any(marker in haystack for marker in _RECORDER_REFUSAL_MARKERS)
-
-
-def is_envelope_refusal(error: str) -> bool:
-    """Whether *error* is an envelope refusal of either kind (never a genuine defect)."""
-    return is_no_envelope_refusal(error) or is_recorder_refusal(error)
 
 
 def required_keys_phrase(phase: str) -> str:

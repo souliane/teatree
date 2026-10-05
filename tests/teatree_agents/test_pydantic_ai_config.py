@@ -10,7 +10,6 @@ from unittest.mock import patch
 import httpx2
 import pytest
 from django.test import TestCase
-from pydantic_ai.models.test import TestModel
 
 from teatree.agents import harness
 from teatree.agents.pydantic_ai_config import (
@@ -18,8 +17,6 @@ from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
     OpenAICompatibleLaneConfig,
-    PydanticAiBinding,
-    build_model_settings,
     build_openai_compatible_provider,
 )
 from teatree.agents.pydantic_ai_turn import SessionRun
@@ -191,17 +188,3 @@ class TestOpenAICompatibleProviderCarriesTheRunIdentityAndTheTee(TestCase):
         request = self._send_one_completion(OpenAICompatibleLaneConfig(lane=LANE_FACTORY), UsageTee())
 
         assert "X-OrcaRouter-Session-Id" not in request.headers
-
-
-class TestRouterModelSettingsCarryThePromptCacheKey:
-    def test_the_router_binding_keys_the_provider_cache_on_the_session(self) -> None:
-        settings = build_model_settings(
-            TestModel(), None, binding=PydanticAiBinding.ROUTER, max_tokens=None, prompt_cache_key="run-7"
-        )
-        assert settings == {"openai_prompt_cache_key": "run-7"}
-
-    def test_the_native_binding_never_receives_the_openai_cache_key(self) -> None:
-        settings = build_model_settings(
-            TestModel(), None, binding=PydanticAiBinding.NATIVE_ANTHROPIC, max_tokens=None, prompt_cache_key="run-7"
-        )
-        assert settings is None

@@ -16,7 +16,7 @@ from django.utils import timezone
 from teatree.core.handover import claim_handovers, render_claimed_payload
 from teatree.core.handover_orchestration import SubagentPush
 from teatree.core.models import LoopLease, SessionHandover, Ticket
-from teatree.core.push.fast_push import FastPushOutcome, LeakFinding
+from teatree.core.push.fast_push import UNAPPROVABLE_AUTHOR_PR_REFUSAL, FastPushOutcome, LeakFinding
 
 _SECTION_HEADER = "## Sub-agent wrap-up"
 
@@ -66,7 +66,7 @@ class _PinnedSessionTestCase(TestCase):
             TEATREE_CLAUDE_STATUSLINE_STATE_DIR=str(self.tmp_path / "state"),
             XDG_DATA_HOME=str(self.tmp_path / "xdg"),
         )
-        self._unset_env("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_DATA_DIR")
+        self._unset_env("CLAUDE_CODE_SESSION_ID", "T3_DATA_DIR")
         (self.tmp_path / "state").mkdir(parents=True, exist_ok=True)
         (self.tmp_path / "state" / "t3-snapshot-this-session-precompact.md").write_text(
             "DURABLE STATE", encoding="utf-8"
@@ -127,14 +127,14 @@ class TestHandoverCreate(_PinnedSessionTestCase):
         assert pathlib.Path(mirror).is_file()
 
     def test_no_session_id_errors(self) -> None:
-        self._unset_env("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID")
+        self._unset_env("CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID")
         self._patch_env(T3_LOOP_REGISTRY_DIR="/nonexistent-registry-dir")
         with pytest.raises(SystemExit):
             _call("handover", "create", json_output=True)
 
     def test_claude_code_session_id_is_accepted(self) -> None:
         """The #3554 bug: a live Claude Code session exports only ``CLAUDE_CODE_SESSION_ID``."""
-        self._unset_env("CLAUDE_SESSION_ID", "T3_LOOP_SESSION_ID")
+        self._unset_env("CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID")
         self._patch_env(T3_LOOP_REGISTRY_DIR="/nonexistent-registry-dir", CLAUDE_CODE_SESSION_ID="cc-session")
         (self.tmp_path / "state" / "t3-snapshot-cc-session-precompact.md").write_text("DURABLE", encoding="utf-8")
         data = json.loads(_call("handover", "create", json_output=True))
@@ -162,6 +162,40 @@ class TestHandoverDrivesSubagents(_PinnedSessionTestCase):
         assert pushes[0]["branch"] == "feat/x"
         assert pushes[0]["pushed"] is True
         assert pushes[0]["pr_url"] == "http://pr/1"
+
+    def test_the_json_carries_the_mr_action_and_the_refusal_reason(self) -> None:
+        outcome = FastPushOutcome(
+            ok=True,
+            branch="feat/x",
+            committed=True,
+            pushed=True,
+            pr_action=UNAPPROVABLE_AUTHOR_PR_REFUSAL,
+            pr_skip_reason="git@gitlab.com:org/factory.git would be authored by the owner",
+        )
+        push = SubagentPush(worktree=pathlib.Path("/wt/agent-x"), branch="feat/x", driven=True, outcome=outcome)
+        self._patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [push])
+
+        data = json.loads(_call("handover", "create", json_output=True))
+
+        pushed = data["subagent_pushes"][0]
+        assert pushed["pr_action"] == UNAPPROVABLE_AUTHOR_PR_REFUSAL
+        assert pushed["pr_skip_reason"] == "git@gitlab.com:org/factory.git would be authored by the owner"
+
+    def test_a_sub_agent_mr_refused_on_its_author_says_so_in_the_report(self) -> None:
+        outcome = FastPushOutcome(
+            ok=True,
+            branch="feat/x",
+            committed=True,
+            pushed=True,
+            pr_action=UNAPPROVABLE_AUTHOR_PR_REFUSAL,
+            pr_skip_reason="git@gitlab.com:org/factory.git would be authored by the owner",
+        )
+        push = SubagentPush(worktree=pathlib.Path("/wt/agent-x"), branch="feat/x", driven=True, outcome=outcome)
+        self._patch("teatree.core.management.commands.handover.drive_subagents_to_fast_push", lambda *a, **k: [push])
+
+        out = _call_human("handover", "create")
+
+        assert "sub-agent feat/x: pushed (committed=True) PR REFUSED: git@gitlab.com:org/factory.git would be" in out
 
     def test_no_drive_subagents_flag_skips_the_driver(self) -> None:
         calls: list = []

@@ -112,6 +112,31 @@ class StaleLoop:
 
 
 @dataclass(frozen=True, slots=True)
+class DeadlinedLoop:
+    """A loop whose last ticks were killed at their deadline, each holding a ``loops`` executor meanwhile."""
+
+    name: str
+    kills: int
+    deadline_seconds: float
+    backoff_seconds: float
+
+    def line(self) -> str:
+        return (
+            f"FAIL loop {self.name!r} was killed at its {self.deadline_seconds:.0f}s deadline {self.kills} time(s) "
+            f"in a row and now waits up to {format_age(self.backoff_seconds)} between attempts — its tick cannot "
+            f"finish. Read the worker log for `loop_timer '{self.name}' tick exceeded`."
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kills": self.kills,
+            "deadline_seconds": self.deadline_seconds,
+            "backoff_seconds": self.backoff_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Admission:
     """The resolved mode and the loops its verdict admits right now.
 
@@ -149,6 +174,7 @@ class LoopHealth:
     #: Whether the active preset admits ANY loop, read from the SAME fail-safe reader every
     #: chain fire gates on — the gate that precedes admission, so it precedes the cause.
     fleet_admits: bool = True
+    deadlined: tuple[DeadlinedLoop, ...] = ()
 
     @property
     def unexplained(self) -> tuple[StaleLoop, ...]:
@@ -162,7 +188,7 @@ class LoopHealth:
 
     @property
     def ok(self) -> bool:
-        return not self.frozen_fleet and not self.unexplained and not self.driverless
+        return not self.frozen_fleet and not self.unexplained and not self.driverless and not self.deadlined
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -172,6 +198,7 @@ class LoopHealth:
             "considered": self.considered,
             "frozen_fleet": self.frozen_fleet,
             "driverless": list(self.driverless),
+            "deadlined": [loop.as_json() for loop in self.deadlined],
         }
 
     def lines(self) -> list[str]:
@@ -185,6 +212,7 @@ class LoopHealth:
         ]
         if self.driverless:
             rendered.append(self._driverless_line())
+        rendered.extend(loop.line() for loop in self.deadlined)
         if not self.frozen_fleet and not self.unexplained:
             rendered.extend(self._suppressed_note())
             return rendered
@@ -242,6 +270,12 @@ class LoopHealth:
                 f"(source={self.admission.source}). Inspect it with `t3 loop preset show`; "
                 "clear a manual override with `t3 loop preset auto`, or pick a narrower "
                 "preset with `t3 loop preset use <name>`."
+            )
+        if self.deadlined:
+            names = ", ".join(repr(loop.name) for loop in self.deadlined)
+            return (
+                f"FAIL these loops are waiting behind {names}: a tick killed at its deadline held a `loops` "
+                "executor for the whole deadline, so the timers queued behind it could not fire."
             )
         return (
             "FAIL the worker holds the flock but these loops are not advancing their cadence "
@@ -321,6 +355,31 @@ def _is_suppressed(row: "Loop", planes: "EnablePlanes") -> bool:
     return not planes.admits(row.name)
 
 
+def deadlined_loops(now: dt.datetime) -> tuple[DeadlinedLoop, ...]:
+    """Admitted loops whose recent ticks keep dying at their deadline, sorted by name.
+
+    A loop an operator turned off keeps its count but is not named: it holds no executor.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
+    from teatree.loops.timer_chains import (  # noqa: PLC0415 — deferred: task-module import at status time
+        compute_tick_deadline,
+        deadline_backoff_seconds,
+    )
+
+    planes = EnablePlanes.resolve(now)
+    return tuple(
+        DeadlinedLoop(
+            name=row.name,
+            kills=row.consecutive_deadline_kills,
+            deadline_seconds=(deadline := compute_tick_deadline(row)),
+            backoff_seconds=deadline_backoff_seconds(row.consecutive_deadline_kills, deadline=deadline),
+        )
+        for row in Loop.objects.filter(consecutive_deadline_kills__gt=0).order_by("name")
+        if planes.admits(row.name)
+    )
+
+
 def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER) -> list[StaleLoop]:
     """Every admitted live-tick interval loop whose anchor is older than ``multiplier x`` its cadence.
 
@@ -382,15 +441,18 @@ def loop_health(now: dt.datetime) -> LoopHealth:
         considered=len(_measured_loops()),
         driverless=driverless_loops(),
         fleet_admits=fleet_admits_work(now),
+        deadlined=deadlined_loops(now),
     )
 
 
 __all__ = [
     "STALE_CADENCE_MULTIPLIER",
     "Admission",
+    "DeadlinedLoop",
     "LoopHealth",
     "StaleLoop",
     "admission",
+    "deadlined_loops",
     "driverless_loops",
     "format_age",
     "loop_health",

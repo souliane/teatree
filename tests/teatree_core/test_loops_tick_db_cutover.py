@@ -1,11 +1,11 @@
 """The live per-loop tick is cut over to the DB ``Loop`` table (#2513, D1).
 
 After the #1796 cutover the live tick (``loops_tick`` management command) selects
-its scanner jobs from the ``Loop`` table via ``build_loop_table_jobs`` — NOT from a
+its scanner jobs from the ``Loop`` table via ``_dispatch_jobs`` — NOT from a
 code-cadence ledger. LOOP-PR-A then DELETED that retired ledger + gate entirely.
 These tests pin that the builder routes through the Loop table and that the
 retired code-cadence modules are gone (so they can never be consulted again). The
-gate is the same whether ``build_loop_table_jobs`` scans every enabled+due row or
+gate is the same whether ``_dispatch_jobs`` scans every enabled+due row or
 is scoped to one via ``only`` (#2650) — a per-loop tick honours it symmetrically.
 """
 
@@ -18,7 +18,12 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.loop_table import build_loop_table_jobs
+from teatree.loops.loop_table import dispatch_loop_table
+
+
+def _dispatch_jobs(context: dict[str, object], *, now: dt.datetime, only: str | None = None) -> list[object]:
+    """Project the live dispatcher outcomes onto their jobs for these assertions."""
+    return [job for outcome in dispatch_loop_table(context, now=now, only=only) for job in outcome.jobs]
 
 
 def _mini(name: str) -> MiniLoop:
@@ -39,7 +44,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-on"), _mini("ct-off"))):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-ct-on" in jobs
         assert "job-ct-off" not in jobs
 
@@ -51,7 +56,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-a"), _mini("ct-b"))):
-            jobs = build_loop_table_jobs({}, now=now, only="ct-a")
+            jobs = _dispatch_jobs({}, now=now, only="ct-a")
         assert jobs == ["job-ct-a"]
 
     def test_legacy_code_cadence_modules_are_deleted(self) -> None:
@@ -68,7 +73,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-bump"),)):
-            build_loop_table_jobs({}, now=now)
+            _dispatch_jobs({}, now=now)
         assert Loop.objects.get(name="ct-bump").last_run_at == now
 
     def test_cooling_row_is_skipped_by_its_own_cadence(self) -> None:
@@ -79,7 +84,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-cool"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
 
 
@@ -90,7 +95,7 @@ class TestTickPreservesOperationalPause(django.test.TestCase):
     Migration 0087 disabled every default ``Loop`` row (``enabled=False``) for the
     #2513 cutover. The unification must NOT un-pause anything: with the rows
     disabled the builder produces zero jobs, exactly as today. This pins the pause
-    through ``build_loop_table_jobs`` so a future change to the unified verdict
+    through ``_dispatch_jobs`` so a future change to the unified verdict
     cannot silently re-arm the loops. No live tick is run here — only the pure
     job-builder is invoked.
     """
@@ -105,7 +110,7 @@ class TestTickPreservesOperationalPause(django.test.TestCase):
             Loop.objects.create(name=name, delay_seconds=60, prompt=_prompt(), enabled=False)
         registry = (_mini("p-a"), _mini("p-b"), _mini("p-c"))
         with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
         for name in ("p-a", "p-b", "p-c"):
             assert Loop.objects.get(name=name).last_run_at is None

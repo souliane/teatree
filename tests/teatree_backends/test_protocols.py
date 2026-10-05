@@ -199,6 +199,10 @@ class _FakeCodeHost:
         _ = (repo, query)
         return []
 
+    def list_repo_open_issues(self, *, repo: str) -> list[dict[str, object]]:
+        _ = repo
+        return []
+
     def close_issue(self, *, issue_url: str, comment: str = "") -> dict[str, object]:
         _ = (issue_url, comment)
         return {}

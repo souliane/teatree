@@ -10,7 +10,7 @@ The command itself never publishes anything — it routes through
 :class:`~teatree.backends.gitlab.api.GitLabAPI` GET endpoints only — so
 it stays outside the on-behalf approval surface (#960). The reviewer
 sub-agent consumes the JSON and decides what to post via
-``t3 review post-draft-note`` / ``post-comment`` afterwards.
+``t3 review post-comment`` afterwards.
 
 Output schema (one JSON object on stdout):
 
@@ -313,7 +313,7 @@ def run(
     approvals), classifies complexity, and emits a small findings
     catalog. Both forges produce the same payload shape, so the reviewer
     sub-agent consumes one contract and decides what to do next via
-    ``t3 review post-draft-note`` / ``post-comment``.
+    ``t3 review post-comment``.
 
     Exit codes:
 

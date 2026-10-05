@@ -238,5 +238,9 @@ class SessionHandoverQuerySet(models.QuerySet):
                 claimed.append(row)
         return claimed
 
+    def release_claims(self, session_id: str, *, since: "dt.datetime") -> int:
+        """Hand back what *session_id* claimed at or after *since*: the start that claimed it never delivered it."""
+        return self.filter(claimed_by=session_id, claimed_at__gte=since).update(claimed_at=None, claimed_by="")
+
 
 SessionHandoverManager = models.Manager.from_queryset(SessionHandoverQuerySet)

@@ -1,5 +1,5 @@
 import pytest
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from teatree.agents.runner_budget import TicketBudget
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
@@ -53,24 +53,16 @@ class TestTicketBudget(TestCase):
         assert budget.breach_reason(self.ticket) is None
 
     def test_from_settings_reads_configured_cap(self) -> None:
-        # Django-settings fallback still honoured when the config field is unconfigured.
-        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 12.5}):
-            budget = TicketBudget.from_settings()
+        ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 12.5, scope="")
+        budget = TicketBudget.from_settings()
         assert budget.max_cost_usd == pytest.approx(12.5)
 
     def test_from_settings_defaults_to_disabled(self) -> None:
-        with override_settings():
-            from django.conf import settings  # noqa: PLC0415
-
-            if hasattr(settings, "TEATREE_TICKET_BUDGET"):
-                del settings.TEATREE_TICKET_BUDGET
-            budget = TicketBudget.from_settings()
+        budget = TicketBudget.from_settings()
         assert budget.max_cost_usd == pytest.approx(0.0)
 
     def test_from_settings_reads_the_db_home_config_field(self) -> None:
-        # F9.5: an explicit ConfigSetting row is the authoritative source — visible to
-        # config_setting get — and wins over the Django-settings fallback.
+        # The configured cap is visible to config_setting get.
         ConfigSetting.objects.set_value("ticket_budget_max_cost_usd", 9.0, scope="")
-        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 12.5}):
-            budget = TicketBudget.from_settings()
+        budget = TicketBudget.from_settings()
         assert budget.max_cost_usd == pytest.approx(9.0)

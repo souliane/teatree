@@ -854,16 +854,6 @@ class TestGetIssueTitle:
 
 
 class TestFactoryPhaseHarnessCandidates:
-    def test_an_overlay_declares_no_candidates_by_default(self) -> None:
-        config = OverlayConfig()
-        assert config.factory_phase_harness_candidates == {}
-        assert config.get_factory_phase_harness_candidates("coding") == []
-
-    def test_phase_keys_canonicalize_and_the_lookup_normalizes(self) -> None:
-        config = OverlayConfig(factory_phase_harness_candidates={"code": ["codex_exec", "", "claude_sdk"]})
-        assert config.factory_phase_harness_candidates == {"coding": ["codex_exec", "claude_sdk"]}
-        assert config.get_factory_phase_harness_candidates("code") == ["codex_exec", "claude_sdk"]
-
     def test_an_unknown_phase_key_fails_loud(self) -> None:
         with pytest.raises(ValidationError, match="not a known phase"):
             OverlayConfig(factory_phase_harness_candidates={"not-a-phase": ["codex_exec"]})

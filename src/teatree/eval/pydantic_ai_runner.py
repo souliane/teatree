@@ -48,7 +48,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from teatree.agents.harness import resolve_effort
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.model_tiering import model_supports_thinking, resolve_pydantic_ai_model
+from teatree.agents.model_tiering import model_supports_thinking, resolve_pydantic_ai_model, resolve_tier
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig, build_openai_compatible_provider
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
 from teatree.agents.pydantic_ai_turn import SessionRun
@@ -206,11 +206,11 @@ def _model_settings(model: Model, effort: EffortLevel | None, max_tokens: int) -
     does not support the effort parameter`` -- a whole-request rejection, so the run
     captures an EMPTY trajectory and the scenario reds as ``error_during_execution``
     having graded nothing. That is what the ``--preset baseline`` lane hits: the preset
-    pins its cheapest-passing scenarios to the ``cheap``/Haiku tier while the lane-level
+    pins its cheapest-passing scenarios to the ``cheap`` tier, Haiku if overridden, while the lane-level
     :data:`~teatree.eval.resource_caps.METERED_DEFAULT_EFFORT` rides on every scenario,
     so 22 of 266 baseline scenarios could never execute. The capability guard is
     :func:`~teatree.agents.model_tiering.model_supports_thinking`, whose contract covers
-    BOTH levers ("the cheap/Haiku tier rejects the ``thinking`` / ``effort`` levers") and
+    BOTH levers ("Haiku rejects the ``thinking`` / ``effort`` levers") and
     which an agent dispatch already consults -- matched on the tier, so a future dated
     Haiku id is covered and a non-Claude id keeps its effort.
 
@@ -358,7 +358,8 @@ class PydanticAiRunner:
         if self._model is not None:
             return self._model
         pinned = parse_model_variant(spec.model).model
-        resolved = resolve_pydantic_ai_model(pinned, configured_model=self._backend.model)
+        tier = spec.tier if spec.tier and resolve_tier(spec.tier) == pinned else None
+        resolved = resolve_pydantic_ai_model(pinned, configured_model=self._backend.model, tier=tier)
         assert_model_allowed_on_regulated_path(pinned or resolved)
         return OpenAIChatModel(resolved, provider=build_openai_compatible_provider(self._backend, session_run))
 

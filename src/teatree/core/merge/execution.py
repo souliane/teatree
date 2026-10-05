@@ -273,8 +273,7 @@ def assert_not_draft(query: CodeHostQuery) -> None:
 
     The last-line not-draft gate at the merge chokepoint — re-reads the forge's
     LIVE draft flag so an open→draft flip in the TOCTOU window between a caller's
-    snapshot and the irreversible PUT is refused here. A registered
-    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    snapshot and the irreversible PUT is refused here.
     """
     _refuse_unless_draft_state_clears(
         query.pr_draft_state(),
@@ -292,8 +291,7 @@ def assert_ci_not_failed(query: CodeHostQuery) -> None:
     required check is a verdict expedite can NEVER waive, and an UNREADABLE rollup
     is a non-answer that cannot rule one out, so both are refused unconditionally
     via ``REFUSING_CHECK_VERDICTS`` (the pending-waiver lives only in
-    :func:`assert_merge_preconditions`, which the keystone runs first). A registered
-    ``merge_keystone`` gate (:mod:`teatree.core.factory.chokepoint_registry`).
+    :func:`assert_merge_preconditions`, which the keystone runs first).
     """
     if (checks := query.required_checks_status()) in REFUSING_CHECK_VERDICTS:
         msg = (
@@ -337,11 +335,10 @@ def execute_bound_merge(
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
     via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
     (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
-    (north-star PR-4 — a directive keystone / opted-in ordinary ticket needs a clean
+    (north-star PR-4 — every ticket needs a clean
     recorded merge-quality verdict at the shipped head), ``assert_ticket_scoped_gates``
     (the anti-vacuity attestation + rubric done-gate, resolved by PR identity so the
-    no-CLEAR paths are graded by the settings the operator enabled instead of merging
-    past them silently), and the #18 not-draft +
+    no-CLEAR paths are graded instead of merging past them silently), and the #18 not-draft +
     FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
     chokepoint so a green→red / open→draft flip in the TOCTOU window between a
     caller's snapshot and this PUT is refused here — the solo lane had NO such
@@ -365,8 +362,7 @@ def execute_bound_merge(
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
     # north-star PR-4: merely-green-but-not-well-engineered does not merge. A
-    # directive keystone (and, under `require_merge_quality_verdict`, an ordinary
-    # ticket) is refused unless a clean recorded merge-quality CriticVerdict
+    # ticket is refused unless a clean recorded merge-quality CriticVerdict
     # (test_value + cleanliness) covers this exact shipped head. Lazy-imported like
     # the other keystone gates so core.merge stays free of an import-time gate edge.
     # The gate import is function-scoped on purpose: a module-level core.merge ->
@@ -376,8 +372,7 @@ def execute_bound_merge(
 
     merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     # The two ticket-scoped gates, by PR identity rather than through a CLEAR — so the
-    # no-CLEAR paths that reach this chokepoint are graded by the settings the operator
-    # turned on, instead of merging past them silently.
+    # no-CLEAR paths that reach this chokepoint are graded before any merge.
     assert_ticket_scoped_gates(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_not_draft(query)
     assert_ci_not_failed(query)

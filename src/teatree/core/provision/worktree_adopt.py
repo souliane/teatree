@@ -19,6 +19,7 @@ from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.work_lease import WorkIdentity, register_work_claim
+from teatree.core.worktree.checkout_gitdir import CheckoutKind, classify_checkout, gitdir_pointer
 from teatree.core.worktree.ticket_workspace import TicketWorkspaceDivergenceError, assert_joins_ticket_workspace
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.instance_id import instance_id
@@ -58,7 +59,55 @@ class NotAWorktreeError(WorktreeAdoptError):
     """
 
 
-def _repo_name_for(cwd_path: Path) -> str:
+class UnreachableGitdirError(WorktreeAdoptError):
+    """The checkout is a linked worktree whose gitdir this venue cannot see.
+
+    Its own type because the fix is the opposite of every sibling refusal's: the
+    directory IS the right one and the operator IS standing in it — what is missing
+    is the clone the pointer names (a host ``git worktree add`` tree whose clone the
+    container never mounts). Without it the branch read below returns nothing and the
+    refusal blamed the branch, sending the operator to audit a branch that is fine.
+    """
+
+
+def assert_adoptable(cwd_path: Path) -> None:
+    """Refuse *cwd_path* unless it is a linked worktree this venue can query.
+
+    The single classification every adoption path shares, so ``pr create`` and the
+    ``worktree adopt`` verb refuse the same shapes with the same cause named.
+    """
+    kind = classify_checkout(cwd_path)
+    if kind is CheckoutKind.LINKED_WORKTREE:
+        return
+    if kind is CheckoutKind.UNREACHABLE_GITDIR:
+        msg = (
+            f"Refusing to adopt {cwd_path}: its gitdir {gitdir_pointer(cwd_path)} does not exist "
+            "here, so no git command can answer for this checkout. The clone it was cut from is "
+            "not visible in this venue — mount it at the same path, or re-cut the worktree from a "
+            "clone that is."
+        )
+        raise UnreachableGitdirError(msg)
+    if kind is CheckoutKind.MAIN_CLONE:
+        msg = f"Refusing to adopt {cwd_path}: not a git worktree — this is a main clone (its .git is a directory)."
+        raise NotAWorktreeError(msg)
+    msg = (
+        f"Refusing to adopt {cwd_path}: not a git worktree (its .git is not a file). "
+        "Stand inside the worktree directory you want to adopt."
+    )
+    raise NotAWorktreeError(msg)
+
+
+def path_owner_for(cwd_path: Path) -> Worktree | None:
+    """The ``Worktree`` row (if any) that already records *cwd_path*.
+
+    Shared by the CLI's early refusal (before any ticket is resolved) and
+    :func:`adopt_worktree_for_ticket`'s own guard, so "no row already claims
+    this path" is implemented once.
+    """
+    return Worktree.objects.filter(extra__worktree_path__in=_candidate_paths(str(cwd_path))).first()
+
+
+def repo_name_for_checkout(cwd_path: Path) -> str:
     """The REPO this checkout belongs to — its clone's leaf, not the directory's name.
 
     ``Path(cwd).name`` is only *conventionally* the repo name: the provisioner
@@ -84,9 +133,10 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
 
     Guardrails (each raises :class:`WorktreeAdoptError`):
 
-    - *cwd* must be a git *worktree* — ``.git`` present as a FILE, else
-        :class:`NotAWorktreeError`. A main clone keeps ``.git`` as a directory
-        and is refused (mirrors the #752 refusal).
+    - *cwd* must be a git *worktree* this venue can query
+        (:func:`assert_adoptable`) — ``.git`` present as a FILE whose gitdir
+        exists, else :class:`NotAWorktreeError` / :class:`UnreachableGitdirError`.
+        A main clone keeps ``.git`` as a directory and is refused (mirrors #752).
     - the checkout must be on a feature branch (not ``HEAD``/``main``/``master``).
     - it must sit in the ticket's ONE workspace dir when the ticket already has one
         (:func:`~teatree.core.worktree.ticket_workspace.assert_joins_ticket_workspace`):
@@ -101,13 +151,7 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
     row exists, so an already-merged branch is refused before any FSM advance.
     """
     cwd_path = Path(cwd).resolve()
-    git_marker = cwd_path / ".git"
-    if not git_marker.is_file():
-        msg = (
-            f"Refusing to adopt {cwd_path}: not a git worktree (its .git is not a file). "
-            "Run pr create from the follow-up PR's worktree directory."
-        )
-        raise NotAWorktreeError(msg)
+    assert_adoptable(cwd_path)
 
     branch = git.current_branch(repo=str(cwd_path))
     if not branch or branch in _NON_FEATURE_BRANCHES:
@@ -119,7 +163,7 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
     except TicketWorkspaceDivergenceError as exc:
         raise WorktreeAdoptError(str(exc)) from exc
 
-    repo_name = _repo_name_for(cwd_path)
+    repo_name = repo_name_for_checkout(cwd_path)
     if Worktree.objects.filter(ticket=ticket, repo_path=repo_name, branch=branch).exists():
         msg = (
             f"Ticket {ticket.pk} already has a worktree row for repo {repo_name!r} on branch "
@@ -127,10 +171,10 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
         )
         raise WorktreeAdoptError(msg)
 
-    path_owner = Worktree.objects.filter(extra__worktree_path__in=_candidate_paths(str(cwd_path))).first()
+    path_owner = path_owner_for(cwd_path)
     if path_owner is not None:
         msg = (
-            f"Worktree #{path_owner.pk} (ticket {path_owner.ticket_id}) already records {cwd_path}; "
+            f"Worktree #{path_owner.pk} (ticket {path_owner.ticket.pk}) already records {cwd_path}; "
             "refusing to adopt a path another row owns."
         )
         raise WorktreeAdoptError(msg)

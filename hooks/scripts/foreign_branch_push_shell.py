@@ -41,6 +41,8 @@ _HEREDOC_OPENER_RE: Final[re.Pattern[str]] = re.compile(r"^<<-?\s*(['\"]?)\w+\1"
 _GIT_WORD_RE: Final[re.Pattern[str]] = re.compile(r"\bgit\b")
 _PUSH_WORD_RE: Final[re.Pattern[str]] = re.compile(r"\bpush\b")
 
+SHELL_WRAPPERS: Final[frozenset[str]] = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+
 # Prefixes that run the NEXT word rather than being the command themselves.
 _WRAPPER_LEADERS: Final[frozenset[str]] = frozenset(
     {"command", "env", "exec", "nohup", "time", "stdbuf", "nice", "sudo"}

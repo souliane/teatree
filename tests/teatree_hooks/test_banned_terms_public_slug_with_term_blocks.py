@@ -74,7 +74,7 @@ def _home_with_terms(
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
     rows: dict[str, object] = {}
     if banned_terms is not None:
-        rows["banned_terms"] = banned_terms
+        rows["banned_term_registry"] = {"leak": banned_terms, "prose_collider": banned_terms}
     if private_repos is not None:
         rows["private_repos"] = private_repos
     db = tmp_path / "config.sqlite3"
@@ -98,7 +98,7 @@ def _home_with_terms(
 
 @pytest.fixture
 def banned_terms_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # No private_repos / internal_publish_namespaces: the destinations under
+    # No private_repos / private_repos: the destinations under
     # test are NOT provably-internal, so the deny path runs and the carve-out
     # (if any) decides the verdict.
     return _home_with_terms(tmp_path, monkeypatch, banned_terms=["apple", "democorp", "othercorp"])
@@ -163,7 +163,7 @@ class TestProvablyPrivateDestinationStillAllowed:
         _home_with_terms(
             tmp_path,
             monkeypatch,
-            private_repos=["democorp-eng/tracker"],
+            private_repos=["github.com/democorp-eng/tracker"],
             banned_terms=["democorp"],
         )
         _pin_probe(monkeypatch, None)

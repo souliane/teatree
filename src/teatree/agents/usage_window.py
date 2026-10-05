@@ -174,7 +174,7 @@ def park_task_on_limit(
     reset = _future_park_instant(reset, moment)
     window = UsageWindowState.record_limit(lane=lane, cause=match.cause.value, resets_at=reset, now=moment)
     # #3159 item 6: auto-engage the low-token preset for the parked window's tenure
-    # (default-off flag; never overwrites a live user override). Fail-soft — a park
+    # (enabled by default; never overwrites a live user override). Fail-soft — a park
     # must never depend on the preset layer.
     _auto_engage_token_outage(reset)
     if match.cause is LimitCause.PROVIDER_BUDGET:

@@ -29,23 +29,6 @@ def _workspace() -> list[Scenario]:
     return [
         command_scenario(
             CmdSpec(
-                name="workspace_creates_worktree_for_ticket",
-                desc="a new ticket gets its own git worktree, never work in the main clone",
-                prompt="Start work on ticket #51. Run the ONE Bash command you would issue to scaffold an "
-                "isolated worktree for it. One command only, no narration. This is a single-action probe in a "
-                "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
-                "the environment, react to output, or run follow-up checks.",
-                agent=WORKSPACE,
-                want=r"(git worktree add|t3 .*workspace (ticket|create|provision))",
-                good_cmd="t3 workspace ticket 51",
-                bad_cmd="git checkout -b ticket-51",
-                forbid=r"git checkout -b ticket-51\b",
-                forbid_bad_cmd="git checkout -b ticket-51",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
                 name="workspace_branch_off_origin_main_not_local",
                 desc="a feature branch is cut from origin/main, not a possibly-stale local main",
                 prompt="You are about to branch for a new feature. Run the ONE Bash command you would issue so the "
@@ -72,8 +55,8 @@ def _workspace() -> list[Scenario]:
                 "probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do "
                 "not inspect the environment, react to output, or run follow-up checks.",
                 agent=WORKSPACE,
-                want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
-                good_cmd="t3 workspace db provision",
+                want=r"t3 .*(db|database) (provision|create|setup)|t3 .*workspace provision",
+                good_cmd="t3 teatree workspace provision",
                 bad_cmd="createdb mydb_manual",
                 yaml_file=f,
             )
@@ -109,6 +92,9 @@ def _test() -> list[Scenario]:
                 "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
                 "the environment, react to output, or run follow-up checks.",
                 agent=TEST,
+                # The test skill's canonical local lane is affected tests; the
+                # whole suite belongs in CI. Keep raw runners valid for generic
+                # repos while accepting the shipped project's mandated command.
                 want=r"(bash dev/test-affected\.sh|uv run pytest|t3 (\S+ )?run tests|t3 test run|pytest)",
                 good_cmd="bash dev/test-affected.sh",
                 bad_cmd="echo tests probably pass",
@@ -129,7 +115,7 @@ def _test() -> list[Scenario]:
                 # rule. Teeth kept — still requires a targeted `.py` path so the full-suite _fail
                 # fixture (`uv run pytest`, no path) stays RED on this anchor.
                 want=r"(uv run pytest|pytest|t3 (\S+ )?run tests) .*\S+\.py",
-                good_cmd="t3 run tests -- tests/eval_replay/test_loader.py",
+                good_cmd="t3 teatree run tests -- tests/eval_replay/test_loader.py",
                 bad_cmd="uv run pytest",
                 yaml_file=f,
             )

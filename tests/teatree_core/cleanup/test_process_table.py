@@ -21,6 +21,13 @@ from teatree.core.cleanup.process_table import ProcessTable, read_process_table
 from tests._process_table_venue import THIS_PROCESS_PID, holding, this_process_in
 
 
+def test_compose_supplies_a_safe_nonempty_host_os_on_first_rollout() -> None:
+    compose = Path(__file__).resolve().parents[3] / "deploy" / "docker-compose.yml"
+    assert "TEATREE_HOST_OS: ${TEATREE_HOST_OS:-unknown}" in compose.read_text(encoding="utf-8")
+    with patch.dict(os.environ, {"TEATREE_HOST_OS": "unknown"}):
+        assert "the host runs unknown" in process_table._host_os_refusal()
+
+
 def _proc_with(root: Path, placements: dict[str, Path]) -> Path:
     """A fake process table: ``{pid: cwd}``, plus this process, which never counts."""
     for pid, cwd in placements.items():
@@ -39,6 +46,7 @@ def _no_real_proc(tmp_path_factory: pytest.TempPathFactory) -> object:
         patch.object(process_table, "_HOST_PROC_ROOT", absent),
         patch.object(process_table, "_OWN_PROC_ROOT", absent),
         patch.object(process_table, "_CONTAINER_MARKERS", ()),
+        patch.dict(os.environ, {"TEATREE_HOST_OS": "Linux"}),
     ):
         yield
 
@@ -116,6 +124,59 @@ class TestSourceSelection:
 
         assert not table.usable, "a container's own namespace must never pass as the host's"
         assert any("host process table" in gap for gap in table.gaps)
+
+    def test_a_mounted_table_from_a_host_that_is_not_linux_is_refused(self, tmp_path: Path) -> None:
+        """Under Docker Desktop /host-proc is the VM's table: a deploy.sh on macOS is never in it."""
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "in-the-vm"})
+        with (
+            patch.object(process_table, "_HOST_PROC_ROOT", host),
+            patch.dict(os.environ, {"TEATREE_HOST_OS": "Darwin"}),
+        ):
+            table = read_process_table()
+
+        assert not table.usable
+        assert any("Darwin" in gap for gap in table.gaps)
+
+    def test_a_mounted_table_from_a_linux_host_is_read(self, tmp_path: Path) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "on-the-host"})
+        with patch.object(process_table, "_HOST_PROC_ROOT", host), patch.dict(os.environ, {"TEATREE_HOST_OS": "Linux"}):
+            table = read_process_table()
+
+        assert table.holds(tmp_path / "on-the-host")
+
+    def test_an_undeclared_host_os_inside_a_container_is_refused(self, tmp_path: Path) -> None:
+        """A bare `docker compose up` on Docker Desktop mounts the VM's table and declares nothing."""
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "in-the-vm"})
+        marker = tmp_path / ".dockerenv"
+        marker.touch()
+        with (
+            patch.object(process_table, "_HOST_PROC_ROOT", host),
+            patch.object(process_table, "_CONTAINER_MARKERS", (marker,)),
+            patch.dict(os.environ),
+        ):
+            os.environ.pop("TEATREE_HOST_OS", None)
+            table = read_process_table()
+
+        assert not table.usable
+        assert any("TEATREE_HOST_OS" in gap for gap in table.gaps)
+
+    @pytest.mark.parametrize(("system", "expected_status"), [("Linux", "usable"), ("Darwin", "unusable")])
+    def test_an_undeclared_host_os_outside_a_container_is_this_machine_s(
+        self,
+        tmp_path: Path,
+        system: str,
+        expected_status: str,
+    ) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "on-the-host"})
+        with (
+            patch.object(process_table, "_HOST_PROC_ROOT", host),
+            patch.object(process_table.platform, "system", return_value=system),
+            patch.dict(os.environ),
+        ):
+            os.environ.pop("TEATREE_HOST_OS", None)
+            table = read_process_table()
+
+        assert table.usable is (expected_status == "usable")
 
     def test_no_readable_table_anywhere_is_unusable(self) -> None:
         table = read_process_table()

@@ -56,16 +56,14 @@ class TestSeedThenColdRead(TransactionTestCase):
         self._run_setup_seed(
             {
                 "teatree": {
-                    "memory_recall_enabled": False,  # default True -> disabled gate
-                    "self_dm_gate_enabled": False,  # default True -> disabled gate
+                    "auto_update_require_green_main": False,  # default True -> disabled gate
                     "hook_validator_timeout_seconds": 90,  # default 60 -> raised budget
                 }
             }
         )
 
         # The seed half: every cold-hook key landed a row in the GLOBAL scope.
-        assert ConfigSetting.objects.get_effective("memory_recall_enabled") is False
-        assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
+        assert ConfigSetting.objects.get_effective("auto_update_require_green_main") is False
         assert ConfigSetting.objects.get_effective("hook_validator_timeout_seconds") == 90
 
         db_file = self.tmp_path / "db.sqlite3"
@@ -76,8 +74,7 @@ class TestSeedThenColdRead(TransactionTestCase):
 
         # The flipped bool adapter returns the SEEDED non-default, not the in-code
         # default — so the gate stays disabled exactly as the user configured.
-        assert teatree_settings.teatree_bool_setting("memory_recall_enabled", default=True) is False
-        assert teatree_settings.teatree_bool_setting("self_dm_gate_enabled", default=True) is False
+        assert teatree_settings.teatree_bool_setting("auto_update_require_green_main", default=True) is False
 
         # The cold reader returns the SEEDED raised budget. The hook_router int flip
         # is PR4; here the cold reader proves the int budget was seeded losslessly
@@ -88,7 +85,7 @@ class TestSeedThenColdRead(TransactionTestCase):
         # A gate the seed did not configure has no seeded row, so the flipped reader
         # falls to its in-code default — a missing row never disables a default-on
         # gate (the fail-open parity crux).
-        self._run_setup_seed({"teatree": {"memory_recall_enabled": False}})
+        self._run_setup_seed({"teatree": {"auto_update_require_green_main": False}})
         db_file = self.tmp_path / "db.sqlite3"
         _snapshot_db_to_file(db_file)
         self.monkeypatch.setenv("T3_CONFIG_DB", str(db_file))

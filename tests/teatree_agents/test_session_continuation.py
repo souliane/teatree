@@ -60,7 +60,7 @@ def _history(output: str) -> list[ModelMessage]:
 
 class _Lanes(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
 
     def _task(self, phase: str = "coding", *, parent: Task | None = None, **kwargs: object) -> Task:
         session = Session.objects.create(ticket=self.ticket, agent_id=phase)

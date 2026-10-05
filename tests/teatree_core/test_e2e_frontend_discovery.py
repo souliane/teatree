@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 
 from teatree.core.management.commands._e2e_discovery import detect_local_port, resolve_linked_worktree
-from teatree.core.management.commands.e2e import _ticket_frontend_projects
+from teatree.core.management.commands._e2e_discovery import ticket_frontend_projects as _ticket_frontend_projects
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.worktree_env import compose_project
 

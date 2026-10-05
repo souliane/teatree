@@ -269,7 +269,7 @@ class TestDockerDaemonCpuCount:
 class TestDeriveWorkerMemLimitMib:
     def test_reserves_siblings_and_headroom(self) -> None:
         # (32000 - 3328) * 0.8 = 22937.
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=0) == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
 
     def test_a_tiny_host_has_no_workable_cap_and_says_so(self) -> None:
         # Was a 2 GiB floor. A 2 GiB cap is HALF the floor `t3 doctor check` hard-FAILs as
@@ -282,14 +282,14 @@ class TestDeriveWorkerMemLimitMib:
 
     def test_unreadable_ram_returns_zero_so_default_holds(self) -> None:
         # 0 signals deploy.sh to keep the compose default rather than cap blindly.
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=0, daemon_ram_mib=0) == 0
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=0).mem_limit_mib == 0
 
     def test_reads_host_total_when_unset(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=32000),
             patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=0),
         ):
-            assert DockerWorkerSizing.worker_mem_limit_mib() == 22937
+            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 22937
 
 
 class TestWorkerCapNeverExceedsTheDockerVm:
@@ -305,7 +305,7 @@ class TestWorkerCapNeverExceedsTheDockerVm:
     def test_daemon_vm_smaller_than_host_wins(self) -> None:
         # 24 GiB host, 12 GiB Docker Desktop VM: (12288 - 3328) * 0.8 = 7168, and the
         # 24 GiB host would have derived 16998 — a cap the VM could never hold.
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=24576, daemon_ram_mib=12288) == 7168
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=24576, daemon_ram_mib=12288).mem_limit_mib == 7168
 
     def test_a_daemon_vm_too_small_for_a_workable_cap_refuses_rather_than_using_the_host(self) -> None:
         # The same property at a VM below the fit threshold: the host's roomier figure
@@ -318,21 +318,21 @@ class TestWorkerCapNeverExceedsTheDockerVm:
 
     def test_host_wins_when_it_is_the_smaller_of_the_two(self) -> None:
         # Linux box: the daemon shares the host kernel, so neither figure inflates.
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=32000) == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=32000).mem_limit_mib == 22937
 
     def test_unreadable_daemon_falls_back_to_host(self) -> None:
         # No docker binary / unreachable daemon must not zero out a good host read.
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=0) == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
 
     def test_daemon_alone_still_sizes_when_host_is_unreadable(self) -> None:
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=0, daemon_ram_mib=12288) == 7168
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=12288).mem_limit_mib == 7168
 
     def test_probes_the_daemon_by_default(self) -> None:
         with (
             patch("teatree.utils.ram_probe.host_total_ram_mib", return_value=24576),
             patch("teatree.utils.ram_probe.DockerWorkerSizing.daemon_total_ram_mib", return_value=12288),
         ):
-            assert DockerWorkerSizing.worker_mem_limit_mib() == 7168
+            assert DockerWorkerSizing.worker_sizing().mem_limit_mib == 7168
 
 
 class TestDockerDaemonTotalRamMib:
@@ -380,12 +380,12 @@ class TestComposeSizingMain:
         proc = self._run_compose_sizing({})
         assert proc.returncode in {0, 3}, proc.stderr
         assert "Traceback" not in proc.stderr
-        assert "TEATREE_WORKER_CPUS=" in proc.stdout
+        assert all(line.startswith("TEATREE_WORKER_") for line in proc.stdout.splitlines())
 
     def test_an_operator_exported_cpu_cap_is_not_overwritten(self) -> None:
         # deploy.sh evals this output after reading the operator's value, so emitting
         # a derived line would silently replace it.
-        proc = self._run_compose_sizing({"TEATREE_WORKER_CPUS": "5"})
+        proc = self._run_compose_sizing({"TEATREE_WORKER_CPUS": "1"})
 
         assert proc.returncode in {0, 3}, proc.stderr
         assert "TEATREE_WORKER_CPUS=" not in proc.stdout
@@ -634,7 +634,7 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
 
     def test_a_daemon_total_above_the_band_is_unchanged(self) -> None:
         """TOO-HIGH control: a real box sizes byte-identically — this is no blanket clamp."""
-        assert DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=32000, daemon_ram_mib=0) == 22937
+        assert DockerWorkerSizing.worker_sizing(total_ram_mib=32000, daemon_ram_mib=0).mem_limit_mib == 22937
 
     def test_an_unreadable_basis_still_defers_to_the_compose_default(self) -> None:
         sizing = DockerWorkerSizing.worker_sizing(total_ram_mib=0, daemon_ram_mib=0)
@@ -646,9 +646,12 @@ class TestTheEmittedCapCanAlwaysReleaseTheBrake:
 class TestTheComposeSizingEmitter:
     """What ``deploy/deploy.sh`` ``eval``s, and how a refusal reaches it."""
 
-    def _emit(self, monkeypatch: pytest.MonkeyPatch, sizing: ram_probe.WorkerSizing) -> tuple[str, str]:
+    def _emit(
+        self, monkeypatch: pytest.MonkeyPatch, sizing: ram_probe.WorkerSizing, *, daemon_cpus: int = 8
+    ) -> tuple[str, str]:
         monkeypatch.setattr(DockerWorkerSizing, "worker_sizing", classmethod(lambda cls, *a, **k: sizing))
         monkeypatch.setattr(DockerWorkerSizing, "worker_cpus", staticmethod(lambda *a, **k: 7))
+        monkeypatch.setattr(DockerWorkerSizing, "daemon_cpu_count", classmethod(lambda cls: daemon_cpus))
         out, err = io.StringIO(), io.StringIO()
         monkeypatch.setattr(ram_probe.sys, "stdout", out)
         monkeypatch.setattr(ram_probe.sys, "stderr", err)
@@ -683,6 +686,33 @@ class TestTheComposeSizingEmitter:
 
         assert "TEATREE_WORKER_CPUS=7" in out
         assert "TEATREE_WORKER_MEM_LIMIT" not in out, "a derived line would overwrite the operator's own value"
+        assert not err
+
+    def test_an_unreadable_daemon_cpu_count_emits_no_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cap derived from host cores alone can exceed a Docker Desktop VM, which refuses the whole `up`."""
+        monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
+        monkeypatch.delenv("TEATREE_WORKER_CPUS", raising=False)
+
+        out, _ = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=0)
+
+        assert "TEATREE_WORKER_CPUS" not in out
+
+    def test_an_operator_value_above_the_daemon_is_capped_at_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
+        monkeypatch.setenv("TEATREE_WORKER_CPUS", "16")
+
+        out, err = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=4)
+
+        assert out == "TEATREE_WORKER_CPUS=4\n"
+        assert "16" in err
+
+    def test_an_operator_value_within_the_daemon_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEATREE_WORKER_MEM_LIMIT", raising=False)
+        monkeypatch.setenv("TEATREE_WORKER_CPUS", "2.5")
+
+        out, err = self._emit(monkeypatch, ram_probe.WorkerSizing(0), daemon_cpus=4)
+
+        assert "TEATREE_WORKER_CPUS" not in out
         assert not err
 
     def test_an_unreadable_basis_emits_cpus_only(self, monkeypatch: pytest.MonkeyPatch) -> None:

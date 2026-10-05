@@ -15,8 +15,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.models import ModeOverride, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.core.models.transition import TicketTransition
 from teatree.core.tasks import drain_queue_body
 from teatree.loop import mechanical_resources
@@ -213,7 +213,7 @@ _FAILING_HANDLERS: dict[str, tuple[dict[str, object], Callable[[], AbstractConte
     ),
     "free_resources": (
         {"resource": "disk"},
-        lambda: patch.object(mechanical_resources, "_survey_disk", side_effect=_BOOM),
+        lambda: patch.object(mechanical_resources, "_plan_disk", side_effect=_BOOM),
     ),
     "sweep_artifacts": ({}, lambda: patch("teatree.core.models.ResourcePressureMarker.load", side_effect=_BOOM)),
     "assign_gitlab_reviewer": (

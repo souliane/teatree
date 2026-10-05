@@ -18,6 +18,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.eval.artifact_redaction import redact_artifact, write_artifact
 from teatree.eval.summaries import merge_summaries as _merge_summaries
 
 
@@ -31,6 +32,6 @@ def merge_summaries(
     """Merge per-shard summary markdown into one dashboard (to --out or stdout)."""
     dashboard = _merge_summaries(inputs, run_url=run_url, sha=sha, generated_at=generated_at)
     if out is not None:
-        out.write_text(dashboard, encoding="utf-8")
+        write_artifact(out, dashboard)
     else:
-        typer.echo(dashboard)
+        typer.echo(redact_artifact(dashboard))

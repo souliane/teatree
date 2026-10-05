@@ -25,6 +25,7 @@ from django.utils import timezone
 from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
 from teatree.core.modelkit.task_failure_taxonomy import classify_failure
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
+from teatree.generation import current_generation
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -154,6 +155,7 @@ def claim(task: "Task", *, claimed_by: str, claimed_by_session: str = "", lease_
             status=status.CLAIMED,
             claimed_by=claimed_by,
             claimed_by_session=claimed_by_session,
+            claimed_generation=current_generation(),
             claimed_at=now,
             heartbeat_at=now,
             lease_expires_at=now + timedelta(seconds=lease_seconds),

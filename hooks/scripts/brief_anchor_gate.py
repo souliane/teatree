@@ -5,15 +5,11 @@ the whole failure mode. This gate does not need to know either: it only checks t
 the brief either anchors its claims to a commit or tells the sub-agent it may
 overrule them, and quotes the one-sentence remedy when it does neither.
 
-WARN, not deny, by default. The fleet dispatches constantly and every brief passes
-through here, so a false deny on an ordinary brief costs far more than a line the
-reader skips; the enforcement value is the remedy text, not the block. The refuse
-posture is opt-in behind ``brief_anchor_gate_refuse`` and routes through the shared
-``_fail_open_or_deny`` chokepoint, so it inherits the self-rescue allowlist and the
-master ``danger_gate_fail_open`` switch like every other over-deny gate.
+An unanchored brief is refused through the shared ``_fail_open_or_deny``
+chokepoint, so it inherits the self-rescue allowlist and the master
+``danger_gate_fail_open`` switch like every other over-deny gate.
 
-NEVER-LOCKOUT: the default posture cannot deny at all; the
-``brief_anchor_gate_enabled`` kill-switch (``t3 <overlay> gate brief-anchor
+NEVER-LOCKOUT: the ``brief_anchor_gate_enabled`` kill-switch (``t3 <overlay> gate brief-anchor
 disable``) turns it off entirely; a per-call ``[brief-anchor-ok: <reason>]`` token
 in the first 512 chars of the brief clears one dispatch (an empty reason does not);
 and any internal error, an unimportable ``teatree`` and an unreadable settings store
@@ -50,12 +46,6 @@ def _gate_enabled() -> bool:
     return teatree_bool_setting("brief_anchor_gate_enabled", default=True)
 
 
-def _refuse_mode() -> bool:
-    from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 — deferred: cold-hook import
-
-    return teatree_bool_setting("brief_anchor_gate_refuse", default=False)
-
-
 def _prompt_of(data: dict) -> str:
     tool_input = data.get("tool_input") or {}
     if not isinstance(tool_input, dict):
@@ -83,7 +73,7 @@ def _warning_for(prompt: str) -> str | None:
 
 
 def handle_brief_anchor_lint(data: dict) -> bool:
-    """Warn (or, in refuse mode, deny) a dispatch whose brief anchors none of its claims."""
+    """Deny a dispatch whose brief anchors none of its claims."""
     try:
         if data.get("tool_name") not in DISPATCH_TOOLS or not _gate_enabled():
             return False
@@ -92,9 +82,6 @@ def handle_brief_anchor_lint(data: dict) -> bool:
             return False
         message = _warning_for(prompt)
         if message is None:
-            return False
-        if not _refuse_mode():
-            sys.stderr.write(message + "\n")
             return False
     except Exception:  # noqa: BLE001 — crash-proof hook: a gate bug must never wedge the dispatch
         return False

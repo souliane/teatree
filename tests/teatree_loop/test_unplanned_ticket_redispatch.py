@@ -12,9 +12,9 @@ import importlib
 from django.apps import apps
 from django.test import TestCase
 
-from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from teatree.loop.unplanned_ticket_redispatch import redispatch_unplanned_tickets

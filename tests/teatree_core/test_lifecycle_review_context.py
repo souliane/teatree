@@ -3,18 +3,11 @@
 Reviewing carries the same responsibility as implementing. The hole this
 closes: ``lifecycle visit-phase <id> reviewing`` can be satisfied by a verdict
 formed from the diff alone — no work item fetched, no links followed, no
-referenced documents downloaded + analyzed. When a project opts in
-(``require_review_context``), recording the ``reviewing`` attestation requires a
+referenced documents downloaded + analyzed. Recording the ``reviewing`` attestation requires a
 durable ``review_context`` artifact naming the fetched work item, listing a
-downloaded reference, and recording its analysis. With the knob off the gate is
-a NO-OP (opt-in default preserved).
-
-The knob is pinned per test via ``review_context_required`` rather than the host
-machine's config, so the suite is deterministic regardless of it.
+downloaded reference, and recording its analysis. The gate always runs.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from io import StringIO
 from unittest.mock import patch
 
@@ -23,20 +16,14 @@ from django.core.management import call_command
 from django.test import TestCase
 from django_fsm import TransitionNotAllowed
 
-from teatree.config import UserSettings
-from teatree.core.gates.review_context_gate import is_complete, recorded_review_context, review_context_required
+from teatree.agents.review_context_recorder import record_returned_review_context
+from teatree.core.gates.review_context_gate import is_complete, recorded_review_context
 from teatree.core.management.commands.lifecycle import ReviewContextError
 from teatree.core.models import Session, Ticket
 from teatree.core.models.task import Task
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
-
-
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch("teatree.core.gates.review_context_gate.review_context_required", return_value=required):
-        yield
 
 
 class TestReviewingRequiresReviewContext(TestCase):
@@ -57,7 +44,7 @@ class TestReviewingRequiresReviewContext(TestCase):
 
     def test_refused_without_context_when_required(self) -> None:
         ticket = self._ticket_ready_for_review()
-        with _gate(required=True), pytest.raises(ReviewContextError, match="referenced-context retrieval"):
+        with pytest.raises(ReviewContextError, match="referenced-context retrieval"):
             self._visit_reviewing(ticket)
         session = ticket.sessions.first()
         assert session is not None
@@ -67,16 +54,7 @@ class TestReviewingRequiresReviewContext(TestCase):
     def test_allowed_with_context_present(self) -> None:
         ticket = self._ticket_ready_for_review()
         self._record_context(ticket)
-        with _gate(required=True):
-            self._visit_reviewing(ticket)
-        session = ticket.sessions.first()
-        assert session is not None
-        assert "reviewing" in session.visited_phases
-
-    def test_noop_when_not_required(self) -> None:
-        ticket = self._ticket_ready_for_review()
-        with _gate(required=False):
-            self._visit_reviewing(ticket)
+        self._visit_reviewing(ticket)
         session = ticket.sessions.first()
         assert session is not None
         assert "reviewing" in session.visited_phases
@@ -84,7 +62,7 @@ class TestReviewingRequiresReviewContext(TestCase):
     def test_partial_context_is_refused(self) -> None:
         ticket = self._ticket_ready_for_review()
         ticket.record_review_context(work_item="https://x/issues/51", documents=[], analysis="looked at the diff")
-        with _gate(required=True), pytest.raises(ReviewContextError, match="referenced-context retrieval"):
+        with pytest.raises(ReviewContextError, match="referenced-context retrieval"):
             self._visit_reviewing(ticket)
 
 
@@ -101,19 +79,24 @@ class TestReviewTransitionConditionIsMechanical(TestCase):
 
     def test_condition_false_without_context_when_required(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
-        with _gate(required=True):
-            assert ticket.review_context_satisfied() is False
+        assert ticket.review_context_satisfied() is False
 
     def test_condition_true_with_context_when_required(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")
-        with _gate(required=True):
-            assert ticket.review_context_satisfied() is True
+        assert ticket.review_context_satisfied() is True
 
-    def test_condition_true_when_not_required(self) -> None:
+    def test_author_review_transition_requires_anti_vacuity_attestation(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
-        with _gate(required=False):
-            assert ticket.review_context_satisfied() is True
+        ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")
+        conditions = Ticket.review._django_fsm.transitions[Ticket.State.TESTED].conditions
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            assert False in [condition(ticket) for condition in conditions]
+
+            ticket.record_anti_vacuity_attestation("a" * 40, "AC mapped", [], no_new_tests=True)
+            assert all(
+                condition(ticket) for condition in conditions if condition.__name__ != "_reviewing_task_completed"
+            )
 
     def test_review_transition_consults_the_condition(self) -> None:
         meta = Ticket.review._django_fsm
@@ -144,7 +127,7 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             phase="reviewing",
             execution_reason="cold review",
         )
-        with _gate(required=True), pytest.raises(TransitionNotAllowed):
+        with pytest.raises(TransitionNotAllowed):
             task.complete()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
@@ -159,18 +142,45 @@ class TestNonFsmReviewPathsAreCovered(TestCase):
             execution_reason="cold review",
         )
         ticket.record_review_context(work_item="https://x/51", documents=["s.pdf"], analysis="matches")
+        ticket.record_anti_vacuity_attestation("a" * 40, "AC covered", [], no_new_tests=True)
         # Shippable so the review lands SELF_REVIEWED (not auto-ignored) — this
         # test pins "review allowed with context", not the #3313
         # unshippable-review disposition.
-        with _gate(required=True), patch.object(Ticket, "has_shippable_diff", return_value=True):
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
             task.complete()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
+    def test_review_result_records_context_before_phase_completion(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
+        session = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", execution_reason="cold review")
+        result = {
+            "review_context": {
+                "work_item": "https://x/issues/51",
+                "documents": ["specs/requirements.pdf"],
+                "analysis": "Checked the reviewed diff against the downloaded requirements.",
+            },
+            "anti_vacuity": {"ac_coverage": "AC covered", "proven_tests": [], "no_new_tests": True},
+        }
+
+        with (
+            patch.object(Ticket, "has_shippable_diff", return_value=True),
+            patch("teatree.agents.review_context_recorder.dispatch_worktree_path", return_value="/tmp/worktree"),
+            patch("teatree.agents.review_context_recorder.git.head_sha", return_value="a" * 40),
+        ):
+            assert record_returned_review_context(task, result, phase="reviewing") == ""
+            task.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert recorded_review_context(ticket)["documents"] == ["specs/requirements.pdf"]
+        assert ticket.extra["anti_vacuity_attestation"]["head_sha"] == "a" * 40
+
     def test_direct_cli_transition_review_exits_nonzero_with_an_actionable_refusal(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         err = StringIO()
-        with _gate(required=True), pytest.raises(SystemExit) as exc:
+        with pytest.raises(SystemExit) as exc:
             call_command("ticket", "transition", str(ticket.pk), "review", stderr=err)
         assert exc.value.code == 1
         ticket.refresh_from_db()
@@ -223,13 +233,6 @@ class TestRecordReviewContext(TestCase):
 
 
 class TestReviewContextResolvers(TestCase):
-    def test_review_context_required_reads_effective_settings(self) -> None:
-        with patch(
-            "teatree.core.gates.review_context_gate.get_effective_settings",
-            return_value=UserSettings(require_review_context=True),
-        ):
-            assert review_context_required() is True
-
     def test_recorded_review_context_empty_without_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         assert recorded_review_context(ticket) == {}

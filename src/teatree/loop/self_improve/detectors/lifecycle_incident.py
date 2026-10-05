@@ -1,17 +1,19 @@
 """Find failed work and unanswered messages from the factory's durable ledgers."""
 
+import json
 import math
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.loop.scanners.base import ScanSignal
@@ -22,6 +24,7 @@ _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
 _CLAIM_WAIT = timedelta(minutes=10)
 _RECURRING_FAILURE = 3
+_WITNESSES = 2
 _OWNER_ALERT_WAIT = timedelta(minutes=30)
 _REPAIR_WAIT = timedelta(hours=2)
 # Shared with the repair-burn factory signal (factory_signal_queries.compute_s5) so the
@@ -73,7 +76,7 @@ class LifecycleIncidentDetector:
         if ticket_allowed and firing.last_action == ActionRung.TICKET:
             return ActionRung.TICKET
         age = now - firing.first_fired_at
-        if ticket_allowed and age >= self.repair_after and firing.last_action == ActionRung.SLACK:
+        if ticket_allowed and age >= self.repair_after:
             return ActionRung.TICKET
         if age >= self.owner_alert_after:
             return ActionRung.SLACK
@@ -110,10 +113,12 @@ class LifecycleIncidentDetector:
         ]
         cutoffs = self._attempt_evidence_cutoffs(attempts)
         by_cause: dict[str, set[int]] = defaultdict(set)
+        recent = []
         for row in attempts:
             cursor = cutoffs.get(self._key("attempt_failure_burst", row["cause"]))
             if cursor is None or row["epoch"] > cursor:
                 by_cause[row["cause"]].add(row["task_id"])
+                recent.append(row)
         if by_cause:
             candidate_ids = {task_id for ids in by_cause.values() for task_id in ids}
             repair_ids = set(
@@ -140,11 +145,39 @@ class LifecycleIncidentDetector:
                 rung=ActionRung.TICKET,
                 action="Inspect recent failed attempts, including tasks that were reopened or retried.",
             )
+            evidence = self._attempt_evidence(recent, cause, ids)
+            if evidence:
+                report.payload["suggested_action"] += f" Fingerprint {evidence[0]}. Evidence: {evidence[1]}"
             cursor = cutoffs.get(report.dedup_key)
             if cursor is not None:
                 report.payload["attempt_after_epoch"] = cursor
             reports.append(report)
         return reports
+
+    @staticmethod
+    def _attempt_evidence(rows: list[dict], cause: str, task_ids: set[int]) -> tuple[str, str] | None:
+        if is_causeless(cause):
+            return None
+        groups: dict[str, dict[int, dict]] = defaultdict(dict)
+        for row in sorted(rows, key=itemgetter("epoch", "entity_id")):
+            fingerprint = row.get("error_fingerprint")
+            if (
+                fingerprint
+                and row.get("trace_id")
+                and row.get("span_id")
+                and row["cause"] == cause
+                and row["task_id"] in task_ids
+            ):
+                groups[fingerprint][row["entity_id"]] = row
+        recurring = [(fingerprint, attempts) for fingerprint, attempts in groups.items() if len(attempts) >= _WITNESSES]
+        if not recurring:
+            return None
+        fingerprint, attempts = min(recurring, key=lambda item: (-len(item[1]), item[0]))
+        witnesses = list(attempts.values())[-_WITNESSES:]
+        citation = "\n".join(
+            f"otel:{row['span_id']}\n{json.dumps(row, sort_keys=True, separators=(',', ':'))}" for row in witnesses
+        )
+        return fingerprint, citation
 
     def _attempt_evidence_cutoffs(self, attempts: list[dict]) -> dict[str, float]:
         keys = {self._key("attempt_failure_burst", row["cause"]) for row in attempts}

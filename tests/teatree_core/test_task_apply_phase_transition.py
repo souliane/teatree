@@ -12,8 +12,12 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.modelkit.review_state import ReviewState
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_phase_disposition import phase_output_reached
+from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
+from tests.factories import planned_ticket, record_test_plan
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
 
 class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
@@ -46,6 +50,7 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
             phase="reviewing",
             status=Task.Status.COMPLETED,
         )
+        record_review_context_for_test(ticket)
 
         # Pre-#1000 this raised TransitionNotAllowed and crashed the tick.
         task._apply_phase_transition()
@@ -72,6 +77,7 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
             phase="reviewing",
             status=Task.Status.COMPLETED,
         )
+        record_review_context_for_test(ticket)
 
         fired = task._apply_phase_transition()
 
@@ -95,10 +101,55 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
             phase="reviewing",
             status=Task.Status.COMPLETED,
         )
+        record_review_context_for_test(ticket)
 
         ticket.mark_reviewed_externally()
 
         assert ticket.state == Ticket.State.REVIEW_DELIVERED
+
+
+class TestSkippedReviewerTaskOrdering(TestCase):
+    def _skipped_task(self, ticket: Ticket) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id="review-skip")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        TaskAttempt.objects.create(task=task, result={"review_skipped": True})
+        return task
+
+    def test_skip_before_real_review_records_no_action(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.NOT_STARTED,
+            issue_url="https://github.com/owner/repo/pull/21",
+            extra={"reviewed_sha": "a" * 40},
+        )
+        assert self._skipped_task(ticket)._apply_phase_transition()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
+        assert ticket.extra["last_review_state"] == ReviewState.REVIEWED_NO_ACTION.value
+
+    def test_skip_after_real_review_preserves_approval(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.REVIEW_DELIVERED,
+            issue_url="https://github.com/owner/repo/pull/22",
+            extra={"reviewed_sha": "a" * 40, "last_review_state": ReviewState.APPROVED.value},
+        )
+        assert not self._skipped_task(ticket)._apply_phase_transition()
+        ticket.refresh_from_db()
+        assert ticket.extra["last_review_state"] == ReviewState.APPROVED.value
+
+    def test_claimed_sibling_prevents_no_action(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.NOT_STARTED)
+        skipped = self._skipped_task(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="real-review")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.CLAIMED)
+
+        assert not skipped._apply_phase_transition()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert "last_review_state" not in ticket.extra
 
 
 class TestApplyPhaseTransitionChainsParentTask(TestCase):
@@ -111,7 +162,7 @@ class TestApplyPhaseTransitionChainsParentTask(TestCase):
     """
 
     def _author_ticket(self, state: str) -> Ticket:
-        return Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+        return planned_ticket(overlay="test", role=Ticket.Role.AUTHOR, state=state)
 
     def _completed_task(self, ticket: Ticket, phase: str) -> Task:
         session = Session.objects.create(ticket=ticket, agent_id=phase)
@@ -140,38 +191,42 @@ class TestApplyPhaseTransitionChainsParentTask(TestCase):
         assert review.parent_task_id == testing_task.pk
 
 
-class TestApplyPhaseTransitionAutoImplement(TestCase):
-    """#10: an auto-implement author ticket advances on coding completion.
+class TestApplyPhaseTransitionCodingBeforePlanned(TestCase):
+    """A coding completion that lands before PLAN_RECORDED advances only on a recorded plan decision.
 
-    ``persistence._handle_orchestrator`` schedules a ``coding`` task directly on
-    a fresh NOT_STARTED author ticket, so the completion cannot match the
-    PLAN_RECORDED-source ``code()`` guard. Before ``code_direct`` this no-opped
-    silently — tickets 35/36 spent budget on coding yet advanced NOTHING.
+    ``code_direct`` is the edge for a ticket whose plan was recorded off the WORK_STARTED
+    rung (``ticket plan`` / ``skip-planning`` on an early ticket), so its coding task
+    was legitimately minted. Without a plan decision the completion escalates as a
+    wedge and never raises mid-completion.
+
     """
 
     def _completed_coding_task(self, ticket: Ticket) -> Task:
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
 
-    def test_coding_completion_on_not_started_auto_implement_advances_to_coded(self) -> None:
-        from teatree.core.models.auto_implement import mark_auto_implement  # noqa: PLC0415
-
+    def test_a_skip_planned_early_ticket_advances_to_coded_and_chains_testing(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
-        mark_auto_implement(ticket)
+        mark_trivial_plan_skip(ticket, reason="one-line constant bump")
         coding_task = self._completed_coding_task(ticket)
 
         fired = coding_task._apply_phase_transition()
 
         ticket.refresh_from_db()
-        assert fired is True, "an auto-implement ticket must advance on coding completion, not silently no-op"
+        assert fired is True
         assert ticket.state == Ticket.State.CODED
-        testing = Task.objects.get(ticket=ticket, phase="testing")
-        assert testing.parent_task_id == coding_task.pk
+        assert Task.objects.get(ticket=ticket, phase="testing").parent_task_id == coding_task.pk
 
-    def test_coding_completion_on_unmarked_early_ticket_does_not_advance(self) -> None:
-        # Behavior preservation: without the marker, code_direct is unreachable —
-        # a plain NOT_STARTED author ticket's coding completion must NOT advance
-        # (it escalates instead; see TestApplyPhaseTransitionEscalation).
+    def test_a_planned_early_ticket_advances_to_coded(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        record_test_plan(ticket)
+
+        assert self._completed_coding_task(ticket)._apply_phase_transition() is True
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+
+    def test_an_unplanned_early_ticket_does_not_advance_and_does_not_raise(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
         coding_task = self._completed_coding_task(ticket)
 
@@ -180,6 +235,7 @@ class TestApplyPhaseTransitionAutoImplement(TestCase):
         ticket.refresh_from_db()
         assert fired is False
         assert ticket.state == Ticket.State.NOT_STARTED
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
 
 
 class TestApplyPhaseTransitionEscalation(TestCase):
@@ -264,7 +320,7 @@ class TestApplyPhaseTransitionReReadsStateUnderLock(TestCase):
         from django.db import connection  # noqa: PLC0415
         from django.db.models.query import QuerySet  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         coding_task = self._completed_coding_task(ticket)
 
         real_sfu = QuerySet.select_for_update
@@ -297,6 +353,8 @@ class TestApplyPhaseTransitionUnshippableReviewDisposition(TestCase):
     """
 
     def _completed_reviewing_task(self, ticket: Ticket) -> Task:
+        record_review_context_for_test(ticket)
+        record_maker_review_for_test(ticket, "a" * 40)
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         return Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
 
@@ -380,6 +438,8 @@ class TestTerminalTicketsCannotBeAdvanced(TestCase):
                             phase=phase,
                             status=Task.Status.COMPLETED,
                         )
+                        if role == Ticket.Role.REVIEWER and phase == "reviewing":
+                            record_review_context_for_test(ticket)
 
                         task._apply_phase_transition()
 

@@ -1,7 +1,7 @@
 """Tests for teatree.core.gates.fix_dod_gate — the fix-ticket FixRecord DoD merge gate.
 
 The gate's pure helpers (``is_fix``, ``override_reason``,
-``missing_fix_record_fields``, ``has_valid_fix_record``, ``check_fix_record_dod``)
+``missing_fix_record_fields``, ``check_fix_record_dod``)
 are exercised directly; the FSM wiring is exercised through
 ``Ticket.mark_delivered`` so a fix without a validated FixRecord cannot reach
 DELIVERED.
@@ -13,7 +13,6 @@ from django.test import TestCase
 from teatree.core.gates.fix_dod_gate import (
     FixRecordDodError,
     check_fix_record_dod,
-    has_valid_fix_record,
     is_fix,
     missing_fix_record_fields,
     override_reason,
@@ -24,6 +23,7 @@ from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
 from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 _COMPLETE_RECORD = {
     "root_cause": "carve-out resolved repo from ambient cwd, ignoring git -C target",
@@ -76,11 +76,6 @@ class TestMissingFixRecordFields(TestCase):
         record = {**_COMPLETE_RECORD, "observed_red": "   "}
         ticket = _fix_ticket(fix_record=record)
         assert missing_fix_record_fields(ticket) == ["observed_red"]
-
-    def test_complete_record_has_no_gaps(self) -> None:
-        ticket = _fix_ticket(fix_record=_COMPLETE_RECORD)
-        assert missing_fix_record_fields(ticket) == []
-        assert has_valid_fix_record(ticket) is True
 
 
 class TestOverrideReason(TestCase):
@@ -155,7 +150,9 @@ class TestRefusalNamesThePositivePath(TestCase):
 
 class TestMarkDeliveredFsmGate(TestCase):
     def _retrospected(self, **kwargs: object) -> Ticket:
-        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED, **kwargs)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED, **kwargs)
+        record_confirmed_merge_for_test(ticket)
+        return ticket
 
     def test_feature_ticket_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
@@ -210,6 +207,7 @@ class TestFixRecordDodLivePath(TestCase):
         extra = {**(ticket.extra or {}), **extra_overrides}
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED, extra=extra)
         ticket.refresh_from_db()
+        record_confirmed_merge_for_test(ticket)
         return ticket
 
     def test_correction_ticket_without_record_is_refused_at_delivery(self) -> None:

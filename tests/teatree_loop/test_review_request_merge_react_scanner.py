@@ -26,6 +26,7 @@ from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_request_merge_react import MERGE_REACTION_EMOJI, ReviewRequestMergeReactScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 
@@ -82,6 +83,10 @@ class FakeHost:
 
 
 class _SeedMixin:
+    def setUp(self) -> None:
+        super().setUp()
+        allow_slack_channels("C_REVIEW")
+
     def _seed_post(self, **overrides: Any) -> ReviewRequestPost:
         spec: dict[str, Any] = {
             "url": "https://github.com/o/r/pull/1",

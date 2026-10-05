@@ -7,16 +7,21 @@ how two commands start disagreeing about what exit 6 means.
 """
 
 import dataclasses
-from typing import TYPE_CHECKING
+import json
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
+from teatree.core.overlays.notion_identity import NOTION_CREDENTIAL_ENV_VAR
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:  # pragma: no cover — import-time cost stays off the CLI startup path
     from teatree.backends.notion.client import NotionClient
     from teatree.backends.notion.errors import NotionError
     from teatree.backends.notion.liveness import LivenessVerdict
+    from teatree.types import RawAPIDict
 
 
 def notion_client(overlay: str = "", *, version: str = "") -> "NotionClient":
@@ -25,6 +30,73 @@ def notion_client(overlay: str = "", *, version: str = "") -> "NotionClient":
     from teatree.backends.notion.credentials import build_notion_client  # noqa: PLC0415 — deferred: lazy CLI import
 
     return build_notion_client(overlay or None, version=version)
+
+
+def routing_label(client: "NotionClient") -> str:
+    """Where the token came from, and whose write roots apply — the env token beats the overlay's entry."""
+    roots = f"write roots of overlay {client.overlay}" if client.overlay else "no overlay's write roots"
+    if os.environ.get(NOTION_CREDENTIAL_ENV_VAR):
+        return f"[token from ${NOTION_CREDENTIAL_ENV_VAR}; {roots}]"
+    return f"[overlay {client.overlay}]"
+
+
+def writer_identity(client: "NotionClient") -> "RawAPIDict":
+    """The integration a write would run as; a write whose identity cannot be read does not start."""
+    import httpx  # noqa: PLC0415 — deferred: lazy CLI import
+
+    from teatree.backends.notion.errors import NotionError, describe_failure  # noqa: PLC0415 — lazy CLI import
+
+    try:
+        return client.whoami()
+    except httpx.HTTPError as exc:
+        msg = f"reading the integration's identity failed ({describe_failure(exc)}), so nothing was written — retry"
+        raise NotionError(msg) from exc
+
+
+def announce_writer(client: "NotionClient") -> "RawAPIDict":
+    """Name, on stderr, the identity and overlay a write is about to run as; return the identity read."""
+    identity = writer_identity(client)
+    typer.echo(
+        f"writing as integration {identity.get('name', '?')!r} (bot id {identity.get('id', '?')}) "
+        f"{routing_label(client)}",
+        err=True,
+    )
+    return identity
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TextInput:
+    """One text, given as a file or inline. Expanded into ``--<name>-file`` and ``--<name>-text``."""
+
+    file: Annotated[Path | None, typer.Option(help="File holding the text; give this or the -text form.")] = None
+    text: Annotated[str | None, typer.Option(help="The text inline and verbatim; give this or the -file form.")] = None
+
+    def read(self, name: str) -> str:
+        if (self.file is None) == (self.text is None):
+            typer.echo(f"Pass exactly one of --{name}-file or --{name}-text.", err=True)
+            raise typer.Exit(code=1)
+        return self.file.read_text(encoding="utf-8") if self.file is not None else str(self.text)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class BodyInput(TextInput):
+    """A page body: Markdown as a file or inline, or raw Notion blocks — exactly one of the three."""
+
+    file: Annotated[Path | None, typer.Option("--body-file", help="File holding the Markdown body.")] = None
+    text: Annotated[str | None, typer.Option("--body-text", help="The Markdown body inline and verbatim.")] = None
+    blocks_file: Annotated[Path | None, typer.Option("--blocks-file", help="Raw Notion block JSON body.")] = None
+
+    def read_body(self) -> tuple[str, "list[RawAPIDict] | None"]:
+        """Return the Markdown body, or raw Notion blocks when ``--blocks-file`` is used."""
+        if sum(given is not None for given in (self.file, self.text, self.blocks_file)) != 1:
+            typer.echo(
+                "Pass exactly one of --body-file or --body-text (Markdown), or --blocks-file (raw Notion block JSON).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if self.blocks_file is not None:
+            return "", json.loads(self.blocks_file.read_text(encoding="utf-8"))
+        return self.read("body"), None
 
 
 def object_id(reference: str) -> str:
@@ -125,10 +197,26 @@ def live_page(client: "NotionClient", reference: str, *, audit_reason: str = "")
     if verdict.readable:
         return LivePage(page_id=page_id)
     if not audit_reason.strip():
-        raise verdict.as_error(page_id)
+        raise _not_live(client, page_id, verdict)
     stamp = _audit_stamp(page_id, verdict, audit_reason.strip())
     typer.echo(stamp, err=True)
     return LivePage(page_id=page_id, stamp=stamp)
+
+
+def _not_live(client: "NotionClient", page_id: str, verdict: "LivenessVerdict") -> "NotionError":
+    from teatree.backends.notion.errors import NotionError, NotionPageNotLiveError  # noqa: PLC0415 — lazy CLI import
+
+    error = verdict.as_error(page_id)
+    if verdict.reason != "parent_database_unreadable":
+        return error
+    try:
+        integration = client.describe_identity()
+    except NotionError:
+        integration = "the integration `t3 notion whoami` names"
+    return NotionPageNotLiveError(
+        f"{error}\nThe page is readable but its parent database is not: share the parent database with "
+        f"{integration} (••• → Connections), then re-run."
+    )
 
 
 def _audit_stamp(page_id: str, verdict: "LivenessVerdict", reason: str) -> str:

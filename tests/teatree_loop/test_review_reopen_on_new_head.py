@@ -61,6 +61,7 @@ from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 from tests._pr_open_state_stub import pr_open_state
+from tests.teatree_core.conftest import record_review_context_for_test
 
 OLD_SHA = "a" * 40
 NEW_SHA = "b" * 40
@@ -146,6 +147,7 @@ def _seed_reviewed_ticket(
     if last_review_state:
         extra["last_review_state"] = last_review_state
     ticket = Ticket.objects.create(issue_url=url, overlay="team-overlay", role=Ticket.Role.REVIEWER, extra=extra)
+    record_review_context_for_test(ticket)
     Ticket.objects.filter(pk=ticket.pk).update(state=state)
     ticket.refresh_from_db()
     return ticket

@@ -15,26 +15,6 @@ surfaces — the topology is preserved through the seams, not by withholding wri
     (CLI-provided, for discovering which `t3` command to run)
 - :mod:`teatree.mcp.server` — MCPServer wiring (``build_server``)
 
-``build_server`` is exported LAZILY (PEP 562 ``__getattr__``): importing the
-``teatree.mcp`` package — which ``teatree.cli`` does at import time to reach the
-``command_catalogue`` registration seam — must NOT eagerly pull ``server`` →
-``search`` → the Django ORM before ``django.setup()`` has run. The lazy export
-keeps ``from teatree.mcp import build_server`` working while deferring the
-ORM-touching import to the ``t3 mcp serve`` path (which bootstraps Django first).
+Import :func:`teatree.mcp.server.build_server` after Django setup. Importing
+this package itself remains ORM-free for CLI command registration.
 """
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from teatree.mcp.server import build_server
-
-__all__ = ["build_server"]
-
-
-def __getattr__(name: str) -> object:
-    if name == "build_server":
-        from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred so the package import stays ORM-free
-
-        return build_server
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)

@@ -1,30 +1,16 @@
 """Review-request SELF_REVIEWED-state + evidence gate (PR-08, item 1).
 
-``require_reviewed_state_for_review_request`` is pinned per test by patching the
+The reviewed-state gate is unconditional; the
 gate's ``get_effective_settings`` (the spec-coverage gate pattern) so the suite
 is deterministic and never depends on the host config.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from unittest.mock import patch
-
 import pytest
 
-from teatree.config import UserSettings
 from teatree.core.gates.review_request_state_gate import check_reviewed_state
 from teatree.core.models import ReviewEvidence, ReviewVerdict, Ticket
 
 _SHA = "a" * 40
-
-
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch(
-        "teatree.core.gates.review_request_state_gate.get_effective_settings",
-        return_value=UserSettings(require_reviewed_state_for_review_request=required),
-    ):
-        yield
 
 
 def _ticket(state: str) -> Ticket:
@@ -45,31 +31,21 @@ def _cold_evidence(ticket: Ticket) -> ReviewEvidence:
     )
 
 
-class TestGateOff:
-    def test_noop_when_setting_off(self, db) -> None:
-        t = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
-        with _gate(required=False):
-            assert check_reviewed_state(t) == ""
-
-
 class TestGateOn:
     def test_refuses_pre_review_ticket(self, db) -> None:
         t = _ticket(Ticket.State.CODED)
-        with _gate(required=True):
-            refusal = check_reviewed_state(t)
+        refusal = check_reviewed_state(t)
         assert "before the SELF_REVIEWED milestone" in refusal
 
     def test_refuses_reviewed_ticket_without_evidence(self, db) -> None:
         t = _reviewed(db)
-        with _gate(required=True):
-            refusal = check_reviewed_state(t)
+        refusal = check_reviewed_state(t)
         assert "no recorded review-evidence artifact" in refusal
 
     def test_allows_reviewed_ticket_with_cold_evidence(self, db) -> None:
         t = _reviewed(db)
         _cold_evidence(t)
-        with _gate(required=True):
-            assert check_reviewed_state(t) == ""
+        assert check_reviewed_state(t) == ""
 
     def test_allows_reviewed_ticket_with_review_verdict_bridge(self, db) -> None:
         # The cold-review step records a ReviewVerdict; that satisfies the gate
@@ -84,8 +60,7 @@ class TestGateOn:
             reviewer_identity="reviewer-bob",
             ticket=t,
         )
-        with _gate(required=True):
-            assert check_reviewed_state(t) == ""
+        assert check_reviewed_state(t) == ""
 
 
 class TestGateOnPostReviewProgression:
@@ -108,8 +83,7 @@ class TestGateOnPostReviewProgression:
         # so the enabled gate blocked every progressed ticket. It must ALLOW.
         t = _ticket(Ticket.State.REVIEW_REQUESTED)
         _cold_evidence(t)
-        with _gate(required=True):
-            assert check_reviewed_state(t) == ""
+        assert check_reviewed_state(t) == ""
 
     def test_refuses_pre_review_coded_ticket_even_with_evidence(self, db) -> None:
         # The other half of the anti-vacuity pair: a pre-review state is STILL
@@ -117,8 +91,7 @@ class TestGateOnPostReviewProgression:
         # so the widened predicate did not collapse into "always allow".
         t = _ticket(Ticket.State.CODED)
         _cold_evidence(t)
-        with _gate(required=True):
-            refusal = check_reviewed_state(t)
+        refusal = check_reviewed_state(t)
         assert "before the SELF_REVIEWED milestone" in refusal
 
     @pytest.mark.parametrize(
@@ -135,8 +108,7 @@ class TestGateOnPostReviewProgression:
     def test_allows_every_post_review_state_with_evidence(self, db, state: str) -> None:
         t = _ticket(state)
         _cold_evidence(t)
-        with _gate(required=True):
-            assert check_reviewed_state(t) == "", f"{state} was refused despite passing review"
+        assert check_reviewed_state(t) == "", f"{state} was refused despite passing review"
 
     @pytest.mark.parametrize(
         "state",
@@ -155,6 +127,5 @@ class TestGateOnPostReviewProgression:
     def test_refuses_every_non_post_review_state(self, db, state: str) -> None:
         t = _ticket(state)
         _cold_evidence(t)
-        with _gate(required=True):
-            refusal = check_reviewed_state(t)
+        refusal = check_reviewed_state(t)
         assert "before the SELF_REVIEWED milestone" in refusal, f"{state} was allowed but is not post-review"

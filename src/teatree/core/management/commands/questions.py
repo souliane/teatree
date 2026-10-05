@@ -34,6 +34,7 @@ from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.table_output import print_table
@@ -45,6 +46,7 @@ class DeferredQuestionRow(TypedDict):
     id: int
     status: str
     question: str
+    answer: str
     created_at: str | None
     escalated_at: str | None
     escalation_count: int
@@ -88,6 +90,7 @@ def _render_questions_table(rows: list[DeferredQuestion]) -> str:
             f"{row.escalation_count}x" if row.escalated_at is not None else "—",
             row.created_at.isoformat() if row.created_at is not None else "?",
             row.question,
+            row.answer_text,
         ]
         for row in rows
     ]
@@ -95,11 +98,11 @@ def _render_questions_table(rows: list[DeferredQuestion]) -> str:
     if escalated:
         title += f", {escalated} past the age ceiling"
     print_table(
-        ["ID", "Status", "Escalated", "Created", "Question"],
+        ["ID", "Status", "Escalated", "Created", "Question", "Answer"],
         table_rows,
         title=title,
         stream=buffer,
-        justify=["right", "left", "right", "left", "left"],
+        justify=["right", "left", "right", "left", "left", "left"],
     )
     return buffer.getvalue()
 
@@ -180,6 +183,7 @@ class Command(MachineOutputCommand):
                 "id": row.pk,
                 "status": row.status,
                 "question": row.question,
+                "answer": row.answer_text,
                 "created_at": row.created_at.isoformat() if row.created_at is not None else None,
                 "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,
                 "escalation_count": row.escalation_count,
@@ -279,7 +283,10 @@ class Command(MachineOutputCommand):
                         resolver_id=resolver_id,
                     )
                     if row.parked_task is not None:
-                        schedule_resume(row.parked_task, answer=text)
+                        try:
+                            schedule_resume(row.parked_task, answer=text)
+                        except NoPlanArtifactError as exc:
+                            self.stderr.write(f"answer #{row.pk} kept; its parked task was not resumed: {exc}")
                     answered.append(row.pk)
             except DeferredQuestionError as exc:
                 self.stderr.write(str(exc))

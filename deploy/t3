@@ -2,11 +2,11 @@
 # Container-wrapping `t3` entry (#3232). Runs the teatree CLI inside the headless
 # Docker stack so an operator needs no host Python / uv / py3.13 / prek / direnv /
 # ttyd — `t3 <args>` on the host executes transparently in a container that shares
-# the live DB, credential, and session mounts. `t3 setup` installs a shell alias
+# the live DB, credential, and session mounts. `t3 setup` installs a launcher
 # pointing here; `t3 doctor` verifies the wiring.
 #
 # Prefers `exec` into the already-running worker (fast; shares the live state).
-# Falls back to a one-off `run --rm` container (worker role, same mounts) when the
+# Falls back to a one-off `run --rm` container (worker role, serving topology) when the
 # stack is down, overriding the role-dispatch entrypoint to run the CLI directly.
 set -euo pipefail
 
@@ -17,6 +17,7 @@ set -euo pipefail
 # symlinked and the direct entry point resolve identically. On a standalone clone,
 # where no symlink is involved, `pwd -P` is `pwd`.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/generation-topology.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
@@ -69,7 +70,8 @@ export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
 # Derived from the source-mount target rather than restated, so the container HOME
 # has exactly one definition in this file.
 CONTAINER_HOME="${CONTAINER_SOURCE_DIR%/*}"
-COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+COMPOSE_PROJECT="$(generation_compose_project "${COMPOSE_PROJECT_NAME:-teatree}")"
+COMPOSE_ARGS=(-p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE")
 # Whether the identity overlay above is in play, so the cwd translation below can
 # TRANSLATE the root it binds. The two must move together: the overlay file binds
 # `$TEATREE_HOST_HOME/workspace` at path identity, and a visibility model that omits
@@ -105,11 +107,8 @@ export TEATREE_DEPLOY_CHECKOUT="${TEATREE_DEPLOY_CHECKOUT:-$REPO_ROOT}"
 # inside the container, so reading the host there would export a group the
 # container does not have and leave provisioning as broken as no group at all.
 #
-# Kept INLINE rather than sourced from a sibling: this wrapper is copied and run
-# standalone (deploy/README.md § alias, and the tests that materialize it), so an
-# extra required file is a failure mode the six lines are not worth. deploy.sh
-# carries the identical block; tests/test_deploy_docker_socket_access.py pins them
-# in sync. An operator-set value always wins.
+# Socket-group resolution stays inline in t3 and deploy.sh; their shared test pins them in sync.
+# The helper owns Compose project and image topology. An operator-set socket GID wins.
 if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
     TEATREE_DOCKER_SOCKET_GID=0
     if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
@@ -117,6 +116,10 @@ if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
     fi
 fi
 export TEATREE_DOCKER_SOCKET_GID
+
+# Unset, a container refuses /host-proc: under Docker Desktop it is the VM's table, not this host's.
+TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
+export TEATREE_HOST_OS
 
 # The sources must PRE-EXIST: dockerd auto-creates a missing bind source, and on
 # the box it creates it ROOT-owned, locking the non-root container out of the
@@ -147,11 +150,13 @@ DATA_MOUNT_SOURCES=(
     # names its clone by the HOST's absolute path) and clean-all verdicts are
     # verifiable instead of clone-unresolvable.
     "$TEATREE_HOST_HOME/workspace"
-    "$TEATREE_HOST_HOME/.claude/projects"
     "$TEATREE_HOST_HOME/.local/bin"
 )
 install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
 install -d "${DATA_MOUNT_SOURCES[@]}"
+if [[ "${TEATREE_TRANSCRIPT_SOURCE:-}" == /* ]]; then
+    install -d "$TEATREE_TRANSCRIPT_SOURCE"
+fi
 
 # A DANGLING `cpython-*` alias in the host's interpreter root is the fingerprint of a
 # container that mounted that root at ITS OWN coordinate instead of the host's: uv
@@ -173,59 +178,6 @@ warn_dangling_interpreter_aliases() {
     [ "$found" -eq 0 ] || printf 't3: WARNING   a host venv resolving through one is DELETED and rebuilt on its next `uv run`. Repair on the HOST with `uv python install <version>`.\n' >&2
 }
 warn_dangling_interpreter_aliases "$TEATREE_HOST_HOME/.local/share/uv/python"
-
-# THE SUPERSEDED SHELL ALIAS, retired from the HOST rc files (#3232). An earlier
-# `t3 setup` wrote a marker-fenced `alias t3=...` block; a PATH launcher reaches
-# interactive AND non-interactive shells, so the alias only ever added a second,
-# independently-stale answer to "which t3" — the split-brain itself. The removal
-# lives HERE because the container that now runs `t3 setup` cannot see the
-# operator's rc files: this wrapper is the only layer that executes on the host.
-# The markers are the strings teatree.docker.workflow defines;
-# tests/test_deploy_alias_retirement.py pins the two spellings together.
-ALIAS_MARKER_BEGIN='# >>> teatree docker t3 alias >>>'
-ALIAS_MARKER_END='# <<< teatree docker t3 alias <<<'
-
-retire_managed_alias_block() {
-    local rc line out drop closed
-    for rc in "$TEATREE_HOST_HOME/.bashrc" "$TEATREE_HOST_HOME/.zshrc"; do
-        [ -f "$rc" ] || continue
-        case "$(<"$rc")" in
-        *"$ALIAS_MARKER_BEGIN"*) ;;
-        *) continue ;;
-        esac
-        out=""
-        drop=0
-        closed=1
-        while IFS= read -r line || [ -n "$line" ]; do
-            case "$line" in
-            "$ALIAS_MARKER_BEGIN")
-                drop=1
-                closed=0
-                continue
-                ;;
-            "$ALIAS_MARKER_END")
-                drop=0
-                closed=1
-                continue
-                ;;
-            esac
-            [ "$drop" = 1 ] || out="$out$line"$'\n'
-        done <"$rc"
-        # An unclosed BEGIN leaves `drop` set to end-of-file, so writing `out` would
-        # delete every line the operator wrote after it. Their rc file is not ours to
-        # guess at: report it and change nothing.
-        if [ "$closed" = 0 ]; then
-            echo "deploy/t3: $rc opens a managed t3 alias block that is never closed by '$ALIAS_MARKER_END'." >&2
-            echo "          Leaving it untouched — removing to end-of-file would take your own lines with it." >&2
-            echo "          Close the block or delete it by hand, then re-run \`t3 setup\`." >&2
-            continue
-        fi
-        # Written THROUGH the path, never renamed over it: an rc file is commonly a
-        # symlink into a dotfiles repo, and a rename would replace the link itself.
-        printf '%s' "$out" >"$rc"
-        echo "deploy/t3: retired the superseded managed t3 alias block from $rc — the PATH launcher replaces it." >&2
-    done
-}
 
 # Run the WORKING TREE the wrapper was invoked from when teatree is installed
 # BENEATH a host project — the `<host>/vendor/teatree/deploy/t3` layout. The tree
@@ -312,8 +264,8 @@ print_visible_host_roots() {
 
 # The narrower set a WORKING DIRECTORY may sit under. Being mounted is not enough:
 # the cwd must also TRANSLATE, and only the MOUNT_PAIRS built below do. Naming the
-# visible set in the refusal advertised ~/.claude/projects and the credential roots
-# as somewhere to work, then refused a checkout under them all the same.
+# visible set in the refusal advertised credential roots as somewhere to work,
+# then refused a checkout under them all the same.
 print_translatable_host_roots() {
     local pair
     for pair in "${MOUNT_PAIRS[@]}"; do
@@ -562,11 +514,7 @@ deploy_lock_held() {
 # this stack, and the service + oneoff labels come back in the same row, so the
 # per-container `inspect` disappears too.
 #
-# The project name is compose's own (`name: teatree` in docker-compose.yml), which is
-# exactly what compose would have derived — `COMPOSE_PROJECT_NAME` still wins where an
-# operator set it, matching compose's own precedence. `tests/test_deploy_t3_route_probe.py`
-# pins the two spellings together so renaming one without the other cannot pass.
-COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-teatree}"
+# The same project resolution drives this label probe and every Compose call.
 
 # `<id> <service> <oneoff>` per running container of this project. The ID leads
 # because it is the one field always present: an absent oneoff label renders as an
@@ -660,11 +608,18 @@ warn_source_mount_drift
 #
 # `deploy/entrypoint.sh` exports GITLAB_TOKEN into the ROLE's process tree only, so an
 # exec'd process starts from the container's create-time environment and the baked https
-# credential helper interpolates an EMPTY password — which GitLab reports as `HTTP Basic:
-# Access denied`, indistinguishable from a branch that does not exist. The host side below
+# credential helper has no token to answer with: it answers nothing, and git stops at
+# `could not read Username`, which names the missing credential. The host side below
 # forwards a token only when the operator exported one or explicitly named a bootstrap
 # pass entry. Otherwise the command receives no host token and the owning overlay's DB
 # route remains authoritative. An already-set value always wins.
+#
+# THE READ IS BOUNDED AND LOUD. `pass show` shells out to gpg, which blocks with no
+# deadline of its own on a keybox lock it cannot judge stale: the unbounded read this
+# replaces left 322 orphaned `pass`/`gpg` pairs alive for ten hours and then exported an
+# EMPTY token as if the credential were merely absent. `timeout` bounds it, and a
+# store that fails to ANSWER refuses outright rather than continuing with that empty
+# value — matching the host-side `refuse_wedged_secret_store` below.
 #
 # THE READ IS BOUNDED AND LOUD. `pass show` shells out to gpg, which blocks with no
 # deadline of its own on a keybox lock it cannot judge stale: the unbounded read this
@@ -696,8 +651,8 @@ CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_
     if [ "$rc" -eq 124 ] || [ "$rc" -gt 1 ]; then
         echo "t3(container): the credential store did not answer for $pass_path within ${deadline}s (rc=$rc)." >&2
         echo "               This is a WEDGED store, not a missing secret. Refusing rather than running" >&2
-        echo "               with an EMPTY credential, which surfaces later as HTTP Basic access denied" >&2
-        echo "               or as a branch that does not exist." >&2
+        echo "               with no credential, which git reports only as: could not read Username" >&2
+        echo "               (once a GitLab remote is reached)." >&2
         echo "               GNUPGHOME=${GNUPGHOME:-<unset>}; clear the daemons with: gpgconf --kill all" >&2
         echo "               A daemon under a DIFFERENT GNUPGHOME survives that - pgrep -al keyboxd gpg-agent." >&2
         exit 1
@@ -742,7 +697,6 @@ FORWARD_ENV_NAMES=(
     # through to the loop registry — answering with the TICK OWNER's id. Mirrors
     # `teatree.core.session_identity.SESSION_ID_ENV_VARS`, pinned in sync by
     # tests/test_deploy_t3_session_identity_forwarding.py.
-    CLAUDE_SESSION_ID
     CLAUDE_CODE_SESSION_ID
     T3_LOOP_SESSION_ID
 )
@@ -808,8 +762,8 @@ run_with_deadline() {
 refuse_wedged_secret_store() {
     echo "deploy/t3: the credential store did not answer for '$1' within ${SECRET_READ_DEADLINE_SECONDS}s." >&2
     echo "           This is a WEDGED store, NOT a missing secret. Continuing would hand the" >&2
-    echo "           container an EMPTY credential, which surfaces later as 'HTTP Basic: Access" >&2
-    echo "           denied' or as a branch that does not exist — a whole day of wrong diagnosis." >&2
+    echo "           container an EMPTY credential, which git reports only as 'could not read" >&2
+    echo "           Username' once a GitLab remote is reached — a whole day of wrong diagnosis." >&2
     echo "           GNUPGHOME is currently '${GNUPGHOME:-<unset>}'. Clear the daemons with:" >&2
     echo "             gpgconf --kill all" >&2
     echo "           A gpg-agent/keyboxd left under a DIFFERENT GNUPGHOME survives that — find" >&2
@@ -1143,7 +1097,7 @@ refuse_host_bound_agent_home_on_setup() {
     fi
     while read -r type target source; do
         [ "$type" = bind ] || continue
-        # The session corpus is the one host bind the Claude home carries; setup never writes there.
+        # An installation may bind transcripts here; setup never writes there.
         [ "$target" = /home/teatree/.claude/projects ] && continue  # privacy-scan:allow — the box's public, documented deploy home
         case "$target" in
         /home/teatree/.claude | /home/teatree/.claude/* | /home/teatree/.codex | /home/teatree/.codex/* | /home/teatree/.agents | /home/teatree/.agents/*)
@@ -1158,9 +1112,7 @@ refuse_host_bound_agent_home_on_setup() {
 
 refuse_host_bound_agent_home_on_setup "$@"
 
-# Only after setup's mount preflight: a refusal must not edit host rc files.
 if [ "${1:-}" = setup ]; then
-    retire_managed_alias_block
     # The CLI runs in Docker, so install the macOS-owned pressure feed on the
     # host only after the unsafe agent-home mount check has passed.
     if [ "$(uname -s)" = Darwin ]; then
@@ -1217,6 +1169,35 @@ refuse_absent_stack() {
 
 if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
     refuse_absent_stack "The Docker daemon is not reachable — start Docker first."
+fi
+
+last_service_container() {
+    docker ps -a -n 1 \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+        --filter "label=com.docker.compose.service=$1" \
+        --filter "label=com.docker.compose.oneoff=False" \
+        --format '{{.ID}}' 2>/dev/null || true
+}
+
+# A stopped stack runs what its service last ran: a roll whose promotion failed leaves the tag on the old generation.
+ONE_OFF_CONTAINER="$(running_service_container "${RUNNING_SERVICE:-$SERVICE}")"
+[ -n "$ONE_OFF_CONTAINER" ] || ONE_OFF_CONTAINER="$(last_service_container "${RUNNING_SERVICE:-$SERVICE}")"
+# The container's own image: a tag rebuilt from a repository name this shell may not share can exist nowhere.
+if [ -n "$ONE_OFF_CONTAINER" ]; then
+    ONE_OFF_IDENTITY="$(docker inspect --format '{{.Config.Image}} {{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ONE_OFF_CONTAINER" 2>/dev/null || true)"
+    ONE_OFF_IMAGE="${ONE_OFF_IDENTITY%% *}"
+    ONE_OFF_REVISION="${ONE_OFF_IDENTITY##* }"
+else
+    ONE_OFF_IMAGE="${TEATREE_PROMOTED_TAG:-teatree-headless:latest}"
+    ONE_OFF_REVISION="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ONE_OFF_IMAGE" 2>/dev/null || true)"
+fi
+if [[ "$ONE_OFF_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+    export TEATREE_IMAGE="$ONE_OFF_IMAGE"
+    # An immutable image's topology never changes, so it is read once per revision and kept.
+    ONE_OFF_TOPOLOGY_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/teatree/generation-topology/$ONE_OFF_REVISION"
+    mkdir -p "$ONE_OFF_TOPOLOGY_DIR"
+    generation_compose_files "$TEATREE_IMAGE" "$ONE_OFF_TOPOLOGY_DIR"
+    COMPOSE_ARGS=(-p "$COMPOSE_PROJECT" --project-directory "$SCRIPT_DIR" "${GENERATION_COMPOSE_ARGS[@]}")
 fi
 
 # The image the compose file names for this service, asked of compose rather than

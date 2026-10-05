@@ -24,8 +24,6 @@ from teatree.core.worktree import branch_currency as branch_currency_module
 from teatree.core.worktree.branch_currency import (
     BranchStaleness,
     MergeConflict,
-    MergeOutcome,
-    auto_merge_target,
     branch_behind_target,
     require_current_branch,
     sha_conflicts_with_target,
@@ -127,56 +125,6 @@ class TestBranchBehindTarget:
         assert result.branch == "feat/x"
         assert result.target == "origin/main"
         assert result.behind_count == 1
-
-
-class TestAutoMergeTarget:
-    def test_zero_conflict_auto_merge_advances_branch(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
-        _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
-        # No overlap → must be a clean merge.
-        pre_sha = _git(clone, "rev-parse", "HEAD")
-
-        outcome = auto_merge_target(str(clone), "feat/x", "origin/main")
-
-        assert outcome is MergeOutcome.ZERO_CONFLICT
-        # Post-merge HEAD differs from pre-merge HEAD — the merge landed.
-        post_sha = _git(clone, "rev-parse", "HEAD")
-        assert post_sha != pre_sha
-        # The remote's `c.txt` is now reachable from HEAD.
-        assert (clone / "c.txt").exists()
-        # No half-merged state.
-        status = _git(clone, "status", "--porcelain")
-        assert status == ""
-
-    def test_conflict_aborts_and_leaves_clean_tree(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        _make_overlap_branch(clone, "feat/x")
-        _advance_remote_overlap(tmp_path, bare)
-        pre_sha = _git(clone, "rev-parse", "HEAD")
-
-        outcome = auto_merge_target(str(clone), "feat/x", "origin/main")
-
-        assert outcome is MergeOutcome.CONFLICTED
-        # HEAD did NOT move; worktree is clean (merge aborted).
-        post_sha = _git(clone, "rev-parse", "HEAD")
-        assert post_sha == pre_sha
-        status = _git(clone, "status", "--porcelain")
-        assert status == "", f"merge-abort left a dirty tree: {status!r}"
-
-    def test_already_current_is_noop(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
-        # No remote advance.
-        pre_sha = _git(clone, "rev-parse", "HEAD")
-
-        outcome = auto_merge_target(str(clone), "feat/x", "origin/main")
-
-        assert outcome is MergeOutcome.ALREADY_CURRENT
-        assert _git(clone, "rev-parse", "HEAD") == pre_sha
 
 
 class TestRequireCurrentBranch:

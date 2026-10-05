@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays, get_overlay
 from teatree.core.toml_backends import (
-    _apply_voice_classifier_mode,
     _code_host_from_toml_overlay,
     _code_host_from_toml_overlay_for_repo,
     _find_external_db,
@@ -251,9 +250,7 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
         if overlay_name:
             return _messaging_from_toml_overlay(overlay_name)
         return OwnerMessagingTransport.sole() or _messaging_from_toml_overlay(overlay_name)
-    backend = get_backend_provider().get_messaging(overlay)
-    _apply_voice_classifier_mode(backend)
-    return backend
+    return get_backend_provider().get_messaging(overlay)
 
 
 class OwnerMessagingTransport:

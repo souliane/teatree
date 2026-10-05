@@ -1,12 +1,15 @@
 """Neutral option translation for the Codex App Server harness."""
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.harness_options import HarnessOptions
+from teatree.utils.ports import running_in_container
 
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
@@ -16,6 +19,9 @@ _UNENFORCEABLE_DENIALS = _READ_TOOLS | _SHELL_TOOLS
 _CLAUDE_ONLY_TOOLS = frozenset(
     {"AskUserQuestion", "Monitor", "PushNotification", "RemoteTrigger", "SendMessage", "WebFetch", "WebSearch"}
 )
+_CONTAINER_READ_ONLY_UNENFORCEABLE = "read-only inside a container: its sandbox cannot create a user namespace there"
+CONTAINER_IS_SANDBOX_ENV = "TEATREE_CODEX_CONTAINER_IS_SANDBOX"
+_TEATREE_CODEX_PLUGIN_ID = "t3@souliane"
 _SUPPORTED_PERMISSION_MODES = frozenset(
     {None, "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"}
 )
@@ -48,11 +54,15 @@ class CodexAppServerError(RuntimeError):
 
     @classmethod
     def refused_request(cls, method: str) -> "CodexAppServerError":
-        return cls(f"Codex App Server refused {method!r}.")
+        return CodexAppServerRefusalError(f"Codex App Server refused {method!r}.")
 
     @classmethod
     def unsupported_policy(cls, detail: str) -> "CodexAppServerError":
         return cls(f"Codex App Server cannot enforce this unsupported tool policy: {detail}.")
+
+
+class CodexAppServerRefusalError(CodexAppServerError):
+    """The app server answered a request with a JSON-RPC error, or ended a turn with a terminal error."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,12 +80,18 @@ class CodexAppServerOptions:
         core = HarnessOptions.from_sdk_options(options)
         runtime_workspace_roots = _workspace_roots(core)
         sandbox_mode, sandbox_policy = _tool_policy(options, runtime_workspace_roots)
+        config = _codex_config(options)
+        if sandbox_mode == "danger-full-access":
+            # A trusted project's `.codex/rules` ALLOW would skip the approval gate.
+            config["projects"] = {root: {"trust_level": "untrusted"} for root in runtime_workspace_roots}
+            # MCP tool calls are not approval requests, so the gate never sees them.
+            config["plugins"] = {_TEATREE_CODEX_PLUGIN_ID: {"enabled": False}}
         return cls(
             core=core,
             runtime_workspace_roots=runtime_workspace_roots,
             sandbox_mode=sandbox_mode,
             sandbox_policy=sandbox_policy,
-            config=_codex_config(options),
+            config=config,
         )
 
 
@@ -83,12 +99,26 @@ def _raise_unsupported(detail: str) -> Never:
     raise CodexAppServerError.unsupported_policy(detail)
 
 
+@cache
+def container_is_the_sandbox() -> bool:
+    return os.environ.get(CONTAINER_IS_SANDBOX_ENV) == "1" and running_in_container()
+
+
 def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> str | None:
     """Explain a Claude deny policy Codex 0.155.1 cannot faithfully enforce."""
-    unsupported = sorted(set(disallowed_tools) & _UNENFORCEABLE_DENIALS)
-    if not unsupported:
+    denied = set(disallowed_tools)
+    if unsupported := sorted(denied & _UNENFORCEABLE_DENIALS):
+        return "Codex cannot enforce tool denials for: " + ", ".join(unsupported)
+    if denied & _MUTATION_TOOLS and container_is_the_sandbox():
+        return f"Codex cannot enforce {_CONTAINER_READ_ONLY_UNENFORCEABLE}"
+    return None
+
+
+def codex_container_unavailable_reason() -> str | None:
+    """Explain why Codex cannot run in a container that has not opted in to being its sandbox."""
+    if container_is_the_sandbox() or not running_in_container():
         return None
-    return "Codex cannot enforce tool denials for: " + ", ".join(unsupported)
+    return f"Codex's sandbox cannot start in a container; {CONTAINER_IS_SANDBOX_ENV}=1 makes the container the sandbox"
 
 
 def _tool_policy(options: ClaudeAgentOptions, runtime_workspace_roots: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
@@ -107,7 +137,12 @@ def _tool_policy(options: ClaudeAgentOptions, runtime_workspace_roots: tuple[str
     if denied - known:
         _raise_unsupported("unknown per-tool denials")
     if options.permission_mode == "plan" or denied & _MUTATION_TOOLS:
+        if container_is_the_sandbox():
+            _raise_unsupported(_CONTAINER_READ_ONLY_UNENFORCEABLE)
         return "read-only", {"type": "readOnly"}
+    if container_is_the_sandbox():
+        # The container is the sandbox, as it already is for the claude_sdk lane beside it.
+        return "danger-full-access", {"type": "dangerFullAccess"}
     # Claude's bypass mode means "do not prompt", not "grant every filesystem path".
     # Codex can preserve the unattended behavior with approvalPolicy=never while retaining
     # the task's explicit cwd/add_dirs boundary. Full host access would silently widen it.

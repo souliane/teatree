@@ -68,10 +68,6 @@ class Recipe:
     signals: dict[str, RecipeSignal]
     recipe_sha: str
 
-    @property
-    def provider_ids(self) -> frozenset[str]:
-        return frozenset(self.signals)
-
 
 def recipe_sha(path: Path | None = None) -> str:
     """The sha256 hex digest over the committed recipe file's bytes.

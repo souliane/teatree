@@ -110,19 +110,17 @@ class TestLegitimateShapesAreSilent:
         assert handle_warn_merged_detection_probe(event) is False
 
 
-class TestNeverLockoutTrio:
+class TestAdvisoryEscapes:
     def test_per_call_token_suppresses_the_advisory(self) -> None:
         assert _advisory("git cherry origin/main HEAD  # [merge-detect-ok: comparing two forks]") == ""
 
     def test_an_empty_token_reason_does_not_suppress(self) -> None:
         assert _advisory("git cherry origin/main HEAD  # [merge-detect-ok: ]") != ""
 
-    def test_kill_switch_silences_the_gate(self) -> None:
-        with patch.object(gate, "teatree_bool_setting", return_value=False):
-            assert _advisory("git cherry origin/main HEAD") == ""
-
-    def test_a_raising_resolver_fails_open_and_silent(self) -> None:
-        with patch.object(gate, "teatree_bool_setting", side_effect=RuntimeError("db is wedged")):
+    def test_a_raising_detector_fails_open_and_silent(self) -> None:
+        with patch(
+            "teatree.hooks.merged_detection_probe.merged_detection_shape", side_effect=RuntimeError("probe failed")
+        ):
             assert _advisory("git cherry origin/main HEAD") == ""
 
 

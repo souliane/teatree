@@ -1,21 +1,4 @@
-"""``t3 <overlay> recipe score|approve`` — the read seam over the factory score (SIG-PR-2).
-
-``score`` computes the recipe-weighted aggregate over the trailing window and
-prints it. It COMPUTES read-only unconditionally (calibrating the recipe against
-real ledger data is exactly why the flag ships OFF), but ``--record`` — the only
-path that writes a :class:`~teatree.core.models.factory_score_snapshot.FactoryScoreSnapshot`
-row or queues a :class:`~teatree.core.models.deferred_question.DeferredQuestion` —
-refuses unless ``factory_score_enabled`` is on. So with the shipped defaults the
-DB stays empty and no human is pinged: the flag-gated OFF footprint is just the
-migrated (empty) table.
-
-``approve`` is the human EVOLVE gate: it pins the committed recipe's ``recipe_sha``
-into the ``approved_recipe_sha`` setting so subsequent scored reads stamp
-``recipe_approved=true``. Until it is run, every payload is ``recipe_approved=false``
-and a single deduped DeferredQuestion per new sha asks a human to approve or reject.
-
-Non-zero exits use ``raise SystemExit(N)`` — this runs under ``call_command``.
-"""
+"""Recipe score and explicit snapshot recording with deduped approval questions."""
 
 import hashlib
 import json
@@ -95,15 +78,13 @@ class Command(MachineOutputCommand):
         ] = False,
         record: Annotated[
             bool,
-            typer.Option("--record", help="Persist a FactoryScoreSnapshot (refused unless factory_score_enabled)."),
+            typer.Option("--record", help="Persist a FactoryScoreSnapshot."),
         ] = False,
     ) -> FactoryScoreDict:
         """Compute the recipe-weighted factory score over the trailing window.
 
-        Read-only by default (safe for calibration even when the flag is OFF).
-        ``--record`` persists a snapshot and — for an unapproved recipe — queues a
-        single human-approval question, but ONLY when ``factory_score_enabled`` is
-        on; otherwise it refuses and writes nothing.
+        Read-only by default. ``--record`` persists a snapshot and queues one
+        approval question per unapproved recipe sha.
         """
         overlay = _overlay()
         settings = get_effective_settings(overlay or None)
@@ -113,12 +94,6 @@ class Command(MachineOutputCommand):
             approved_recipe_sha=settings.approved_recipe_sha,
         )
         if record:
-            if not settings.factory_score_enabled:
-                self.stderr.write(
-                    "  refusing --record: factory_score_enabled is off (the shipped OFF state). "
-                    "The score computes read-only; recording is a deliberate later act."
-                )
-                raise SystemExit(2)
             FactoryScoreSnapshot.objects.record_snapshot(result, tree_sha=_safe_head_sha(), overlay=overlay)
             if not result.recipe_approved and _queue_recipe_approval(result.recipe_sha, overlay):
                 self.stderr.write(f"  recipe {result.recipe_sha[:12]} unapproved — queued one approval question.")

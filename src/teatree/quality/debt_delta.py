@@ -69,6 +69,9 @@ class DebtWaiver:
 # ``#`` (so a prose comment that merely mentions the term never matches), and the
 # scan runs on a string-literal-blanked line (so a marker inside a string is inert).
 _NOQA_RE: Final[re.Pattern[str]] = re.compile(r"#\s*noqa\b", re.IGNORECASE)
+# PLC0415 is the sanctioned deferred-import idiom for Django app-registry and import-cycle seams.
+_SANCTIONED_NOQA_CODES: Final[frozenset[str]] = frozenset({"PLC0415"})
+_NOQA_CODES_RE: Final[re.Pattern[str]] = re.compile(r"#\s*noqa:\s*([A-Z]+\d+(?:[\s,]+[A-Z]+\d+)*)\b", re.IGNORECASE)
 _TYPE_IGNORE_RE: Final[re.Pattern[str]] = re.compile(r"#\s*type:\s*ignore\b")
 _PRAGMA_NO_COVER_RE: Final[re.Pattern[str]] = re.compile(r"#\s*pragma:\s*no\s+cover\b")
 _MARKER_KINDS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
@@ -107,10 +110,14 @@ def _suppression_findings(path: str, added: list[str]) -> list[DebtIntroduction]
     findings: list[DebtIntroduction] = []
     for line in added:
         blanked = blank_string_literals(line)
+        codes = _NOQA_CODES_RE.search(blanked)
+        sanctioned_noqa = bool(codes) and (
+            {code.upper() for code in re.split(r"[\s,]+", codes.group(1))} <= _SANCTIONED_NOQA_CODES
+        )
         findings.extend(
             DebtIntroduction(kind=kind, path=path, line=line.strip())
             for regex, kind in _MARKER_KINDS
-            if regex.search(blanked)
+            if regex.search(blanked) and not (kind == "noqa" and sanctioned_noqa)
         )
     return findings
 

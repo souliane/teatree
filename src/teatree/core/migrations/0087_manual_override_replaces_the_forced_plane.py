@@ -29,7 +29,7 @@ would invent history. Recovery is forward — set the override again by hand.
 from django.db import migrations, models
 
 _RUNNER_SETTING = "loop_runner_enabled"
-_RETIRED_SETTINGS = ("presence_upgrade_mode",)
+_REMOVED_KEYS = ("presence_upgrade_mode",)
 _STOPPED_REASON = "migrated from loop_runner_enabled=false — lift deliberately"
 _FORCED_ON = "on"
 
@@ -55,7 +55,7 @@ def _fold(apps, schema_editor) -> None:
     if _runner_stopped(config_setting):
         mode_override.all().delete()
         mode_override.create(preset_name="off", reason=_STOPPED_REASON)
-    config_setting.filter(key__in=(_RUNNER_SETTING, *_RETIRED_SETTINGS)).delete()
+    config_setting.filter(key__in=(_RUNNER_SETTING, *_REMOVED_KEYS)).delete()
 
 
 def _runner_stopped(config_setting) -> bool:

@@ -20,7 +20,7 @@ Two invariants must hold for this to work end-to-end:
     ``check_on_behalf`` triggers the lazy import of the gate-recorded module
     which then accesses the ORM.
 
-Without both, ``t3 review post-draft-note`` (and every sibling gated subcommand)
+Without both, ``t3 review post-comment`` (and every sibling gated subcommand)
 crashes with ``django.core.exceptions.ImproperlyConfigured: Requested setting
 INSTALLED_APPS, but settings are not configured``. The bug was originally
 masked by typer's rich-traceback handler exiting 0 — see souliane/teatree#932
@@ -150,19 +150,19 @@ class TestSendProxyIsImportSafePreBootstrap:
         assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
 
 
-class TestReviewPostDraftNoteBootstrapsDjango:
-    """`t3 review post-draft-note` bootstraps Django before the gate runs.
+class TestReviewPostCommentBootstrapsDjango:
+    """`t3 review post-comment` bootstraps Django before the gate runs.
 
     The subcommand is invoked in a child interpreter without
     ``DJANGO_SETTINGS_MODULE`` pre-exported, the way a normal shell invocation
     would be. It must NOT crash with ``ImproperlyConfigured`` — the typer
     command body is responsible for calling ``django.setup()`` before the gate
     chain executes. We patch ``ReviewService.read_gitlab_token`` to return a
-    sentinel and the underlying GitLab API call to a no-op so we never hit the
-    network; the only behaviour under test is the bootstrap path.
+    sentinel and the service call to a probe that checks the app registry; the
+    only behaviour under test is the bootstrap path.
     """
 
-    def test_post_draft_note_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
+    def test_post_comment_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
         # A draft is colleague-invisible, so no posture withholds it — the chokepoint
         # is exercised with no approval row and nothing staged.
         probe = (
@@ -171,17 +171,20 @@ class TestReviewPostDraftNoteBootstrapsDjango:
             "os.environ['GITLAB_TOKEN'] = 't'\n"
             "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"
+            "from django.apps import apps\n"
             "from teatree.cli import app\n"
             "from teatree.cli.review import ReviewService\n"
             "from teatree.cli.review.guarded_read import ReadOutcome\n"
             "\n"
+            "def checked_post(_self, *_args, **_kwargs):\n"
+            "    assert apps.ready, 'Django was not bootstrapped'\n"
+            "    return ('OK', 0)\n"
             "runner = CliRunner()\n"
             "with patch.object(ReviewService, 'read_gitlab_token',\n"
             "                  return_value=ReadOutcome(value='t', failed=False)), \\\n"
-            "     patch.object(ReviewService, '_post_draft_note_impl',\n"
-            "                  return_value=('OK draft_note_id=99', 0)):\n"
-            "    result = runner.invoke(app, ['review', 'post-draft-note',\n"
-            "                                 'org/repo', '1', 'hello', '--general'])\n"
+            "     patch.object(ReviewService, 'post_comment', checked_post):\n"
+            "    result = runner.invoke(app, ['review', 'post-comment',\n"
+            "                                 'org/repo', '1', 'hello'])\n"
             "if 'ImproperlyConfigured' in (result.output or '') or result.exception is not None:\n"
             "    import traceback\n"
             "    if result.exception:\n"

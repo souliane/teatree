@@ -9,31 +9,11 @@ thread sampler the heartbeat loop offloads the aggregate read to.
 
 from dataclasses import dataclass
 
-from django.conf import settings
 from django.db.models import Sum
 
-from teatree.config import UserSettings, get_effective_settings
+from teatree.config import get_effective_settings
 from teatree.core.models import Task
 from teatree.utils.thread_db import close_thread_db_connections
-
-# Conservative documented default (#882): a generous wall-clock ceiling that
-# only trips on a genuinely runaway agent that never returns — the canonical
-# "Claude session spins on the same error" symptom. Absolute turn/cost budget
-# caps are #398-4's responsibility, so they default off here.
-_DEFAULT_WATCHDOG = {
-    "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
-    "max_turns": 0,  # 0 = disabled
-    "max_cost_usd": 0.0,  # 0 = disabled
-}
-
-
-def _config_or_fallback(configured: float, default: float, fallback: float) -> float:
-    """The config value when explicitly set, else the documented Django-settings fallback.
-
-    A config field still at its dataclass *default* is "unconfigured", so the legacy
-    Django-settings *fallback* supplies the dimension; any other config value wins (F9.5).
-    """
-    return configured if configured != default else fallback
 
 
 @dataclass(frozen=True)
@@ -50,7 +30,7 @@ class TaskUsage:
 
     @classmethod
     def for_task(cls, task: Task) -> "TaskUsage":
-        attempts = task.attempts  # ty: ignore[unresolved-attribute]
+        attempts = task.attempts
         totals = attempts.aggregate(turns=Sum("num_turns"), cost=Sum("cost_usd"))
         return cls(turns=totals["turns"] or 0, cost_usd=totals["cost"] or 0.0)
 
@@ -72,39 +52,12 @@ class LoopWatchdog:
 
     @classmethod
     def from_settings(cls) -> "LoopWatchdog":
-        """Build the watchdog from the DB-home config tier; Django-settings as fallback.
-
-        The ceilings resolve through ``get_effective_settings()`` (the #1775 config tier —
-        env -> ConfigSetting -> dataclass default), so ``config_setting get`` sees them
-        (F9.5). The legacy Django-settings ``TEATREE_LOOP_WATCHDOG`` dict stays a documented
-        fallback: it supplies a dimension only while the config value is still at its
-        dataclass default (unconfigured), so an explicit DB / env config always wins.
-        """
+        """Build the watchdog from effective DB-home config."""
         effective = get_effective_settings()
-        fallback = getattr(settings, "TEATREE_LOOP_WATCHDOG", None) or _DEFAULT_WATCHDOG
-        defaults = UserSettings()
         return cls(
-            max_runtime_seconds=float(
-                _config_or_fallback(
-                    effective.watchdog_max_runtime_seconds,
-                    defaults.watchdog_max_runtime_seconds,
-                    fallback.get("max_runtime_seconds", 0),
-                )
-            ),
-            max_turns=int(
-                _config_or_fallback(
-                    effective.watchdog_max_turns,
-                    defaults.watchdog_max_turns,
-                    fallback.get("max_turns", 0),
-                )
-            ),
-            max_cost_usd=float(
-                _config_or_fallback(
-                    effective.watchdog_max_cost_usd,
-                    defaults.watchdog_max_cost_usd,
-                    fallback.get("max_cost_usd", 0.0),
-                )
-            ),
+            max_runtime_seconds=float(effective.watchdog_max_runtime_seconds),
+            max_turns=int(effective.watchdog_max_turns),
+            max_cost_usd=float(effective.watchdog_max_cost_usd),
         )
 
     def breach_reason(self, task: Task, *, elapsed_seconds: float, usage: TaskUsage | None = None) -> str | None:

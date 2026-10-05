@@ -1,9 +1,8 @@
-"""The memory-skim mini-loop ships weekly, registered, and masked off.
+"""The memory-skim mini-loop ships weekly, registered, and admitted by present.
 
 Directive 32 asked for the cadence three times (it restates directives 6 and 2).
 This pins the three properties the ask depends on: the loop is discoverable by
-the registry fan-out, its cadence is a week, and it is off out of the box — an
-operator turns it on deliberately.
+the registry fan-out, its cadence is a week, and present admits it.
 """
 
 from teatree.loops.memory_skim.loop import MINI_LOOP
@@ -25,11 +24,12 @@ class TestMemorySkimLoop:
 
         assert job.scanner.name == "memory_skim"
 
-    def test_it_ships_disabled(self) -> None:
+    def test_it_ships_on_a_weekly_cadence(self) -> None:
         spec = next(s for s in DEFAULT_LOOPS if s.name == MINI_LOOP.name)
 
-        assert spec.default_enabled is False
         assert spec.delay_seconds == 604800
+        present = next(mode for mode in default_preset_specs() if mode.name == "present")
+        assert present.entries[MINI_LOOP.name] is True
 
     def test_the_off_preset_masks_it(self) -> None:
         off = next(spec for spec in default_preset_specs() if spec.name == "off")

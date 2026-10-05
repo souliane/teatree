@@ -67,7 +67,6 @@ class TestEveryShippedKeyIsDeclared:
         defaults = declared_defaults()
         assert defaults["active_loop_schedule"] == ""
         assert defaults["danger_gate_fail_open"] is False
-        assert defaults["token_outage_auto_engage"] is False
         assert defaults["token_outage_preset_name"] == ""
 
     def test_a_default_category_key_no_declaration_states_raises(self) -> None:

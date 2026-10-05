@@ -20,16 +20,13 @@ from typing import TYPE_CHECKING
 import httpx
 import typer
 
-from teatree.backends.types import Service
-from teatree.config.credential_pass_key import pass_key_setting
 from teatree.core.gates.notion_write_roots import notion_write_roots
+from teatree.core.overlays.notion_identity import NOTION_CREDENTIAL, notion_routed_overlays, route_notion_token_command
 from teatree.utils.secrets import SecretStoreError
 
 if TYPE_CHECKING:  # pragma: no cover — deferred with the other app-dependent imports
     from teatree.backends.notion.client import NotionClient
     from teatree.core.overlay import OverlayConfig
-
-_CREDENTIAL = "notion_token"
 
 
 class NotionCredentialState(StrEnum):
@@ -47,8 +44,7 @@ class NotionCredentialState(StrEnum):
 DIAGNOSES: dict[NotionCredentialState, str] = {
     NotionCredentialState.UNCONFIGURED: (
         "the overlay needs Notion but no token entry is routed on this venue ({detail}). Store the token in "
-        "`pass`, then route the credential to that entry: "
-        "`t3 {overlay} config_setting set {setting} '\"<entry>\"' --overlay {overlay}`."
+        "`pass`, then route the credential to that entry: `{route}`."
     ),
     NotionCredentialState.ABSENT: (
         "no token resolves from $NOTION_TOKEN or `pass {pass_key}` on this venue, so every Notion read fails at "
@@ -64,9 +60,10 @@ DIAGNOSES: dict[NotionCredentialState, str] = {
         "integration, then re-check with `t3 notion doctor <page-url> --overlay {overlay}`."
     ),
     NotionCredentialState.UNGRANTED: (
-        "the token authenticates ({detail}) but required pages/databases are not shared with it: "
-        "{ungranted}. Add the integration under ... -> Connections on each object or its teamspace, then re-check with "
-        "`t3 notion doctor <page-url> --overlay {overlay}`."
+        "the token authenticates ({detail}) but this bot cannot see these required pages/databases: {ungranted}. "
+        "Notion answers 404 alike for an object not shared with the integration, a deleted id and another "
+        "workspace's object: check the object's ••• -> Connections (or its teamspace) and that the id is current, "
+        "then re-check with `t3 notion doctor <page-url> --overlay {overlay}`."
     ),
     NotionCredentialState.UNREACHABLE: (
         "the credential could not be probed ({detail}). A probe that FAILED is not a credential that "
@@ -103,21 +100,10 @@ class NotionCredential:
             overlay=self.overlay,
             pass_key=self.pass_key,
             detail=self.detail,
-            setting=pass_key_setting(_CREDENTIAL),
+            route=route_notion_token_command(self.overlay),
             ungranted=", ".join(self.ungranted),
         )
         return f"FAIL  Notion [{self.overlay}]: {diagnosis}"
-
-
-def notion_routed_overlays() -> "list[tuple[str, OverlayConfig]]":
-    """``(overlay, config)`` for every registered overlay that needs Notion or routes a token entry."""
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: needs apps
-
-    return [
-        (name, overlay.config)
-        for name, overlay in sorted(get_all_overlays().items())
-        if Service.NOTION in overlay.config.required_third_party_services or overlay.config.secret_pass_key(_CREDENTIAL)
-    ]
 
 
 def tracked_notion_pages(overlay: str) -> list[tuple[str, int]]:
@@ -187,7 +173,7 @@ def probe_notion_credential(
     """Route, authenticate and check every required Notion object's grant."""
     from teatree.backends.notion.client import NotionTokenCredential  # noqa: PLC0415 — deferred: needs apps
 
-    resolution = config.resolve_pass_key(_CREDENTIAL)
+    resolution = config.resolve_pass_key(NOTION_CREDENTIAL)
     from_env = bool(os.environ.get(NotionTokenCredential.spec.env_var))
     verdict = functools.partial(
         NotionCredential, overlay, "" if from_env else resolution.value, source=str(resolution.source)

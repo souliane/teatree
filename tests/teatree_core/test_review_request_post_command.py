@@ -12,18 +12,19 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import tempfile
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from typer.testing import CliRunner
 
-from teatree.config import UserSettings
+from teatree.cli import app
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import (
@@ -34,7 +35,7 @@ from teatree.core.models import (
     ReviewRequestPost,
     Ticket,
 )
-from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -53,6 +54,13 @@ class _DraftProbeHost:
             raise self._answer
         return self._answer
 
+    def current_user(self) -> str:
+        return "souliane"
+
+    def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[dict[str, object]]:
+        del author, updated_after
+        return [{"web_url": _MR_URL, "title": "fix(scope): thing", "head_pipeline": {"status": "success"}}]
+
 
 @pytest.fixture(autouse=True)
 def _forge_answers_non_draft() -> Iterator[None]:
@@ -64,6 +72,10 @@ def _forge_answers_non_draft() -> Iterator[None]:
     """
     with (
         patch(_FORGE, return_value=_DraftProbeHost(DraftState.NOT_DRAFT)),
+        patch(
+            "teatree.core.gates.review_request_batch_gate.code_host_from_overlay",
+            return_value=_DraftProbeHost(DraftState.NOT_DRAFT),
+        ),
         patch(f"{_CMD}._owner_authorship", return_value=True, create=True),
     ):
         yield
@@ -112,13 +124,35 @@ def _cli_overlay_pin() -> Iterator[None]:
         yield
 
 
-def _run(*extra: str) -> tuple[int, dict[str, object]]:
+def _run(*extra: str, supply_gate_evidence: bool = True) -> tuple[int, dict[str, object]]:
     """Call the command, capture exit code + the machine-legible dict it prints."""
+    args = list(extra)
+    if supply_gate_evidence:
+        if "--ticket-id" in args:
+            ticket = Ticket.objects.get(pk=int(args[args.index("--ticket-id") + 1]))
+        else:
+            ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+            args.extend(("--ticket-id", str(ticket.pk)))
+        if "--head-sha" not in args:
+            args.extend(("--head-sha", _SHA))
+        ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+        if ticket.state in {
+            Ticket.State.SELF_REVIEWED,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
+        } and not ReviewEvidence.objects.has_cold_review(ticket):
+            ReviewEvidence.record(
+                ticket=ticket,
+                kind=ReviewEvidence.Kind.COLD_REVIEW,
+                reviewer_identity="reviewer-bob",
+                verdict="merge_safe",
+                head_sha=_SHA,
+            )
     buf = io.StringIO()
     code = 0
     with contextlib.redirect_stdout(buf):
         try:
-            call_command("review_request_post", "--mr-url", _MR_URL, "--approver", "souliane", *extra)
+            call_command("review_request_post", "--mr-url", _MR_URL, "--approver", "souliane", *args)
         except SystemExit as exc:
             code = int(exc.code) if isinstance(exc.code, int) else 1
     out = buf.getvalue()
@@ -147,13 +181,6 @@ class _DataDirMixin:
             os.environ["T3_DATA_DIR"] = self._prev_data_dir
         shutil.rmtree(self._tmp, ignore_errors=True)
         super().tearDown()
-
-
-def _gate_required(*, required: bool) -> AbstractContextManager[object]:
-    return patch(
-        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
-        return_value=UserSettings(require_anti_vacuity_attestation=required),
-    )
 
 
 class TestReviewExemptRepoIsRefusedFirst(_DataDirMixin, TestCase):
@@ -227,13 +254,12 @@ class TestReviewRequestOwnerAuthorship(_DataDirMixin, TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
         with (
-            _gate_required(required=True),
             patch(
                 f"{_CMD}.resolve_guard_target",
                 side_effect=AssertionError("the channel must not resolve for an exempt repo"),
             ),
         ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA)
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA, supply_gate_evidence=False)
 
         assert (code, payload["reason"]) == (2, "review_exempt_repo")
 
@@ -256,17 +282,16 @@ class TestReviewRequestOwnerAuthorship(_DataDirMixin, TestCase):
 
 
 class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
-    """#1829: with the gate on, the post refuses before any dedup claim / wire call."""
+    """#1829: the gate refuses before any dedup claim or wire call."""
 
     def test_refused_without_attestation_and_takes_no_claim(self) -> None:
         backend = _FakeBackend()
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with (
-            _gate_required(required=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA)
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA, supply_gate_evidence=False)
         assert code == 2
         assert payload["action"] == "refused"
         assert payload["reason"] == "anti_vacuity_not_attested"
@@ -276,10 +301,9 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
 
     def test_refused_when_ticket_id_or_head_sha_missing(self) -> None:
         with (
-            _gate_required(required=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
         ):
-            code, payload = _run()  # no --ticket-id / --head-sha
+            code, payload = _run(supply_gate_evidence=False)  # no --ticket-id / --head-sha
         assert code == 2
         assert payload["reason"] == "anti_vacuity_not_attested"
 
@@ -288,68 +312,6 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
         backend = _FakeBackend()
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_SHA, "AC1-3 mapped", ["tests/x.py::test_y"])
-        with (
-            _gate_required(required=True),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA, "--title", "t")
-        assert code == 0, payload
-        assert payload["action"] == "post"
-        assert len(backend.posts) == 1
-
-    def test_noop_when_gate_off_ignores_missing_attestation(self) -> None:
-        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
-        backend = _FakeBackend()
-        with (
-            _gate_required(required=False),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--title", "t")
-        assert code == 0, payload
-        assert payload["action"] == "post"
-
-
-def _reviewed_gate(*, required: bool) -> AbstractContextManager[object]:
-    return patch(
-        "teatree.core.gates.review_request_state_gate.get_effective_settings",
-        return_value=UserSettings(require_reviewed_state_for_review_request=required),
-    )
-
-
-class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
-    """PR-08: with the gate on, a broadcast refuses unless the ticket is SELF_REVIEWED + has evidence."""
-
-    def test_refused_when_ticket_not_reviewed_and_takes_no_claim(self) -> None:
-        backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
-        with (
-            _reviewed_gate(required=True),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--ticket-id", str(ticket.pk))
-        assert code == 2
-        assert payload["reason"] == "ticket_not_reviewed"
-        assert backend.posts == []
-        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
-
-    def test_refused_when_ticket_id_missing(self) -> None:
-        with (
-            _reviewed_gate(required=True),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-        ):
-            code, payload = _run()  # no --ticket-id
-        assert code == 2
-        assert payload["reason"] == "ticket_not_reviewed"
-
-    def test_allows_reviewed_ticket_with_evidence(self) -> None:
-        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
-        backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,
@@ -358,12 +320,97 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
             head_sha=_SHA,
         )
         with (
-            _reviewed_gate(required=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+            code, payload = _run(
+                "--ticket-id", str(ticket.pk), "--head-sha", _SHA, "--title", "t", supply_gate_evidence=False
+            )
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_documented_cli_command_posts_with_ticket_and_head(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        documented = next(
+            line
+            for line in (Path(__file__).parents[2] / "skills/review-request/SKILL.md").read_text().splitlines()
+            if line.startswith("t3 review-request post --mr-url")
+        )
+        argv = shlex.split(
+            documented.replace("<PR_URL>", _MR_URL)
+            .replace("<user-id>", "souliane")
+            .replace("<ticket-id>", str(ticket.pk))
+            .replace("<full-40-char-head-sha>", _SHA)
+            .replace("<type(scope): description>", "fix(scope): thing")
+        )[1:]
+        backend = _FakeBackend()
+
+        def run_command(*args: str, overlay_name: str) -> None:
+            assert overlay_name
+            call_command(*args)
+
+        with (
+            patch("teatree.cli.review.request._overlay_name_for_mr", return_value="t3-acme"),
+            patch("teatree.cli.review.request.managepy_core", side_effect=run_command),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            result = CliRunner().invoke(app, argv)
+
+        assert result.exit_code == 0, result.output
+        assert '"action": "post"' in result.output
+        assert len(backend.posts) == 1
+
+
+class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
+    """PR-08: a broadcast requires a reviewed ticket with evidence."""
+
+    def test_refused_when_ticket_not_reviewed_and_takes_no_claim(self) -> None:
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA, supply_gate_evidence=False)
+        assert code == 2
+        assert payload["reason"] == "ticket_not_reviewed"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_allows_reviewed_ticket_with_evidence(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
+        ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run(
+                "--ticket-id", str(ticket.pk), "--head-sha", _SHA, "--title", "t", supply_gate_evidence=False
+            )
         assert code == 0, payload
         assert payload["action"] == "post"
         assert len(backend.posts) == 1
@@ -377,6 +424,7 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,
@@ -385,29 +433,16 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
             head_sha=_SHA,
         )
         with (
-            _reviewed_gate(required=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+            code, payload = _run(
+                "--ticket-id", str(ticket.pk), "--head-sha", _SHA, "--title", "t", supply_gate_evidence=False
+            )
         assert code == 0, payload
         assert payload["action"] == "post"
         assert len(backend.posts) == 1
-
-    def test_noop_when_gate_off(self) -> None:
-        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
-        backend = _FakeBackend()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
-        with (
-            _reviewed_gate(required=False),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
-        assert code == 0, payload
-        assert payload["action"] == "post"
 
 
 class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
@@ -605,6 +640,15 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
 
     def test_refusal_message_names_approve_on_behalf_command(self) -> None:
         backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        ticket.record_anti_vacuity_attestation(_SHA, "ACs checked against diff", [], no_new_tests=True)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
 
         def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
             ReviewRequestPost.objects.create(
@@ -623,7 +667,17 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
             contextlib.redirect_stdout(buf),
             pytest.raises(SystemExit),
         ):
-            call_command("review_request_post", "--mr-url", _MR_URL, "--approver", "souliane")
+            call_command(
+                "review_request_post",
+                "--mr-url",
+                _MR_URL,
+                "--approver",
+                "souliane",
+                "--ticket-id",
+                str(ticket.pk),
+                "--head-sha",
+                _SHA,
+            )
         text = buf.getvalue()
         assert "t3 review approve-on-behalf" in text
         assert "review_request_post" in text
@@ -673,74 +727,6 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
         assert len(backend.posts) == 1
 
 
-class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
-    """``review_request_post_disabled`` refuses the auto-post end-to-end (#2579).
-
-    The scoped-overlay scenario: the posture permits the owner's voice (which would
-    otherwise auto-post a review request with no approval), but the overlay runs the
-    ``notify`` tier, which
-    resolves ``review_request_post_disabled = True``. The command must refuse with
-    no post — the agent stops at "MR is mergeable + review-requestable".
-    """
-
-    def _permitting_posture_with_disable(self, *, disabled: bool) -> AbstractContextManager[object]:
-        # Without the posture pin the fail-closed chokepoint refuses either way, and the
-        # disable — the only thing these two cases contrast — decides nothing.
-        stack = ExitStack()
-        stack.enter_context(posture_permits_cm())
-        stack.enter_context(
-            patch(
-                "teatree.on_behalf_gate.get_effective_settings",
-                return_value=UserSettings(review_request_post_disabled=disabled),
-            )
-        )
-        return stack
-
-    def test_disabled_refuses_auto_post_under_a_permitting_posture(self) -> None:
-        backend = _FakeBackend()
-
-        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
-            ReviewRequestPost.objects.create(
-                mr_url=mr_url,
-                slack_channel_id=target.channel_id,
-                slack_thread_ts="",
-                overlay=overlay,
-            )
-            return GuardDecision(action="post")
-
-        with (
-            self._permitting_posture_with_disable(disabled=True),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.should_post_review_request", side_effect=_real_claim),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--title", "fix(scope): thing")
-
-        assert code == 2, payload
-        assert payload["action"] == "refused"
-        assert payload["reason"] == "on_behalf_not_approved"
-        assert backend.posts == []
-        # The orphan claim is rolled back exactly as the missing-approval path.
-        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
-
-    def test_not_disabled_auto_posts_under_a_permitting_posture(self) -> None:
-        # The control: WITHOUT the disable, a permitting posture auto-posts (no
-        # recorded approval needed). This pins the disable as the only thing
-        # that changes the outcome — the test above is anti-vacuous.
-        backend = _FakeBackend()
-        with (
-            self._permitting_posture_with_disable(disabled=False),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-        ):
-            code, payload = _run("--title", "fix(scope): thing")
-
-        assert code == 0, payload
-        assert payload["action"] == "post"
-        assert len(backend.posts) == 1
-
-
 class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
     @pytest.fixture(autouse=True)
     def _gate_on(self) -> Iterator[None]:
@@ -750,6 +736,11 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
             yield
 
     def test_records_consumes_audits_and_persists(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.REVIEW_REQUESTED,
+            issue_url="https://gitlab.com/org/repo/-/issues/385",
+        )
         OnBehalfApproval.record(
             target=_MR_URL,
             action="review_request_post",
@@ -764,7 +755,7 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
             ),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
-            code, payload = _run("--title", "fix(scope): thing")
+            code, payload = _run("--title", "fix(scope): thing", "--ticket-id", str(ticket.pk))
 
         assert code == 0
         assert payload["action"] == "post"
@@ -838,7 +829,11 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         """
         from teatree.core.models import PullRequest  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://gitlab.com/org/repo/-/issues/17")
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.REVIEW_REQUESTED,
+            issue_url="https://gitlab.com/org/repo/-/issues/17",
+        )
         assert ticket.issue_number == "17"
         PullRequest.objects.create(ticket=ticket, url=_MR_URL, repo="org/repo", iid="385")
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
@@ -848,7 +843,7 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
         ):
-            code, payload = _run("--title", "t")
+            code, payload = _run("--title", "t", "--ticket-id", str(ticket.pk))
 
         assert code == 0, payload
         assert (self._tmp / "tickets" / "17" / "mr_review_messages.json").exists()
@@ -899,41 +894,10 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert backend.posts[0]["text"] == f"Please review {_MR_URL}"
 
     def test_iid_falls_back_to_last_segment_for_non_numeric_url(self) -> None:
-        non_numeric = "https://github.com/org/repo/pull/feature-branch"
-        OnBehalfApproval.record(
-            target=non_numeric,
-            action="review_request_post",
-            approver_id="souliane",
-        )
-        backend = _FakeBackend()
-        buf = io.StringIO()
-        with (
-            # This URL carries no parsable PR ref, so the draft gate refuses it on
-            # its own merits (``test_unparsable_url_is_unknown``). Stubbed out here
-            # so the case still reaches the cache-key fallback it is about.
-            patch(f"{_CMD}.draft_refusal_reason", return_value=""),
-            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
-            patch(
-                f"{_CMD}.should_post_review_request",
-                return_value=GuardDecision(action="post"),
-            ),
-            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
-            contextlib.redirect_stdout(buf),
-            pytest.raises(SystemExit),
-        ):
-            call_command(
-                "review_request_post",
-                "--mr-url",
-                non_numeric,
-                "--approver",
-                "souliane",
-                "--title",
-                "t",
-            )
+        from teatree.core.management.commands.review_request_post import _iid_from_mr  # noqa: PLC0415
 
-        cache = self._tmp / "tickets" / "feature-branch" / "mr_review_messages.json"
-        data = json.loads(cache.read_text())
-        assert non_numeric in data
+        non_numeric = "https://github.com/org/repo/pull/feature-branch"
+        assert _iid_from_mr(non_numeric) == "feature-branch"
 
     def test_no_messaging_backend_suppresses_without_post(self) -> None:
         OnBehalfApproval.record(

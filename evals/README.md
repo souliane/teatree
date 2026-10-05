@@ -80,7 +80,7 @@ coverage gate (`t3 eval coverage`). A companion advisory check, `t3 eval reachab
 | Run-store | `src/teatree/core/models/eval_run.py` (`EvalRunRecord` + `EvalScenarioResult`) |
 | Generated corpus | `scripts/eval/corpus_gen/` + `generate_corpus.py` |
 | Prek hooks | `.pre-commit-config.yaml`: `eval-pinned-regressions` (push stage → `t3 eval pinned-regressions`) |
-| CI triggers | `.github/workflows/eval.yml` (standalone weekly schedule + manual `workflow_dispatch`) + `.gitlab-ci.yml` (schedule + manual), `scripts/eval/merged_prs_since.py` (scheduled no-PR guard) |
+| CI triggers | `.github/workflows/eval.yml` (standalone weekly schedule + manual `workflow_dispatch`), `scripts/eval/merged_prs_since.py` (scheduled no-PR guard) |
 
 ### Tech stack
 
@@ -119,8 +119,8 @@ installed editable from a clone; the eval harness ships inside it.
   too).
 - **`--local` — the explicit host escape.** `t3 eval run --backend api --local`
   and `t3 eval benchmark --local` run the fresh-run lane on the host. Use it for
-  durable-history gates that must persist/read the runner DB (for example the
-  GitLab weekly cost-bounds gate), or for a fast host check. It prints a loud
+  durable-history gates that must persist/read the runner DB (for example a
+  local cost-bounds check), or for a fast host check. It prints a loud
   WARNING so the host path is never accidental. With docker missing, the default
   fresh-run route raises `DockerUnavailableError` with guidance, so it is
   impossible to ACCIDENTALLY run the fresh-run lane on the host.
@@ -130,8 +130,8 @@ installed editable from a clone; the eval harness ships inside it.
   (`t3 eval pinned-regressions`, real git/FSM work) runs at the **push** stage —
   token-free, failing the push on a real violation.
 - **CI manual.** The metered eval can be triggered on demand via the standalone
-  workflow's manual `workflow_dispatch` button (GitHub) / `when: manual` job
-  (GitLab). A manual run ALWAYS runs (the no-PR guard is bypassed).
+  workflow's manual `workflow_dispatch` button. A manual run ALWAYS runs
+  (the no-PR guard is bypassed).
 - **CI weekly.** The metered Agent-SDK scenario run lives in a STANDALONE
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
   run neither runs nor displays a metered-eval check. It fires on a weekly cron;
@@ -418,7 +418,7 @@ model-limit and is removed from the table below.
 These two RED in every attempt of the historical **`model=haiku`** run
 27903729721 for a behavioural reason (a cleanly-completing short trajectory that
 drifts, not a cap). **Reality check — do not read this table as a current verdict:**
-the catalog now pins `tier: balanced` (→ `sonnet-5`), not `haiku`, and under that tier
+the catalog now pins `tier: balanced` (→ Sonnet), not `haiku`, and under that tier
 both PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time` and
 `read_canonical_before_structural_action_under_load`
 (see `docs/evals/index.md`, run 28630941573).
@@ -443,10 +443,8 @@ both-attempt hard core rather than an inflated catch-all.
 ### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
 
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:
-when the eval-derivation seam is on (LIVE by default — `[loops.dream]
-propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch), it derives an inert eval
-CANDIDATE from each grounded drift cluster (`teatree.loops.dream.eval_proposer`)
-and then PROMOTES it to a real `under_load` scenario here
+on every pass it derives an inert eval CANDIDATE from each grounded drift cluster
+(`teatree.loops.dream.eval_proposer`) and then PROMOTES it to a real `under_load` scenario here
 (`teatree.loops.dream.promote`). A promoted candidate lands as a spec appended to
 `evals/scenarios/promoted_drift.yaml` plus its `_{fail,pass}` replay fixtures —
 the same artifacts a hand-authored scenario ships, so the deterministic replay
@@ -507,9 +505,9 @@ run cannot be served from a single saved transcript). Combining them with the
 `transcript` default is an explicit usage error; pass `--backend api`.
 
 **CI stays on the fresh-run path explicitly.** The standalone eval jobs in
-`.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend api` so CI runs
+`.github/workflows/eval.yml` passes `--backend api` so CI runs
 the budgeted Agent-SDK path while LOCAL defaults to `transcript`. CI also passes
-`--trials 3`, so the explicit `--backend api` is required and debuggable.
+an explicit trial count, so the `--backend api` choice is required and debuggable.
 `--require-executed` is passed
 unconditionally so a missing CLI/key fails the job loud — never an all-skipped
 green.
@@ -606,8 +604,8 @@ right-sized (a single effort tier, a smaller trial count, per-account OAuth
 routing) to stay inside it. `api_key` — the metered `ANTHROPIC_API_KEY`, billed
 per token with no usage window — is selectable per run via `t3 eval run
 --credential api_key` (or durably via `config_setting set agent_harness_provider
-api_key`) for a lane that needs per-token cost accounting (e.g. GitLab's
-cost-audit lane).
+api_key`) for a lane that needs per-token cost accounting (e.g. a local
+cost-bounds audit).
 
 The eval lane and the dispatch lane now share ONE knob, so a deployment that
 pins `agent_harness_provider = api_key` for its dispatch lane moves eval spend
@@ -947,7 +945,7 @@ references" rule in `CLAUDE.md` — and exits non-zero, catching a stale doc
 after a CLI rename. An overlay slot (`t3 <overlay> …`, or an illustrative
 overlay name like `t3 acme …`) is SUBSTITUTED with a representative overlay
 rather than skipped, so the subcommand path behind it is validated; a
-slash/pipe enumeration (`t3 loop enable/disable`) is expanded and every
+slash/pipe enumeration (`t3 loop resume/disable`) is expanded and every
 alternative walked. The narrow `ALLOWED_NON_RESOLVING` exemptions each carry a
 justification and an anti-rot test that fails once an entry starts resolving.
 
@@ -999,8 +997,7 @@ path drives it for real.
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
   scenario suite once a week on a cron — not on every push, not on every PR, and
-  NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`
-  (GitHub) / a schedule + manual job in `.gitlab-ci.yml` (GitLab), so a PR run
+  NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`, so a PR run
   neither runs nor displays a metered-eval check. The deterministic lanes are NOT
   re-run standalone in the weekly job (prek per push + pytest per PR is the
   single source of truth). The scheduled run is guarded by
@@ -1103,7 +1100,6 @@ class, where it is pinned, and the originating fix:
 | review-claim means review now (eyes → read the diff; skip eyes-claimed MRs) | `scenarios/review_claim_means_review_now.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | background long operations (build / migrate / e2e / clone / await job) | `scenarios/background_long_operations_extra.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | stale-OPEN-issue gate (search before filing, verify number, reconcile before redispatch) | `scenarios/stale_open_issue_gate.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
-| MR-first-line validation (conventional-commit title, no bare subject) | `scenarios/mr_first_line_validation.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | never foreground-poll CI / deploy / job (background, no sleep-loop) | `scenarios/never_foreground_poll_ci.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | keystone merge not raw `gh`/`glab` (ticket clear+merge, independent reviewer, human-authorized substrate) | `scenarios/keystone_merge_not_raw_gh.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | never edit the main clone (kill-switch relief, worktree+PR for the durable fix) | `scenarios/never_edit_main_clone_extra.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
@@ -1615,11 +1611,11 @@ silent mass-conversion shows up as a diff.
 `DEFAULT_PHASE_MODELS` maps several phases (`planning` / `coding` / `reviewing`
 / `debugging` / `retrospecting`) to the `frontier` tier — Opus. The metered CI
 lane's single shared credential (subscription OAuth by default) is right-sized
-for a `balanced`-tier (Sonnet 5) run, not for a suite that silently mixes in
+for a `balanced`-tier (Sonnet) run, not for a suite that silently mixes in
 Opus calls: souliane/teatree run 28515055436 confirmed a `frontier`-resolving
 scenario is exactly as capable of draining the shared account's usage window as
 any other, and there is no reason for the automated eval lane specifically to
-pay Opus's cost/latency premium over Sonnet 5. So **every scenario currently
+pay Opus's cost/latency premium over Sonnet. So **every scenario currently
 shipped under `evals/scenarios/` pins `tier: balanced` explicitly** (never bare
 `phase: coding`/`reviewing`/`planning`/`debugging`/`retrospecting`, which would
 silently resolve to `frontier`) — `tier` wins over `phase` in the resolution
@@ -1667,7 +1663,7 @@ leave the rest of the catalog at the lane's default effort.
 This also generally beats reaching for Opus on a hard scenario: qualitatively,
 Sonnet 5 at a given reasoning-effort level tends to match or beat Opus 4.8's
 pass rate at the same or a lower cost across the effort scale, so raising a
-Sonnet-5 scenario's OWN effort is normally the right first lever before
+balanced-tier scenario's OWN effort is normally the right first lever before
 escalating to a heavier/more expensive model tier — that is internal
 cost/pass-rate observation, not a citable external benchmark, so treat it as a
 starting heuristic rather than a guarantee for any specific scenario.

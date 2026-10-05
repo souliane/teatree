@@ -494,9 +494,9 @@
     11:08:40  orchestrator: a note on the quote-gate. The prek hook #1213 scans
               commit messages for prose quotations that should use backtick-code
               fencing instead; a message containing "unable to run X" in prose
-              fails the gate. Use QUOTE_OK=1 to bypass for commit messages that
-              legitimately contain technical phrases in prose (e.g. test fixture
-              content). The gate is fail-closed.
+              fails the gate. There is no bypass token: rephrase the prose, or
+              backtick-fence the technical phrase (e.g. test fixture content).
+              The gate is fail-closed.
     11:09:58  orchestrator: a long note on the banned-terms gate #1415. The gate
               scans the commit body for private terms (overlay names, issue IDs,
               repo slugs) that should not appear in public commits. The gate

@@ -14,10 +14,10 @@ _TUNED_LOOP = "housekeeping"
 
 class TestExport(TestCase):
     def test_export_withholds_secret_keeps_personal(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["synthetic"])  # secret
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})
         ConfigSetting.objects.set_value("workspace_dir", "/tmp/ws")  # personal, non-secret
         dump = export_text()
-        assert "banned_brands" not in dump
+        assert "banned_term_registry" not in dump
         assert "synthetic" not in dump
         assert "/tmp/ws" in dump
 

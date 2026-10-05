@@ -51,7 +51,7 @@ safely; only ``_effective_spec`` applies the injected override at resolve time.
 import dataclasses
 import os
 from collections.abc import Mapping, Sequence
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from teatree.utils.secrets import read_pass
 
@@ -158,6 +158,10 @@ class Credential:
 
     spec: CredentialSpec
 
+    #: Every value any credential resolved in this process. A ``pass``-store value never
+    #: reaches the environment, so this is the only place an artifact redactor can find it.
+    _resolved: ClassVar[set[str]] = set()
+
     def __init__(
         self,
         *,
@@ -184,6 +188,15 @@ class Credential:
         """
         return self._pass_path_override or ""
 
+    @staticmethod
+    def resolved_values() -> frozenset[str]:
+        return frozenset(Credential._resolved)
+
+    @staticmethod
+    def forget_resolved() -> None:
+        """Empty the process-wide registry, so a value resolved in one test never redacts another's artifacts."""
+        Credential._resolved.clear()
+
     def resolve(self) -> str:
         """Return the credential value from the first source that yields one.
 
@@ -198,6 +211,7 @@ class Credential:
         for source in self._sources:
             value = source.lookup(spec)
             if value:
+                Credential._resolved.add(value)
                 return value
         raise CredentialError(self._missing_message(spec, self._missing_context))
 

@@ -8,6 +8,7 @@ the swap is invisible to the grader. The SDK is mocked here — no metered calls
 
 import asyncio
 import dataclasses
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
@@ -47,6 +48,7 @@ from teatree.eval.models import (
     FinalStateMatcher,
     Matcher,
     TokenUsage,
+    ToolCallCountMatcher,
     canonicalize_tool,
 )
 from teatree.eval.production_hooks import t3_plugin, teatree_root
@@ -1653,6 +1655,16 @@ class TestComputeAvailableTools:
         available = compute_available_tools(spec)
         assert set(available) == {"Agent", "Bash", "Edit", "Write"}
 
+    def test_count_matcher_tool_is_available_when_omitted_from_declared_tools(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Edit",),
+            matchers=(ToolCallCountMatcher("Bash", "command", "t3 push", 1, ("src/app.py",)),),
+        )
+
+        assert compute_available_tools(spec) == ("Bash", "Edit")
+        assert "Bash" not in compute_disallowed_tools(spec)
+
     def test_lowercase_declared_tool_is_canonicalized(self, tmp_path: Path) -> None:
         spec = _spec_with(
             tmp_path,
@@ -1967,7 +1979,7 @@ class TestDelegationAgentsProvisioning:
 
     def test_build_delegation_agents_for_delegation_scenario(self, tmp_path: Path) -> None:
         # A scenario exposing the spawn tool gets a single generic delegate sub-agent
-        # keyed by DELEGATION_SUBAGENT_NAME, capped on the bounded haiku stub model.
+        # keyed by DELEGATION_SUBAGENT_NAME, capped on the bounded stub model.
         spec = _spec_with(
             tmp_path,
             tools=("Bash", "Task"),
@@ -1976,7 +1988,7 @@ class TestDelegationAgentsProvisioning:
         agents = build_delegation_agents(spec)
         assert agents is not None
         assert set(agents) == {DELEGATION_SUBAGENT_NAME}
-        assert agents[DELEGATION_SUBAGENT_NAME].model == "haiku"
+        assert agents[DELEGATION_SUBAGENT_NAME].model == "sonnet"
 
     def test_build_delegation_agents_none_for_non_delegation_scenario(self, tmp_path: Path) -> None:
         spec = _spec_with(
@@ -2246,7 +2258,11 @@ class TestProductionHooksSdkOptions:
         assert options.plugins[0] == {"type": "local", "path": str(teatree_root())}
         assert options.include_hook_events is True
         # The isolation levers are untouched — only the plugin chain + hook events change.
-        assert options.settings == '{"hooks":{}}'
+        assert json.loads(options.settings or "") == {
+            "hooks": {},
+            "syncClaudeAiSkills": False,
+            "syncClaudeAiPlugins": False,
+        }
         assert options.setting_sources == []
 
     def test_non_hooked_options_are_byte_identical_regression_pin(self, tmp_path: Path) -> None:

@@ -18,7 +18,7 @@ from django.utils import timezone
 from teatree.agents.usage_window import maybe_park_for_active_window
 from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.agent_admission import AgentAdmission
-from teatree.core.managers import ADMITTED_INFLIGHT_WINDOW
+from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.managers_task_claim import _claimable_now_q
 from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt, Ticket, UsageWindowState
 from teatree.core.models.task_claim import window_parked

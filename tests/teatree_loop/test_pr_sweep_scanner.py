@@ -27,7 +27,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, BotPing, BranchUpdateAttempt, MergeableNotified, Task
+from teatree.core.models import (
+    AutoReviewDispatch,
+    BotPing,
+    BranchUpdateAttempt,
+    MergeableNotified,
+    PullRequest,
+    Task,
+    Ticket,
+)
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.pr_sweep_skip_surface import SURFACE_AFTER_TICKS, record_sweep_outcomes
@@ -1523,6 +1531,8 @@ class TestAutoReviewDispatch:
 
     def test_end_to_end_enqueued_task_then_recorded_verdict_merges_on_next_sweep(self) -> None:
         # Sweep 1: no verdict, armed -> flag_no_review + a real reviewing task.
+        ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.SELF_REVIEWED)
+        PullRequest.objects.record_opened(ticket=ticket, url=f"https://github.com/{SLUG}/pull/6230", overlay="teatree")
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         scanner, _ = _scanner(
             api=api,

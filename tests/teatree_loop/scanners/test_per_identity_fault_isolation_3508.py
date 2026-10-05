@@ -25,6 +25,7 @@ from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.needs_triage_query import needs_triage_issues
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 _BAD = "bad-identity"
 _BAD_LABEL = "bad-identity"
@@ -131,6 +132,7 @@ class TestIssueIntakePerIdentityIsolation(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        FleetClaimStub().install(self)
 
     def _issue(self, url: str, author: str) -> RawAPIDict:
         return {

@@ -5,9 +5,7 @@ dedupe marker, so this loop's outer cadence is a FLOOR: checking more often than
 weekly cannot produce a second question, and slowing it past a week would starve
 the inner cadence.
 
-Ships disabled (``default_enabled`` is absent from its ``[loops.memory_skim]``
-seed entry) and the ``off``/``low-token`` presets mask it like every other loop —
-an operator enables it deliberately.
+The ``present`` preset admits it; restrictive presets may mask it like every other loop.
 """
 
 from typing import TYPE_CHECKING

@@ -37,7 +37,6 @@ from teatree.config.known_settings import SETTING_ENTRIES
 from teatree.config.overlay_code_defaults import overlay_code_defaults
 from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
 from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
-from teatree.config.retired_settings import RENAMED_SETTING_KEYS, removed_setting, warn_removed_setting
 from teatree.config.setting_layers import (
     SettingLayers,
     apply_structured_settings,
@@ -195,13 +194,7 @@ def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool =
     layered = {**code_defaults, **overrides}
     settings = defaults_base if not layered else replace(defaults_base, **layered)
     settings = apply_structured_settings(settings, layers.db_rows, defaults_base.speak)
-    # ``global_pinned`` MUST be the FOLDED field names (``layers.global_db``), not the raw
-    # row keys: a global row stored under a retired alias (``_LEGACY_SETTING_ALIASES``)
-    # resolves its VALUE onto the current field via ``_coerce_setting_rows``, so its pin
-    # must be recorded under that same current field name. Keying the pin set off the raw
-    # row keys would let a renamed approval-gate field's value resolve while its pin
-    # silently vanished — the autonomy collapse would then override an explicitly-stored
-    # gate (config §3d #1).
+    # Pin only parsed global settings; unknown stored rows never affect autonomy.
     return _apply_autonomy(
         settings,
         hard_pinned=hard_pinned,
@@ -376,16 +369,6 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
 
 
-# Retired ConfigSetting keys mapped to their current ``UserSettings`` field, and
-# the retired keys with no replacement. Both are DERIVED from the one registry in
-# ``config.retired_settings`` (#3527) so a retirement is recorded exactly once: a
-# renamed key's stored row resolves onto the replacement field (the canonical key
-# still wins when both rows exist), and a removed key's stored row is reported
-# loudly rather than dropped in silence.
-_LEGACY_SETTING_ALIASES: dict[str, str] = RENAMED_SETTING_KEYS
-_RETIRED_SETTING_KEYS: frozenset[str] = frozenset(RENAMED_SETTING_KEYS)
-
-
 def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
     """Coerce a ``{key: stored value}`` table via the DB-home parser registry.
 
@@ -397,14 +380,7 @@ def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
     Returns ``{field: coerced}`` for every key that is a registered
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; unknown / non-DB keys are
     dropped so neither a stray row nor a cold-hook-only ``defaults.toml`` key ever
-    mutates the resolved settings. A key written under a retired name
-    (``_LEGACY_SETTING_ALIASES``) is folded onto its current field name; the canonical
-    key wins when both are present.
-
-    A row under a REMOVED key (``retired_settings.REMOVED_SETTING_KEYS``) has no
-    field to resolve onto, so it is reported on stderr naming the key, the reason
-    and the remedy before falling through to the default (#3527) — loud rather
-    than fatal, so a stale row never locks an operator out of their own factory.
+    mutates the resolved settings.
 
     A per-row parser failure means a stored value is invalid for its setting's
     type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
@@ -413,32 +389,18 @@ def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
     never swallowed back to the default with no signal.
     """
     overrides: dict[str, Any] = {}
-    fields_from_canonical_key: set[str] = set()
     for key, value in rows.items():
-        removed = removed_setting(key)
-        if removed is not None:
-            warn_removed_setting(removed)
-            continue
-        is_alias = key in _LEGACY_SETTING_ALIASES
-        field_name = _LEGACY_SETTING_ALIASES.get(key, key)
-        if field_name in _BESPOKE_STRUCTURED_FIELDS:
+        if key in _BESPOKE_STRUCTURED_FIELDS:
             continue  # resolved bespoke in get_effective_settings (dict -> dataclass + merge)
-        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(field_name)
+        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
         if parser is None:
-            continue
-        # The canonical key is authoritative; a legacy-alias row only fills a gap
-        # and never overwrites a value the current key already supplied — order-
-        # independent, so it holds regardless of which row is iterated first.
-        if is_alias and field_name in fields_from_canonical_key:
             continue
         try:
             coerced = parser(value)
         except (ValueError, TypeError, AttributeError) as exc:
             msg = f"Invalid stored ConfigSetting value for {key!r}: {exc}"
             raise ValueError(msg) from exc
-        overrides[field_name] = coerced
-        if not is_alias:
-            fields_from_canonical_key.add(field_name)
+        overrides[key] = coerced
     return overrides
 
 
@@ -482,9 +444,7 @@ _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FU
 #: can differ from that default without the declaration changing — the reviewed decision is
 #: the tier, not the per-field value. Sourced from the collapse itself so the
 #: set cannot drift from what the resolver actually writes.
-AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset(
-    {*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode", "notify_on_behalf", "review_request_post_disabled"}
-)
+AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset({*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode"})
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
@@ -498,14 +458,7 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
     Both autonomous tiers fill only the gates the user left unpinned and pin
     ``mode`` to ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``,
     so a ``full``/``notify`` overlay that forgot ``mode`` would otherwise be a
-    silent no-op). The ``notify`` tier additionally derives
-    ``notify_on_behalf = True`` so every on-behalf action DMs the user.
-    Both tiers also set the resolved ``review_request_post_disabled`` off the tier
-    (#2579, replacing the deleted ``agent_review_request_disabled`` side flag):
-    ``notify`` → ``True`` (collaborative/customer surface BLOCKs review-request),
-    ``full`` → ``False`` (solo tooling surface PROCEEDs). ``babysit`` is a no-op —
-    every gate keeps its resolved value, so review-request follows
-    the active posture like any other colleague-visible post.
+    silent no-op). ``babysit`` is a no-op.
 
     Pin precedence:
 
@@ -520,8 +473,7 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
         leaves an autonomous overlay half-collapsed.
 
     The safety floor is untouched: only the keys in
-    :data:`_AUTONOMY_COLLAPSED_GATE_VALUES` (plus ``mode`` and the derived
-    ``notify_on_behalf``) are ever written here.
+    :data:`_AUTONOMY_COLLAPSED_GATE_VALUES` (plus ``mode``) are ever written here.
     """
     if settings.autonomy not in _AUTONOMOUS_TIERS:
         return settings
@@ -533,16 +485,6 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
     }
     if "mode" not in hard_pinned:
         relaxed["mode"] = Mode.AUTO
-    if settings.autonomy is Autonomy.NOTIFY and "notify_on_behalf" not in gate_pinned:
-        relaxed["notify_on_behalf"] = True
-    # Review-request blocking is driven off the tier (#2579), replacing the
-    # deleted ``agent_review_request_disabled`` side flag. The ``notify`` tier
-    # (collaborative/customer surface) BLOCKs review-request; ``full`` (solo
-    # tooling surface) PROCEEDs. An explicit per-overlay pin always wins (Option
-    # A — the per-overlay escape), so the field is only set for the tier when the
-    # user has not pinned it themselves.
-    if "review_request_post_disabled" not in gate_pinned:
-        relaxed["review_request_post_disabled"] = settings.autonomy is Autonomy.NOTIFY
     if not relaxed:
         return settings
     return replace(settings, **relaxed)

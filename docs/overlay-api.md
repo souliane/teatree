@@ -50,7 +50,6 @@ Set these as `UPPER_CASE` constants in a settings module, or as `lower_case` key
 | `gitlab_url` | `"https://gitlab.com/api/v4"` | GitLab API base URL |
 | `github_owner` | `""` | GitHub user or org that owns the project board |
 | `github_project_number` | `0` | GitHub Projects v2 board number |
-| `require_ticket` | `False` | Whether to enforce a tracked issue before coding/shipping |
 | `known_variants` | `[]` | Tenant variant identifiers |
 | `pr_auto_labels` | `[]` | Labels auto-applied to pull requests (GitLab MRs translated at the API edge) |
 | `pr_auto_reviewers` | `[]` | Usernames set as reviewers in the same call that opens the pull request — applied only on a repo `get_gitlab_token_for_remote` scopes to a non-owner credential |

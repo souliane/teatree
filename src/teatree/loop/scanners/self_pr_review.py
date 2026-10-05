@@ -87,7 +87,7 @@ class ClaudeSelfPrReviewScanner:
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
         if pr.is_draft or pr.checks_unsettled:
             return None
-        adversarial = is_adversarial_review(pr.changed_files, slug=pr.slug, author=pr.author)
+        adversarial = is_adversarial_review(pr.changed_files, slug=pr.slug, author=pr.author, pr_url=pr.url)
         variant = CLAUDE_ADVERSARIAL_REVIEW_VARIANT if adversarial else CLAUDE_STANDARD_REVIEW_VARIANT
         return ScanSignal(
             kind="self_pr_review.dispatch",

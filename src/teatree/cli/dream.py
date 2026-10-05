@@ -53,11 +53,6 @@ def run_command(
         "--dry-run",
         help="Do everything except writing ConsolidatedMemory rows / the marker.",
     ),
-    propose_evals: bool = typer.Option(
-        False,
-        "--propose-evals",
-        help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
-    ),
     full: bool = typer.Option(
         False,
         "--full",
@@ -72,8 +67,6 @@ def run_command(
     args: list[str] = ["run"]
     if dry_run:
         args.append("--dry-run")
-    if propose_evals:
-        args.append("--propose-evals")
     if full:
         args.append("--full")
     if since:
@@ -89,6 +82,48 @@ def tick_command() -> None:
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     call_command("dream", "tick")
+
+
+@dream_app.command("gap-coverage")
+def gap_coverage_command(
+    *,
+    ticket: int = typer.Option(
+        0, "--ticket", help="Scope the proof to this host's folded gaps, dispositions included."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+) -> None:
+    """Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
+
+    args: list[str] = ["gap-coverage"]
+    if ticket:
+        args.extend(["--ticket", str(ticket)])
+    if json_output:
+        args.append("--json")
+    call_command("dream", *args)
+
+
+@dream_app.command("gap-disposition")
+def gap_disposition_command(
+    ticket: int = typer.Argument(..., help="The host ticket the gap is folded into."),
+    gap_key: str = typer.Argument(..., help="The folded gap's key."),
+    *,
+    citation: str = typer.Option("", "--citation", help="ADDRESS: the evidence that verifies the gap."),
+    reject: str = typer.Option("", "--reject", help="REJECT: why the gap is not worth addressing."),
+) -> None:
+    """Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
+
+    args: list[str] = ["gap-disposition", str(ticket), gap_key]
+    if citation:
+        args.extend(["--citation", citation])
+    if reject:
+        args.extend(["--reject", reject])
+    call_command("dream", *args)
 
 
 compliance_app = typer.Typer(

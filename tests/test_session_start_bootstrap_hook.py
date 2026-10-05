@@ -478,7 +478,7 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
     Compaction rotates the session id. The hook updates the file
     registry to the new id, but the live ``LoopLease`` row name=
     ``t3-master`` still carries the OLD id with an unexpired
-    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    ``lease_expires_at``. ``CLAUDE_CODE_SESSION_ID`` is empty in Bash-tool
     subprocesses (#1107), so the next ``t3 loop tick`` resolves the new
     id via the file registry and the CAS in ``claim_ownership`` fails:
     DB session != new session, lease not expired. The session can never
@@ -910,10 +910,7 @@ class TestLoopRunnerOwnerIsNotAForeignSession(TestCase):
     """The ``t3 worker`` holding ``t3-master`` is the DRIVER, not a competing session (#3968).
 
     Once the worker claims the slot, every interactive session reads a live foreign
-    owner and backs off — so no session becomes the file-registry tick owner, and the
-    sticky election in ``handle_enforce_loop_on_prompt`` registers NONE of the three
-    reactive ``/loop`` slots. That would re-break the very loops #3968 fixes, one layer
-    up: the cycles would be permitted to run and never be invoked.
+    owner and backs off — so no session becomes the file-registry tick owner.
 
     Cross-session mutual exclusion is untouched — a genuinely foreign SESSION still
     blocks (``TestNewSessionHijackFix`` pins that arc).
@@ -926,19 +923,6 @@ class TestLoopRunnerOwnerIsNotAForeignSession(TestCase):
         _claim_t3_master()
 
         assert _db_live_foreign_owner("a-session", current_pid=os.getpid() + 1) == ""
-
-    def test_session_still_claims_the_tick_owner_record_under_a_running_worker(self) -> None:
-        from hooks.scripts.hook_router import _claim_loop_ownership  # noqa: PLC0415 — see the module note
-        from teatree.loops.worker import _claim_t3_master  # noqa: PLC0415 — see the module note
-
-        _claim_t3_master()
-
-        _claim_loop_ownership("a-session")
-
-        owner = _read_loop_registry().get(_OWNER_LOOP) or {}
-        assert owner.get("session_id") == "a-session", (
-            "the worker driving loops must not stop a session becoming the tick owner (#3968)"
-        )
 
     def test_a_foreign_session_still_blocks_the_claim(self) -> None:
         from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415 — see the module note

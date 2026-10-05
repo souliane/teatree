@@ -18,12 +18,12 @@ from teatree.agents import permission_modes
 from teatree.agents.compaction_guard import CompactionGuard, with_compaction_off
 from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
 from teatree.agents.model_tiering import (
+    SpawnModelSelection,
     model_supports_thinking,
     resolve_fallback_model,
     resolve_spawn_effort,
     resolve_spawn_model,
 )
-from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.agents.session_lineage import honesty_subject, resume_session_id
 from teatree.agents.skill_injection import _resolve_skill_md, harness_skills_dirs
@@ -32,13 +32,11 @@ from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
-from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 if TYPE_CHECKING:
     from teatree.agents.harness import Harness
 
 _PERMISSION_MODE = permission_modes.UNATTENDED
-_READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
 # The external-contact / interactive built-ins — every CLI built-in that can reach
 # the user or an external endpoint directly. NO headless phase may call any of them:
 # there is no live human at the SDK/headless harness (AskUserQuestion would silently
@@ -49,7 +47,7 @@ _READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
 # phase's allowed complement), so denying them removes nothing a work phase needs. Each
 # is a real member of the ``claude`` CLI's built-in registry (pinned by
 # :func:`test_floor_is_a_valid_subset_of_the_builtin_registry`), so it is a valid deny
-# rule. The reader phase denies the full :data:`KNOWN_BUILTIN_TOOLS` superset on top.
+# rule.
 _EXTERNAL_CONTACT_BUILTINS: tuple[str, ...] = (
     "AskUserQuestion",
     "Monitor",
@@ -65,8 +63,8 @@ _DISALLOWED_TOOLS = _EXTERNAL_CONTACT_BUILTINS
 # so the Opus-4.8 planning/coding/debugging/reviewing phases would silently lose
 # extended thinking; setting adaptive makes them deterministically think (the
 # model still decides HOW MUCH). GUARDED by
-# :func:`~teatree.agents.model_tiering.model_supports_thinking` so the cheap/Haiku
-# tier — which rejects the lever — never receives it.
+# :func:`~teatree.agents.model_tiering.model_supports_thinking` so a Haiku
+# model — which rejects the lever — never receives it.
 _ADAPTIVE_THINKING: ThinkingConfig = {"type": "adaptive"}
 
 
@@ -85,15 +83,10 @@ def _disallowed_tools_for_phase(phase: str) -> list[str]:
     denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
     cold-review least-privilege that keeps the transcript at its verdict. A write phase's
     complement is empty, so its list stays exactly the floor, and the floor never names a
-    capability tool (Read/Write/Edit/Bash), so a work phase keeps every tool it needs. The
-    #116 reader phase denies the EXHAUSTIVE
-    :data:`~teatree.llm.builtin_tools.KNOWN_BUILTIN_TOOLS` set (the binary-validated
-    registry — a superset of the floor, so the overlap is harmless), so no tool of ANY
-    kind remains. Sorted & deduplicated for determinism.
+    capability tool (Read/Write/Edit/Bash), so a work phase keeps every tool it needs.
+    Sorted & deduplicated for determinism.
     """
     denied = set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase))
-    if is_reader_phase(phase):
-        denied |= set(KNOWN_BUILTIN_TOOLS)
     return sorted(denied)
 
 
@@ -124,7 +117,9 @@ class SpawnOverrides:
     #: ordinary phase/skill model". Ordered routes set this with their concrete pin;
     #: direct Codex sets it with ``None``.
     model_is_resolved: bool = False
+    spawn_selection: SpawnModelSelection | None = None
     harness_name: str = ""
+    mcp: bool = True
     #: Route-specific reasoning effort. ``None`` resolves the phase default.
     effort: str | None = None
 
@@ -144,7 +139,7 @@ def _build_options(
     of the per-phase tier and the per-skill MODEL floors of the loaded skills,
     else the user's default), the per-tier reasoning effort for the same phase
     (:func:`resolve_spawn_effort` — ``xhigh`` for a frontier phase, ``high`` for a
-    balanced phase, unset for the cheap/Haiku phases), the worktree as ``cwd`` /
+    balanced phase, unset for the cheap phases), the worktree as ``cwd`` /
     ``add_dirs``, and the prior session its task is typed to continue. NO clean-room isolation — a
     headless run executes a real task and needs the real environment, skills, and
     project context.
@@ -162,7 +157,7 @@ def _build_options(
     add_dirs = [cwd] if cwd else []
     if overrides.handoff is not None:
         add_dirs.append(str(overrides.handoff.parent))
-    if overrides.harness_name == "pydantic_ai" and not is_reader_phase(phase):
+    if overrides.harness_name == "pydantic_ai":
         # Lane B's add_dirs become Read-only roots; allow only requested skill
         # directories, never a broad home or all-skills directory.
         directories = harness_skills_dirs()
@@ -174,11 +169,15 @@ def _build_options(
     spawn_model = (
         overrides.model
         if overrides.model_is_resolved
-        else resolve_spawn_model(
-            phase,
-            skills=skills,
-            session_id=subject.session_id if subject else None,
-            task_id=subject.task_id if subject else int(task.pk),
+        else (
+            overrides.spawn_selection.model
+            if overrides.spawn_selection is not None
+            else resolve_spawn_model(
+                phase,
+                skills=skills,
+                session_id=subject.session_id if subject else None,
+                task_id=subject.task_id if subject else int(task.pk),
+            )
         )
     )
     options = ClaudeAgentOptions(
@@ -220,13 +219,13 @@ def _build_options(
         max_turns=resolve_agent_max_turns() if overrides.turn_ceiling is None else overrides.turn_ceiling,
         resume=resume_session_id(task, harness=overrides.harness_name) or None,
         # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
-        # omits thinking by default). Guarded so the cheap/Haiku tier — which
+        # omits thinking by default). Guarded so a Haiku model — which
         # rejects the lever — and an inherited-default spawn (``None``) keep the
         # SDK default.
         thinking=_ADAPTIVE_THINKING if model_supports_thinking(spawn_model) else None,
         # Pin the per-abstract-TIER reasoning effort for the SAME phase the model
         # resolved from (frontier → xhigh, balanced → high). ``None`` for the
-        # cheap/Haiku phases (which reject the lever) and a sentinel-opted-out
+        # cheap phases (no effort entry) and a sentinel-opted-out
         # phase, so those spawns inherit the SDK default effort. The resolver
         # returns the domain ``str | None`` (validated to the effort scale);
         # cast it to the SDK ``EffortLevel`` literal at this boundary.
@@ -244,9 +243,7 @@ def _build_options(
     )
     if overrides.compaction_guard is not None:
         with_compaction_off(options, overrides.compaction_guard)
-    if is_reader_phase(phase):
-        _apply_reader_tool_lockdown(options)
-    else:
+    if overrides.mcp:
         _wire_teatree_mcp_server(options)
     return options
 
@@ -299,8 +296,7 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:
     tools; they fall back to shelling out to the ``t3`` CLI. The headless
     dispatch owns its options, so it wires the server explicitly here. The
     launch command mirrors ``.mcp.json`` (:mod:`teatree.core.mcp_registration`
-    is the single source of truth). Skipped for the #116 reader, which stays
-    hermetic (:func:`_apply_reader_tool_lockdown`).
+    is the single source of truth).
     """
     from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps the option-build import light
         EXPECTED_ARGS,
@@ -313,31 +309,6 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions) -> None:
         **existing,
         TEATREE_MCP_SERVER_NAME: {"type": "stdio", "command": EXPECTED_COMMAND, "args": list(EXPECTED_ARGS)},
     }
-
-
-def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:
-    """Close the #116 reader's tool-acquisition residual: load NO settings, NO MCP config.
-
-    The ``disallowed_tools`` denylist covers every capability tool + every named built-in
-    (:func:`_disallowed_tools_for_phase`), but under ``bypassPermissions`` a tool the
-    denylist does not name — an MCP-server tool, a custom slash command loaded from
-    ``~/.claude`` / project settings — would still be reachable. Loading NO setting
-    sources (``--setting-sources=`` empty) and NO MCP config (``strict_mcp_config`` +
-    empty ``mcp_servers``) removes every such source, so the reader has zero tools from
-    any origin. An empty ``allowed_tools`` is NOT the mechanism — the SDK omits the
-    ``--allowedTools`` flag when the list is empty, so it would be a silent no-op; the
-    closure is source-suppression, verified against the SDK transport.
-
-    :data:`_READER_PERMISSION_MODE` closes the same residual from the other side.
-    ``bypassPermissions`` auto-approves whatever survives; ``dontAsk`` denies anything
-    not pre-approved by an allow rule, and the reader carries none — so an unnamed tool
-    reaching the reader by any route is refused by DEFAULT rather than by enumeration.
-    Source-suppression and default-deny are independent, and the reader keeps both.
-    """
-    options.setting_sources = []
-    options.mcp_servers = {}
-    options.strict_mcp_config = True
-    options.permission_mode = _READER_PERMISSION_MODE
 
 
 def _resolve_task_cwd(task: Task) -> str | None:

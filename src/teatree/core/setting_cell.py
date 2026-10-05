@@ -18,7 +18,7 @@ from urllib.parse import quote
 from django.urls import reverse
 
 from teatree.config.provenance import ValueSource
-from teatree.config.setting_registries import code_pin_refusal, env_pin
+from teatree.config.setting_registries import env_pin
 from teatree.core.setting_control import SettingControl, wire
 
 #: The column header the global scope renders under — every other column is named by its scope.
@@ -44,18 +44,15 @@ class DriftVerdict(StrEnum):
 def env_pin_refusal(key: str, source: str) -> str:
     """Why a cell holding *key* cannot be written, or ``""`` — the one rule both grids ask.
 
-    Two ways a stored write lands in a layer nothing reads back, reporting success and
-    changing nothing an operator can observe: a ``T3_*`` var supplying the value, and a code
-    path that reads the SHIPPED default for this key instead of the resolver. The second is
-    the more dangerous of the two, because the cell then re-renders as drifted — the operator
-    is shown their own write echoed back by a mechanism that ignores it.
+    A ``T3_*`` var supplying the value makes a stored write land in a layer nothing reads
+    back, reporting success and changing nothing an operator can observe.
 
     A var whose value the parser REFUSES still pins the key: the resolver raises on it, so a
     stored write is no more readable than under a valid pin.
     """
     if source in _ENV_SOURCES and (pinned := env_pin(key)):
         return f"pinned by {pinned}"
-    return code_pin_refusal(key)
+    return ""
 
 
 def verdict_for(control: SettingControl, *, overridden: bool, value: str) -> DriftVerdict:

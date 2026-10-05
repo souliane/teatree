@@ -14,6 +14,7 @@ from unittest import mock
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.fleet.claim import Claim, claim_ref
 from teatree.core.models import ImplementedIssueMarker, LoopLease
 from teatree.core.work_lease import (
     WorkIdentity,
@@ -42,15 +43,20 @@ class TestBranchClaimedPrRefusesASecondLifecycleClaim(TestCase):
         Drives the real scanner seam (``IssueIntakeScanner._claim``) rather than
         the marker manager, so the work-lease gate is exercised where it lives.
         """
-        for target, replacement in (
-            ("teatree.loop.scanners.issue_intake.instance_id", lambda: as_instance),
-            ("teatree.core.fleet.wire.fleet_claim_enabled", lambda _overlay: False),
-        ):
-            patched = mock.patch(target, replacement)
-            patched.start()
-            self.addCleanup(patched.stop)
         scanner = IssueIntakeScanner(host=cast("CodeHostBackend", None), admit_label="t3-auto")
-        return scanner._claim(_ISSUE)
+        won = Claim(
+            work_key=_ISSUE,
+            ref=claim_ref(_ISSUE),
+            sha="a" * 40,
+            instance_id=as_instance,
+            claimed_at=0.0,
+            ttl_seconds=3600.0,
+        )
+        with (
+            mock.patch("teatree.loop.scanners.issue_intake.instance_id", return_value=as_instance),
+            mock.patch("teatree.loop.scanners.issue_intake.wire.acquire_issue_claim", return_value=won),
+        ):
+            return scanner._claim(_ISSUE)
 
     def test_the_loop_defers_to_a_live_branch_claim(self) -> None:
         register_work_claim(

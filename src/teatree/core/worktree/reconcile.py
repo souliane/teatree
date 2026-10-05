@@ -599,19 +599,6 @@ def reconcile_all() -> dict[int, Drift]:
     return drifts
 
 
-def reconcile_work_state_ticket(ticket: Ticket) -> Drift:
-    """Work-state-only :class:`Drift` for ``ticket`` — no infra (docker/DB/env) probes.
-
-    The loop scanner's entry point: it needs only the three work-tracking-truth
-    findings each tick, not the heavier docker/Postgres/env-cache reconcile that
-    :func:`reconcile_ticket` runs for ``workspace doctor``.
-    """
-    drift = Drift(ticket_pk=ticket.pk)
-    worktrees = list(Worktree.objects.for_ticket(ticket))
-    _collect_work_state_drift(drift, ticket, worktrees, WorkStateScope.per_ticket())
-    return drift
-
-
 def reconcile_work_state_all() -> dict[int, Drift]:
     """Return a ``{ticket.pk: Drift}`` map for every ticket with a work-state finding.
 

@@ -21,13 +21,8 @@ The gate (deterministic)
     downgraded to ``instrumentation_gap``, or an OMITTED item all block — the
     anti-vacuity floor). Fail-closed, exactly like "CI must be green".
 
-Which tickets it gates: DIRECTIVE tickets UNCONDITIONALLY (self-modification is
-held to the stricter bar — the machine gets no benefit of the doubt); ORDINARY
-tickets only when the per-overlay ``require_merge_quality_verdict`` flag is on
-(DARK, default off) — so ordinary work merges unchanged until an overlay opts in.
-Its own kill-switch (setting the flag back off) is the audited never-lockout
-escape for ordinary tickets; a directive ticket's escape is a corrected+re-judged
-verdict at the shipped head.
+Every ticket requires a verdict at the shipped head, including ordinary and
+directive tickets.
 
 Wired at :func:`~teatree.core.merge.execution.execute_bound_merge` — the single
 chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_gate``.
@@ -36,7 +31,6 @@ chokepoint BOTH autonomous merge paths cross, mirroring ``assert_review_verdict_
 import logging
 from typing import TYPE_CHECKING, cast
 
-from teatree.config import get_effective_settings
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
@@ -45,6 +39,7 @@ from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.directive import Directive
 from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
+from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -75,17 +70,6 @@ def linked_directive(ticket: "Ticket") -> "Directive | None":
 
 def is_directive_ticket(ticket: "Ticket") -> bool:
     return linked_directive(ticket) is not None
-
-
-def merge_quality_enforced(ticket: "Ticket") -> bool:
-    """Whether the merge-quality verdict BLOCKS this ticket's merge.
-
-    Directive tickets: always (the stricter self-modification bar). Ordinary
-    tickets: only under the per-overlay ``require_merge_quality_verdict`` flag.
-    """
-    if is_directive_ticket(ticket):
-        return True
-    return bool(get_effective_settings(ticket.overlay or None).require_merge_quality_verdict)
 
 
 def ratified_test_strategy(ticket: "Ticket") -> str:
@@ -229,25 +213,33 @@ def _arm_merge_quality_critic(ticket: "Ticket", head_sha: str) -> None:
 
 
 def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
-    """Refuse the merge unless a clean merge-quality verdict covers *head_sha* (when enforced).
+    """Refuse the merge unless a clean merge-quality verdict covers *head_sha*.
 
-    NO-OP when the ticket is not gated (ordinary ticket, flag off). Otherwise
-    fail-closed: no covering verdict → arm the async critic and refuse; a verdict
+    For every ticket, fail closed: no covering verdict → arm the async critic and refuse; a verdict
     with any unmet merge item → record the FAIL findings and refuse; every item
     affirmatively passed → proceed.
     """
-    if not merge_quality_enforced(ticket):
-        return
     head = head_sha.strip().lower()
     verdict = covering_verdict(ticket, head)
     if verdict is None:
         _arm_merge_quality_critic(ticket, head)
+        from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: reads live worker config
+
+        if CriticDispatch.saturated().filter(ticket=ticket, transition=_MERGE_TRANSITION, head_sha=head).exists():
+            recovery = (
+                "The critic retry budget is exhausted; inspect the failed critic tasks, repair the cause, "
+                "and rearm the claim before retrying."
+            )
+        elif worker_is_quiescing():
+            recovery = "The worker is quiescing; resume worker admission, then let the queued critic run and retry."
+        elif not flock_is_held(WORKER_SINGLETON):
+            recovery = "The worker is stopped; start the worker, let the queued critic run, then retry."
+        else:
+            recovery = "A headless critic has been armed; retry once it records a clean verdict."
         msg = (
             f"no recorded merge-quality CriticVerdict covers the shipped head {head} for ticket {ticket.pk} — "
             f"refusing to merge (north-star PR-4). A clean-and-tested-enough verdict (test_value + cleanliness) at "
-            f"the exact head is required before a directive keystone merges; a headless critic has been armed and "
-            f"the merge can proceed once it records a clean verdict (same as CI pending). Ordinary tickets are gated "
-            f"only under `require_merge_quality_verdict`; disabling it per-overlay is the audited never-lockout escape."
+            f"the exact head is required before a merge. {recovery}"
         )
         raise MergeQualityVerdictError(msg)
     record_merge_quality_findings(verdict, ticket=ticket, head_sha=head)
@@ -257,8 +249,7 @@ def check_merge_quality_verdict(ticket: "Ticket", head_sha: str) -> None:
             f"the merge-quality CriticVerdict at head {head} for ticket {ticket.pk} does not clear "
             f"{', '.join(unmet)} — refusing to merge (north-star PR-4): merely-green is not well-engineered. Each "
             f"unmet item is recorded as a CriticFinding naming the offending test/file — resolve them and re-judge "
-            f"at the shipped head. The never-lockout escape for an ordinary ticket is disabling "
-            f"`require_merge_quality_verdict` per-overlay."
+            f"at the shipped head."
         )
         raise MergeQualityVerdictError(msg)
 

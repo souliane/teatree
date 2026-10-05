@@ -1,83 +1,35 @@
 """Bounded, anti-cheat-gated CI-eval heal fixer (#3201 PR-3b).
 
-Two guardrails are asserted red-first here: the fixer arms ONLY when both switches
-are on (the DARK flag AND the loop row), and it PROPOSES without pushing — the
+Two guardrails are asserted here: the fixer runs only for a confirmed red within
+the spend budget, and it PROPOSES without pushing — the
 production ``_HeadlessFixer`` writes and commits a fix in a throwaway worktree but
 never publishes it, so the driver can run the anti-cheat gate BEFORE any push. The
 one unstoppable external (the ``claude`` write turn) is injected, so the real git
 worktree / commit / diff / push orchestration runs under a tmp-path repo.
 """
 
+import ast
+import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
+import teatree.loop.ci_eval_heal_fixer as fixer_module
 from teatree.agents.compaction_guard import COMPACTION_BLOCKED_REASON
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride
+from teatree.core.models import CiEvalHealSession, Loop
+from teatree.loop.ci_eval_heal_advance import advance_session
 from teatree.loop.ci_eval_heal_fixer import (
     SALVAGE_REF_PREFIX,
     FixProposal,
     _HeadlessFixer,
-    autofix_armed,
     build_fixer_prompt,
     default_fixer,
 )
 from teatree.utils.run import run_checked
-
-
-def _arm_flag() -> None:
-    ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)
-
-
-def _admit_loop() -> None:
-    Mode.objects.update_or_create(name="quiet", defaults={"entries": {"ci_eval_heal": True}})
-
-
-class TestAutofixArmedNeedsBothSwitches(TestCase):
-    """The fixer is a double opt-in: the DARK flag AND the loop's own run verdict."""
-
-    def setUp(self) -> None:
-        # A real preset has to GOVERN, or resolution fails open and admits every loop —
-        # which would make every "the loop is off" case here unable to fail.
-        Loop.objects.update_or_create(
-            name="ci_eval_heal",
-            defaults={"delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"},
-        )
-        Mode.objects.create(name="quiet", entries={"ci_eval_heal": False})
-        ModeOverride.objects.set_override("quiet", reason="test posture")
-
-    def _session(self) -> "SimpleNamespace":
-        return SimpleNamespace(overlay="", pr_ref="3201-feat", red_scenarios=["r"])
-
-    def test_disarmed_by_default(self) -> None:
-        assert autofix_armed(self._session()) is False
-
-    def test_flag_alone_is_not_enough(self) -> None:
-        _arm_flag()
-        assert autofix_armed(self._session()) is False
-
-    def test_loop_alone_is_not_enough(self) -> None:
-        _admit_loop()
-        assert autofix_armed(self._session()) is False
-
-    def test_armed_only_when_both_on(self) -> None:
-        _arm_flag()
-        _admit_loop()
-        assert autofix_armed(self._session()) is True
-
-    def test_a_manual_override_off_disarms_a_preset_admitted_loop(self) -> None:
-        _arm_flag()
-        _admit_loop()
-        Loop.objects.set_manual_override("ci_eval_heal", runs=False, reason="the fixer is misbehaving")
-        assert autofix_armed(self._session()) is False
-
-    def test_an_absent_loop_row_disarms(self) -> None:
-        _arm_flag()
-        _admit_loop()
-        Loop.objects.filter(name="ci_eval_heal").delete()
-        assert autofix_armed(self._session()) is False
 
 
 class TestFixerPrompt:
@@ -171,6 +123,21 @@ class TestHeadlessFixerProposeGatePublish:
         assert origin_tip == proposal.commit_sha
         assert head == proposal.commit_sha
         assert not Path(proposal.worktree_path).exists()
+
+    def test_agent_commit_is_folded_into_one_fixer_commit(self, tmp_path: Path) -> None:
+        work, _ = _seed_repo(tmp_path)
+
+        def turn(_prompt: str, cwd: Path) -> None:
+            (cwd / "product.txt").write_text("v2-fixed\n", encoding="utf-8")
+            _git(str(cwd), "add", "product.txt")
+            _git(str(cwd), "commit", "-m", "agent committed despite instruction")
+
+        fixer = _HeadlessFixer(repo=work, turn_runner=turn, worktree_root=str(tmp_path))
+        session = _fake_session()
+        proposal = fixer.propose(session)
+        assert proposal.changed_paths == ("product.txt",)
+        fixer.publish(session, proposal)
+        assert _git(work, "rev-list", "--count", "main..origin/pr-branch") == "1"
 
     def test_propose_tolerates_a_failing_fetch_and_uses_the_local_ref(self, tmp_path: Path) -> None:
         work, _ = _seed_repo(tmp_path)
@@ -360,3 +327,82 @@ class TestHeadlessFixerProposeGatePublish:
 def test_fix_proposal_is_frozen() -> None:
     proposal = FixProposal(changed_paths=("a.py",), worktree_path="/tmp/x", base_sha="b", commit_sha="c")
     assert proposal.changed_paths == ("a.py",)
+
+
+class TestHarnessDispatchAtAdvancerEntry(TestCase):
+    """A confirmed red reaches the configured harness and the real PR branch gate."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp_path = Path(temporary.name)
+        Loop.objects.update_or_create(
+            name="ci_eval_heal", defaults={"delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"}
+        )
+        self.session = CiEvalHealSession.objects.create(overlay="", pr_ref="pr-branch")
+        self.session.trigger(ci_run_id="run-1", head_sha="a" * 40)
+        self.session.save()
+        self.session.receive_result(red_scenarios=["rules_under_load"])
+        self.session.save()
+
+    def _dispatch(self, tmp_path: Path, changed_path: str) -> tuple[str, str, object]:
+        work, origin = _seed_repo(tmp_path)
+        opened: list[str] = []
+
+        class FakeSession:
+            async def query(self, prompt: str) -> None:
+                opened.append(prompt)
+                target = Path(self.cwd) / changed_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("fixed\n", encoding="utf-8")
+
+            async def interrupt(self) -> None:
+                return None
+
+            async def receive_response(self):
+                if False:
+                    yield None
+
+        class FakeHarness:
+            capabilities = SimpleNamespace(spawns_cli_child=False)
+
+            @asynccontextmanager
+            async def open(self, options):
+                session = FakeSession()
+                session.cwd = options.cwd
+                yield session
+
+        class FakeClient:
+            def trigger_workflow(self, workflow, *, ref, inputs):
+                return None
+
+        with patch("teatree.agents.write_turn.resolve_harness", return_value=FakeHarness()):
+            outcome = advance_session(
+                self.session,
+                client=FakeClient(),
+                escalate=lambda _session: None,
+                fixer=_HeadlessFixer(repo=work, worktree_root=str(tmp_path)),
+            )
+        assert len(opened) == 1
+        return work, origin, outcome
+
+    def test_one_red_dispatch_creates_one_fix_commit_on_pr_branch(self) -> None:
+        work, _origin, outcome = self._dispatch(self.tmp_path, "product.txt")
+        self.session.refresh_from_db()
+        assert outcome.to_state == self.session.State.AWAITING_CI
+        assert self.session.fix_attempts == 1
+        assert _git(work, "rev-list", "--count", "main..origin/pr-branch") == "1"
+
+    def test_anticheat_violation_discards_commit_and_halts(self) -> None:
+        work, _origin, outcome = self._dispatch(self.tmp_path, "evals/scenarios/rules.yaml")
+        self.session.refresh_from_db()
+        assert outcome.to_state == self.session.State.HALTED
+        assert self.session.fix_attempts == 0
+        assert _git(work, "rev-list", "--count", "main..origin/pr-branch") == "0"
+
+
+def test_fixer_module_has_no_direct_sdk_import() -> None:
+    tree = ast.parse(Path(fixer_module.__file__).read_text(encoding="utf-8"))
+    modules = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    modules += [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
+    assert all(not name.startswith("claude_agent_sdk") for name in modules if name)

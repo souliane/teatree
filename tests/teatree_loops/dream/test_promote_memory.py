@@ -21,19 +21,21 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.core.models.dream_gap_ledger import record_gap_disposition
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
+from teatree.loops.dream.gap_attach import attach_dream_gaps
 from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
     MemoryDisposition,
     delete_source_memory_files,
-    file_binding_reconciliation_tickets,
     file_core_gap_tickets,
     retire_resolved_memories,
     triage_disposition,
 )
 from teatree.loops.dream.retro_finding import promote_finding, record_finding
+from tests.teatree_loops.dream._own_umbrella import claims_self, ours
 
 
 def _row(
@@ -60,11 +62,25 @@ UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 
 
 def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
-    host = MagicMock(spec=CodeHostBackend)
+    host = claims_self(MagicMock(spec=CodeHostBackend))
     host.search_open_issues.return_value = []
-    host.get_issue.return_value = {"body": body}
+    host.get_issue.return_value = ours({"body": body})
     host.update_issue.return_value = {"number": 2663}
     return host
+
+
+def _stateful_forge() -> CodeHostBackend:
+    state = {"body": "## Host issue\n"}
+
+    def _update(**kwargs: object) -> dict[str, int]:
+        state["body"] = str(kwargs["body"])
+        return {"number": 56}
+
+    forge = claims_self(MagicMock(spec=CodeHostBackend))
+    forge.get_issue.side_effect = lambda *_a, **_k: ours({"body": state["body"]})
+    forge.update_issue.side_effect = _update
+    forge.repo_for_issue_url.return_value = "souliane/teatree"
+    return forge
 
 
 class TriageDispositionTestCase(TestCase):
@@ -103,27 +119,24 @@ class TriageDispositionTestCase(TestCase):
 class FileCoreGapTicketsTestCase(TestCase):
     """Core-gap rows queue into the pass's batch — never a triage issue, never alone (#4776)."""
 
-    def test_core_gap_row_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
+    def test_core_gap_row_is_queued_for_the_sweep_and_mints_nothing(self) -> None:
         from teatree.core.models.task import Task  # noqa: PLC0415
 
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         row = _row(destination="skills/ship/SKILL.md")
-        host = _fake_host()
         batch = PromotionBatch()
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
-        # Nothing is written/scheduled until the pass mints its single batch ticket.
-        host.create_issue.assert_not_called()
-        host.update_issue.assert_not_called()
 
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        # No fresh needs-triage issue is filed — the gap rides the umbrella + a coding task.
-        host.create_issue.assert_not_called()
-        host.update_issue.assert_called_once()
-        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
-        assert Task.objects.filter(phase="coding").exists()
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
+
+        umbrella.refresh_from_db()
+        assert [entry["gap_key"] for entry in umbrella.extra["dream_gap_pending"]] == ["k1"]
+        assert not Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
+        assert not Task.objects.exists()
 
     def test_user_specific_row_is_classified_and_files_nothing(self) -> None:
         row = _row(destination="feedback/tone.md")
@@ -133,25 +146,19 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
         assert batch.pending == []
 
-    def test_checkbox_carries_the_gap_marker(self) -> None:
+    def test_an_already_queued_gap_is_not_queued_again(self) -> None:
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         _row(destination="skills/ship/SKILL.md")
-        host = _fake_host()
-        batch = PromotionBatch()
-        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        _, kwargs = host.update_issue.call_args
-        assert "<!-- dream-gap k1 -->" in kwargs["body"]
+        first = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=first)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=first)
 
-    def test_already_scheduled_gap_is_not_double_added(self) -> None:
-        existing = "## Open gaps\n- [ ] Workflow gap (dreaming Pass 2): Run the tree-wide ... <!-- dream-gap k1 -->\n"
-        _row(destination="skills/ship/SKILL.md")
-        host = _fake_host(body=existing)
-        batch = PromotionBatch()
-        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
-        outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        # The checkbox is already present — no rewrite.
-        assert outcome.checkboxes_added == 0
-        host.update_issue.assert_not_called()
+        second = PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=second)
+
+        umbrella.refresh_from_db()
+        assert second.pending == []
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
 
     def test_banned_term_title_is_withheld_not_promoted(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -163,7 +170,7 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert outcomes[0].filed is False
         assert outcomes[0].withheld is True
         assert batch.pending == []
-        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+        assert not Ticket.objects.exists()
 
     def test_dry_run_writes_nothing_and_never_strands_the_gap(self) -> None:
         # F6.1: a preview must NOT advance the disposition. Advancing it before the
@@ -188,15 +195,15 @@ class FileCoreGapTicketsTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()  # prior pass left it here with no ticket + no promotion
         assert not ConsolidatedMemory.objects.untriaged().exists()  # not in the untriaged queue
-        host = _fake_host()
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         batch = PromotionBatch()
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        host.update_issue.assert_called_once()
-        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
-        assert Task.objects.filter(phase="coding").exists()
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
+        umbrella.refresh_from_db()
+        assert [entry["gap_key"] for entry in umbrella.extra["dream_gap_pending"]] == ["k1"]
+        assert not Task.objects.exists()
 
     def test_a_new_core_gap_is_not_double_promoted_in_one_pass(self) -> None:
         # The needs_ticket() drain reads the queue BEFORE the untriaged loop classifies
@@ -207,39 +214,21 @@ class FileCoreGapTicketsTestCase(TestCase):
         outcomes = file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         assert len(outcomes) == 1
 
-    def test_a_promoted_gap_is_stamped_with_its_batch_ticket_and_leaves_the_queue(self) -> None:
+    def test_a_queued_gap_is_stamped_with_its_promotion_anchor_and_leaves_the_queue(self) -> None:
         row = _row()
-        host = _fake_host()
+        Ticket.objects.create(issue_url=UMBRELLA)
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
 
-        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
-        assert row.ticket_url == ticket.issue_url
-        assert "#dream-batch=" in row.ticket_url
+        assert row.ticket_url.startswith(f"{UMBRELLA}#dream-batch=")
         assert not ConsolidatedMemory.objects.needs_ticket().exists()
 
         next_batch = PromotionBatch()
         assert file_core_gap_tickets(umbrella_url=UMBRELLA, batch=next_batch) == []
         assert next_batch.already_covered == 0
-
-    def test_a_row_already_riding_a_legacy_ticket_is_backfilled_once(self) -> None:
-        row = _row()
-        row.classify_core_gap()
-        legacy = Ticket.objects.create(
-            issue_url=f"{UMBRELLA}#dream-gap=k1",
-            role=Ticket.Role.AUTHOR,
-            short_description="Fix the gate",
-            extra={"dream_gap_key": "k1", "dream_memory_cluster_key": "k1", "dream_umbrella_url": UMBRELLA},
-        )
-
-        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
-
-        row.refresh_from_db()
-        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
-        assert row.ticket_url == legacy.issue_url
 
     def _batch_ticket_covering_k1(self, **extra: object) -> Ticket:
         return Ticket.objects.create(
@@ -281,7 +270,7 @@ class FileCoreGapTicketsTestCase(TestCase):
         batch = PromotionBatch()
         with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
             file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
-        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
         self._assert_still_queued(row)
 
     def test_an_ungrounded_gap_is_never_stamped(self) -> None:
@@ -289,7 +278,7 @@ class FileCoreGapTicketsTestCase(TestCase):
         row.classify_core_gap()
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
-        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
         self._assert_still_queued(row)
 
     def test_a_dry_run_gap_is_never_stamped(self) -> None:
@@ -297,18 +286,19 @@ class FileCoreGapTicketsTestCase(TestCase):
         row.classify_core_gap()
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch, dry_run=True)
-        bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch, dry_run=True)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch, dry_run=True)
         self._assert_still_queued(row)
 
-    def test_a_failed_schedule_rolls_the_stamp_back(self) -> None:
+    def test_a_failed_queue_write_rolls_the_stamp_back(self) -> None:
         row = _row()
+        Ticket.objects.create(issue_url=UMBRELLA)
         batch = PromotionBatch()
         file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
         with (
-            patch.object(Ticket, "schedule_coding", side_effect=RuntimeError("queue down")),
+            patch.object(Ticket, "merge_extra", side_effect=RuntimeError("db down")),
             pytest.raises(RuntimeError),
         ):
-            bp_module.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+            bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
         assert ConsolidatedMemory.objects.needs_ticket().filter(pk=row.pk).exists()
 
 
@@ -321,88 +311,6 @@ def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bin
     )
 
 
-class FileBindingReconciliationTicketsTestCase(TestCase):
-    """Two conflicting BINDING memories get a deduped reconciliation ticket (#2723)."""
-
-    def test_conflict_files_a_reconciliation_ticket(self) -> None:
-        host = _fake_host()
-        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert len(outcomes) == 1
-        assert outcomes[0].filed is True
-        _, kwargs = host.create_issue.call_args
-        assert "reconcil" in kwargs["body"].lower()
-        assert "feedback_bind_one.md" in kwargs["body"]
-        assert "feedback_bind_two.md" in kwargs["body"]
-        assert "needs-triage" in kwargs["labels"]
-
-    def test_existing_open_reconciliation_issue_is_reused(self) -> None:
-        host = MagicMock(spec=CodeHostBackend)
-        host.search_open_issues.return_value = [
-            {
-                "html_url": "https://github.com/souliane/teatree/issues/55",
-                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
-            }
-        ]
-        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert outcomes[0].filed is False
-        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/55"
-        host.create_issue.assert_not_called()
-
-    def test_dedup_key_is_order_independent(self) -> None:
-        # The same pair surfaced with survivor/absorbed swapped dedups to one issue.
-        host = MagicMock(spec=CodeHostBackend)
-        host.search_open_issues.return_value = [
-            {
-                "html_url": "https://github.com/souliane/teatree/issues/55",
-                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
-            }
-        ]
-        outcomes = file_binding_reconciliation_tickets(
-            host,
-            repo="souliane/teatree",
-            conflicts=[_conflict(survivor="feedback_bind_two", absorbed="feedback_bind_one")],
-        )
-        assert outcomes[0].filed is False
-        host.create_issue.assert_not_called()
-
-    def test_banned_term_body_is_withheld(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        host = _fake_host()
-        with patch("teatree.loops.dream.promote_memory.banned_terms_scanner.scan_text", return_value="customer-name"):
-            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert outcomes[0].withheld is True
-        host.create_issue.assert_not_called()
-
-    def test_bare_reference_body_is_withheld(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        host = _fake_host()
-        with patch("teatree.loops.dream.promote_memory.find_bare_references", return_value=["#1234"]):
-            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert outcomes[0].withheld is True
-        assert "bare reference" in (outcomes[0].reason or "")
-        host.create_issue.assert_not_called()
-
-    def test_dry_run_files_nothing(self) -> None:
-        host = _fake_host()
-        outcomes = file_binding_reconciliation_tickets(
-            host, repo="souliane/teatree", conflicts=[_conflict()], dry_run=True
-        )
-        assert outcomes == []
-        host.create_issue.assert_not_called()
-
-    def test_search_hiccup_does_not_block_filing(self) -> None:
-        # A search error must not block filing — the issue is filed anyway (refile-once
-        # self-corrects on the next pass).
-        host = MagicMock(spec=CodeHostBackend)
-        host.search_open_issues.side_effect = RuntimeError("forge search down")
-        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9001"}
-        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert outcomes[0].filed is True
-        host.create_issue.assert_called_once()
-
-
 class RetireResolvedMemoriesTestCase(TestCase):
     """A TICKETED row whose linked ticket is closed is retired (prose archived)."""
 
@@ -410,8 +318,8 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()
         row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
-        host = MagicMock(spec=CodeHostBackend)
-        host.get_issue.return_value = {"state": "closed"}
+        host = claims_self(MagicMock(spec=CodeHostBackend))
+        host.get_issue.return_value = ours({"state": "closed"})
         retired = retire_resolved_memories(host)
         assert len(retired) == 1
         row.refresh_from_db()
@@ -421,8 +329,8 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()
         row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
-        host = MagicMock(spec=CodeHostBackend)
-        host.get_issue.return_value = {"state": "open"}
+        host = claims_self(MagicMock(spec=CodeHostBackend))
+        host.get_issue.return_value = ours({"state": "open"})
         retired = retire_resolved_memories(host)
         assert retired == []
         row.refresh_from_db()
@@ -432,8 +340,8 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md", binding=True)
         row.classify_core_gap()
         row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
-        host = MagicMock(spec=CodeHostBackend)
-        host.get_issue.return_value = {"state": "closed"}
+        host = claims_self(MagicMock(spec=CodeHostBackend))
+        host.get_issue.return_value = ours({"state": "closed"})
         retired = retire_resolved_memories(host)
         # BINDING feedback is load-bearing user doctrine — never silently dropped.
         assert retired == []
@@ -444,7 +352,7 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()
         row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
-        host = MagicMock(spec=CodeHostBackend)
+        host = claims_self(MagicMock(spec=CodeHostBackend))
         host.get_issue.side_effect = RuntimeError("forge down")
         retired = retire_resolved_memories(host)
         # A forge error must not retire a memory whose fix may not have landed.
@@ -458,7 +366,7 @@ class RetireResolvedMemoriesTestCase(TestCase):
         row = _row(destination="skills/ship/SKILL.md")
         row.classify_core_gap()
         row.mark_ticketed("https://github.com/souliane/teatree/pull/9100")
-        host = MagicMock(spec=CodeHostBackend)
+        host = claims_self(MagicMock(spec=CodeHostBackend))
         host.get_issue.side_effect = AssertionError("the injected predicate must not round-trip the forge")
         retired = retire_resolved_memories(host, is_resolved=lambda _row: True)
         assert len(retired) == 1
@@ -477,26 +385,26 @@ class RetroFindingSharesTheRetirementPathTestCase(TestCase):
     driven by the umbrella reconciler, with no retro-specific code in the path.
     """
 
-    def test_a_retro_finding_retires_when_its_fix_merges(self) -> None:
+    def test_a_retro_finding_retires_when_the_host_it_was_folded_into_merges(self) -> None:
         rule = "Run the tree-wide health gate before any push."
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         row = record_finding(
             rule=rule, citation="pushed without running the gate, CI went red", destination="skills/ship/SKILL.md"
         )
-        promote_finding(_fake_host(), rule=rule, umbrella_url=UMBRELLA)
+        promote_finding(rule=rule, umbrella_url=UMBRELLA)
+        host = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/56")
+        forge = _stateful_forge()
+        attached = attach_dream_gaps(host, [{"gap_key": row.cluster_key}], umbrella=umbrella, code_host=forge)
+        assert attached.attached == [row.cluster_key]
 
-        ticket = Ticket.objects.get(extra__dream_gap_batch__0__cluster_key=row.cluster_key)
-        ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": [row.cluster_key]})
-        ticket.pull_requests.create(
+        record_gap_disposition(host, row.cluster_key, citation="the push gate now runs the lane")
+        host.pull_requests.create(
             url="https://github.com/souliane/teatree/pull/9100", repo="souliane/teatree", iid="9100", state="merged"
         )
-        ticket.state = Ticket.State.MERGED
-        ticket.save()
+        host.state = Ticket.State.MERGED
+        host.save()
 
-        body = f"## Open gaps\n- [ ] Workflow gap <!-- dream-gap {row.cluster_key} -->\n"
-        host = _fake_host(body=body)
-        host.get_issue.return_value = {"body": body, "state": "merged"}
-
-        assert len(bp_module.reconcile_batches(host, umbrella_url=UMBRELLA)) == 1
+        assert len(bp_module.reconcile_batches(forge, umbrella_url=UMBRELLA)) == 1
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 

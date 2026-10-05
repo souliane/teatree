@@ -31,14 +31,11 @@ never a deny:
 
 Scope: ONLY the live t3-master session (the session holding the ``t3-master``
 ``LoopLease``); a non-owner interactive session and every sub-agent pass
-untouched. Off-ramps (any one suppresses the nudge): a per-call
-``[orchestration-ok: <reason>]`` token (mirroring ``[fg-ok:]`` /
-``[skill-load-ok:]``) and the out-of-repo kill-switch ``[teatree]
-orchestrator_investigation_gate_enabled = false``.
+untouched. A per-call ``[orchestration-ok: <reason>]`` token suppresses the
+nudge for a genuine orchestration read.
 
 ``call_is_from_subagent`` / ``PYTEST_VERB_FINDER`` come from the shared
-``orchestration_boundary_signals`` leaf, ``teatree_bool_setting`` from
-``teatree_settings``, and ``bootstrap_teatree_django`` from ``django_bootstrap``
+``orchestration_boundary_signals`` leaf, and ``bootstrap_teatree_django`` from ``django_bootstrap``
 — all dependency-free leaves, so this module imports them at top level with no
 ``hook_router`` cycle.
 """
@@ -48,7 +45,6 @@ import sys
 
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
 from hooks.scripts.orchestration_boundary_signals import PYTEST_VERB_FINDER, call_is_from_subagent
-from hooks.scripts.teatree_settings import teatree_bool_setting
 
 # Alias both identities so the handler the router registers and a test patching a
 # helper here operate on ONE module object.
@@ -87,16 +83,6 @@ _ORCHESTRATOR_INVESTIGATION_BASH_RE = re.compile(
 _ORCHESTRATION_OK_RE = re.compile(r"\[orchestration-ok:\s*\S[^\]]*?\s*\]")
 
 _INVESTIGATION_EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
-
-
-def _orchestrator_investigation_gate_enabled() -> bool:
-    """Whether the t3-master investigation NUDGE is enabled (default True).
-
-    Reads the ``orchestrator_investigation_gate_enabled`` DB setting via the
-    shared bare-boolean reader: fails OPEN to enabled on a missing/broken row,
-    and only a stored ``false`` is the one-line out-of-repo kill-switch.
-    """
-    return teatree_bool_setting("orchestrator_investigation_gate_enabled", default=True)
 
 
 def _session_is_loop_owner(session_id: str) -> bool:
@@ -176,12 +162,8 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
     returns ``False`` (the call proceeds). A warn is the only never-lockout-safe
     enforcement for a boundary this broad. Off-ramps that suppress the nudge: it
     fires ONLY for the live t3-master session (not sub-agents, not a non-owner
-    interactive session); a per-call ``[orchestration-ok: <reason>]`` token; and
-    the out-of-repo kill-switch ``[teatree]
-    orchestrator_investigation_gate_enabled = false``.
+    interactive session); a per-call ``[orchestration-ok: <reason>]`` token.
     """
-    if not _orchestrator_investigation_gate_enabled():
-        return False
     if call_is_from_subagent(data):
         return False
     signal = _investigation_signal(data)
@@ -199,8 +181,6 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
         "archaeology, and test runs belong in a sub-agent in a worktree "
         "(background if >~30s). Dispatch one (Task/Agent, run_in_background) "
         "instead of doing the work inline. If this IS genuine orchestration, add "
-        "`[orchestration-ok: <reason>]` to suppress this nudge; to disable the "
-        "nudge entirely run `t3 <overlay> config_setting set "
-        "orchestrator_investigation_gate_enabled false`.\n"
+        "`[orchestration-ok: <reason>]` to suppress this nudge.\n"
     )
     return False

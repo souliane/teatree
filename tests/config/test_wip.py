@@ -34,21 +34,8 @@ class TestWipParse:
     def test_parse_is_case_insensitive_and_strips(self) -> None:
         assert Wip.parse("  FULL ") is Wip.FULL
 
-    def test_alias_low_maps_to_slow(self) -> None:
-        assert Wip.parse("low") is Wip.SLOW
-
-    def test_alias_normal_maps_to_medium(self) -> None:
-        assert Wip.parse("normal") is Wip.MEDIUM
-
-    def test_alias_high_maps_to_full(self) -> None:
-        assert Wip.parse("high") is Wip.FULL
-
     def test_parse_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid wip"):
-            Wip.parse("ludicrous")
-
-    def test_invalid_message_lists_values_and_aliases(self) -> None:
-        with pytest.raises(ValueError, match="aliases: high, low, normal"):
             Wip.parse("ludicrous")
 
     def test_tier_ordering_slow_medium_full_boost(self) -> None:
@@ -74,10 +61,6 @@ class TestWipDbResolution(TestCase):
         ConfigSetting.objects.set_value("wip", "full")
         assert get_effective_settings().wip is Wip.FULL
 
-    def test_global_db_alias_high_is_full(self) -> None:
-        ConfigSetting.objects.set_value("wip", "high")
-        assert get_effective_settings().wip is Wip.FULL
-
     def test_corrupt_db_value_raises_loud_on_read(self) -> None:
         # An out-of-band corrupt row (the write path validates, so this can only
         # exist via a direct ORM write) raises LOUD on read, never silently.
@@ -97,10 +80,6 @@ class TestWipDbResolution(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
         self.monkeypatch.setenv("T3_WIP", "slow")
         assert get_effective_settings().wip is Wip.SLOW
-
-    def test_env_alias_resolves(self) -> None:
-        self.monkeypatch.setenv("T3_WIP", "high")
-        assert get_effective_settings().wip is Wip.FULL
 
     def test_one_overlay_wip_does_not_leak_to_another(self) -> None:
         ConfigSetting.objects.set_value("wip", "boost", scope="fast")

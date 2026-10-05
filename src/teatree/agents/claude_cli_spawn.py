@@ -47,6 +47,15 @@ _PROMPT_FILE_PREFIX = "t3-system-prompt-"
 _PROMPT_FILE_SUFFIX = ".md"
 
 
+_ACCOUNT_SYNC_OFF = {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}
+
+
+def with_account_skills_off(options: ClaudeAgentOptions) -> ClaudeAgentOptions:
+    # Only --settings scopes these to one invocation; in user settings they trash the synced content everywhere.
+    settings = json.loads(options.settings or "{}")
+    return replace(options, settings=json.dumps({**settings, **_ACCOUNT_SYNC_OFF}))
+
+
 def _preset_append(options: ClaudeAgentOptions) -> str:
     prompt = options.system_prompt
     if isinstance(prompt, dict) and prompt.get("type") == "preset":
@@ -61,13 +70,13 @@ def _without_append(prompt: SystemPromptPreset) -> SystemPromptPreset:
 
 @contextmanager
 def prepared_spawn(options: ClaudeAgentOptions) -> Iterator[ClaudeAgentOptions]:
-    """Yield *options* with the system-prompt append moved off argv into a temp file.
+    """Yield *options* with the account skills off and the system-prompt append moved into a temp file.
 
-    A no-op yield of the original *options* when there is no preset append to move
-    (an inline-string prompt, a file prompt, a resumed spawn with none) — those carry
-    no teatree-grown argv element, so rewriting them would change a transport that
-    is not implicated.
+    The prompt is left in place when there is no preset append to move (an inline-string
+    prompt, a file prompt, a resumed spawn with none) — those carry no teatree-grown argv
+    element, so rewriting them would change a transport that is not implicated.
     """
+    options = with_account_skills_off(options)
     append = _preset_append(options)
     if not append:
         yield options

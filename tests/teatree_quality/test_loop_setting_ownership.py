@@ -54,10 +54,10 @@ class TestAKeyReadInsideOneLoopIsThatLoops:
             tmp_path,
             {
                 "loops/dream/loop.py": "MINI_LOOP = 1\n",
-                "loops/dream/pass_config.py": "def phases(settings):\n    return settings.dream_merge\n",
+                "loops/dream/pass_config.py": "def phases(settings):\n    return settings.synthetic_dream_setting\n",
             },
         )
-        assert loop_owned_settings(source, ["dream_merge"]) == {"dream_merge": "dream"}
+        assert loop_owned_settings(source, ["synthetic_dream_setting"]) == {"synthetic_dream_setting": "dream"}
 
     def test_a_factory_the_loop_imports_at_tick_time_is_the_loops_code(self, tmp_path: Path) -> None:
         source = _tree(
@@ -139,10 +139,10 @@ class TestAKeyTwoConcernsReadIsNobodys:
             {
                 "loops/dream/loop.py": _READS_SHARED_GATE,
                 "loops/news/loop.py": _READS_SHARED_GATE,
-                "loop/shared_gate.py": "def armed():\n    return settings.send_proxy_mode\n",
+                "loop/shared_gate.py": "def armed():\n    return settings.require_human_approval_to_merge\n",
             },
         )
-        assert loop_owned_settings(source, ["send_proxy_mode"]) == {}
+        assert loop_owned_settings(source, ["require_human_approval_to_merge"]) == {}
 
     def test_a_read_outside_the_loop_layer_disqualifies_the_key(self, tmp_path: Path) -> None:
         source = _tree(
@@ -158,31 +158,31 @@ class TestAKeyTwoConcernsReadIsNobodys:
         source = _tree(
             tmp_path,
             {
-                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.dream_merge\n",
-                "config/settings.py": "class UserSettings:\n    dream_merge: bool = True\n",
+                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.synthetic_dream_setting\n",
+                "config/settings.py": "class UserSettings:\n    synthetic_dream_setting: bool = True\n",
             },
         )
-        assert loop_owned_settings(source, ["dream_merge"]) == {"dream_merge": "dream"}
+        assert loop_owned_settings(source, ["synthetic_dream_setting"]) == {"synthetic_dream_setting": "dream"}
 
     def test_a_migration_naming_a_key_is_frozen_history_not_a_consumer(self, tmp_path: Path) -> None:
         source = _tree(
             tmp_path,
             {
-                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.dream_merge\n",
-                "core/migrations/0001_initial.py": 'KEYS = ["dream_merge"]\n',
+                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.synthetic_dream_setting\n",
+                "core/migrations/0001_initial.py": 'KEYS = ["synthetic_dream_setting"]\n',
             },
         )
-        assert loop_owned_settings(source, ["dream_merge"]) == {"dream_merge": "dream"}
+        assert loop_owned_settings(source, ["synthetic_dream_setting"]) == {"synthetic_dream_setting": "dream"}
 
     def test_a_comment_mentioning_a_key_is_not_a_read(self, tmp_path: Path) -> None:
         source = _tree(
             tmp_path,
             {
-                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.dream_merge\n",
-                "core/notes.py": "# dream_merge is described here but never read\nVALUE = 1\n",
+                "loops/dream/loop.py": "def _build_jobs(**_):\n    return settings.synthetic_dream_setting\n",
+                "core/notes.py": "# synthetic_dream_setting is described here but never read\nVALUE = 1\n",
             },
         )
-        assert loop_owned_settings(source, ["dream_merge"]) == {"dream_merge": "dream"}
+        assert loop_owned_settings(source, ["synthetic_dream_setting"]) == {"synthetic_dream_setting": "dream"}
 
 
 class TestTheIndexReportsTheLoopsItFound:

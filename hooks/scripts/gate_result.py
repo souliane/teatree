@@ -33,7 +33,8 @@ emits (:func:`announce_cannot_evaluate`), so the allowance is one knob shared by
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib and
-the stdlib-only ``teatree_settings`` sibling (whose DB read is itself lazy).
+the stdlib-only ``teatree_settings`` (whose DB read is itself lazy), ``hook_budget``
+and ``t3_invocation`` siblings.
 """
 
 import sys
@@ -41,6 +42,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from hooks.scripts.hook_budget import HOOK_CEILING_S, NO_TIME_LEFT, remaining_timeout_s
+from hooks.scripts.t3_invocation import CompletedProcess, NoTimeLeft, TimeoutExpired, run_t3
 from hooks.scripts.teatree_settings import teatree_int_setting
 
 _TRACEBACK_SIGNATURE = "Traceback (most recent call last):"
@@ -61,13 +64,33 @@ def validator_timeout_seconds() -> int:
     )
 
 
-def _warn_validator_timed_out(gate: str, allowance_seconds: int) -> None:
+def run_validator(
+    argv: list[str], *, stdin_text: str
+) -> "CompletedProcess[str] | ValidatorTimedOut | GateSkipped | None":
+    """Run a ``t3`` validator within its allowance and the hook budget left; ``None`` when there is no ``t3``."""
+    try:
+        return run_t3(argv, timeout=validator_timeout_seconds(), stdin_text=stdin_text, budget=remaining_timeout_s)
+    except NoTimeLeft:
+        return GateSkipped(reason=NO_TIME_LEFT)
+    except TimeoutExpired as expired:
+        return ValidatorTimedOut(allowance_seconds=float(expired.timeout))
+    except FileNotFoundError:
+        return None
+
+
+def _warn_validator_timed_out(gate: str, allowance_seconds: float) -> None:
     """Emit the one loud line that keeps a timeout distinguishable from a rejection."""
+    configured = validator_timeout_seconds()
+    remedy = (
+        f"The hook's {HOOK_CEILING_S}s ceiling cut it off before its {configured}s allowance, so raising "
+        "hook_validator_timeout_seconds would not help."
+        if allowance_seconds < configured
+        else "Raise the allowance with `t3 <overlay> config_setting set hook_validator_timeout_seconds <seconds>`."
+    )
     sys.stderr.write(
-        f"NOTE: the {gate} validator did not finish within its {allowance_seconds}s "
-        "allowance (CANNOT_EVALUATE — a timeout is not a verdict on the content) — "
-        "allowing the call to proceed (fail-open-with-warn). Raise the allowance with "
-        "`t3 <overlay> config_setting set hook_validator_timeout_seconds <seconds>`. "
+        f"NOTE: the {gate} validator did not finish within the {allowance_seconds:g}s it was given "
+        "(CANNOT_EVALUATE — a timeout is not a verdict on the content) — "
+        f"allowing the call to proceed (fail-open-with-warn). {remedy} "
         "The remote CI job remains the backstop.\n"
     )
 
@@ -83,7 +106,7 @@ class ValidatorTimedOut:
     the warn names the budget the caller actually gave it.
     """
 
-    allowance_seconds: int
+    allowance_seconds: float
 
 
 @dataclass(frozen=True)
@@ -143,8 +166,8 @@ def announce_cannot_evaluate(gate: str, marker: "ValidatorTimedOut | GateSkipped
 class CompletedRun(Protocol):
     """The structural slice of ``subprocess.CompletedProcess`` a verdict needs.
 
-    Typed as a Protocol so this cold-hook leaf never imports ``subprocess`` (it
-    spawns no process): a real ``CompletedProcess[str]`` satisfies it structurally.
+    Typed as a Protocol so a verdict reads a finished run without depending on
+    ``subprocess``'s concrete type: a real ``CompletedProcess[str]`` satisfies it structurally.
     The members are read-only (``@property``) so a concrete ``stdout: str`` matches
     the ``str | None`` slot covariantly.
     """

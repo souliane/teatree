@@ -29,7 +29,7 @@ _VALID: set[str] = {
     "t3 teatree workspace ticket",
     "t3 loop",
     "t3 loop tick",
-    "t3 loop enable",
+    "t3 loop resume",
     "t3 loop disable",
     "t3 eval",
     "t3 eval coverage",
@@ -91,7 +91,7 @@ class TestIterBacktickedCommands:
 
 class TestExpandAlternations:
     def test_pipe_and_slash_enumerations_become_one_variant_each(self) -> None:
-        assert expand_alternations("t3 loop enable/disable") == ["t3 loop enable", "t3 loop disable"]
+        assert expand_alternations("t3 loop resume/disable") == ["t3 loop resume", "t3 loop disable"]
         assert expand_alternations("t3 prompts list|render") == ["t3 prompts list", "t3 prompts render"]
 
     def test_a_plain_command_is_its_own_only_variant(self) -> None:
@@ -227,10 +227,10 @@ class TestWidenedCorpus:
         assert report.checked == 0
 
     def test_each_alternative_of_an_enumeration_is_walked(self, tmp_path: Path) -> None:
-        _doc(tmp_path, "BLUEPRINT.md", "Control with `t3 loop enable/disable` or `t3 loop enable/frobnicate`.")
+        _doc(tmp_path, "BLUEPRINT.md", "Control with `t3 loop resume/disable` or `t3 loop resume/frobnicate`.")
         report = validate_doc_commands(_VALID, _GROUPS, repo_root=tmp_path)
         assert not report.ok
-        assert [v.command for v in report.violations] == ["t3 loop enable/frobnicate"]
+        assert [v.command for v in report.violations] == ["t3 loop resume/frobnicate"]
 
 
 class TestAllowlist:

@@ -68,22 +68,24 @@ class TestSeamBindsTheServiceToTheTargetRepo:
             "allow_bloat": False,
         }
 
-    def test_post_draft_note_builds_a_service_scoped_to_the_posted_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_draft_post_builds_a_service_scoped_to_the_posted_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         captured: dict[str, object] = {}
 
         def _record(self: ReviewService, repo: str, mr: int, note: str, **kwargs: object) -> tuple[str, int]:
-            del kwargs
-            captured.update(token=self.token, bound_repo=self.repo, posted_repo=repo, mr=mr, note=note)
+            captured.update(token=self.token, bound_repo=self.repo, posted_repo=repo, mr=mr, note=note, **kwargs)
             return "OK draft_note_id=9", 0
 
-        monkeypatch.setattr(ReviewService, "post_draft_note", _record)
-        message, code = review_seam.review_post_seam("acme/alpha").post_draft_note(
+        monkeypatch.setattr(ReviewService, "post_comment", _record)
+        message, code = review_seam.review_post_seam("acme/alpha").post_comment(
             "acme/alpha", 7, SeamNote(note="nit: naming")
         )
 
         assert (message, code) == ("OK draft_note_id=9", 0)
         assert captured["token"] == "glpat-ALPHA"
         assert captured["bound_repo"] == "acme/alpha"
+        assert captured["live"] is False
 
     def test_two_posts_to_different_repos_each_get_their_own_overlay_credential(
         self, monkeypatch: pytest.MonkeyPatch
@@ -95,9 +97,9 @@ class TestSeamBindsTheServiceToTheTargetRepo:
             seen.append((repo, self.token))
             return "OK draft_note_id=9", 0
 
-        monkeypatch.setattr(ReviewService, "post_draft_note", _record)
-        review_seam.review_post_seam("acme/alpha").post_draft_note("acme/alpha", 1, SeamNote(note="nit: naming"))
-        review_seam.review_post_seam("acme/bravo").post_draft_note("acme/bravo", 2, SeamNote(note="nit: naming"))
+        monkeypatch.setattr(ReviewService, "post_comment", _record)
+        review_seam.review_post_seam("acme/alpha").post_comment("acme/alpha", 1, SeamNote(note="nit: naming"))
+        review_seam.review_post_seam("acme/bravo").post_comment("acme/bravo", 2, SeamNote(note="nit: naming"))
 
         # ``bravo`` holds no credential, so its posts carry none — the point is that
         # each call reads from ITS repo's overlay, not from one process-wide guess.
@@ -123,7 +125,7 @@ class TestTheSeamCarriesTheAnchorToTheService:
 
         assert (captured["file"], captured["line"]) == ("src/a.py", 42)
 
-    def test_post_draft_note_lands_the_anchor_as_file_and_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_draft_post_lands_the_anchor_as_file_and_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
         def _record(self: ReviewService, repo: str, mr: int, note: str, **kwargs: object) -> tuple[str, int]:
@@ -131,12 +133,13 @@ class TestTheSeamCarriesTheAnchorToTheService:
             captured.update(kwargs)
             return "OK draft_note_id=9", 0
 
-        monkeypatch.setattr(ReviewService, "post_draft_note", _record)
-        review_seam.review_post_seam("acme/alpha").post_draft_note(
+        monkeypatch.setattr(ReviewService, "post_comment", _record)
+        review_seam.review_post_seam("acme/alpha").post_comment(
             "acme/alpha", 7, SeamNote(note="nit: naming", anchor=("src/b.py", 3))
         )
 
         assert (captured["file"], captured["line"]) == ("src/b.py", 3)
+        assert captured["live"] is False
 
     def test_the_batch_lands_every_anchor_as_file_and_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[InlineNote] = []

@@ -7,7 +7,7 @@ in a shared module with no other consumer.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
@@ -19,14 +19,17 @@ from teatree.core.management.commands._test_plan.render import (
     parse_state_blob,
     render_ticket_marker,
 )
+from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.send_proxy import route_forge_write
+from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.types import RawAPIDict
+from teatree.utils.url_slug import project_slug_from_ref
 
 __all__ = ["ExistingNote", "MrTestPlanPost", "TestPlanMediaError", "find_existing_note", "post_mr_test_plan_comment"]
 
@@ -179,10 +182,17 @@ def post_mr_test_plan_comment(
         :func:`find_existing_note`), never a naive ``"## Test Plan" in body`` scan
         that could clobber a colleague's comment.
 
-    The overlay's CI project path is a bare slug, so ``forge`` is left
-    unqualified in the forge-write call: the leak gate then fails CLOSED (scans)
-    on an unknown host rather than skipping the scan.
+    The overlay's CI project path is a bare slug. Resolve its forge from the
+    running clone or declared repository scope when either names it; an
+    unresolved slug remains unqualified and the leak gate scans it.
     """
+    repo = project_slug_from_ref(post.repo) or post.repo.strip().strip("/")
+    if "/" in repo and repo.split("/", 1)[0] in {"github.com", "gitlab.com"}:
+        repo = repo.split("/", 1)[1]
+    if "/" not in repo or "://" in repo:
+        msg = f"test-plan destination must be owner/repo, got {post.repo!r}"
+        raise OutboundBlockedError(msg)
+    post = replace(post, repo=repo)
     target = post.target
     # Peek (non-consuming) so an unapproved post refuses BEFORE any upload or
     # other host side effect; the consume happens atomically with the post below.
@@ -197,7 +207,20 @@ def post_mr_test_plan_comment(
     note_body = _render_mr_note_body(title=post.title, body=post.body, embeds=embeds, marker_id=target)
     check_blocked_body_from_config(note_body, target)
     # The shared forge-write seam (public-repo leak gate + #117 send-proxy) — same seam the MCP tools use.
-    note_body = route_forge_write(forge="", repo=post.repo, text=note_body, action=_MR_ON_BEHALF_ACTION, target=target)
+    try:
+        forge = forge_for_repo_slug(post.repo)
+    except MergePreconditionError:
+        # Conflicting host declarations do not authorize either forge. The
+        # unqualified channel keeps the leak scan active and needs an explicit
+        # ``other:<repo>`` destination grant before this post can land.
+        forge = ""
+    note_body = route_forge_write(
+        forge=forge,
+        repo=post.repo,
+        text=note_body,
+        action=_MR_ON_BEHALF_ACTION,
+        target=target,
+    )
 
     existing = find_existing_note(host.list_pr_comments(repo=post.repo, pr_iid=post.mr_iid), ticket_id=target)
     match_id = existing.comment_id if existing else None

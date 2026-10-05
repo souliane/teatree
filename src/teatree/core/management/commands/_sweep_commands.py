@@ -16,16 +16,34 @@ scanner that runs unattended are literally the same reconciliation path (#3841).
 """
 
 import logging
-from typing import Annotated, TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Ticket
+from teatree.core.machine_output import emit
+from teatree.core.models import Ticket, TicketSweepRun
 from teatree.loop.scanners.board_reconcile import DEFAULT_PROBE_BUDGET, reconcile_board
 from teatree.loop.scanners.board_reconcile_report import BoardTransition
 
 logger = logging.getLogger(__name__)
+
+
+class SweepRunResult(TypedDict, total=False):
+    run_id: str
+    source: str
+    changed_count: int
+    examined_count: int
+    external_skipped_count: int
+    finished: bool
+    error: str
+
+
+class SweepTrendResult(TypedDict, total=False):
+    latest_changed_count: int
+    recent_changed_counts: list[int]
+    zero_streak: int
+    incomplete_runs: list[str]
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -59,6 +77,122 @@ class SweepCommands(TyperCommand):
         for line in report.lines():
             self.stdout.write(line)
         return list(report.transitions)
+
+    @command(name="sweep-begin")
+    def sweep_begin(
+        self,
+        *,
+        source: Annotated[str, typer.Option(help="Who is sweeping: interactive or loop.")] = "interactive",
+        overlay: Annotated[str, typer.Option(help="Overlay this sweep covers.")] = "",
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the typed result as JSON on stdout.")] = False,
+    ) -> None:
+        """Open a ticket-hygiene sweep run and print its id (#162 Rule 4).
+
+        Pass the printed ``run_id`` to every ``ticket comment`` the sweep makes,
+        so each fold is attributed and the changed-ticket count is measured
+        rather than reported. The run also makes the sweep's zero-comment
+        invariant enforceable: with a run id set, every comment purpose is
+        refused below the skill.
+        """
+        payload: SweepRunResult
+        try:
+            run = TicketSweepRun.objects.begin(source=source, overlay=overlay)
+        except ValueError as exc:
+            payload = {"error": str(exc)}
+            human = ""
+        else:
+            payload = {"run_id": run.run_id, "source": run.source, "finished": False}
+            human = run.run_id
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
+        if "error" in payload:
+            raise SystemExit(1)
+
+    @command(name="sweep-finish")
+    def sweep_finish(
+        self,
+        run_id: str,
+        *,
+        examined: Annotated[int, typer.Option(help="How many tickets the sweep looked at.")] = 0,
+        external_skipped: Annotated[int, typer.Option(help="Tickets skipped as externally authored.")] = 0,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the typed result as JSON on stdout.")] = False,
+    ) -> None:
+        """Close a sweep run, persisting its changed-ticket count — zero included.
+
+        A sweep that changed nothing MUST still finish: without the row, a
+        healthy factory and a sweep that never ran are indistinguishable, and
+        the trend rule 4 asks for cannot be read.
+        """
+        payload: SweepRunResult
+        try:
+            run = TicketSweepRun.objects.finish(
+                run_id=run_id, examined_count=examined, external_skipped_count=external_skipped
+            )
+        except (TicketSweepRun.DoesNotExist, ValueError) as exc:
+            payload = {"error": f"sweep-finish refused: {exc}"}
+            human = ""
+        else:
+            payload = {
+                "run_id": run.run_id,
+                "source": run.source,
+                "changed_count": run.changed_count,
+                "examined_count": run.examined_count,
+                "external_skipped_count": run.external_skipped_count,
+                "finished": True,
+            }
+            human = f"  run {run.run_id}: changed {run.changed_count} of {run.examined_count} examined"
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=human,
+        )
+        if "error" in payload:
+            raise SystemExit(1)
+
+    @command(name="sweep-trend")
+    def sweep_trend(
+        self,
+        *,
+        limit: Annotated[int, typer.Option(help="How many finished runs to report.")] = 10,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit the typed result as JSON on stdout.")] = False,
+    ) -> None:
+        """Report the changed-ticket count series, the zero streak, and any unfinished runs."""
+        recent = list(TicketSweepRun.objects.recent(limit=limit))
+        counts = [run.changed_count for run in recent]
+        incomplete = [run.run_id for run in TicketSweepRun.objects.incomplete()]
+        zero_streak = TicketSweepRun.objects.zero_streak()
+        payload: SweepTrendResult = {
+            "latest_changed_count": counts[0] if counts else 0,
+            "recent_changed_counts": counts,
+            "zero_streak": zero_streak,
+            "incomplete_runs": incomplete,
+        }
+
+        def _human(stream: IO[str]) -> None:
+            stream.write(f"  recent changed counts (newest first): {counts or '(none)'}\n")
+            stream.write(f"  zero streak: {zero_streak}\n")
+            if incomplete:
+                stream.write(f"  unfinished runs: {', '.join(incomplete)}\n")
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=_human,
+        )
 
     @command()
     def reconcile_overlay(

@@ -1,7 +1,7 @@
 """Author-marked TODO/FIXME anchor gate (souliane/teatree#1186).
 
 When a reviewer posts a blocker-shaped comment via `t3 review post-comment`
-or `post-draft-note` anchored to (or within ±3 lines of) an author-marked
+or `post-comment` anchored to (or within ±3 lines of) an author-marked
 TODO/FIXME/XXX/HACK on an added line, the gate refuses the post. The
 author has already documented the work is deferred ("not in this MR" /
 "follow-up" / "deferred" / "implement later" / "out of scope"); re-asking
