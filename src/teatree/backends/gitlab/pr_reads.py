@@ -12,7 +12,10 @@ import logging
 from collections.abc import Callable
 from urllib.parse import quote_plus, urlencode
 
+import httpx
+
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 
@@ -87,6 +90,7 @@ def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:
         "path_with_namespace": project.path_with_namespace,
         "short_name": project.short_name,
         "default_branch": project.default_branch,
+        "allow_merge_on_skipped_pipeline": project.allow_merge_on_skipped_pipeline,
     }
 
 
@@ -145,3 +149,30 @@ def _first_open_mr_url(client: GitLabAPI, project: ProjectInfo, *, branch: str) 
         logger.warning("GitLab open-MR probe returned a row with no web_url for %s — UNKNOWN", branch)
         return None
     return url
+
+
+def enrich_mr_pipeline(client: GitLabAPI, mr: RawAPIDict) -> RawAPIDict:
+    """Fold the MR's latest pipeline into a global-listing row as ``head_pipeline``.
+
+    Any gap returns *mr* unchanged, so its CI reads UNKNOWN rather than a fabricated green.
+    """
+    project_id = mr.get("project_id")
+    iid = mr.get("iid")
+    if not isinstance(project_id, int) or not isinstance(iid, int):
+        return mr
+    try:
+        pipeline = client.get_mr_pipeline(project_id, iid)
+    except (BackendResolutionError, httpx.HTTPError, ValueError) as exc:
+        warn_throttled(
+            logger,
+            f"gitlab-mr-enrich-failed:{project_id}:{iid}",
+            "could not read the pipeline of MR %s!%s — its CI stays unknown: %s",
+            project_id,
+            iid,
+            exc,
+        )
+        return mr
+    status = pipeline.get("status")
+    if not status:
+        return mr
+    return {**mr, "head_pipeline": {"status": status, "web_url": pipeline.get("url") or ""}}

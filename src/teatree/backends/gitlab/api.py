@@ -87,11 +87,13 @@ class GitLabAPI(GitLabHTTPClient):
         if not isinstance(data, dict):
             return None
 
+        skipped_merges = data.get("allow_merge_on_skipped_pipeline")
         info = ProjectInfo(
             project_id=_as_int(data["id"]),
             path_with_namespace=str(data["path_with_namespace"]),
             short_name=str(data["path"]),
             default_branch=str(data.get("default_branch") or "main"),
+            allow_merge_on_skipped_pipeline=skipped_merges if isinstance(skipped_merges, bool) else None,
         )
         self._project_cache[repo_path] = info
         return info

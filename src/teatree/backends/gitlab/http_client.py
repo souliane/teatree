@@ -63,6 +63,7 @@ class ProjectInfo:
     path_with_namespace: str
     short_name: str
     default_branch: str = "main"
+    allow_merge_on_skipped_pipeline: bool | None = None
 
 
 class GitLabTokenCredential(Credential):

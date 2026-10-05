@@ -277,6 +277,7 @@ def _as_int(value: object) -> int:
 _PIPELINE_VERDICT: dict[str, CiVerdict] = {
     "green": CiVerdict.GREEN,
     "pending": CiVerdict.PENDING,
+    "skipped": CiVerdict.PENDING,
     "failed": CiVerdict.RED,
 }
 
