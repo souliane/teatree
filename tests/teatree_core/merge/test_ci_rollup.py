@@ -1233,7 +1233,7 @@ class TestFloorUnreadableFailsClosed:
 
 
 class TestGitlabPipelineClassification:
-    """F2.1: ONLY ``success`` is green; ``manual`` / ``skipped`` are pending (not-passed CI)."""
+    """F2.1: ONLY ``success`` is green; ``manual`` is pending and ``skipped`` is its own class (not-passed CI)."""
 
     def test_success_is_green(self) -> None:
         assert classify_gitlab_pipeline("success") == "green"
@@ -1243,9 +1243,8 @@ class TestGitlabPipelineClassification:
         # never merge a keystone MR as "all checks passed".
         assert classify_gitlab_pipeline("manual") == "pending"
 
-    def test_skipped_is_pending_not_green(self) -> None:
-        # A skipped required pipeline never ran — pending, not green.
-        assert classify_gitlab_pipeline("skipped") == "pending"
+    def test_skipped_is_its_own_terminal_class_never_green_never_pending(self) -> None:
+        assert classify_gitlab_pipeline("skipped") == "skipped"
 
     def test_running_is_pending(self) -> None:
         assert classify_gitlab_pipeline("running") == "pending"
@@ -1259,7 +1258,7 @@ class TestGitlabPipelineClassification:
     def test_case_insensitive_manual_is_pending(self) -> None:
         # The classifier lower-cases first, so a MANUAL/Manual status is still pending.
         assert classify_gitlab_pipeline("MANUAL") == "pending"
-        assert classify_gitlab_pipeline("Skipped") == "pending"
+        assert classify_gitlab_pipeline("Skipped") == "skipped"
 
 
 class TestRollupEntryTypename:

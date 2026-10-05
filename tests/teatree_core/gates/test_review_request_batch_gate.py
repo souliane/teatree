@@ -23,6 +23,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends.gitlab import GitLabCodeHost
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_batch_gate import (
     WORK_GROUP_MAX_MEMBERS,
@@ -41,6 +42,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.types import RawAPIDict
+from tests.teatree_backends._gitlab_wire import GitLabWire
 
 _GATE = "teatree.core.gates.review_request_batch_gate"
 _DRAFT_PROBE_FACTORY = "teatree.core.backend_factory.code_host_from_overlay"
@@ -195,6 +197,12 @@ class TestCiStateFailsClosed(TestCase):
 
     def test_control_green_ci_releases_the_same_group(self) -> None:
         host = _Host(mrs=[_mr(1, "feat(billing): add the sweep", ci="success")])
+        with _forge(host):
+            verdict = work_group_ready(mr_url=_url(1))
+        assert verdict.ready, verdict
+
+    def test_a_pipeline_whose_jobs_were_all_skipped_is_settled_and_releases_the_group(self) -> None:
+        host = _Host(mrs=[_mr(1, "feat(billing): add the sweep", ci="skipped")])
         with _forge(host):
             verdict = work_group_ready(mr_url=_url(1))
         assert verdict.ready, verdict
@@ -525,3 +533,59 @@ class TestCheckChokepoint(_ChokepointCase):
         assert result["reason"] == "work_group_not_ready"
         assert result["blockers"] == [f"{_url(2)}: draft"]
         assert ReviewRequestPost.objects.count() == 0
+
+
+class TestCheckReadsTheRealGitLabListing(_ChokepointCase):
+    """GitLab's global MR listing carries no pipeline field: the gate must see each MR's real pipeline."""
+
+    _HEAD = "a" * 40
+
+    @classmethod
+    def _gitlab(cls, pipeline_status: str, *, pipeline_sha: str = _HEAD) -> GitLabCodeHost:
+        return GitLabCodeHost(
+            client=GitLabWire(
+                {
+                    "user": {"username": "souliane"},
+                    "merge_requests": [
+                        {
+                            "iid": 1,
+                            "project_id": 42,
+                            "sha": cls._HEAD,
+                            "title": "feat(billing): add the sweep",
+                            "web_url": _url(1),
+                        },
+                    ],
+                    "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
+                    "projects/42/merge_requests/1": {"iid": 1, "draft": False},
+                    "projects/42/merge_requests/1/pipelines": [
+                        {"status": pipeline_status, "sha": pipeline_sha, "web_url": "https://p/1"}
+                    ],
+                }
+            )
+        )
+
+    def _check(self, host: GitLabCodeHost) -> dict[str, object]:
+        with (
+            _forge(host),
+            patch(f"{_CHECK_CMD}._owner_authorship", return_value=True),
+            patch(f"{_CHECK_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CHECK_CMD}.peek_should_post_review_request", return_value=GuardDecision(action="post")),
+        ):
+            return cast("dict[str, object]", call_command("review_request_check", "--mr-url", _url(1)))
+
+    def test_a_ready_gitlab_mr_is_not_refused_as_ci_unknown(self) -> None:
+        result = self._check(self._gitlab("success"))
+
+        assert result["action"] == "post", result
+
+    def test_control_a_running_pipeline_still_holds_the_group(self) -> None:
+        result = self._check(self._gitlab("running"))
+
+        assert result["reason"] == "work_group_not_ready", result
+        assert result["blockers"] == [f"{_url(1)}: ci_pending"]
+
+    def test_an_older_commits_green_pipeline_does_not_release_the_head(self) -> None:
+        result = self._check(self._gitlab("success", pipeline_sha="b" * 40))
+
+        assert result["reason"] == "work_group_not_ready", result
+        assert result["blockers"] == [f"{_url(1)}: ci_unknown"]
