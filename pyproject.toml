@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.161",
+  "claude-agent-sdk==0.2.163",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -173,7 +173,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.5.3",
+  "prek==0.5.4",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
