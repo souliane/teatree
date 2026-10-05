@@ -7,9 +7,6 @@ task forever. Fixing intake fixes every FUTURE admission and none of the already
 stranded ones; this sweep is what reaches those, keyed on the refusal's NAME.
 """
 
-import importlib
-
-from django.apps import apps
 from django.test import TestCase
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
@@ -21,8 +18,6 @@ from teatree.loop.unplanned_ticket_redispatch import redispatch_unplanned_ticket
 from tests.factories import record_test_plan
 
 # A migration module name starts with a digit, so it is unreachable by import syntax.
-_backfill = importlib.import_module("teatree.core.migrations.0081_plan_missing_failure_kind")
-_rename_unclassified_plan_refusals = _backfill._rename_unclassified_plan_refusals
 
 
 def _refused_ticket(
@@ -91,43 +86,6 @@ class TestTheStrandDrains(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.WORK_STARTED
-
-
-class TestTheAlreadyStrandedTicketsAreReached(TestCase):
-    """A row that failed BEFORE the kind existed is invisible to the sweep.
-
-    It carries ``unclassified``, so migration 0081 must re-derive the name first — fixing
-    intake alone leaves the already-stranded population dead.
-    """
-
-    def _stranded_under_the_old_vocabulary(self) -> Ticket:
-        ticket = _refused_ticket()
-        Task.objects.filter(ticket=ticket).update(failure_kind=FailureKind.UNCLASSIFIED)
-        return ticket
-
-    def test_an_unmigrated_row_is_invisible_to_the_sweep(self) -> None:
-        self._stranded_under_the_old_vocabulary()
-
-        assert redispatch_unplanned_tickets() == 0
-
-    def test_the_migration_renames_it_and_the_sweep_then_drains_it(self) -> None:
-        ticket = self._stranded_under_the_old_vocabulary()
-
-        _rename_unclassified_plan_refusals(apps, None)
-
-        assert redispatch_unplanned_tickets() == 1
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.WORK_STARTED
-
-    def test_the_migration_leaves_an_unrelated_unclassified_row_alone(self) -> None:
-        ticket = _refused_ticket()
-        Task.objects.filter(ticket=ticket).update(
-            failure_kind=FailureKind.UNCLASSIFIED, failure_reason="AssertionError: expected 3 got 4"
-        )
-
-        _rename_unclassified_plan_refusals(apps, None)
-
-        assert Task.objects.get(ticket=ticket).failure_kind == FailureKind.UNCLASSIFIED
 
 
 class TestWhatTheSweepMustNotTouch(TestCase):

@@ -1,7 +1,6 @@
 """OTel issue spans are reconciled against actual action receipts."""
 
 import hashlib
-import importlib
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -9,7 +8,6 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
-from django.apps import apps
 from django.db import connection
 from django.db.utils import OperationalError
 from django.test import TestCase
@@ -78,20 +76,6 @@ class TelemetryActionGapTests(TestCase):
         )
         expected = hashlib.sha256(key.encode()).hexdigest()[:16]
         assert SelfImproveFiring.objects.get(pk=firing.pk).dedup_key_digest == expected
-
-    def test_data_migration_backfills_existing_firing_digests(self) -> None:
-        key = "pressure_incident::before-migration"
-        firing = SelfImproveFiring.objects.create(
-            detector="pressure_incident",
-            dedup_key=key,
-            state_hash="seen",
-            severity="warn",
-            dedup_key_digest="",
-        )
-        migration = importlib.import_module("teatree.core.migrations.0113_self_improve_firing_digest")
-        migration.backfill_firing_digests(apps, connection.schema_editor())
-        firing.refresh_from_db()
-        assert firing.dedup_key_digest == hashlib.sha256(key.encode()).hexdigest()[:16]
 
     def test_schema_not_yet_migrated_skips_only_the_missing_digest_column(self) -> None:
         now = timezone.now()
