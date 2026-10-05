@@ -46,16 +46,19 @@ import re
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import TypedDict, cast
 
 from teatree.instance_id import instance_id
-from teatree.utils.git_run import git_env_without_overrides
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_allowed_to_fail, run_checked
+from teatree.utils.git_run import git_env_non_interactive
+from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 
 _REF_PREFIX = "refs/teatree/claims"
+#: ``wire.resolve_claim_repo`` only hands out a clone whose origin hosts the work item.
+_ORIGIN = "origin"
 
 
 class ClaimMeta(TypedDict):
@@ -81,7 +84,15 @@ DEFAULT_TTL_SECONDS = 14400.0
 # The commit that carries the claim metadata is authored under a fixed, repo-
 # independent identity so ``commit-tree`` never depends on the local repo's
 # ``user.*`` config being set.
-_CLAIM_IDENTITY = ("-c", "user.name=teatree-fleet-claim", "-c", "user.email=fleet-claim@teatree.local")
+# A GitHub noreply address, because the public-repo push gate refuses any other author/committer email.
+_CLAIM_IDENTITY = (
+    "-c",
+    "user.name=teatree-fleet-claim",
+    "-c",
+    "user.email=teatree-fleet-claim@users.noreply.github.com",  # privacy-scan:allow GitHub noreply claim identity
+)
+
+_NO_ENV: Mapping[str, str] = MappingProxyType({})
 
 _SLUG_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -156,30 +167,31 @@ def acquire(
     work_key: str,
     *,
     repo: str = ".",
-    remote: str = "origin",
     ttl_seconds: float = DEFAULT_TTL_SECONDS,
     now: float | None = None,
+    extra_env: Mapping[str, str] = _NO_ENV,
 ) -> Claim | None:
     """Create the claim ref for *work_key*, or return ``None`` if already held.
 
     Returns a :class:`Claim` when this instance created the ref (won the mutex),
     ``None`` when the ref already exists (someone else holds it — a live holder,
     or an expired one to be reclaimed via :func:`steal_if_expired`). Raises
-    :class:`FleetClaimUnavailableError` when the remote is unreachable.
+    :class:`FleetClaimUnavailableError` when the remote is unreachable or refuses
+    the push, carrying git's output with every *extra_env* value redacted.
     """
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
     inst = instance_id()
-    with _ephemeral_odb(repo, remote) as scope:
+    with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
         sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
-        created = _try_create(scope, sha, ref)
-    if created:
+        push = _try_create(scope, sha, ref)
+    if push.returncode == 0:
         return Claim(work_key=work_key, ref=ref, sha=sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
     # The create failed. A present ref means a rival holds it (a normal loss);
     # an absent ref means the push failed for an infra/permission reason.
-    if _ls_remote_sha(repo, remote, ref):
+    if _ls_remote_sha(repo, _ORIGIN, ref, extra_env):
         return None
-    msg = f"claim push for {ref} failed but the ref is absent (remote unreachable or unwritable)"
+    msg = f"claim push for {ref} was refused and the ref is absent: {_redacted_output(push, extra_env)}"
     raise FleetClaimUnavailableError(msg)
 
 
@@ -187,9 +199,9 @@ def steal_if_expired(
     work_key: str,
     *,
     repo: str = ".",
-    remote: str = "origin",
     ttl_seconds: float = DEFAULT_TTL_SECONDS,
     now: float | None = None,
+    extra_env: Mapping[str, str] = _NO_ENV,
 ) -> Claim | None:
     """Reclaim an EXPIRED claim via CAS against the expired sha; else ``None``.
 
@@ -201,25 +213,31 @@ def steal_if_expired(
     """
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
-    snapshot = _fetch_claim(repo, remote, ref)
+    snapshot = _fetch_claim(repo, _ORIGIN, ref, extra_env)
     if snapshot is None:
         return None
     current_sha, meta = snapshot
     if not _is_expired(meta, ts):
         return None
     inst = instance_id()
-    with _ephemeral_odb(repo, remote) as scope:
+    with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
         new_sha = _write_claim_commit(scope, _meta(work_key, inst, ts, ttl_seconds))
-        won = _cas(scope, ref, old_sha=current_sha, new_sha=new_sha)
-    if won:
+        push = _cas(scope, ref, old_sha=current_sha, new_sha=new_sha)
+    if push.returncode == 0:
         return Claim(work_key=work_key, ref=ref, sha=new_sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
-    if _ls_remote_sha(repo, remote, ref) == current_sha:
-        msg = f"claim steal push for {ref} failed but the ref is unchanged (remote unwritable)"
+    if _ls_remote_sha(repo, _ORIGIN, ref, extra_env) == current_sha:
+        msg = f"claim steal push for {ref} was refused and the ref is unchanged: {_redacted_output(push, extra_env)}"
         raise FleetClaimUnavailableError(msg)
     return None
 
 
-def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: float | None = None) -> Claim | ClaimLost:
+def heartbeat(
+    claim: Claim,
+    *,
+    repo: str = ".",
+    now: float | None = None,
+    extra_env: Mapping[str, str] = _NO_ENV,
+) -> Claim | ClaimLost:
     """Re-point the ref to a fresh commit via CAS against the caller's OWN sha.
 
     Returns the refreshed :class:`Claim` when the CAS lands (the ref still held
@@ -233,14 +251,15 @@ def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: flo
     a rival's steal.
     """
     ts = _resolve_now(now)
-    with _ephemeral_odb(repo, remote) as scope:
+    with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
         new_sha = _write_claim_commit(scope, _meta(claim.work_key, claim.instance_id, ts, claim.ttl_seconds))
-        landed = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
-    if landed:
+        push = _cas(scope, claim.ref, old_sha=claim.sha, new_sha=new_sha)
+    if push.returncode == 0:
         return replace(claim, sha=new_sha, claimed_at=ts)
-    observed = _ls_remote_sha(repo, remote, claim.ref)
+    observed = _ls_remote_sha(repo, _ORIGIN, claim.ref, extra_env)
     if observed == claim.sha:
-        msg = f"heartbeat push for {claim.ref} failed but the ref still holds our sha (remote unwritable)"
+        refusal = _redacted_output(push, extra_env)
+        msg = f"heartbeat push for {claim.ref} was refused and the ref still holds our sha: {refusal}"
         raise FleetClaimUnavailableError(msg)
     return ClaimLost(
         work_key=claim.work_key,
@@ -250,7 +269,7 @@ def heartbeat(claim: Claim, *, repo: str = ".", remote: str = "origin", now: flo
     )
 
 
-def release(claim: Claim, *, repo: str = ".", remote: str = "origin") -> None:
+def release(claim: Claim, *, repo: str = ".", extra_env: Mapping[str, str] = _NO_ENV) -> None:
     """Best-effort delete of the claim ref, CAS-guarded against ``claim.sha``.
 
     The delete is a ``--force-with-lease`` against this instance's own sha, so a
@@ -259,10 +278,10 @@ def release(claim: Claim, *, repo: str = ".", remote: str = "origin") -> None:
     cleanup; the TTL is the real backstop.
     """
     with contextlib.suppress(Exception):
-        _cas_delete(repo, remote, claim.ref, old_sha=claim.sha)
+        _cas_delete(repo, _ORIGIN, claim.ref, old_sha=claim.sha, extra_env=extra_env)
 
 
-def is_held_by_me(work_key: str, claim: Claim, *, repo: str = ".", remote: str = "origin") -> bool:
+def is_held_by_me(work_key: str, claim: Claim, *, repo: str = ".", extra_env: Mapping[str, str] = _NO_ENV) -> bool:
     """THE fence: re-read the ref and return whether it still points at ``claim.sha``.
 
     ``False`` when the ref was stolen (its sha changed) or deleted. Raises
@@ -272,7 +291,7 @@ def is_held_by_me(work_key: str, claim: Claim, *, repo: str = ".", remote: str =
     """
     if not claim.sha:
         return False
-    return _ls_remote_sha(repo, remote, claim_ref(work_key)) == claim.sha
+    return _ls_remote_sha(repo, _ORIGIN, claim_ref(work_key), extra_env) == claim.sha
 
 
 def _resolve_now(now: float | None) -> float:
@@ -295,7 +314,19 @@ def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float) -> Cl
 def _git(repo: str, args: tuple[str, ...] | list[str], *, env: dict[str, str] | None = None) -> CompletedProcess[str]:
     # Every remote/read op tolerates a non-zero exit (the caller inspects the
     # returncode); the local claim-commit writes use run_checked directly.
-    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env or git_env_without_overrides())
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env or git_env_non_interactive())
+
+
+def _remote_env(extra_env: Mapping[str, str]) -> dict[str, str]:
+    return git_env_non_interactive() | dict(extra_env)
+
+
+def _redacted_output(result: CompletedProcess[str], extra_env: Mapping[str, str]) -> str:
+    # A refusing pre-push hook reports on stdout; git's own refusal is on stderr.
+    text = " ".join(f"{result.stdout} {result.stderr}".split())
+    for secret in filter(None, extra_env.values()):
+        text = text.replace(secret, "<redacted>")
+    return redact_secrets(text) or f"git exited {result.returncode} with no output"
 
 
 def _objects_dir(repo: str) -> str:
@@ -318,14 +349,14 @@ class _Scope:
 
 
 @contextlib.contextmanager
-def _ephemeral_odb(repo: str, remote: str) -> Iterator[_Scope]:
+def _ephemeral_odb(repo: str, remote: str, extra_env: Mapping[str, str]) -> Iterator[_Scope]:
     """A scope routing every object git WRITES during one claim op into a throwaway dir.
 
     The clone's real object DB is attached as a read-only alternate — push and
     fetch negotiation walk local refs, which resolve only through it — so the
     scope reads everything the clone has and contributes nothing back to it.
     """
-    env = git_env_without_overrides()
+    env = _remote_env(extra_env)
     alternate = _objects_dir(repo)
     with tempfile.TemporaryDirectory(prefix="t3-claim-odb-") as scratch:
         overrides = {"GIT_OBJECT_DIRECTORY": scratch, "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate}
@@ -350,34 +381,34 @@ def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
         raise FleetClaimUnavailableError(msg) from exc
 
 
-def _try_create(scope: _Scope, sha: str, ref: str) -> bool:
+def _try_create(scope: _Scope, sha: str, ref: str) -> CompletedProcess[str]:
     # Assumes each claim commit is unique (the nonce in _meta): so an existing ref
     # is never a fast-forward of this fresh commit, and a plain push succeeds ONLY
     # as a create — an idempotent "already there" success (two claimants, one sha)
     # cannot occur.
-    return _git(scope.repo, ["push", scope.remote, f"{sha}:{ref}"], env=scope.env).returncode == 0
+    return _git(scope.repo, ["push", scope.remote, f"{sha}:{ref}"], env=scope.env)
 
 
-def _cas(scope: _Scope, ref: str, *, old_sha: str, new_sha: str) -> bool:
+def _cas(scope: _Scope, ref: str, *, old_sha: str, new_sha: str) -> CompletedProcess[str]:
     args = ["push", f"--force-with-lease={ref}:{old_sha}", scope.remote, f"{new_sha}:{ref}"]
-    return _git(scope.repo, args, env=scope.env).returncode == 0
+    return _git(scope.repo, args, env=scope.env)
 
 
-def _cas_delete(repo: str, remote: str, ref: str, *, old_sha: str) -> bool:
+def _cas_delete(repo: str, remote: str, ref: str, *, old_sha: str, extra_env: Mapping[str, str]) -> bool:
     args = ["push", f"--force-with-lease={ref}:{old_sha}", remote, f":{ref}"]
-    return _git(repo, args).returncode == 0
+    return _git(repo, args, env=_remote_env(extra_env)).returncode == 0
 
 
-def _ls_remote_sha(repo: str, remote: str, ref: str) -> str:
-    result = _git(repo, ["ls-remote", remote, ref])
+def _ls_remote_sha(repo: str, remote: str, ref: str, extra_env: Mapping[str, str]) -> str:
+    result = _git(repo, ["ls-remote", remote, ref], env=_remote_env(extra_env))
     if result.returncode != 0:
-        msg = f"ls-remote {ref} failed (remote unreachable): {result.stderr.strip()}"
+        msg = f"ls-remote {ref} failed (remote unreachable): {_redacted_output(result, extra_env)}"
         raise FleetClaimUnavailableError(msg)
     line = result.stdout.strip()
     return line.split()[0] if line else ""
 
 
-def _fetch_claim(repo: str, remote: str, ref: str) -> tuple[str, ClaimMeta | None] | None:
+def _fetch_claim(repo: str, remote: str, ref: str, extra_env: Mapping[str, str]) -> tuple[str, ClaimMeta | None] | None:
     """Return the ref's current ``(sha, metadata)`` or ``None`` when absent.
 
     The commit is fetched into an ephemeral object dir with no destination
@@ -387,10 +418,10 @@ def _fetch_claim(repo: str, remote: str, ref: str) -> tuple[str, ClaimMeta | Non
     expiry decision; a ref that moved under us leaves that sha unfetched, the read
     fails, and the steal is skipped this round (fail-safe).
     """
-    tip = _ls_remote_sha(repo, remote, ref)
+    tip = _ls_remote_sha(repo, remote, ref, extra_env)
     if not tip:
         return None
-    with _ephemeral_odb(repo, remote) as scope:
+    with _ephemeral_odb(repo, remote, extra_env) as scope:
         fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", remote, ref]
         if _git(repo, fetch, env=scope.env).returncode != 0:
             msg = f"fetch {ref} failed (remote unreachable)"
