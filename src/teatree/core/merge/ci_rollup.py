@@ -216,7 +216,7 @@ class CodeHostQuery:
         newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
         superseded by a newer SUCCESS for the same name does not false-block. The
         required set is read BEFORE the rollup: a plan-restricted base is gated on its
-        Actions runs and never reads the rollup, which GitHub Free refuses there.
+        Actions runs and never reads the rollup, so a refused rollup read cannot block it.
 
         **GitLab** gates on the head pipeline's overall status (which aggregates the
         required jobs server-side); it needs the head SHA to pick the right
@@ -449,10 +449,10 @@ def _github_required_checks_verdict(backend: "CodeHostBackend", *, slug: str, pr
     BEFORE that extractor folds it into the same ``None`` a genuine transport
     failure produces — a repo on GitHub Free with no way to answer branch
     protection at all falls back to :func:`_github_actions_runs_verdict` instead of
-    refusing forever (issue #4844). That check runs before the rollup is read: the
-    same plan refuses the rollup read too, and the fallback never needs it. Every
-    other required-set answer still needs a readable rollup, so a refused one
-    there stays ``unreadable``.
+    refusing forever (issue #4844). That check runs before the rollup is read, which
+    the fallback never needs, so a refused rollup read cannot block it. Every other
+    required-set answer still needs a readable rollup, so a refused one there stays
+    ``unreadable``.
     """
     raw_required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
     if plan_restricted_no_protection(raw_required):
