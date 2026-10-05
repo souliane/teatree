@@ -93,9 +93,7 @@ class TestReviewRequestClaimConcurrent:
         canonical = canonical_mr_url(_MR_URL)
         alias = _make_alias(tmp_path)
         try:
-            assert ("core", "0102_review_request_post_overlay") in MigrationRecorder(
-                connections[alias]
-            ).applied_migrations()
+            assert ("core", "0001_squashed") in MigrationRecorder(connections[alias]).applied_migrations()
             outcomes = _run_two_claims(alias, canonical)
             rows = ReviewRequestPost.objects.using(alias).count()
         finally:

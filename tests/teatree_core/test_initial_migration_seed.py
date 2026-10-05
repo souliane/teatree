@@ -1,102 +1,84 @@
-"""The consolidated default-loops seed folded into the squashed ``0001_initial`` (#2652/#3071).
+"""The seed rows the squashed core migration carries, pinned against the shipped seed.
 
-The migration squash collapsed all of ``core`` to a single ``0001_initial`` and
-folded ONE consolidated default-loops seed into it as a ``RunPython`` — so a
-brand-new DB lands the canonical loop set the same way ``t3 setup`` seeds it. The
-single seed absorbs every fresh-install data effect the old 0001..0043 chain
-layered on: the loop rows, their descriptions (old 0009), ``colleague_facing``
-(old 0016), the ``directive_loop`` row (old 0035), and the sound-default ON-set
-(old 0043) — seeded directly ``enabled=default_enabled`` since a fresh DB carries
-no operator ``LoopState`` hold.
-
-A migration is frozen history and must not import the evolving
-:mod:`teatree.loops.seed` module, so the seed values are INLINED in the
-migration. :class:`InlinedSeedMatchesCanonicalSeed` pins those inlined constants
-against the canonical seed so the migrate-path and the install-seed cannot
-drift, and :class:`FreshMigrateSeedsDefaultLoops` proves a real migrate from
-``zero`` lands every default loop in its final shape — descriptions and
-``colleague_facing`` set, and exactly the sound operational-default set enabled.
+The core history was squashed into ONE migration (named on disk; read through
+``core_head_migration()`` so no test pins the name). Its last operation is a
+``RunPython`` that seeds exactly the rows a fresh history DB used to end with: the
+default loops, the ``arch_review`` prompt and the ``off`` preset. They are LITERALS
+(a migration is frozen history and imports nothing from teatree), dumped from a fresh
+history DB of the pre-squash head, so :class:`TestSeedLiteralsMatchTheShippedSeed`
+keeps them in lock-step with :mod:`teatree.loops.seed` (the install-time seed ``t3
+setup`` runs), and :class:`FreshMigrateSeedsDefaultLoops` proves a migrate from
+``zero`` lands them.
 """
 
 import importlib
 
 import pytest
+from django.apps import apps
 from django.core.management import call_command
+from django.db import connection
 from django.test import TransactionTestCase
 
-from teatree.core.models import Loop
-from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS
+from teatree.core.models import Loop, Mode, Prompt
+from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS, script_entry_point_for
+from tests.teatree_core._migration_graph import core_head_migration
 
-_migration = importlib.import_module("teatree.core.migrations.0001_initial")
-_squashed_migration = importlib.import_module("teatree.core.migrations.0001_squashed_0030")
-
+_migration = importlib.import_module(f"teatree.core.migrations.{core_head_migration()}")
+_LOOP_ROWS = {row["name"]: row for row in _migration._LOOP_ROWS}
 _COLLEAGUE_FACING = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.colleague_facing)
-_ISSUE_DISPOSITION_DESCRIPTION = (
-    "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, "
-    "only for t3-teatree owned repos; bounded per tick."
-)
 
 
-class TestInlinedSeedMatchesCanonicalSeed:
-    """The migration's inlined seed must not drift from ``teatree.loops.seed``."""
+class TestSeedLiteralsMatchTheShippedSeed:
+    """The migration's literals must not drift from ``teatree.loops.seed``."""
 
-    def test_inlined_loops_match_the_canonical_default_loops(self) -> None:
-        # Any add/remove/reorder/cadence/description/flag change to the canonical
-        # DEFAULT_LOOPS must be reflected in the migration's inlined snapshot —
-        # otherwise a fresh migrate and ``t3 setup`` would seed different loops.
-        expected = tuple(
-            (
-                spec.name,
+    def test_the_loop_rows_are_the_default_loops_in_order(self) -> None:
+        assert [row["name"] for row in _migration._LOOP_ROWS] == [spec.name for spec in DEFAULT_LOOPS]
+
+    def test_each_loop_row_carries_its_shipped_spec(self) -> None:
+        for spec in DEFAULT_LOOPS:
+            row = _LOOP_ROWS[spec.name]
+            assert (row["delay_seconds"], row["daily_at"], row["description"], row["colleague_facing"]) == (
                 spec.delay_seconds,
                 spec.daily_at,
-                spec.prompt_body,
                 spec.description,
                 spec.colleague_facing,
-            )
-            for spec in DEFAULT_LOOPS
-        )
-        issue_disposition = next(row for row in expected if row[0] == "issue_disposition")
-        assert issue_disposition[4] == _ISSUE_DISPOSITION_DESCRIPTION
-        assert expected == tuple(row[:6] for row in _migration._DEFAULT_LOOPS)
-        assert expected == tuple(row[:6] for row in _squashed_migration._DEFAULT_LOOPS), (
-            "Default-loops dataset drifted. The canonical set lives in FIVE places that must "
-            "stay in lock-step — edit all five:\n"
-            "  1. src/teatree/loops/seed.py            (DEFAULT_LOOPS — the canonical source)\n"
-            "  2. src/teatree/core/migrations/0001_initial.py  (_DEFAULT_LOOPS — inlined, frozen history)\n"
-            "  3. src/teatree/core/migrations/0001_squashed_0030.py  (_DEFAULT_LOOPS — frozen history)\n"
-            "  4. this pin (tests/teatree_core/test_initial_migration_seed.py)\n"
-            "  5. tests/conformance/test_registry_parity.py"
-        )
+            ), spec.name
+            if spec.is_prompt_backed:
+                assert (row["script"], row["prompt"]) == ("", spec.name)
+            else:
+                assert (row["script"], row["prompt"]) == (script_entry_point_for(spec.name), None)
 
-    def test_inlined_arch_review_body_matches_the_canonical_body(self) -> None:
-        assert _migration._ARCH_REVIEW_PROMPT_BODY == ARCH_REVIEW_PROMPT_BODY
+    def test_no_loop_row_carries_a_manual_override(self) -> None:
+        # ``Loop.enabled`` is the MANUAL override; whether a loop runs is the preset's answer.
+        assert {row["enabled"] for row in _migration._LOOP_ROWS} == {None}
+
+    def test_the_prompt_row_is_the_arch_review_body(self) -> None:
+        (prompt,) = _migration._PROMPT_ROWS
+        assert prompt["name"] == "arch_review"
+        assert prompt["body"] == ARCH_REVIEW_PROMPT_BODY
+        assert prompt["description"] == _LOOP_ROWS["arch_review"]["description"]
+
+    def test_the_off_preset_switches_every_default_loop_off(self) -> None:
+        (off,) = _migration._MODE_ROWS
+        assert off["name"] == "off"
+        assert off["entries"] == dict.fromkeys(sorted(spec.name for spec in DEFAULT_LOOPS), False)
 
 
-# ``setUp`` reverse-migrates ``core`` to ``zero`` then re-applies the full graph
-# on the shared ``default`` connection — several seconds single-core that
-# exceeds the global 60s ``pytest-timeout`` under maximum ``-n auto --cov
-# --doctest-modules`` parallel contention. Scoped bump for the
-# genuinely-slow migrations; the global 60s stays the hang-detector (#1189).
-# CI pytest-core, 54 runs 09-27..30: p50 141 s, peak 290 s, 11 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+# ``setUp`` reverse-migrates ``core`` to ``zero`` then re-applies it on the shared
+# ``default`` connection; scoped bump over the global 60s hang-detector (#1189).
 @pytest.mark.timeout(480)
 class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
-    """A migrate from ``zero`` re-runs the seed ``RunPython`` and lands the loops."""
+    """A migrate from ``zero`` runs the seed ``RunPython`` and lands the rows."""
 
     def setUp(self) -> None:
-        # Drop core to ``zero`` then re-apply ``0001_initial`` so the seed
-        # RunPython genuinely runs (anti-vacuous: the rows are created from
-        # scratch, not asserted against ambient migrate-time state). The
-        # cleanup restores the head schema for the rest of the session.
         call_command("migrate", "core", "zero", "--no-input", verbosity=0)
         self.addCleanup(call_command, "migrate", "core", "--no-input", verbosity=0)
         call_command("migrate", "core", "--no-input", verbosity=0)
 
     def test_seeds_every_default_loop_once(self) -> None:
-        assert Loop.objects.count() == len(DEFAULT_LOOPS)
+        assert sorted(Loop.objects.values_list("name", flat=True)) == sorted(spec.name for spec in DEFAULT_LOOPS)
 
     def test_a_migrated_box_carries_no_manual_override_on_any_loop(self) -> None:
-        # `Loop.enabled` is the MANUAL override slot, and a fresh box has taken no manual
-        # decision — whether a loop runs is the active preset's answer. The shipped
         assert not Loop.objects.exclude(enabled=None).exists()
 
     def test_seeds_colleague_facing_on_exactly_the_colleague_loops(self) -> None:
@@ -106,12 +88,9 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     def test_seeds_each_loop_description_from_the_canonical_seed(self) -> None:
         by_name = dict(Loop.objects.values_list("name", "description"))
         assert by_name == {spec.name: spec.description for spec in DEFAULT_LOOPS}
-        assert all(desc for desc in by_name.values())
+        assert all(by_name.values())
 
     def test_slack_answer_is_not_seeded(self) -> None:
-        # ``slack_answer`` has no registry MiniLoop (it runs only via its
-        # dedicated ``loop-slack-answer`` ``/loop`` slot); a seeded row would be
-        # an orphan the loop-table fan-out can never dispatch.
         assert not Loop.objects.filter(name="slack_answer").exists()
 
     def test_each_script_loop_points_at_its_own_module(self) -> None:
@@ -119,12 +98,19 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
             if spec.is_prompt_backed:
                 continue
             row = Loop.objects.get(name=spec.name)
-            assert row.script == f"src/teatree/loops/{spec.name}/loop.py"
+            assert row.script == script_entry_point_for(spec.name)
             assert row.prompt_id is None
 
     def test_arch_review_is_prompt_backed_with_the_review_skill_body(self) -> None:
         arch = Loop.objects.select_related("prompt").get(name="arch_review")
         assert arch.script == ""
-        assert arch.prompt_id is not None
-        assert "/t3:architectural-review" in arch.prompt.body
+        assert arch.prompt.body == ARCH_REVIEW_PROMPT_BODY
         assert arch.prompt.description == arch.description
+
+    def test_the_off_preset_is_seeded(self) -> None:
+        assert list(Mode.objects.values_list("name", flat=True)) == ["off"]
+
+    def test_the_seed_is_idempotent(self) -> None:
+        before = (Loop.objects.count(), Prompt.objects.count(), Mode.objects.count())
+        _migration._seed_defaults(apps, connection.schema_editor())
+        assert (Loop.objects.count(), Prompt.objects.count(), Mode.objects.count()) == before

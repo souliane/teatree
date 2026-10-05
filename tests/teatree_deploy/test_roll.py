@@ -638,7 +638,7 @@ class TestReRollingAGenerationThatFailedAfterItsInitMigrated(TestCase):
     def setUp(self) -> None:
         WorkerGeneration.objects.boot(N)
         self.engine = _engine(serving=N)
-        self.engine.init_applies = "0122_zdd_late_admin_probe"
+        self.engine.init_applies = "0001_zdd_late_admin_probe"
         self.engine.admin_down_for = N1
         with pytest.raises(RollError, match="refusing to roll back"):
             _roller(self.engine).roll(N1)

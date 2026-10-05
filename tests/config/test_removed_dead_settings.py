@@ -14,7 +14,6 @@ asserted through ``get_effective_settings``.
 """
 
 import dataclasses
-from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -29,7 +28,6 @@ from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src"
-_DELETED_ROW_KEYS = frozenset(import_module("teatree.core.migrations.0124_delete_rows_of_retired_settings").KEYS)
 
 
 def _field_names() -> set[str]:
@@ -180,7 +178,6 @@ class TestAlwaysOnSettingsRemoved:
     def test_key_is_absent_and_retired(self, key: str) -> None:
         assert key not in _field_names()
         assert key not in OVERLAY_OVERRIDABLE_SETTINGS
-        assert key in _DELETED_ROW_KEYS
 
 
 class TestStoredAlwaysOnSettingsRemoved(TestCase):
