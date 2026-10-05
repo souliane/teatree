@@ -9,10 +9,12 @@ than silently classifying it as a benign open PR.
 
 import logging
 
+from teatree.backends.gitlab import GitLabCodeHost
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher, reset_ci_memo
 from teatree.utils.throttled_log import reset_throttle
+from tests.teatree_backends._gitlab_wire import GitLabWire
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 
@@ -181,3 +183,25 @@ class TestOnlyARealFailureDispatchesDebug:
             ("my_pr.failed", "agent", "t3:debug"),
             ("my_pr.failed", "statusline", "action_needed"),
         ]
+
+
+def test_a_canceled_merge_train_pipeline_in_front_of_a_green_head_dispatches_no_debug() -> None:
+    head, train = "a" * 40, "c" * 40
+    mr_url = "https://gitlab.example/group/repo/-/merge_requests/1"
+    wire = GitLabWire(
+        {
+            "user": {"username": "alice"},
+            "merge_requests": [{"iid": 1, "project_id": 42, "sha": head, "title": "GitLab MR", "web_url": mr_url}],
+            "projects/42/merge_requests/1/pipelines": [
+                {"status": "canceled", "sha": train, "source": "merge_train", "ref": "refs/merge-requests/1/train"},
+                {"status": "success", "sha": head, "source": "merge_request_event"},
+            ],
+        }
+    )
+    reset_throttle()
+
+    signals = MyPrsScanner(host=GitLabCodeHost(client=wire)).scan()
+
+    assert [(signal.kind, action.kind) for signal in signals for action in dispatch([signal])] == [
+        ("my_pr.open", "statusline"),
+    ]

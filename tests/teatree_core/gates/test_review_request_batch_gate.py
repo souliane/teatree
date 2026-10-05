@@ -538,18 +538,28 @@ class TestCheckChokepoint(_ChokepointCase):
 class TestCheckReadsTheRealGitLabListing(_ChokepointCase):
     """GitLab's global MR listing carries no pipeline field: the gate must see each MR's real pipeline."""
 
-    @staticmethod
-    def _gitlab(pipeline_status: str) -> GitLabCodeHost:
+    _HEAD = "a" * 40
+
+    @classmethod
+    def _gitlab(cls, pipeline_status: str, *, pipeline_sha: str = _HEAD) -> GitLabCodeHost:
         return GitLabCodeHost(
             client=GitLabWire(
                 {
                     "user": {"username": "souliane"},
                     "merge_requests": [
-                        {"iid": 1, "project_id": 42, "title": "feat(billing): add the sweep", "web_url": _url(1)},
+                        {
+                            "iid": 1,
+                            "project_id": 42,
+                            "sha": cls._HEAD,
+                            "title": "feat(billing): add the sweep",
+                            "web_url": _url(1),
+                        },
                     ],
                     "projects/org%2Frepo": {"id": 42, "path_with_namespace": "org/repo", "path": "repo"},
                     "projects/42/merge_requests/1": {"iid": 1, "draft": False},
-                    "projects/42/merge_requests/1/pipelines": [{"status": pipeline_status, "web_url": "https://p/1"}],
+                    "projects/42/merge_requests/1/pipelines": [
+                        {"status": pipeline_status, "sha": pipeline_sha, "web_url": "https://p/1"}
+                    ],
                 }
             )
         )
@@ -573,3 +583,9 @@ class TestCheckReadsTheRealGitLabListing(_ChokepointCase):
 
         assert result["reason"] == "work_group_not_ready", result
         assert result["blockers"] == [f"{_url(1)}: ci_pending"]
+
+    def test_an_older_commits_green_pipeline_does_not_release_the_head(self) -> None:
+        result = self._check(self._gitlab("success", pipeline_sha="b" * 40))
+
+        assert result["reason"] == "work_group_not_ready", result
+        assert result["blockers"] == [f"{_url(1)}: ci_unknown"]

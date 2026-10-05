@@ -16,6 +16,7 @@ import httpx
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.review.gitlab_head_pipeline import select_head_pipeline
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 
@@ -151,27 +152,29 @@ def _first_open_mr_url(client: GitLabAPI, project: ProjectInfo, *, branch: str) 
 
 
 def enrich_mr_pipeline(client: GitLabAPI, mr: RawAPIDict) -> RawAPIDict:
-    """Fold the MR's latest pipeline into a global-listing row as ``head_pipeline``.
+    """Fold the pipeline of the MR's head commit into a global-listing row as ``head_pipeline``.
 
-    Any gap returns *mr* unchanged, so its CI reads UNKNOWN rather than a fabricated green.
+    Any gap — no head sha, an unreadable list, no non-train pipeline on the head — returns
+    *mr* unchanged, so its CI reads UNKNOWN rather than another commit's verdict.
     """
     project_id = mr.get("project_id")
     iid = mr.get("iid")
-    if not isinstance(project_id, int) or not isinstance(iid, int):
+    head_sha = mr.get("sha")
+    if not isinstance(project_id, int) or not isinstance(iid, int) or not isinstance(head_sha, str) or not head_sha:
         return mr
     try:
-        pipeline = client.get_mr_pipeline(project_id, iid)
+        pipelines = client.get_mr_pipelines(project_id, iid)
     except (BackendResolutionError, httpx.HTTPError, ValueError) as exc:
         warn_throttled(
             logger,
             f"gitlab-mr-enrich-failed:{project_id}:{iid}",
-            "could not read the pipeline of MR %s!%s — its CI stays unknown: %s",
+            "could not read the pipelines of MR %s!%s — its CI stays unknown: %s",
             project_id,
             iid,
             exc,
         )
         return mr
-    status = pipeline.get("status")
-    if not status:
+    head = select_head_pipeline(list(pipelines), head_sha, slug=str(project_id), pr_id=iid)
+    if head is None or not (status := head.get("status")):
         return mr
-    return {**mr, "head_pipeline": {"status": status, "web_url": pipeline.get("url") or ""}}
+    return {**mr, "head_pipeline": {"status": status, "web_url": head.get("web_url") or ""}}

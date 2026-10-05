@@ -88,45 +88,67 @@ def test_repo_metadata_unresolvable_project_returns_structured_error() -> None:
 
 
 _PIPELINE_URL = "https://gitlab.example/org/repo/-/pipelines/9"
+_HEAD = "a" * 40
+_OLDER = "b" * 40
+_TRAIN = "c" * 40
 
 
 def _listed(iid: int, *, project_id: int = 42) -> dict[str, object]:
     return {
         "iid": iid,
         "project_id": project_id,
+        "sha": _HEAD,
         "title": f"MR {iid}",
         "web_url": f"https://gitlab.example/org/repo/-/merge_requests/{iid}",
     }
+
+
+def _pipeline(status: str, *, sha: str = _HEAD) -> dict[str, object]:
+    return {"status": status, "sha": sha, "source": "merge_request_event", "web_url": _PIPELINE_URL}
 
 
 def _pipelines_path(project_id: int, iid: int) -> str:
     return f"projects/{project_id}/merge_requests/{iid}/pipelines"
 
 
+def _listed_row(pipelines: list[dict[str, object]]) -> dict[str, object]:
+    wire = GitLabWire({"merge_requests": [_listed(1)], _pipelines_path(42, 1): pipelines})
+    (row,) = GitLabCodeHost(client=wire).list_my_prs(author="souliane")
+    return row
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [("success", CiState.GREEN), ("failed", CiState.FAILED), ("running", CiState.PENDING)],
 )
-def test_list_my_prs_reads_each_listed_mrs_pipeline(status: str, expected: CiState) -> None:
-    wire = GitLabWire(
-        {
-            "merge_requests": [_listed(1)],
-            _pipelines_path(42, 1): [{"status": status, "web_url": _PIPELINE_URL}],
-        }
-    )
-
-    (row,) = GitLabCodeHost(client=wire).list_my_prs(author="souliane")
+def test_list_my_prs_reads_the_pipeline_of_each_mrs_head_commit(status: str, expected: CiState) -> None:
+    row = _listed_row([_pipeline(status)])
 
     assert ci_state(row) is expected
     assert row["head_pipeline"] == {"status": status, "web_url": _PIPELINE_URL}
+
+
+def test_a_pipeline_of_an_older_commit_leaves_the_head_unknown() -> None:
+    row = _listed_row([_pipeline("success", sha=_OLDER)])
+
+    assert not carries_pipeline_field(row)
+    assert ci_state(row) is CiState.UNKNOWN
+
+
+def test_a_merge_train_pipeline_in_front_of_the_head_is_not_its_verdict() -> None:
+    train = {**_pipeline("canceled", sha=_TRAIN), "source": "merge_train", "ref": "refs/merge-requests/1/train"}
+
+    row = _listed_row([train, _pipeline("success")])
+
+    assert ci_state(row) is CiState.GREEN
 
 
 def test_list_my_prs_reads_each_mr_against_its_own_project() -> None:
     wire = GitLabWire(
         {
             "merge_requests": [_listed(1), _listed(2, project_id=7)],
-            _pipelines_path(42, 1): [{"status": "success", "web_url": _PIPELINE_URL}],
-            _pipelines_path(7, 2): [{"status": "failed", "web_url": _PIPELINE_URL}],
+            _pipelines_path(42, 1): [_pipeline("success")],
+            _pipelines_path(7, 2): [_pipeline("failed")],
         }
     )
 
@@ -154,17 +176,15 @@ def test_an_unreadable_pipeline_leaves_the_row_unknown_never_green() -> None:
 
 
 def test_an_mr_with_no_pipeline_stays_unknown() -> None:
-    wire = GitLabWire({"merge_requests": [_listed(1)], _pipelines_path(42, 1): []})
-
-    (row,) = GitLabCodeHost(client=wire).list_my_prs(author="souliane")
-
-    assert ci_state(row) is CiState.UNKNOWN
+    assert ci_state(_listed_row([])) is CiState.UNKNOWN
 
 
-def test_a_row_without_a_project_id_asks_the_forge_nothing() -> None:
-    wire = GitLabWire({"merge_requests": [{"iid": 1, "web_url": "https://gitlab.example/org/repo/-/merge_requests/1"}]})
+@pytest.mark.parametrize("missing", ["project_id", "sha"])
+def test_a_row_without_its_project_or_head_sha_asks_the_forge_nothing(missing: str) -> None:
+    row = {key: value for key, value in _listed(1).items() if key != missing}
+    wire = GitLabWire({"merge_requests": [row], _pipelines_path(42, 1): [_pipeline("success")]})
 
-    (row,) = GitLabCodeHost(client=wire).list_my_prs(author="souliane")
+    (listed,) = GitLabCodeHost(client=wire).list_my_prs(author="souliane")
 
-    assert ci_state(row) is CiState.UNKNOWN
+    assert ci_state(listed) is CiState.UNKNOWN
     assert wire.paths == ["merge_requests"]
