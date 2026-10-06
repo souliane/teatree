@@ -66,10 +66,10 @@ class TestPreCompactSnapshotFromDurableState:
         assert snapshot.is_file()
         body = snapshot.read_text(encoding="utf-8")
         assert "agent-abc-123" in body
-        # #786 WS3: tick-owner snapshot — no roster name, no spawn brief.
-        assert "loop OWNER" in body
-        assert "t3 loops tick" in body
-        assert "t3 loop claim-next" in body
+        # #786 WS3: slot-owner snapshot — no roster name, no spawn brief, nothing to re-arm.
+        assert "holds the host's attended loop slot" in body
+        assert "loops tick" not in body
+        assert "claim-next" not in body
 
     def test_snapshot_does_not_consume_spawn_brief(self) -> None:
         """#786 WS3 regression: the snapshot must NOT read/emit spawn_brief.
@@ -226,7 +226,7 @@ class TestPreCompactSessionStartRoundTrip:
         # #1452: recovery context lives under hookSpecificOutput, not at top level.
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "xrev-7" in ctx
-        assert "loop OWNER" in ctx
+        assert "attended loop slot" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
 
 

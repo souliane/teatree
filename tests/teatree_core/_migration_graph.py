@@ -36,3 +36,8 @@ def core_head_migration() -> str:
     — so this is the migration a stale-DB report or a fresh apply names first.
     """
     return (CORE_MIGRATIONS_DIR / "max_migration.txt").read_text().strip()
+
+
+def core_initial_migration() -> str:
+    """The one initial ``core`` migration (the squash), oldest on disk."""
+    return core_migration_names()[0]

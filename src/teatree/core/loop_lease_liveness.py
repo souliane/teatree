@@ -6,7 +6,7 @@ triple plus the caller's slot policy, so they are decided and tested without a r
 
 ``trust_pid_past_ttl`` is the slot policy the manager supplies. The GLOBAL
 ``t3-master`` slot passes ``True``: an alive ``owner_pid`` keeps the lease live past
-its TTL, because a busy owner fires no self-pump so no tick re-claims (#1604). A
+its TTL, because a busy owner can run past it with no tick re-claiming (#1604). A
 ``loop:<name>`` PER-LOOP slot passes ``False`` (#3571): a dead session's pid is
 routinely reused / cross-namespace, so once its TTL lapses the lease is reclaimable
 regardless of pid liveness.

@@ -1,4 +1,4 @@
-"""Tests for the ``loop_dispatch`` management command (pending-spawn / spawn-claim)."""
+"""Tests for the ``loop_dispatch`` management command (claim-next)."""
 
 import json
 import os
@@ -59,11 +59,13 @@ class _LoopDispatchTest(TestCase):
         return ticket.schedule_coding()
 
 
-class TestPendingSpawn(_LoopDispatchTest):
+class TestClaimNextPayload(_LoopDispatchTest):
+    """The dispatch payload ``claim-next`` emits for the one task it claims."""
+
     def test_emits_reviewer_subagent_for_reviewer_role(self) -> None:
         task = self._reviewer_task()
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert len(payload) == 1
@@ -77,7 +79,7 @@ class TestPendingSpawn(_LoopDispatchTest):
     def test_emits_coder_subagent_for_author_coding(self) -> None:
         task = self._author_task()
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert len(payload) == 1
@@ -89,15 +91,15 @@ class TestPendingSpawn(_LoopDispatchTest):
         # attributable, never an anonymous general-purpose spawn.
         task = self._author_task()
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
         assert entry["display_name"] == f"t3-coder-{task.pk}"
 
     def test_skips_claimed_tasks(self) -> None:
         task = self._reviewer_task()
-        task.claim(claimed_by="loop-slot")
+        task.claim(claimed_by="loop-slot", lease_seconds=900)
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         assert json.loads(stdout.getvalue()) == []
 
@@ -107,22 +109,21 @@ class TestPendingSpawn(_LoopDispatchTest):
         session = Session.objects.create(ticket=ticket, agent_id="scoping")
         Task.objects.create(ticket=ticket, session=session, phase="scoping")
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         assert json.loads(stdout.getvalue()) == []
 
     def test_text_output_when_empty(self) -> None:
         stderr = StringIO()
-        call_command("loop_dispatch", "pending-spawn", stdout=StringIO(), stderr=stderr)
+        call_command("loop_dispatch", "claim-next", stdout=StringIO(), stderr=stderr)
         assert "No pending spawn requests." in stderr.getvalue()
 
     def test_payload_carries_model_and_skill_bundle(self) -> None:
         # The model tier + skill bundle are resolved in LOOP scope and threaded
-        # into the dispatch payload so the in-session /loop slot passes them to
-        # its Agent (not inside a claude -p subprocess).
+        # into the dispatch payload.
         self._reviewer_task()
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         entry = json.loads(stdout.getvalue())[0]
         assert "model" in entry
@@ -134,7 +135,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         # feeds the Agent tool, which has no effort param) must NEVER carry it.
         self._reviewer_task()
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
         assert "effort" not in entry
         assert "session_effort" not in entry
@@ -161,7 +162,7 @@ class TestPendingSpawn(_LoopDispatchTest):
             patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),
             patch("teatree.agents.skill_bundle.resolve_skill_bundle", return_value=["code-review"]),
         ):
-            call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
         assert entry["model"] == "custom-strong-model"
         assert entry["skill_bundle"] == ["code-review"]
@@ -171,7 +172,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
     """#786 N4 keystone: claim-then-spawn so two ticks never double-dispatch one Task.
 
     The claim boundary IS the spawn boundary. The pre-fix flow
-    (``pending-spawn`` lists ALL unclaimed → Agent → ``spawn-claim``
+    (a preview listed ALL unclaimed → Agent → ``spawn-claim``
     after) let two ticks both see the same Task and both spawn before
     either claimed. ``claim-next`` claims atomically and only then emits
     the dispatch payload for the just-claimed Task.
@@ -255,7 +256,7 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         healthy session's ``claim-next`` reclaims and dispatches that SAME unit
         exactly once. Previously only the full loop tick's recovery sweep
         (``_reap_stale_task_claims``) returned an orphan to PENDING, so on the
-        standalone self-pump / slack-answer path a dead session's unit stalled
+        standalone claim-next path a dead session's unit stalled
         CLAIMED forever and the loop silently stopped picking it up.
 
         Anti-vacuity: on the pre-fix command (no reclaim before the claim) the
@@ -628,119 +629,14 @@ class TestGovernorGate(_LoopDispatchTest):
             assert loop_dispatch._admit_budget_exhausted() is False
 
 
-class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
-    """``pending-spawn --claimable-only`` mirrors what ``claim-next`` would take.
-
-    TODO #100: the Stop-hook self-pump probes ``pending-spawn`` to decide
-    "is there work to continue the loop?". The legacy probe reports EVERY
-    dispatchable PENDING task regardless of the admit budget, but
-    ``claim-next`` refuses once the in-flight CLAIMED WIP reaches the
-    ceiling. So when the budget is exhausted, the probe reports the same
-    PENDING unit forever while ``claim-next`` claims nothing — the
-    self-pump re-offers a unit it can never advance. ``--claimable-only``
-    applies the same admit-budget gate the claimer applies, so the probe
-    reports work ONLY when a claim could actually land.
-    """
-
-    def _claim_in_flight(self, n: int) -> list[Task]:
-        claimed: list[Task] = []
-        for i in range(n):
-            task = self._author_task(url=f"https://example.com/issues/inflight/{i}")
-            task.claim(claimed_by="other-worker")
-            claimed.append(task)
-        return claimed
-
-    def _run_pending_claimable(self, sl: Path) -> list[dict]:
-        stdout = StringIO()
-        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
-            call_command("loop_dispatch", "pending-spawn", "--json", "--claimable-only", stdout=stdout)
-        return json.loads(stdout.getvalue())
-
-    def test_budget_exhausted_reports_no_claimable_work(self) -> None:
-        # THE anti-vacuous core (RED on the pre-fix code): budget B, B already
-        # in flight, one more PENDING → claim-next would refuse → the
-        # claimable-only probe must report ZERO so the self-pump stops
-        # re-offering the un-advanceable unit.
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            self._claim_in_flight(2)
-            self._author_task(url="https://example.com/issues/pending")
-            write_admit_budget(2, statusline_path=sl)
-            payload = self._run_pending_claimable(sl)
-        assert payload == []
-        # The legacy probe (no gate) still reports the un-advanceable unit —
-        # proving the gate is what changed the answer, not the data.
-        legacy = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=legacy)
-        assert len(json.loads(legacy.getvalue())) == 1
-
-    def test_under_budget_reports_the_claimable_unit(self) -> None:
-        # Control: in-flight 1 < budget 2 → a claim could land → the probe
-        # reports the PENDING unit (it did not just blanket-suppress).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            self._claim_in_flight(1)
-            self._author_task(url="https://example.com/issues/pending")
-            write_admit_budget(2, statusline_path=sl)
-            payload = self._run_pending_claimable(sl)
-        assert len(payload) == 1
-        assert payload[0]["issue_url"] == "https://example.com/issues/pending"
-
-    def test_no_budget_key_reports_all_dispatchable_unclamped(self) -> None:
-        # Absence of a budget (medium / toggle-off) is UNCLAMPED — the probe
-        # reports the pending unit exactly as the legacy probe does today.
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            self._author_task(url="https://example.com/issues/a")
-            payload = self._run_pending_claimable(sl)
-        assert len(payload) == 1
-
-    def test_budget_read_error_fails_open_unclamped(self) -> None:
-        # A budget-read failure must NEVER clamp the probe — fail open so a
-        # broken sidecar read can never wedge the self-pump into idle.
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            self._author_task(url="https://example.com/issues/a")
-            stdout = StringIO()
-            with (
-                patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
-                patch(
-                    "teatree.core.management.commands.loop_dispatch.read_admit_budget",
-                    side_effect=RuntimeError("sidecar exploded"),
-                ),
-            ):
-                call_command("loop_dispatch", "pending-spawn", "--json", "--claimable-only", stdout=stdout)
-            assert len(json.loads(stdout.getvalue())) == 1
-
-    def test_default_probe_is_unchanged_no_gate(self) -> None:
-        # Without --claimable-only the legacy probe is byte-identical: it
-        # reports the un-advanceable unit even at a full budget (the legacy
-        # callers must not change behaviour).
-        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415 - deferred: local import
-
-        with tempfile.TemporaryDirectory() as d:
-            sl = Path(d) / "statusline.txt"
-            self._claim_in_flight(2)
-            self._author_task(url="https://example.com/issues/pending")
-            write_admit_budget(2, statusline_path=sl)
-            stdout = StringIO()
-            with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
-                call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
-        assert len(json.loads(stdout.getvalue())) == 1
-
-
 class TestExternalDeliveryExclusion(_LoopDispatchTest):
     """#6/#2217: the live claim/spawn paths honour the external-delivery lease.
 
     A unit hand-delivered by an external agent (a live #2104 lease) is being
     implemented directly with no loop-armed sub-agent, so the loop must NOT
     claim a second coder/reviewer on it. ``orchestrate`` already excluded it,
-    but the live ``claim-next``/``pending-spawn`` in ``loop_dispatch`` did not —
-    the #2218 "fix landed on one side" recurrence. Both must now share the
+    but the live ``claim-next`` in ``loop_dispatch`` did not —
+    the #2218 "fix landed on one side" recurrence. It now shares the
     ``Task.dispatchable_q`` SSOT, which carries the exclusion.
     """
 
@@ -759,29 +655,12 @@ class TestExternalDeliveryExclusion(_LoopDispatchTest):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING  # left for the delivery owner
 
-    def test_pending_spawn_skips_a_ticket_under_external_delivery(self) -> None:
-        # RED before the fix: pending-spawn filtered on role/phase only (no
-        # exclusion), so the /loop slot would spawn onto the leased ticket.
-        task = self._author_task()
-        self._lease(task)
-        stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
-        assert json.loads(stdout.getvalue()) == []
-
     def test_claim_next_claims_a_ticket_not_under_external_delivery(self) -> None:
         # Anti-vacuity twin: an unleased dispatchable task IS claimed — the
         # exclusion is not blanket suppression.
         task = self._author_task()
         stdout = StringIO()
         call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
-        payload = json.loads(stdout.getvalue())
-        assert [e["task_id"] for e in payload] == [task.pk]
-
-    def test_pending_spawn_lists_a_ticket_not_under_external_delivery(self) -> None:
-        # Anti-vacuity twin for the preview path.
-        task = self._author_task()
-        stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         payload = json.loads(stdout.getvalue())
         assert [e["task_id"] for e in payload] == [task.pk]
 

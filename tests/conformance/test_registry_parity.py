@@ -115,11 +115,11 @@ class TestDispatchableFilterSsotParity:
 
     The #2218 recurrence class: the dispatchable filter re-hand-rolled per
     consumer, so a fix to one copy (the #2217 external-delivery exclusion) never
-    reached the other — the live ``claim-next``/``pending-spawn`` double-dispatched
-    onto leased tickets while ``orchestrate`` correctly excluded them. Now every
-    consumer builds ON ``Task.dispatchable_q``: ``orchestrate`` returns it verbatim,
-    ``claim-next`` and ``pending-spawn`` filter through it, and the admit-budget gate
-    counts through it. A consumer that stops referencing the symbol fails here.
+    reached the other — the live ``claim-next`` double-dispatched onto leased
+    tickets while ``orchestrate`` correctly excluded them. Now every consumer builds
+    ON ``Task.dispatchable_q``: ``orchestrate`` returns it verbatim, ``claim-next``
+    filters through it, and the admit-budget gate counts through it. A consumer that
+    stops referencing the symbol fails here.
     """
 
     _SENTINEL = Q(pk__in=[-98765])
@@ -139,17 +139,10 @@ class TestDispatchableFilterSsotParity:
             loop_dispatch._admit_budget_exhausted()
         count.assert_called_once_with(self._SENTINEL)
 
-    def test_pending_spawn_shares_the_claim_filter(self) -> None:
-        # Structural: the in-session preview MUST filter through the same
-        # ``Task.dispatchable_q()`` the atomic claim uses, so it cannot drift back to
-        # a role/phase-only filter that ignores the external-delivery exclusion.
-        source = inspect.getsource(loop_dispatch.Command.pending_spawn)
-        assert "dispatchable_q()" in source
-
     def test_ssot_is_referenced_by_every_live_consumer(self) -> None:
         # The parity claim made explicit: orchestrate, claim-next and the budget gate
-        # each name ``dispatchable_q`` in their own source (pending-spawn is covered
-        # above), so no consumer can re-hand-roll the filter and silently diverge.
+        # each name ``dispatchable_q`` in their own source, so no consumer can
+        # re-hand-roll the filter and silently diverge.
         consumers = (
             orchestrate._dispatchable_filter,
             loop_dispatch.Command.claim_next,

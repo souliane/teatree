@@ -401,35 +401,19 @@ def test_list_recently_closed_mrs_returns_empty_when_no_pages(monkeypatch: pytes
     assert client.list_recently_closed_mrs("adrien") == []
 
 
-def test_get_mr_pipeline_returns_status_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_mr_pipelines_returns_every_pipeline_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(
-        client,
-        "get_json",
-        lambda endpoint: [{"status": "success", "web_url": "https://gitlab.com/pipelines/1"}],
-    )
+    pipelines = [{"status": "canceled", "sha": "c"}, {"status": "success", "sha": "a"}]
+    monkeypatch.setattr(client, "get_json", lambda endpoint: [*pipelines, "not-a-pipeline"])
 
-    result = client.get_mr_pipeline(42, 1)
-
-    assert result == {"status": "success", "url": "https://gitlab.com/pipelines/1"}
+    assert client.get_mr_pipelines(42, 1) == pipelines
 
 
-def test_get_mr_pipeline_returns_none_when_no_pipelines(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(client, "get_json", lambda endpoint: [])
-
-    result = client.get_mr_pipeline(42, 1)
-
-    assert result == {"status": None, "url": None}
-
-
-def test_get_mr_pipeline_returns_none_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_mr_pipelines_returns_empty_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(client, "get_json", lambda endpoint: None)
 
-    result = client.get_mr_pipeline(42, 1)
-
-    assert result == {"status": None, "url": None}
+    assert client.get_mr_pipelines(42, 1) == []
 
 
 def test_get_mr_approvals_returns_counts(monkeypatch: pytest.MonkeyPatch) -> None:

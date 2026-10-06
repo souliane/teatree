@@ -334,10 +334,10 @@ class TestRouterWiring:
         names = [h.__name__ for h in _HANDLERS["Stop"]]
         assert names.index("handle_enforce_structured_question") < names.index("handle_consideration_gate")
 
-    def test_runs_before_loop_self_pump(self) -> None:
-        """The loop self-pump must run last."""
+    def test_runs_before_the_answer_hand_back(self) -> None:
+        """The answer hand-back must run last."""
         names = [h.__name__ for h in _HANDLERS["Stop"]]
-        assert names.index("handle_consideration_gate") < names.index("handle_loop_self_pump")
+        assert names.index("handle_consideration_gate") < names.index("handle_hand_back_answers")
 
 
 class TestCrashProof:

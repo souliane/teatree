@@ -3,45 +3,46 @@
 Move (A) of the CI-runtime fix: a re-push to a PR must cancel its OWN superseded
 in-progress wave (killing the self-inflicted queue stacking), while push-to-main
 and the schedule must NEVER be cancelled — their full-tree banned-terms /
-overlay-leak backstops must run to completion. This pins both halves so a future
-edit cannot drop the cancel (queue stacking returns) or extend the cancel to main
-(a tree scan gets killed mid-run).
+overlay-leak backstops must run to completion. Each group is evaluated per event,
+so swapping an expression's branches fails here even though every substring survives.
 """
 
-from pathlib import Path
+from typing import Any
 
-import yaml
+import pytest
 
-_CI = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+from tests._actions_workflow import CI_DAILY_CRON, CI_WEEKLY_CRON, Value, github_context, load, render
 
-
-def _workflow() -> dict:
-    return yaml.safe_load(_CI.read_text(encoding="utf-8"))
+_PULL_REQUEST = github_context("pull_request", ref="refs/pull/42/merge")
 
 
-def test_concurrency_block_present() -> None:
-    assert "concurrency" in _workflow(), "ci.yml must declare a top-level concurrency block (move A — supersede-cancel)"
+def _concurrency(workflow: str, github: dict[str, Any]) -> tuple[Value, Value]:
+    block = load(workflow)["concurrency"]
+    context = {"github": github}
+    return render(block["group"], context), render(block["cancel-in-progress"], context)
 
 
-def test_cancel_in_progress_is_conditional_on_pull_request() -> None:
-    cancel = str(_workflow()["concurrency"]["cancel-in-progress"])
-    assert "pull_request" in cancel, (
-        "cancel-in-progress must be gated on pull_request so a superseding push/schedule "
-        "run never kills a main-branch tree scan mid-run."
+class TestCiSupersedesOnlyPullRequestWaves:
+    def test_a_pull_request_re_push_cancels_its_own_wave(self) -> None:
+        assert _concurrency("ci.yml", _PULL_REQUEST) == ("ci-pr-42", True)
+
+    @pytest.mark.parametrize(
+        "github",
+        [
+            github_context("push"),
+            github_context("schedule", schedule=CI_DAILY_CRON),
+            github_context("schedule", schedule=CI_WEEKLY_CRON),
+        ],
+        ids=["push", "daily", "weekly"],
     )
-    assert cancel.strip().lower() != "true", (
-        "cancel-in-progress must NOT be an unconditional true — that would cancel push/schedule "
-        "runs and defeat the main-branch backstops."
-    )
+    def test_main_and_scheduled_runs_get_a_unique_never_cancelled_group(self, github: dict[str, Any]) -> None:
+        assert _concurrency("ci.yml", github) == (f"ci-{github['run_id']}", False)
 
 
-def test_group_supersedes_per_pr_but_isolates_non_pr_runs() -> None:
-    group = str(_workflow()["concurrency"]["group"])
-    assert "pull_request.number" in group, (
-        "the concurrency group must key on the PR number so a re-push supersedes its OWN wave "
-        "instead of stacking a new one."
-    )
-    assert "run_id" in group, (
-        "push/schedule must fall back to a unique run_id group so their runs are never cancelled "
-        "by a superseding sibling."
-    )
+class TestPublishImageNeverCancelsAMainPublish:
+    def test_a_pull_request_build_supersedes_only_its_own_earlier_build(self) -> None:
+        assert _concurrency("publish-image.yml", _PULL_REQUEST) == ("publish-image-refs/pull/42/merge", True)
+
+    @pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+    def test_main_and_dispatch_publishes_share_one_never_cancelled_group(self, event: str) -> None:
+        assert _concurrency("publish-image.yml", github_context(event)) == ("publish-image", False)
