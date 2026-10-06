@@ -7,7 +7,6 @@ other trace: the bundle simply lacks them. This reads the bundles recent attempt
 a regression in either the detection root or the bundle shows on the health chip.
 """
 
-import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -19,9 +18,6 @@ from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.skill_support.loading import SkillLoadingPolicy
-from teatree.utils.throttled_log import warn_throttled
-
-logger = logging.getLogger(__name__)
 
 WINDOW_HOURS = 6
 WINDOW = timedelta(hours=WINDOW_HOURS)
@@ -61,12 +57,11 @@ def _stack_skills_for(ticket: Ticket) -> frozenset[str]:
 
 
 def stack_skill_coverage_signals() -> SignalCollection:
-    """One WARNING while a recent dispatch on a Python/Django repo lacked a stack skill; fail-open."""
-    try:
-        gaps = stack_skill_gaps()
-    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
-        warn_throttled(logger, "health-stack-skill-coverage", "stack-skill coverage health read failed", exc_info=True)
-        return SignalCollection(unread=("stack_skill_coverage_signals",))
+    """One WARNING while a recent dispatch on a Python/Django repo lacked a stack skill.
+
+    A raising read is named unread by ``collect_signals``, the one fail-open wrapper.
+    """
+    gaps = stack_skill_gaps()
     if not gaps:
         return SignalCollection()
     missing = sorted({name for gap in gaps for name in gap.missing})
