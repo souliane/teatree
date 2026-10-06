@@ -73,6 +73,11 @@ _CASES: tuple[_RemediationCase, ...] = (
         accept_command="t3 teatree workspace ticket https://github.com/souliane/teatree/issues/9",
         reject_command="git reset --hard origin/main",
     ),
+    _RemediationCase(
+        scenario="workspace_provisions_db_via_cli",
+        accept_command="t3 <overlay> worktree provision",
+        reject_command="createdb mydb_manual",
+    ),
 )
 
 
