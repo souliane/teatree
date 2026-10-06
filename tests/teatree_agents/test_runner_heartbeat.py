@@ -45,6 +45,18 @@ def _no_lease_renewal(_task: Task) -> None:
     pass
 
 
+def _lease_lost_on_beat(beat: int) -> Callable[[Task], None]:
+    renewals: list[Task] = []
+
+    def renew(task: Task) -> None:
+        renewals.append(task)
+        if len(renewals) >= beat:
+            msg = f"lease lost for task {task.pk}: re-claimed by a competing worker"
+            raise LeaseLostError(msg)
+
+    return renew
+
+
 def _drive(
     session: InterruptibleSession,
     *,
@@ -86,12 +98,11 @@ def test_no_drain_never_interrupts_the_run() -> None:
     session = InterruptibleSession([], session_id=_SESSION)
     calls: list[str] = []
 
-    outcome = _drive(session, drain_reason=_drain_from_beat(10**9, calls), max_runtime_seconds=0.1)
+    outcome = _drive(session, drain_reason=_drain_from_beat(10**9, calls), renew_lease=_lease_lost_on_beat(3))
 
-    assert len(calls) > 1, "the heartbeat must keep reading the gate on every beat"
+    assert len(calls) == 2, "the heartbeat must read the gate on every beat it survives"
     assert outcome.checkpointed is False
-    assert outcome.stuck_reason is not None
-    assert "runtime" in outcome.stuck_reason
+    assert outcome.lease_lost is True
 
 
 def test_an_open_tool_call_defers_the_checkpoint_to_the_beat_cap() -> None:
@@ -106,13 +117,9 @@ def test_an_open_tool_call_defers_the_checkpoint_to_the_beat_cap() -> None:
 
 
 def test_a_lost_lease_is_still_a_lost_lease_not_a_checkpoint() -> None:
-    def lease_lost(_task: Task) -> None:
-        msg = "lease lost for task 1: re-claimed by a competing worker"
-        raise LeaseLostError(msg)
-
     session = InterruptibleSession([], session_id=_SESSION)
 
-    outcome = _drive(session, drain_reason=_drain_from_beat(1, []), renew_lease=lease_lost)
+    outcome = _drive(session, drain_reason=_drain_from_beat(1, []), renew_lease=_lease_lost_on_beat(1))
 
     assert outcome.lease_lost is True
     assert outcome.checkpointed is False
@@ -127,10 +134,11 @@ def test_an_unreadable_gate_keeps_the_run_going() -> None:
     session = InterruptibleSession([], session_id=_SESSION)
 
     with patch.object(runner_heartbeat, "logger") as logger:
-        outcome = _drive(session, drain_reason=unreadable, max_runtime_seconds=0.1)
+        outcome = _drive(session, drain_reason=unreadable, renew_lease=_lease_lost_on_beat(3))
 
     assert outcome.checkpointed is False
-    assert logger.warning.call_count >= 1
+    assert outcome.lease_lost is True, "the run kept going past both unreadable beats"
+    assert logger.warning.call_count >= 2
 
 
 class TestTheProductionDrainRead(TestCase):
