@@ -172,7 +172,8 @@ kept apart on purpose.
     section**. A comment that merely widens scope ("also do Y") is a new ticket,
     not a fold.
 13. **Our tickets only (Non-Negotiable).** Fold, edit, retire or relabel ONLY
-    tickets the owner or the factory bot filed. An externally-authored ticket is
+    tickets the owner or the factory bot filed, or that the CI workflows of a repo
+    in the owner's own namespace filed (`github-actions[bot]`). An externally-authored ticket is
     read-only: it may be cited as a duplicate or a host candidate, but it is
     never edited, never closed, and its comments are never touched. The facade
     refuses these below the skill, so an attempt surfaces as a refusal rather
@@ -457,7 +458,7 @@ non-zero when any of these holds:
 
 - Post ZERO comments. A requirement folds into the description; the close carries
   no comment. Verify a comment's claim against the code before folding it.
-- Touch only tickets the owner or the factory bot filed; an external ticket is
+- Touch only tickets the owner, the factory bot, or our own repos' CI workflows filed; an external ticket is
   read-only and counts as `--external-skipped`.
 - Open a run with `sweep-begin`, tag every mutation with it, and `sweep-finish`
   even when the count is zero. On a loop dispatch, return its id as

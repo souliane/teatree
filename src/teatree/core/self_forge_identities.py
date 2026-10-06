@@ -1,7 +1,8 @@
 """Who "we" are on a forge, and the guard that keeps the factory off other people's tickets (#162).
 
 Rule 5 of #162: the factory may extend, fold into, or close a ticket
-ONLY when the owner or the factory bot filed it. Everything else in
+ONLY when the owner, the factory bot, or the CI workflows of a repo in the
+owner's own namespace (``github-actions[bot]``) filed it. Everything else in
 :mod:`teatree.core.issue_hygiene` is a write, so this module is the authority
 every one of those writes asks first.
 
@@ -39,6 +40,9 @@ SELF_FORGE_IDENTITIES_SETTING = "self_forge_identities"
 # (container key, login key) per forge payload shape: GitLab issues nest the
 # author under ``author.username``, GitHub under ``user.login``.
 _AUTHOR_PATHS = (("author", "username"), ("user", "login"))
+
+# The login GitHub Actions files issues under: on a repo we own, those workflows are ours.
+_WORKFLOW_BOT_LOGIN = "github-actions[bot]"
 
 
 class ExternalIssueRefusedError(Exception):
@@ -145,9 +149,21 @@ def require_self_authored_issue(*, host: CodeHostBackend, issue_url: str) -> Raw
         detail = fresh.get("error") if isinstance(fresh, dict) else "non-dict response"
         raise ExternalIssueRefusedError(issue_url, "", f"the forge did not return the issue ({detail})")
     author = issue_author_login(fresh)
-    if not issue_author_is_self(author, self_identity_set(issue_url, host=host)):
-        raise ExternalIssueRefusedError(issue_url, author, "not authored by the owner or the factory bot")
+    identities = self_identity_set(issue_url, host=host)
+    if not (issue_author_is_self(author, identities) or _is_own_repo_workflow_bot(author, issue_url, identities)):
+        raise ExternalIssueRefusedError(
+            issue_url, author, "not authored by the owner, the factory bot, or our own repo's workflows"
+        )
     return fresh
+
+
+def _is_own_repo_workflow_bot(author: str, issue_url: str, identities: set[str]) -> bool:
+    """Whether *author* is the workflow bot of a repo whose namespace is one of *identities*."""
+    try:
+        namespace = urlparse(issue_url).path.strip("/").split("/", 1)[0]
+    except ValueError:
+        return False
+    return author.casefold() == _WORKFLOW_BOT_LOGIN and issue_author_is_self(namespace, identities)
 
 
 __all__ = [
