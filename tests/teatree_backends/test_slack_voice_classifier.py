@@ -134,7 +134,7 @@ class TestAssertVoiceTokenMatch:
         """A review-request from the user's voice over the user's xoxp."""
         assert_voice_token_match(
             text="please review !6264 when you have time",
-            channel="C-the-review-team",
+            channel="C-review-channel",
             token="xoxp-personal",
             dm_channel_ids=self._dm_channels(),
         )
@@ -144,7 +144,7 @@ class TestAssertVoiceTokenMatch:
         with pytest.raises(SlackVoiceMismatchError) as exc_info:
             assert_voice_token_match(
                 text="please review !6264",
-                channel="C-the-review-team",
+                channel="C-review-channel",
                 token="xoxb-bot",
                 dm_channel_ids=self._dm_channels(),
             )

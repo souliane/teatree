@@ -8,6 +8,7 @@ LOC cap. The token-selection policy stays on the backend: it resolves the token
 and passes it in, keeping these functions free of the Connect-membership concern.
 """
 
+import re
 from typing import Protocol, cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES
@@ -17,6 +18,7 @@ from teatree.types import ChannelReadRefusedError, RawAPIDict, ScannerError
 # Bounds the members walk at ~10k users so a lookup of a genuinely-absent handle
 # terminates rather than paging an entire enterprise workspace.
 _MAX_USER_PAGES = 50
+_USERGROUP_ID = re.compile(r"S[A-Z0-9]{8,}")
 
 
 class Getter(Protocol):
@@ -155,4 +157,25 @@ def resolve_user_id(*, get: Getter, handle: str) -> str:
         cursor = next_cursor(listing)
         if cursor is None:
             return ""
+    return ""
+
+
+def resolve_usergroup_id(*, get: Getter, handle: str) -> str:
+    """Look up a Slack user-group id from its handle (``@team`` or ``team``); an id passes through."""
+    clean = handle.lstrip("@")
+    if _USERGROUP_ID.fullmatch(clean):
+        return clean
+    if not clean:
+        return ""
+    listing = get("usergroups.list", {})
+    groups = listing.get("usergroups") if listing.get("ok") else None
+    if not isinstance(groups, list):
+        return ""
+    for raw_group in groups:
+        if not isinstance(raw_group, dict):
+            continue
+        group = cast("RawAPIDict", raw_group)
+        group_id = group.get("id")
+        if group.get("handle") == clean and isinstance(group_id, str):
+            return group_id
     return ""

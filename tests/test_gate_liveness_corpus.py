@@ -571,7 +571,7 @@ def _mr_meta_mcp_allow(ctx: GateContext) -> dict:
 
 
 def _reviewer_assign_bash_deny(ctx: GateContext) -> dict:
-    return _bash("glab mr update 7624 --reviewer WouterLachat")
+    return _bash("glab mr update 7624 --reviewer reviewer-a")
 
 
 def _reviewer_assign_bash_allow(ctx: GateContext) -> dict:
@@ -579,7 +579,7 @@ def _reviewer_assign_bash_allow(ctx: GateContext) -> dict:
 
 
 def _reviewer_assign_mcp_deny(ctx: GateContext) -> dict:
-    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 7624, "reviewer": "WouterLachat"}}
+    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 7624, "reviewer": "reviewer-a"}}
 
 
 def _reviewer_assign_mcp_allow(ctx: GateContext) -> dict:

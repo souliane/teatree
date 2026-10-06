@@ -1261,7 +1261,7 @@ class TestBuildDefaultJobsWiring(django.test.TestCase):
         backend = _backend_with_overlay(
             name="teatree",
             repos=["souliane/teatree"],
-            review_channel=("the-review-team", "C0DEMOCHAN1"),
+            review_channel=("review-channel", "C0DEMOCHAN1"),
             with_messaging=True,
         )
         jobs = build_default_jobs(backends=[backend])
@@ -1281,7 +1281,7 @@ class TestBuildDefaultJobsWiring(django.test.TestCase):
         backend = _backend_with_overlay(
             name="teatree",
             repos=["souliane/teatree"],
-            review_channel=("the-review-team", "C0DEMOCHAN1"),
+            review_channel=("review-channel", "C0DEMOCHAN1"),
             with_messaging=False,
         )
         jobs = build_default_jobs(backends=[backend])

@@ -30,6 +30,7 @@ from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
+from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -265,6 +266,14 @@ def _reset_stripped_key_warnings() -> Iterator[None]:
     reset_stripped_key_warnings()
     yield
     reset_stripped_key_warnings()
+
+
+@pytest.fixture(autouse=True)
+def _reset_unresolved_mention_warnings() -> Iterator[None]:
+    """The unresolved re-ask mention warning is once-per-process, so a leaked pair silences a later test's."""
+    reset_unresolved_mention_warnings()
+    yield
+    reset_unresolved_mention_warnings()
 
 
 @pytest.fixture(autouse=True)
