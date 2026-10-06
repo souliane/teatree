@@ -120,7 +120,8 @@ class TestStrictRemoteReads:
             remote_heads(str(self.repo), ["main"])
 
     def test_fetch_branch_retries_a_fetch_that_lost_the_ref_to_a_concurrent_one(self) -> None:
-        _run_git("push", "-q", "origin", "main:refs/heads/moved", cwd=self.repo)
+        # Created in origin so the clone has no tracking ref; git 2.43 skips the hook for an up-to-date ref.
+        _run_git("update-ref", "refs/heads/moved", "refs/heads/main", cwd=self.origin)
         hooks = self.tmp / "hooks"
         hooks.mkdir()
         hook = hooks / "reference-transaction"
