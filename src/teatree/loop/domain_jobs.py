@@ -14,6 +14,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.mode_resolution import egress_forbidden
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify import NotifyKind, resolve_user_id
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_triage import RepoOwner
 from teatree.loop.domain_optional_scanner_jobs import (
     _arch_review_jobs_for_overlay,
@@ -77,6 +78,7 @@ from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
+from teatree.loops.enable_verdict import loop_admits
 from teatree.messaging import notify_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -223,7 +225,7 @@ def _ship_jobs_for_overlay(
     triage_scanner = _mr_triage_scanner_for(
         backend,
         ci_enricher=ci_enricher,
-        ask_owner_on_missing_review=not _colleague_egress_selected(backend),
+        ask_owner_on_missing_review=not _review_request_sender_runs(backend),
     )
     if triage_scanner is not None:
         jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
@@ -310,6 +312,11 @@ def _colleague_egress_selected(backend: OverlayBackends) -> bool:
     return backend.messaging is not None and not egress_forbidden()
 
 
+def _review_request_sender_runs(backend: OverlayBackends) -> bool:
+    """Whether the followup loop will send what the triage ladder finds owed, so SHIP need not ask."""
+    return _colleague_egress_selected(backend) and loop_admits(Domain.FOLLOWUP.value)
+
+
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The colleague-facing review posts (overlay-scoped). Intake is the unified ``issue_intake`` job.
 
@@ -357,7 +364,8 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         )
         triage = _mr_triage_scanner_for(backend, ci_enricher=BoundedCiEnricher())
         if triage is not None:
-            jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage), overlay=tag))
+            metadata = backend.overlay.metadata if backend.overlay is not None else OverlayMetadata()
+            jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage, metadata=metadata), overlay=tag))
     return jobs
 
 

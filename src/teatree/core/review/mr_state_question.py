@@ -27,6 +27,7 @@ re-offered on a later tick once a slot frees.
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -37,6 +38,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 logger = logging.getLogger(__name__)
 
 _MARKER_PREFIX = "mr-state:"
+_HEAD_TAG = re.compile(r"\[head [0-9a-f]{12}\]")
 _OWNER_QUESTION_OBSERVER: ContextVar[Callable[[str], None] | None] = ContextVar(
     "owner_question_observer",
     default=None,
@@ -62,15 +64,25 @@ def mr_state_marker(mr_url: str) -> str:
     return f"{_MARKER_PREFIX}{canonical_mr_url(mr_url)}"
 
 
-def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> DeferredQuestion | None:
+def head_tag(head_sha: str) -> str:
+    """The marker a head-bound question carries, so an answer binds to the commit it was asked about."""
+    return f"[head {head_sha[:12]}]"
+
+
+def ask_mr_state(
+    *, mr_url: str, reason: str, options: Sequence[str] = (), head_sha: str = ""
+) -> DeferredQuestion | None:
     """Queue an owner question about *mr_url*'s state; ``None`` when the cap refuses it.
 
     Returns the already-open row when one exists for this merge request, so a
     re-ask is idempotent and can never be refused by the cap — a merge request
     the owner is already being asked about occupies its slot rather than
-    competing for a new one.
+    competing for a new one. A *head_sha* ask is the exception: it replaces an
+    open head-bound row whose wording differs (a moved head or a new blocker),
+    and never touches an untagged row another caller opened.
     """
     marker = mr_state_marker(mr_url)
+    text = _question_text(mr_url=mr_url, reason=reason, head_sha=head_sha)
     open_questions = DeferredQuestion.objects.filter(
         dedupe_marker__startswith=_MARKER_PREFIX,
         answered_at__isnull=True,
@@ -78,7 +90,9 @@ def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> De
     )
     already_asked = open_questions.filter(dedupe_marker=marker).first()
     if already_asked is not None:
-        return already_asked
+        if not (head_sha and _HEAD_TAG.search(already_asked.question) and already_asked.question != text):
+            return already_asked
+        already_asked.mark_stale("superseded by a question about the merge request's current head")
 
     if open_questions.count() >= MAX_OPEN_QUESTIONS:
         logger.info(
@@ -90,7 +104,7 @@ def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> De
         return None
 
     question = DeferredQuestion.record(
-        _question_text(mr_url=mr_url, reason=reason),
+        text,
         options_json=_options_json(options),
         dedupe_marker=marker,
         audience=DeferredQuestion.Audience.OWNER_QUESTION,
@@ -107,8 +121,22 @@ def retire_mr_state_question(mr_url: str, *, reason: str) -> None:
         question.mark_stale(reason)
 
 
-def _question_text(*, mr_url: str, reason: str) -> str:
-    return f"I cannot determine the state of {mr_url} — {reason} How should I treat it?"
+def owner_answer_at_head(mr_url: str, *, head_sha: str) -> DeferredQuestion | None:
+    """The owner's newest answer to a question about *mr_url* asked at *head_sha*."""
+    return (
+        DeferredQuestion.objects.filter(
+            dedupe_marker=mr_state_marker(mr_url),
+            answered_at__isnull=False,
+            question__contains=head_tag(head_sha),
+        )
+        .order_by("-answered_at", "-pk")
+        .first()
+    )
+
+
+def _question_text(*, mr_url: str, reason: str, head_sha: str) -> str:
+    subject = f"{mr_url} {head_tag(head_sha)}" if head_sha else mr_url
+    return f"I cannot determine the state of {subject} — {reason} How should I treat it?"
 
 
 def _options_json(options: Sequence[str]) -> str:

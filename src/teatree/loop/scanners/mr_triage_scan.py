@@ -348,7 +348,10 @@ class MrTriageScanner:
         return ref.slug if ref is not None else ""
 
     def _open_review_requests(self) -> dict[str, ReviewRequestPost]:
-        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
+        # An unposted claim is a request nobody received; the guard reclaims it once stale.
+        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name).exclude(
+            slack_thread_ts=""
+        )
         return {row.mr_url: row for row in rows}
 
     def _resolve_identities(self) -> tuple[str, ...]:

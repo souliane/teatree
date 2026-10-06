@@ -20,7 +20,7 @@ TeaTree keeps the rest locally because PR discovery, chat deduplication, routing
 
 From "PRs exist" to "reviewers are notified." Operates across all user's open PRs, not just the current branch.
 
-The followup loop already sends eligible requests on its own under a posture that lets the owner's voice out: its `review_request_send` scanner runs the same sanctioned `review_request_post` command (§ 7) for every own PR the triage ladder finds owed a review, once a `merge_safe` cold review binds the current head. This skill is the manual path for everything else — a posture that forbids it, a refusal it surfaced as an owner question, or a batch you want to send now.
+The followup loop already sends eligible requests on its own under a posture that lets the owner's voice out: its `review_request_send` scanner runs the same sanctioned `review_request_post` command (§ 7) for every own PR the triage ladder finds owed a review. Its approval is that permitting posture plus a `merge_safe` cold review bound to the current head — or, in place of the review, your "Post the review request" answer to its question about that head — and it validates the PR's title and body first, like step 2 here. This skill is the manual path for everything else — a posture that forbids it, a refusal it surfaced as an owner question, or a batch you want to send now.
 
 ## Dependencies
 
@@ -107,6 +107,8 @@ This is the **only** sanctioned post path. **Never** post a review request with 
 
 - runs `review_request_check`'s live-channel dedup internally and prints `{"action": "suppress", ...}` + exits 0 with **no post** on a live duplicate;
 - requires a matching, unconsumed, exactly-scoped #960 `OnBehalfApproval`. With none it prints the exact `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <id>` remediation, refuses (`{"action": "refused", "reason": "on_behalf_not_approved"}`, exit 2), and **rolls back** the dedup claim so a later approved retry is not wedged;
+- routes the post through the #117 send-proxy: a review channel missing from `send_proxy_allowlist` refuses (`{"action": "refused", "reason": "send_blocked"}`, exit 2) with no post and a `SendAudit` row, and an overlay privacy term in the title is redacted. Add the channel to the allowlist rather than posting around it;
+- rolls the dedup claim back on every exit that posted nothing, a transport error included, so the next attempt is never wedged on `already_claimed`;
 - on success posts once, consumes the approval (single-use), writes the #960 audit row, records the permalink, and prints `{"action": "post", "permalink": ...}`;
 - when the review channel is unpostable (e.g. a Slack Connect channel that requires a user xoxp token the bot doesn't hold), emits a bot→user DM draft the user can forward manually and prints `{"action": "draft", "reason": "no_review_channel_or_token", ...}` + exits 0. **No channel post is made.** Surface the DM to the user so they can forward the review request; do not treat this as a silent success.
 
@@ -160,10 +162,10 @@ The review-request post uses the same on-behalf posture as other colleague-facin
 ## Rules
 
 - **NEVER directly assign a reviewer — review is REQUESTED, never assigned.** Reviewers must NEVER be set directly on an MR/PR (not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg) — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). The ONLY sanctioned path to a COLLEAGUE's review is requesting it by posting the MR link to the Slack/approval channel (the `review-request post` command below); the reviewer self-claims from there. The overlay's standing `pr_auto_reviewers` policy is not a colleague request and is applied by teatree itself, on bot-authored repos only — at creation, and on already-open bot-authored MRs by `t3 <overlay> review apply-reviewer-policy`. A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token.
-- **Never post without user approval.** Always present the summary tables first and wait for explicit "send" / "go ahead".
+- **Never post without user approval.** On this manual path, always present the summary tables first and wait for explicit "send" / "go ahead". The autonomous sender's approval is the one named above, and it never posts over a hold or after you declined at that head.
 - **Post only via the sanctioned path — enforced, not advisory.** The `mcp__teatree__review_request_post` MCP tool — or `t3 review-request post --mr-url <url> --approver <id> --ticket-id <ticket-id> --head-sha <full-40-char-head-sha>` when the MCP server isn't connected — is the ONLY sanctioned post path (#1098). It runs the #1084 live-channel dedup + atomic DB claim and the #960 recorded-approval chokepoint in one transaction, so two posts (agent+agent, or user+agent) for the same PR within the dedup window are impossible and an unapproved post cannot go out. A user's manual out-of-band post suppresses the agent. **Never** post with a raw `messaging_from_overlay(...).post_message(...)` Bash call, a JSON cache, or an out-of-turn manual search — all bypass the dedup+approval binding and are racy and stale-prone.
 - **Draft PRs are invisible.** Exclude them from all tables and counts.
-- **Validate before posting.** Never send a review request for a PR that fails validation — fix it first.
+- **Validate before posting.** Never send a review request for a PR that fails validation — fix it first. The autonomous sender refuses one too and asks you instead.
 - **Preserve description bodies.** When fixing the first line, never lose the rest of the description.
 - **Sort consistently.** Always sort by `updated_at` descending.
 

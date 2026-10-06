@@ -25,6 +25,7 @@ from django.test import TestCase
 
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
 from tests.teatree_core.conftest import ready_review_batch_for_test, record_review_request_prerequisites_for_test
 
@@ -79,6 +80,7 @@ class _Base(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        allow_slack_channels(_TARGET.channel_id)
         self._tmp = Path(tempfile.mkdtemp())
         self._prev_data_dir = os.environ.get("T3_DATA_DIR")
         os.environ["T3_DATA_DIR"] = str(self._tmp)

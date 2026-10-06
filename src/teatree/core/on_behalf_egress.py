@@ -160,11 +160,14 @@ def _observe_egress_errors(
         raise
 
 
-def observed_channel_post(*, target: str, action: str, channel: str, publish: Callable[[], RawAPIDict]) -> RawAPIDict:
-    """A gated caller's own channel post, suppressed and reported by a preview exactly as this egress's are."""
+def observed_channel_post(
+    *, target: str, action: str, channel: str, text: str, post: Callable[[str], RawAPIDict]
+) -> RawAPIDict:
+    """A gated caller's own channel post: send-proxied, then suppressed and reported by a preview like this egress's."""
     destination = EgressDestination(channel=channel)
     with _observe_egress_errors(target, action, EgressKind.POST, destination=destination):
-        response = run_egress_transport(target, action, EgressKind.POST, publish)
+        routed = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
+        response = run_egress_transport(target, action, EgressKind.POST, lambda: post(routed))
     return _observe_egress(target, action, EgressKind.POST, response, destination=destination)
 
 

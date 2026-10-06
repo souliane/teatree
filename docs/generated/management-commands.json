@@ -983,7 +983,7 @@
       "subcommands": []
     },
     {
-      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no\nrecorded approval, no anti-vacuity attestation, a draft MR, an\nunreadable draft state, a work group holding this member back, or a\npost the transport did not land).",
+      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no\nrecorded approval, no anti-vacuity attestation, a draft MR, an\nunreadable draft state, a work group holding this member back, a\nreview channel off the send-proxy allowlist, or a post the transport\ndid not land).",
       "name": "review_request_post",
       "subcommands": []
     },

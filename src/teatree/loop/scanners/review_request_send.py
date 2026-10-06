@@ -2,13 +2,17 @@
 
 :class:`~teatree.loop.scanners.mr_triage_scan.MrTriageScanner` decides; this acts on its
 ``REQUEST_REVIEW`` verdicts through the sanctioned ``review_request_post`` command, so the
-dedup claim, the posture gate, the post and the ``ReviewRequestPost`` record stay in that
-one chokepoint. Two selections are this caller's own, because the command trusts a human
-to have made them: a ticket to read the anti-vacuity attestation from, and a ``merge_safe``
-cold review bound to the CURRENT head — the command's review-state gate is not head-bound.
+dedup claim, the posture gate, the send-proxy, the post and the ``ReviewRequestPost`` record
+stay in that one chokepoint. What the command trusts a human to have checked is this caller's
+own: the owner's answer at the CURRENT head, no standing hold, a ``merge_safe`` cold review
+bound to that head (or the owner's "post" answer in its place), a ticket to read the
+anti-vacuity attestation from, a PR title and body the overlay accepts, and a live head that
+still matches the listing.
 
-A refusal the owner can fix becomes their question; any other refusal clears on its own and
-is retried on the next pass, the command having rolled its dedup claim back.
+A refusal asks the owner once per head, and an answer at a head is final for that head. Only
+the outcomes in :data:`_RETRIED_QUIETLY` retry on their own; every other one, including a
+reason added later, is put to the owner. A pass stops after ``max_posts_per_tick`` landed
+posts, and one merge request raising never ends the pass for the rest.
 """
 
 import io
@@ -17,22 +21,37 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from teatree.core.machine_output import call_command_streamed, last_json_object
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
-from teatree.core.review.mr_state_question import ask_mr_state, retire_mr_state_question
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
+from teatree.core.models import DeferredQuestion
+from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.review.mr_state_question import ask_mr_state, owner_answer_at_head, retire_mr_state_question
 from teatree.core.review.mr_triage import TriageAction
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.mr_triage_scan import MISSING_REVIEW_OPTIONS, MrTriageScanner, TriagedMr
 from teatree.loop.scanners.my_prs import _str_field
 from teatree.loop.scanners.pr_payload import head_sha
-from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
+from teatree.loop.scanners.pr_sweep_decision import head_review_state
 from teatree.types import RawAPIDict
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
-_OWNER_ACTIONABLE = frozenset(
-    {"no_ticket", "anti_vacuity_not_attested", "ticket_not_reviewed", "on_behalf_not_approved"}
+_SENT = "review_request.sent"
+_POST_ANSWER = MISSING_REVIEW_OPTIONS[0].casefold()
+_RETRIED_QUIETLY = frozenset(
+    {
+        "read_failed_failsafe",
+        "already_claimed",
+        "thread_gone",
+        "already_posted",
+        "authorship_unreadable",
+        "draft_state_unknown",
+    }
 )
+_ASK_TEXT = {"awaiting_cold_review": "no independent cold review covers its current head yet."}
 
 
 class ReviewRequestPoster(Protocol):
@@ -46,11 +65,6 @@ class CallCommandReviewRequestPoster:
     approver: str = "review_request_send"
 
     def post(self, *, mr_url: str, title: str, ticket_id: str, head_sha: str) -> RawAPIDict:
-        from teatree.core.machine_output import (  # noqa: PLC0415 — deferred: the command registry needs Django
-            call_command_streamed,
-            last_json_object,
-        )
-
         out = io.StringIO()
         with suppress(SystemExit):
             call_command_streamed(
@@ -68,18 +82,13 @@ class CallCommandReviewRequestPoster:
         return verdict
 
 
-@dataclass(frozen=True, slots=True)
-class _Sendable:
-    ticket_id: str
-    head_sha: str
-
-
 @dataclass(slots=True)
 class ReviewRequestSendScanner:
-    """Send each owed review request, invoking the command at most ``max_posts_per_tick`` times a pass."""
+    """Send each owed review request, stopping once ``max_posts_per_tick`` have landed this pass."""
 
     triage: MrTriageScanner
     poster: ReviewRequestPoster = field(default_factory=CallCommandReviewRequestPoster)
+    metadata: OverlayMetadata = field(default_factory=OverlayMetadata)
     max_posts_per_tick: int = 3
     name: str = "review_request_send"
 
@@ -89,78 +98,100 @@ class ReviewRequestSendScanner:
         for item in self.triage.triaged():
             if item.verdict.action is not TriageAction.REQUEST_REVIEW:
                 continue
-            sendable = self._sendable(item)
-            if isinstance(sendable, ScanSignal):
-                signals.append(sendable)
-                continue
             if posts == self.max_posts_per_tick:
                 break
-            posts += 1
-            result = self.poster.post(
-                mr_url=item.url,
-                title=_str_field(item.pr, "title"),
-                ticket_id=sendable.ticket_id,
-                head_sha=sendable.head_sha,
-            )
-            signals.append(self._outcome(item, result))
+            try:
+                signal = self._act(item)
+            except Exception as exc:
+                logger.exception("review_request_send: sending the review request for %s raised", item.url)
+                signal = _deferred(item, f"error:{type(exc).__name__}")
+            if signal.kind == _SENT:
+                posts += 1
+            signals.append(signal)
         return signals
 
-    @staticmethod
-    def _sendable(item: TriagedMr) -> _Sendable | ScanSignal:
+    def _act(self, item: TriagedMr) -> ScanSignal:
         ref = pr_ref_from_url(item.url)
         sha = head_sha(item.pr)
         if ref is None or not sha:
             return _deferred(item, "head_unreadable")
+        answer = owner_answer_at_head(item.url, head_sha=sha)
+        if blocker := _review_blocker(item, ref, sha, answer):
+            return blocker
+        return self._send(item, ref, sha, answered=answer is not None)
+
+    def _send(self, item: TriagedMr, ref: PrRef, sha: str, *, answered: bool) -> ScanSignal:
         ticket = resolve_gated_ticket(slug=ref.slug, pr_id=ref.pr_id)
         if ticket is None:
-            return _refused(item, "no_ticket")
-        if not has_independent_cold_review(slug=ref.slug, pr_id=ref.pr_id, head_sha=sha):
-            ask_mr_state(
-                mr_url=item.url,
-                reason="it is ready for review, but no independent cold review covers its current head yet.",
-                options=MISSING_REVIEW_OPTIONS,
-            )
-            return _deferred(item, "awaiting_cold_review")
-        return _Sendable(ticket_id=str(ticket.pk), head_sha=sha)
+            return _ask(item, sha, "no_ticket", answered=answered)
+        title = _str_field(item.pr, "title")
+        if self.metadata.validate_pr(title, _str_field(item.pr, "description", "body"), repo=ref.slug)["errors"]:
+            return _ask(item, sha, "pr_metadata_invalid", answered=answered)
+        if moved := self._live_head_mismatch(ref, sha):
+            return _deferred(item, moved)
+        result = self.poster.post(mr_url=item.url, title=title, ticket_id=str(ticket.pk), head_sha=sha)
+        return _outcome(item, sha, result, answered=answered)
 
-    @staticmethod
-    def _outcome(item: TriagedMr, result: RawAPIDict) -> ScanSignal:
-        action = str(result.get("action") or "")
-        reason = str(result.get("reason") or "")
-        if action == "post":
-            retire_mr_state_question(item.url, reason="the review request was sent")
-            return _sent(item, str(result.get("permalink") or ""))
-        if action == "refused" and reason in _OWNER_ACTIONABLE:
-            return _refused(item, reason)
+    def _live_head_mismatch(self, ref: PrRef, sha: str) -> str:
+        live = self.triage.host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id)
+        if live in {"", HEAD_SHA_UNREADABLE}:
+            return "head_unreadable"
+        return "" if live == sha else "head_moved"
+
+
+def _review_blocker(item: TriagedMr, ref: PrRef, sha: str, answer: DeferredQuestion | None) -> ScanSignal | None:
+    """What stops a send at this head: the owner declining, a standing hold, or no review and no "post" answer."""
+    if answer is not None and answer.answer_text.strip().casefold() != _POST_ANSWER:
+        return _deferred(item, "owner_declined")
+    review = head_review_state(slug=ref.slug, pr_id=ref.pr_id, head_sha=sha)
+    if review.held_verdicts:
+        return _deferred(item, review.hold_reason, detail=review.hold_detail)
+    if review.authorizing_verdict is None and answer is None:
+        return _ask(item, sha, "awaiting_cold_review", answered=False)
+    return None
+
+
+def _outcome(item: TriagedMr, sha: str, result: RawAPIDict, *, answered: bool) -> ScanSignal:
+    action = str(result.get("action") or "")
+    reason = str(result.get("reason") or "")
+    if action == "post":
+        retire_mr_state_question(item.url, reason="the review request was sent")
+        return _sent(item, str(result.get("permalink") or ""))
+    if reason in _RETRIED_QUIETLY:
         return _deferred(item, f"{action}:{reason}")
+    return _ask(item, sha, reason or action or "no_verdict", answered=answered)
+
+
+def _ask(item: TriagedMr, sha: str, reason: str, *, answered: bool) -> ScanSignal:
+    """Refuse *item*, asking the owner unless they already answered at this head."""
+    text = _ASK_TEXT.get(reason, f"sending the review request was refused ({reason}).")
+    asked = not answered and (
+        ask_mr_state(
+            mr_url=item.url,
+            reason=f"it is ready for review, but {text}",
+            options=MISSING_REVIEW_OPTIONS,
+            head_sha=sha,
+        )
+        is not None
+    )
+    return ScanSignal(
+        kind="review_request.send_refused",
+        summary=_summary(item, "refused", f"{reason}; owner {'asked' if asked else 'not asked'}"),
+        payload={**_payload(item, reason=reason), "asked": asked},
+    )
 
 
 def _sent(item: TriagedMr, permalink: str) -> ScanSignal:
     return ScanSignal(
-        kind="review_request.sent",
-        summary=_summary(item, "sent", permalink),
-        payload=_payload(item, permalink=permalink),
+        kind=_SENT, summary=_summary(item, "sent", permalink), payload=_payload(item, permalink=permalink)
     )
 
 
-def _refused(item: TriagedMr, reason: str) -> ScanSignal:
-    ask_mr_state(
-        mr_url=item.url,
-        reason=f"it is ready for review, but sending the review request was refused ({reason}).",
-        options=MISSING_REVIEW_OPTIONS,
-    )
-    return ScanSignal(
-        kind="review_request.send_refused",
-        summary=_summary(item, "refused", reason),
-        payload=_payload(item, reason=reason),
-    )
-
-
-def _deferred(item: TriagedMr, reason: str) -> ScanSignal:
+def _deferred(item: TriagedMr, reason: str, *, detail: str = "") -> ScanSignal:
     return ScanSignal(
         kind="review_request.send_deferred",
-        summary=_summary(item, "deferred", reason),
-        payload=_payload(item, reason=reason),
+        summary=_summary(item, "deferred", f"{reason}: {detail}" if detail else reason),
+        payload={**_payload(item, reason=reason), "detail": detail},
     )
 
 
