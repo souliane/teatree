@@ -31,6 +31,8 @@
 #   group (`ci-<run_id>`) so the full-tree banned-terms / overlay-leak
 #   backstops always run to completion — a superseding event must never kill
 #   a main-branch tree scan mid-run.
+#   A job that must override an upstream skip says `!cancelled()`, never
+#   `always()`: GitHub keeps an `always()` job running through the cancel.
 #
 # THE `preflight` JOB — diff-scoped lane classifier
 #   Reads the PR's file diff and exports two booleans:
@@ -146,6 +148,7 @@ jobs:
     # this job is PR-only and the downstream ``if:`` conditions run the
     # heavy lanes unconditionally on non-PR events.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     outputs:
       run_heavy_python: ${{ steps.classify.outputs.run_heavy_python }}
@@ -185,6 +188,7 @@ jobs:
   # same-repo run, in-job local build for a fork PR (`mode=local`).
   lint:
     needs: build-image
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -242,6 +246,7 @@ jobs:
     # Only runs on pull_request events because push-to-main has nothing
     # to diff against and the underlying hook covers the merge result.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -278,6 +283,7 @@ jobs:
     # the gate. Reads the PR-vs-base diff into the git index so the
     # hook's ``git diff --cached`` query sees the PR contents.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -307,6 +313,7 @@ jobs:
     # PR's HEAD spec files onto disk) so the hook's ``git diff --cached`` query
     # sees the PR contents and the scan reads the PR's spec bodies.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -335,6 +342,7 @@ jobs:
   # flows, mermaid render, loop round-trips, theme toggle) — never pixel snapshots.
   dash-e2e:
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -372,6 +380,7 @@ jobs:
     # arises here. PR-only: push/schedule have no base to diff against, and the
     # prek hook covers the per-commit case.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -403,6 +412,7 @@ jobs:
     # so the hook's ``git diff --cached`` query sees the PR contents —
     # identical code path to prek and to ``t3 tool comment-density --staged``.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -426,6 +436,7 @@ jobs:
   # GATE: regenerates all generated docs and runs mkdocs --strict; fails if
   # committed output is stale or if any link/nav target is broken.
   docs-drift:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -517,6 +528,7 @@ jobs:
     # makes the same command exit non-zero, promoting this job to a gate
     # without any workflow change. Never a PreToolUse gate; it can never lock
     # the agent's tools.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -541,6 +553,7 @@ jobs:
     # documented floor (files predating the convention) never does. The baseline
     # ratchets toward 0 as the relocation sweep proceeds. Never a PreToolUse
     # gate; it can never lock the agent's tools.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -576,6 +589,7 @@ jobs:
   # markdownlint/codespell/doc generators are its whole point), and steady-state
   # cost here is a manifest check either way.
   build-image:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -652,7 +666,7 @@ jobs:
     # runs unconditionally — fail-safe-unknown. (#132)
     needs: [preflight, build-image]
     if: >
-      always() &&
+      !cancelled() &&
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
@@ -815,9 +829,9 @@ jobs:
   # Never gates a PR; a merge failure or empty diff is a no-op.
   #
   # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
-  # `schedule`, `test-shard` runs anyway because its own `if` says `always()`, and
+  # `schedule`, `test-shard` runs anyway because its own `if` says `!cancelled()`, and
   # GitHub then propagates that upstream skip THROUGH it to every dependent whose
-  # `if` does not re-establish `always()` — an explicit condition is evaluated in
+  # `if` does not name a status function itself — an explicit condition is evaluated in
   # addition to the inherited status gate, not instead of it. Without it this job
   # was skipped on every scheduled run while all twelve shards were green and had
   # uploaded their durations, so no refresh PR was ever opened and
@@ -843,6 +857,7 @@ jobs:
   refresh-durations:
     needs: test-shard
     if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -969,11 +984,12 @@ jobs:
   # reported success while `dev/.test_durations` decayed to 10.8% of the test files. This
   # job is where the second claim is made, so a job that did not run says so.
   # `always()` is load-bearing for the same reason it is on `refresh-durations`: both of its
-  # dependencies run via `always()`, and GitHub propagates their skip through to anything
-  # that does not re-establish it — the very bug being reported here.
+  # dependencies override an upstream skip, and GitHub propagates that skip through to
+  # anything that does not override it too — the very bug being reported here.
   scheduled-maintenance-report:
     needs: [test-shard, refresh-durations]
     if: always() && github.event_name == 'schedule'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Report whether the scheduled maintenance job actually ran
@@ -1012,7 +1028,7 @@ jobs:
   jscpd-scan:
     needs: [preflight, build-image]
     if: >
-      always() &&
+      !cancelled() &&
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
@@ -1062,7 +1078,7 @@ jobs:
   test:
     needs: [preflight, test-shard, jscpd-scan]
     if: >
-      always() &&
+      !cancelled() &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
     timeout-minutes: 12
@@ -1084,7 +1100,7 @@ jobs:
           fi
       # The relocated whole-tree jscpd scan (#4672) reaches merge protection only
       # through this context, so its result is checked exactly like a shard's: a
-      # `needs:` alone still passes under `always()` when the needed job failed.
+      # `needs:` alone still passes under `!cancelled()` when the needed job failed.
       - name: Require the relocated jscpd scan to have passed
         run: |
           result='${{ needs.jscpd-scan.result }}'
@@ -1180,6 +1196,7 @@ jobs:
     if: >
       github.event_name == 'pull_request' &&
       needs.preflight.outputs.run_heavy_python == 'false'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1192,7 +1209,8 @@ jobs:
           (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
           so the required status context is satisfied without re-running the suite."
 
-  # GATE (heavy lane): order-dependence audit. Runs a curated, order-safe slice of
+  # SCHEDULED (nightly cron + manual dispatch, never a PR check): order-dependence
+  # audit. Runs a curated, order-safe slice of
   # the suite under a SHUFFLED collection order (pytest-randomly) so a test that
   # leaks shared global state — a stray env var, an unreset singleton, a
   # module-level cache — and the victim it breaks cannot silently return
@@ -1218,13 +1236,8 @@ jobs:
     # effort; add a dir here only after it passes shuffled (all four seeds) TOGETHER
     # with this set.
     #
-    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
-    # (preflight ``run_heavy_python=false``); any non-pure-docs PR runs it.
-    needs: preflight
-    if: >
-      always() &&
-      (github.event_name != 'pull_request' ||
-      needs.preflight.outputs.run_heavy_python == 'true')
+    # Four ~25-min serial seeds cost too much per push; nightly and on demand instead.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
@@ -1293,7 +1306,6 @@ jobs:
     # it — fail-safe-unknown. (#132)
     needs: preflight
     if: >
-      always() &&
       github.event_name == 'pull_request' &&
       needs.preflight.outputs.run_heavy_python == 'true'
     timeout-minutes: 12
@@ -1377,6 +1389,7 @@ jobs:
     #
     # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1418,6 +1431,7 @@ jobs:
   # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   overlay-leak-tree:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1462,6 +1476,7 @@ jobs:
   # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   term-source-drift:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1494,6 +1509,7 @@ jobs:
   # whole-tree lane is the hard backstop; this audit measures scoped coverage.
   selection-audit:
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1554,6 +1570,7 @@ jobs:
     # one ``VULN-ID  # package==version: justification`` entry per line. See that
     # file for the format. Keep the list as short as possible; every entry is a
     # conscious decision to ship with a known vulnerability.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1608,6 +1625,7 @@ jobs:
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.
   sbom:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1641,6 +1659,7 @@ jobs:
   # `uv-audit` (UV_AUDIT_CHECK_NAME in src/teatree/loop/scanners/pr_sweep.py) so
   # the two never collide.
   uv-audit-advisory:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
