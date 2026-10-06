@@ -192,6 +192,25 @@ queryset inside `except (OperationalError, ProgrammingError): return
 outage still surfaces via `_run_job`. Canonical exemplars:
 `IncomingEventsScanner.scan`, `_reap_stale_task_claims`.
 
+### Squashing the core migrations (Non-Negotiable)
+
+Whoever writes up or performs a squash of `src/teatree/core/migrations/`
+follows both rules, in the code and in the squash PR's deploy note:
+
+- **The squashed initial migration takes a NEW name.** Never `0001_initial`,
+  and never a name any install already recorded, the current squash's own
+  name included. Code from before the squash that meets a squashed database
+  then finds none of its own rows and stops at its first `CreateModel` on an
+  existing table. A reused name would instead read the squash as its own
+  first migration and replay its later, destructive migrations over the
+  squashed schema. Add every retired name to `_PRE_SQUASH_ROWS` in
+  `tests/teatree_core/test_migration_squash_existing_db.py`, which refuses
+  a squash that reuses one.
+- **The squash has no automatic rollback.** The one-time rewrite of the
+  `core` rows in `django_migrations` cannot be undone by `migrate`. The only
+  rollback is restoring the pre-squash backup taken in the maintenance
+  window, so the deploy note names that backup and says so.
+
 ## Three-Tier Command Split
 
 | Tier | Tool | Examples | Needs Django? |
