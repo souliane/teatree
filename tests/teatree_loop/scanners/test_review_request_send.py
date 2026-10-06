@@ -210,7 +210,7 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
         assert self.slack.posts == []
         assert not ReviewRequestPost.objects.filter(mr_url=_URL).exists()
         assert _kinds(signals) == ["review_request.send_deferred"]
-        assert _mr_state_questions() == []
+        assert len(_mr_state_questions()) == 1
 
     def test_a_hold_at_the_head_sends_nothing(self) -> None:
         _ready_ticket(verdict="hold")

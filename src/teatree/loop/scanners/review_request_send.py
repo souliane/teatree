@@ -115,6 +115,11 @@ class ReviewRequestSendScanner:
         if ticket is None:
             return _refused(item, "no_ticket")
         if not has_independent_cold_review(slug=ref.slug, pr_id=ref.pr_id, head_sha=sha):
+            ask_mr_state(
+                mr_url=item.url,
+                reason="it is ready for review, but no independent cold review covers its current head yet.",
+                options=MISSING_REVIEW_OPTIONS,
+            )
             return _deferred(item, "awaiting_cold_review")
         return _Sendable(ticket_id=str(ticket.pk), head_sha=sha)
 
