@@ -901,7 +901,7 @@ class TestTheWriteConcurrencyFactorIsAnOperatorSetting(TestCase):
                 assert self._ceiling(configured) == 4
 
     def test_a_malformed_row_is_logged_not_swallowed(self) -> None:
-        with self.assertLogs("teatree.core.admission_governor", "ERROR") as logs:
+        with self.assertLogs("teatree.core.admission.write_ceiling", "ERROR") as logs:
             self._ceiling("not-a-number")
         assert any(_PER_CORE_SETTING in line for line in logs.output)
 

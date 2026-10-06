@@ -92,6 +92,23 @@ class TestWorkerStatus(django.test.TestCase):
         admission = json.loads(as_json.stdout)["agent_admission"]
         assert (admission["ceiling"], admission["cores"], admission["per_core"]) == (8, 8, 1.0)
 
+    def test_an_unreadable_admission_still_reports_the_worker(self) -> None:
+        # deploy.sh certifies a deploy by grepping `"running": true` out of `--json`.
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+            mock.patch("teatree.core.agent_admission.read_quota_signal", side_effect=RuntimeError("probe down")),
+        ):
+            text = runner.invoke(worker_app, ["status"])
+            as_json = runner.invoke(worker_app, ["status", "--json"])
+        assert text.exit_code == 0
+        assert "worker: RUNNING (pid 4242)" in text.stdout
+        assert "agent admission: unavailable (RuntimeError: probe down)" in text.stdout
+        assert as_json.exit_code == 0
+        payload = json.loads(as_json.stdout)
+        assert payload["running"] is True
+        assert payload["agent_admission"] is None
+
     def test_status_reports_running_via_flock_when_pid_file_absent(self) -> None:
         # The flock is HELD by a live worker but the pid file is missing/stale, so
         # `read_pid` returns None — status must not print a false "NOT running" (#3571).

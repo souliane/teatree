@@ -414,6 +414,14 @@ class TestHeadlessAdmissionStatus(TestCase):
         assert status.pressure.reason
         assert status.pressure.reason in status.line()
 
+    def test_the_status_read_books_no_seat_and_records_no_span(self) -> None:
+        self._claimed("coding")
+        with patch.object(gate_mod, "record_admission_decision") as emit_span:
+            self._status(_healthy_quota())
+
+        emit_span.assert_not_called()
+        assert not Task.objects.filter(admitted_at__isnull=False).exists()
+
 
 class TestDrainConsultsTheGovernor(TestCase):
     def setUp(self) -> None:
@@ -865,6 +873,17 @@ class TestTheDrainingClassHasAReservedSlot(TestCase):
 
         assert self._verdict(expensive=0).denied_for(PhaseCost.EXPENSIVE) is None
         assert self._verdict(expensive=1).denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_a_raised_factor_still_holds_one_seat_for_the_drain(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 2.0)
+
+        full = self._verdict(expensive=15)
+
+        assert "1 of the 16 reserved for the draining class" in (full.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert full.expensive_lane.ceiling == 15
+        assert full.denied_for(PhaseCost.CHEAP) is None
+        assert full.cheap_lane.ceiling == 1
+        assert self._verdict(expensive=14).denied_for(PhaseCost.EXPENSIVE) is None
 
     def test_a_zero_reservation_is_the_rollback_lever(self) -> None:
         # Byte-identical to the pre-#4374 verdict: the expensive class takes every slot
