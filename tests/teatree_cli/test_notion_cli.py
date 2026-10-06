@@ -109,7 +109,7 @@ class TestReads:
     ) -> None:
         paragraph = notion.paragraph("the lookup returns the customer number")
         notion.comment_on(
-            paragraph, "this contradicts the line above", discussion_id="disc-inline", author="Adrien Cossa"
+            paragraph, "this contradicts the line above", discussion_id="disc-inline", author="Alice Example"
         )
 
         result = runner.invoke(notion_app, ["comments", notion.page_id])

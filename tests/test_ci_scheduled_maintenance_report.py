@@ -61,8 +61,8 @@ class TestTheReporterIsReachableOnAScheduledRun:
     def test_it_re_establishes_always_so_an_upstream_skip_does_not_silence_it(self) -> None:
         condition = str(_reporter().get("if", ""))
         assert "always()" in condition, (
-            "the reporter needs jobs that themselves run via `always()`, so GitHub propagates their "
-            "skip to it unless it says `always()` too — the exact #4048 shape it exists to report."
+            "the reporter needs jobs that themselves override an upstream skip, so GitHub propagates "
+            "that skip to it unless it says `always()` too — the exact #4048 shape it exists to report."
         )
         assert "github.event_name == 'schedule'" in condition, (
             "the reporter is about the SCHEDULED lane; a PR run has no maintenance job to report on."

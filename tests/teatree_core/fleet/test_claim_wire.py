@@ -415,6 +415,7 @@ def _record_push(seen: list[dict[str, object]]) -> "Callable[..., PushOutcome]":
     return push
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestExecuteShipFence(TestCase):
     """B2: ``execute_ship`` re-fences and aborts (no push, no PR) under a stolen claim."""
 

@@ -1,3 +1,5 @@
+# test-path: cross-cutting — pins the cli/review conftest's outbound-HTTP ban; the gate_verdict
+# reader is only the swallowing read it is exercised through, not the unit under test.
 """The package-wide outbound-HTTP ban proves itself, so `attempts == 0` means something.
 
 An autouse fixture that silently failed to patch is indistinguishable from one that
@@ -13,7 +15,7 @@ survives that, and it is what the tests around it assert on.
 import httpx
 import pytest
 
-from teatree.cli.review.guarded_read import guarded_read
+from teatree.core.modelkit.gate_verdict import guarded_read
 from tests.teatree_cli.review.conftest import OutboundHttpBan
 
 

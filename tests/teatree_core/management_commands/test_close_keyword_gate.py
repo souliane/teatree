@@ -30,9 +30,12 @@ from tests.teatree_core.management_commands._overlays import (
     _patch_overlays,
 )
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
-)
+pytestmark = [
+    pytest.mark.usefixtures("readable_ship_tree"),
+    pytest.mark.filterwarnings(
+        "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+    ),
+]
 
 
 def _shippable_ticket(*, repo: str = "/tmp/wt", branch: str = "feature-x") -> Ticket:
@@ -66,11 +69,12 @@ def _git_boundary(
     ``last_commit_message`` is the raw MR-description source the gate scans
     (and also what ``ship_preview`` derives the post-sanitize description
     from); ``commit_messages`` feeds the branch-commit scan; ``default_branch``
-    lets the ``origin/main..branch`` range be built. Visual QA is the other
-    unstoppable boundary (browser).
+    lets the ``origin/main..branch`` range be built. Visual QA and mandatory E2E
+    are the other unstoppable boundaries (browser, published E2E evidence).
     """
     with (
         patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+        patch.object(pr_mod, "_run_e2e_mandatory_gate", return_value=None),
         patch(
             "teatree.core.management.commands._close_keyword_gate.git.last_commit_message",
             return_value=(subject, body),

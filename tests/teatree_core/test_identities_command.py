@@ -21,13 +21,13 @@ class TestIdentitiesCommand(TestCase):
         TrustedIdentity.objects.all().delete()
 
     def test_seed_consolidates_configured_aliases(self) -> None:
-        ConfigSetting.objects.set_value("user_identity_aliases", ["souliane", "adrien.cossa"])
+        ConfigSetting.objects.set_value("user_identity_aliases", ["souliane", "alice.example"])
         result = call_command("identities", "seed")
         assert result == {"seeded": 2, "created": 2}
-        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "adrien.cossa"}
+        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "alice.example"}
 
     def test_seed_is_idempotent(self) -> None:
-        ConfigSetting.objects.set_value("user_identity_aliases", ["souliane", "adrien.cossa"])
+        ConfigSetting.objects.set_value("user_identity_aliases", ["souliane", "alice.example"])
         call_command("identities", "seed")
         result = call_command("identities", "seed")
         assert result == {"seeded": 2, "created": 0}
@@ -52,6 +52,6 @@ class TestIdentitiesCommand(TestCase):
         assert not TrustedIdentity.objects.filter(handle="souliane").exists()
 
     def test_list_returns_rows(self) -> None:
-        TrustedIdentity.objects.create(platform="gitlab", handle="adrien.cossa", note="GitLab")
+        TrustedIdentity.objects.create(platform="gitlab", handle="alice.example", note="GitLab")
         rows = call_command("identities", "list")
-        assert rows == [{"platform": "gitlab", "handle": "adrien.cossa", "note": "GitLab"}]
+        assert rows == [{"platform": "gitlab", "handle": "alice.example", "note": "GitLab"}]

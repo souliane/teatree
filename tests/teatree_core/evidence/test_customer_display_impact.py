@@ -2,11 +2,12 @@
 
 ``classify_paths`` decides whether a changed-file set could impact what is
 displayed to the customer, given an overlay's non-impacting glob rules. The
-defining property is FAIL-CLOSED: a path matching no non-impacting rule, and the
-empty-diff case, resolve to ``True`` — an unanticipated path is presumed
-display-impacting so the mandatory-E2E gate cannot be silently skipped by a path
-the rules did not anticipate. Only a set whose every path is explicitly
-non-impacting resolves to ``False``.
+defining property is FAIL-CLOSED: a path matching no non-impacting rule resolves to
+``True`` — an unanticipated path is presumed display-impacting so the
+mandatory-E2E gate cannot be silently skipped by a path the rules did not
+anticipate. Only a set whose every path is explicitly non-impacting, or a verified
+empty diff, resolves to ``False``; a diff that could not be read never reaches the
+classifier (#4929).
 """
 
 from teatree.core.evidence.customer_display_impact import classify_paths, is_non_impacting_path
@@ -60,8 +61,5 @@ class TestFailClosed:
         # One non-impacting + one unknown → the unknown forces fail-closed True.
         assert classify_paths(["README.md", "app/business/pricing.py"], _NON_IMPACTING) is True
 
-    def test_empty_diff_is_impacting(self) -> None:
-        # An empty changed-file list is ambiguous, never proof of no impact →
-        # fail closed so the gate is not skipped by a diff that failed to
-        # enumerate.
-        assert classify_paths([], _NON_IMPACTING) is True
+    def test_a_verified_empty_diff_is_not_impacting(self) -> None:
+        assert classify_paths([], _NON_IMPACTING) is False

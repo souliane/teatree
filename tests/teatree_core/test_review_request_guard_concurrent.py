@@ -43,7 +43,7 @@ from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
-_TARGET = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="the-review-team", token="xoxb-bot")
+_TARGET = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="review-channel", token="xoxb-bot")
 
 
 def _make_alias(tmp_path: Path) -> str:

@@ -11,6 +11,7 @@ separate CLI call.
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -253,6 +254,7 @@ class TestShippingGateCrossSessionUnion(TestCase):
         assert ticket.state == Ticket.State.SELF_REVIEWED
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestPrCreateNeverRaisesTransitionNotAllowed(TestCase):
     def test_pr_create_blocks_instead_of_raising_when_fsm_behind(self) -> None:
         # FSM stuck at WORK_STARTED, no phases visited — pr create must return a

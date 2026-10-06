@@ -12,11 +12,11 @@ from pathlib import Path
 
 import yaml
 
-_CI = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+_WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
-def _workflow() -> dict:
-    return yaml.safe_load(_CI.read_text(encoding="utf-8"))
+def _workflow(name: str = "ci.yml") -> dict:
+    return yaml.safe_load((_WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
 def test_concurrency_block_present() -> None:
@@ -45,3 +45,15 @@ def test_group_supersedes_per_pr_but_isolates_non_pr_runs() -> None:
         "push/schedule must fall back to a unique run_id group so their runs are never cancelled "
         "by a superseding sibling."
     )
+
+
+def test_publish_image_cancels_superseded_pr_builds_but_never_a_main_publish() -> None:
+    concurrency = _workflow("publish-image.yml")["concurrency"]
+    cancel = str(concurrency["cancel-in-progress"])
+    group = str(concurrency["group"])
+    assert cancel.strip() == "${{ github.event_name == 'pull_request' }}", (
+        "only a PR's build-only run may be cancelled; a main publish must never die mid-push."
+    )
+    assert "github.event_name == 'pull_request'" in group, "PR builds need a group of their own"
+    assert "github.ref" in group, "each PR's builds supersede only that PR's own earlier build"
+    assert "'publish-image'" in group, "main and dispatch publishes keep the one shared, never-cancelled group"

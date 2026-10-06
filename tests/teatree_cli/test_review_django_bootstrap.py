@@ -174,7 +174,7 @@ class TestReviewPostCommentBootstrapsDjango:
             "from django.apps import apps\n"
             "from teatree.cli import app\n"
             "from teatree.cli.review import ReviewService\n"
-            "from teatree.cli.review.guarded_read import ReadOutcome\n"
+            "from teatree.core.modelkit.gate_verdict import ReadOutcome\n"
             "\n"
             "def checked_post(_self, *_args, **_kwargs):\n"
             "    assert apps.ready, 'Django was not bootstrapped'\n"

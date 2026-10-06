@@ -219,7 +219,7 @@ class TestNagPostBypassClosed(TestCase):
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            signal = scanner._post_engineers_pray(post, fake, timezone.now())
+            signal = scanner._post_reask(post, fake, timezone.now())
         assert fake.post_message_calls == []
         assert fake.post_routed_calls == []
         post.refresh_from_db()
@@ -234,7 +234,7 @@ class TestNagPostBypassClosed(TestCase):
         fake = _RouteAwareFake()
         scanner = ReviewNagScanner(messaging=fake)
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            scanner._post_engineers_pray(post, fake, timezone.now())
+            scanner._post_reask(post, fake, timezone.now())
         assert fake.post_routed_calls == [(_COLLEAGUE, fake.post_routed_calls[0][1], _TS)]
         post.refresh_from_db()
         assert post.last_nag_at is not None

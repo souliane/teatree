@@ -27,20 +27,18 @@ also what lets ``teatree.agents`` consume the gate at all: it declares no
 ``teatree.backends`` edge either, so the read has to live on this side.
 """
 
-import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.forge_url import is_forge_url
+from teatree.core.modelkit.gate_verdict import guarded_read
 from teatree.core.modelkit.phases import IMPLEMENTING_PHASES, SUBAGENT_BY_IMPLEMENTING_PHASE, normalize_phase
 from teatree.core.overlay_loader import get_overlay_for_ticket
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.types import RawAPIDict
-
-logger = logging.getLogger(__name__)
 
 #: Greppable marker leading every refusal, matching the ``plan_missing:`` sibling
 #: recorded at the same pre-harness seam. Kept in step with
@@ -119,15 +117,13 @@ def closed_issue_dispatch_refusal(ticket: "Ticket", *, phase: str) -> str | None
 
 
 def _fetch_issue(ticket: "Ticket") -> object:
-    """*ticket*'s live issue payload, or ``None`` for every failure — the fail-open read."""
-    try:
+    """*ticket*'s live issue payload, or ``None`` when it cannot be read — logged, and the dispatch proceeds."""
+
+    def read() -> object:
         host = get_backend_provider().get_code_host_for_url(get_overlay_for_ticket(ticket), ticket.issue_url)
-        if host is None:
-            return None
-        return host.get_issue(ticket.issue_url)
-    except Exception:  # noqa: BLE001 — a read this gate cannot complete lets the dispatch through, never blocks it
-        logger.warning("Could not read issue %s — letting the dispatch through", ticket.issue_url)
-        return None
+        return None if host is None else host.get_issue(ticket.issue_url)
+
+    return guarded_read(f"issue {ticket.issue_url}, letting the dispatch through", read, neutral=None).value
 
 
 def _refusal(ticket: "Ticket", canonical_phase: str, closed_reason: str) -> str:

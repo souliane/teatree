@@ -312,7 +312,7 @@ Agent(
 - Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']`.
 - Blocks PR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
 - Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
-- Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
+- Refuses as `[gate:visual_qa] DID NOT RUN` when the check cannot run: the diff is unreadable, the browser cannot start, or the page budget runs out. Run `playwright install chromium` and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
 
 ### 5. Create MR/PR
 

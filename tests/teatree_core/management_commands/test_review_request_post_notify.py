@@ -49,7 +49,7 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
 
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
-_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
+_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="review-channel", token="xoxp")
 _CMD = "teatree.core.management.commands.review_request_post"
 
 
