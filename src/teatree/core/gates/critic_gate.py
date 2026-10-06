@@ -195,11 +195,12 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
     The orchestrator half of the async critic lane, mirroring
     ``review_envelope_recorder.record_returned_review_envelope``: a Bash-denied critic RETURNS a
     typed ``critic_verdict``; THIS actor (not the maker) records the
-    :class:`CriticVerdict`, then re-runs the finding recording so the freshly-judged
-    LLM items land in ``CriticFinding``. A non-critic task, a result without a
-    ``critic_verdict``, or an unresolvable dispatch is a no-op (``""``). Returns an
-    error string when the verdict is maker-graded so the caller fails the task and the
-    block surfaces.
+    :class:`CriticVerdict`. Only a ``mark_delivered`` verdict then re-runs the delivery
+    rubric so its LLM items land in ``CriticFinding``; a merge or plan verdict is mirrored
+    by its own gate, and re-running here would judge ``done_not_done`` before the merge.
+    A non-critic task, a result without a ``critic_verdict``, or an unresolvable dispatch
+    is a no-op (``""``). Returns an error string when the verdict is maker-graded so the
+    caller fails the task and the block surfaces.
     """
     dispatch = getattr(task, "critic_dispatches", None)
     dispatch_row = dispatch.first() if dispatch is not None else None
@@ -218,7 +219,8 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
         )
     except CriticVerdictError as exc:
         return f"critic verdict recording refused: {exc}"
-    record_critic_findings(ticket, run_critic(ticket))
+    if dispatch_row.transition == _TRANSITION:
+        record_critic_findings(ticket, run_critic(ticket))
     return ""
 
 
