@@ -51,6 +51,10 @@ class GateResult[E]:
     def passed(self) -> bool:
         return isinstance(self.verdict, Pass)
 
+    @property
+    def blocks(self) -> bool:
+        return not self.passed
+
     def render(self) -> str:
         if isinstance(self.verdict, Pass):
             return f"[gate:{self.gate_id}] PASSED"

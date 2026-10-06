@@ -43,6 +43,7 @@ class TestEvaluateGateNeedsExecutedEvidence:
 
         assert isinstance(result.verdict, Unknown)
         assert result.passed is False
+        assert result.blocks is True
         assert result.render().startswith("[gate:synthetic_probe] DID NOT RUN")
         assert _ABSENT_PROBE in result.render()
         assert "Remedy: install it" in result.render()
@@ -52,6 +53,7 @@ class TestEvaluateGateNeedsExecutedEvidence:
 
         assert isinstance(result.verdict, Pass)
         assert result.passed is True
+        assert result.blocks is False
         assert result.evidence == ""
         assert result.render() == "[gate:synthetic_probe] PASSED"
 
@@ -75,6 +77,7 @@ class TestEvaluateGateNeedsExecutedEvidence:
         )
 
         assert result.passed is False
+        assert result.blocks is True
         assert result.render() == "[gate:synthetic_probe] REFUSED: 3 findings Remedy: fix"
 
     def test_a_collection_failure_is_logged_with_its_gate(self, caplog: pytest.LogCaptureFixture) -> None:
