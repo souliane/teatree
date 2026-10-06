@@ -3,6 +3,7 @@
 import asyncio
 import atexit
 import inspect
+import logging
 import os
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
@@ -22,6 +23,8 @@ from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAp
 from teatree.agents.codex_auth_cache import CodexAuthCache
 from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
 from teatree.agents.harness_registry import HarnessFallbackError
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 _IDLE_SECONDS = 5.0
@@ -96,7 +99,9 @@ class SharedCodexAppServer:
     def _run(self, options: CodexAppServerOptions) -> None:
         try:
             asyncio.run(self._serve(options))
-        except Exception as exc:  # noqa: BLE001 - propagate worker startup failure
+        except Exception as exc:
+            if self._ready.is_set():
+                logger.warning("Shared Codex App Server stopped after startup", exc_info=exc)
             self._startup_error = exc
             self._ready.set()
         finally:
