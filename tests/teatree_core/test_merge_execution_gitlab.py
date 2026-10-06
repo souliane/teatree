@@ -425,7 +425,14 @@ class TestExecuteBoundMergeGitLab(TestCase):
             result = _merge_at(_SHA)
         assert result == "commit-sha-12345"
         assert f"projects/acme%2Fwidget/merge_requests/{_PR_IID}/merge" in stub.calls
-        assert stub.merge_payloads == [{"sha": _SHA, "squash": True, "squash_commit_message": _MR_TITLE}]
+        assert stub.merge_payloads == [
+            {
+                "sha": _SHA,
+                "squash": True,
+                "squash_commit_message": _MR_TITLE,
+                "merge_commit_message": f"{_MR_TITLE}\n\nTidies the widget.",
+            }
+        ]
 
     def test_a_footer_in_the_description_is_refused_before_the_merge_request(self) -> None:
         footer = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
