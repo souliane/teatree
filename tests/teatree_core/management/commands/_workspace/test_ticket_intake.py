@@ -18,7 +18,11 @@ from django.utils.module_loading import import_string
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
-from teatree.core.models import Ticket
+from teatree.core.management.commands._workspace import ticket_intake as ticket_intake_mod
+from teatree.core.models import Ticket, Worktree
+from teatree.core.runners.base import RunnerResult
+from tests._git_repo import make_git_repo, run_git
+from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS
 
 pytestmark = pytest.mark.filterwarnings(
@@ -32,6 +36,8 @@ class TestTheIssueTitleIsReadOutsideTheWriteTransaction(TestCase):
         self.enterContext(
             patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0, stdout="", stderr=""))
         )
+        # ``cut_start_point`` reads origin through Popen, which the ``subprocess.run`` mock never reaches.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"))
         workspace = Path(os.environ["HOME"]) / "workspace"
         for repo in ("backend", "frontend"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
@@ -53,3 +59,101 @@ class TestTheIssueTitleIsReadOutsideTheWriteTransaction(TestCase):
 
         assert depth_at_fetch == [caller_depth]
         assert Ticket.objects.get(pk=ticket_id).extra["description"] == "Fix Login Flow"
+
+
+class TestTheSummaryReportsTheCheckout(TestCase):
+    """The intake summary names the branch each worktree is on, and a refusal names git's error (#4967)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+
+    def _ticket(self, branch: str, *, worktree_path: str = "", recorded_branch: str = "") -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/4967", repos=["repo-a"], extra={"branch": branch}
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="repo-a",
+            branch=recorded_branch or branch,
+            extra={"worktree_path": worktree_path} if worktree_path else {},
+        )
+        return ticket
+
+    def _finalize_after(self, ticket: Ticket, result: RunnerResult) -> tuple[str, int]:
+        out: list[str] = []
+        provisioner = MagicMock()
+        provisioner.run.return_value = result
+        with patch.object(ticket_intake_mod, "WorktreeProvisioner", return_value=provisioner):
+            rc = ticket_intake_mod.finalize_ticket_provision(out.append, lambda _s: None, ticket, None)
+        return "\n".join(out), rc
+
+    def test_names_the_branch_actually_checked_out(self) -> None:
+        clone = make_git_repo(self.tmp / "repo-a")
+        checkout = self.tmp / "requested-y" / "repo-a"
+        run_git(clone, "worktree", "add", "-q", "-b", "actual-x", str(checkout))
+        ticket = self._ticket("requested-y", worktree_path=str(checkout))
+
+        summary, rc = self._finalize_after(ticket, RunnerResult(ok=True, detail="provisioned 1 worktree(s)"))
+
+        assert rc == ticket.pk
+        assert "on actual-x (ticket records requested-y)" in summary
+        assert "Branch: requested-y" not in summary
+
+    def test_a_row_with_no_checkout_never_reads_the_current_directory(self) -> None:
+        ticket = self._ticket("4967-no-path")
+
+        summary, _rc = self._finalize_after(ticket, RunnerResult(ok=False, detail="failed to create worktrees for: x"))
+
+        assert "repo-a: worktree #" in summary
+        assert "no readable checkout" in summary
+
+    def test_a_detached_checkout_is_labelled_detached(self) -> None:
+        clone = make_git_repo(self.tmp / "repo-a")
+        checkout = self.tmp / "4967-detached" / "repo-a"
+        run_git(clone, "worktree", "add", "-q", "--detach", str(checkout))
+        ticket = self._ticket("4967-detached", worktree_path=str(checkout))
+
+        summary, _rc = self._finalize_after(ticket, RunnerResult(ok=True, detail="provisioned 1 worktree(s)"))
+
+        assert "on detached HEAD (ticket records 4967-detached)" in summary
+
+    def _finalize_against_a_real_clone(self, *, break_origin: bool) -> tuple[int, int, list[str]]:
+        origin = make_git_repo(self.tmp / "origin" / "repo-a.git", bare=True)
+        clone = make_git_repo(self.tmp / "workspace" / "repo-a")
+        run_git(clone, "remote", "add", "origin", str(origin))
+        run_git(clone, "push", "-q", "origin", "main")
+        if break_origin:
+            run_git(clone, "remote", "set-url", "origin", str(self.tmp / "gone.git"))
+        else:
+            run_git(clone, "remote", "remove", "origin")
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/4968", repos=["repo-a"], extra={"branch": "4968-x"}
+        )
+        pk, errs = int(ticket.pk), []
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": CommandOverlay()}),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.tmp / "workspace"),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.tmp / "worktrees"),
+            patch.object(ticket_intake_mod, "worktree_root", return_value=self.tmp / "worktrees"),
+        ):
+            rc = ticket_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
+        return pk, rc, errs
+
+    def test_a_retryable_refusal_keeps_the_ticket_for_the_workers_retry(self) -> None:
+        pk, rc, errs = self._finalize_against_a_real_clone(break_origin=True)
+
+        assert rc == 0
+        assert Ticket.objects.filter(pk=pk).exists(), "the CLI discarded a ticket the worker retries"
+        assert errs[0].startswith("  Provisioning deferred:")
+        assert "does not appear to be a git repository" in errs[0]
+
+    def test_a_refusal_no_retry_can_clear_discards_the_unattested_ticket(self) -> None:
+        pk, rc, errs = self._finalize_against_a_real_clone(break_origin=False)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(pk=pk).exists()
+        (reported,) = errs
+        assert reported.startswith("  Provisioning failed:")
+        assert "has no origin remote" in reported
