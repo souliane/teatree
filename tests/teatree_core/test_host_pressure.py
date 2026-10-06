@@ -2,13 +2,19 @@
 
 import json
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.core import admission_governor
+from teatree.core.admission.write_ceiling import admission_ceiling
 from teatree.core.admission_governor import MachineBrake, QuotaSignal, decide_admission, read_machine_signal
+from teatree.core.admission_pressure import UNREAD_QUOTA
 from teatree.utils import host_pressure, ram_probe, ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 
@@ -72,29 +78,30 @@ def test_fresh_host_reading_beats_docker_vm(monkeypatch: pytest.MonkeyPatch, tmp
     assert machine.vm_pressure_level == 2
 
 
-def test_eight_core_host_without_cpu_quota_keeps_four_agent_slots(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
-    _write_feed(tmp_path, epoch=int(time.time()))
-    feed = json.loads((tmp_path / "host-pressure.json").read_text(encoding="utf-8"))
-    feed["cores"] = 8
-    (tmp_path / "host-pressure.json").write_text(json.dumps(feed), encoding="utf-8")
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: None)
-    _stub_uncapped(monkeypatch)
-    machine = read_machine_signal()
-    assert machine.cores == 8
-    assert admission_governor._machine_ceiling(machine) == 4
+class TestTheHostFeedSizesTheAdmissionCeiling(TestCase):
+    """The core count the feed reports is what the configured per-core factor multiplies."""
 
+    def setUp(self) -> None:
+        self.feed_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {"T3_LOOP_REGISTRY_DIR": str(self.feed_dir)}))
+        uncapped = RamHeadroom(available_mib=None, cgroup_limit_mib=None, host_available_mib=None)
+        self.enterContext(patch.object(ram_scope, "read_ram_headroom", return_value=uncapped))
+        _write_feed(self.feed_dir, epoch=int(time.time()))
 
-def test_cgroup_cpu_quota_caps_host_ceiling(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path))
-    _write_feed(tmp_path, epoch=int(time.time()))
-    monkeypatch.setattr(ram_probe, "cgroup_cpu_quota", lambda: 3)
-    _stub_uncapped(monkeypatch)
-    machine = read_machine_signal()
-    assert machine.cores == 3
-    assert admission_governor._machine_ceiling(machine) == 1
+    def test_an_eight_core_host_without_a_cpu_quota_keeps_four_agent_slots(self) -> None:
+        feed = json.loads((self.feed_dir / "host-pressure.json").read_text(encoding="utf-8"))
+        feed["cores"] = 8
+        (self.feed_dir / "host-pressure.json").write_text(json.dumps(feed), encoding="utf-8")
+        with patch.object(ram_probe, "cgroup_cpu_quota", return_value=None):
+            machine = read_machine_signal()
+        assert machine.cores == 8
+        assert admission_ceiling(UNREAD_QUOTA, machine).value == 4
+
+    def test_a_cgroup_cpu_quota_caps_the_host_ceiling(self) -> None:
+        with patch.object(ram_probe, "cgroup_cpu_quota", return_value=3):
+            machine = read_machine_signal()
+        assert machine.cores == 3
+        assert admission_ceiling(UNREAD_QUOTA, machine).value == 1
 
 
 def test_a_full_swap_file_with_no_swap_activity_admits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
