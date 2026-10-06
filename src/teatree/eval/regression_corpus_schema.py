@@ -1,12 +1,9 @@
-"""Runtime self-DB schema pre-flight for the regression corpus (souliane/teatree#2190).
+"""The regression corpus's own fresh DB and its schema pre-flight (souliane/teatree#2190).
 
 The corpus's ORM-backed checks (``Worktree``/``Ticket``/``MergeClear`` create)
-run against the runtime-resolved self-DB. A worktree's auto-isolated DB is
-seeded from a snapshot of the canonical DB at its (possibly stale) schema and
-migrations are NEVER applied to it — so a PR adding a migration (e.g. the
-``last_used_at`` column) left that DB missing the new column/table and every
-ORM check raised ``OperationalError: no such column``, redding the
-``eval-pinned-regressions`` pre-push lane.
+assert gate behaviour, not the host's state, so :func:`fresh_corpus_db` points
+them at an empty temp DB rather than the ambient one, whose migration state the
+diff does not control.
 
 The pre-flight applies pending migrations in-process via the existing
 sanctioned :func:`teatree.core.gates.schema_guard.migrate_self_db`
@@ -17,6 +14,14 @@ half-migrated DB. Split out of ``regression_corpus`` to keep that module under
 the module-health LOC cap.
 """
 
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+from django.db import connections
+
+from teatree.db.boundary import ControlDbBoundary
 from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck
 
 SCHEMA_PREFLIGHT = RegressionCheck(
@@ -29,6 +34,31 @@ SCHEMA_PREFLIGHT = RegressionCheck(
     predicate=lambda: True,  # never invoked — the pre-flight runs migrate_self_db directly.
     needs_db=True,
 )
+
+
+@contextmanager
+def fresh_corpus_db() -> Iterator[None]:
+    """Point every file-backed DB alias at one fresh temp file the pre-flight migrates, then restore.
+
+    An in-memory DB is already private to this process, so it is left alone.
+    """
+    with tempfile.TemporaryDirectory(prefix="t3-pinned-regressions-") as scratch:
+        original: list[tuple[str, str]] = []
+        for alias in connections:
+            connection = connections[alias]
+            name = str(connection.settings_dict["NAME"])
+            if not ControlDbBoundary(name).file_backed:
+                continue
+            original.append((alias, name))
+            connection.close()
+            # One file for every alias, so the config alias reads the schema the pre-flight migrated.
+            connection.settings_dict["NAME"] = str(Path(scratch) / "corpus.sqlite3")
+        try:
+            yield
+        finally:
+            for alias, name in original:
+                connections[alias].close()
+                connections[alias].settings_dict["NAME"] = name
 
 
 def migrate_self_db() -> list[str]:
@@ -69,4 +99,10 @@ def skipped_preflight_result(reason: str) -> CheckResult:
     return CheckResult(check=SCHEMA_PREFLIGHT, ok=True, skipped=True, detail=reason)
 
 
-__all__ = ["SCHEMA_PREFLIGHT", "migrate_self_db", "schema_preflight_result", "skipped_preflight_result"]
+__all__ = [
+    "SCHEMA_PREFLIGHT",
+    "fresh_corpus_db",
+    "migrate_self_db",
+    "schema_preflight_result",
+    "skipped_preflight_result",
+]
