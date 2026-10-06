@@ -1,3 +1,4 @@
+# test-path: cross-cutting — binds the hook guard's teatree-server exemption to the server name core registers.
 """Tests for the direct-MCP Slack-write deny gate (#1196).
 
 A direct ``mcp__*slack*`` write bypasses teatree's Slack egress chokepoint
