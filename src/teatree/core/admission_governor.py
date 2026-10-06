@@ -26,7 +26,7 @@ and named so at each call site. The deliberate split is that foreign occupancy B
 producer and only REPORTS on the rest: the admission-pressure scalar bounds intake, because
 slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
 pile, while the agent lanes keep only the binary watermark brake below — scaling their
-already-small ``floor(cores * WRITE_CONCURRENCY_PER_CORE)`` ceiling by the same headroom
+already-small ``floor(cores * admission_write_concurrency_per_core)`` ceiling by the same headroom
 would leave a 4-core box ONE expensive slot and starve the drain.
 
 **The brakes are ONE scalar, not six ``if``s (#4508).** Every watermark below normalises
@@ -72,8 +72,8 @@ logger = logging.getLogger(__name__)
 
 _MIB_PER_GB = 1024.0
 
-#: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
-#: up automatically. 8 cores → 4.
+#: The shipped ``admission_write_concurrency_per_core``: WRITE concurrency as a function of
+#: cores, not a magic number, so a bigger box scales up automatically. 8 cores → 4.
 #:
 #: This was 0.25 (8 cores → 2), calibrated against the meltdown recorded on
 #: :data:`TOTAL_TEST_WORKERS_PER_CORE` below — which names its own cause: "the per-agent
@@ -88,6 +88,8 @@ _MIB_PER_GB = 1024.0
 #: over-aggressive value throttles itself instead of melting the box. Measured at the change:
 #: load 13.4/15.9/16.5 on 8 cores against a deny watermark of 40, 14 GB RAM free.
 WRITE_CONCURRENCY_PER_CORE = 0.5
+WRITE_CONCURRENCY_PER_CORE_MIN = 0.25
+WRITE_CONCURRENCY_PER_CORE_MAX = 2.0
 
 #: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
 #: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
@@ -236,14 +238,47 @@ def per_agent_test_workers(
     return max(1, total // max(1, int(active_agents)))
 
 
-def _machine_ceiling(machine: MachineSignal) -> int:
-    """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
-    return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
+@dataclass(frozen=True)
+class AdmissionCeiling:
+    """The WRITE ceiling with the parts it is derived from, so a status surface can show why."""
+
+    cores: int
+    per_core: float
+    pace: float | None
+
+    @property
+    def machine(self) -> int:
+        """The core-derived part, floored at 1 — the bound that needs NO quota signal."""
+        return max(1, math.floor(max(1, self.cores) * self.per_core))
+
+    @property
+    def value(self) -> int:
+        if self.pace is None:
+            return self.machine
+        return max(1, math.floor(self.machine * min(1.0, self.pace)))
 
 
-def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
-    """The live ceiling: the core-derived WRITE default, scaled by weekly pace, floored at 1."""
-    return max(1, math.floor(_machine_ceiling(machine) * min(1.0, weekly_pace(quota))))
+def admission_ceiling(quota: QuotaSignal, machine: MachineSignal) -> AdmissionCeiling:
+    """An unread quota drops only the weekly-pace scaling, never the machine bound (#4097)."""
+    return AdmissionCeiling(
+        cores=machine.cores,
+        per_core=_write_concurrency_per_core(),
+        pace=weekly_pace(quota) if quota.fresh else None,
+    )
+
+
+def _write_concurrency_per_core() -> float:
+    """The operator's per-core factor, clamped; an unreadable setting keeps the shipped default."""
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
+
+    try:
+        configured = float(get_effective_settings().admission_write_concurrency_per_core)
+    except Exception:
+        logger.exception("admission_write_concurrency_per_core unreadable — keeping the shipped default")
+        return WRITE_CONCURRENCY_PER_CORE
+    if not math.isfinite(configured):
+        return WRITE_CONCURRENCY_PER_CORE
+    return min(WRITE_CONCURRENCY_PER_CORE_MAX, max(WRITE_CONCURRENCY_PER_CORE_MIN, configured))
 
 
 def _shed_at() -> float:
@@ -310,7 +345,7 @@ def decide_admission(
     the target.
 
     An UNKNOWN quota is the conservative case, never the unbounded one (#4097): the
-    ceiling falls back to :func:`_machine_ceiling`, which reads only the machine signal
+    ceiling falls back to :attr:`AdmissionCeiling.machine`, which reads only the machine signal
     the governor DID read successfully, so not knowing the budget can never buy more
     concurrency than knowing it is healthy. Only the weekly-pace scaling on top of that
     base genuinely needs a fresh quota, and that is exactly what is dropped. The load
@@ -323,7 +358,7 @@ def decide_admission(
     :func:`~teatree.core.agent_admission.agent_admission_verdict`, the seam that already
     owns the cheap/expensive split.
     """
-    ceiling = _adaptive_ceiling(quota, machine) if quota.fresh else _machine_ceiling(machine)
+    ceiling = admission_ceiling(quota, machine).value
     if static_ceiling is not None:
         ceiling = max(1, min(ceiling, static_ceiling))
 
@@ -580,6 +615,7 @@ __all__ = [
     "RAM_BRAKE_FLOOR_GB",
     "RAM_RESUME_FLOOR_GB",
     "UNBRAKED",
+    "AdmissionCeiling",
     "AdmissionDecision",
     "AdmissionPressure",
     "MachineBrake",
@@ -588,6 +624,7 @@ __all__ = [
     "PressureBand",
     "QuotaSignal",
     "YieldSignal",
+    "admission_ceiling",
     "box_load_headroom",
     "decide_admission",
     "per_agent_test_workers",

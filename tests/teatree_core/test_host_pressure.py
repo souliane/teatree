@@ -8,7 +8,14 @@ from pathlib import Path
 import pytest
 
 from teatree.core import admission_governor
-from teatree.core.admission_governor import MachineBrake, QuotaSignal, decide_admission, read_machine_signal
+from teatree.core.admission_governor import (
+    MachineBrake,
+    QuotaSignal,
+    admission_ceiling,
+    decide_admission,
+    read_machine_signal,
+)
+from teatree.core.admission_pressure import UNREAD_QUOTA
 from teatree.utils import host_pressure, ram_probe, ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 
@@ -84,7 +91,7 @@ def test_eight_core_host_without_cpu_quota_keeps_four_agent_slots(
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()
     assert machine.cores == 8
-    assert admission_governor._machine_ceiling(machine) == 4
+    assert admission_ceiling(UNREAD_QUOTA, machine).machine == 4
 
 
 def test_cgroup_cpu_quota_caps_host_ceiling(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -94,7 +101,7 @@ def test_cgroup_cpu_quota_caps_host_ceiling(monkeypatch: pytest.MonkeyPatch, tmp
     _stub_uncapped(monkeypatch)
     machine = read_machine_signal()
     assert machine.cores == 3
-    assert admission_governor._machine_ceiling(machine) == 1
+    assert admission_ceiling(UNREAD_QUOTA, machine).machine == 1
 
 
 def test_a_full_swap_file_with_no_swap_activity_admits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

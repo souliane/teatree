@@ -40,7 +40,8 @@ worker_app = typer.Typer(
     help=(
         "The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence "
         "owner). `status` reports the live holder + how many loops the active preset admits "
-        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet); `ensure` spawns "
+        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet) + how the agent "
+        "admission ceiling is derived; `ensure` spawns "
         "a detached worker iff the flock is free; `drain` quiesces admission without stopping "
         "anything; `stop` / `restart` end the live worker and verify it against the flock."
     ),
@@ -146,7 +147,7 @@ def _holder_lines(record: "HolderRecord | None") -> list[str]:
 
 @worker_app.command("status")
 def status_command(*, json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON.")) -> None:
-    """Report the worker: flock holder, admitted loops under the active preset, timers, staleness.
+    """Report the worker: flock holder, admitted loops, timers, staleness, and the agent admission ceiling.
 
     Exits NON-ZERO when the loop fleet is stale.
     """
@@ -160,6 +161,9 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
 
     from django.utils import timezone  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
+    from teatree.core.agent_admission import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+        headless_admission_status,
+    )
     from teatree.loops.loop_staleness import loop_health  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
     from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
         WORKER_SINGLETON,
@@ -179,6 +183,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     # is reused in place on the next acquire and describes nobody.
     record = read_holder(default_pid_path(WORKER_SINGLETON)) if running else None
     health = loop_health(timezone.now())
+    agent_admission = headless_admission_status()
 
     if json_output:
         typer.echo(
@@ -193,6 +198,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                     # chain itself gates on, so the JSON cannot report a posture the timers
                     # do not obey.
                     **health.as_json(),
+                    "agent_admission": agent_admission.as_json(),
                 }
             )
         )
@@ -208,6 +214,7 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     for line in _holder_lines(record):
         typer.echo(line)
     typer.echo(_admission_line(health))
+    typer.echo(agent_admission.line())
     if health.fleet_admits and not running:
         typer.echo("The active preset admits work but no worker is running — run `t3 worker ensure`.")
     ready_total = sum(c["ready"] for c in timers.values())

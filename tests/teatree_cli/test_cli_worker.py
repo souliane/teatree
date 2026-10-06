@@ -78,6 +78,20 @@ class TestWorkerStatus(django.test.TestCase):
         assert payload["fleet_admits"] is True
         assert isinstance(payload["timers"], dict)
 
+    def test_status_shows_how_the_agent_ceiling_is_derived(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            text = runner.invoke(worker_app, ["status"])
+            as_json = runner.invoke(worker_app, ["status", "--json"])
+        assert text.exit_code == 0
+        assert "agent admission: ceiling 8 = 8 cores x 1 per core (8) x weekly pace unread" in text.stdout
+        assert "0 expensive + 0 cheap" in text.stdout
+        admission = json.loads(as_json.stdout)["agent_admission"]
+        assert (admission["ceiling"], admission["cores"], admission["per_core"]) == (8, 8, 1.0)
+
     def test_status_reports_running_via_flock_when_pid_file_absent(self) -> None:
         # The flock is HELD by a live worker but the pid file is missing/stale, so
         # `read_pid` returns None — status must not print a false "NOT running" (#3571).

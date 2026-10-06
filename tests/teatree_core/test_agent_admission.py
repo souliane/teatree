@@ -33,7 +33,13 @@ from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
-from teatree.core.agent_admission import AgentAdmission, agent_admission_denied_reason, agent_admission_verdict
+from teatree.core.agent_admission import (
+    AgentAdmission,
+    HeadlessAdmissionStatus,
+    agent_admission_denied_reason,
+    agent_admission_verdict,
+    headless_admission_status,
+)
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, TaskAttempt, Ticket, UsageWindowState
@@ -293,6 +299,120 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
         verdict = self._verdict(weekly=1.0)
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
         assert verdict.denied_for(PhaseCost.CHEAP) is not None
+
+
+class TestTheWriteFactorNeverOutrunsTheLoadShed(TestCase):
+    """A wider per-core factor buys seats on an idle box, never on a loaded one."""
+
+    _SHED_LOAD = 38.0  # 0.95 of the 40 watermark on 8 cores: past the 0.9 shed point, short of HALT
+
+    def test_the_shed_band_refuses_expensive_work_whatever_the_factor(self) -> None:
+        for factor in (0.25, 0.5, 2.0):
+            with self.subTest(factor=factor):
+                ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._SHED_LOAD)),
+                    patch.object(Task.objects, "claimed_agent_count", return_value=0),
+                ):
+                    verdict = agent_admission_verdict()
+                assert "shed band" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+                assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+
+_CEILING_PARTS = (
+    "ceiling",
+    "cores",
+    "per_core",
+    "machine_ceiling",
+    "weekly_pace",
+    "expensive_occupied",
+    "cheap_occupied",
+)
+
+
+class TestHeadlessAdmissionStatus(TestCase):
+    """The parts ``t3 worker status`` shows are the ones the headless verdict is decided on."""
+
+    def _claimed(self, phase: str) -> None:
+        ticket = Ticket.objects.create()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            status=Task.Status.CLAIMED,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+        )
+
+    def _status(self, quota: QuotaSignal) -> HeadlessAdmissionStatus:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return headless_admission_status()
+
+    def test_the_ceiling_parts_and_lane_occupancy_are_reported(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        self._claimed("coding")
+        self._claimed("coding")
+        self._claimed("reviewing")
+        paced = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.625,
+            short_utilization=0.1,
+            seconds_to_weekly_reset=_WEEK * 0.5,
+        )
+
+        status = self._status(paced)
+
+        parts = status.as_json()
+        assert {key: parts[key] for key in _CEILING_PARTS} == {
+            "ceiling": 6,
+            "cores": 8,
+            "per_core": 1.0,
+            "machine_ceiling": 8,
+            "weekly_pace": 0.75,
+            "expensive_occupied": 2,
+            "cheap_occupied": 1,
+        }
+        assert parts["band"] == str(status.pressure.band)
+        assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
+        assert "2 expensive + 1 cheap" in status.line()
+
+    def test_the_status_ceiling_is_the_verdicts_ceiling(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        for _ in range(6):  # under 8 minus the one seat reserved for the drain
+            self._claimed("coding")
+        quota = _healthy_quota()
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            assert headless_admission_status().ceiling.value == 8
+            assert agent_admission_verdict().denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
+        unread = QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        )
+
+        status = self._status(unread)
+
+        assert status.as_json()["weekly_pace"] is None
+        assert status.ceiling.value == 4
+        assert "weekly pace unread" in status.line()
+
+    def test_a_braking_band_names_its_cause(self) -> None:
+        status = self._status(_exhausted_quota())
+
+        assert status.pressure.band == "halt"
+        assert status.pressure.reason
+        assert status.pressure.reason in status.line()
 
 
 class TestDrainConsultsTheGovernor(TestCase):

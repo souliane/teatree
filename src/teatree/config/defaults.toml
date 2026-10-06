@@ -254,6 +254,7 @@ task_result_retention_days = 1 # int — days a task result row is kept
 
 [teatree.Infrastructure.Provisioning]
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
+admission_write_concurrency_per_core = 0.5 # float — headless agents admitted per CPU core before weekly pacing, clamped to 0.25-2.0
 cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
 drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve

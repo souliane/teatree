@@ -47,12 +47,14 @@ only seam that returns a DENY reason, and every caller logs it at WARNING.
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.admission.dispatch_lane import configured_dispatch_lane
 from teatree.core.admission_governor import (
+    AdmissionCeiling,
     MachineBrake,
     SupplementalAdmissionSignals,
+    admission_ceiling,
     decide_admission,
     pressure_for,
     read_machine_signal,
@@ -424,6 +426,67 @@ def agent_admission_verdict() -> AgentAdmission:
     )
 
 
+class HeadlessAdmissionJson(TypedDict):
+    ceiling: int
+    cores: int
+    per_core: float
+    machine_ceiling: int
+    weekly_pace: float | None
+    expensive_occupied: int
+    cheap_occupied: int
+    pressure: float
+    band: str
+
+
+@dataclass(frozen=True)
+class HeadlessAdmissionStatus:
+    """The headless lane's live ceiling, the parts it is derived from, and who holds its seats."""
+
+    ceiling: AdmissionCeiling
+    pressure: AdmissionPressure
+    expensive_occupied: int
+    cheap_occupied: int
+
+    def line(self) -> str:
+        ceiling = self.ceiling
+        if ceiling.pace is None:
+            pace = "weekly pace unread (unscaled)"
+        else:
+            pace = f"weekly pace {ceiling.pace:.2f}" + (" (scaling capped at 1)" if ceiling.pace > 1 else "")
+        braking = f" — {self.pressure.reason}" if self.pressure.band in {PressureBand.SHED, PressureBand.HALT} else ""
+        return (
+            f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
+            f"({ceiling.machine}) x {pace}; occupied {self.expensive_occupied} expensive + "
+            f"{self.cheap_occupied} cheap; pressure {self.pressure.value:.2f} {self.pressure.band}{braking}"
+        )
+
+    def as_json(self) -> HeadlessAdmissionJson:
+        return HeadlessAdmissionJson(
+            ceiling=self.ceiling.value,
+            cores=self.ceiling.cores,
+            per_core=self.ceiling.per_core,
+            machine_ceiling=self.ceiling.machine,
+            weekly_pace=self.ceiling.pace,
+            expensive_occupied=self.expensive_occupied,
+            cheap_occupied=self.cheap_occupied,
+            pressure=self.pressure.value,
+            band=str(self.pressure.band),
+        )
+
+
+def headless_admission_status() -> HeadlessAdmissionStatus:
+    """The verdict's inputs, read without booking a seat or recording a telemetry span."""
+    quota, metered = _lane_budget()
+    machine = read_machine_signal()
+    task_model = _task_model()
+    return HeadlessAdmissionStatus(
+        ceiling=admission_ceiling(quota, machine),
+        pressure=pressure_for(quota=quota, machine=machine, metered=metered),
+        expensive_occupied=task_model.objects.expensive_lane_occupancy(),
+        cheap_occupied=task_model.objects.cheap_lane_occupancy(),
+    )
+
+
 def agent_admission_denied_reason(phase: str = "") -> str | None:
     """The governor's reason to DENY one more headless admission of *phase*, or ``None``.
 
@@ -435,4 +498,11 @@ def agent_admission_denied_reason(phase: str = "") -> str | None:
     return agent_admission_verdict().denied_reason(phase)
 
 
-__all__ = ["AgentAdmission", "LaneBound", "agent_admission_denied_reason", "agent_admission_verdict"]
+__all__ = [
+    "AgentAdmission",
+    "HeadlessAdmissionStatus",
+    "LaneBound",
+    "agent_admission_denied_reason",
+    "agent_admission_verdict",
+    "headless_admission_status",
+]

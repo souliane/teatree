@@ -11,7 +11,7 @@ def read_load_and_cores() -> tuple[float, int]:
     Named for the reason :func:`~teatree.utils.ram_scope.read_ram_headroom` is: the suite
     has to be able to pin them. Unpinned they decide admission for every test that never
     mentions machine capacity — a busy box HALTs at ``BRAKE_LOAD_PER_CORE * cores``, and
-    the core count IS the WRITE ceiling (``admission_governor._machine_ceiling``), so a 2-vCPU runner
+    the core count IS the WRITE ceiling (``admission_governor.AdmissionCeiling.machine``), so a 2-vCPU runner
     admits exactly one concurrent dispatch. A platform with no load average reads ``0.0``:
     an unknown load is inert wherever it is consumed, never a manufactured clamp.
     """

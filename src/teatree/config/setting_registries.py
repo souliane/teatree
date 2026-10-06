@@ -209,6 +209,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #4508 Pressure at which the EXPENSIVE agent class is shed while the cheap drain
     # keeps running; 1.0 collapses SHED into HALT (the rollback lever). Per-overlay overridable.
     "admission_pressure_shed_at": _parse_strict_float,
+    # Headless agents admitted per core before weekly pacing; clamped on read. Box-global.
+    "admission_write_concurrency_per_core": _parse_strict_float,
     # #4816 Whether the TOKEN brakes apply at all; false leaves load + memory only, so
     # standing down an irrelevant quota signal never disarms the box. Per-overlay overridable.
     # #4816 The metered lane's spend ceiling in TOKENS over the window below; 0 =
@@ -272,6 +274,7 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 #: every cold-hook read); ``schema.derive_box_global_settings`` keeps this copy honest.
 BOX_GLOBAL_SETTINGS: frozenset[str] = frozenset(
     {
+        "admission_write_concurrency_per_core",
         "gitlab_events_subscription",
         "harness_skill_exclusions",
         "loop_cadence_seconds",
