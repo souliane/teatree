@@ -6,7 +6,10 @@ module-health LOC cap (the ticket-display concern, anticipated by the prior
 in-line note).
 """
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
+
+from teatree.utils.git_branch import DETACHED_HEAD
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -65,17 +68,28 @@ def render_project_learnings(content: str, *, max_lines: int = 40) -> str:
     )
 
 
-def format_intake_summary(ticket: "Ticket", ticket_dir: str, branch: str, *, project_learnings: str = "") -> str:
-    """Format the ``workspace ticket`` intake summary block (#627, #2892).
+def format_intake_summary(
+    ticket: "Ticket", ticket_dir: str, checked_out: Mapping[int, str], *, project_learnings: str = ""
+) -> str:
+    """Format the ``workspace ticket`` intake summary block (#627, #2892, #4967).
 
-    Worktree list, ticket header, branch, and the collapsed durable-context
-    + project-learnings sections, returned as one string.
+    *checked_out* maps each worktree's pk to the branch git reports for its checkout
+    (``HEAD`` when detached, ``""`` when nothing readable is there), read by the
+    caller so this module runs no git.
     """
-    lines = [f"  {wt.repo_path}: worktree #{wt.pk}" for wt in ticket.worktrees.all()]
-    lines.extend(
-        (
-            f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}",
-            f"  Branch: {branch}{render_ticket_context(ticket.context)}{render_project_learnings(project_learnings)}",
-        )
+    lines = [
+        f"  {wt.repo_path}: worktree #{wt.pk} {_checkout_label(checked_out.get(wt.pk, ''), wt.branch)}"
+        for wt in ticket.worktrees.all()
+    ]
+    lines.append(
+        f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}"
+        f"{render_ticket_context(ticket.context)}{render_project_learnings(project_learnings)}"
     )
     return "\n".join(lines)
+
+
+def _checkout_label(actual: str, recorded: str) -> str:
+    if not actual:
+        return "(no readable checkout)"
+    label = "on detached HEAD" if actual == DETACHED_HEAD else f"on {actual}"
+    return label if actual == recorded else f"{label} (ticket records {recorded})"
