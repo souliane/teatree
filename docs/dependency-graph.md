@@ -226,6 +226,7 @@ graph TD
     teatree.cli --> teatree.quality
     teatree.cli --> teatree.hooks
     teatree.cli --> teatree.mcp
+    teatree.cli --> teatree.browser
     teatree.cli --> teatree.cli.eval
     teatree.cli.eval --> teatree.cli._format_opts
     teatree.cli.eval --> teatree.ci_oauth_switch
@@ -450,6 +451,10 @@ graph TD
     teatree.overlay_sdk --> teatree.visual_qa
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
+    teatree.browser --> teatree.core
+    teatree.browser --> teatree.paths
+    teatree.browser --> teatree.utils
+    teatree.visual_qa --> teatree.browser
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
     teatree.on_behalf_gate --> teatree.config

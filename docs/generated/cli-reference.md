@@ -80,6 +80,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
+│ browser         Drive a headless browser held open for this worktree         │
+│                 (Playwright): open, act, inspect, close.                     │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -5794,6 +5796,93 @@ Usage: t3 mcp browser-diagnosis [OPTIONS]
  inspect a deployed page (navigate/click/fill, network/console/DOM) before
  proposing a root cause for browser-visible breakage. No enforcement; a
  diagnostic and interaction aid only.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 browser`
+
+```
+Usage: t3 browser [OPTIONS] COMMAND [ARGS]...
+
+ Drive a headless browser held open for this worktree (Playwright): open, act,
+ inspect, close.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Load URL in this worktree's headless browser, launching the browser │
+│          on first use.                                                       │
+│ act      Perform one interaction on the open page: click, fill, type, press, │
+│          upload, wait, or eval.                                              │
+│ inspect  Save the page's accessibility snapshot, HTML and screenshot; print  │
+│          what it did since it loaded.                                        │
+│ close    End this worktree's browser session.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser open`
+
+```
+Usage: t3 browser open [OPTIONS] URL
+
+ Load URL in this worktree's headless browser, launching the browser on first
+ use.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser act`
+
+```
+Usage: t3 browser act [OPTIONS] VERB:{click|fill|type|press|upload|wait|eval}
+                       [ARGUMENTS]...
+
+ Perform one interaction on the open page: click, fill, type, press, upload,
+ wait, or eval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    verb           VERB:{click|fill|type|press  [required]                  │
+│                     |upload|wait|eval}                                       │
+│      arguments      [ARGUMENTS]...               SELECTOR                    │
+│                                                  [VALUE|TEXT|KEY|FILE...],   │
+│                                                  or EXPRESSION               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser inspect`
+
+```
+Usage: t3 browser inspect [OPTIONS]
+
+ Save the page's accessibility snapshot, HTML and screenshot; print what it did
+ since it loaded.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser close`
+
+```
+Usage: t3 browser close [OPTIONS]
+
+ End this worktree's browser session.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
