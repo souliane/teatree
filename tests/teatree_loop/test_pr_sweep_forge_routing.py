@@ -95,6 +95,7 @@ class RecordingArm:
 
     listed: list[str] = field(default_factory=list)
     merged: list[tuple[str, int]] = field(default_factory=list)
+    updated: list[tuple[str, int]] = field(default_factory=list)
     prs: list[PrSummary] = field(default_factory=list)
 
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
@@ -111,7 +112,8 @@ class RecordingArm:
         return BoundMergeResult(merged=True, merged_sha=_MERGED)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
-        del slug, pr_id, expected_head_oid
+        del expected_head_oid
+        self.updated.append((slug, pr_id))
         return True
 
 
@@ -276,9 +278,9 @@ class TestGitLabMrDecoding(TestCase):
 class TestGitLabCiGate(TestCase):
     """GitLab's verdict is the head pipeline — the GitHub ladder reads it as GREEN."""
 
-    def _sweep(self, *, pipeline: str) -> tuple[list[str], FakeKeystone]:
+    def _sweep(self, *, pipeline: str, behind_main: bool = False) -> tuple[list[str], FakeKeystone]:
         keystone = FakeKeystone()
-        arm = RecordingArm(prs=[_gitlab_pr()])
+        arm = self.arm = RecordingArm(prs=[_gitlab_pr(behind_main=behind_main)])
         scanner = PrSweepScanner(
             repos=(_GITLAB_SLUG,),
             api=ForgePrApiClient(github=RecordingArm(), gitlab=arm),
@@ -313,6 +315,17 @@ class TestGitLabCiGate(TestCase):
         clear = _issue_clear()
         _reasons, keystone = self._sweep(pipeline="green")
         assert keystone.calls == [clear.pk]
+
+    def test_an_unreadable_pipeline_is_not_red_so_a_stale_base_is_not_merge_updated(self) -> None:
+        _issue_clear()
+        reasons, keystone = self._sweep(pipeline="unreadable", behind_main=True)
+        assert (keystone.calls, self.arm.updated) == ([], [])
+        assert "required_checks_indeterminate" in reasons
+
+    def test_control_a_failed_pipeline_on_a_stale_base_is_merge_updated(self) -> None:
+        _issue_clear()
+        self._sweep(pipeline="failed", behind_main=True)
+        assert self.arm.updated == [(_GITLAB_SLUG, _MR_IID)]
 
 
 class TestSweepFactoryWiring(TestCase):

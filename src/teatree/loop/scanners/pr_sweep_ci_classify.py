@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from teatree.core.merge import CodeHostQuery
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.loop.scanners.pr_sweep_decision import classify_sweep_ci
 from teatree.loop.scanners.pr_sweep_types import GITLAB_PIPELINE_CHECK_NAME
 from teatree.utils.pr_ref import PrRef
@@ -49,11 +50,7 @@ def classify_gitlab_sweep_ci(verdict: str) -> tuple[str | None, bool, set[str]]:
     The uv-audit fallback never applies (there is no per-check verdict to compare
     against ``main``), so the middle element is always ``False``.
     """
-    if verdict == "green":
-        return None, False, set()
-    if verdict == "pending":
-        return "ci_pending", False, set()
-    return "ci_red", False, {GITLAB_PIPELINE_CHECK_NAME}
+    return _classify_aggregated_verdict(verdict, red_checks={GITLAB_PIPELINE_CHECK_NAME})
 
 
 def classify_plan_restricted_sweep_ci(verdict: str) -> tuple[str | None, bool, set[str]]:
@@ -67,8 +64,15 @@ def classify_plan_restricted_sweep_ci(verdict: str) -> tuple[str | None, bool, s
     verdict — the uv-audit fallback never applies (no per-check verdict to compare
     against ``main``).
     """
+    return _classify_aggregated_verdict(verdict, red_checks=set())
+
+
+def _classify_aggregated_verdict(verdict: str, *, red_checks: set[str]) -> tuple[str | None, bool, set[str]]:
     if verdict == "green":
         return None, False, set()
     if verdict == "pending":
         return "ci_pending", False, set()
-    return "ci_red", False, set()
+    # A read that failed saw no red: calling it ``ci_red`` let the stale-base remedy merge-update the branch.
+    if verdict == CHECKS_UNREADABLE:
+        return "required_checks_indeterminate", False, set()
+    return "ci_red", False, red_checks

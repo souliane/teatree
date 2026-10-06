@@ -18,6 +18,31 @@ class GitlabPipeline(TypedDict, total=False):
     allow_merge_on_skipped_pipeline: object
 
 
+#: Heads already reported unmatched: a listing re-reads every open MR each tick.
+_REPORTED_UNMATCHED: set[tuple[str, int, str]] = set()
+_REPORTED_CAPACITY = 512
+
+
+def reset_unmatched_head_reports() -> None:
+    _REPORTED_UNMATCHED.clear()
+
+
+def _report_unmatched_head_once(slug: str, pr_id: int, head_sha: str, candidate_shas: list[str]) -> None:
+    key = (slug, pr_id, head_sha)
+    if key in _REPORTED_UNMATCHED:
+        return
+    if len(_REPORTED_UNMATCHED) >= _REPORTED_CAPACITY:
+        _REPORTED_UNMATCHED.clear()
+    _REPORTED_UNMATCHED.add(key)
+    logger.info(
+        "GitLab head pipeline: none matches MR head %s for %s#%s (non-train candidates: %s) — failing closed",
+        head_sha,
+        slug,
+        pr_id,
+        candidate_shas,
+    )
+
+
 def _is_merge_train_pipeline(pipeline: GitlabPipeline) -> bool:
     ref = str(pipeline.get("ref") or "")
     source = str(pipeline.get("source") or "")
@@ -48,13 +73,7 @@ def select_head_pipeline(
         for pipeline in candidates:
             if str(pipeline.get("sha") or "") == head_sha:
                 return pipeline
-        logger.info(
-            "GitLab head pipeline: none matches MR head %s for %s#%s (non-train candidates: %s) — failing closed",
-            head_sha,
-            slug,
-            pr_id,
-            [str(p.get("sha") or "") for p in candidates],
-        )
+        _report_unmatched_head_once(slug, pr_id, head_sha, [str(p.get("sha") or "") for p in candidates])
         return None
     logger.info(
         "GitLab head pipeline: MR head SHA unavailable for %s#%s — falling back to newest non-train pipeline",
