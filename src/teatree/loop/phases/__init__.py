@@ -17,7 +17,7 @@ carrying the work inline:
     it admits at most one worker, and at ``full`` / ``boost`` it computes a
     claimed manifest of dispatchable work clamped to
     ``max_concurrent_auto_starts``. It only computes + claims + returns the
-    manifest — spawning stays in the session/self-pump half.
+    manifest — spawning stays with the worker's ``execute_task``.
 *   :func:`render_phase` — the closing stage: project the dispatched
     actions into statusline zones, refresh the ``tick-meta.json`` /
     ``open-prs.json`` sidecars, plan the admit budget, fold in the

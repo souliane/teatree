@@ -122,9 +122,6 @@ class HostProjection:
     def setting(self, key: str, *, scope: str = GLOBAL_SCOPE) -> object | None:
         return self.settings.get(scope, {}).get(key)
 
-    def loop_status(self, name: str) -> str | None:
-        return self.loop_state.get(name)
-
     def as_payload(self) -> dict[str, JsonValue]:
         return {
             "schema_version": self.schema_version,

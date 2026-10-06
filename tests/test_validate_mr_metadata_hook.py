@@ -65,7 +65,7 @@ class TestDefaultOverlayValidation:
         completed = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="Title is empty.\nMR description is empty.\n"
         )
-        with patch.object(router.subprocess, "run", return_value=completed) as run:
+        with patch.object(subprocess, "run", return_value=completed) as run:
             blocked = handle_validate_mr_metadata(_glab_create("", ""))
 
         assert blocked is True
@@ -82,7 +82,7 @@ class TestDefaultOverlayValidation:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is False
 
@@ -117,7 +117,7 @@ class TestDefaultOverlayValidation:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        with patch.object(router.subprocess, "run", side_effect=FileNotFoundError):
+        with patch.object(subprocess, "run", side_effect=FileNotFoundError):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -130,7 +130,7 @@ class TestDefaultOverlayValidation:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": "glab mr create --description 'x'"}}
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_validate_mr_metadata(data)
         assert blocked is True
         argv = run.call_args[0][0]
@@ -194,7 +194,7 @@ class TestUnvalidatedOutcomeIsAnnounced:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
         assert capsys.readouterr().err == ""
 
@@ -224,7 +224,7 @@ class TestValidatorCrashIsNotADeny:
             stdout="",
             stderr="Traceback (most recent call last):\n  File ...\nKeyError: 'overlay'\n",
         )
-        with patch.object(router.subprocess, "run", return_value=crashed):
+        with patch.object(subprocess, "run", return_value=crashed):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is False, "a crashing validator must not deny (fail-open-with-warn)"
         captured = capsys.readouterr()
@@ -239,7 +239,7 @@ class TestValidatorCrashIsNotADeny:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(_glab_create("", ""))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -260,9 +260,7 @@ class TestValidatorTimeoutIsNotADeny:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        return patch.object(
-            router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=allowance)
-        )
+        return patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=allowance))
 
     def test_timeout_allows_with_a_loud_warn_naming_the_timeout(self, monkeypatch, capsys):
         with self._timeout_run(monkeypatch):
@@ -291,7 +289,7 @@ class TestValidatorTimeoutIsNotADeny:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(_glab_create("", ""))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -302,7 +300,7 @@ class TestValidatorTimeoutIsNotADeny:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is False
         assert capsys.readouterr().err.strip() == "", "a clean pass must be silent"
@@ -321,7 +319,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         monkeypatch.setattr(gate_result, "validator_timeout_seconds", lambda: 12)
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert run.call_args.kwargs["timeout"] == 12
 
@@ -330,7 +328,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         hook_clock.now = 25.0
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
 
@@ -346,7 +344,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
 
         monkeypatch.setattr(t3_invocation, "t3_invocation_env", slow_env)
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
 
@@ -356,7 +354,7 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
         # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
         monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
         monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
-        with patch.object(router.subprocess, "run") as run:
+        with patch.object(subprocess, "run") as run:
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
         assert blocked is False
         assert run.call_count == 0
@@ -463,7 +461,7 @@ class TestOutOfBandApiEditIsGated:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         cmd = "glab api --method PUT projects/x%2Fy/merge_requests/123 --field 'description=bad prose'"
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Invalid first line.")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": cmd}})
         assert blocked is True
         argv = run.call_args[0][0]
@@ -510,7 +508,7 @@ class TestOutOfBandApiEditIsGated:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         cmd = "gh api repos/o/r/pulls --method POST -f 'title=bad title' -f 'body=bad body'"
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": cmd}})
         assert blocked is True
 
@@ -531,7 +529,7 @@ class TestMrTargetRepoIsThreadedToValidator:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
         return list(run.call_args[0][0])
 
@@ -591,7 +589,7 @@ class TestTitleOnlyUpdateSkipsRequiredSections:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
         return list(run.call_args[0][0])
 
@@ -650,7 +648,7 @@ class TestIssueCommandsAreNeverMrMutations:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is invalid.")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_validate_mr_metadata(
                 {
                     "tool_name": "Bash",
@@ -668,7 +666,7 @@ class TestEnvVarOverrideStillWorks:
         script.write_text("import sys; sys.exit(0)", encoding="utf-8")
         monkeypatch.setenv("T3_MR_VALIDATE_SCRIPT", str(script))
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok) as run:
+        with patch.object(subprocess, "run", return_value=ok) as run:
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "body"))
         assert blocked is False
         # Used the script, not `t3 tool validate-mr`.
@@ -1443,7 +1441,7 @@ class TestAnExecThatNeverStartsIsAnnouncedNotSwallowed:
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
 
-        with patch.object(router.subprocess, "run", side_effect=self._EXEC_FAILED):
+        with patch.object(subprocess, "run", side_effect=self._EXEC_FAILED):
             blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "body"))
 
         captured = capsys.readouterr()

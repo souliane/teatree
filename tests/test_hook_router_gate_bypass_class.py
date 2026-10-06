@@ -91,7 +91,7 @@ class TestF1DoubleSpaceBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "git  commit -m 'fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>'"},
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "double-space git  commit must trigger AI-sig scan and be blocked"
         deny = _parse_deny(capsys)
@@ -103,7 +103,7 @@ class TestF1DoubleSpaceBypass:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "git   commit -m 'bad trailer'"}}
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "triple-space git   commit must trigger AI-sig scan"
 
@@ -112,7 +112,7 @@ class TestF1DoubleSpaceBypass:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'Co-Authored-By: Claude'"}}
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             assert handle_block_ai_signature(data) is True
 
     def test_f1a_extract_payload_double_space_git_commit(self):
@@ -150,7 +150,7 @@ class TestF1DoubleSpaceBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "glab  mr  create --title 'fix: x (p#1)' --description 'desc'"},
         }
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             result = handle_validate_mr_metadata(data)
         # The validator ran (we patched it to return 0) — result is False (not denied).
         # Key: _extract_mr_fields must have returned a tuple (not None).
@@ -165,7 +165,7 @@ class TestF1DoubleSpaceBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "glab  mr  update --title '' --description ''"},
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             result = handle_validate_mr_metadata(data)
         assert result is True, "double-space glab  mr  update with bad title must be denied"
 
@@ -196,7 +196,7 @@ class TestF1DoubleSpaceBypass:
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr create --title 'fix: x (p#1)' --description 'desc'"},
         }
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_validate_mr_metadata(data) is False  # validator ran, rc=0
 
 
@@ -220,7 +220,7 @@ class TestF2ApiCreateEndpointBypass:
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         cmd = "gh api repos/example-org/private-repo/pulls -X POST -f title='t' -f body='Generated with [Claude Code]'"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}}
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "gh api .../pulls POST must trigger AI-sig scan"
         deny = _parse_deny(capsys)
@@ -237,7 +237,7 @@ class TestF2ApiCreateEndpointBypass:
                 "command": "glab api projects/42/merge_requests --method POST -f title='t' -f description='bad trailer'"
             },
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "glab api .../merge_requests POST must trigger AI-sig scan"
 
@@ -480,7 +480,7 @@ class TestF5MissingEditCommentInAiSig:
             "tool_name": "Bash",
             "tool_input": {"command": "glab mr update 7 --description 'fix: x\n\nGenerated with [Claude Code]'"},
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "glab mr update with banned trailer must be blocked"
 
@@ -492,7 +492,7 @@ class TestF5MissingEditCommentInAiSig:
             "tool_name": "Bash",
             "tool_input": {"command": "gh pr comment 12 --body 'see fix\n\nGenerated with [Claude Code]'"},
         }
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "gh pr comment with banned trailer must be blocked"
 
@@ -513,7 +513,7 @@ class TestF5MissingEditCommentInAiSig:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "glab mr update 7 --description 'clean body'"}}
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(data) is False
 
     def test_f5_clean_gh_pr_comment_allowed(self, monkeypatch):
@@ -521,7 +521,7 @@ class TestF5MissingEditCommentInAiSig:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr comment 12 --body 'clean note'"}}
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(data) is False
 
 

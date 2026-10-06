@@ -238,9 +238,10 @@ Print the standing directives with their resolved cadence, scope and text (#4166
 
 ## `loop_dispatch`
 
+``loop_dispatch`` group root.
+
 | Subcommand | Description |
 | --- | --- |
-| `pending-spawn` | List pending Tasks the ``/loop`` slot should spawn in-session |
 | `claim-next` | Atomically claim the oldest pending dispatchable Task, then emit it |
 
 ## `loop_drain_queue`
@@ -321,7 +322,7 @@ List DB-configured autonomous loops (read-only; #1796).
 
 ## `loops_tick`
 
-Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
+Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires.
 
 ## `makemigrations`
 

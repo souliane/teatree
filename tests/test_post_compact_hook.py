@@ -121,8 +121,8 @@ class TestSessionStartCompactRecoversSnapshot:
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
         assert "/repo/work" in ctx
-        # The tick-dispatch directive is preserved in the same payload.
-        assert "t3 loops tick" in ctx
+        # The loop-slot directive is preserved in the same payload.
+        assert "attended loop slot" in ctx
 
     def test_recovers_arbitrary_snapshot_content(self, capsys: pytest.CaptureFixture[str]) -> None:
         session_id = "sess-456"

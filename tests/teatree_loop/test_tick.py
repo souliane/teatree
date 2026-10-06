@@ -693,7 +693,7 @@ class TestTickReapsOrphanedReviewingTask(django.test.TransactionTestCase):
     End-to-end coverage of the scanner → dispatch → mechanical pipeline:
     a reviewer-role ticket with a PENDING reviewing task whose URL is not
     in the current open-MR scan must have its task completed in the SAME
-    tick so ``pending-spawn`` stops re-emitting it.
+    tick so it is never dispatched.
 
     Runs the scanner inline (no ``run_tick`` thread pool) so the SQLite
     test backend doesn't deadlock — ``TestCase``'s outer transaction

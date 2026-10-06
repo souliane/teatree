@@ -181,9 +181,9 @@ Skill loading is fully explicit — there is no free-text scan of the prompt. Sk
 
 The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
 
-**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing either runtime's skills does NOT force teatree onto every session. The engagement markers and loop scheduling described here are Claude-only hook automation: Claude's `InstructionsLoaded` hook writes `<session>.teatree-active` when this skill (or a requiring skill) loads, while `handle_track_skill_usage` writes `<session>.t3-engaged` for any `t3:` skill. Codex has no equivalent plugin-hook adapter today, so loading `$t3:interactive` adopts this contract but does not write either marker, deliver standing directives, or arm loops. That absence is fail-safe: no loop starts merely because Codex can read the skill.
+**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing either runtime's skills does NOT force teatree onto every session. The engagement markers described here are Claude-only hook automation: Claude's `InstructionsLoaded` hook writes `<session>.teatree-active` when this skill (or a requiring skill) loads, while `handle_track_skill_usage` writes `<session>.t3-engaged` for any `t3:` skill. Codex has no equivalent plugin-hook adapter today, so loading `$t3:interactive` adopts this contract but does not write either marker or deliver standing directives. That absence is fail-safe: the `t3 worker` runs the loops whichever runtime reads the skill.
 
-In Claude Code, a fresh session is *not engaged*: SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages when the owner sets `[teatree] autoload = true` (or `T3_AUTOLOAD=1`), a teatree-requiring skill loads, or any `t3:` skill loads. `InstructionsLoaded` writes the `.teatree-active` marker used by loop scheduling; skill usage writes `.t3-engaged` for engagement tracking. Loading `/t3:interactive` writes the engagement marker for later hook events. No teatree hook runs when the owner submits a prompt.
+In Claude Code, a fresh session is *not engaged*: SessionStart shows a one-line how-to advisory instead of electing the host's attended loop slot. A session engages when the owner sets `[teatree] autoload = true` (or `T3_AUTOLOAD=1`), a teatree-requiring skill loads, or any `t3:` skill loads. `InstructionsLoaded` writes the `.teatree-active` marker the loop-slot election reads; skill usage writes `.t3-engaged` for engagement tracking. Loading `/t3:interactive` writes the engagement marker for later hook events. No teatree hook runs when the owner submits a prompt.
 
 ## Standing directives
 
@@ -203,7 +203,7 @@ your prompt once its own cadence has passed. That comes to **0 self-woken turns*
 wakes the session, and nothing asks it to register a `/loop` or a cron — teatree's worker
 runs the loops. The board is one board per host, so only the session that owns the host's
 loop slot receives it — N sessions each driving it would mean N cold reviews per PR and two
-sub-agents on one branch. While the active preset masks the self-pump's loop off, the two
+sub-agents on one branch. While the active preset masks the dispatch loop off, the two
 slots that send the session to work are not delivered; the golden rule still arrives.
 
 Read the live text with `t3 loop directives show` (`--json` for the machine contract:

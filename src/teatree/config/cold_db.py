@@ -31,8 +31,6 @@ from typing import cast
 from teatree.config.host_projection import HostProjection, ProjectionReader, warn_once
 from teatree.paths import ControlDb
 
-_RUNNABLE_LOOP_STATUS = "enabled"
-
 #: How long a cold read waits for a contended lock before reporting the store UNREADABLE.
 #: The canonical DB runs `journal_mode=TRUNCATE` (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`
 #: dropped WAL), so a committing writer holds EXCLUSIVE and a reader genuinely blocks — the
@@ -189,41 +187,6 @@ def fetch_one_confirmed(
     if row is _QUERY_ERROR:
         return (None, False)
     return (cast("tuple[object, ...] | None", row), True)
-
-
-def loop_status(
-    name: str,
-    *,
-    default: str = _RUNNABLE_LOOP_STATUS,
-    env: Mapping[str, str] = os.environ,
-    db_path: Path | None = None,
-) -> str:
-    """Durable status of loop `name` from `teatree_loop_state`, or `default` on absence/failure.
-
-    The Django-free cold twin of `LoopState.objects.status_of`: an absent row —
-    or an unreadable DB — resolves to the runnable `enabled` default, exactly as
-    the model manager's absent-row fall-through does (there is no seeded-defaults
-    migration; an empty table means every loop runs). Fails OPEN to `default` for
-    every path — missing DB file, absent table (fresh install), locked DB, a
-    non-str status — so the caller never suppresses on an unreadable control
-    plane. Reuses `canonical_config_db` + the WAL-aware `fetch_one` so it targets
-    the same PRIMARY control DB the installed `t3` writes, even from inside a
-    worktree.
-    """
-    db = db_path if db_path is not None else canonical_config_db(env=env)
-    if not db.exists():
-        return _projected_loop_status(name, default=default, env=env) if db_path is None else default
-    row = fetch_one(db, "SELECT status FROM teatree_loop_state WHERE name=?", (name,))
-    if row is None:
-        return default
-    status = row[0]
-    return status if isinstance(status, str) and status else default
-
-
-def _projected_loop_status(name: str, *, default: str, env: Mapping[str, str]) -> str:
-    projection = canonical_projection(env=env)
-    status = projection.loop_status(name) if projection is not None else None
-    return status if isinstance(status, str) and status else default
 
 
 def row_exists(

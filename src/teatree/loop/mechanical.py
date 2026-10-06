@@ -135,8 +135,8 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
     absence from the reviewer-assignment scan: ``host.get_pr_open_state``
     confirmed the PR is genuinely MERGED or CLOSED (#1074), or the ticket sits
     in a settled state that admits no review (#1431). Without this sweep the
-    PENDING task lingers forever, surfacing on every ``pending-spawn`` and
-    dispatching a reviewer sub-agent for nothing.
+    PENDING task lingers forever and dispatches a reviewer sub-agent for
+    nothing.
 
     The two grounds are NOT interchangeable in a log (#3910): a local reap on a
     still-OPEN PR is correct, so crediting it to the forge-state proof reads as
@@ -180,7 +180,7 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     review-request — never a ``t3:reviewer`` sub-agent. Without this sweep
     a reviewing task created for a self-authored OPEN MR (the orphan sweep
     only reaps MERGED/CLOSED PRs) lingers forever and re-dispatches a
-    self-review every ``pending-spawn``.
+    self-review.
 
     Narrow and best-effort: by ticket id, only ``phase=reviewing``
     non-terminal tasks, CLAIMED included (:func:`reviewer_task_orphaned`

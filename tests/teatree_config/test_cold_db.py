@@ -1,7 +1,7 @@
 """Integration tests for the Django-free stdlib sqlite plumbing (`cold_db`).
 
-The raw read layer under `cold_reader`: config-DB path resolution, the loop-state
-status read, and the generic existence probe. The happy paths build a REAL sqlite
+The raw read layer under `cold_reader`: config-DB path resolution, the single-row
+read, and the generic existence probe. The happy paths build a REAL sqlite
 database via stdlib `sqlite3` and read it back — the fail-open, WAL-fallback, and
 locking behaviour exercised against actual sqlite. The rarer fail-open branches
 (a PRAGMA-setup failure, the exact quiescent-WAL retry codes, a
@@ -18,7 +18,7 @@ import pytest
 
 import teatree.paths
 from teatree.config import cold_db
-from teatree.config.cold_db import canonical_config_db, fetch_one, loop_status, row_exists
+from teatree.config.cold_db import canonical_config_db, fetch_one, row_exists
 
 _PRAGMA_FAIL = "pragma failed"
 
@@ -75,6 +75,9 @@ def _make_config_db(path: Path, rows: Iterable[tuple[str, str, object]], *, wal:
         conn.commit()
     finally:
         conn.close()
+
+
+_LOOP_STATUS_QUERY = "SELECT status FROM teatree_loop_state WHERE name=?"
 
 
 def _make_loop_state_db(path: Path, rows: Iterable[tuple[str, str]], *, wal: bool = False) -> None:
@@ -147,60 +150,6 @@ class TestCanonicalConfigDb:
         isolated = teatree.paths.resolve_data_dir(env={}, home=tmp_path, repo_root=worktree)
         assert isolated.auto_isolated is True
         assert isolated.path / "db.sqlite3" != primary
-
-
-class TestLoopStatus:
-    """`loop_status` is the Django-free cold twin of `LoopState.objects.status_of`."""
-
-    def test_reads_seeded_status(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_loop_state_db(db, [("dispatch", "paused"), ("review", "disabled")])
-        assert loop_status("dispatch", db_path=db) == "paused"
-        assert loop_status("review", db_path=db) == "disabled"
-
-    def test_absent_row_returns_enabled_default(self, tmp_path: Path) -> None:
-        # The manager's absent-row fall-through: an empty table means every loop
-        # runs. Anti-vacuous: default="enabled" differs from a would-be None.
-        db = tmp_path / "db.sqlite3"
-        _make_loop_state_db(db, [("review", "paused")])
-        assert loop_status("dispatch", db_path=db) == "enabled"
-
-    def test_custom_default_honoured_on_absent_row(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_loop_state_db(db, [])
-        assert loop_status("dispatch", default="sentinel", db_path=db) == "sentinel"
-
-    def test_missing_db_fails_open_to_default(self, tmp_path: Path) -> None:
-        assert loop_status("dispatch", db_path=tmp_path / "nope.sqlite3") == "enabled"
-
-    def test_missing_table_fails_open_to_default(self, tmp_path: Path) -> None:
-        db = tmp_path / "fresh.sqlite3"
-        sqlite3.connect(db).close()  # exists but has no teatree_loop_state table
-        assert loop_status("dispatch", db_path=db) == "enabled"
-
-    def test_reads_via_t3_config_db_env(self, tmp_path: Path) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_loop_state_db(db, [("dispatch", "disabled")])
-        assert loop_status("dispatch", env={"T3_CONFIG_DB": str(db)}) == "disabled"
-
-    def test_quiescent_wal_db_readable(self, tmp_path: Path) -> None:
-        # The realistic cold state: a WAL-format DB with no live writer and no
-        # sidecars. The shared `fetch_one` immutable=1 fallback reads it.
-        db = tmp_path / "wal.sqlite3"
-        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
-        _remove_wal_sidecars(db)
-        assert not db.with_name(db.name + "-wal").exists()
-        assert loop_status("dispatch", db_path=db) == "paused"
-
-    def test_quiescent_wal_db_in_a_read_only_directory_readable(self, tmp_path: Path) -> None:
-        db = tmp_path / "wal.sqlite3"
-        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
-        _remove_wal_sidecars(db)
-        tmp_path.chmod(0o555)
-        try:
-            assert loop_status("dispatch", db_path=db) == "paused"
-        finally:
-            tmp_path.chmod(0o755)
 
 
 class TestRowExists:
@@ -276,6 +225,25 @@ class TestFetchOne:
         db = tmp_path / "fresh.sqlite3"
         sqlite3.connect(db).close()  # exists, but the table is absent → sentinel → None
         assert fetch_one(db, "SELECT value FROM teatree_config_setting WHERE key=?", ("mode",)) is None
+
+    def test_quiescent_wal_db_readable(self, tmp_path: Path) -> None:
+        # The realistic cold state: a WAL-format DB with no live writer and no
+        # sidecars. The immutable=1 fallback reads it.
+        db = tmp_path / "wal.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
+        _remove_wal_sidecars(db)
+        assert not db.with_name(db.name + "-wal").exists()
+        assert fetch_one(db, _LOOP_STATUS_QUERY, ("dispatch",)) == ("paused",)
+
+    def test_quiescent_wal_db_in_a_read_only_directory_readable(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
+        _remove_wal_sidecars(db)
+        tmp_path.chmod(0o555)
+        try:
+            assert fetch_one(db, _LOOP_STATUS_QUERY, ("dispatch",)) == ("paused",)
+        finally:
+            tmp_path.chmod(0o755)
 
 
 class TestReadOnlyFailOpenBranches:

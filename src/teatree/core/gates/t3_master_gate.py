@@ -23,7 +23,7 @@ claim about the whole system was false, and its "start a worker" advice would ha
 second worker against one control DB. The contradiction between the two facts belongs to
 ``t3 doctor check``, which reads both.
 
-Exactly two callers consult this gate, and both are reactive ``/loop`` cycles that
+Exactly two callers consult this gate, and both are reactive loop cycles that
 would otherwise run against a factory nobody owns:
 :mod:`teatree.core.management.commands.loop_slack_answer` and
 :mod:`teatree.core.management.commands.loop_self_improve`. The set is pinned by
@@ -107,9 +107,8 @@ def live_foreign_owner_session(session_id: str, *, current_pid: int | None) -> s
 
     The SessionStart tick-owner election's read. The ``t3 worker`` is exempt: it is
     the machine-wide driver, and it holds the slot for as long as it drives ticks —
-    reported as a rival, it would leave the tick-owner record permanently unclaimed,
-    so no session would register the three reactive ``/loop`` slots and #3968 would
-    re-break one layer up. Only the DB CAS treats the runner as an ordinary owner,
+    reported as a rival, it would leave the tick-owner record permanently unclaimed
+    and #3968 would re-break one layer up. Only the DB CAS treats the runner as an ordinary owner,
     so a live lease is still never evicted.
     """
     owner = LoopLease.objects.live_foreign_owner(T3_MASTER_SLOT, session_id=session_id, current_pid=current_pid)

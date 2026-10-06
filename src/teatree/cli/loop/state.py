@@ -9,7 +9,7 @@ the ``loop_state`` Django management command — anything touching the ORM is a
 management command, not a plain typer command.
 
 The DB-backed ``LoopState`` is the HOLD tier: a paused/disabled loop stays held across a
-session restart, honoured by BOTH the tick and the in-session Stop self-pump (#1913).
+session restart, honoured by the tick (#1913).
 ``t3 loop override`` writes the tri-state MANUAL layer beneath it (``Loop.enabled``),
 which requires a reason and is never cleared by anything but a person.
 """

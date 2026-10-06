@@ -12,9 +12,8 @@ kill-switch and no ``[loops]`` toml disabled-state fallback.
 
 The motivation is the 2026-06-03 'pause everything' incident: there was no
 single atomic command and no durable paused state that survived a session
-restart. A row written here outlives the process — the tick AND the in-session
-Stop self-pump both consult it, so a paused loop stays paused across a restart,
-including the core ``dispatch`` loop.
+restart. A row written here outlives the process — the tick consults it, so a
+paused loop stays paused across a restart, including the core ``dispatch`` loop.
 
 Transitions are atomic single-row upserts (``update_or_create`` on the unique
 ``name``) so two racing writers cannot produce a duplicate row, and they are
@@ -37,7 +36,7 @@ class LoopStatus(models.TextChoices):
     + the DB; there is no env kill-switch and no ``[loops]`` toml
     disabled-state fallback). ``PAUSED`` is a reversible hold; ``DISABLED`` a
     durable kill-switch. Only ``ENABLED`` is runnable — both other states skip
-    the loop in the tick and suppress the self-pump.
+    the loop in the tick.
     """
 
     ENABLED = "enabled", "Enabled"
@@ -49,9 +48,9 @@ class LoopStateManager(models.Manager["LoopState"]):
     """Read/transition surface for the per-loop control plane.
 
     The manager owns the absent-row → ``ENABLED`` fall-through contract and the
-    atomic, idempotent transitions. Callers (the tick gate and the self-pump
-    hook) ask only "is this loop runnable / paused / disabled?" and never touch
-    the ``status`` string directly.
+    atomic, idempotent transitions. Callers (the tick gate) ask only "is this
+    loop runnable / paused / disabled?" and never touch the ``status`` string
+    directly.
     """
 
     def status_of(self, name: str) -> LoopStatus:

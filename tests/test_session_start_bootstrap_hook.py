@@ -1,13 +1,11 @@
-"""Tests for the SessionStart hook handler (tick-dispatch bootstrap).
+"""Tests for the SessionStart hook handler (attended loop-slot bootstrap).
 
 #718 established a SessionStart hook emitting ``additionalContext``;
 #786 WS3 RETIRED the immortal-singleton roster it used to spawn. The
-hook now records which single *session* is the loop-tick owner
-(Django-free, so the #758/#810 Stop self-pump can gate on it) and emits
-a tick-dispatch directive: the loop is the ``t3 loop tick`` cron + WS1
-atomic ``claim-next`` + WS2 ``LoopLease``, never a fixed set of
-long-lived sub-agents. The ``/rename`` reminder + OSC title stay
-owner-only / interactive-TTY-gated.
+hook records which single *session* holds the host's attended loop slot
+(Django-free) and tells the session the ``t3 worker`` runs the loops,
+never a fixed set of long-lived sub-agents. The ``/rename`` reminder +
+OSC title stay owner-only / interactive-TTY-gated.
 
 Module note — why every ``teatree.*`` import here sits inside its test body: this
 module lives at the ``tests/`` ROOT because it exercises a hook, not one ``src``
@@ -126,8 +124,8 @@ class TestHandleSessionStartBootstrap:
             assert name not in ctx
         for retired in ("re-attach", "reattach", "takeover", "resume by", "from its brief"):
             assert retired not in ctx.lower()
-        assert "t3 loops tick" in ctx
-        assert "t3 loop claim-next" in ctx
+        assert "this session holds this host's attended loop slot" in ctx.lower()
+        assert "t3 worker" in ctx
         # Owner gets the rename reminder.
         assert "/rename TEATREE LOOP" in ctx
 
@@ -148,7 +146,7 @@ class TestHandleSessionStartBootstrap:
         handle_session_start_bootstrap({"session_id": "second-2"})
 
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        # Non-owner: stay idle, never arm a competing tick, never spawn.
+        # Non-owner: told who holds the slot, never asked to arm or spawn.
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -165,13 +163,9 @@ class TestHandleSessionStartBootstrap:
         assert "another" in ctx.lower()
         assert "owner" in ctx.lower()
         assert "owner-1" in ctx  # names the live owner session
-        assert "do not arm" in ctx.lower() or "stay idle" in ctx.lower()
-        # #1073 doc-alignment: the directive must state the gate is now
-        # HARD (a non-owner tick SKIPs, not "runs and finds nothing").
-        assert "skip" in ctx.lower()
+        assert "another live session" in ctx.lower()
+        assert "t3 worker" in ctx
         assert "find nothing to claim" not in ctx.lower()
-        assert "take" in ctx.lower()
-        assert "over" in ctx.lower()
         # Non-owner must NOT get the rename reminder.
         assert "/rename TEATREE LOOP" not in ctx
         # Ownership is unchanged.
@@ -183,9 +177,9 @@ class TestHandleSessionStartBootstrap:
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        # Post-compaction same-session restart: still owner, tick-driven,
+        # Post-compaction same-session restart: still the slot owner,
         # nothing to re-spawn.
-        assert "t3 loops tick" in ctx
+        assert "this session holds this host's attended loop slot" in ctx.lower()
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -208,9 +202,8 @@ class TestHandleSessionStartBootstrap:
         handle_session_start_bootstrap({"session_id": "new-owner"})
 
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        # Dead owner pruned -> this session becomes tick-owner (no
-        # re-spawn; the cron keeps ticking).
-        assert "t3 loops tick" in ctx
+        # Dead owner pruned -> this session takes the slot (no re-spawn).
+        assert "this session holds this host's attended loop slot" in ctx.lower()
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -325,16 +318,12 @@ class TestSessionStartWiredIntoRouter:
 class TestWs3TickDispatchContract:
     """#786 WS3: SessionStart retires the immortal-singleton roster.
 
-    The loop is now driven by the ``t3 loop tick`` cron + WS1
-    ``claim-next`` (DB-claimed work) + WS2 ``LoopLease`` (one tick-owner),
-    NOT by SessionStart spawning/re-spawning a fixed roster of long-lived
-    sub-agents. The bootstrap directive must therefore NOT instruct
-    spawning the now-retired four-name loop roster, NOT use the
-    spawn/takeover/resume/re-attach roster vocabulary, point the session
-    at tick-dispatch (the cron drives per-unit fresh bounded sub-agents;
-    statelessness across ticks is the compaction-proofing), and still
-    emit something (a session needs to know the loop is tick-driven and
-    whether it is the tick-owner).
+    The ``t3 worker`` runs the loops; SessionStart never spawns or re-spawns a
+    fixed roster of long-lived sub-agents. The bootstrap directive must therefore
+    NOT instruct spawning the retired four-name roster, NOT use the
+    spawn/takeover/resume/re-attach roster vocabulary, point the session at the
+    worker, and still emit something (a session needs to know whether it holds
+    the attended loop slot).
     """
 
     def _ctx(self, capsys: pytest.CaptureFixture[str], session_id: str = "s-1") -> str:
@@ -360,11 +349,10 @@ class TestWs3TickDispatchContract:
         ):
             assert retired_token not in ctx.lower()
 
-    def test_bootstrap_points_at_tick_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
-        ctx = self._ctx(capsys).lower()
-        # The directive must orient the session toward the tick-driven model.
-        assert "tick" in ctx
-        assert "t3 loops tick" in ctx or "loops tick" in ctx
+    def test_bootstrap_points_at_the_worker(self, capsys: pytest.CaptureFixture[str]) -> None:
+        ctx = self._ctx(capsys)
+        assert "t3 worker" in ctx
+        assert "loops tick" not in ctx
 
     def test_bootstrap_still_emits_a_directive(self, capsys: pytest.CaptureFixture[str]) -> None:
         # A session must still be told the loop is tick-driven; empty
@@ -618,7 +606,7 @@ class TestNewSessionHijackFix(TestCase):
         Post-fix: the ``owner is None`` branch consults
         ``LoopLease.objects.ownership_status("t3-master")`` before
         deciding; if the DB lease is LIVE and foreign it emits
-        ``_TICK_DISPATCH_NON_OWNER_DIRECTIVE`` and does NOT evict.
+        ``_LOOP_SLOT_NON_OWNER_DIRECTIVE`` and does NOT evict.
         """
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
