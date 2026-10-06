@@ -448,6 +448,24 @@
       ]
     },
     {
+      "help": "Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.",
+      "name": "live",
+      "subcommands": [
+        {
+          "help": "Show one live session's state, tool and progress without contacting the agent",
+          "name": "inspect"
+        },
+        {
+          "help": "Send input into a running agent's current turn and print its receipt (active)",
+          "name": "steer"
+        },
+        {
+          "help": "List every live session on this host's workers (passive)",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "Switch standing-directive slots off (disable) or back on (enable) (#4166).",
       "name": "loop_directive_set",
       "subcommands": [

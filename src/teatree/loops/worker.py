@@ -280,6 +280,16 @@ def _release_t3_master() -> None:
     LoopLease.objects.release_ownership(T3_MASTER_SLOT, session_id=LOOP_RUNNER_SESSION_ID)
 
 
+def _start_live_ingress() -> None:
+    """Publish this worker's live socket at boot, so a worker running nothing answers ``live list`` with none."""
+    from teatree.agents.live_mailbox import shared_broker  # noqa: PLC0415 — deferred: agents runtime at call time
+
+    try:
+        shared_broker()
+    except Exception:
+        logger.warning("Live ingress could not start; operators cannot reach this worker's sessions", exc_info=True)
+
+
 def _spawn_executor_thread(executor: _Executor) -> _Handle:
     """Run *executor* in a daemon thread that closes its DB connection on exit.
 
@@ -328,6 +338,7 @@ class WorkerSeams:
     reap_leases: Callable[[], object] = _reap_expired_leases
     claim_master: Callable[[], object] = _claim_t3_master
     release_master: Callable[[], object] = _release_t3_master
+    start_live_ingress: Callable[[], object] = _start_live_ingress
     publish_health: _HealthPublisher = _publish_health
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
@@ -540,6 +551,7 @@ class LoopWorker:
         # chains that fire ticks exist, so `t3 loop owner` can never report "unclaimed"
         # while this process drives loops.
         self._claim_t3_master()
+        seams.start_live_ingress()
         seams.reconcile()
         seams.seed_chains()
         # Expire the stale `default`-queue backlog BEFORE any executor spawns, so a box

@@ -227,6 +227,18 @@ scoping rule and the mode brake, and each harness supplies its own delivery adap
 They are advisory — repeated prose, not a gate. A rule that is repeated is one the session
 still holds; it is not one it cannot break.
 
+## Reach a running factory agent
+
+When a running factory task needs something only this session has — a page or document its credentials cannot read, a correction, a decision — hand it to the running agent. Never re-run its work here.
+
+1. `t3 <overlay> live list` — the sessions running now on this host's workers, each with its task id and `steerable` flag.
+2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
+3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
+
+To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
+
+Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `t3 <overlay> questions answer` or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
+
 ## Claude-only hook automation
 
 Claude hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for Claude hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution. Codex does not consume this file; shared behavior must live in the skill or CLI seam, never rely silently on a Claude hook.

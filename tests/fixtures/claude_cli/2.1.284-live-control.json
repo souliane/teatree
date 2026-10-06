@@ -1,0 +1,85 @@
+{
+  "claude_cli_version": "2.1.284",
+  "claude_agent_sdk_version": "0.2.161",
+  "source": "stream-json recorded between claude-agent-sdk 0.2.161 and its bundled Claude Code 2.1.284 in the worker container, 2026-10-06, model claude-haiku-4-5-20251001",
+  "initialize_hooks": {
+    "PostToolUse": [{"matcher": null, "hookCallbackIds": ["hook_0"]}],
+    "Stop": [{"matcher": null, "hookCallbackIds": ["hook_1"]}]
+  },
+  "hook_callback_request": {
+    "type": "control_request",
+    "request_keys": ["callback_id", "input", "subtype", "tool_use_id"],
+    "subtype": "hook_callback"
+  },
+  "hook_inputs": {
+    "PostToolUse": [
+      "cwd",
+      "duration_ms",
+      "hook_event_name",
+      "permission_mode",
+      "prompt_id",
+      "session_id",
+      "tool_input",
+      "tool_name",
+      "tool_response",
+      "tool_use_id",
+      "transcript_path"
+    ],
+    "PostToolUse_subagent": [
+      "agent_id",
+      "agent_type",
+      "cwd",
+      "duration_ms",
+      "hook_event_name",
+      "permission_mode",
+      "prompt_id",
+      "session_id",
+      "tool_input",
+      "tool_name",
+      "tool_response",
+      "tool_use_id",
+      "transcript_path"
+    ],
+    "Stop": [
+      "background_tasks",
+      "cwd",
+      "hook_event_name",
+      "last_assistant_message",
+      "permission_mode",
+      "prompt_id",
+      "session_crons",
+      "session_id",
+      "stop_hook_active",
+      "transcript_path"
+    ]
+  },
+  "observed": {
+    "post_tool_use_additional_context": "reached the model in the same turn as a system reminder; no stream event",
+    "stop_block": "continued the same turn; the next Stop carried stop_hook_active=true",
+    "subagent_post_tool_use": "carried agent_id and agent_type; main-thread PostToolUse carried neither",
+    "result_messages_per_turn": 1
+  },
+  "stop_block_feedback_message": {
+    "type": "user",
+    "isSynthetic": true,
+    "parent_tool_use_id": null,
+    "text_prefix": "Stop hook feedback:\n"
+  },
+  "sequence": [
+    {"from": "sdk", "type": "control_request", "subtype": "initialize"},
+    {"from": "sdk", "type": "user"},
+    {"from": "cli", "type": "system", "subtype": "init"},
+    {"from": "cli", "type": "assistant", "content": "tool_use"},
+    {"from": "cli", "type": "control_request", "subtype": "hook_callback", "hook_event_name": "PostToolUse"},
+    {"from": "sdk", "type": "control_response", "response": {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "<framed operator input>"}}},
+    {"from": "cli", "type": "user", "content": "tool_result"},
+    {"from": "cli", "type": "assistant", "content": "text"},
+    {"from": "cli", "type": "control_request", "subtype": "hook_callback", "hook_event_name": "Stop", "stop_hook_active": false},
+    {"from": "sdk", "type": "control_response", "response": {"decision": "block", "reason": "<framed operator input>"}},
+    {"from": "cli", "type": "user", "isSynthetic": true, "content": "Stop hook feedback"},
+    {"from": "cli", "type": "assistant", "content": "text"},
+    {"from": "cli", "type": "control_request", "subtype": "hook_callback", "hook_event_name": "Stop", "stop_hook_active": true},
+    {"from": "sdk", "type": "control_response", "response": {}},
+    {"from": "cli", "type": "result", "subtype": "success", "num_turns": 3}
+  ]
+}

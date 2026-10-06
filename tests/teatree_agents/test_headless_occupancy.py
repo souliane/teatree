@@ -11,7 +11,10 @@ runs are ALLOWED to start, and driving a real harness would prove nothing about
 that while costing a model call.
 """
 
+import asyncio
 import tempfile
+import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest import mock
 
@@ -20,6 +23,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents import runner
+from teatree.agents.live_control import LiveTask
+from teatree.agents.live_registry import shared_registry
+from teatree.agents.runner_stream import StreamCapture
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
 from teatree.core.worktree.occupancy import (
     OccupancyHolder,
@@ -233,3 +239,51 @@ class HeartbeatRenewalTests(_DispatchCase):
             runner._renew_lease_closing_connection(Task())
 
         renew_lease.assert_called_once()
+
+
+class _SteerableStub:
+    async def query(self, prompt: str) -> None: ...
+
+    async def receive_response(self) -> AsyncIterator[object]:
+        return
+        yield
+
+    async def interrupt(self) -> None: ...
+
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None: ...
+
+
+class LiveSessionKeepsOneWriterTests(_DispatchCase):
+    """A live, steerable session is still the checkout's one writer; steering never admits a second."""
+
+    def test_a_second_dispatch_is_refused_while_the_first_session_is_live_and_steerable(self) -> None:
+        rival = Task.objects.create(ticket=self.ticket, session=SessionFactory(ticket=self.ticket), phase="coding")
+        release = threading.Event()
+        attached = threading.Event()
+        seen: list[list[dict[str, object]]] = []
+
+        async def hold_live_session() -> None:
+            live_task = LiveTask(pk=self.task.pk, ticket=self.ticket.pk, phase="coding", harness="claude_sdk", model="")
+            async with shared_registry().attach(live_task, StreamCapture()) as controller:
+                controller.bind(_SteerableStub())
+                attached.set()
+                await asyncio.to_thread(release.wait)
+
+        def first_run(task: Task, **_: object) -> TaskAttempt:
+            holder = threading.Thread(target=asyncio.run, args=(hold_live_session(),))
+            holder.start()
+            attached.wait(timeout=10)
+            with mock.patch.object(runner, "_run_agent") as second_driver:
+                runner.run_agent(rival, phase="coding", overlay_skill_metadata=mock.Mock())
+            seen.append([dict(facts) for facts in shared_registry().sessions()])
+            release.set()
+            holder.join(timeout=10)
+            second_driver.assert_not_called()
+            return mock.Mock(spec=TaskAttempt)
+
+        self.dispatch(driver=first_run)
+
+        rival.refresh_from_db()
+        assert rival.status == Task.Status.FAILED
+        assert task_holder_id(self.task) in TaskAttempt.objects.filter(task=rival).latest("pk").error
+        assert [(row["task"], row["steerable"]) for row in seen[0]] == [(self.task.pk, True)]

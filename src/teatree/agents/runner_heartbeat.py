@@ -8,8 +8,11 @@ from dataclasses import dataclass, replace
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.compaction_guard import GuardedHarness
 from teatree.agents.harness import Harness
+from teatree.agents.live_control import LiveTask
 from teatree.agents.live_mailbox import bound_task_mailbox
+from teatree.agents.live_registry import shared_registry
 from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
@@ -67,14 +70,24 @@ async def drive_with_heartbeat(
     runtime: HeartbeatRuntime,
 ) -> HarnessOutcome:
     """Drive one session while renewing ownership and enforcing watchdog ceilings."""
-    underlying = getattr(harness, "harness", harness)
+    live_task = _live_task(task, options, harness)
     with bound_task_mailbox(
         options,
-        room=str(task.ticket_id),  # ty: ignore[unresolved-attribute] — Django FK attname
-        harness=type(underlying).__name__,
+        room=str(live_task.ticket),
+        harness=live_task.harness,
         label=f"{task.phase} task {task.pk}",
     ):
         return await _drive_bound_session(task, prompt, options, harness, runtime=runtime)
+
+
+def _live_task(task: Task, options: ClaudeAgentOptions, harness: Harness) -> LiveTask:
+    return LiveTask(
+        pk=task.pk,
+        ticket=task.ticket_id,  # ty: ignore[unresolved-attribute] — Django FK attname
+        phase=task.phase,
+        harness=harness.name if isinstance(harness, GuardedHarness) else type(harness).__name__,
+        model=options.model or "",
+    )
 
 
 async def _drive_bound_session(
@@ -91,7 +104,9 @@ async def _drive_bound_session(
     lease_lost = False
     capture = StreamCapture(round_ceiling=_arm_round_ceiling(options, harness))
 
-    async with harness.open(options) as session:
+    registry = shared_registry()
+    async with registry.attach(_live_task(task, options, harness), capture) as live, harness.open(options) as session:
+        live.bind(session)
 
         async def heartbeat() -> None:
             nonlocal lease_lost
@@ -104,7 +119,7 @@ async def _drive_bound_session(
                         breach.append(str(exc))
                         lease_lost = True
                         logger.warning("Task %s lease lost; interrupting duplicate run", task.pk)
-                        await session.interrupt()
+                        await live.interrupt()
                         return
                     except Exception:
                         logger.warning("Heartbeat failed for task %s", task.pk, exc_info=True)
@@ -119,7 +134,7 @@ async def _drive_bound_session(
                     if reason and not breach:
                         breach.append(reason)
                         logger.warning("Watchdog interrupting stuck task %s: %s", task.pk, reason)
-                        await session.interrupt()
+                        await live.interrupt()
                         return
             finally:
                 await asyncio.to_thread(close_thread_db_connections)
@@ -129,7 +144,7 @@ async def _drive_bound_session(
             timeout = runtime.watchdog.max_runtime_seconds or None
             outcome = await asyncio.wait_for(_collect(session, prompt, capture), timeout=timeout)
         except TimeoutError:
-            await session.interrupt()
+            await live.interrupt()
             elapsed = time.monotonic() - started_at
             reason = runtime.watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
                 f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"

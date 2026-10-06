@@ -14,7 +14,8 @@ import typer
 
 from teatree.agents.skill_injection import build_subagent_skill_preamble, harness_skills_dirs
 from teatree.cli.autonomy import register_autonomy_commands
-from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
+from teatree.cli.django_group import DjangoGroup
+from teatree.cli.django_groups import DJANGO_GROUPS
 from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands

@@ -14,9 +14,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hooks.scripts import hook_budget
+from teatree.agents import live_mailbox
 from teatree.agents.codex_app_server_options import container_is_the_sandbox
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
 from teatree.agents.live_mailbox import reset_shared_brokers
+from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
@@ -231,12 +233,21 @@ def _reset_host_pressure_warning_memo() -> Iterator[None]:
     reset_missing_warning_memo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _private_live_dir() -> Iterator[None]:
+    """Keep every test's broker socket out of the host's real control-DB volume."""
+    with patch.object(live_mailbox, "live_dir", return_value=Path(tempfile.mkdtemp(prefix="t3-live-", dir="/tmp"))):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_live_harness_registries() -> Iterator[None]:
     reset_shared_brokers()
+    reset_shared_registries()
     reset_shared_codex_app_servers()
     yield
     reset_shared_brokers()
+    reset_shared_registries()
     reset_shared_codex_app_servers()
 
 

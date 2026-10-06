@@ -9,6 +9,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
@@ -109,8 +110,16 @@ class StreamCapture:
     pending_skill_loads: dict[str, tuple[str, Path | None]] = field(default_factory=dict)
     model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
     context_tokens: int | None = None
+    open_tools: dict[str, tuple[str, float]] = field(default_factory=dict)
+    last_event_at: float | None = None
+
+    @property
+    def open_tool(self) -> tuple[str, float] | None:
+        """The longest-running tool call still awaiting its result: its name and monotonic start."""
+        return next(iter(self.open_tools.values()), None)
 
     def observe(self, message: object) -> None:
+        self.last_event_at = monotonic()
         if self.round_ceiling is not None:
             self.round_ceiling.observe(message)
         if isinstance(message, AssistantMessage):
@@ -134,7 +143,10 @@ class StreamCapture:
             self.model_fallbacks.append(message.data)
 
     def _observe_tool_block(self, block: object) -> None:
+        if isinstance(block, ToolUseBlock):
+            self.open_tools.setdefault(block.id, (block.name, monotonic()))
         if isinstance(block, ToolResultBlock):
+            self.open_tools.pop(block.tool_use_id, None)
             pending = self.pending_skill_loads.pop(block.tool_use_id, None)
             if pending is not None and not block.is_error:
                 skill, read_path = pending
