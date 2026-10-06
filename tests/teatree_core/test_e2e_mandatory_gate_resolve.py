@@ -146,3 +146,14 @@ class TestCoreRepoWithoutE2EProducer(TestCase):
         inputs = resolve_gate_inputs(ticket, read_diff=lambda: ["src/teatree/core/views/home.py"], head_sha=_SHA)
 
         assert inputs.display_impacting is False
+
+    def test_a_teatree_ticket_without_a_readable_diff_is_not_impacting(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/4929",
+            overlay="t3-teatree",
+        )
+
+        inputs = resolve_gate_inputs(ticket, read_diff=_unreadable_diff, head_sha=_SHA)
+
+        assert inputs.display_impacting is False
+        assert inputs.unread_diff == ""
