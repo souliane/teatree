@@ -31,7 +31,7 @@ key (:mod:`teatree.loop.phases.conflict_area`) so a fan-out prefers tickets in
 different repos. The spread only re-orders — nothing is dropped.
 
 It only **computes + claims + returns** the manifest — it never spawns; that stays
-in the session / self-pump half. With ``claim=True`` rows are admitted through the
+with the worker's ``execute_task``. With ``claim=True`` rows are admitted through the
 existing claim-next compare-and-swap (:meth:`TaskQuerySet.claim_next_pending`, the
 #786 boundary), so a row it admits is never double-dispatched by a concurrent
 tick. The default ``claim=False`` is a read-only plan.

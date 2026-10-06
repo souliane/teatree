@@ -25,6 +25,7 @@ from teatree.core.admission import machine_load
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
+from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
@@ -281,12 +282,14 @@ def _reset_declaration_caches() -> Iterator[None]:
     """Drop the process-memoised repo declarations so one test's config never answers another's."""
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_unmatched_head_reports()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
     container_is_the_sandbox.cache_clear()
     yield
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_unmatched_head_reports()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
     container_is_the_sandbox.cache_clear()

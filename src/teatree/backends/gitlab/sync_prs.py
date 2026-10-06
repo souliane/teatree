@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, SupportsInt, cast
 
+from teatree.backends.gitlab.pr_reads import enrich_mr_pipeline
 from teatree.backends.gitlab.sync_approvals import detect_approval_dismissal
 from teatree.core.gates.dod_gate import workflow_capped_state
 from teatree.core.models import Ticket
@@ -69,9 +70,10 @@ def build_pr_entry(ctx: "_PRContext", *, username: str) -> PREntry:
     )
 
     if not is_draft and ctx.project and pr_iid:
-        pipeline = ctx.client.get_mr_pipeline(ctx.project.project_id, pr_iid)
-        pr_entry.pipeline_status = pipeline["status"]
-        pr_entry.pipeline_url = pipeline["url"]
+        head = enrich_mr_pipeline(ctx.client, raw).get("head_pipeline")
+        if isinstance(head, dict):
+            pr_entry.pipeline_status = str(head.get("status") or "") or None
+            pr_entry.pipeline_url = str(head.get("web_url") or "") or None
         pr_entry.approvals = ctx.client.get_mr_approvals(ctx.project.project_id, pr_iid)
 
         discussions = ctx.client.get_mr_discussions(ctx.project.project_id, pr_iid)

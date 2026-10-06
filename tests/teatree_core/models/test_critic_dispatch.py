@@ -1,7 +1,7 @@
 """CriticDispatch (SELFCATCH-5): the idempotent enqueue of the async headless critic.
 
 Mirrors ``AutoReviewDispatch``: one row per ``(ticket, transition, head_sha)`` linking
-the claimable headless ``Task(phase="reviewing")`` the loop self-pump dispatches. A
+the claimable headless ``Task(phase="reviewing")`` the worker dispatches. A
 re-fire at the same delivered head returns ``None`` (no second critic); the row and its
 task share one transaction.
 """

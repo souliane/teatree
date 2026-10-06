@@ -306,6 +306,11 @@ class TestFetchRequiredChecksGitLab(TestCase):
             # closed): an empty pipeline list must never merge as "all checks passed".
             assert _gitlab_query().required_checks_status() == "pending"
 
+    def test_a_head_whose_pipeline_is_not_created_yet_is_pending_not_failed(self) -> None:
+        older_commit = {"id": 7, "status": "success", "sha": "b" * 40, "source": "push"}
+        with _patch_gitlab(_PipelinesClient([older_commit])):
+            assert _gitlab_query().required_checks_status() == "pending"
+
     def test_pipeline_query_failure_returns_unreadable(self) -> None:
         # A pipeline query that could not be made observed no red — it observed
         # nothing. Still refused (``REFUSING_CHECK_VERDICTS``), now under its own word.

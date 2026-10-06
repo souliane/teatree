@@ -55,7 +55,6 @@ _DRIVERLESS_WARNING = (
     "      Register one of:\n"
     "        - run `t3 worker` (or restart the session for the SessionStart resurrection) "
     "for the loop runner,\n"
-    "        - keep the owning Claude session alive for the Stop self-pump,\n"
     "        - `t3 loop claim --slot {slot} --driver external` if a foreign scheduler drives it."
 )
 
@@ -104,7 +103,7 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
     # Only the pid-anchored ownership layer (t3-master + loop:<name>) carries a
     # driver; an explicit ``--driver`` overrides detection (the only path to
     # ``external``, since a foreign scheduler is invisible to teatree).
-    resolved_driver = (driver or detect_driver(session_id)) if pid_anchored else ""
+    resolved_driver = (driver or detect_driver()) if pid_anchored else ""
     # take-over is an unconditional steal (evicts a live claimant); the plain
     # claim is the pid-anchored CAS that never evicts a live owner.
     claim = LoopLease.objects.take_over_ownership if take_over else LoopLease.objects.claim_ownership
@@ -184,7 +183,7 @@ def _whoami(command: TyperCommand, *, json_output: bool) -> None:
     from teatree.loop.session_identity import loop_principal  # noqa: PLC0415 — deferred: keeps command import light
 
     session_id, _ = loop_principal()
-    driver = detect_driver(session_id)
+    driver = detect_driver()
     if session_id:
         human = f"{session_id}\ndriver: {driver or 'DRIVERLESS'}"
     else:
@@ -248,7 +247,7 @@ class Command(TyperCommand):
             str,
             typer.Option(
                 "--driver",
-                help="Explicit tick driver (self_pump/loop_runner/external); overrides detection. "
+                help="Explicit tick driver (loop_runner/external); overrides detection. "
                 "Use 'external' for a foreign scheduler.",
             ),
         ] = "",

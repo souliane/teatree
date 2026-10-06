@@ -44,7 +44,6 @@ EXPECTED_CONSUMERS = frozenset(
         "core/claim_liveness.py",
         "core/loop_lease_manager.py",
         "eval/regression_corpus_fixtures.py",
-        "loop/driver_detection.py",
         "loops/dream/lease.py",
         "loops/live.py",
     }

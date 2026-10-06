@@ -1,7 +1,7 @@
 """The seed rows the squashed core migration carries, pinned against the shipped seed.
 
-The core history was squashed into ONE migration (named on disk; read through
-``core_head_migration()`` so no test pins the name). Its last operation is a
+The core history was squashed into ONE initial migration (named on disk; read through
+``core_initial_migration()`` so no test pins the name). Its last operation is a
 ``RunPython`` that seeds exactly the rows a fresh history DB used to end with: the
 default loops, the ``arch_review`` prompt and the ``off`` preset. They are LITERALS
 (a migration is frozen history and imports nothing from teatree), dumped from a fresh
@@ -21,9 +21,9 @@ from django.test import TransactionTestCase
 
 from teatree.core.models import Loop, Mode, Prompt
 from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS, script_entry_point_for
-from tests.teatree_core._migration_graph import core_head_migration
+from tests.teatree_core._migration_graph import core_initial_migration
 
-_migration = importlib.import_module(f"teatree.core.migrations.{core_head_migration()}")
+_migration = importlib.import_module(f"teatree.core.migrations.{core_initial_migration()}")
 _LOOP_ROWS = {row["name"]: row for row in _migration._LOOP_ROWS}
 _COLLEAGUE_FACING = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.colleague_facing)
 
