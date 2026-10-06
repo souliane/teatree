@@ -12,6 +12,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
@@ -525,3 +526,48 @@ class LifecycleIncidentTests(TestCase):
             ).detect()
 
         assert not [report for report in reports if report.payload["kind"] == "attempt_failure_burst"]
+
+
+class PhaseWedgeIncidentTests(TestCase):
+    def _wedged(self, *, overlay: str = "t3-teatree", phase: str = "coding", source: str = "") -> Ticket:
+        ticket = Ticket.objects.create(overlay=overlay, extra={"source": source} if source else {})
+        record_stuck_transition_question(None, phase=phase, ticket=ticket, refusal="FixRecordDodError: no record")
+        return ticket
+
+    def _reports(self, overlay: str = "t3-teatree") -> dict[str, DetectorReport]:
+        detector = LifecycleIncidentDetector(overlay_name=overlay)
+        return {report.payload["kind"]: report for report in detector.detect()}
+
+    def test_a_wedge_is_a_ticket_rung_incident_and_a_repair_wedge_stays_on_the_statusline(self) -> None:
+        wedged = self._wedged(phase="retro")
+        repair = self._wedged(phase="planning", source="self_improve")
+
+        reports = self._reports()
+
+        assert reports["phase_wedge"].payload["cause"] == "retro"
+        assert reports["phase_wedge"].payload["ids"] == [wedged.pk]
+        assert reports["phase_wedge"].requested_rung == ActionRung.TICKET
+        assert reports["repair_phase_wedge"].payload["ids"] == [repair.pk]
+        assert reports["repair_phase_wedge"].requested_rung == ActionRung.STATUSLINE
+
+    def test_another_overlays_wedge_and_a_dismissed_wedge_are_not_counted(self) -> None:
+        self._wedged(overlay="other")
+        dismissed = self._wedged()
+        DeferredQuestion.objects.get(dedupe_marker__startswith=f"fsm-wedge:{dismissed.pk}:").mark_stale("done")
+
+        assert "phase_wedge" not in self._reports()
+
+    def test_a_wedge_incident_opens_one_repair_ticket_that_reaches_work_started(self) -> None:
+        self._wedged(phase="retro")
+
+        result = run_tier(
+            Tier.CHEAP,
+            detectors=[LifecycleIncidentDetector(overlay_name="t3-teatree")],
+            budget=BudgetVerdict.allow(),
+        )
+
+        ticketed = [action for action in result.actions if action.rung == ActionRung.TICKET]
+        assert len(ticketed) == 1
+        repair = Ticket.objects.get(pk=ticketed[0].firing.ticket_id)
+        assert repair.state == Ticket.State.WORK_STARTED
+        assert repair.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
