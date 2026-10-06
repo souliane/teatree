@@ -165,6 +165,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # Announced (model, key) pairs behind the undeclared-extra-key warning (#2663). Same shape as
     # the two memos above: a pair leaking out of its test silences the warning a later test asserts.
     "teatree.core.models.types:_WARNED_STRIPPED_KEYS": "reset_stripped_key_warnings",
+    "teatree.loop.scanners.review_nag_mention:_warn_unresolved_mention_once": "reset_unresolved_mention_warnings",
     "teatree.core.worktree.branch_classification:_declared_single_branch_repos": "reset_single_branch_cache",
     "teatree.core.worktree.branch_classification:_branch_pr_is_merged": "reset_forge_probe_cache",
     "teatree.core.worktree.branch_classification:_merged_pr_head_sha": "reset_forge_probe_cache",

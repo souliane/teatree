@@ -149,11 +149,11 @@ class TestSelfAuthoredReactSkipMatrix:
     def test_self_authored_via_alias_identity_never_reacts(self) -> None:
         post = _seed(reacted=False)
         slack = _RecordingSlack()
-        host = _AuthoredHost(open_state=PrOpenState.MERGED, author="adrien.cossa", user="")
+        host = _AuthoredHost(open_state=PrOpenState.MERGED, author="alice.example", user="")
         scanner = ReviewRequestMergeReactScanner(
             messaging=slack,
             host=host,
-            identities=(_USER_LOGIN, "adrien.cossa"),
+            identities=(_USER_LOGIN, "alice.example"),
         )
 
         scanner.scan()
