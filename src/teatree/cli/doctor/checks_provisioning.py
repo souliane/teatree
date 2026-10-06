@@ -20,6 +20,10 @@ import typer
 
 from teatree.provisioning.declared import DeclaredDependency, declared_dependencies, project_root_for_running_code
 from teatree.provisioning.probes import BinaryResolver, unprovisioned
+from teatree.skill_support.index import harness_skills_dirs, install_roots, locate_skill_md
+from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.utils import git_run
+from teatree.utils.git_remote import slug_from_remote
 
 
 def _render(gap: DeclaredDependency) -> str:
@@ -28,6 +32,44 @@ def _render(gap: DeclaredDependency) -> str:
         f"(declared in {gap.declared_in}) — the configuration mandates it but nothing installed it, "
         f"so anything depending on it silently does nothing. Fix: {gap.remediation}."
     )
+
+
+def _declared_repo(spec: str) -> str:
+    return "/".join(spec.split("#", 1)[0].split("/")[:2])
+
+
+def _symlinked_checkout_slug(skill_dir: Path, *, home: Path) -> str:
+    """The ``owner/repo`` of the checkout an install-root symlink points into, or ``""``."""
+    if not skill_dir.is_symlink():
+        return ""
+    top = git_run.run(repo=str(skill_dir.resolve()), args=["rev-parse", "--show-toplevel"])
+    if not top or Path(top) == home:
+        return ""
+    return slug_from_remote(git_run.run(repo=top, args=["remote", "get-url", "origin"]))
+
+
+def _declared_skill_source_findings(
+    dependencies: Sequence[DeclaredDependency], *, roots: Sequence[Path], home: Path
+) -> list[str]:
+    """FAIL lines for a declared skill the resolver satisfies from anything but its declared source."""
+    installs = install_roots()
+    findings: list[str] = []
+    for dependency in dependencies:
+        located = locate_skill_md(dependency.name, roots) if dependency.kind == "skill" else None
+        if located is None:
+            continue
+        root, skill_md = located
+        if root not in installs:
+            findings.append(f"FAIL  {SkillShadowsDeclaredPinError(dependency.name, dependency.source, skill_md)}")
+            continue
+        slug = _symlinked_checkout_slug(skill_md.parent, home=home)
+        if slug and slug != _declared_repo(dependency.source):
+            findings.append(
+                f"FAIL  Declared skill {dependency.name!r} resolves to {skill_md.parent} → "
+                f"{skill_md.parent.resolve()}, a checkout of {slug}, not the declared `{dependency.source}`. "
+                f"Fix: {dependency.remediation}."
+            )
+    return findings
 
 
 def _default_search_dirs() -> list[Path]:
@@ -69,4 +111,11 @@ def _check_declared_dependencies_provisioned(
     )
     for gap in gaps:
         typer.echo(_render(gap))
-    return not gaps
+    sources = _declared_skill_source_findings(
+        enumeration.dependencies,
+        roots=harness_skills_dirs() if search_dirs is None else search_dirs,
+        home=Path.home() if home is None else home,
+    )
+    for finding in sources:
+        typer.echo(finding)
+    return not gaps and not sources

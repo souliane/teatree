@@ -51,17 +51,25 @@ def bare_skill_name(name: str) -> str:
     return Path(tail).name
 
 
-def resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
-    """The first ``<root>/<skill>/SKILL.md`` across *skills_dirs*, refusing a shadowed apm pin."""
+def locate_skill_md(name: str, skills_dirs: Sequence[Path]) -> tuple[Path, Path] | None:
+    """``(root, SKILL.md)`` for the first root holding *name* — the precedence every reader shares."""
     bare = bare_skill_name(name)
-    installs = install_roots()
     for root in skills_dirs:
         candidate = root / bare / _SKILL_FILE
         if candidate.is_file():
-            if root not in installs:
-                refuse_shadowed_pin(bare, candidate)
-            return candidate
+            return root, candidate
     return None
+
+
+def resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
+    """The first ``<root>/<skill>/SKILL.md`` across *skills_dirs*, refusing a shadowed apm pin."""
+    located = locate_skill_md(name, skills_dirs)
+    if located is None:
+        return None
+    root, skill_md = located
+    if root not in install_roots():
+        refuse_shadowed_pin(bare_skill_name(name), skill_md)
+    return skill_md
 
 
 def _skill_names(skills_dirs: Sequence[Path]) -> list[str]:
@@ -123,6 +131,7 @@ __all__ = [
     "direct_requires",
     "harness_skills_dirs",
     "install_roots",
+    "locate_skill_md",
     "resolve_skill_md",
     "skill_mtimes",
 ]

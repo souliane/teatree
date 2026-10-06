@@ -8,6 +8,7 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
+from teatree.utils import git_run
 
 _DECLARED_SKILLS = ("souliane/skills/ac-python#d0008a3", "souliane/skills/ac-django#d0008a3")
 #: The real checkout, for the tests that gate the SHIPPED manifest rather than a fixture.
@@ -174,3 +175,58 @@ class TestSilenceIsNeverAnOutcome:
         assert not ok
         assert "ac-python" in output
         assert "WARN" in output
+
+
+def _install(root: Path, name: str) -> Path:
+    skill = root / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    return skill
+
+
+def _checkout(path: Path, origin: str, name: str) -> Path:
+    path.mkdir()
+    git_run.run_strict(repo=str(path), args=["init", "-q"])
+    git_run.run_strict(repo=str(path), args=["remote", "add", "origin", origin])
+    return _install(path / "skills", name)
+
+
+class TestADeclaredSkillSatisfiedByAnotherSource:
+    """#4769: a declared skill name resolving to something other than its declared source is a FAIL."""
+
+    def test_a_local_skills_folder_shadowing_the_pin_fails_naming_both_sides(
+        self, project_root: Path, home: Path
+    ) -> None:
+        shadow = _install(project_root / "skills", "ac-python")
+        for name in ("ac-python", "ac-django"):
+            _install(home / ".claude" / "skills", name)
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert "souliane/skills/ac-python#d0008a3" in output
+        assert str(shadow / "SKILL.md") in output
+
+    def test_an_install_symlink_into_another_repo_fails_naming_that_repo(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        foreign = _checkout(tmp_path / "teatree-clone", "https://github.com/souliane/teatree.git", "ac-python")
+        (home / ".claude" / "skills" / "ac-python").symlink_to(foreign, target_is_directory=True)
+        _install(home / ".claude" / "skills", "ac-django")
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert "a checkout of souliane/teatree, not the declared `souliane/skills/ac-python#d0008a3`" in output
+
+    def test_an_install_symlink_into_a_live_clone_of_the_declared_repo_is_silent(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        clone = _checkout(tmp_path / "skills-clone", "git@github.com:souliane/skills.git", "ac-python")
+        (home / ".claude" / "skills" / "ac-python").symlink_to(clone, target_is_directory=True)
+        _install(home / ".claude" / "skills", "ac-django")
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "FAIL" not in output

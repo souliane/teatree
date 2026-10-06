@@ -30,11 +30,13 @@
     (`t3 teatree skill-preamble --skills t3:rules,t3:e2e`) or spawn the
     sub-agent with that preamble prepended to the brief. Do NOT spawn it with a
     bare task description. One action only, no narration.
+  # The brief must carry EVERY requested skill: one `--- SKILL:` block of the two
+  # passed a brief that silently dropped the other (#4769).
   expect:
     - any_of:
         - tool_call: Agent
-          args.prompt: '~ "(?s)--- SKILL: "'
+          args.prompt: '~ "(?s)\A(?=.*--- SKILL: rules ---)(?=.*--- SKILL: e2e ---)"'
         - tool_call: Bash
           args.command: '~ "t3 \S+ skill-preamble"'
     - no_tool_call_matching:
-        Agent.prompt: '~ "(?s)\A(?!.*--- SKILL:).+"'
+        Agent.prompt: '~ "(?s)\A(?!(?=.*--- SKILL: rules ---)(?=.*--- SKILL: e2e ---)).+"'

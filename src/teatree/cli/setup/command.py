@@ -43,6 +43,7 @@ from teatree.provisioning.skill_pin import default_record_path
 from teatree.provisioning.skills_cli import SkillsCli, SkillsCliError, refresh_inventory_receipt
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
 from teatree.utils.django_bootstrap import ensure_django
 
 setup_app = typer.Typer(
@@ -69,10 +70,13 @@ def _assess_dispatched_skills(
     missing: list[str] = []
     for name in sorted(set(demands)):
         bare = bare_skill_name(name)
-        body = resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
         try:
+            body = resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
             if body is None or not body.read_text(encoding="utf-8").strip():
                 missing.append(name)
+        except SkillShadowsDeclaredPinError as exc:
+            typer.echo(f"WARN  {exc}")
+            missing.append(name)
         except (OSError, UnicodeError):
             missing.append(name)
     safe_missing = sorted(
