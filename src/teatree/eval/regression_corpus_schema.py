@@ -17,6 +17,11 @@ half-migrated DB. Split out of ``regression_corpus`` to keep that module under
 the module-health LOC cap.
 """
 
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
 from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck
 
 SCHEMA_PREFLIGHT = RegressionCheck(
@@ -29,6 +34,31 @@ SCHEMA_PREFLIGHT = RegressionCheck(
     predicate=lambda: True,  # never invoked — the pre-flight runs migrate_self_db directly.
     needs_db=True,
 )
+
+
+@contextmanager
+def fresh_corpus_db() -> Iterator[None]:
+    """Point every DB alias at a fresh temp file for the lane's duration, then restore.
+
+    The corpus asserts gate behaviour, not the host DB's state, so it must not read the
+    ambient one: a snapshot at a different migration state reddened the lane with an
+    `OperationalError` the diff did not cause. The pre-flight then migrates this empty DB.
+    """
+    from django.db import connections  # noqa: PLC0415 — deferred: only reached once Django is configured
+
+    with tempfile.TemporaryDirectory(prefix="t3-pinned-regressions-") as scratch:
+        original: list[tuple[str, str]] = []
+        for alias in connections:
+            connection = connections[alias]
+            original.append((alias, str(connection.settings_dict["NAME"])))
+            connection.close()
+            connection.settings_dict["NAME"] = str(Path(scratch) / f"{alias}.sqlite3")
+        try:
+            yield
+        finally:
+            for alias, name in original:
+                connections[alias].close()
+                connections[alias].settings_dict["NAME"] = name
 
 
 def migrate_self_db() -> list[str]:
@@ -69,4 +99,10 @@ def skipped_preflight_result(reason: str) -> CheckResult:
     return CheckResult(check=SCHEMA_PREFLIGHT, ok=True, skipped=True, detail=reason)
 
 
-__all__ = ["SCHEMA_PREFLIGHT", "migrate_self_db", "schema_preflight_result", "skipped_preflight_result"]
+__all__ = [
+    "SCHEMA_PREFLIGHT",
+    "fresh_corpus_db",
+    "migrate_self_db",
+    "schema_preflight_result",
+    "skipped_preflight_result",
+]
