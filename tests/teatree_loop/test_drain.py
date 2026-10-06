@@ -250,6 +250,8 @@ class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
 
         assert report.outcome is DrainOutcome.DRAINED
         assert report.still_claimed == []
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING, "the run parked to resume; a watchdog kill would read FAILED"
 
     def test_the_fresh_worker_claims_the_run_and_resumes_its_conversation(self) -> None:
         self._drain()
