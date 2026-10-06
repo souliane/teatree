@@ -6,6 +6,7 @@ from dataclasses import dataclass
 class RunnerResult:
     ok: bool
     detail: str = ""
+    retryable: bool = False
 
 
 class RunnerBase(ABC):
