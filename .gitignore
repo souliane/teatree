@@ -19,7 +19,7 @@ mutants/
 e2e/snapshot_tests_failures/
 .coverage
 *.egg-info/
-dist/
+**/dist/*
 !dist/sbom.json
 build/
 node_modules/
@@ -37,6 +37,7 @@ site/
 .mypy_cache/
 .tox/
 *.lock
+!uv.lock
 *.min.js
 *.min.css
 *.map
