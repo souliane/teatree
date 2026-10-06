@@ -848,13 +848,14 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         branch: str,
         *,
         repo: str = "repo-a",
+        repos: tuple[str, ...] = (),
         public_remote: bool = False,
         recorded_path: str = "",
     ) -> tuple[Any, Ticket]:
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/3234",
-            repos=[repo],
+            repos=list(repos) or [repo],
             extra={"branch": branch, "description": "x"},
         )
         if recorded_path:
@@ -1059,6 +1060,33 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         registered = git.run(repo=str(clone), args=["worktree", "list", "--porcelain"])
         assert str(wt_path) not in registered, "the failed provision stranded a git worktree registration"
         assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
+
+    def test_a_duplicated_repo_entry_records_one_row(self) -> None:
+        self._clone()
+
+        result, ticket = self._provision("4967-duplicate-entry", repos=("repo-a", "repo-a"))
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 1
+
+    def test_a_row_a_concurrent_provision_records_during_the_fetch_is_reused(self) -> None:
+        # The workspace-ticket CLI and the worker can provision one ticket at once; the peer's row lands mid-fetch.
+        self._clone()
+        branch = "4967-concurrent-row"
+        real_cut = git.cut_start_point
+
+        def cut_while_a_peer_records_the_row(repo: str, cut_branch: str, *, base: str) -> str:
+            Worktree.objects.create(
+                ticket=Ticket.objects.get(extra__branch=branch), overlay="test", repo_path="repo-a", branch=branch
+            )
+            return real_cut(repo, cut_branch, base=base)
+
+        with patch.object(git, "cut_start_point", side_effect=cut_while_a_peer_records_the_row):
+            result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 1
+        assert self._recorded_path(ticket) == str(self.workspace / branch / "repo-a")
 
     def test_a_leftover_adopted_elsewhere_is_refused_not_persisted_as_a_split(self) -> None:
         # Recovery once adopted a same-branch checkout ELSEWHERE, persisting a row that split the workspace.

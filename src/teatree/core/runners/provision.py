@@ -92,7 +92,6 @@ class _RepoPlan:
 
     repo_name: str
     branch: str
-    existing: Worktree | None
     clone: Path
     start_point: str = ""
     adopt_path: str = ""
@@ -424,12 +423,10 @@ class WorktreeProvisioner(RunnerBase):
 
         if adopt_path:
             clone = find_clone_path(clones_root, repo_name) or _clone_dir_from_worktree(adopt_path)
-            return _RepoPlan(repo_name, branch, existing, clone=clone or Path(adopt_path), adopt_path=adopt_path)
-        return self._plan_cut(clones_root, repo_name, branch, existing)
+            return _RepoPlan(repo_name, branch, clone=clone or Path(adopt_path), adopt_path=adopt_path)
+        return self._plan_cut(clones_root, repo_name, branch)
 
-    def _plan_cut(
-        self, clones_root: Path, repo_name: str, branch: str, existing: Worktree | None
-    ) -> _RepoPlan | _Refusal:
+    def _plan_cut(self, clones_root: Path, repo_name: str, branch: str) -> _RepoPlan | _Refusal:
         """The clone and the freshly fetched start point a new worktree for *repo_name* is cut from."""
         clone = ensure_clone(clones_root, repo_name, get_overlay_for_ticket(self.ticket))
         if clone is None:
@@ -448,7 +445,7 @@ class WorktreeProvisioner(RunnerBase):
             return _Refusal(f"{repo_name}: {exc}")
         except git.RemoteReadError as exc:
             return _Refusal(f"{repo_name}: cannot refresh from its remote: {exc}", retryable=True)
-        return _RepoPlan(repo_name, branch, existing, clone=clone, start_point=start_point)
+        return _RepoPlan(repo_name, branch, clone=clone, start_point=start_point)
 
     def _provision_repo(self, plan: _RepoPlan | _LiveCheckout, ticket_dir: Path) -> str | None:
         """Materialise one preflighted repo's ``Worktree`` row + checkout; return its path or ``None``.
@@ -465,7 +462,9 @@ class WorktreeProvisioner(RunnerBase):
         slot = Path(plan.adopt_path) if plan.adopt_path else ticket_dir / Path(plan.repo_name).name
         assert_joins_ticket_workspace(self.ticket, slot)
 
-        worktree = plan.existing or Worktree.objects.create(
+        # Read at the create, not the preflight: a duplicate repo entry or a concurrent provision records it mid-fetch.
+        existing = Worktree.objects.filter(ticket=self.ticket, repo_path=plan.repo_name).first()
+        worktree = existing or Worktree.objects.create(
             ticket=self.ticket,
             repo_path=plan.repo_name,
             branch=plan.branch,
@@ -477,11 +476,11 @@ class WorktreeProvisioner(RunnerBase):
         except Exception:
             # A RAISED failure is a failed provision exactly as a ``None`` return is,
             # so it must roll the row back too — never strand a row for an unprovisioned repo.
-            if plan.existing is None:
+            if existing is None:
                 worktree.delete()
             raise
         if created is None:
-            if plan.existing is None:
+            if existing is None:
                 worktree.delete()  # roll back only the row we just created, never a reused one
             return None
 
