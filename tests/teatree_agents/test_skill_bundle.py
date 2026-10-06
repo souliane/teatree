@@ -249,5 +249,8 @@ class TestTheRequiresClosureReachesTheDispatchedBundle(TestCase):
                 assert set(self._bundle(phase, worktree)) == _closure_oracle(declared, roots)
 
     def test_the_planning_bundle_now_carries_writing_plans(self) -> None:
-        with tempfile.TemporaryDirectory() as worktree:
+        with (
+            tempfile.TemporaryDirectory() as worktree,
+            patch.object(skill_index_mod, "DEFAULT_SKILLS_DIR", _THIS_CHECKOUT_SKILLS),
+        ):
             assert "writing-plans" in self._bundle("planning", worktree)

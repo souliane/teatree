@@ -10,7 +10,8 @@ from typer.testing import CliRunner
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.utils import git_run
 
-_DECLARED_SKILLS = ("souliane/skills/ac-python#d0008a3", "souliane/skills/ac-django#d0008a3")
+_PIN = "d0008a3c1e5f4b2a9d8e7f6a5b4c3d2e1f0a9b8c"
+_DECLARED_SKILLS = (f"souliane/skills/ac-python#{_PIN}", f"souliane/skills/ac-django#{_PIN}")
 #: The real checkout, for the tests that gate the SHIPPED manifest rather than a fixture.
 _TEATREE_ROOT = Path(__file__).resolve().parents[3]
 
@@ -77,8 +78,8 @@ class TestMandatedSkillAbsent:
     def test_the_failure_carries_the_exact_remediation(self, project_root: Path, home: Path) -> None:
         _, output = _run(project_root, home)
 
-        assert "souliane/skills/ac-python#d0008a3" in output
-        assert "souliane/skills/ac-django#d0008a3" in output
+        assert f"souliane/skills/ac-python#{_PIN}" in output
+        assert f"souliane/skills/ac-django#{_PIN}" in output
         assert "t3 setup" in output
         assert "apm install" not in output
 
@@ -108,7 +109,7 @@ class TestConfigDrivenEnumeration:
             skill.mkdir()
             (skill / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
         (project_root / "apm.yml").write_text(
-            _manifest_body(*_DECLARED_SKILLS, "souliane/skills/ac-rust#d0008a3"), encoding="utf-8"
+            _manifest_body(*_DECLARED_SKILLS, f"souliane/skills/ac-rust#{_PIN}"), encoding="utf-8"
         )
 
         ok, output = _run(project_root, home)
@@ -204,7 +205,7 @@ class TestADeclaredSkillSatisfiedByAnotherSource:
         ok, output = _run(project_root, home)
 
         assert not ok
-        assert "souliane/skills/ac-python#d0008a3" in output
+        assert f"souliane/skills/ac-python#{_PIN}" in output
         assert str(shadow / "SKILL.md") in output
 
     def test_an_install_symlink_into_another_repo_fails_naming_that_repo(
@@ -217,7 +218,7 @@ class TestADeclaredSkillSatisfiedByAnotherSource:
         ok, output = _run(project_root, home)
 
         assert not ok
-        assert "a checkout of souliane/teatree, not the declared `souliane/skills/ac-python#d0008a3`" in output
+        assert f"a checkout of souliane/teatree, not the declared `souliane/skills/ac-python#{_PIN}`" in output
 
     def test_an_install_symlink_into_a_live_clone_of_the_declared_repo_is_silent(
         self, project_root: Path, home: Path, tmp_path: Path
@@ -230,3 +231,33 @@ class TestADeclaredSkillSatisfiedByAnotherSource:
 
         assert ok
         assert "FAIL" not in output
+
+
+class TestADeclaredSkillSpecMustPinAFullCommit:
+    """#4769: a spec without a 40-hex ``#ref`` installs whatever its source holds on the day ``t3 setup`` runs."""
+
+    @pytest.mark.parametrize(
+        "spec",
+        ["souliane/skills/ac-python", "souliane/skills/ac-python#main", "souliane/skills/ac-python#d0008a3"],
+    )
+    def test_an_installed_skill_declared_without_a_full_sha_fails_naming_the_spec(
+        self, project_root: Path, home: Path, spec: str
+    ) -> None:
+        (project_root / "apm.yml").write_text(_manifest_body(spec, _DECLARED_SKILLS[1]), encoding="utf-8")
+        for name in ("ac-python", "ac-django"):
+            _install(home / ".claude" / "skills", name)
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert f"`{spec}` names no 40-hex commit" in output
+        assert "ac-django" not in output
+
+    def test_the_shipped_manifest_pins_every_skill_spec_to_a_full_sha(self, tmp_path: Path, home: Path) -> None:
+        empty_skills = tmp_path / "no-skills"
+        empty_skills.mkdir()
+
+        _, output = _run(_TEATREE_ROOT, home, search_dirs=[empty_skills])
+
+        assert "Declared dependency not provisioned: skill" in output, "the shipped manifest was not enumerated"
+        assert "names no 40-hex commit" not in output

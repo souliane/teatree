@@ -40,11 +40,13 @@ Judge the tree by `skills/architecture-design/SKILL.md` § "Standing bar" — Re
 | Generic step | Headless rule |
 |---|---|
 | No `~/.ac-reviewing-codebase` config; scope from `MAINTAINED_SKILLS` / `MANAGED_REPOS` | The scope is this overlay's main clone. The maintained skills are this repo's `skills/`; pinned external skills are read-only. |
+| Configuration fallback — ask before modifying any skill | No question: this repo's `skills/` may be edited, a pinned external skill never is (the Phase 5.3 row). |
 | Phase 0.3 — commit or rescue a dirty main clone | Never mutate or rescue it. Report the dirty state in the envelope. |
 | Phase 0.4 — open-PR sweep, or ask how to sweep | Skip it: the factory's sweep loops own open PRs. Deduplicate findings against open PRs and the backlog instead. |
 | Phase 0.5 — confirm or narrow the scope | No question. Rank by § 5. |
 | Phase 0.6 — memory discovery | Skip it. |
 | Rule 4 and Phase 5.2 — ask when ambiguous | Ambiguity is the § 8 path: record it with `t3 <overlay> questions record` and continue the pass. |
+| Rule 10 — ask when unsure whether duplication is intentional | Merge the copies only when one replaces the rest with no behaviour lost; otherwise it is contested and takes the Rule 4 path. |
 | Phase 5.3 — ownership check before each edit | Edit teatree paths only. A finding in an external skill becomes a question, never an edit. |
 | Phase 6.6 — squash own commits | One commit per unit (§ 7), no squash. |
 | Phase 6.7 — offer to push | Push is mandatory: one PR through `ensure-pr` (§ 7). |

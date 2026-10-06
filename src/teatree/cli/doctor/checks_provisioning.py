@@ -13,17 +13,25 @@ names the dependency, where it is declared, and the exact remediation; a
 declaration surface that cannot be read is a WARN that says so.
 """
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 import typer
 
-from teatree.provisioning.declared import DeclaredDependency, declared_dependencies, project_root_for_running_code
+from teatree.provisioning.declared import (
+    DeclaredDependency,
+    declared_dependencies,
+    project_root_for_running_code,
+    skill_bump_remediation,
+)
 from teatree.provisioning.probes import BinaryResolver, unprovisioned
 from teatree.skill_support.index import harness_skills_dirs, install_roots, locate_skill_md
 from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
 from teatree.utils import git_run
 from teatree.utils.git_remote import slug_from_remote
+
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def _render(gap: DeclaredDependency) -> str:
@@ -31,6 +39,16 @@ def _render(gap: DeclaredDependency) -> str:
         f"FAIL  Declared dependency not provisioned: {gap.kind} {gap.name!r} "
         f"(declared in {gap.declared_in}) — the configuration mandates it but nothing installed it, "
         f"so anything depending on it silently does nothing. Fix: {gap.remediation}."
+    )
+
+
+def _unpinned_spec_finding(dependency: DeclaredDependency) -> str:
+    path, _, ref = dependency.source.partition("#")
+    if _FULL_SHA.fullmatch(ref.strip().lower()):
+        return ""
+    return (
+        f"FAIL  Declared skill {dependency.name!r}: `{dependency.source}` names no 40-hex commit, so what "
+        f"`t3 setup` installs moves with its source. Fix: {skill_bump_remediation(f'{path}#<40-hex commit sha>')}."
     )
 
 
@@ -51,11 +69,15 @@ def _symlinked_checkout_slug(skill_dir: Path, *, home: Path) -> str:
 def _declared_skill_source_findings(
     dependencies: Sequence[DeclaredDependency], *, roots: Sequence[Path], home: Path
 ) -> list[str]:
-    """FAIL lines for a declared skill the resolver satisfies from anything but its declared source."""
+    """FAIL lines for a declared skill pinned to no commit, or satisfied from anything but its declared source."""
     installs = install_roots()
     findings: list[str] = []
     for dependency in dependencies:
-        located = locate_skill_md(dependency.name, roots) if dependency.kind == "skill" else None
+        if dependency.kind != "skill":
+            continue
+        if unpinned := _unpinned_spec_finding(dependency):
+            findings.append(unpinned)
+        located = locate_skill_md(dependency.name, roots)
         if located is None:
             continue
         root, skill_md = located

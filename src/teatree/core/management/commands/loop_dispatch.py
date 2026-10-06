@@ -164,7 +164,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
 
 
 def _resolve_skill_bundle(task: Task) -> list[str]:
-    """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
+    """Resolve the loaded skill bundle for *task*; empty, and logged with its cause, on any failure.
 
     Resolves the overlay and the framework/detection cwd from the TASK's ticket
     (its overlay + its worktree, PR-12) — never the orchestrator's ambient cwd,
@@ -183,7 +183,8 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
             overlay_skill_metadata=overlay_skill_metadata,
             worktree_path=dispatch_worktree_path(task.ticket),
         )
-    except Exception:  # noqa: BLE001 — a failure degrades to no candidates
+    except Exception:
+        logger.exception("Task %s dispatches with no skill bundle", task.pk)
         return []
 
 
