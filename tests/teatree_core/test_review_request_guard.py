@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _CHANNEL_ID = "C0DEMOCHAN1"
-_CHANNEL_NAME = "the-review-team"
+_CHANNEL_NAME = "review-channel"
 _BOT_AUTHOR = "B_AGENT"
 _HUMAN_AUTHOR = "U_HUMAN"
 

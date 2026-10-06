@@ -8,9 +8,10 @@ Two credential shapes are probed differently, because Anthropic reports their he
 differently:
 
 *   A **subscription OAuth** token (``authorization: Bearer`` + ``anthropic-beta:
-    oauth-2025-04-20``) emits the ``anthropic-ratelimit-unified-{5h,7d}-*`` headers.
-    :func:`read_rate_limits` folds them into a :class:`RateLimitSnapshot`; a **429 still
-    carries these headers**, so a 200 and a 429 are treated ALIKE.
+    oauth-2025-04-20`` + the Claude Code system prompt) emits the
+    ``anthropic-ratelimit-unified-{5h,7d}-*`` headers. :func:`read_rate_limits` folds them
+    into a :class:`RateLimitSnapshot`; a **429 still carries these headers**, so a 200 and
+    a 429 are treated ALIKE.
 *   A **metered API key** (``x-api-key`` — NO ``Bearer``, NO oauth beta) does NOT emit
     the unified windows. A funded key returns 200 with the standard per-minute
     ``anthropic-ratelimit-{requests,tokens}-*`` headers; an out-of-credits key returns a
@@ -18,8 +19,9 @@ differently:
     those into a :class:`MeteredKeySnapshot` (funded vs out-of-credits + per-minute
     headroom) — the exact prepaid dollar balance is NOT available to a standard key.
 
-For both, only a network error or an unexpected status is a failure
-(:class:`RateLimitProbeError`). The token is used ONLY to sign the request header — it is
+For both, a network error or an unexpected status is a failure
+(:class:`RateLimitProbeError`), and so is a :func:`read_rate_limits` answer carrying no
+unified header at all. The token is used ONLY to sign the request header — it is
 never logged and never stored on the returned result. The HTTP call is injected
 (:class:`Transport`) so tests drive canned ``(status, headers, body)`` triples with no
 real network; the default transport uses ``httpx``.
@@ -48,6 +50,7 @@ _API_URL = "https://api.anthropic.com/v1/messages"
 _PROBE_MODEL = "claude-sonnet-5-5"
 _ANTHROPIC_VERSION = "2023-06-01"
 _OAUTH_BETA = "oauth-2025-04-20"
+_CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude."
 _PROBE_TIMEOUT_SECONDS = 20.0
 
 # The two response statuses that carry rate-limit headers: a healthy 200 and a
@@ -76,6 +79,7 @@ _7D_RESET = "anthropic-ratelimit-unified-7d-reset"
 _5H_SURPASSED = "anthropic-ratelimit-unified-5h-surpassed-threshold"
 _7D_SURPASSED = "anthropic-ratelimit-unified-7d-surpassed-threshold"
 _FALLBACK = "anthropic-ratelimit-unified-fallback"
+_UNIFIED_PREFIX = "anthropic-ratelimit-unified-"
 
 # Extra-usage (overage) headers — the same probe response carries them.
 _OVERAGE_STATUS = "anthropic-ratelimit-unified-overage-status"
@@ -95,9 +99,9 @@ _OUTPUT_TOKENS_REMAINING = "anthropic-ratelimit-output-tokens-remaining"
 class RateLimitProbeError(RuntimeError):
     """The probe could not read the account's rate-limit headers.
 
-    Raised for a transport/network failure or a non-{200,429} error status — the
-    signals that carry NO usable rate-limit headers. A 429 is NOT an error here:
-    it carries the headers and yields a normal snapshot.
+    Raised for a transport/network failure, a non-{200,429} error status, or a 200/429
+    carrying no unified header — the signals that carry NO usable rate-limit headers. A
+    429 that carries them is NOT an error here: it yields a normal snapshot.
     """
 
 
@@ -266,19 +270,24 @@ def read_rate_limits(
 ) -> RateLimitSnapshot:
     """Probe *token*'s account once and return its :class:`RateLimitSnapshot`.
 
-    *is_oauth* adds the ``anthropic-beta: oauth-2025-04-20`` header the subscription
-    OAuth token needs (a metered API key omits it). A 200 or a 429 both parse to a
-    snapshot; any other status or a transport error raises
-    :class:`RateLimitProbeError`. The token signs the request and is never logged.
+    *is_oauth* adds the ``anthropic-beta: oauth-2025-04-20`` header and the Claude Code
+    system prompt the subscription OAuth token needs (a metered API key omits both). A 200
+    or a 429 both parse to a snapshot; any other status, an answer with no unified header,
+    or a transport error raises :class:`RateLimitProbeError`. The token signs the request
+    and is never logged.
     """
     call = transport or _httpx_transport
+    body = {**_PROBE_BODY, "system": _CLAUDE_CODE_SYSTEM_PROMPT} if is_oauth else _PROBE_BODY
     try:
-        response = call(_request_headers(token, is_oauth=is_oauth), _PROBE_BODY)
+        response = call(_request_headers(token, is_oauth=is_oauth), body)
     except httpx.HTTPError as exc:
         msg = f"rate-limit probe transport failed: {type(exc).__name__}"
         raise RateLimitProbeError(msg) from exc
     if response.status_code not in {_OK, _RATE_LIMITED}:
         msg = f"rate-limit probe returned status {response.status_code}"
+        raise RateLimitProbeError(msg)
+    if not any(name.lower().startswith(_UNIFIED_PREFIX) for name in response.headers):
+        msg = f"rate-limit probe returned status {response.status_code} with no anthropic-ratelimit-unified-* header"
         raise RateLimitProbeError(msg)
     return RateLimitSnapshot.from_headers(response.headers)
 

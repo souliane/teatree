@@ -20,9 +20,12 @@ from teatree.core.overlay import OverlayReview
 
 _SHA = "9" * 40
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
-)
+pytestmark = [
+    pytest.mark.usefixtures("readable_ship_tree"),
+    pytest.mark.filterwarnings(
+        "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+    ),
+]
 
 
 class _ImpactingReview(OverlayReview):

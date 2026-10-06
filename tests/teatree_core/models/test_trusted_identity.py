@@ -14,11 +14,11 @@ class TestOrderedHandles(TestCase):
         TrustedIdentity.objects.all().delete()
 
     def test_distinct_handles_in_platform_order(self) -> None:
-        TrustedIdentity.objects.create(platform="gitlab", handle="adrien.cossa")
+        TrustedIdentity.objects.create(platform="gitlab", handle="alice.example")
         TrustedIdentity.objects.create(platform="github", handle="souliane")
         TrustedIdentity.objects.create(platform="github", handle="souliane-alt")
 
-        assert TrustedIdentity.objects.ordered_handles() == ["souliane", "souliane-alt", "adrien.cossa"]
+        assert TrustedIdentity.objects.ordered_handles() == ["souliane", "souliane-alt", "alice.example"]
 
     def test_dedupes_same_handle_across_platforms_case_insensitively(self) -> None:
         TrustedIdentity.objects.create(platform="github", handle="Souliane")

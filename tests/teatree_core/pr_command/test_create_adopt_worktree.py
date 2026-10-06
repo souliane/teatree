@@ -14,6 +14,8 @@ from teatree.core.provision.worktree_adopt import WorktreeAdoptError
 
 from ._shared import _MOCK_OVERLAY
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 
 class TestWorktreeMissingMessage(TestCase):
     """The refusal names the follow-up recovery only when it actually applies."""

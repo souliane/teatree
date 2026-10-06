@@ -95,13 +95,19 @@ class TestHeavyLanesGatedSafely:
         condition = str(_load_jobs()["test"].get("if", ""))
         assert "github.event_name != 'pull_request'" in condition
 
-    def test_heavy_lane_condition_uses_always(self) -> None:
+    def test_test_lane_overrides_the_skipped_preflight_and_stays_cancellable(self) -> None:
         # needs: preflight + a skipped preflight (push/schedule) would
-        # otherwise skip the dependent job; always() lets it evaluate its
+        # otherwise skip the dependent job; a status function lets it evaluate its
         # own condition so a push can never silently skip the test lane.
+        condition = str(_load_jobs()["test"].get("if", ""))
+        assert "!cancelled()" in condition, "test must use !cancelled() so a skipped preflight cannot skip it on push"
+
+    def test_heavy_lanes_are_not_cancel_immune(self) -> None:
         for lane in _HEAVY_LANES:
             condition = str(_load_jobs()[lane].get("if", ""))
-            assert "always()" in condition, f"{lane} must use always() so a skipped preflight cannot skip it on push"
+            assert "always()" not in condition, (
+                f"{lane} must not use always(): it survives the supersede-cancel, so a superseded PR wave keeps running"
+            )
 
 
 class TestAlwaysRunLanesNotGated:

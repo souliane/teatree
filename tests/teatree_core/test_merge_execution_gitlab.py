@@ -32,11 +32,12 @@ from teatree.core.merge import (
     merge_ticket_pr,
     resolve_host_kind,
 )
-from teatree.core.merge.execution import assert_not_draft
+from teatree.core.merge.execution import assert_ci_not_failed, assert_not_draft
 from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.utils.pr_ref import PrRef
 from tests.factories import waive_rubric
+from tests.teatree_backends._gitlab_wire import GitLabWire
 from tests.teatree_core.conftest import (
     record_merge_prerequisites_for_test,
     record_owned_pr_for_test,
@@ -329,6 +330,71 @@ class TestFetchRequiredChecksGitLab(TestCase):
 
         with _patch_gitlab(_PipelinesClient(pipelines)):
             assert _gitlab_query().required_checks_status() == "green"
+
+
+_PROJECT_PATH = "projects/acme%2Fwidget"
+_MR_PATH = f"{_PROJECT_PATH}/merge_requests/{_PR_IID}"
+
+
+def _skipped_head(*, project: dict[str, object] | None = None, project_status: int = 0) -> GitLabWire:
+    """A head pipeline whose every job ``rules:`` skipped, on a project whose skipped-pipeline policy is *project*."""
+    return GitLabWire(
+        {
+            _MR_PATH: {"iid": _PR_IID, "sha": _SHA},
+            f"{_MR_PATH}/pipelines": [{"id": 1, "status": "skipped", "sha": _SHA, "source": "merge_request_event"}],
+            _PROJECT_PATH: {
+                "id": _PROJECT_ID,
+                "path_with_namespace": _GITLAB_SLUG,
+                "path": "widget",
+                **(project or {}),
+            },
+        },
+        failures={_PROJECT_PATH: project_status} if project_status else None,
+    )
+
+
+class TestSkippedHeadPipelineFollowsTheProjectSetting(TestCase):
+    """Skipped is settled, but merges only where GitLab's "skipped pipelines are considered successful" is on."""
+
+    def test_a_project_that_counts_skipped_as_successful_merges_it_as_green(self) -> None:
+        with _patch_gitlab(_skipped_head(project={"allow_merge_on_skipped_pipeline": True})):
+            assert _gitlab_query().required_checks_status() == "green"
+
+    def test_a_project_that_requires_a_succeeding_pipeline_blocks_it(self) -> None:
+        with _patch_gitlab(_skipped_head(project={"allow_merge_on_skipped_pipeline": False})):
+            assert _gitlab_query().required_checks_status() == "failed"
+
+    def test_a_project_payload_without_the_setting_fails_closed(self) -> None:
+        with _patch_gitlab(_skipped_head()):
+            verdict = _gitlab_query().required_checks_status()
+        assert verdict == "unreadable"
+        assert verdict in REFUSING_CHECK_VERDICTS
+
+    def test_an_unreadable_project_fails_closed(self) -> None:
+        with _patch_gitlab(_skipped_head(project_status=500)):
+            assert _gitlab_query().required_checks_status() == "unreadable"
+
+    def test_the_merge_chokepoint_refuses_a_skipped_head_the_project_does_not_count_as_success(self) -> None:
+        with (
+            _patch_gitlab(_skipped_head(project={"allow_merge_on_skipped_pipeline": False})),
+            pytest.raises(MergePreconditionError, match="refusing bound merge"),
+        ):
+            assert_ci_not_failed(_gitlab_query())
+
+    def test_control_the_merge_chokepoint_passes_a_skipped_head_the_project_counts_as_success(self) -> None:
+        with _patch_gitlab(_skipped_head(project={"allow_merge_on_skipped_pipeline": True})):
+            assert_ci_not_failed(_gitlab_query())
+
+    def test_a_head_that_was_not_skipped_never_reads_the_project(self) -> None:
+        wire = GitLabWire(
+            {
+                _MR_PATH: {"iid": _PR_IID, "sha": _SHA},
+                f"{_MR_PATH}/pipelines": [{"id": 1, "status": "success", "sha": _SHA, "source": "merge_request_event"}],
+            }
+        )
+        with _patch_gitlab(wire):
+            assert _gitlab_query().required_checks_status() == "green"
+        assert _PROJECT_PATH not in wire.paths
 
 
 class TestExecuteBoundMergeGitLab(TestCase):

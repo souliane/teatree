@@ -6,6 +6,7 @@ exercise the remaining branches — ``release``, the fail-safe error paths, the
 metadata parser, and the Django-side wiring — directly.
 """
 
+import subprocess
 from typing import cast
 
 import pytest
@@ -40,45 +41,45 @@ class TestReleaseAndFence:
     def test_release_deletes_the_ref_and_frees_it(self, tmp_path) -> None:
         bare = init_bare(tmp_path / "o.git")
         client = init_client(tmp_path / "c", bare)
-        claim = fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
         assert claim is not None
-        fleet_claim.release(claim, repo=str(client), remote="origin")
-        assert not fleet_claim.is_held_by_me(_KEY, claim, repo=str(client), remote="origin")
+        fleet_claim.release(claim, repo=str(client))
+        assert not fleet_claim.is_held_by_me(_KEY, claim, repo=str(client))
         # Freed: a fresh acquire succeeds.
-        again = fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
+        again = fleet_claim.acquire(_KEY, repo=str(client))
         assert again is not None
 
     def test_stale_release_never_removes_a_rivals_claim(self, tmp_path) -> None:
         bare = init_bare(tmp_path / "o.git")
         a = init_client(tmp_path / "a", bare)
         b = init_client(tmp_path / "b", bare)
-        original = fleet_claim.acquire(_KEY, repo=str(a), remote="origin", ttl_seconds=10.0, now=1000.0)
-        stolen = fleet_claim.steal_if_expired(_KEY, repo=str(b), remote="origin", ttl_seconds=10.0, now=5000.0)
+        original = fleet_claim.acquire(_KEY, repo=str(a), ttl_seconds=10.0, now=1000.0)
+        stolen = fleet_claim.steal_if_expired(_KEY, repo=str(b), ttl_seconds=10.0, now=5000.0)
         assert original is not None
         assert stolen is not None
         # A releases its OWN (stale) claim: the CAS lease mismatches, so it is a
         # no-op — the thief's live claim survives.
-        fleet_claim.release(original, repo=str(a), remote="origin")
-        assert fleet_claim.is_held_by_me(_KEY, stolen, repo=str(b), remote="origin")
+        fleet_claim.release(original, repo=str(a))
+        assert fleet_claim.is_held_by_me(_KEY, stolen, repo=str(b))
 
     def test_is_held_by_me_is_false_for_empty_token(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
         token = fleet_claim.Claim.from_token(_KEY, "")
-        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client), remote="origin") is False
+        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client)) is False
 
     def test_is_held_by_me_is_false_when_ref_absent(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
         token = fleet_claim.Claim.from_token(_KEY, "deadbeef" * 5)
-        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client), remote="origin") is False
+        assert fleet_claim.is_held_by_me(_KEY, token, repo=str(client)) is False
 
     def test_heartbeat_moves_the_ref_and_stays_held(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
-        claim = fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
         assert claim is not None
-        beat = fleet_claim.heartbeat(claim, repo=str(client), remote="origin")
+        beat = fleet_claim.heartbeat(claim, repo=str(client))
         assert isinstance(beat, fleet_claim.Claim)
         assert beat.sha != claim.sha
-        assert fleet_claim.is_held_by_me(_KEY, beat, repo=str(client), remote="origin")
+        assert fleet_claim.is_held_by_me(_KEY, beat, repo=str(client))
 
 
 def _reject_pushes(bare) -> None:
@@ -94,7 +95,7 @@ class TestErrorPaths:
     def test_acquire_raises_when_remote_unreachable(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", tmp_path / "absent.git")  # origin does not exist
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
-            fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
+            fleet_claim.acquire(_KEY, repo=str(client))
 
     def test_acquire_raises_on_local_git_failure(self, tmp_path) -> None:
         # N4: a repo where even the LOCAL mktree/commit-tree cannot run surfaces as
@@ -102,7 +103,7 @@ class TestErrorPaths:
         not_a_repo = tmp_path / "plain"
         not_a_repo.mkdir()
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
-            fleet_claim.acquire(_KEY, repo=str(not_a_repo), remote="origin")
+            fleet_claim.acquire(_KEY, repo=str(not_a_repo))
 
     def test_acquire_raises_when_push_denied_but_ref_absent(self, tmp_path) -> None:
         # ls-remote succeeds (ref absent) yet the create push is refused — a
@@ -112,7 +113,15 @@ class TestErrorPaths:
         _reject_pushes(bare)
         client = init_client(tmp_path / "c", bare)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
-            fleet_claim.acquire(_KEY, repo=str(client), remote="origin")
+            fleet_claim.acquire(_KEY, repo=str(client))
+
+    def test_a_refusing_pre_push_hook_says_why(self, tmp_path) -> None:
+        client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
+        hook = client / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\necho 'gate refused: non-noreply identity'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="gate refused: non-noreply identity"):
+            fleet_claim.acquire(_KEY, repo=str(client))
 
     def test_steal_returns_none_when_cas_is_lost(self, tmp_path, monkeypatch) -> None:
         # The ref is expired (so the steal is attempted) but the CAS is rejected —
@@ -120,9 +129,9 @@ class TestErrorPaths:
         bare = init_bare(tmp_path / "o.git")
         a = init_client(tmp_path / "a", bare)
         b = init_client(tmp_path / "b", bare)
-        fleet_claim.acquire(_KEY, repo=str(a), remote="origin", ttl_seconds=10.0, now=1000.0)
+        fleet_claim.acquire(_KEY, repo=str(a), ttl_seconds=10.0, now=1000.0)
 
-        def rival_steals_first(_scope, ref: str, **_kwargs) -> bool:
+        def rival_steals_first(_scope, ref: str, **_kwargs) -> subprocess.CompletedProcess[str]:
             tree = git(bare, "hash-object", "-t", "tree", "-w", "/dev/null").strip()
             rival = git(
                 bare,
@@ -136,10 +145,10 @@ class TestErrorPaths:
                 "rival claim",
             ).strip()
             git(bare, "update-ref", ref, rival)
-            return False
+            return subprocess.CompletedProcess(args=["git", "push"], returncode=1, stdout="", stderr="stale lease")
 
         monkeypatch.setattr(fleet_claim, "_cas", rival_steals_first)
-        assert fleet_claim.steal_if_expired(_KEY, repo=str(b), remote="origin", ttl_seconds=10.0, now=5000.0) is None
+        assert fleet_claim.steal_if_expired(_KEY, repo=str(b), ttl_seconds=10.0, now=5000.0) is None
 
     def test_fetch_claim_raises_when_object_unfetchable(self, tmp_path, monkeypatch) -> None:
         # The ref exists (ls-remote OK) but fetching its object fails — a corrupt
@@ -147,7 +156,7 @@ class TestErrorPaths:
         # liveness.
         bare = init_bare(tmp_path / "o.git")
         client = init_client(tmp_path / "c", bare)
-        fleet_claim.acquire(_KEY, repo=str(client), remote="origin", ttl_seconds=10.0, now=1000.0)
+        fleet_claim.acquire(_KEY, repo=str(client), ttl_seconds=10.0, now=1000.0)
         real_git = fleet_claim._git
 
         def fail_fetch(repo, args, *, env=None):
@@ -157,11 +166,11 @@ class TestErrorPaths:
 
         monkeypatch.setattr(fleet_claim, "_git", fail_fetch)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
-            fleet_claim.steal_if_expired(_KEY, repo=str(client), remote="origin", ttl_seconds=10.0, now=5000.0)
+            fleet_claim.steal_if_expired(_KEY, repo=str(client), ttl_seconds=10.0, now=5000.0)
 
     def test_steal_returns_none_when_ref_absent(self, tmp_path) -> None:
         client = init_client(tmp_path / "c", init_bare(tmp_path / "o.git"))
-        assert fleet_claim.steal_if_expired(_KEY, repo=str(client), remote="origin", now=1e12) is None
+        assert fleet_claim.steal_if_expired(_KEY, repo=str(client), now=1e12) is None
 
     def test_steal_skips_a_claim_with_unreadable_metadata(self, tmp_path) -> None:
         # A ref whose commit message is not the JSON metadata: liveness cannot be
@@ -173,7 +182,7 @@ class TestErrorPaths:
         tree = git(client, "mktree")
         sha = git(client, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", tree, "-m", "not json")
         git(client, "push", "origin", f"{sha}:{fleet_claim.claim_ref(_KEY)}")
-        assert fleet_claim.steal_if_expired(_KEY, repo=str(client), remote="origin", now=1e12) is None
+        assert fleet_claim.steal_if_expired(_KEY, repo=str(client), now=1e12) is None
 
 
 class TestMetadataHelpers:

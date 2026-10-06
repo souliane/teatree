@@ -15,6 +15,7 @@ from dataclasses import replace
 from io import StringIO
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
@@ -731,6 +732,21 @@ class TokensCommandTest(TestCase):
         assert payload[0]["organization_id"] == "org-LIVE"
         assert payload[0]["status"] == "healthy"
         assert reader.calls == [("SECRET-CLI-TOKEN", True)]
+
+    def test_an_oauth_answer_without_rate_limit_headers_is_unreachable_not_healthy(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/acct"])
+        secrets = RecordingSecretReader({"anthropic/oauth/acct": "SECRET-CLI-TOKEN"})
+        bare_429 = httpx.Response(429, headers={"anthropic-organization-id": "org-bare"}, text="{}")
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.llm.rate_limits.httpx.post", return_value=bare_429),
+        ):
+            call_command("tokens", json_output=True, stdout=buf)
+        payload = json.loads(buf.getvalue())
+        assert payload[0]["status"] == "unreachable"
+        assert payload[0]["utilization_7d"] is None
+        assert not AnthropicTokenUsage.objects.exists(), "a header-less answer must not be cached as a verdict"
 
     def test_the_cached_flag_reports_the_stored_verdict_without_probing(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/acct"])

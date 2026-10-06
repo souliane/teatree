@@ -12,6 +12,7 @@ so the gate it exercises is the one every overlay inherits.
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -21,6 +22,8 @@ from teatree.core.models import Ticket
 from teatree.core.review.mr_metadata import DEFAULT_MR_TITLE_REGEX
 
 from ._shared import _MOCK_OVERLAY, _shippable_ticket
+
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
 
 
 class TestPrCreateMrTitleGate(TestCase):

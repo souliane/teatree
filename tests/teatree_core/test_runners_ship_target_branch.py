@@ -69,6 +69,7 @@ def _clone_with_conflicting_feature(tmp_path: Path) -> Path:
     return clone
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestShipTargetsTheConfiguredBranch(TestCase):
     """The configured integration branch reaches both the currency gate and the spec."""
 

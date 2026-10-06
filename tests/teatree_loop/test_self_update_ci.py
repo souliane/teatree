@@ -231,11 +231,12 @@ class TestClassifyPipelines:
     def test_pending_while_the_pipeline_runs(self) -> None:
         assert _classify_pipelines([_pipeline(2, "push", "running")]) is CiVerdict.PENDING
 
-    def test_manual_and_skipped_are_pending_not_green(self) -> None:
-        # Inherited from the shared classifier: a blocked or never-run pipeline is
-        # not evidence the required stages passed.
-        for status in ("manual", "skipped"):
-            assert _classify_pipelines([_pipeline(2, "push", status)]) is CiVerdict.PENDING
+    def test_manual_is_pending_not_green(self) -> None:
+        # A blocked-manual pipeline has not run its later stages yet.
+        assert _classify_pipelines([_pipeline(2, "push", "manual")]) is CiVerdict.PENDING
+
+    def test_a_pipeline_every_job_of_which_was_skipped_is_settled(self) -> None:
+        assert _classify_pipelines([_pipeline(2, "push", "skipped")]) is CiVerdict.GREEN
 
     def test_newest_gating_pipeline_wins(self) -> None:
         older, newer = _pipeline(1, "push", "failed"), _pipeline(9, "push", "success")
@@ -274,6 +275,12 @@ class TestGlabMainCiStatusVerdict:
     def test_green_from_the_commits_own_pipeline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_gitlab(monkeypatch)
         _fake_glab(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "success")]))
+
+        assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
+
+    def test_a_skipped_main_pipeline_lets_the_pull_proceed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _on_gitlab(monkeypatch)
+        _fake_glab(monkeypatch, stdout=json.dumps([_pipeline(3, "push", "skipped")]))
 
         assert GlabMainCiStatus().verdict(repo=Path("/x")) is CiVerdict.GREEN
 

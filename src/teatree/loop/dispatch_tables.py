@@ -81,6 +81,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "mr_triage.verdict": "action_needed",
     "my_pr.failed": "action_needed",
     "my_pr.draft_notes": "action_needed",
+    "my_pr.manual_action": "action_needed",
     "my_pr.findings_to_fix": "action_needed",
     "my_pr.open": "in_flight",
     # Both halves of the conflict sweep are owed work the operator must see. The

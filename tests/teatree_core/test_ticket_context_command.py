@@ -23,7 +23,7 @@ class TicketContextShowTest(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/1",
-            context="\n\n[2026-05-18 09:00] dev_lr_id = 5842",
+            context="\n\n[2026-05-18 09:00] dev_lr_id = 1234",
         )
         result = cast(
             "ContextResult",
@@ -32,7 +32,7 @@ class TicketContextShowTest(TestCase):
         assert result == {
             "ticket_id": int(ticket.pk),
             "repo_namespaced_key": "",
-            "context": "\n\n[2026-05-18 09:00] dev_lr_id = 5842",
+            "context": "\n\n[2026-05-18 09:00] dev_lr_id = 1234",
         }
 
     def test_show_unknown_ticket_exits_nonzero(self) -> None:
@@ -110,10 +110,10 @@ class TicketContextAddTest(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
         result = cast(
             "ContextResult",
-            call_command("ticket", "context", "add", str(ticket.pk), "dev_lr_id: 5842"),
+            call_command("ticket", "context", "add", str(ticket.pk), "dev_lr_id: 1234"),
         )
         ticket.refresh_from_db()
-        assert "dev_lr_id: 5842" in ticket.context
+        assert "dev_lr_id: 1234" in ticket.context
         assert ticket.context.startswith("\n\n[")
         assert result["ticket_id"] == int(ticket.pk)
 
@@ -130,10 +130,10 @@ class TicketContextAddTest(TestCase):
         ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/acme-eng/widgets/issues/42")
         result = cast(
             "ContextResult",
-            call_command("ticket", "context", "add", "acme-eng/widgets#42", "dev_lr_id: 5842"),
+            call_command("ticket", "context", "add", "acme-eng/widgets#42", "dev_lr_id: 1234"),
         )
         ticket.refresh_from_db()
-        assert "dev_lr_id: 5842" in ticket.context
+        assert "dev_lr_id: 1234" in ticket.context
         assert result["ticket_id"] == int(ticket.pk)
 
 

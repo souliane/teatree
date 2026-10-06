@@ -7,7 +7,7 @@ from teatree.backends.notion.errors import NotionBlockChangedError, NotionWriteN
 from teatree.cli.notion_write_approval import approval_hint, spent_approval, write_target
 from teatree.core.models import OnBehalfApproval, OnBehalfAudit
 
-_OWNER = "adrien.cossa"
+_OWNER = "alice.example"
 _ACTION = "notion_replace"
 _OBJECT = "page-1#block-1"
 

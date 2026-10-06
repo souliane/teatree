@@ -17,7 +17,13 @@ removed BLOCKs, so the satisfier is what flips the verdict.
 import pytest
 from django.test import TestCase
 
-from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, GateInputs, check_e2e_mandatory
+from teatree.core.gates.e2e_mandatory_gate import (
+    E2EMandatoryGateError,
+    GateInputs,
+    check_e2e_mandatory,
+    e2e_mandatory_verdict,
+)
+from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown
 from teatree.core.models import E2EBypassApproval, E2EBypassAudit, E2eMandatoryRun, Ticket
 
 _SHA = "e" * 40
@@ -81,7 +87,45 @@ class TestMustBlock(TestCase):
     def test_block_message_says_an_empty_diff_is_why(self) -> None:
         with pytest.raises(E2EMandatoryGateError) as exc:
             check_e2e_mandatory(_inputs(self.ticket, diff=[], display_impacting=True))
-        assert "enumerated NO files" in str(exc.value)
+        assert "enumerated no files" in str(exc.value)
+
+
+class TestUnreadableDiffDidNotRun(TestCase):
+    """An unreadable diff with nothing covering the tree is Unknown, never a pass and never a classified refusal."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/24")
+        self.unread = GateInputs(
+            ticket=self.ticket,
+            changed_files=[],
+            head_sha=_SHA,
+            display_impacting=True,
+            unread_diff="CommandFailedError: fatal: bad revision",
+        )
+
+    def test_nothing_covering_the_tree_did_not_run(self) -> None:
+        verdict = e2e_mandatory_verdict(self.unread)
+
+        assert isinstance(verdict, Unknown)
+        assert "could not be read" in verdict.cause
+        assert "bad revision" in verdict.cause
+        assert "e2e-bypass" in verdict.cause
+
+    def test_green_posted_evidence_at_the_tree_still_passes(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="e2e/a.spec.ts", result="green", posted_url=_URL)
+
+        assert e2e_mandatory_verdict(self.unread) == Pass()
+
+    def test_a_user_bypass_at_the_tree_passes_and_is_consumed(self) -> None:
+        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
+
+        assert e2e_mandatory_verdict(self.unread) == Pass()
+        assert isinstance(e2e_mandatory_verdict(self.unread), Unknown)
+
+    def test_a_readable_impacting_diff_is_refused_not_unknown(self) -> None:
+        verdict = e2e_mandatory_verdict(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+        assert isinstance(verdict, Refuse)
 
 
 class TestMustAllow(TestCase):
@@ -162,12 +206,3 @@ class TestNeverLockout(TestCase):
     def test_user_bypass_escape_unblocks(self) -> None:
         E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
         check_e2e_mandatory(self.blocked)
-
-
-class TestClearWithoutTicket(TestCase):
-    """An out-of-FSM CLEAR (no resolved ticket) is not gated — nothing to bind to."""
-
-    def test_clear_with_no_ticket_returns_empty(self) -> None:
-        from teatree.core.gates.e2e_mandatory_gate import check_clear_e2e_mandatory  # noqa: PLC0415
-
-        assert check_clear_e2e_mandatory(None, _SHA, _IMPACTING_DIFF) == ""

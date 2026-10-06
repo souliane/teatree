@@ -10,9 +10,10 @@ and the probe token equals the routed path.
 
 import datetime as dt
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from unittest.mock import patch
 
 import pytest
@@ -37,7 +38,13 @@ from teatree.credential_config import (
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
+from teatree.llm.rate_limits import (
+    MeteredKeySnapshot,
+    ProbeResponse,
+    RateLimitProbeError,
+    RateLimitSnapshot,
+    read_rate_limits,
+)
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 from tests._credential_readings import reading_from_metered
 
@@ -984,6 +991,25 @@ class TestReactiveExhaustionRecordsProbedTruth(TestCase):
         assert row.valid_until == self.now + HEALTH_TTL, (
             "an unmeasured verdict self-corrects in minutes instead of stranding the account"
         )
+
+    def test_a_probe_answered_without_rate_limit_headers_records_an_unverified_verdict(self) -> None:
+        def bare_429(_headers: Mapping[str, str], _body: Mapping[str, object]) -> ProbeResponse:
+            return ProbeResponse(status_code=429, headers={"anthropic-organization-id": "org-spent"})
+
+        self._route([self._SPENT], self._SPENT)
+        with pytest.raises(AllTokensExhaustedError):
+            record_reactive_exhaustion_and_reselect(
+                scope=GLOBAL_SCOPE,
+                limit=ReactiveLimit(resets_at=self.foreign_reset, weekly=True),
+                now=self.now,
+                prober=AccountProber(
+                    reader=partial(read_rate_limits, transport=bare_429), secret_reader=lambda _path: "T-spent"
+                ),
+            )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.is_exhausted, "a header-less probe must not re-route the spent account as healthy"
+        assert row.valid_until == self.now + HEALTH_TTL
 
     def test_an_account_with_no_stored_token_records_an_unverified_verdict(self) -> None:
         self._route([self._SPENT], self._SPENT)
