@@ -26,7 +26,7 @@ from tests.teatree_core.conftest import ready_review_batch_for_test, record_revi
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _CHANNEL_ID = "C0_REVIEW"
-_CHANNEL_NAME = "the-review-team"
+_CHANNEL_NAME = "review-channel"
 _TARGET = GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxp-user")
 _CMD_MOD = "teatree.core.management.commands.review_request_post"
 

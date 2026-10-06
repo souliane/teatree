@@ -31,6 +31,16 @@
 #   group (`ci-<run_id>`) so the full-tree banned-terms / overlay-leak
 #   backstops always run to completion — a superseding event must never kill
 #   a main-branch tree scan mid-run.
+#   A job that must override an upstream skip says `!cancelled()`; `always()`
+#   never goes on a job a pull request can reach, because GitHub keeps an
+#   `always()` job running through the cancel.
+#
+# SCHEDULE — slim daily, full weekly
+#   Mon-Sat (`17 6 * * 1-6`): only banned-terms-tree, overlay-leak-tree,
+#   term-source-drift, uv-audit and test-shuffle. Every other job that would
+#   run on a schedule says `github.event.schedule != '17 6 * * 1-6'`.
+#   Sunday (`17 6 * * 0`): the full pipeline, plus the `--store-durations`
+#   shard run, refresh-durations and scheduled-maintenance-report.
 #
 # THE `preflight` JOB — diff-scoped lane classifier
 #   Reads the PR's file diff and exports two booleans:
@@ -74,7 +84,7 @@
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree, overlay-leak-tree,
 #                              term-source-drift
-#                              (the two tree gates run on push, schedule AND PR
+#                              (the two tree gates run on push, both crons AND PR
 #                              so a leak is caught before merge — #44;
 #                              term-source-drift proves those two are scanning
 #                              the list the operator actually configured)
@@ -91,8 +101,8 @@
 # ============================================================
 
 # TRIGGER: primarily pull_request (the PR merge pipeline — hence the `CI ·`
-# name). ALSO runs on push to main and a daily schedule as full-tree backstops
-# (see the CONCURRENCY note above); those secondary triggers are declared below.
+# name). ALSO runs on push to main and on two crons as full-tree backstops
+# (see the CONCURRENCY and SCHEDULE notes above); those secondary triggers are declared below.
 name: CI · Lint, test & quality gates
 
 on:
@@ -100,12 +110,13 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Daily full-tree banned-brand backstop (#1570). The diff-only gate
-    # cannot see a brand name already committed; this catches a pre-existing
-    # leak even when no new diff touches it.
-    - cron: "17 6 * * *"
-  # The daily cron's durations-refresh path, reachable on demand (#4048). It had
-  # never produced a PR, and one attempt a day is no way to establish that it can:
+    # Full-tree banned-brand backstop (#1570). The diff-only gate cannot see a
+    # brand name already committed; this catches a pre-existing leak even when no
+    # new diff touches it. Daily Mon-Sat is slim; Sunday is the full run (SCHEDULE above).
+    - cron: "17 6 * * 1-6"
+    - cron: "17 6 * * 0"
+  # The weekly cron's durations-refresh path, reachable on demand (#4048). It had
+  # never produced a PR, and one scheduled attempt is no way to establish that it can:
   # every downstream fix waits on the refreshed file. Opt-in, so a dispatch run for
   # any other reason still records nothing and force-pushes no branch.
   workflow_dispatch:
@@ -146,6 +157,7 @@ jobs:
     # this job is PR-only and the downstream ``if:`` conditions run the
     # heavy lanes unconditionally on non-PR events.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     outputs:
       run_heavy_python: ${{ steps.classify.outputs.run_heavy_python }}
@@ -183,13 +195,27 @@ jobs:
   # change, `check_gate_relaxation.py`/`check_quality_gates.py` semantics are
   # untouched. Obtain-image step matches the `test-shard` pattern: pull for a
   # same-repo run, in-job local build for a fork PR (`mode=local`).
+  # `!cancelled()` plus the guard step: a skipped required check passes branch
+  # protection, so a failed image build must red lint rather than skip it.
   lint:
     needs: build-image
+    if: >
+      !cancelled() &&
+      github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
     steps:
+      - name: Require the lint image build to have passed
+        env:
+          BUILD_IMAGE: ${{ needs.build-image.result }}
+        run: |
+          if [ "$BUILD_IMAGE" != "success" ]; then
+            echo "::error::build-image result was '$BUILD_IMAGE' — lint has no image to run in, so the required lint check fails."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Obtain the prebuilt lint image
         env:
@@ -242,6 +268,7 @@ jobs:
     # Only runs on pull_request events because push-to-main has nothing
     # to diff against and the underlying hook covers the merge result.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -278,6 +305,7 @@ jobs:
     # the gate. Reads the PR-vs-base diff into the git index so the
     # hook's ``git diff --cached`` query sees the PR contents.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -307,6 +335,7 @@ jobs:
     # PR's HEAD spec files onto disk) so the hook's ``git diff --cached`` query
     # sees the PR contents and the scan reads the PR's spec bodies.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -335,6 +364,7 @@ jobs:
   # flows, mermaid render, loop round-trips, theme toggle) — never pixel snapshots.
   dash-e2e:
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -372,6 +402,7 @@ jobs:
     # arises here. PR-only: push/schedule have no base to diff against, and the
     # prek hook covers the per-commit case.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -403,6 +434,7 @@ jobs:
     # so the hook's ``git diff --cached`` query sees the PR contents —
     # identical code path to prek and to ``t3 tool comment-density --staged``.
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -426,6 +458,8 @@ jobs:
   # GATE: regenerates all generated docs and runs mkdocs --strict; fails if
   # committed output is stale or if any link/nav target is broken.
   docs-drift:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -517,6 +551,8 @@ jobs:
     # makes the same command exit non-zero, promoting this job to a gate
     # without any workflow change. Never a PreToolUse gate; it can never lock
     # the agent's tools.
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -541,6 +577,8 @@ jobs:
     # documented floor (files predating the convention) never does. The baseline
     # ratchets toward 0 as the relocation sweep proceeds. Never a PreToolUse
     # gate; it can never lock the agent's tools.
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -571,11 +609,14 @@ jobs:
   # downstream job (test-shard, lint) builds the image IT needs in-job — the
   # packages can stay PRIVATE (same-repo runs pull them with the job's
   # `packages: read` token; forks never touch them).
-  # UNCONDITIONAL — no preflight gating, no `needs: preflight`. The `lint` job
-  # below always needs an image (lint must run on pure-docs PRs too:
-  # markdownlint/codespell/doc generators are its whole point), and steady-state
+  # UNCONDITIONAL on every push and PR — no preflight gating, no `needs: preflight`
+  # (only the slim daily cron skips it). The `lint` job below always needs an
+  # image (lint must run on pure-docs PRs too: markdownlint/codespell/doc
+  # generators are its whole point), and steady-state
   # cost here is a manifest check either way.
   build-image:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -642,17 +683,18 @@ jobs:
   # parallelism: wall per shard ~= total-CPU-time / N. 12 puts the slowest shard
   # near the ~180s single-test floor without wasting runners beyond it.
   # Skipped ONLY on a provably pure-docs PR diff
-  # (run_heavy_python=false); always runs on push-to-main, schedule, and any
-  # non-pure-docs PR — same heavy-lane gating as the old monolithic `test` job.
+  # (run_heavy_python=false); always runs on push-to-main, the weekly cron, and
+  # any non-pure-docs PR — same heavy-lane gating as the old monolithic `test` job.
   # NOT a required context: `test-shard (3.13, N)` is aggregated by the combiner.
   test-shard:
     # Heavy lane. Skipped ONLY on a provably pure-docs/markdown PR diff
     # (preflight ``run_heavy_python=false``). On push-to-main and on the
-    # schedule (no PR diff to classify) and on any non-pure-docs PR it
-    # runs unconditionally — fail-safe-unknown. (#132)
+    # weekly cron (no PR diff to classify) and on any non-pure-docs PR it
+    # runs unconditionally — fail-safe-unknown. (#132) It follows `build-image`,
+    # so the slim daily cron skips it.
     needs: [preflight, build-image]
     if: >
-      always() &&
+      !cancelled() &&
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
@@ -717,9 +759,9 @@ jobs:
       # tighter than the default chunk split (#3160). `leak_sentinel_plugin` runs
       # WARN-ONLY here so a process-global env/cwd polluter is NAMED suite-wide
       # (across the twelve shards) without ever failing the required context —
-      # the #3160 rollout mode. On the daily `schedule` only, `--store-durations
-      # --clean-durations` records THIS shard's fresh, tests-that-ran durations
-      # (each group's clean slice) for the `refresh-durations` merge job below;
+      # the #3160 rollout mode. On the weekly cron (or a refresh dispatch) only,
+      # `--store-durations --clean-durations` records THIS shard's fresh, tests-that-ran
+      # durations (each group's clean slice) for the `refresh-durations` merge job below;
       # PR/push runs never pay the store write.
       #
       # `-o timeout=180` is the lane's OWN ceiling, not a global raise (#4048).
@@ -767,9 +809,10 @@ jobs:
           -p scripts.ci.shard_stats_plugin
           --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
           -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
-          ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
+          ${{ (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
+      # A failed leg still hands its data to the combiner; a superseded, cancelled wave uploads nothing.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: shard-artifacts-${{ matrix.group }}
           path: |
@@ -786,7 +829,7 @@ jobs:
       # died before pytest rewrote the file uploads the committed one verbatim; the merge
       # job recognises that shape and drops it rather than merging month-old timings back.
       - name: Upload this shard's recorded durations (refresh source)
-        if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
+        if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: durations-shard-${{ matrix.group }}
@@ -798,7 +841,7 @@ jobs:
           # `dev/.test_durations` is committed, so zero matches can only mean the upload broke.
           if-no-files-found: error
 
-  # MAINTENANCE (daily cron, or an explicit dispatch): keep `dev/.test_durations`
+  # MAINTENANCE (weekly cron, or an explicit dispatch): keep `dev/.test_durations`
   # from rotting (#3160).
   # The twelve shards on a refresh run each recorded their group's fresh, clean
   # durations (`--store-durations --clean-durations` above, including the
@@ -807,7 +850,7 @@ jobs:
   # changed, or aggregate per-test time moved past the threshold — never on pure
   # jitter), opens/updates ONE single refresh PR a human reviews and merges.
   # The refresh branch name is STABLE (`ci/test-durations-refresh`), so an unmerged
-  # refresh is UPDATED in place instead of stacking a new dated PR every day (which
+  # refresh is UPDATED in place instead of stacking a new dated PR every run (which
   # piled up conflicting PRs — #3160 residual CI-3). It is REBUILT only while it carries
   # nothing but the generated file; once it carries anything else, the base is merged
   # under those commits instead, because rebuilding the ref byte-erased the review fixes
@@ -815,9 +858,9 @@ jobs:
   # Never gates a PR; a merge failure or empty diff is a no-op.
   #
   # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
-  # `schedule`, `test-shard` runs anyway because its own `if` says `always()`, and
+  # `schedule`, `test-shard` runs anyway because its own `if` says `!cancelled()`, and
   # GitHub then propagates that upstream skip THROUGH it to every dependent whose
-  # `if` does not re-establish `always()` — an explicit condition is evaluated in
+  # `if` does not name a status function itself — an explicit condition is evaluated in
   # addition to the inherited status gate, not instead of it. Without it this job
   # was skipped on every scheduled run while all twelve shards were green and had
   # uploaded their durations, so no refresh PR was ever opened and
@@ -842,7 +885,8 @@ jobs:
   # nothing costs its slice's freshness and never removes a test from the split.
   refresh-durations:
     needs: test-shard
-    if: always() && (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))
+    if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -955,7 +999,7 @@ jobs:
           if [ -z "$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null)" ]; then
             gh pr create \
               --title "chore(ci): refresh test shard durations" \
-              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the daily scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green. Fixes that this refresh's own review requires (raised timeout ceilings, markers, source edits) belong on this branch: the next refresh merges the base under them and preserves every path other than \`dev/.test_durations\`, or refuses and says why (#4717)." \
+              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the weekly scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green. Fixes that this refresh's own review requires (raised timeout ceilings, markers, source edits) belong on this branch: the next refresh merges the base under them and preserves every path other than \`dev/.test_durations\`, or refuses and says why (#4717)." \
               --base main
             # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
             # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
@@ -969,11 +1013,12 @@ jobs:
   # reported success while `dev/.test_durations` decayed to 10.8% of the test files. This
   # job is where the second claim is made, so a job that did not run says so.
   # `always()` is load-bearing for the same reason it is on `refresh-durations`: both of its
-  # dependencies run via `always()`, and GitHub propagates their skip through to anything
-  # that does not re-establish it — the very bug being reported here.
+  # dependencies override an upstream skip, and GitHub propagates that skip through to
+  # anything that does not override it too — the very bug being reported here.
   scheduled-maintenance-report:
     needs: [test-shard, refresh-durations]
-    if: always() && github.event_name == 'schedule'
+    if: always() && github.event.schedule == '17 6 * * 0'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Report whether the scheduled maintenance job actually ran
@@ -1012,7 +1057,7 @@ jobs:
   jscpd-scan:
     needs: [preflight, build-image]
     if: >
-      always() &&
+      !cancelled() &&
       needs.build-image.result == 'success' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
@@ -1062,7 +1107,8 @@ jobs:
   test:
     needs: [preflight, test-shard, jscpd-scan]
     if: >
-      always() &&
+      !cancelled() &&
+      github.event.schedule != '17 6 * * 1-6' &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
     timeout-minutes: 12
@@ -1084,7 +1130,7 @@ jobs:
           fi
       # The relocated whole-tree jscpd scan (#4672) reaches merge protection only
       # through this context, so its result is checked exactly like a shard's: a
-      # `needs:` alone still passes under `always()` when the needed job failed.
+      # `needs:` alone still passes under `!cancelled()` when the needed job failed.
       - name: Require the relocated jscpd scan to have passed
         run: |
           result='${{ needs.jscpd-scan.result }}'
@@ -1180,6 +1226,7 @@ jobs:
     if: >
       github.event_name == 'pull_request' &&
       needs.preflight.outputs.run_heavy_python == 'false'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1192,7 +1239,8 @@ jobs:
           (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
           so the required status context is satisfied without re-running the suite."
 
-  # GATE (heavy lane): order-dependence audit. Runs a curated, order-safe slice of
+  # SCHEDULED (nightly cron + manual dispatch, never a PR check): order-dependence
+  # audit. Runs a curated, order-safe slice of
   # the suite under a SHUFFLED collection order (pytest-randomly) so a test that
   # leaks shared global state — a stray env var, an unreset singleton, a
   # module-level cache — and the victim it breaks cannot silently return
@@ -1218,13 +1266,8 @@ jobs:
     # effort; add a dir here only after it passes shuffled (all four seeds) TOGETHER
     # with this set.
     #
-    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
-    # (preflight ``run_heavy_python=false``); any non-pure-docs PR runs it.
-    needs: preflight
-    if: >
-      always() &&
-      (github.event_name != 'pull_request' ||
-      needs.preflight.outputs.run_heavy_python == 'true')
+    # Four ~25-min serial seeds cost too much per push; nightly and on demand instead.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
@@ -1293,7 +1336,6 @@ jobs:
     # it — fail-safe-unknown. (#132)
     needs: preflight
     if: >
-      always() &&
       github.event_name == 'pull_request' &&
       needs.preflight.outputs.run_heavy_python == 'true'
     timeout-minutes: 12
@@ -1377,6 +1419,7 @@ jobs:
     #
     # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1418,6 +1461,7 @@ jobs:
   # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   overlay-leak-tree:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1462,6 +1506,7 @@ jobs:
   # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
   term-source-drift:
     if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - name: Term scan unavailable to fork pull requests
@@ -1494,6 +1539,7 @@ jobs:
   # whole-tree lane is the hard backstop; this audit measures scoped coverage.
   selection-audit:
     if: github.event_name == 'pull_request'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1554,6 +1600,7 @@ jobs:
     # one ``VULN-ID  # package==version: justification`` entry per line. See that
     # file for the format. Keep the list as short as possible; every entry is a
     # conscious decision to ship with a known vulnerability.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1608,6 +1655,8 @@ jobs:
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.
   sbom:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1641,6 +1690,8 @@ jobs:
   # `uv-audit` (UV_AUDIT_CHECK_NAME in src/teatree/loop/scanners/pr_sweep.py) so
   # the two never collide.
   uv-audit-advisory:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

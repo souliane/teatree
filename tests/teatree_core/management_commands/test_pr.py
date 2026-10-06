@@ -41,6 +41,7 @@ def _shippable_ticket(*, repo: str = "/tmp/wt", branch: str = "feature-x") -> Ti
     return ticket
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestPrCreate(TestCase):
     """``pr create`` is a thin wrapper around ``ticket.ship()`` (#140)."""
 
@@ -58,6 +59,7 @@ class TestPrCreate(TestCase):
 
         with (
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_mod, "_run_e2e_mandatory_gate", return_value=None),
             patch.object(pr_mod, "validate_pr_metadata", return_value=None),
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
@@ -77,6 +79,7 @@ class TestPrCreate(TestCase):
 
         with (
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_mod, "_run_e2e_mandatory_gate", return_value=None),
             patch.object(
                 pr_mod,
                 "validate_pr_metadata",
@@ -96,6 +99,7 @@ class TestPrCreate(TestCase):
 
         with (
             patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_mod, "_run_e2e_mandatory_gate", return_value=None),
             patch.object(pr_mod, "validate_pr_metadata", return_value=None),
             patch.object(pr_mod.git, "last_commit_message", return_value=("Dry MR", "body")),
         ):

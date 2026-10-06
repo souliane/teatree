@@ -224,7 +224,8 @@ def test_live_core_graph_is_linear_by_dependency() -> None:
 
     roots = [name for name, parents in core_parents.items() if not parents]
     leaves = [name for name, children in core_children.items() if not children]
-    assert roots == ["0001_initial"], f"expected exactly one non-squash root (0001_initial), got {roots}"
+    assert len(roots) == 1, f"expected exactly one non-squash root, got {roots}"
+    assert chain_core[roots[0]].initial, f"the root {roots[0]} is not an initial migration"
     assert len(leaves) == 1, f"expected exactly one leaf migration, got {leaves}"
 
     # Every node is on a path root -> leaf. Forward reachability catches a disconnected

@@ -532,7 +532,8 @@ class TestTheHookEntrySeesEveryOverlay:
         repos = yaml.safe_load(self._CONFIG.read_text(encoding="utf-8"))["repos"]
         entries = [hook["entry"] for repo in repos for hook in repo["hooks"] if hook["id"] == "ensure-pr"]
         assert len(entries) == 1, "the ensure-pr hook must exist exactly once"
-        return shlex.split(entries[0])
+        argv = shlex.split(entries[0])
+        return argv[1:] if argv[:1] == ["scripts/hooks/branch-push-only.sh"] else argv
 
     def test_the_entry_installs_every_workspace_member_before_running_the_cli(self) -> None:
         argv = self._entry()

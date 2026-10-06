@@ -88,7 +88,7 @@ class TestRunDebtDeltaGate(TestCase):
         ):
             assert run_debt_delta_gate(ticket, worktree) is None
 
-    def test_no_op_when_diff_unresolvable(self) -> None:
+    def test_an_unresolvable_diff_did_not_run(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
@@ -98,7 +98,10 @@ class TestRunDebtDeltaGate(TestCase):
                 side_effect=CommandFailedError(["git", "diff"], 128, "", "not a git repo"),
             ),
         ):
-            assert run_debt_delta_gate(ticket, worktree) is None
+            result = run_debt_delta_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:debt_delta] DID NOT RUN: CommandFailedError")
 
 
 class TestPrCreateDebtDeltaWiring(TestCase):

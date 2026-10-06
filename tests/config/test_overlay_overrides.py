@@ -108,10 +108,10 @@ class TestOverlayDbHomeOverrides(TestCase):
     def test_overlay_can_override_user_identity_aliases(self) -> None:
         ConfigSetting.objects.set_value("user_identity_aliases", ["souliane"])
         ConfigSetting.objects.set_value(
-            "user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"], scope="my-overlay"
+            "user_identity_aliases", ["alice.work", "souliane", "alice.example"], scope="my-overlay"
         )
         self._activate()
-        assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
+        assert get_effective_settings().user_identity_aliases == ["alice.work", "souliane", "alice.example"]
 
     def test_overlay_can_override_clean_ignore(self) -> None:
         ConfigSetting.objects.set_value("clean_ignore", ["global-*"])

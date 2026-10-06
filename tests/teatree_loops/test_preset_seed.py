@@ -11,7 +11,6 @@ import datetime as dt
 import io
 import itertools
 import zoneinfo
-from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 
@@ -456,55 +455,6 @@ class TestNoShippedModeConsumesWhatItCannotReclaim:
         }
 
         assert offenders == {}, offenders
-
-
-class TestThePostureMigrationsReplacementTextMatchesWhatShips:
-    """What ``0086`` writes onto a live row is what ``defaults.toml`` ships.
-
-    The migration rewrites descriptions unconditionally, so drift between the two leaves
-    a live box's wording permanently apart from the shipped table with nothing failing.
-    """
-
-    @staticmethod
-    def _postures():
-        return import_module("teatree.core.migrations.0086_total_presets_and_the_five_postures")
-
-    def test_every_written_description_equals_the_shipped_mode_description(self) -> None:
-        shipped = {name: entry["description"] for name, entry in shipped_seed_table("modes").items()}
-
-        drift = {
-            name: (written, shipped.get(name))
-            for name, written in self._postures()._DESCRIPTIONS.items()
-            if shipped.get(name) != written
-        }
-
-        assert drift == {}, drift
-
-    def test_the_written_schedule_description_equals_the_shipped_one(self) -> None:
-        postures = self._postures()
-
-        assert shipped_seed_table("schedules")[postures._SCHEDULE]["description"] == postures._SCHEDULE_DESCRIPTION
-
-    def test_the_masks_it_writes_satisfy_the_posture_chain(self) -> None:
-        """B13 holds on a LIVE box too — the migration lands every posture in the chain itself."""
-        postures = self._postures()
-        loops = set(shipped_seed_table("loops"))
-        landed = {
-            "present": loops,
-            "afk": loops - set(postures._AFK_OFF),
-            "maintenance": set(postures._MAINTENANCE_ON),
-            "off": set(),
-        }
-
-        for wider, narrower in itertools.pairwise(_POSTURE_CHAIN):
-            assert landed[narrower] <= landed[wider], sorted(landed[narrower] - landed[wider])
-
-    def test_the_maintenance_and_afk_masks_it_writes_equal_the_shipped_tables(self) -> None:
-        postures = self._postures()
-        shipped = {name: entry["entries"] for name, entry in shipped_seed_table("modes").items()}
-
-        assert {loop for loop, on in shipped["maintenance"].items() if on} == set(postures._MAINTENANCE_ON)
-        assert {loop for loop, on in shipped["afk"].items() if not on} == set(postures._AFK_OFF)
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")

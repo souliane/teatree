@@ -37,7 +37,7 @@ def _spec_page(notion: FakeNotion) -> None:
     toggle = notion.add({"type": "toggle", "toggle": {"rich_text": [], "children": []}})
     for index in range(4):
         nested = notion.paragraph(f"nested {index}", parent=toggle)
-        notion.comment_on(nested, f"toggled {index}", discussion_id=f"disc-toggled-{index}", author="Adnan")
+        notion.comment_on(nested, f"toggled {index}", discussion_id=f"disc-toggled-{index}", author="bob")
     table = notion.add({"type": "table", "table": {"table_width": 1, "children": []}})
     for index in range(4):
         row = notion.add({"type": "table_row", "table_row": {"cells": []}}, parent=table)
@@ -67,7 +67,7 @@ class TestUnionEnumeration:
             paragraph,
             "this contradicts the paragraph above",
             discussion_id="disc-77",
-            author="Adrien Cossa",
+            author="Alice Example",
             created_time="2026-09-16T10:21:00.000Z",
         )
 
@@ -76,7 +76,7 @@ class TestUnionEnumeration:
         assert found.discussion_id == "disc-77"
         assert found.block_id == paragraph
         assert found.block_type == "paragraph"
-        assert found.author == "Adrien Cossa"
+        assert found.author == "Alice Example"
         assert found.created_time == "2026-09-16T10:21:00.000Z"
         assert found.text == "this contradicts the paragraph above"
 

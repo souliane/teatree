@@ -312,7 +312,7 @@ Agent(
 - Runs automatically before PR creation; the report is recorded on `Ticket.extra['visual_qa']`.
 - Blocks PR creation when findings exist; the error payload includes `report_markdown` for a `## Visual QA` section.
 - Bypass: `t3 <overlay> pr create <ticket> --skip-visual-qa "<reason>"` or `T3_VISUAL_QA=disabled` in the environment.
-- Skipped when Playwright cannot start — fails open with a clear message rather than blocking the push.
+- Refuses as `[gate:visual_qa] DID NOT RUN` when the check cannot run: the diff is unreadable, the browser cannot start, or the page budget runs out. Run `playwright install chromium` and retry, or bypass on purpose with `--skip-visual-qa '<reason>'`.
 
 ### 5. Create MR/PR
 
@@ -420,7 +420,7 @@ When a PR ships work spanning more than one numbered phase of an issue (e.g. `ph
 - Triggering the job and holding the watch is the orchestrator's own work — a sub-agent briefed to wait on CI comes to rest mid-wait and cannot be resumed with its context. Sub-agents are dispatched to FIX a confirmed failure, with the failing trace already in the brief.
 - On failure → delegate to fix-push-monitor loop (see `/t3:test`).
 
-**Not-green == red (Non-Negotiable).** When monitoring a pipeline, the *only* acceptable terminal state is every required job `success`. Any job that is **not** `success` — `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, an `allow_failure: true` job that is failing, or a gray/unknown state — is a **failure**: find the cause, fix it, re-trigger the job, and confirm it goes green. Never report a pipeline OK while any job is non-green, never "walk away" from a gray/skipped/manual job, and never treat `allow_failure: true` as "safe to ignore" — `allow_failure` keeps the *pipeline* green but the job still failed and must be investigated. A still-running/pending job is not yet a failure — wait for it to reach a terminal state, then apply this rule. (Enforced in the loop's PR scanner: `teatree.loop.scanners.my_prs._needs_attention`.)
+**Not-green == red (Non-Negotiable).** When monitoring a pipeline, the *only* acceptable terminal state is every required job `success`. Any job that is **not** `success` — `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, an `allow_failure: true` job that is failing, or a gray/unknown state — is a **failure**: find the cause, fix it, re-trigger the job, and confirm it goes green. Never report a pipeline OK while any job is non-green, never "walk away" from a gray/skipped/manual job, and never treat `allow_failure: true` as "safe to ignore" — `allow_failure` keeps the *pipeline* green but the job still failed and must be investigated. A still-running/pending job is not yet a failure — wait for it to reach a terminal state, then apply this rule. (The loop's PR scanner, `teatree.loop.scanners.my_prs._needs_attention`, applies this to a pipeline's overall status with two exceptions: a pipeline whose every job `rules:` skipped is settled, and a `manual` pipeline surfaces as waiting for a manual action. Neither dispatches a fix agent.)
 
 ### 7. Review Request
 

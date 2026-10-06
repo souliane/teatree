@@ -14,8 +14,13 @@ from django.test import TestCase
 from teatree.core.gates.e2e_mandatory_gate import resolve_gate_inputs
 from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayReview
+from teatree.utils.run import CommandFailedError
 
 _SHA = "1" * 40
+
+
+def _unreadable_diff() -> list[str]:
+    raise CommandFailedError(["git", "diff"], 128, "", "fatal: bad revision 'origin/main...HEAD'")
 
 
 class _ImpactingReview(OverlayReview):
@@ -57,13 +62,13 @@ class TestResolveGateInputs(TestCase):
 
     def test_impacting_overlay_marks_inputs_impacting(self) -> None:
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
-            inputs = resolve_gate_inputs(self.ticket, changed_files=["app/views.py"], head_sha=_SHA)
+            inputs = resolve_gate_inputs(self.ticket, read_diff=lambda: ["app/views.py"], head_sha=_SHA)
         assert inputs.display_impacting is True
         assert inputs.head_sha == _SHA
 
     def test_safe_overlay_marks_inputs_non_impacting(self) -> None:
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()):
-            inputs = resolve_gate_inputs(self.ticket, changed_files=["app/views.py"], head_sha=_SHA)
+            inputs = resolve_gate_inputs(self.ticket, read_diff=lambda: ["app/views.py"], head_sha=_SHA)
         assert inputs.display_impacting is False
 
     def test_unresolvable_overlay_fails_closed_impacting(self) -> None:
@@ -72,8 +77,30 @@ class TestResolveGateInputs(TestCase):
         # misconfigured ticket. The non-impacting diff is irrelevant — resolution
         # fails before classification, so the verdict is the fail-closed default.
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", side_effect=ImproperlyConfigured("no overlay")):
-            inputs = resolve_gate_inputs(self.ticket, changed_files=["app/tests/test_x.py"], head_sha=_SHA)
+            inputs = resolve_gate_inputs(self.ticket, read_diff=lambda: ["app/tests/test_x.py"], head_sha=_SHA)
         assert inputs.display_impacting is True
+
+
+class TestUnreadableDiff(TestCase):
+    """A diff that could not be read is presumed impacting and says so; it is never an empty diff."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/31", overlay="t3-teatree")
+
+    def test_an_unreadable_diff_is_presumed_impacting_even_for_a_safe_overlay(self) -> None:
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()):
+            inputs = resolve_gate_inputs(self.ticket, read_diff=_unreadable_diff, head_sha=_SHA)
+
+        assert inputs.display_impacting is True
+        assert "bad revision" in inputs.unread_diff
+
+    def test_a_repo_without_display_surface_reads_no_diff(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://gitlab.example.com/acme-eng/skills/-/work_items/46")
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_RepoExemptOverlay()):
+            inputs = resolve_gate_inputs(ticket, read_diff=_unreadable_diff, head_sha=_SHA)
+
+        assert inputs.display_impacting is False
+        assert inputs.unread_diff == ""
 
 
 class TestRepoLevelExemption(TestCase):
@@ -87,7 +114,7 @@ class TestRepoLevelExemption(TestCase):
     def _verdict(self, issue_url: str) -> bool:
         ticket = Ticket.objects.create(issue_url=issue_url, overlay="t3-teatree")
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_RepoExemptOverlay()):
-            return resolve_gate_inputs(ticket, changed_files=["evals/x.json"], head_sha=_SHA).display_impacting
+            return resolve_gate_inputs(ticket, read_diff=lambda: ["evals/x.json"], head_sha=_SHA).display_impacting
 
     def test_a_ticket_on_the_declared_repo_is_not_impacting(self) -> None:
         assert self._verdict("https://gitlab.example.com/acme-eng/skills/-/work_items/44") is False
@@ -104,7 +131,7 @@ class TestRepoLevelExemption(TestCase):
     def test_an_overlay_declaring_nothing_stays_impacting(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://gitlab.example.com/acme-eng/skills/-/work_items/45")
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
-            inputs = resolve_gate_inputs(ticket, changed_files=["evals/x.json"], head_sha=_SHA)
+            inputs = resolve_gate_inputs(ticket, read_diff=lambda: ["evals/x.json"], head_sha=_SHA)
 
         assert inputs.display_impacting is True
 
@@ -116,6 +143,17 @@ class TestCoreRepoWithoutE2EProducer(TestCase):
             overlay="t3-teatree",
         )
 
-        inputs = resolve_gate_inputs(ticket, changed_files=["src/teatree/core/views/home.py"], head_sha=_SHA)
+        inputs = resolve_gate_inputs(ticket, read_diff=lambda: ["src/teatree/core/views/home.py"], head_sha=_SHA)
 
         assert inputs.display_impacting is False
+
+    def test_a_teatree_ticket_without_a_readable_diff_is_not_impacting(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/4929",
+            overlay="t3-teatree",
+        )
+
+        inputs = resolve_gate_inputs(ticket, read_diff=_unreadable_diff, head_sha=_SHA)
+
+        assert inputs.display_impacting is False
+        assert inputs.unread_diff == ""

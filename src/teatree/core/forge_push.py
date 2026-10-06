@@ -377,6 +377,16 @@ def _forge_write_credential(repo_path: str, forge: str) -> _ForgeCredential:
     return resolve_forge_credential(repo_path)
 
 
+def _credential_env(forge: str, token: str) -> dict[str, str]:
+    return {"GITLAB_TOKEN" if forge == "gitlab" else "GH_TOKEN": token} if token else {}
+
+
+def forge_write_env(repo: str) -> dict[str, str]:
+    """The env that hands *repo*'s routed write credential to git for ``origin``, as ``t3 push`` does."""
+    forge = RemoteUrls.read(repo=repo, remote="origin").credential_forge
+    return _credential_env(forge, _forge_write_credential(repo, forge).token)
+
+
 def _refuse_missing_forge_credential(
     forge: str, credential: _ForgeCredential, *, resolved_branch: BranchRef, remote: str
 ) -> PushOutcome | None:
@@ -438,9 +448,7 @@ def push_branch(
         )
     if refusal is not None:
         return refusal
-    env = git_env_non_interactive()
-    if credential.token:
-        env["GITLAB_TOKEN" if forge == "gitlab" else "GH_TOKEN"] = credential.token
+    env = git_env_non_interactive() | _credential_env(forge, credential.token)
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
     tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.qualified)
@@ -502,6 +510,7 @@ __all__ = [
     "PushOutcome",
     "PushReport",
     "RemoteUrls",
+    "forge_write_env",
     "push_branch",
     "remote_url_embeds_credential",
     "resolve_forge_credential",

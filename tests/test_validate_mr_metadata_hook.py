@@ -687,7 +687,7 @@ class TestUpdateValidatesOnlySetFields:
 
     def test_metadata_only_update_is_skipped(self):
         for cmd in (
-            "glab mr update 7624 --reviewer WouterLachat",
+            "glab mr update 7624 --reviewer reviewer-a",
             "glab mr update --add-label needs-review",
             "glab mr update 12 --ready",
         ):

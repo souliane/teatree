@@ -19,6 +19,7 @@ import json
 import os
 from contextlib import AbstractContextManager
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,6 +113,10 @@ class TestRelativeHooksPathResolvesAgainstTheRepo:
             assert prek_hook._clear_redundant_hooks_path(str(tmp_path)) is False
 
 
+_REFUSED_PUSH = CompletedProcess(args=["git", "push"], returncode=1, stdout="", stderr="rejected")
+_LANDED_PUSH = CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr="")
+
+
 class TestHeartbeatDistinguishesAStealFromAFailedPush:
     def _claim(self) -> Claim:
         return Claim(
@@ -128,7 +133,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
-            patch.object(claim_mod, "_cas", return_value=False),
+            patch.object(claim_mod, "_cas", return_value=_REFUSED_PUSH),
             patch.object(claim_mod, "_ls_remote_sha", return_value=held.sha),
             pytest.raises(FleetClaimUnavailableError),
         ):
@@ -139,7 +144,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
-            patch.object(claim_mod, "_cas", return_value=False),
+            patch.object(claim_mod, "_cas", return_value=_REFUSED_PUSH),
             patch.object(claim_mod, "_ls_remote_sha", return_value="c" * 40),
         ):
             outcome = heartbeat(held)
@@ -151,7 +156,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
-            patch.object(claim_mod, "_cas", return_value=False),
+            patch.object(claim_mod, "_cas", return_value=_REFUSED_PUSH),
             patch.object(claim_mod, "_ls_remote_sha", return_value=""),
         ):
             outcome = heartbeat(held)
@@ -163,7 +168,7 @@ class TestHeartbeatDistinguishesAStealFromAFailedPush:
         with (
             patch.object(claim_mod, "_ephemeral_odb"),
             patch.object(claim_mod, "_write_claim_commit", return_value="b" * 40),
-            patch.object(claim_mod, "_cas", return_value=True),
+            patch.object(claim_mod, "_cas", return_value=_LANDED_PUSH),
         ):
             outcome = heartbeat(held)
         assert isinstance(outcome, Claim)

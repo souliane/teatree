@@ -1,8 +1,8 @@
-"""Tests for the ReviewNagScanner — 2-day ``@engineers :pray:`` re-ping (#1084 follow-up).
+"""Tests for the ReviewNagScanner — the 2-day re-ask (#1084 follow-up).
 
 The scanner walks ``ReviewRequestPost`` rows and, when an MR has had no thread
 activity (reply or reaction) for 2 days and is still live-open, non-draft, and
-unapproved, posts exactly ONE thread reply mentioning ``@engineers`` + `` :pray:``.
+unapproved, posts exactly ONE thread reply: the configured re-ask mention + `` :pray:``.
 ``last_nag_at`` enforces no double-ping within the 2-day window.
 """
 
@@ -16,6 +16,8 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
+from teatree.backends.slack.web_reads import resolve_usergroup_id as resolve_slack_usergroup_id
 from teatree.config import TeaTreeConfig, UserSettings, cold_reader
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import DraftState, PrOpenState
@@ -33,6 +35,7 @@ from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 _CHANNEL = "C0DEMOCHAN1"
+_REVIEWERS_GROUP: RawAPIDict = {"id": "S0REVIEWERS", "handle": "reviewers-team", "name": "Reviewers"}
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +88,9 @@ class FakeSlack:
     raise_on_message_read: Exception | None = None
     root_reactions: list[RawAPIDict] = field(default_factory=list)
     root_message_missing: bool = False
-    usergroup_id: str = ""
+    usergroups: list[RawAPIDict] = field(default_factory=list)
+    members: list[RawAPIDict] = field(default_factory=list)
+    lookups: list[str] = field(default_factory=list)
     post_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
@@ -140,10 +145,20 @@ class FakeSlack:
         self.reactions.append({"channel": channel, "ts": ts, "emoji": emoji})
         return {"ok": True}
 
-    def resolve_user_id(self, handle: str) -> str:
+    def _slack_api(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        _ = (params, token)
+        self.lookups.append(method)
         if self.raise_on_resolve is not None:
             raise self.raise_on_resolve
-        return self.usergroup_id if handle == "engineers" else ""
+        if method == "usergroups.list":
+            return {"ok": True, "usergroups": list(self.usergroups)}
+        return {"ok": True, "members": list(self.members)}
+
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return resolve_slack_usergroup_id(get=self._slack_api, handle=handle)
+
+    def resolve_user_id(self, handle: str) -> str:
+        return resolve_slack_user_id(get=self._slack_api, handle=handle)
 
 
 @dataclass
@@ -220,7 +235,7 @@ def _attribute(post: ReviewRequestPost, overlay: str | None) -> ReviewRequestPos
 
 
 class TestActivityGate(_PermittingPostureMixin, TestCase):
-    def test_idle_over_two_days_pings_engineers_on_thread(self) -> None:
+    def test_idle_over_two_days_re_asks_on_thread(self) -> None:
         post = _seed(days_old=3.0)
         slack = FakeSlack()
         signals = ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
@@ -229,7 +244,7 @@ class TestActivityGate(_PermittingPostureMixin, TestCase):
         sent = slack.posts[0]
         assert sent["channel"] == _CHANNEL
         assert sent["thread_ts"] == "ts.1"
-        assert sent["text"] == "@engineers :pray:"
+        assert sent["text"] == ":pray:"
         post.refresh_from_db()
         assert post.last_nag_at is not None
         assert [s.kind for s in signals] == ["review_nag.ping"]
@@ -396,18 +411,33 @@ class TestNoDoublePing(_PermittingPostureMixin, TestCase):
         assert len(slack.posts) == 1
 
 
-class TestMention(_PermittingPostureMixin, TestCase):
-    def test_subteam_mention_when_usergroup_resolves(self) -> None:
-        _seed(days_old=3.0)
-        slack = FakeSlack(usergroup_id="S_ENG")
-        ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
-        assert slack.posts[0]["text"] == "<!subteam^S_ENG> :pray:"
+class TestReaskMention(_PermittingPostureMixin, TestCase):
+    def _re_ask(self, slack: FakeSlack, *, overlay: str = "") -> str:
+        url = f"https://gitlab.example/x/-/merge_requests/{ReviewRequestPost.objects.count() + 1}"
+        _attribute(_seed(url=url, days_old=3.0), overlay)
+        ReviewNagScanner(messaging=slack, host=FakeHost(), overlay_name=overlay).scan()
+        return slack.posts[-1]["text"]
 
-    def test_resolve_failure_falls_back_to_plain_handle(self) -> None:
-        _seed(days_old=3.0)
-        slack = FakeSlack(raise_on_resolve=RuntimeError("api down"))
-        ReviewNagScanner(messaging=slack, host=FakeHost()).scan()
-        assert slack.posts[0]["text"] == "@engineers :pray:"
+    def test_a_handle_the_usergroups_list_knows_renders_a_group_mention(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team")
+
+        text = self._re_ask(FakeSlack(usergroups=[_REVIEWERS_GROUP]))
+
+        assert text.startswith("<!subteam^")
+        assert text == "<!subteam^S0REVIEWERS> :pray:"
+
+    def test_an_empty_setting_posts_no_mention_and_looks_nothing_up(self) -> None:
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
+
+        assert self._re_ask(slack) == ":pray:"
+        assert slack.lookups == []
+
+    def test_the_mention_is_read_at_the_scanners_overlay(self) -> None:
+        ConfigSetting.objects.set_value("review_nag_reask_mention", "reviewers-team", scope="t3-acme")
+        slack = FakeSlack(usergroups=[_REVIEWERS_GROUP])
+
+        assert self._re_ask(slack, overlay="t3-acme") == "<!subteam^S0REVIEWERS> :pray:"
+        assert self._re_ask(slack, overlay="t3-other") == ":pray:"
 
 
 class TestMrStateGate(_PermittingPostureMixin, TestCase):
@@ -663,8 +693,8 @@ class TestConcurrentTickPingsOnce(_PermittingPostureMixin, TestCase):
         slack = FakeSlack()
         right_now = timezone.now()
         with patch("teatree.loop.scanners.review_nag._consult_guard_before_nag", return_value=None):
-            sig_a = scanner._post_engineers_pray(snap_a, slack, right_now)
-            sig_b = scanner._post_engineers_pray(snap_b, slack, right_now)
+            sig_a = scanner._post_reask(snap_a, slack, right_now)
+            sig_b = scanner._post_reask(snap_b, slack, right_now)
         assert len(slack.posts) == 1
         assert [s.kind for s in (sig_a, sig_b) if s is not None] == ["review_nag.ping"]
 
@@ -795,7 +825,7 @@ class TestNagPatienceFollowsTheRepoOwner(_PermittingPostureMixin, TestCase):
 
         ReviewNagScanner(messaging=slack, host=FakeHost(), repo_owner=self._devops_everywhere).scan()
 
-        assert slack.posts[0]["text"] == "@engineers :pray:"
+        assert slack.posts[0]["text"] == ":pray:"
 
     def test_the_resolver_is_asked_about_the_repo_slug_not_the_url(self) -> None:
         seen: list[str] = []
