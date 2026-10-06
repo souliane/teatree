@@ -18,6 +18,8 @@ from typing import Any, cast
 import pytest
 import yaml
 
+from tests._actions_workflow import CI_DAILY_CRON, CI_WEEKLY_CRON, github_context, job_results, load
+
 _CI = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 _BASH = shutil.which("bash") or "/bin/bash"
 
@@ -57,15 +59,19 @@ def _run_reporter(*, shards: str, refresh: str, tmp_path: Path) -> subprocess.Co
     )
 
 
-class TestTheReporterIsReachableOnAScheduledRun:
-    def test_it_re_establishes_always_so_an_upstream_skip_does_not_silence_it(self) -> None:
-        condition = str(_reporter().get("if", ""))
-        assert "always()" in condition, (
+class TestTheReporterIsReachableOnTheMaintenanceRun:
+    def test_it_reports_on_the_weekly_run_even_when_the_shards_failed(self) -> None:
+        weekly = github_context("schedule", schedule=CI_WEEKLY_CRON)
+        results = job_results(load(), weekly, failing=frozenset({"test-shard"}))
+        assert results[REPORTER_JOB] != "skipped", (
             "the reporter needs jobs that themselves override an upstream skip, so GitHub propagates "
             "that skip to it unless it says `always()` too — the exact #4048 shape it exists to report."
         )
-        assert "github.event_name == 'schedule'" in condition, (
-            "the reporter is about the SCHEDULED lane; a PR run has no maintenance job to report on."
+
+    def test_it_stays_silent_on_the_daily_run_that_schedules_no_maintenance(self) -> None:
+        results = job_results(load(), github_context("schedule", schedule=CI_DAILY_CRON))
+        assert results[REPORTER_JOB] == "skipped", (
+            "the daily cron runs no refresh by design, so reporting there would red every slim run."
         )
 
     def test_it_watches_the_maintenance_job_and_the_shards_that_gate_it(self) -> None:
