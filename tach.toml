@@ -316,6 +316,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.factory.queue_stall"
+layer = "domain"
+depends_on = ["teatree.core.models"]
+
+[[modules]]
 path = "teatree.core.modelkit"
 layer = "domain"
 depends_on = []
@@ -978,6 +983,8 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
+  "teatree.core.admission",
+  "teatree.core.factory.queue_stall",
   "teatree.core.models",
   "teatree.utils",
   "teatree.loop.scanners",

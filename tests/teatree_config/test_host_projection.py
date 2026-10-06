@@ -100,7 +100,7 @@ class TestProjectionCarriesWhatTheHooksRead:
 
         assert published.setting("auto_update_require_green_main") is False
         assert published.setting("mode", scope="demo-overlay") == "auto"
-        assert published.loop_status("dispatch") == "paused"
+        assert published.loop_state["dispatch"] == "paused"
 
     def test_generation_comes_from_the_source_not_the_file(self, source_db: Path, data_dir: Path) -> None:
         assert ProjectionPublisher(source_db, data_dir).publish().generation == 7
@@ -229,13 +229,7 @@ class TestColdReadersFallThroughToTheProjection:
         assert cold_reader.read_setting("auto_update_require_green_main") is False
         assert cold_reader.read_setting("mode", scope="demo-overlay") == "auto"
 
-    def test_loop_status_resolves_from_the_projection(self, source_db: Path, data_dir: Path) -> None:
-        ProjectionPublisher(source_db, data_dir).publish()
-
-        assert cold_db.loop_status("dispatch") == "paused"
-
     def test_an_unpublished_projection_leaves_the_compiled_in_default(self) -> None:
-        assert cold_db.loop_status("dispatch") == "enabled"
         assert cold_reader.read_setting("auto_update_require_green_main") is None
 
 
@@ -269,7 +263,7 @@ class TestAnOlderPublishersPayloadIsStillServed:
     exists to prevent, with the version bump as its new cause.
     """
 
-    def test_a_previous_schema_still_answers_settings_and_loop_status(self, data_dir: Path) -> None:
+    def test_a_previous_schema_still_answers_settings_and_loop_state(self, data_dir: Path) -> None:
         reader = ProjectionReader(data_dir)
         reader.target.write_text(json.dumps(_previous_schema_payload()), encoding="utf-8")
 
@@ -277,7 +271,7 @@ class TestAnOlderPublishersPayloadIsStillServed:
 
         assert read.trustworthy
         assert read.projection.setting("auto_update_require_green_main") is False
-        assert read.projection.loop_status("dispatch") == "paused"
+        assert read.projection.loop_state["dispatch"] == "paused"
 
     def test_a_cold_setting_read_still_resolves_from_a_previous_schema(
         self, data_dir: Path, monkeypatch: pytest.MonkeyPatch

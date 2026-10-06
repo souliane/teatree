@@ -190,9 +190,9 @@ class TestCurrentSessionPid:
 class TestCurrentSessionPidEnvFallback:
     """The env-var precedence the registry-only resolver lacked (#1722).
 
-    A self-pumped tick runs in an env-restricted Bash-tool subprocess: the
+    An in-session tick runs in an env-restricted Bash-tool subprocess: the
     loop registry can be unreadable (``T3_LOOP_REGISTRY_DIR`` points
-    nowhere), but the Stop self-pump exports ``T3_LOOP_SESSION_PID``. With
+    nowhere), but ``T3_LOOP_SESSION_PID`` can still be exported. With
     only the registry source the resolver returned ``None`` and the tick
     silently anchored the lease on ``os.getppid()`` of the transient shell,
     collapsing pid-liveness to TTL-only. The env path must resolve the
@@ -282,8 +282,8 @@ class TestLoopClaimSucceedsViaRegistrySessionId:
 class TestEnvInvisibleRegistryAnchorsDurablePid:
     """The #1722 gap: env-restricted subprocess with the registry unreadable.
 
-    The Stop self-pump exports both ``T3_LOOP_SESSION_ID`` and
-    ``T3_LOOP_SESSION_PID`` into the tick command. When that tick runs in a
+    ``T3_LOOP_SESSION_ID`` and ``T3_LOOP_SESSION_PID`` can be exported into a
+    tick command. When that tick runs in a
     subprocess that cannot read the loop registry, the env-propagated pid is
     the ONLY durable source. Before the fix ``current_session_pid()``
     returned ``None`` there and the claim fell back to ``os.getppid()`` of

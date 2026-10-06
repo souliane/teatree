@@ -1,6 +1,6 @@
 """Three readings of ``dev/.test_durations``, all ahead of the outage rather than during it (#4048).
 
-The daily scheduled ``refresh-durations`` job is the only thing that keeps the
+The weekly scheduled ``refresh-durations`` job is the only thing that keeps the
 file current, and its failure mode is silence: the job is skipped, no refresh PR
 is opened, and the file simply ages. Nothing downstream complains, because
 pytest-split accepts a durations file of any size — it fills the gaps with the
@@ -87,7 +87,7 @@ def check_test_durations_coverage() -> bool:
         "whichever PR is in flight."
     )
     typer.echo(
-        "      The daily scheduled run opens `ci/test-durations-refresh` with fresh durations — "
+        "      The weekly scheduled run opens `ci/test-durations-refresh` with fresh durations — "
         "merge it. If no such PR exists, the refresh job is not running: check it on the latest "
         "`schedule` run of the CI workflow."
     )
@@ -136,7 +136,7 @@ def check_test_durations_freshness() -> bool:
 
     typer.echo(
         f"FAIL  Test-shard durations have not been refreshed in {freshness.age.days} days "
-        f"(last landed {landed}, threshold {durations_freshness.MAX_REFRESH_AGE.days} days) — the daily "
+        f"(last landed {landed}, threshold {durations_freshness.MAX_REFRESH_AGE.days} days) — the weekly "
         "refresh has stopped reaching `main`, so the 12-way split is drifting further from the suite "
         "it is splitting with nothing else to say so."
     )

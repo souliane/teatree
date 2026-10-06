@@ -97,18 +97,13 @@ fi
 # within three beats. The deadline is the lock's own reclaim age. Cleared on exit.
 DEPLOY_HEARTBEAT_INTERVAL=60
 DEPLOY_DEADLINE=$(($(date -u +%s) + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
-_write_deploy_record() {
-    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$DEPLOY_DEADLINE" >"$DEPLOY_LOCK"
-}
-_write_deploy_record "$$"
+write_deploy_record "$$" "$DEPLOY_DEADLINE"
 # The beat stops with its parent and never recreates a record the exit trap cleared; fd 9 is
 # closed so a SIGKILLed deploy's flock is not held by it.
 (
     exec 9>&-
     while sleep "$DEPLOY_HEARTBEAT_INTERVAL" && kill -0 "$$" 2>/dev/null; do
-        if [ -s "$DEPLOY_LOCK" ]; then
-            _write_deploy_record "$$" || true
-        fi
+        beat_deploy_record "$$" "$DEPLOY_DEADLINE" || true
     done
 ) </dev/null >/dev/null 2>&1 &
 _DEPLOY_HEARTBEAT_PID=$!
