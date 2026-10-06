@@ -39,18 +39,24 @@ def recorded_anti_vacuity_attestation(ticket: "Ticket", head_sha: str = "") -> A
 
 def anti_vacuity_is_complete(attestation: AntiVacuityAttestation) -> bool:
     """Require AC coverage and a RED proof, or an explicit no-new-tests claim."""
-    raw_coverage = attestation.get("ac_coverage")
-    coverage = raw_coverage.strip() if isinstance(raw_coverage, str) else ""
+    return not anti_vacuity_problems(attestation)
+
+
+def anti_vacuity_problems(attestation: AntiVacuityAttestation) -> list[str]:
+    problems: list[str] = []
+    coverage = attestation.get("ac_coverage")
+    if not (isinstance(coverage, str) and coverage.strip()):
+        problems.append("ac_coverage must be a non-empty string")
     proven = attestation.get("proven_tests") or []
     valid_proven = isinstance(proven, list) and all(isinstance(test, str) for test in proven)
-    has_proven = valid_proven and any(test.strip() for test in proven)
+    if not valid_proven:
+        problems.append("proven_tests must be a list of test ids")
     no_new_tests = attestation.get("no_new_tests")
-    return (
-        bool(coverage)
-        and valid_proven
-        and (no_new_tests is None or isinstance(no_new_tests, bool))
-        and (has_proven or no_new_tests is True)
-    )
+    if no_new_tests is not None and not isinstance(no_new_tests, bool):
+        problems.append("no_new_tests must be true or false")
+    if not ((valid_proven and any(test.strip() for test in proven)) or no_new_tests is True):
+        problems.append("missing proven_tests or no_new_tests")
+    return problems
 
 
 class TicketEvidenceModel(TicketFacet):
