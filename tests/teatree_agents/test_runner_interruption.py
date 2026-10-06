@@ -23,8 +23,11 @@ from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
 from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER, CeilingSalvage, _record_stuck_outcome
 from teatree.agents.runner_usage import DispatchProvenance
+from teatree.agents.session_lineage import resume_session_id
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.task_repair import phase_attempts
+from tests.teatree_agents._sdk_fake import result_message
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
 _ROW_COMPLETED = "lease lost for task 1: the row is already completed — the attempt has nothing left to hand over"
@@ -149,3 +152,76 @@ class TestALeaseLossAfterAnOperatorCancel(TestCase):
         assert row.failure_kind == FailureKind.CANCELLED
         assert attempt.error.startswith("cancelled: ")
         assert attempt.input_tokens == 42
+
+
+_CHECKPOINTED_SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def _checkpointed() -> HarnessOutcome:
+    return HarnessOutcome(
+        agent_text="half-way through the change",
+        result_message=result_message(
+            session_id=_CHECKPOINTED_SESSION,
+            subtype="error_during_execution",
+            is_error=True,
+            num_turns=12,
+            usage={"input_tokens": 900, "output_tokens": 300},
+        ),
+        stuck_reason="deploy checkpoint: this worker is quiescing for a rolling deploy",
+        checkpointed=True,
+    )
+
+
+class TestADeployCheckpointParksTheRunToResumeIt(TestCase):
+    """A run a deploy drain interrupted re-queues to continue its own conversation (#5089)."""
+
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://github.com/o/r/issues/5089")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        self.task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        self.task.claim(claimed_by="worker-A", lease_seconds=900)
+        self.reclaims = self.task.reclaim_count
+
+    def test_the_task_returns_to_the_queue_holding_its_conversation(self) -> None:
+        _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.claimed_by == ""
+        assert self.task.session_continuation == Task.SessionContinuation.SELF
+        assert resume_session_id(self.task) == _CHECKPOINTED_SESSION
+
+    def test_the_park_attempt_carries_the_session_and_the_spend(self) -> None:
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        assert attempt is not None
+        assert attempt.error.startswith("limit_parked: deploy checkpoint")
+        assert attempt.agent_session_id == _CHECKPOINTED_SESSION
+        assert attempt.input_tokens == 900
+        assert attempt.output_tokens == 300
+
+    def test_the_checkpoint_burns_no_iteration_and_no_reclaim(self) -> None:
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert attempt not in phase_attempts(self.task)
+        assert self.task.reclaim_count == self.reclaims
+
+    def test_a_completed_row_is_still_a_no_op(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED, claimed_by="")
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert self.task.status == Task.Status.COMPLETED
+
+    def test_a_cancelled_row_keeps_the_cancel(self) -> None:
+        call_command("tasks", "cancel", self.task.pk, confirm=True)
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        assert attempt is not None
+        assert attempt.error.startswith("cancelled: ")
+        assert Task.objects.get(pk=self.task.pk).failure_kind == FailureKind.CANCELLED

@@ -8,6 +8,7 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 - Both claim paths stamp `Task.claimed_generation`. A generation whose own row is draining, retired or failed is refused by `claim_admission_block_reason` with its short sha named.
 - `begin_drain` advances the quiesce fence in the same transaction, so a claim racing the drain rolls back exactly as it does for `worker_quiescing`; a drain that loses a race joins the one in progress.
 - `drain_worker(generation=<sha>)` waits on that generation's stamped claims only and never writes `worker_quiescing`; `t3 worker drain --generation <sha>` drains one generation.
+- A draining, retired or failed own generation is a `drain_block_reason`, like `worker_quiescing`: each of its in-flight runs interrupts itself at its next heartbeat and parks PENDING with its session id, so the drain ends in about one heartbeat and the next generation resumes the conversation. The `--drain-timeout` (default 600 s) only bounds a run that cannot checkpoint.
 
 ## Stranded drains
 

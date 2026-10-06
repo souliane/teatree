@@ -16,7 +16,7 @@ import teatree.agents.runner as runner_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core import managers_task_claim
 from teatree.core.claim_liveness import current_owner
-from teatree.core.managers_task_claim import claim_admission_block_reason
+from teatree.core.managers_task_claim import claim_admission_block_reason, drain_block_reason
 from teatree.core.models import ModeOverride, Session, Task, Ticket, WorkerGeneration
 from teatree.loop.drain import DrainReport, drain_worker
 from tests.teatree_core.conftest import CommandOverlay
@@ -227,3 +227,35 @@ class TestAGenerationDrainLandingMidClaimWinsNoClaim(TestCase):
 
         self.task.refresh_from_db()
         assert self.task.status == Task.Status.PENDING
+
+
+class TestOnlyADrainCheckpointsAnInFlightRun(TestCase):
+    """``drain_block_reason`` is the subset of the admission refusals that means this worker is going away (#5089)."""
+
+    def test_the_quiescing_gate_is_a_drain(self) -> None:
+        drain_worker(timeout=0)
+
+        assert drain_block_reason() == "this worker is quiescing for a rolling deploy"
+        assert claim_admission_block_reason() == drain_block_reason()
+
+    def test_a_draining_own_generation_is_a_drain(self) -> None:
+        WorkerGeneration.objects.boot(_N).begin_drain(deadline=_in_an_hour())
+
+        with _running_as(_N):
+            assert drain_block_reason() == "this worker's generation aaaaaaaaaaaa is draining"
+
+    def test_a_schema_behind_the_code_is_not_a_drain(self) -> None:
+        with patch.object(managers_task_claim, "schema_admission_block_reason", return_value="0042 unapplied"):
+            assert claim_admission_block_reason() == "the control DB is behind this code"
+            assert drain_block_reason() == ""
+
+    def test_a_process_behind_the_schema_is_not_a_drain(self) -> None:
+        with patch.object(managers_task_claim, "_process_code_behind_schema", return_value="0042 applied"):
+            assert claim_admission_block_reason() == "this process is behind the applied schema"
+            assert drain_block_reason() == ""
+
+    def test_a_stopped_fleet_is_not_a_drain(self) -> None:
+        _stop_the_fleet()
+
+        assert "admits no loop" in claim_admission_block_reason()
+        assert drain_block_reason() == ""

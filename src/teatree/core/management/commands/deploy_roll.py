@@ -9,6 +9,7 @@ import typer
 from django_typer.management import TyperCommand
 
 from teatree.generation import short_sha
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 
 ROLL_PROGRESS_INTERVAL_SECONDS = 30.0
 _ROLLED_BACK_EXIT = 3
@@ -55,7 +56,7 @@ class Command(TyperCommand):
         self,
         *,
         to: Annotated[str, typer.Option("--to")] = "",
-        drain_timeout: Annotated[int, typer.Option("--drain-timeout")] = 1800,
+        drain_timeout: Annotated[int, typer.Option("--drain-timeout")] = DEFAULT_DRAIN_TIMEOUT_SECONDS,
         verify_timeout: Annotated[float, typer.Option("--verify-timeout")] = 300.0,
         stable_seconds: Annotated[float, typer.Option("--stable-seconds")] = 30.0,
         optional_service: Annotated[list[str] | None, typer.Option("--optional-service")] = None,

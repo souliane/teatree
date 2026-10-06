@@ -8,25 +8,36 @@ re-queues via its lease lapse. ``sleep`` / ``monotonic`` are injected so the wai
 driven without wall-clock time.
 """
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
 import django.test
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from django.utils import timezone
 
+from teatree.agents._runner_options import _build_options
+from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
+from teatree.agents.runner_interruption import CeilingSalvage
+from teatree.agents.runner_outcomes import record_outcome
+from teatree.agents.runner_usage import DispatchProvenance
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
+from teatree.core.managers_task_claim import drain_block_reason
 from teatree.core.models import ConfigSetting, WorkerGeneration
 from teatree.core.models.task import Task
 from teatree.loop.drain import (
     DrainOutcome,
     DrainPacing,
     DrainProgress,
+    DrainReport,
     GenerationNotDrainableError,
     drain_worker,
     set_worker_quiescing,
 )
-from tests.factories import TaskFactory
+from tests.factories import TaskFactory, planned_ticket
+from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness
 
 _NO_WAIT = DrainPacing(sleep=lambda _seconds: None)
 
@@ -200,3 +211,51 @@ class TestGenerationScopedDrain(django.test.TestCase):
     def test_an_unregistered_generation_cannot_be_drained(self) -> None:
         with pytest.raises(GenerationNotDrainableError, match="cccccccccccc is not registered"):
             drain_worker(timeout=1800, generation="c" * 40, pacing=_NO_WAIT)
+
+
+_RESUMED_SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
+    """The drain ends at the in-flight run's next heartbeat, and the fresh worker resumes it (#5089)."""
+
+    def setUp(self) -> None:
+        self.task = cast("Task", TaskFactory(ticket=planned_ticket(), status=Task.Status.PENDING))
+        self.task.claim(claimed_by="old-worker", lease_seconds=900)
+
+    def _run_to_its_checkpoint(self, _seconds: float) -> None:
+        # Read here: the run's heartbeat thread cannot see this TestCase's uncommitted gate row.
+        drain = drain_block_reason()
+        harness = OneSessionHarness(InterruptibleSession([], session_id=_RESUMED_SESSION))
+        runtime = HeartbeatRuntime(
+            watchdog=LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0),
+            heartbeat_interval=0.005,
+            sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+            renew_lease=lambda _task: None,
+            drain_reason=lambda: drain,
+        )
+        outcome = asyncio.run(drive_with_heartbeat(self.task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+        record_outcome(
+            self.task, outcome, harness, CeilingSalvage(phase="coding", lane="", provenance=DispatchProvenance())
+        )
+
+    def _drain(self) -> DrainReport:
+        clock = _FakeClock([0.0, 0.0, 700.0])
+        return drain_worker(
+            timeout=600, pacing=DrainPacing(poll_interval=0, sleep=self._run_to_its_checkpoint, monotonic=clock)
+        )
+
+    def test_the_drain_ends_once_the_run_checkpoints(self) -> None:
+        report = self._drain()
+
+        assert report.outcome is DrainOutcome.DRAINED
+        assert report.still_claimed == []
+
+    def test_the_fresh_worker_claims_the_run_and_resumes_its_conversation(self) -> None:
+        self._drain()
+        set_worker_quiescing(value=False)
+
+        claimed = Task.objects.claim_next_pending(claimed_by="fresh-worker")
+
+        assert claimed == self.task
+        assert _build_options(claimed, "ctx", phase="coding", skills=[]).resume == _RESUMED_SESSION

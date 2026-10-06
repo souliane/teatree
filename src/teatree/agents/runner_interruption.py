@@ -16,9 +16,10 @@ from django.utils import timezone
 
 from teatree.agents.result_schema import AgentResultBlob, check_evidence
 from teatree.agents.runner_usage import DispatchProvenance, UsageObservation, _attempt_usage
+from teatree.agents.usage_window import record_park
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
-from teatree.core.models import Task, TaskAttempt
+from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
 
 if TYPE_CHECKING:
@@ -100,6 +101,9 @@ def _record_stuck_outcome(
     row buries a real completion, inflates the environmental-failure rate and feeds the
     auto-repair sweep a "re-do this" signal for work that is done.
 
+    A deploy CHECKPOINT parks the run to resume its conversation on the fresh worker:
+    the drain interrupted it, so it is a scheduling event, never a failure or a work iteration.
+
     Short of that, only a LOST LEASE qualifies for the landed outcome (#3982) — it says the
     lease lapsed, not that the work failed. A watchdog breach is a genuine runaway with no such
     alibi, so it stays a recorded failure here, carrying the text the run had written; on the
@@ -112,6 +116,8 @@ def _record_stuck_outcome(
     cancelled = Task.objects.filter(pk=task.pk, status=Task.Status.FAILED, failure_kind=FailureKind.CANCELLED).first()
     if cancelled is not None:
         return _record_noop_over_cancelled_row(cancelled, interruption=stuck_reason, usage=usage)
+    if outcome.checkpointed:
+        return record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{stuck_reason}", not_before=timezone.now(), usage=usage)
     evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason, usage=usage)

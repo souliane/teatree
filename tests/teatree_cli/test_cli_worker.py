@@ -29,6 +29,7 @@ from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, D
 from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
 from teatree.loops.loop_staleness import Admission, LoopHealth
 from teatree.utils import singleton as singleton_mod
+from tests.factories import TaskFactory
 
 runner = CliRunner()
 
@@ -206,6 +207,49 @@ class TestWorkerStatus(django.test.TestCase):
         assert payload["running"] is True
         assert payload["admitted"] == []
         assert [entry["name"] for entry in payload["stale"]] == ["tickets"]
+
+
+class TestWorkerStatusShowsTheDeployDrain(django.test.TestCase):
+    """A quiesced worker says for how long and which runs it is waiting on (#5089)."""
+
+    def _status(self, *args: str) -> str:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", *args])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    def _quiesced_twelve_minutes_ago_with_two_runs_in_flight(self) -> list[int]:
+        set_worker_quiescing(value=True)
+        ConfigSetting.objects.filter(key=QUIESCING_SETTING).update(updated_at=timezone.now() - dt.timedelta(minutes=12))
+        tasks = [TaskFactory(), TaskFactory()]
+        for task in tasks:
+            task.claim(claimed_by="worker-A", lease_seconds=900)
+        return sorted(task.pk for task in tasks)
+
+    def test_json_carries_the_quiesce_age_and_the_runs_in_flight(self) -> None:
+        in_flight = self._quiesced_twelve_minutes_ago_with_two_runs_in_flight()
+
+        quiescing = json.loads(self._status("--json"))["quiescing"]
+
+        assert 700 <= quiescing["age_seconds"] <= 780
+        assert quiescing["in_flight"] == in_flight
+
+    def test_text_names_the_runs_that_will_checkpoint(self) -> None:
+        in_flight = self._quiesced_twelve_minutes_ago_with_two_runs_in_flight()
+
+        out = self._status()
+
+        line = next(line for line in out.splitlines() if line.startswith("deploy drain:"))
+        assert "(12m)" in line
+        assert ", ".join(str(pk) for pk in in_flight) in line
+        assert "checkpoint" in line
+
+    def test_an_open_gate_reports_no_drain(self) -> None:
+        assert json.loads(self._status("--json"))["quiescing"] is None
+        assert "deploy drain:" not in self._status()
 
 
 class TestWorkerEnsure(django.test.TestCase):

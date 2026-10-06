@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
+from teatree.loop.drain import quiesce_status
 from teatree.loop.loop_cadences import (
     drain_cadence_seconds,
     loop_owner_ttl_seconds,
@@ -479,6 +480,9 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
             line counts down across renders.
     *   ``forced ON: <names>`` / ``forced OFF: <names>`` — the per-loop manual
         overrides that diverge from the mode/base verdict.
+    *   ``deploy drain <age>, N in flight`` — ONLY while a deploy holds the worker
+        quiesced, so a frozen queue never reads as an idle one
+        (:func:`_deploy_drain_chunk`).
     *   ``N waiting`` — appended ONLY when N > 0 things are waiting on the user
         across the durable waiting-on-you lane (unresolved questions, PRs awaiting
         a merge authorization, pending review requests, manual items —
@@ -527,7 +531,8 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     # mode / override handle, no loop section, and no infra lease. The waiting
     # segment is a trailing decoration that never keeps an otherwise-empty line
     # alive (a quiet machine shows no loop line).
-    substantive = handles.schedule or handles.mode or handles.override or loop_section or leases
+    drain = _deploy_drain_chunk(colorize=colorize)
+    substantive = handles.schedule or handles.mode or handles.override or loop_section or drain or leases
     if not substantive:
         return []
 
@@ -544,11 +549,25 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
         parts.append(loop_section)
     if handles.override:
         parts.append(handles.override)
+    if drain:
+        parts.append(drain)
     waiting = _waiting_clause()
     if waiting:
         parts.append(waiting)
     parts.extend(leases)
     return [" · ".join(parts)]
+
+
+def _deploy_drain_chunk(*, colorize: bool = False) -> str:
+    """``deploy drain 4m, 2 in flight`` while the worker is quiesced, else ``""``; fails open to ``""``."""
+    try:
+        drain = quiesce_status()
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no chunk
+        return ""
+    if drain is None:
+        return ""
+    label = _colorize_chunk("deploy drain", _ANSI_YELLOW, colorize=colorize)
+    return f"{label} {_chip_age(drain.since, timezone.now())}, {len(drain.in_flight)} in flight"
 
 
 def _waiting_clause() -> str:

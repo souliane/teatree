@@ -52,6 +52,13 @@ def _write_exec(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+_SIZER_DERIVING_SEVEN_CPUS = (
+    "import os, sys\n"
+    'if not os.environ.get("TEATREE_WORKER_CPUS", "").strip():\n'
+    '    sys.stdout.write("TEATREE_WORKER_CPUS=7\\n")\n'
+)
+
+
 class TestDeployShRunDerivesWorkerCaps:
     """The REAL deploy.sh under tmp_path exports the host-derived worker cap.
 
@@ -101,6 +108,7 @@ class TestDeployShRunDerivesWorkerCaps:
             "    ps) echo stubcid; exit 0;;\n"
             "    inspect)\n"
             '      case "$*" in\n'
+            '        *NanoCpus*) printf %s "${STUB_LIVE_NANO_CPUS:-}";;\n'
             "        *State.ExitCode*) echo 'exited 0';;\n"
             "        *State.Status*RestartCount*) echo 'running/0';;\n"
             "        *State.Status*) echo running;;\n"
@@ -235,6 +243,29 @@ class TestDeployShRunDerivesWorkerCaps:
 
         assert proc.returncode == 0, f"a failed probe must not abort:\n{proc.stdout}\n{proc.stderr}"
         assert record_cpus.exists(), "the deploy stopped instead of degrading to the compose default"
+
+    @pytest.mark.parametrize(
+        ("live_nano_cpus", "operator_cpus", "expected"),
+        [
+            pytest.param("8000000000", "", "8", id="live-above-derived-is-kept"),
+            pytest.param("4000000000", "", "7", id="live-below-derived-takes-derived"),
+            pytest.param("8000000000", "5", "5", id="an-operator-export-still-wins"),
+            pytest.param("", "", "7", id="no-readable-live-cap-takes-derived"),
+        ],
+    )
+    def test_a_raised_live_cpu_cap_survives_the_deploy(
+        self, tmp_path: Path, live_nano_cpus: str, operator_cpus: str, expected: str
+    ) -> None:
+        """An operator's `docker update --cpus` on the live worker is not undone by the next deploy (#5089)."""
+        repo, record_cpus, env = self._stage_with_stub_sizer(tmp_path, _SIZER_DERIVING_SEVEN_CPUS)
+        env["STUB_LIVE_NANO_CPUS"] = live_nano_cpus
+        if operator_cpus:
+            env["TEATREE_WORKER_CPUS"] = operator_cpus
+
+        proc = self._run(repo, env)
+
+        assert proc.returncode == 0, f"deploy.sh failed:\n{proc.stdout}\n{proc.stderr}"
+        assert record_cpus.read_text() == expected
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not available")

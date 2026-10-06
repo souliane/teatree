@@ -370,9 +370,9 @@ have been destroyed with the container objects.
 | # | Stage | What is still serving |
 | --- | --- | --- |
 | 1 | `compose build` | everything — the longest phase recreates nothing, so a failed build costs no availability |
-| 2 | `t3 worker drain` | everything; in-flight agents finish before migrations run |
+| 2 | `t3 worker drain` | everything; each in-flight agent checkpoints at its next heartbeat (parks with its session id for the fresh worker to resume) before migrations run |
 | 3 | `up -d --no-deps teatree-init`, poll for `exited 0` | the OLD admin and worker; a failed init recreates no app service at all |
-| 4 | `t3 worker drain` again | init clears `worker_quiescing` as its last act, so the gate is re-asserted before the worker can claim — and then lose — a task |
+| 4 | `t3 worker drain` again | init clears `worker_quiescing` as its last act, so the gate is re-asserted before the worker can claim more work; a task it claimed in between checkpoints the same way |
 | 5 | `up -d --no-deps teatree-admin`, poll the dashboard | the worker |
 | 6 | `up -d --no-deps teatree-worker teatree-slack-listener` | the new admin |
 | 7 | clear `worker_quiescing` on the fresh worker | — |
