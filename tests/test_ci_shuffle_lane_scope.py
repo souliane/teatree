@@ -16,6 +16,7 @@ anything gating on the exit code (measured: bare pytest exits 1, the piped run e
 """
 
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any, cast
@@ -42,9 +43,13 @@ _WIDENED_DIRS = (
 )
 
 
-def _shuffle_run() -> str:
+def _shuffle_job() -> dict[str, Any]:
     jobs = cast("dict[str, Any]", yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"])
-    steps = [s for s in jobs["test-shuffle"]["steps"] if isinstance(s, dict)]
+    return cast("dict[str, Any]", jobs["test-shuffle"])
+
+
+def _shuffle_run() -> str:
+    steps = [s for s in _shuffle_job()["steps"] if isinstance(s, dict)]
     run_steps = [str(s.get("run", "")) for s in steps if "randomly" in str(s.get("run", ""))]
     assert run_steps, "test-shuffle must have a step that runs pytest under -p randomly."
     return run_steps[0]
@@ -76,11 +81,27 @@ class TestShuffleLaneScope:
         # pytest-randomly is NOT in the default `dev` group, so the lane is only ever
         # real if it installs `--group shuffle` first. Without it `-p randomly` raises
         # ImportError — loud on its own, but silently exit-0 the moment the run is piped.
-        jobs = cast("dict[str, Any]", yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"])
-        runs = " ".join(str(s.get("run", "")) for s in jobs["test-shuffle"]["steps"] if isinstance(s, dict))
+        runs = " ".join(str(s.get("run", "")) for s in _shuffle_job()["steps"] if isinstance(s, dict))
         assert "--group shuffle" in runs, (
             "The test-shuffle lane must `uv sync --group shuffle` — pytest-randomly is out of the "
             "default dev group, so without it the lane loads no plugin and audits no order."
+        )
+
+
+class TestShuffleLaneTriggers:
+    """Four seeds at ~25 runner-minutes each, so the lane runs nightly rather than per push."""
+
+    def test_runs_only_on_the_schedule_and_manual_dispatch(self) -> None:
+        condition = str(_shuffle_job().get("if", ""))
+        events = set(re.findall(r"github\.event_name == '([a-z_]+)'", condition))
+        assert events == {"schedule", "workflow_dispatch"}, (
+            f"test-shuffle must run on exactly the schedule and workflow_dispatch, found {sorted(events)}."
+        )
+        assert "!=" not in condition, "a negated event clause would let pull_request or push runs through again."
+
+    def test_reads_no_lane_decision_from_the_pr_only_preflight(self) -> None:
+        assert "needs" not in _shuffle_job(), (
+            "preflight never runs on schedule/dispatch, so needing it only adds a skip."
         )
 
 

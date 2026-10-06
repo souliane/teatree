@@ -48,10 +48,12 @@ permissions:
   contents: read
   packages: write
 
-# One publish at a time; never cancel an in-flight push mid-layer.
+# One publish at a time; never cancel an in-flight push mid-layer. A PR's
+# build-only run gets its own group, so a re-push supersedes it and it never
+# queues behind (or displaces a pending) main publish.
 concurrency:
-  group: publish-image
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('publish-image-{0}', github.ref) || 'publish-image' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   publish:
