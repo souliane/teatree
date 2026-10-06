@@ -3,7 +3,7 @@
 Each shard on a refresh run stores its group's fresh, tests-that-ran durations
 (``pytest --store-durations --clean-durations``) and uploads the file. This script unions
 the per-shard slices back into ``dev/.test_durations`` and decides — from the drift versus
-the committed file — whether that refresh is worth a PR. Without a drift gate every daily
+the committed file — whether that refresh is worth a PR. Without a drift gate every weekly
 run would open a churn PR from pure timing jitter; the gate opens one only when the set of
 tests changed (added/removed — the decisive staleness signal) or the aggregate per-test
 time moved beyond a threshold.

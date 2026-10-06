@@ -2,7 +2,7 @@
 
 The third reading of the artifact, and the only one that can tell that the refresh
 pipeline has *stopped*. Coverage answers how much of the tree the file knows about,
-which is a shortfall the daily refresh closes on its own — so it is an advisory the
+which is a shortfall the weekly refresh closes on its own — so it is an advisory the
 operator is meant to watch climb, never a page. Age answers whether anything is
 closing it at all, which nothing else on this surface can: a fully stale but perfectly
 parseable file trips neither retained hard FAIL (the unreadable-file one needs
@@ -33,7 +33,7 @@ from teatree.quality.durations_file import DURATIONS_PATH
 from teatree.utils.git_run import run_with_status
 from teatree.utils.git_worktree_query import is_git_checkout
 
-# The refresh runs daily behind a drift gate and lands only once a human merges its
+# The refresh runs weekly behind a drift gate and lands only once a human merges its
 # PR, so days of quiet are ordinary. A fortnight is not: by then either the scheduled
 # job has stopped producing or its PR is sitting unmerged, and both are worth a page.
 MAX_REFRESH_AGE = dt.timedelta(days=14)
