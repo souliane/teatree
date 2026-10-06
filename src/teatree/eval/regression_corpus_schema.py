@@ -1,12 +1,9 @@
-"""Runtime self-DB schema pre-flight for the regression corpus (souliane/teatree#2190).
+"""The regression corpus's own fresh DB and its schema pre-flight (souliane/teatree#2190).
 
 The corpus's ORM-backed checks (``Worktree``/``Ticket``/``MergeClear`` create)
-run against the runtime-resolved self-DB. A worktree's auto-isolated DB is
-seeded from a snapshot of the canonical DB at its (possibly stale) schema and
-migrations are NEVER applied to it — so a PR adding a migration (e.g. the
-``last_used_at`` column) left that DB missing the new column/table and every
-ORM check raised ``OperationalError: no such column``, redding the
-``eval-pinned-regressions`` pre-push lane.
+assert gate behaviour, not the host's state, so :func:`fresh_corpus_db` points
+them at an empty temp DB rather than the ambient one, whose migration state the
+diff does not control.
 
 The pre-flight applies pending migrations in-process via the existing
 sanctioned :func:`teatree.core.gates.schema_guard.migrate_self_db`
@@ -22,6 +19,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from django.db import connections
+
+from teatree.db.boundary import ControlDbBoundary
 from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck
 
 SCHEMA_PREFLIGHT = RegressionCheck(
@@ -38,21 +38,21 @@ SCHEMA_PREFLIGHT = RegressionCheck(
 
 @contextmanager
 def fresh_corpus_db() -> Iterator[None]:
-    """Point every DB alias at a fresh temp file for the lane's duration, then restore.
+    """Point every file-backed DB alias at one fresh temp file the pre-flight migrates, then restore.
 
-    The corpus asserts gate behaviour, not the host DB's state, so it must not read the
-    ambient one: a snapshot at a different migration state reddened the lane with an
-    `OperationalError` the diff did not cause. The pre-flight then migrates this empty DB.
+    An in-memory DB is already private to this process, so it is left alone.
     """
-    from django.db import connections  # noqa: PLC0415 — deferred: only reached once Django is configured
-
     with tempfile.TemporaryDirectory(prefix="t3-pinned-regressions-") as scratch:
         original: list[tuple[str, str]] = []
         for alias in connections:
             connection = connections[alias]
-            original.append((alias, str(connection.settings_dict["NAME"])))
+            name = str(connection.settings_dict["NAME"])
+            if not ControlDbBoundary(name).file_backed:
+                continue
+            original.append((alias, name))
             connection.close()
-            connection.settings_dict["NAME"] = str(Path(scratch) / f"{alias}.sqlite3")
+            # One file for every alias, so the config alias reads the schema the pre-flight migrated.
+            connection.settings_dict["NAME"] = str(Path(scratch) / "corpus.sqlite3")
         try:
             yield
         finally:

@@ -11,11 +11,17 @@ silently against a half-migrated DB.
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.eval import regression_corpus_schema
-from teatree.eval.regression_corpus_schema import SCHEMA_PREFLIGHT, migrate_self_db, schema_preflight_result
+from teatree.eval.regression_corpus_schema import (
+    SCHEMA_PREFLIGHT,
+    fresh_corpus_db,
+    migrate_self_db,
+    schema_preflight_result,
+)
 
 
 class TestSchemaPreflightCheckDefinition(TestCase):
@@ -65,3 +71,10 @@ class TestMigrateSelfDbSeam(TestCase):
             pytest.raises(SelfDbMigrationError),
         ):
             migrate_self_db()
+
+
+class TestFreshCorpusDb(TestCase):
+    def test_an_in_memory_db_is_already_private_and_left_in_place(self) -> None:
+        original = connection.settings_dict["NAME"]
+        with fresh_corpus_db():
+            assert connection.settings_dict["NAME"] == original

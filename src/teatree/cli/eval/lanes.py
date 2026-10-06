@@ -18,7 +18,6 @@ from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
-from teatree.eval.regression_corpus_schema import fresh_corpus_db
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -61,14 +60,11 @@ def pinned_regressions(
     a must-allow input. Any violated invariant exits non-zero.
 
     ``--strict`` additionally demands a VALIDATED green (#4005), matching the suite's
-    own ``t3 eval --strict``. The default stays lenient because the pre-push hook runs
-    on the host, where the container-owned control DB is unreachable by design and
-    blocking every push there is the false red the skip exists to end.
+    own ``t3 eval --strict``.
     """
     ensure_django()
     require_valid_format(output_format)
-    with fresh_corpus_db():
-        report = run_regression_corpus()
+    report = run_regression_corpus()
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
     if not report.ok or (strict and not report.validated):
         sys.exit(1)
