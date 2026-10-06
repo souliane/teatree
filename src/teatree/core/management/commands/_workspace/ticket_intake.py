@@ -32,6 +32,7 @@ from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import overlay_name_of
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.worktree.dev_repo import parse_repo_branch_map, resolve_repo_names
+from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
 from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree.worktree_paths import ticket_dir_for
 from teatree.utils import git
@@ -404,8 +405,9 @@ def finalize_ticket_provision(
 
     The second half of ``workspace ticket``, split from the command module to
     keep it under the per-module LOC cap. Returns the ticket pk on success (or a
-    soft-failure warning), or 0 when an unrecoverable provision aborted and the
-    unattested ticket was discarded.
+    soft-failure warning), or 0 when nothing was provisioned: the unattested
+    ticket is discarded, unless the refusal is one the worker's queued
+    ``execute_provision`` retries.
     """
     branch = cast("TicketExtra", ticket.extra)["branch"]
     # Re-derived from the TICKET as the provisioner derives it, so the dir printed
@@ -421,6 +423,10 @@ def finalize_ticket_provision(
     # worktrees already in place. Single source of truth: the runner.
     result = WorktreeProvisioner(ticket).run()
     if not result.ok and not ticket.worktrees.exists():
+        if result.retryable:
+            write_err(f"  Provisioning deferred: {result.detail}")
+            write_err(f"  Ticket #{ticket.pk} kept: the worker retries provisioning, then asks the owner.")
+            return 0
         write_err(f"  Provisioning failed: {result.detail}")
         # #748: only discard the ticket if it carries NO phase attestation.
         # ``get_or_create`` may have resolved an existing loop/coordinator-built
@@ -437,5 +443,10 @@ def finalize_ticket_provision(
     if not result.ok:
         write_err(f"  WARNING: {result.detail}")
     learnings = _project_learnings_for_ticket(ticket)
-    write_out(format_intake_summary(ticket, str(ticket_dir), branch, project_learnings=learnings))
+    # An empty path must never reach ``git -C ""``, which reads the current directory's repo.
+    checked_out = {
+        wt.pk: git.current_branch(wt.worktree_path) if wt.worktree_path else "" for wt in ticket.worktrees.all()
+    }
+    landed_in = ticket_workspace_dir(ticket) or ticket_dir
+    write_out(format_intake_summary(ticket, str(landed_in), checked_out, project_learnings=learnings))
     return int(ticket.pk)

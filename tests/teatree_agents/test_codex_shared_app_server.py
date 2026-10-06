@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import logging
 import os
 import sys
 import threading
@@ -75,6 +76,9 @@ for raw in sys.stdin:
 """
 _EXITS_AFTER_TURN = _SERVER.replace(
     "    sys.stdout.flush()\n", "    sys.stdout.flush()\n    if method == 'turn/start':\n        break\n"
+)
+_PADDED_THREAD_START = _SERVER.replace(
+    "        response = {'thread': {'id':", "        response = {'pad': 'x' * 200_000, 'thread': {'id':"
 )
 
 
@@ -156,6 +160,65 @@ def test_two_codex_sessions_share_process_and_auth_writer(tmp_path: Path) -> Non
     assert cache.active == 0
     assert cache.persists == 2
     assert cache.max_persists == 1
+
+
+def test_a_thread_start_reply_past_the_asyncio_default_limit_opens_the_thread(tmp_path: Path) -> None:
+    assert _PADDED_THREAD_START != _SERVER
+    script = tmp_path / "padded_app_server.py"
+    script.write_text(_PADDED_THREAD_START)
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")
+    )
+    manager = SharedCodexAppServer(
+        code_home=tmp_path / "private-home",
+        cache=FakeCache(),
+        command=(sys.executable, str(script)),
+        process_env={},
+    )
+
+    try:
+        thread_id, _model = asyncio.run(manager.open_session(options, None))
+    finally:
+        manager.close()
+
+    assert thread_id == "thread-1"
+
+
+def test_a_failure_after_the_shared_server_started_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class ReleaseFailingCache(FakeCache):
+        @asynccontextmanager
+        async def session(self) -> AsyncIterator[Path]:
+            async with super().session() as path:
+                yield path
+            msg = "credential-release-sentinel"
+            raise RuntimeError(msg)
+
+    script = tmp_path / "fake_app_server.py"
+    script.write_text(_SERVER)
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")
+    )
+    manager = SharedCodexAppServer(
+        code_home=tmp_path / "private-home",
+        cache=ReleaseFailingCache(),
+        command=(sys.executable, str(script)),
+        process_env={},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="teatree.agents.codex_shared_app_server"):
+        try:
+            asyncio.run(manager.open_session(options, None))
+        finally:
+            manager.close()
+
+    assert manager.stopped
+    assert any(
+        record.name == "teatree.agents.codex_shared_app_server"
+        and record.levelno == logging.WARNING
+        and record.exc_info is not None
+        and "credential-release-sentinel" in str(record.exc_info[1])
+        for record in caplog.records
+    )
 
 
 def test_live_codex_threads_keep_distinct_mailbox_config_and_can_exchange(tmp_path: Path) -> None:

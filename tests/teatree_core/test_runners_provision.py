@@ -20,7 +20,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.runners import WorktreeProvisioner
 from teatree.core.runners.provision import _recorded_checkout_is_live
 from teatree.utils import git
-from tests._git_repo import make_git_repo
+from tests._git_repo import make_git_repo, run_git, run_git_captured
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -73,8 +73,10 @@ class TestWorktreeProvisioner(TestCase):
 
         created_paths: list[str] = []
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del repo, branch, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del repo, branch, create_branch, start_point
             Path(path).mkdir(parents=True, exist_ok=True)
             created_paths.append(path)
             return True
@@ -83,7 +85,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
 
@@ -118,7 +120,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", return_value=True) as worktree_add,
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
 
@@ -136,7 +138,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", return_value=False),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
 
@@ -163,7 +165,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", return_value=False),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
 
@@ -196,8 +198,10 @@ class TestWorktreeProvisioner(TestCase):
 
         captured: dict[str, str] = {}
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del branch, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del branch, create_branch, start_point
             captured["source"] = repo
             captured["dest"] = path
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -207,7 +211,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
 
@@ -228,8 +232,10 @@ class TestWorktreeProvisioner(TestCase):
 
         captured: dict[str, str] = {}
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del branch, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del branch, create_branch, start_point
             captured["source"] = repo
             Path(path).mkdir(parents=True, exist_ok=True)
             return True
@@ -238,7 +244,7 @@ class TestWorktreeProvisioner(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
             self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as cm,
         ):
             result = WorktreeProvisioner(ticket).run()
@@ -304,8 +310,10 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
         branch_by_dest: dict[str, str] = {}
         created_paths: list[str] = []
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del repo, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del repo, create_branch, start_point
             branch_by_dest[path] = branch
             created_paths.append(path)
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -315,7 +323,7 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
         return result, branch_by_dest, created_paths
@@ -451,8 +459,10 @@ class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
     def _run_capturing_dests(self, ticket: Ticket) -> tuple[Any, list[str]]:
         created_paths: list[str] = []
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del repo, branch, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del repo, branch, create_branch, start_point
             Path(path).mkdir(parents=True, exist_ok=True)
             created_paths.append(path)
             return True
@@ -461,7 +471,7 @@ class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             result = WorktreeProvisioner(ticket).run()
         return result, created_paths
@@ -558,8 +568,8 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
         ticket = self._scoped_ticket(repos=[repo], branch=branch)
         stamped: list[tuple[str, str, str]] = []
 
-        def fake_worktree_add(r: str, path: str, b: str, *, create_branch: bool = True) -> bool:
-            del r, b, create_branch
+        def fake_worktree_add(r: str, path: str, b: str, *, create_branch: bool = True, start_point: str = "") -> bool:
+            del r, b, create_branch, start_point
             Path(path).mkdir(parents=True, exist_ok=True)
             return True
 
@@ -581,7 +591,7 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
             # #2655: the call site now reads the FULL remote URL (host
             # intact); the gate refuses a non-github host before any gh call.
             patch("teatree.core.runners.provision.git.remote_url", return_value=remote_url),
@@ -838,13 +848,14 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         branch: str,
         *,
         repo: str = "repo-a",
+        repos: tuple[str, ...] = (),
         public_remote: bool = False,
         recorded_path: str = "",
     ) -> tuple[Any, Ticket]:
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/3234",
-            repos=[repo],
+            repos=list(repos) or [repo],
             extra={"branch": branch, "description": "x"},
         )
         if recorded_path:
@@ -862,9 +873,8 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
             # The venue's owned root decides whether a missing registration may be
             # pruned at all (#4287), so it must name the same workspace as above.
             patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
-            # The clones have no remote: pin the two network-adjacent seams so the
-            # test exercises the worktree lifecycle, not git's remote plumbing.
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            # The origin is a local bare repo, so the real fetch runs; only the
+            # identity step is pinned.
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=public_remote),
         ):
             return WorktreeProvisioner(ticket).run(), ticket
@@ -1051,6 +1061,33 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert str(wt_path) not in registered, "the failed provision stranded a git worktree registration"
         assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
 
+    def test_a_duplicated_repo_entry_records_one_row(self) -> None:
+        self._clone()
+
+        result, ticket = self._provision("4967-duplicate-entry", repos=("repo-a", "repo-a"))
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 1
+
+    def test_a_row_a_concurrent_provision_records_during_the_fetch_is_reused(self) -> None:
+        # The workspace-ticket CLI and the worker can provision one ticket at once; the peer's row lands mid-fetch.
+        self._clone()
+        branch = "4967-concurrent-row"
+        real_cut = git.cut_start_point
+
+        def cut_while_a_peer_records_the_row(repo: str, cut_branch: str, *, base: str) -> str:
+            Worktree.objects.create(
+                ticket=Ticket.objects.get(extra__branch=branch), overlay="test", repo_path="repo-a", branch=branch
+            )
+            return real_cut(repo, cut_branch, base=base)
+
+        with patch.object(git, "cut_start_point", side_effect=cut_while_a_peer_records_the_row):
+            result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 1
+        assert self._recorded_path(ticket) == str(self.workspace / branch / "repo-a")
+
     def test_a_leftover_adopted_elsewhere_is_refused_not_persisted_as_a_split(self) -> None:
         # Recovery once adopted a same-branch checkout ELSEWHERE, persisting a row that split the workspace.
         self._clone("repo-a")
@@ -1070,7 +1107,6 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
         ):
             result = WorktreeProvisioner(ticket).run()
@@ -1122,7 +1158,7 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="main"),
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
         ):
             return WorktreeProvisioner(ticket).run()
@@ -1237,8 +1273,10 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
         (repo_dir / ".git").mkdir(exist_ok=True)
         ticket = self._ticket(branch)
 
-        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-            del repo, branch, create_branch
+        def fake_worktree_add(
+            repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = ""
+        ) -> bool:
+            del repo, branch, create_branch, start_point
             Path(path).mkdir(parents=True, exist_ok=True)
             return True
 
@@ -1247,7 +1285,7 @@ class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
             self._declared(enabled=enabled, entries=entries),
         ):
             return WorktreeProvisioner(ticket).run(), ticket
@@ -1349,7 +1387,6 @@ class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
         ):
             return WorktreeProvisioner(ticket).run(), ticket
@@ -1476,7 +1513,7 @@ class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
             patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
-            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="main"),
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
         ):
             return WorktreeProvisioner(ticket).run()
@@ -1503,3 +1540,230 @@ class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
         assert self._admin_entries(clone) == {"repo-a"}, "the registration was pruned on a venue-local reading"
         assert branch in git.run_strict(repo=str(clone), args=["branch", "--list", branch])
         assert "unreadable in this execution context" in "\n".join(logs.output)
+
+
+class TestWorktreeProvisionerCutsFromAFetchedBase(TestCase):
+    """souliane/teatree#4967: a worktree is cut from a freshly fetched base, or not at all.
+
+    Real git under ``tmp_path``, each clone pushed to its own bare ``origin``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _origin(self, repo: str) -> Path:
+        return self.tmp / "origin" / f"{repo}.git"
+
+    def _clone(self, repo: str = "repo-a") -> Path:
+        make_git_repo(self._origin(repo), bare=True)
+        clone = make_git_repo(self.workspace / repo)
+        run_git(clone, "remote", "add", "origin", str(self._origin(repo)))
+        run_git(clone, "push", "-q", "-u", "origin", "main")
+        return clone
+
+    def _push_from_another_clone(self, branch: str, repo: str = "repo-a") -> str:
+        other = self.tmp / "other" / repo
+        if not other.exists():
+            run_git(self.tmp, "clone", "-q", str(self._origin(repo)), str(other))
+        run_git(other, "checkout", "-q", "-B", branch, "origin/main")
+        run_git(other, "commit", "-q", "--allow-empty", "-m", f"upstream work on {branch}")
+        run_git(other, "push", "-q", "origin", branch)
+        return run_git(other, "rev-parse", "HEAD")
+
+    def _break_origin(self, clone: Path) -> None:
+        run_git(clone, "remote", "set-url", "origin", str(self.tmp / "gone.git"))
+
+    @staticmethod
+    def _registrations(clone: Path) -> list[str]:
+        porcelain = run_git(clone, "worktree", "list", "--porcelain")
+        return [line for line in porcelain.splitlines() if line.startswith("worktree ")]
+
+    def _ticket(self, repos: list[str], branch: str, *, recorded: Path | None = None) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/4967",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+        if recorded is not None:
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path=repos[0],
+                branch=branch,
+                extra={"worktree_path": str(recorded)},
+            )
+        return ticket
+
+    def _provision(self, ticket: Ticket) -> Any:
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def _foreign_checkout(self, clone: Path, branch: str) -> Path:
+        checkout = self.workspace / branch / "repo-a"
+        run_git(clone, "worktree", "add", "-q", "-b", branch, str(checkout))
+        (checkout / ".git").write_text(
+            f"gitdir: /a-root-this-context-cannot-reach/repo-a/.git/worktrees/{checkout.name}\n", encoding="utf-8"
+        )
+        return checkout
+
+    def test_an_unreachable_origin_cuts_nothing_and_reports_gits_error(self) -> None:
+        clone = self._clone()
+        self._break_origin(clone)
+        ticket = self._ticket(["repo-a"], "4967-unreachable")
+
+        result = self._provision(ticket)
+
+        assert result.ok is False, "a worktree was cut although origin could not be read"
+        assert "repo-a" in result.detail
+        assert "does not appear to be a git repository" in result.detail
+        assert result.retryable is True
+        assert len(self._registrations(clone)) == 1, "a worktree was registered before the refusal"
+        assert not (self.workspace / "4967-unreachable").exists()
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+
+    def test_a_base_origin_lacks_is_refused_without_a_retry(self) -> None:
+        clone = self._clone()
+        ticket = self._ticket(["repo-a"], "4967-stacked")
+        ticket.extra = {**ticket.extra, "target_branch": "stacked-target"}
+        ticket.save(update_fields=["extra"])
+
+        result = self._provision(ticket)
+
+        assert result.ok is False
+        assert "origin has no stacked-target to cut 4967-stacked from" in result.detail
+        assert result.retryable is False, "a retry reads the same absent base"
+        assert len(self._registrations(clone)) == 1
+
+    def test_a_clone_without_an_origin_remote_is_refused_without_a_retry(self) -> None:
+        clone = self._clone()
+        run_git(clone, "remote", "remove", "origin")
+
+        result = self._provision(self._ticket(["repo-a"], "4967-no-origin"))
+
+        assert result.ok is False
+        assert "has no origin remote" in result.detail
+        assert result.retryable is False, "a retry finds the same missing remote"
+        assert len(self._registrations(clone)) == 1
+
+    def test_one_unreachable_origin_cuts_no_repo_of_the_ticket(self) -> None:
+        clone_a = self._clone("repo-a")
+        clone_b = self._clone("repo-b")
+        self._break_origin(clone_b)
+        ticket = self._ticket(["repo-a", "repo-b"], "4967-two-repos")
+
+        result = self._provision(ticket)
+
+        assert result.ok is False
+        assert "repo-b" in result.detail
+        assert len(self._registrations(clone_a)) == 1, "repo-a was cut before repo-b refused"
+        assert len(self._registrations(clone_b)) == 1
+        assert not (self.workspace / "4967-two-repos").exists()
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+
+    def test_a_new_branch_starts_at_origins_target_not_the_main_clones_head(self) -> None:
+        clone = self._clone()
+        upstream_tip = self._push_from_another_clone("main")
+        run_git(clone, "checkout", "-q", "-b", "side")
+        run_git(clone, "commit", "-q", "--allow-empty", "-m", "side work")
+        side_tip = run_git(clone, "rev-parse", "HEAD")
+        branch = "4967-fresh"
+
+        result = self._provision(self._ticket(["repo-a"], branch))
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / branch / "repo-a"
+        assert run_git(wt_path, "rev-parse", "HEAD") == upstream_tip
+        assert run_git_captured(wt_path, "merge-base", "--is-ancestor", side_tip, "HEAD").returncode == 1
+        assert run_git(clone, "config", "--get", f"branch.{branch}.merge", check=False) == ""
+
+    def test_provisioning_leaves_the_main_clone_where_it_was(self) -> None:
+        clone = self._clone()
+        before = run_git(clone, "rev-parse", "HEAD")
+        upstream_tip = self._push_from_another_clone("main")
+        branch = "4967-untouched"
+
+        result = self._provision(self._ticket(["repo-a"], branch))
+
+        assert result.ok is True, result.detail
+        assert run_git(clone, "rev-parse", "HEAD") == before, "provisioning moved the main clone"
+        assert run_git(self.workspace / branch / "repo-a", "rev-parse", "HEAD") == upstream_tip
+
+    def test_a_branch_origin_already_holds_starts_at_its_remote_tip(self) -> None:
+        clone = self._clone()
+        branch = "4967-existing"
+        pushed_tip = self._push_from_another_clone(branch)
+
+        result = self._provision(self._ticket(["repo-a"], branch))
+
+        assert result.ok is True, result.detail
+        assert run_git(self.workspace / branch / "repo-a", "rev-parse", "HEAD") == pushed_tip
+        assert run_git(clone, "config", "--get", f"branch.{branch}.merge") == f"refs/heads/{branch}"
+
+    def test_a_recorded_checkout_git_cannot_read_here_is_refused_untouched(self) -> None:
+        clone = self._clone()
+        branch = "4967-foreign"
+        checkout = self._foreign_checkout(clone, branch)
+        gitfile_before = (checkout / ".git").read_bytes()
+        ticket = self._ticket(["repo-a"], branch, recorded=checkout)
+
+        with patch.object(WorktreeProvisioner, "_create") as create:
+            result = self._provision(ticket)
+
+        create.assert_not_called()
+        assert result.ok is False, "a checkout no git command can run in was reported provisioned"
+        assert str(checkout) in result.detail
+        assert "execution context" in result.detail
+        assert (checkout / ".git").read_bytes() == gitfile_before
+
+    def test_a_recorded_checkout_whose_pointer_resolves_but_git_refuses_names_gits_error(self) -> None:
+        clone = self._clone()
+        branch = "4967-pointer-resolves"
+        checkout = self.workspace / branch / "repo-a"
+        run_git(clone, "worktree", "add", "-q", "-b", branch, str(checkout))
+        not_a_gitdir = self.tmp / "not-a-gitdir" / "repo-a"
+        not_a_gitdir.mkdir(parents=True)
+        (checkout / ".git").write_text(f"gitdir: {not_a_gitdir}\n", encoding="utf-8")
+        ticket = self._ticket(["repo-a"], branch, recorded=checkout)
+
+        result = self._provision(ticket)
+
+        assert result.ok is False
+        assert "git cannot read in this execution context" in result.detail
+        assert "not a git repository" in result.detail
+
+    def test_an_unreadable_checkout_found_at_the_slot_is_not_adopted(self) -> None:
+        clone = self._clone()
+        branch = "4967-unreadable-slot"
+        checkout = self._foreign_checkout(clone, branch)
+        gitfile_before = (checkout / ".git").read_bytes()
+        ticket = self._ticket(["repo-a"], branch)
+
+        result = self._provision(ticket)
+
+        assert result.ok is False, "an unreadable checkout was adopted as the ticket's worktree"
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+        assert (checkout / ".git").read_bytes() == gitfile_before
+
+    def test_a_usable_recorded_checkout_needs_no_origin(self) -> None:
+        clone = self._clone()
+        branch = "4967-offline"
+        checkout = self.workspace / branch / "repo-a"
+        run_git(clone, "worktree", "add", "-q", "-b", branch, str(checkout))
+        self._break_origin(clone)
+        ticket = self._ticket(["repo-a"], branch, recorded=checkout)
+
+        with patch.object(WorktreeProvisioner, "_create") as create:
+            result = self._provision(ticket)
+
+        create.assert_not_called()
+        assert result.ok is True, result.detail
