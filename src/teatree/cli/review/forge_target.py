@@ -11,7 +11,7 @@ Absent an explicit environment override, both reads go through the same owning o
 so a post can never be addressed to one forge with another's credential.
 
 A read that FAILED is kept distinct from one that found nothing
-(:class:`~teatree.cli.review.guarded_read.ReadOutcome`): the two need different
+(:class:`~teatree.core.modelkit.gate_verdict.ReadOutcome`): the two need different
 remediation, and reporting the first as the second sends the operator to a re-login
 that changes nothing (souliane/teatree#3794).
 """
@@ -19,8 +19,8 @@ that changes nothing (souliane/teatree#3794).
 import os
 from typing import TYPE_CHECKING
 
-from teatree.cli.review.guarded_read import ReadOutcome, guarded_read, read_or_refuse
 from teatree.config.credential_pass_key import PassKeySource
+from teatree.core.modelkit.gate_verdict import ReadOutcome, guarded_read, read_or_refuse
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -108,7 +108,7 @@ def resolve_base_url(repo: str) -> str:
     review post to a DIFFERENT GitLab instance. An explicitly-set ``$GITLAB_URL`` is
     still honoured — that is an operator's stated choice, not a guess — but with nothing
     to fall back to the read raises
-    :class:`~teatree.cli.review.guarded_read.ReadRefusedError`.
+    :class:`~teatree.core.modelkit.gate_verdict.EvidenceUnavailableError`.
     """
 
     def _overlay_url() -> str:

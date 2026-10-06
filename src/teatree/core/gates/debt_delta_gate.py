@@ -21,10 +21,10 @@ before the push, never after it (#4151).
 """
 
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
+from teatree.core.modelkit.gate_verdict import Pass, Refuse, Verdict, evaluate_gate
 from teatree.core.models import Ticket
 from teatree.quality.debt_delta import DebtIntroduction, DebtWaiver, load_debt_waivers, scan_debt_delta, unwaived_debt
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError
 
 
 class DebtDeltaExceededError(RuntimeError):
@@ -35,22 +35,27 @@ def evaluate_debt_delta(ticket: Ticket, repo_path: str) -> str | None:
     """The single diff+policy orchestration both PR-creation seams share.
 
     Diffs merge-base..HEAD in *repo_path* (the shrink-only
-    delta source) and runs :func:`check_debt_delta`. Returns the refusal message on
-    unwaived net-new debt, or ``None`` when clean, inert, or unverifiable (no real
-    repo / git error) — mirroring the branch-currency / mandatory-E2E posture. The
-    three call sites (``ShipExecutor._refusal_before_outward_write``,
-    ``_ship_gates.run_debt_delta_gate``, and ``_ensure_pr.create_or_defer_pr``)
-    wrap this into their own result shape.
+    delta source) and runs :func:`check_debt_delta`. Returns the rendered refusal on
+    unwaived net-new debt AND when the diff cannot be read (no real repo, git error),
+    since a diff nobody read proves nothing about its debt; ``None`` only when the
+    diff was read and is clean. The three call sites
+    (``ShipExecutor._refusal_before_outward_write``, ``_ship_gates.run_debt_delta_gate``,
+    and ``_ensure_pr.create_or_defer_pr``) wrap this into their own result shape.
     """
+    result = evaluate_gate(
+        "debt_delta",
+        collect=lambda: git.branch_diff(repo=repo_path),
+        judge=lambda diff: _debt_verdict(ticket, diff),
+    )
+    return None if result.passed else result.render()
+
+
+def _debt_verdict(ticket: Ticket, diff_text: str) -> Verdict:
     try:
-        diff = git.branch_diff(repo=repo_path)
-    except (CommandFailedError, RuntimeError, ValueError):
-        return None
-    try:
-        check_debt_delta(ticket, diff)
+        check_debt_delta(ticket, diff_text)
     except DebtDeltaExceededError as exc:
-        return str(exc)
-    return None
+        return Refuse(str(exc))
+    return Pass()
 
 
 def waivers_for_ticket(ticket: Ticket) -> tuple[DebtWaiver, ...]:

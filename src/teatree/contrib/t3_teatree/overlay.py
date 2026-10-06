@@ -225,6 +225,10 @@ class TeatreeReview(OverlayReview):
         _ = changed_files
         return False
 
+    @override
+    def mandatory_e2e_exempt_repo_slugs(self) -> tuple[str, ...]:
+        return tuple(_DEFAULT_FOLLOWUP_REPOS)
+
 
 class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""

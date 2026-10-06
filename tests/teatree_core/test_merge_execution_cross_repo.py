@@ -357,6 +357,7 @@ class TestCrossRepoCandidateProbe(TestCase):
         assert not overlay_calls, f"probe must not run when resolved repo's PR head matches: {overlay_calls}"
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestUrlFormCrossRepoClearVerdictStaysConsistent(TestCase):
     """A url-form CLEAR keeps clear-time record and merge-time lookup consistent across repos (#2860).
 

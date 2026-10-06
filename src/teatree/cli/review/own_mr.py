@@ -24,8 +24,8 @@ forge alias is still recognised as the owner's own work.
 
 from typing import TYPE_CHECKING
 
-from teatree.cli.review.guarded_read import guarded_read
 from teatree.cli.review.shape_gate import fetch_mr_author
+from teatree.core.modelkit.gate_verdict import guarded_read
 from teatree.core.review.review_candidate import author_is_self
 
 if TYPE_CHECKING:
