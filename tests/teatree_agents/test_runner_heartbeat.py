@@ -8,8 +8,8 @@ session id — deferring at most ``CHECKPOINT_MAX_DEFER_BEATS`` beats while a to
 
 import asyncio
 import sqlite3
-import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -141,7 +141,6 @@ class TestTheProductionDrainRead(TestCase):
 
     def test_it_closes_its_worker_threads_raw_handle(self) -> None:
         raws: list[sqlite3.Connection] = []
-        errors: list[BaseException] = []
 
         def _touch_the_orm() -> str:
             from django.db import connection  # noqa: PLC0415 — the WORKER thread's connection
@@ -150,18 +149,9 @@ class TestTheProductionDrainRead(TestCase):
             raws.append(connection.connection)
             return ""
 
-        def _read_on_worker() -> None:
-            try:
-                drain_reason_closing_connection()
-            except BaseException as exc:  # noqa: BLE001 — surfaced to the parent as an assertion
-                errors.append(exc)
+        with patch.object(runner_heartbeat, "drain_block_reason", _touch_the_orm), ThreadPoolExecutor(1) as worker:
+            worker.submit(drain_reason_closing_connection).result()
 
-        with patch.object(runner_heartbeat, "drain_block_reason", _touch_the_orm):
-            thread = threading.Thread(target=_read_on_worker)
-            thread.start()
-            thread.join()
-
-        assert not errors, errors
         assert raws, "the drain read never opened the worker thread's connection"
         with pytest.raises(sqlite3.ProgrammingError):
             raws[0].execute("SELECT 1")

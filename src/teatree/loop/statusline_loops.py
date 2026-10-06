@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
+from django.db import DatabaseError
 from django.utils import timezone
 
 from teatree.loop.drain import quiesce_status
@@ -562,7 +563,7 @@ def _deploy_drain_chunk(*, colorize: bool = False) -> str:
     """``deploy drain 4m, 2 in flight`` while the worker is quiesced, else ``""``; fails open to ``""``."""
     try:
         drain = quiesce_status()
-    except Exception:  # noqa: BLE001 — rendering is best-effort; a failure degrades to no chunk
+    except DatabaseError:
         return ""
     if drain is None:
         return ""

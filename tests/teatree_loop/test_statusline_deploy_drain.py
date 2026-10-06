@@ -4,6 +4,7 @@ import datetime as dt
 from unittest.mock import patch
 
 import django.test
+from django.db import OperationalError
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting
@@ -31,7 +32,7 @@ class TestTheDeployDrainChip(django.test.TestCase):
     def test_an_unreadable_drain_drops_only_the_chip(self) -> None:
         set_worker_quiescing(value=True)
 
-        with patch("teatree.loop.statusline_loops.quiesce_status", side_effect=RuntimeError("control DB locked")):
+        with patch("teatree.loop.statusline_loops.quiesce_status", side_effect=OperationalError("database is locked")):
             lines = live_loops_anchor()
 
         assert not any("deploy drain" in line for line in lines)
