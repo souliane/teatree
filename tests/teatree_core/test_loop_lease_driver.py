@@ -25,6 +25,9 @@ def _driver(slot: str) -> str:
 
 
 class TestDriverDefault(TestCase):
+    def test_the_driver_choices_are_the_worker_and_an_external_scheduler(self) -> None:
+        assert LoopDriver.values == ["loop_runner", "external"]
+
     def test_fresh_lease_row_has_blank_driver(self) -> None:
         LoopLease.objects.get_or_create(name=_SLOT)
         assert _driver(_SLOT) == ""
