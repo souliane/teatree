@@ -3,7 +3,7 @@
 One process runs programmatic ``django_tasks_db`` :class:`Worker` executor threads —
 a host-scaled ``loops`` pool (floored at 2, :func:`loops_executor_count`) and a
 host-scaled ``default`` pool (floored at 2, :func:`default_queue_executor_count`) and
-one protected ``cheap`` executor for review/draining phases —
+one ``cheap`` executor per review-lane seat (:func:`~teatree.core.agent_admission.review_lane_width`) —
 so a heavy headless ``default`` job can never starve a reactive loop timer, two slow
 loop ticks can never stall every OTHER loop's timer, and a deep backlog of independent
 headless work still drains in parallel on a bigger box instead of one-or-two-at-a-time.
@@ -32,12 +32,12 @@ import logging
 import os
 import threading
 import time
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.core.admission_pressure import MACHINE_BRAKE_CAUSES
+from teatree.core.agent_admission import review_lane_width
 from teatree.loop.queue_drain import expire_stale_headless_jobs
 from teatree.loops.deadlined_tick import kill_live_tick_process_groups
 from teatree.loops.enable_verdict import FleetAdmission, read_fleet_admission
@@ -88,8 +88,12 @@ def default_queue_executor_count() -> int:
 
 
 def build_executor_queues() -> tuple[str, ...]:
-    """Control and coding pools plus one protected cheap/draining executor."""
-    return ("loops",) * loops_executor_count() + ("default",) * default_queue_executor_count() + ("cheap",)
+    """Control and coding pools plus one review runner per review-lane seat, so admitted reviews never queue."""
+    return (
+        ("loops",) * loops_executor_count()
+        + ("default",) * default_queue_executor_count()
+        + ("cheap",) * review_lane_width()
+    )
 
 
 def _read_pool_pressure() -> "AdmissionDecision | None":
@@ -101,31 +105,21 @@ def _read_pool_pressure() -> "AdmissionDecision | None":
 
 
 def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str, ...]:
-    """Clamp the agent executors to *ceiling*; the ``loops`` control plane is never clamped.
+    """Clamp the coding executors to *ceiling*; the ``loops`` control plane and the review runners keep their width.
 
-    The ceiling counts live agents, and a loop timer is not one: counting loop threads
-    against it starved the control plane, and at a one-slot ceiling a single shared
-    executor let one coding task block every loop for hours.
+    The ceiling bounds the coding lane only: a loop timer is no agent, and the review lane
+    is admitted outside the ceiling, so clamping either starved work admission had already
+    let in.
     """
-    loops = tuple(queue for queue in queues if queue == "loops")
-    agents = tuple(queue for queue in queues if queue != "loops")
-    if ceiling >= len(agents):
-        return loops + agents
-    names = tuple(dict.fromkeys(agents))
-    if ceiling <= 0:
-        return loops
-    if ceiling == 1 and len(names) > 1:
-        # One agent executor subscribes to every agent queue so none starves.
-        return (*loops, ",".join(names))
-    remaining = Counter(agents)
-    selected: list[str] = []
-    for name in names:
-        if len(selected) < ceiling:
-            selected.append(name)
-            remaining[name] -= 1
-    for name in names:
-        selected.extend([name] * min(ceiling - len(selected), remaining[name]))
-    return loops + tuple(sorted(selected, key=names.index))
+    bounded: list[str] = []
+    coding = 0
+    for queue in queues:
+        if queue == "default":
+            if coding >= ceiling:
+                continue
+            coding += 1
+        bounded.append(queue)
+    return tuple(bounded)
 
 
 #: The supervisor re-reads the fleet verdict on this cadence — a preset that stops
@@ -432,8 +426,10 @@ class LoopWorker:
                 # Cheap agents are exempt from MACHINE pressure only, never a
                 # spent token budget or collapsed yield. Unknown causes fail
                 # closed for agent execution while control diagnosis continues.
-                agents = ("cheap",) if pressure.cause in MACHINE_BRAKE_CAUSES else ()
-                self._resize_pool(_bounded_executor_queues(self._seams.executor_queues, 0) + agents)
+                braked = _bounded_executor_queues(self._seams.executor_queues, 0)
+                if pressure.cause not in MACHINE_BRAKE_CAUSES:
+                    braked = tuple(queue for queue in braked if queue == "loops")
+                self._resize_pool(braked)
                 return
             desired = self._seams.executor_queues
             if pressure is not None:

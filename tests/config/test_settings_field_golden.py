@@ -53,7 +53,6 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "disk_warn_free_gb",
         "dogfood_smoke_overlay",
         "dogfood_smoke_skill",
-        "drain_slot_reservation",
         "dream_memory_promote",
         "dream_umbrella_url",
         "envelope_stop_gate_refusals",

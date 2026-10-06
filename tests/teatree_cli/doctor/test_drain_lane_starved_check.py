@@ -60,7 +60,7 @@ class DrainLaneStarvedDoctorCheckTests(TestCase):
 
         assert "1 reviewing/shipping task(s) queued" in output
         assert "oldest waiting 34m" in output
-        assert "drain_slot_reservation" in output
+        assert "cheap_phase_admission_ceiling" in output
 
     def test_a_crashed_read_degrades_to_ok(self) -> None:
         # An advisory that cannot read its own state must never redden the doctor run.

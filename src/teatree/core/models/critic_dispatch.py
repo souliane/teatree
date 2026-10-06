@@ -87,6 +87,7 @@ class CriticDispatch(models.Model):
         # invisible to a static checker. Declared here (annotation-only, never
         # evaluated at runtime) so ``__str__`` reads the id without a relation query.
         ticket_id: int
+        task_id: int | None
 
     def __str__(self) -> str:
         return f"critic-dispatch<{self.pk}:ticket:{self.ticket_id} {self.transition}@{self.head_sha[:8]}>"
@@ -107,9 +108,10 @@ class CriticDispatch(models.Model):
         head_sha)``, and re-armed when an existing claim EXPIRED without
         producing a verdict and has retry budget left — a dead critic task must
         not leave the merge-quality gate unsatisfiable for that head forever
-        (#3920). ``None`` covers a live claim, a RESOLVED one (a verdict already
-        covers this delivered tree), and a saturated one
-        (:data:`MAX_DISPATCH_ATTEMPTS` critics died — see :meth:`saturated`).
+        (#3920). ``None`` covers a live claim, an expired one whose critic task is still
+        queued or running, a RESOLVED one (a verdict already covers this delivered
+        tree), and a saturated one (:data:`MAX_DISPATCH_ATTEMPTS` critics died — see
+        :meth:`saturated`).
         The claim and the ``Task`` share one transaction so a row never exists
         without its task.
         """
@@ -122,7 +124,7 @@ class CriticDispatch(models.Model):
                 head_sha=normalized_head,
                 defaults={"state": cls.State.DISPATCHED, "deadline": now + DEFAULT_DISPATCH_TTL, "attempts": 1},
             )
-            if not created and not cls._reclaim(row, now=now):
+            if not created and (cls._critic_is_active(row) or not cls._reclaim(row, now=now)):
                 return None
             row.refresh_from_db()
             row.task = cls._create_critic_task(ticket=ticket, contract=contract)
@@ -154,6 +156,10 @@ class CriticDispatch(models.Model):
                 resolved_at=None,
             )
         )
+
+    @staticmethod
+    def _critic_is_active(row: "CriticDispatch") -> bool:
+        return Task.objects.filter(pk=row.task_id, status__in=Task.Status.active()).exists()
 
     @classmethod
     def saturated(cls, *, at: "dt.datetime | None" = None) -> models.QuerySet:

@@ -1438,7 +1438,7 @@ class TestTasksListCommand(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="planning")
         result = cast("list[dict[str, object]]", call_command("tasks", "list", json_output=True))
         row = next(item for item in result if item["task_id"] == task.pk)
-        assert row["admission_rank"] == 1
+        assert row["admission_rank"] == 4
         assert row["parent_task_id"] is None
 
     def test_list_all_tasks(self) -> None:

@@ -478,7 +478,7 @@ class Command(TyperCommand):
 
         Enqueue and claim are two ways to START work, so the governor's verdict decides both:
         a box braked enough to stop the drain enqueueing kept claiming through this seam.
-        A shed EXPENSIVE lane narrows the candidates to the reserved cheap phases IN THE
+        A shed EXPENSIVE lane narrows the candidates to the review-lane phases IN THE
         QUERY rather than walking a backed-up queue row by row, so the review that retires
         work is reachable behind a coding row instead of stuck behind it.
 

@@ -254,9 +254,8 @@ task_result_retention_days = 1 # int — days a task result row is kept
 
 [teatree.Infrastructure.Provisioning]
 admission_pressure_shed_at = 0.9 # float — pressure at which expensive agents are refused while review and ship keep draining
-cheap_phase_admission_ceiling = 2 # int — how many cheap-class phase agents still run while the box is braked
+cheap_phase_admission_ceiling = 2 # int — review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling, and the review executor count (min 1; the executor count applies at worker restart)
 clean_ignore = [] # list — branch globs the cleanup reapers never touch
-drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
 metered_spend_window_hours = 24 # int — the window the metered token ceiling is measured over

@@ -1,9 +1,9 @@
-"""The ticket-state admission rank shared by loop claims and task-list inspection."""
+"""The admission rank shared by both headless chokepoints, loop claims and task-list inspection."""
 
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import BaseExpression
 
-from teatree.core.modelkit.phases import phase_spellings
+from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
 
 ADMISSION_RANK_ALIAS = "_admission_rank"
 ADMISSION_ORDER: tuple[str, ...] = (ADMISSION_RANK_ALIAS, "pk")
@@ -19,11 +19,16 @@ def _new_ticket_autostart_q() -> Q:
 
 
 def admission_priority_annotations() -> dict[str, BaseExpression]:
-    """SQL rank: continuing work 0; new-ticket first phase 1."""
+    """SQL rank: expedited review 0; review 1; expedited work 2; continuing work 3; new-ticket first phase 4."""
+    review = Q(phase__in=cheap_phase_spellings())
+    expedited = Q(ticket__expedited=True)
     return {
         ADMISSION_RANK_ALIAS: Case(
-            When(_new_ticket_autostart_q(), then=Value(1)),
-            default=Value(0),
+            When(review & expedited, then=Value(0)),
+            When(review, then=Value(1)),
+            When(expedited, then=Value(2)),
+            When(_new_ticket_autostart_q(), then=Value(4)),
+            default=Value(3),
             output_field=IntegerField(),
         )
     }

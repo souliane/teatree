@@ -7,13 +7,13 @@ the pool while the PROCESS stays alive, and that a stop signal tears the pool do
 """
 
 import contextlib
-import dataclasses
 import datetime as dt
 import inspect
 import os
 import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -24,6 +24,7 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
 from teatree.core.admission_governor import AdmissionDecision
+from teatree.core.models import ConfigSetting
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
@@ -93,6 +94,9 @@ class _StuckHandle(_FakeHandle):
         self.joined = True
 
 
+_POOL = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
+
+
 def _make_worker(*, script, sleep, **seam_overrides):
     """A worker whose scripted verdicts end by requesting stop — nothing else exits ``run``."""
     built: list[_FakeExecutor] = []
@@ -123,10 +127,8 @@ def _make_worker(*, script, sleep, **seam_overrides):
         reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
-        executor_queues=seam_overrides.get("executor_queues") or build_executor_queues(),
+        executor_queues=seam_overrides.get("executor_queues", _POOL),
     )
-    if "executor_queues" in seam_overrides:
-        seams = dataclasses.replace(seams, executor_queues=seam_overrides["executor_queues"])
     holder.append(LoopWorker(seams))
     return holder[0], built, handles
 
@@ -171,18 +173,38 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     # blind-fires the instant the worker starts (the load-jam class).
     assert order[:3] == ["reconcile", "seed", "expire"]
     assert order[3] == "spawn"
-    assert order.count("spawn") == len(build_executor_queues())
+    assert order.count("spawn") == len(_POOL)
 
 
-def test_both_pools_scale_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 4 loops + 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core
-    # box). Scaling the loops pool too means two slow ticks no longer stall every OTHER loop.
-    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
-    assert loops_executor_count() == 4
-    assert default_queue_executor_count() == 4
-    queues = build_executor_queues()
-    assert queues.count("loops") == 4
-    assert queues.count("default") == 4
+class TestBuildExecutorQueues(TestCase):
+    def test_both_pools_scale_with_host_cores(self) -> None:
+        # 4 loops + 4 default executors on a host whose shared provisioning ceiling is 4 (an
+        # 8-core box). Scaling the loops pool too means two slow ticks no longer stall every OTHER loop.
+        with patch.object(worker_mod, "default_provision_concurrency", return_value=4):
+            assert loops_executor_count() == 4
+            assert default_queue_executor_count() == 4
+            queues = build_executor_queues()
+        assert queues.count("loops") == 4
+        assert queues.count("default") == 4
+
+    def test_the_worker_spawns_the_host_scaled_pools(self) -> None:
+        with patch.object(worker_mod, "default_provision_concurrency", return_value=3):
+            queues = build_executor_queues()
+        worker, built, _ = _make_worker(script=[True], sleep=lambda _s: None, executor_queues=queues)
+        worker.run()
+        spawned = [executor.queue for executor in built]
+        assert spawned.count("loops") == 3
+        assert spawned.count("default") == 3
+
+    def test_one_review_runner_per_review_lane_seat(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+
+        assert build_executor_queues().count("cheap") == 3
+
+    def test_a_zero_review_width_still_keeps_one_review_runner(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
+
+        assert build_executor_queues().count("cheap") == 1
 
 
 def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,7 +217,7 @@ def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPat
 _THREE_LOOPS = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
 
 
-def test_pressure_ceiling_clamps_the_agent_lanes_but_keeps_all_three_queues() -> None:
+def test_pressure_ceiling_clamps_the_coding_lane_but_keeps_all_three_queues() -> None:
     decision = AdmissionDecision(admit=True, reason="healthy", ceiling=2, braked=False)
     worker, built, _handles = _make_worker(
         script=[True],
@@ -204,15 +226,16 @@ def test_pressure_ceiling_clamps_the_agent_lanes_but_keeps_all_three_queues() ->
         executor_queues=_THREE_LOOPS,
     )
     worker.run()
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "default", "cheap"]
 
 
 @pytest.mark.parametrize("ceiling", [2, 3, 4])
-def test_pressure_ceiling_reserves_remaining_agent_lanes_for_coding(ceiling: int) -> None:
-    queues = ("loops",) * 4 + ("default",) * 4 + ("cheap",)
+def test_the_coding_ceiling_never_clamps_the_review_runners(ceiling: int) -> None:
+    queues = ("loops",) * 4 + ("default",) * 4 + ("cheap",) * 2
     assert _bounded_executor_queues(queues, ceiling) == (
         *("loops",) * 4,
-        *("default",) * (ceiling - 1),
+        *("default",) * ceiling,
+        "cheap",
         "cheap",
     )
 
@@ -221,12 +244,12 @@ def test_the_ceiling_never_clamps_the_loops_control_plane() -> None:
     """Loop timers are not agents: a 3-agent ceiling kept 1 loops executor where main ran 3."""
     bounded = _bounded_executor_queues(_THREE_LOOPS, 3)
     assert bounded.count("loops") == 3
-    assert len(bounded) - bounded.count("loops") == 3
+    assert bounded.count("default") == 3
 
 
-def test_a_one_agent_ceiling_keeps_dedicated_loops_executors() -> None:
+def test_a_one_agent_ceiling_keeps_dedicated_loops_and_review_executors() -> None:
     """One shared executor let a single coding task block every loop timer for hours."""
-    assert _bounded_executor_queues(_THREE_LOOPS, 1) == ("loops", "loops", "loops", "default,cheap")
+    assert _bounded_executor_queues(_THREE_LOOPS, 1) == ("loops", "loops", "loops", "default", "cheap")
 
 
 def test_a_brake_keeps_the_whole_loops_pool() -> None:
@@ -252,7 +275,7 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
     )
     worker.run()
 
-    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
+    assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "default", "cheap"]
     assert set(started) == {"timer/control", "coding", "reviewing"}
 
 
@@ -272,7 +295,7 @@ def test_braked_governor_keeps_control_loop_then_resumes_default_queue() -> None
         executor_queues=("loops",) * 2 + ("default",) * 2 + ("cheap",),
     )
     worker.run()
-    assert snapshots[:3] == [4, 4, 5]
+    assert snapshots[:3] == [5, 5, 7]
     assert built[2].queue == "default"
     assert handles[2].joined
     # The control handle stays live across the brake, then joins at final shutdown.
@@ -313,7 +336,21 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
     assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
 
 
-_POOL = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
+_TWO_REVIEWERS = ("loops",) * 2 + ("default",) * 2 + ("cheap",) * 2
+
+
+@pytest.mark.parametrize(
+    ("cause", "kept"),
+    [("load", ("loops", "loops", "cheap", "cheap")), ("weekly-quota", ("loops", "loops"))],
+)
+def test_a_machine_brake_keeps_every_review_runner_and_a_token_brake_none(cause: str, kept: tuple[str, ...]) -> None:
+    denied = AdmissionDecision(admit=False, reason="braked", ceiling=1, braked=True, cause=cause)
+    worker, built, _handles = _make_worker(
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_TWO_REVIEWERS
+    )
+    worker.run()
+
+    assert tuple(executor.queue for executor in built) == kept
 
 
 @pytest.mark.parametrize("cause", ["swap", "weekly-quota"])
@@ -326,16 +363,6 @@ def test_a_brake_keeps_the_whole_control_plane_so_one_slow_tick_cannot_starve_th
     worker.run()
 
     assert [executor.queue for executor in built].count("loops") == 3
-
-
-def test_spawns_host_scaled_loops_and_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Patch BEFORE _make_worker so the WorkerSeams default_factory reads the host size.
-    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 3)
-    worker, built, _ = _make_worker(script=[True], sleep=lambda _s: None)
-    worker.run()
-    queues = [executor.queue for executor in built]
-    assert queues.count("loops") == 3
-    assert queues.count("default") == 3
 
 
 def test_a_preset_admitting_nothing_stops_and_joins_all_executors() -> None:
@@ -395,7 +422,7 @@ def test_quiescing_keeps_the_process_alive_and_re_admission_restarts_the_pool() 
     # admitting poll spawns a fresh pool unaided.
     worker, built, handles = _make_worker(script=[True, False, True], sleep=lambda _s: None)
     worker.run()
-    per_pool = len(build_executor_queues())
+    per_pool = len(_POOL)
     assert len(built) == 2 * per_pool  # the original pool, quiesced, then a fresh one
     assert all(handle.joined for handle in handles[:per_pool])
 

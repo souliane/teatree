@@ -706,28 +706,16 @@ class _ProvisioningSettings:
     # and the provider's cycle boundaries are not discoverable from teatree's data.
     # Per-overlay overridable.
     metered_spend_window_hours: int = 24
-    # #4098 How many CHEAP headless phase agents (reviews, review requests, ship/merge,
-    # short assessors — ``teatree.core.modelkit.phases.CHEAP_PHASES``) may occupy the
-    # lane while the governor brakes the EXPENSIVE class. Those phases are what RETIRE
-    # work, so refusing them on the load their coding siblings created removed the only
-    # relief available and held the brake on for hours. They are cheap by comparison,
-    # not free — one still gets a shell and can still run a suite — so this number is
-    # small on purpose: it is the bound, not the exemption, that makes the class safe.
-    # The exemption is from the MACHINE brake only; a spent token budget still refuses
-    # every class. ``0`` disables the exemption entirely (cheap is braked exactly like
-    # expensive): the rollback lever. Per-overlay overridable.
+    # #4098 #5051 Review lane width: how many review-lane agents (reviewing, critic,
+    # shipping, review requests — ``teatree.core.modelkit.phases.CHEAP_PHASES``) are
+    # admitted OUTSIDE the coding ceiling, and how many review executors the worker runs
+    # (the executor count applies at worker restart). Those phases RETIRE work, so they
+    # are never queued behind coding. They are cheap by comparison, not free — one still
+    # gets a shell and can still run a suite — so this number is small on purpose: the
+    # bound is what keeps the lane from becoming a second unbounded one (#4097). The
+    # exemption is from the MACHINE brake only; a spent token budget still refuses every
+    # class. Floored at 1. Per-overlay overridable.
     cheap_phase_admission_ceiling: int = 2
-    # #4374 How many of the governor's slots only the DRAINING class may occupy. The
-    # ceiling above bounds how much of the box the cheap class may take and says nothing
-    # about how much is kept FOR it, so expensive work filled every slot and zero reviews
-    # ran — the #4098 outcome by a different route. Reviewing and shipping RETIRE pull
-    # requests where coding CREATES them, so with capacity allocated purely first-come the
-    # producing side can occupy the whole factory. Clamped to at most ``ceiling - 2``, so
-    # the expensive class always keeps two slots and a fat-fingered value can never stop the
-    # factory writing code — two rather than one because a 4-core box's ceiling is 2, where a
-    # ``ceiling - 1`` clamp leaves a SINGLE expensive slot (#4407). ``0`` restores the
-    # pre-#4374 first-come allocation: the rollback lever. Per-overlay overridable.
-    drain_slot_reservation: int = 1
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap. Measured p90 worker RSS from the kernel OOM log,
     # 2026-07-21..08-04: p50 0.65 GB, p90 1.24 GB, max 23.1 GB. The p90 is the sizing

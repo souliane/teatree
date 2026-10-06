@@ -135,7 +135,7 @@ class TestClaimSeamWiring:
         worker.run()  # must not raise
 
     def test_defaults_wire_the_real_lease_seams(self) -> None:
-        seams = WorkerSeams()
+        seams = WorkerSeams(executor_queues=())
 
         assert seams.claim_master is worker_mod._claim_t3_master
         assert seams.release_master is worker_mod._release_t3_master
