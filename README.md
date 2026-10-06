@@ -428,7 +428,8 @@ t3 ui                           # browse and run the whole command tree in a ter
 t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
-t3 notion whoami|doctor         # headless Notion access via an integration token (no interactive connector, so a scheduled run reaches a page at all): verify the token / triage one page (token valid, page shared, page still LIVE)
+t3 browser open|act|inspect|close  # drive one headless Playwright browser held open per worktree: each step prints the page's console messages, page errors, failed requests and HTTP errors; `inspect` also saves the accessibility snapshot, HTML and a screenshot (`--json` on every step)
+t3 notion whoami|doctor         # Notion access via an integration token, the same in a session and a scheduled run: verify the token / triage one page (token valid, page shared, page still LIVE)
 t3 notion fetch <page>          # read a page as Markdown (or raw blocks), optionally with its open comments; refuses an ARCHIVED page with its own exit code and names the successor, because a dead page renders exactly like a current one
 t3 notion audit-fetch <page>    # read a DEAD page for a postmortem — deliberately its own command so it is not reachable by habit
 t3 notion comments|append|query # every open discussion anchored anywhere UNDER a page (a comment's parent is the BLOCK, so the page anchor alone sees only page-level threads) — exits 18 rather than returning a set it could not prove whole; append at the end of a page; query a database/data source as JSON
