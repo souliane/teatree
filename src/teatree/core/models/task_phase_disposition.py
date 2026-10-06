@@ -11,10 +11,15 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from django.db.models import Max
+
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from teatree.core.models.deferred_question import DeferredQuestion
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -154,3 +159,28 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
         dedupe_marker=marker,
         audience=DeferredQuestion.Audience.INTERNAL,
     )
+
+
+def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
+    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+
+    Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
+    wedged one, so a refusal recorded on a ticket already past the phase stays pending
+    until something acts on it.
+    """
+    wedges = {
+        question.pk: match for question in questions if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker))
+    }
+    tickets = Ticket.objects.annotate(newest_task=Max("tasks__pk")).in_bulk(
+        {int(match["ticket"]) for match in wedges.values()}
+    )
+    healed: dict[int, str] = {}
+    for question_pk, match in wedges.items():
+        ticket = tickets.get(int(match["ticket"]))
+        if ticket is None:
+            continue
+        if ticket.state in Ticket.marker_release_states():
+            healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
+        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > int(match["task"]):
+            healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
+    return healed
