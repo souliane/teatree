@@ -1,11 +1,10 @@
 """Where the Django-free hook tier keeps its loop registries.
 
-``loop-registry.json`` (the tick-owner singleton) and
-``consolidation-registry.json`` (the per-agent consolidation slots) are both
-written by ``hooks/scripts/hook_router.py`` — a process with no teatree import
-at all — and read back from the Django tier. That makes the directory a
+``loop-registry.json`` (the attended loop-slot owner) is written by
+``hooks/scripts/hook_router.py`` — a process with no teatree import at all — and
+read back from the Django tier. That makes the directory a
 cross-tier contract: a Django reader that resolves it differently reads a file
-nobody writes, and reports "no owner" / "no holders" rather than "cannot see
+nobody writes, and reports "no owner" rather than "cannot see
 it" (souliane/teatree#3828, the #3499 shape).
 
 This module is that one Django-side answer. It lives beside

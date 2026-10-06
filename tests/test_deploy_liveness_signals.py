@@ -72,7 +72,10 @@ def test_every_container_learns_the_host_os() -> None:
 
 
 def _heartbeat_harness(tmp_path: Path, *, kill_is_a_no_op: bool) -> str:
-    """deploy.sh's heartbeat and its release, verbatim, beating every second; the lock read 3s after release."""
+    """deploy.sh's heartbeat, its release and the record writers it sources, verbatim, beating every second.
+
+    The lock is read 3s after release.
+    """
     body = (_DEPLOY_DIR / "deploy.sh").read_text(encoding="utf-8")
     beat = body[body.index("DEPLOY_HEARTBEAT_INTERVAL=60\n") : body.index("_DEPLOY_HEARTBEAT_PID=$!") + 24]
     release = body[body.index("_release_deploy_record() {") :]
@@ -81,6 +84,7 @@ def _heartbeat_harness(tmp_path: Path, *, kill_is_a_no_op: bool) -> str:
     return (
         "set -euo pipefail\n"
         f"DEPLOY_LOCK={lock}\nDEPLOY_LOCK_MAX_AGE_MINUTES=90\n"
+        f". {_DEPLOY_DIR / 'deploy-lock.sh'}\n"
         + ("kill() { :; }\n" if kill_is_a_no_op else "")
         + beat.replace("DEPLOY_HEARTBEAT_INTERVAL=60", "DEPLOY_HEARTBEAT_INTERVAL=1")
         + "\n"

@@ -849,6 +849,30 @@ class TestTheConvergenceRecordsItsHolder:
         assert (later_pid, later_deadline) == (pid, deadline)
         assert int(later_beat) > int(beat), "a convergence that runs long must keep proving it is alive"
 
+    def test_a_beat_rewrites_the_record_in_place(self, checkout: Path, tmp_path: Path) -> None:
+        # A truncating beat drops the sentinel; that truncation is the window a reader saw as no record.
+        _beat_every_second(checkout)
+        first, after = tmp_path / "first.snapshot", tmp_path / "after.snapshot"
+        _write_exec(
+            checkout / "deploy" / "fast-forward-checkout.sh",
+            '#!/usr/bin/env bash\n[ "$1" = --fetch-only ] || exit 0\n'
+            f'head -n1 "$TEATREE_DEPLOY_LOCK" >{str(first)!r}\n'
+            "printf 'sentinel\\n' >>\"$TEATREE_DEPLOY_LOCK\"\n"
+            f'for _ in $(seq 100); do sleep 0.2; [ "$(head -n1 "$TEATREE_DEPLOY_LOCK")" = "$(cat {str(first)!r})" ] '
+            "|| break; done\n"
+            f'cp "$TEATREE_DEPLOY_LOCK" {str(after)!r}\n'
+            'git -C "$2" rev-parse HEAD\n',
+        )
+
+        _run(checkout, tmp_path)
+
+        pid, beat, deadline = first.read_text(encoding="utf-8").split()
+        record, *rest = after.read_text(encoding="utf-8").splitlines()
+        later_pid, later_beat, later_deadline = record.split()
+        assert (later_pid, later_deadline) == (pid, deadline)
+        assert int(later_beat) > int(beat)
+        assert rest == ["sentinel"], "a beat must never truncate the record a reader may be reading"
+
     def test_the_record_is_cleared_on_exit(self, checkout: Path, tmp_path: Path) -> None:
         _run(checkout, tmp_path)
 

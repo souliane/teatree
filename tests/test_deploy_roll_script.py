@@ -36,6 +36,7 @@ case "$1 $2" in
         printf 'watchdog_lock=%s\n' "$TEATREE_WATCHDOG_DEPLOY_LOCK"
         printf 'source_mount=%s\n' "${TEATREE_SOURCE_MOUNT:-}"
     } >>"$FAKE_DIR/roll.env"
+    [ ! -x "$FAKE_DIR/roller-hook" ] || "$FAKE_DIR/roller-hook"
     exit "${FAKE_ROLL_RC:-0}" ;;
 esac
 exit 0
@@ -55,7 +56,7 @@ class _Fork:
     sha: str
 
 
-def _fork(tmp_path: Path, *, nested_core: bool = True) -> _Fork:
+def _fork(tmp_path: Path, *, nested_core: bool = True, record_refresh_seconds: int = 60) -> _Fork:
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     root = tmp_path / ("fork" if nested_core else "teatree")
@@ -64,6 +65,14 @@ def _fork(tmp_path: Path, *, nested_core: bool = True) -> _Fork:
     for name in ("roll.sh", "build-generation.sh", "generation-topology.sh", "deploy-lock.sh"):
         shutil.copy2(DEPLOY / name, deploy / name)
         (deploy / name).chmod((deploy / name).stat().st_mode | stat.S_IXUSR)
+    roll = deploy / "roll.sh"
+    assert "\nRECORD_REFRESH_SECONDS=60\n" in roll.read_text(encoding="utf-8")
+    roll.write_text(
+        roll.read_text(encoding="utf-8").replace(
+            "\nRECORD_REFRESH_SECONDS=60\n", f"\nRECORD_REFRESH_SECONDS={record_refresh_seconds}\n"
+        ),
+        encoding="utf-8",
+    )
     (root / "pyproject.toml").write_text("[project]\nname = 'fork'\n", encoding="utf-8")
     _git(tmp_path, "init", "-q", "-b", "main", str(root))
     _git(root, "add", "-A")
@@ -228,6 +237,31 @@ def test_the_deploy_record_the_watchdog_reads_is_held_during_the_roll_and_cleare
     assert pid.isdigit()
     assert int(deadline) > int(heartbeat)
     assert (tmp_path / "deploy.lock").read_text() == ""
+
+
+def test_a_record_refresh_rewrites_the_record_in_place(tmp_path: Path) -> None:
+    # A truncating refresh drops the sentinel; that truncation is the window a reader saw as no record.
+    hook = tmp_path / "roller-hook"
+    hook.write_text(
+        "#!/usr/bin/env bash\n"
+        'head -n1 "$TEATREE_DEPLOY_LOCK" >"$FAKE_DIR/first.snapshot"\n'
+        "printf 'sentinel\\n' >>\"$TEATREE_DEPLOY_LOCK\"\n"
+        'for _ in $(seq 100); do sleep 0.2; [ "$(head -n1 "$TEATREE_DEPLOY_LOCK")" = '
+        '"$(cat "$FAKE_DIR/first.snapshot")" ] || break; done\n'
+        'cp "$TEATREE_DEPLOY_LOCK" "$FAKE_DIR/after.snapshot"\n',
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+    result = _roll(tmp_path, _fork(tmp_path, record_refresh_seconds=1))
+
+    assert result.returncode == 0, result.stderr
+    pid, heartbeat, deadline = (tmp_path / "first.snapshot").read_text(encoding="utf-8").split()
+    record, *rest = (tmp_path / "after.snapshot").read_text(encoding="utf-8").splitlines()
+    later_pid, later_heartbeat, later_deadline = record.split()
+    assert (later_pid, later_deadline) == (pid, deadline)
+    assert int(later_heartbeat) > int(heartbeat)
+    assert rest == ["sentinel"], "a refresh must never truncate the record a reader may be reading"
 
 
 def test_a_deploy_already_in_flight_refuses_with_tempfail(tmp_path: Path) -> None:
