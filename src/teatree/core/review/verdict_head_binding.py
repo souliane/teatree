@@ -87,7 +87,7 @@ def resolve_verdict_head(
     current = live.sha.strip()
     if _abbreviates(claimed, current.lower()):
         return HeadBinding(head=current)
-    if current.lower() != pinned.lower():
+    if pinned and current.lower() != pinned.lower():
         return HeadBinding(
             error=(
                 f"{HEAD_SUPERSEDED_PREFIX}{pr.slug}#{pr.pr_id} advanced from {dispatch_head[:8]} to "
@@ -96,11 +96,13 @@ def resolve_verdict_head(
             ),
             superseded=True,
         )
+    expected = (
+        f"this review was dispatched for ({dispatch_head})" if pinned else f"{pr.slug}#{pr.pr_id} points at ({current})"
+    )
     return HeadBinding(
         error=(
-            f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
-            f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
-            f"dispatched for is itself a finding; the verdict is not recorded"
+            f"review verdict reviewed_sha {asserted!r} is not the head {expected} — a reviewer that judged a "
+            f"different tree than the one it was dispatched for is itself a finding; the verdict is not recorded"
         ),
     )
 

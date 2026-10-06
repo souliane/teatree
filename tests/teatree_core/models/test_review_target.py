@@ -10,7 +10,7 @@ import dataclasses
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import AutoReviewDispatch, ReviewVerdict, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, Ticket
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
 from teatree.core.models.review_target import review_target_for_task, review_target_for_ticket, verdict_at
 
@@ -258,3 +258,29 @@ class TestTheClaimHeadIsTheArmingRowsKey(TestCase):
         rebound = dataclasses.replace(target, head_sha=_DISPATCH_HEAD)
 
         assert (rebound.head_sha, rebound.claim_head_sha) == (_DISPATCH_HEAD, _HEAD)
+
+
+class TestAnIssueAnchoredTicketResolvesThroughItsRecordedPr(TestCase):
+    def _task(self, *, pr_states: tuple[str, ...], issue: int = 5072) -> Task:
+        ticket = Ticket.objects.create(
+            issue_url=f"https://github.com/{_SLUG}/issues/{issue}", overlay="teatree", role=Ticket.Role.AUTHOR
+        )
+        for offset, state in enumerate(pr_states):
+            pr_id = _PR_ID + 10 * issue + offset
+            PullRequest.objects.create(
+                ticket=ticket, url=f"https://github.com/{_SLUG}/pull/{pr_id}", repo=_SLUG, iid=str(pr_id), state=state
+            )
+        session = Session.objects.create(ticket=ticket, agent_id="review")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def test_its_one_live_pr_is_the_target_with_the_head_bound_live(self) -> None:
+        target = review_target_for_task(self._task(pr_states=(PullRequest.State.MERGED, PullRequest.State.OPEN)))
+
+        assert target is not None
+        assert (target.slug, target.pr_id, target.head_sha) == (_SLUG, _PR_ID + 10 * 5072 + 1, "")
+        assert target.bind_live_head is True
+
+    def test_no_live_pr_or_two_live_prs_resolve_to_none(self) -> None:
+        assert review_target_for_task(self._task(pr_states=(), issue=1)) is None
+        two_live = (PullRequest.State.OPEN, PullRequest.State.OPEN)
+        assert review_target_for_task(self._task(pr_states=two_live, issue=2)) is None

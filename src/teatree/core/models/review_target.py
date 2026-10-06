@@ -19,6 +19,7 @@ see, which is a false "never persisted" on a forge slug spelled another way.
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER, AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.review_verdict import ReviewVerdict
@@ -64,6 +65,8 @@ class ReviewTarget:
     #: claim on it (#4530). Defaults to the marker so a path with no claim at all resolves
     #: to a no-op lookup rather than to the ledger that holds the review lock.
     armed_by: "type[AutoReviewDispatch | CodexReviewMarker]" = CodexReviewMarker
+    #: No claim armed a head: an author ticket's own recorded PR, whose verdict binds to the live head.
+    bind_live_head: bool = False
 
 
 def review_target_for_ticket(ticket: "Ticket") -> ReviewTarget | None:
@@ -92,7 +95,8 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
     """The PR + head *task*'s review is answerable for, or ``None`` when it is answerable for none.
 
     Most-authoritative first: the #68 auto-review dispatch carries ``(slug, pr_id,
-    head_sha)`` and holds the per-MR lock. Failing that, the ticket itself is the answer.
+    head_sha)`` and holds the per-MR lock. Failing that, the ticket itself is the answer,
+    and failing that, the one live PR an issue-anchored ticket records.
     """
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if dispatch is not None:
@@ -106,7 +110,33 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
             lock_holder=LOOP_SCANNER_HOLDER,
             armed_by=AutoReviewDispatch,
         )
-    return review_target_for_ticket(task.ticket)
+    return review_target_for_ticket(task.ticket) or _recorded_pr_target(task.ticket)
+
+
+def _recorded_pr_target(ticket: "Ticket") -> ReviewTarget | None:
+    live = list(ticket.pull_requests.live()[:2])  # ty: ignore[unresolved-attribute]
+    if len(live) != 1 or (pr := pr_ref_from_url(live[0].url)) is None:
+        return None
+    return ReviewTarget(
+        slug=pr.slug, pr_id=pr.pr_id, head_sha="", claim_head_sha="", host_kind=pr.host_kind, bind_live_head=True
+    )
+
+
+def unattachable_verdict_refusal(task: "Task") -> str:
+    """Why *task*'s returned verdict reaches no pull request, or ``""`` for a pre-PR self-review.
+
+    An author ticket with no live PR is reviewing its own unshipped work: that verdict stays on
+    the task attempt, where the FSM reads it. Anything else answerable for no PR is refused.
+    """
+    ticket = task.ticket
+    live = ticket.pull_requests.live().count()  # ty: ignore[unresolved-attribute]
+    if ticket.role == ticket.Role.AUTHOR and not live:
+        return ""
+    return (
+        f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be attached to a pull request: task {task.pk} "
+        f"has no dispatch row, {ticket.issue_url or f'ticket {ticket.pk}'} names no PR, and the ticket records "
+        f"{live} live PR(s), not exactly one — no merge guard could ever read this verdict"
+    )
 
 
 def assigned_reviewer_identity_for(task: "Task") -> str:
@@ -133,4 +163,10 @@ def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
     return ReviewVerdict.objects.for_pr(target.slug, target.pr_id).filter(reviewed_sha=target.head_sha.lower()).first()
 
 
-__all__ = ["ReviewTarget", "review_target_for_task", "review_target_for_ticket", "verdict_at"]
+__all__ = [
+    "ReviewTarget",
+    "review_target_for_task",
+    "review_target_for_ticket",
+    "unattachable_verdict_refusal",
+    "verdict_at",
+]
