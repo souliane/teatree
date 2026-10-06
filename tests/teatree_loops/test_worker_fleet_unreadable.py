@@ -71,7 +71,8 @@ def _worker(
         sleep=lambda _s: None,
         poll_seconds=0.0,
         max_unreadable_polls=max_unreadable_polls,
-        executor_queues=("loops",),
+        loops_executors=1,
+        read_agent_queues=lambda: (),
         publish_health=lambda verdict, *, active: (
             health_beats.append((verdict, active)) if health_beats is not None else None
         ),
