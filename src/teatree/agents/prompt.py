@@ -22,6 +22,7 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
+from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -196,12 +197,14 @@ def required_skill_delivery(
     """Return only the skills this phase's prompt actually promises to deliver.
 
     The generic companion summary is optional. A full body or a forced Skill-tool
-    directive is not: either missing one makes the dispatch contract false.
+    directive is not: either missing one makes the dispatch contract false. A
+    stack skill is a forced directive in every phase unless it is embedded in full.
     """
+    stack = {name for name in skills if _explicit_load_name(name) in FRAMEWORK_SKILL_NAMES}
     if not lifecycle_skill:
         # build_system_context takes its all-inline path without a lifecycle
         # skill, including reactive phases with no _PHASE_TO_SKILL mapping.
-        return set(skills) | set(stage_skills), set()
+        return (set(skills) | set(stage_skills)) - stack, stack
     full = ({lifecycle_skill} if lifecycle_skill else set()) | set(stage_skills)
     full |= {name for name in skills if _explicit_load_name(name) in _ALWAYS_FULL_SKILLS}
     explicit: set[str] = set()
@@ -212,7 +215,7 @@ def required_skill_delivery(
     elif normalized == "reviewing":
         review_full, explicit = _review_phase_scoping(skills)
         full |= {name for name in review_full if name in skills}
-    return full, explicit
+    return full, explicit | (stack - full)
 
 
 def _assigned_reviewer_identity(task: Task) -> str:
