@@ -22,8 +22,13 @@ from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.mode_resolution import set_mode_override
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, REVIEW_UNRECORDABLE_PREFIX, FailureKind
-from teatree.core.models import Mode, PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    PLAN_STALE_PREFIX,
+    REVIEW_UNRECORDABLE_PREFIX,
+    FailureKind,
+)
+from teatree.core.models import Mode, PlanArtifact, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
@@ -263,6 +268,42 @@ class TestStuckTicketRedispatch(TestCase):
         _reap_stale_task_claims()
 
         assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+
+
+class TestAStalePlanGetsAPlanningPass(TestCase):
+    def _stale(self) -> Ticket:
+        ticket = _stuck_ticket(state=Ticket.State.PLAN_RECORDED)
+        PlanArtifact.objects.create(ticket=ticket, plan_text="legacy", recorded_by="op")
+        _finished_task(
+            ticket, phase="coding", status=Task.Status.FAILED, error=f"{PLAN_STALE_PREFIX}stale", hours_ago=1
+        )
+        return ticket
+
+    def test_the_refusal_mints_a_reaffirm_planning_task_and_its_completion_mints_coding(self) -> None:
+        ticket = self._stale()
+
+        assert redispatch_stuck_tickets() == 1
+
+        planning = ticket.tasks.get(phase="planning", status=Task.Status.PENDING)
+        assert "The plan is not current" in planning.execution_reason
+        assert "per-commit disposition" in planning.execution_reason
+        assert not DeferredQuestion.objects.exists()
+        record_test_plan(ticket)
+        Task.objects.filter(pk=planning.pk).update(status=Task.Status.COMPLETED)
+        planning.refresh_from_db()
+        planning._apply_phase_transition()
+        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
+
+    def test_a_planning_budget_spent_on_reaffirms_halts_once_internally(self) -> None:
+        ticket = self._stale()
+        for index in range(max_phase_iterations()):
+            _finished_task(ticket, phase="planning", status=Task.Status.FAILED, error=f"no reaffirm {index}")
+
+        assert redispatch_stuck_tickets() == 0
+
+        assert not ticket.tasks.filter(status=Task.Status.PENDING).exists()
+        halt = DeferredQuestion.objects.get()
+        assert halt.audience == DeferredQuestion.Audience.INTERNAL
 
 
 class TestReviewerRoleCandidates(TestCase):

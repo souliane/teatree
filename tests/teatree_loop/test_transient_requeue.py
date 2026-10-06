@@ -23,7 +23,12 @@ from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, HEAD_SUPERSEDED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    HEAD_SUPERSEDED_PREFIX,
+    PLAN_STALE_PREFIX,
+    FailureKind,
+)
 from teatree.core.models import (
     AutoReviewDispatch,
     PullRequest,
@@ -1361,6 +1366,22 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
             requeue_transient_failed()
 
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestAStalePlanIsParkedNotReopened(TestCase):
+    def test_a_plan_stale_coding_row_is_parked_with_no_question(self) -> None:
+        error = f"{PLAN_STALE_PREFIX}Refusing to advance ticket 1 to CODED — its plan is stale on a declared seam."
+        task = _failed_task(state=Ticket.State.PLAN_RECORDED)
+        Task.objects.filter(pk=task.pk).update(failure_kind=FailureKind.PLAN_STALE)
+        _add_failed_attempt(task, error=error)
+
+        reopened = requeue_transient_failed()
+
+        assert reopened == 0
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        assert not DeferredQuestion.objects.exists()
 
 
 class TestKeptThirdPartyClaimIsNotSwept(TestCase):

@@ -54,7 +54,7 @@ from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.errors import InvalidTransitionError, NoCurrentPlanError
 from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.ticket_external_review import (
@@ -334,12 +334,28 @@ def _schedule_for_state(ticket: Ticket) -> Task:
     if state == Ticket.State.WORK_STARTED:
         return ticket.schedule_planning()
     if state == Ticket.State.PLAN_RECORDED:
-        return ticket.schedule_planned_work()
+        return _schedule_planned_work_or_reaffirm(ticket)
     if state == Ticket.State.CODED:
         return ticket.schedule_testing()
     if state == Ticket.State.TESTED:
         return ticket.schedule_review()
     return ticket.schedule_shipping()
+
+
+def _schedule_planned_work_or_reaffirm(ticket: Ticket) -> Task:
+    """Coding on a current plan; on a stale one, a planning pass that reaffirms or re-plans it, within budget."""
+    try:
+        return ticket.schedule_planned_work()
+    except NoCurrentPlanError as exc:
+        if halt := _budget_halt_reason(ticket, phase="planning"):
+            raise InvalidTransitionError(halt) from exc
+        return ticket.schedule_planning(
+            intent=(
+                f"The plan is not current: {exc} Record a per-commit disposition (no conflict / compatible / "
+                "conflict). If none conflicts, re-emit the plan at the new base_sha with that section; if one "
+                "conflicts, re-plan."
+            )
+        )
 
 
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:

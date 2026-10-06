@@ -233,6 +233,7 @@ class TestClassifier(TestCase):
             "head_superseded: the PR head advanced past the reviewed tree",
             "agent_abandoned: agent failed the task without giving a reason",
             "cli_too_old_for_model: claude-opus-5-5 refused this Claude Code build; claude-sonnet-5 served the run",
+            "plan_stale: Refusing to advance ticket 7 to CODED — its plan is stale on a declared seam",
         ]
         assert {classify_failure(r) for r in reasons} == set(FailureKind.values)
 
