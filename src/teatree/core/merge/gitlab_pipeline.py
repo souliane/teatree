@@ -43,7 +43,8 @@ def _gitlab_pipeline_verdict(
     head_sha = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)).sha
     head = select_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
     if head is None:
-        return "failed"
+        # The head commit has no pipeline of its own (not created yet, or none will run) — it waits, never reads red.
+        return "pending"
     verdict = classify_gitlab_pipeline(str(head.get("status") or ""))
     return _skipped_pipeline_verdict(head, slug=slug) if verdict == _GITLAB_PIPELINE_SKIPPED else verdict
 
