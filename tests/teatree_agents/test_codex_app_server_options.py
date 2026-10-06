@@ -53,7 +53,20 @@ def test_review_policy_is_read_only_and_disables_codex_multi_agent() -> None:
 
     assert options.sandbox_mode == "read-only"
     assert options.sandbox_policy == {"type": "readOnly"}
-    assert options.config == {"features": {"multi_agent": False}}
+    assert options.config == {"features": {"apps": False, "multi_agent": False}}
+
+
+@pytest.mark.parametrize(
+    ("disallowed_tools", "features"),
+    [([], {"apps": False}), (["Agent", "Task"], {"apps": False, "multi_agent": False})],
+    ids=["no-denial", "dispatch-denied"],
+)
+def test_every_thread_switches_off_chatgpt_apps(disallowed_tools: list[str], features: dict[str, bool]) -> None:
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work/main", permission_mode="bypassPermissions", disallowed_tools=disallowed_tools)
+    )
+
+    assert options.config["features"] == features
 
 
 @pytest.mark.parametrize("tool", ["Read", "Grep", "Glob", "Bash", "BashOutput", "KillBash", "KillShell"])
@@ -189,3 +202,16 @@ def test_worker_write_session_switches_off_the_teatree_plugin_and_its_mcp_server
     )
 
     assert options.config["plugins"] == {CODEX_PLUGIN_ID: {"enabled": False}}
+
+
+@pytest.mark.usefixtures("in_container")
+def test_worker_write_session_keeps_apps_off_beside_its_trust_and_plugin_overrides() -> None:
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd="/work/main", permission_mode="bypassPermissions")
+    )
+
+    assert options.config == {
+        "features": {"apps": False},
+        "projects": {"/work/main": {"trust_level": "untrusted"}},
+        "plugins": {CODEX_PLUGIN_ID: {"enabled": False}},
+    }

@@ -133,6 +133,8 @@ class TestRenderBody:
         after = parse_lock(_lock(("django", "6.1"), ("quiet", "1.0.1")))
         body = render_body(compute_delta(before, after))
         assert "review required" in body.lower()
+        assert "factory cold-reviews" in body
+        assert "never refused" in body
         assert "django" in body
         assert "quiet" in body
 

@@ -1,0 +1,67 @@
+# ============================================================
+# LOCK-REFRESH PATH SCOPE — re-asked on every push (souliane/teatree#4569)
+# ============================================================
+#
+# `uv-lock-upgrade.yml` arms auto-merge when it opens the refresh PR; anything
+# pushed onto the branch afterwards would merge on green with it. So every push
+# re-runs `scripts/ci/refresh_scope.py`, and a branch carrying more than
+# lock/generated paths has auto-merge disarmed and goes to the factory's cold
+# review, then merges. The check stays green for that: a bump is never refused.
+# It reds only when it cannot read the diff or the disarm does not land.
+#
+# `pull_request_target`: the BASE workflow and script judge the PR, so a push
+# cannot rewrite its own judge, and nothing from the PR head is executed.
+# ============================================================
+
+name: Lock-refresh path scope
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: lock-refresh-scope-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    if: startsWith(github.head_ref, 'chore/uv-lock-upgrade')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Disarm auto-merge when the refresh changes more than lock/generated paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags --quiet origin "pull/${PR}/head" || echo "::warning::Could not fetch the head of #${PR}."
+          status=0
+          python scripts/ci/refresh_scope.py --base "$BASE_SHA" --head "$HEAD_SHA" || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          armed() { gh pr view "$PR" --json autoMergeRequest -q '.autoMergeRequest != null'; }
+          if [ "$(armed)" != "false" ]; then
+            gh pr merge "$PR" --disable-auto || true
+            if [ "$(armed)" != "false" ]; then
+              echo "::error::#${PR} is out of scope but auto-merge is still armed — the disarm did not land."
+              exit 1
+            fi
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "::error::Could not judge #${PR}'s paths, so auto-merge is withheld — see the scope check output above."
+            exit 1
+          fi
+          echo "::warning::#${PR} changes more than uv.lock, dist/sbom.json and docs/generated/**, so auto-merge is withheld — it goes to the factory's cold review, then merges."
