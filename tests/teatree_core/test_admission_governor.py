@@ -890,6 +890,13 @@ class TestTheWriteConcurrencyFactorIsAnOperatorSetting(TestCase):
             call_command("config_setting", "set", _PER_CORE_SETTING, "1.0", overlay="x", stderr=StringIO())
         assert not ConfigSetting.objects.filter(key=_PER_CORE_SETTING).exists()
 
+    def test_the_cli_refuses_a_value_outside_the_range(self) -> None:
+        stderr = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", _PER_CORE_SETTING, "4", stderr=stderr)
+        assert "between 0.25 and 2" in stderr.getvalue()
+        assert not ConfigSetting.objects.filter(key=_PER_CORE_SETTING).exists()
+
     def test_a_value_outside_the_range_is_clamped(self) -> None:
         for configured, expected in ((5.0, 16), (2.0, 16), (0.1, 2), (0.25, 2)):
             with self.subTest(configured=configured):

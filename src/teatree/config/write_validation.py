@@ -16,12 +16,18 @@ this helper covers only the shared coercion, raising a single
 
 from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.settings import WRITE_CONCURRENCY_PER_CORE_MAX, WRITE_CONCURRENCY_PER_CORE_MIN
 
 # A canonical, JSON/TOML-storable config value — the shape every registry parser
 # returns (a ``StrEnum`` is a ``str``; the structured ``speak`` / ``mr_reminder``
 # parsers return plain dicts). Mirrors ``ConfigSetting.ConfigValue``, which lives in
 # the ``core.models`` layer this platform module cannot import.
 type ConfigWriteValue = bool | int | float | str | list[object] | dict[str, object]
+
+#: The reader clamps these silently, so a write outside the range is refused where the operator sees it.
+_WRITE_RANGES: dict[str, tuple[float, float]] = {
+    "admission_write_concurrency_per_core": (WRITE_CONCURRENCY_PER_CORE_MIN, WRITE_CONCURRENCY_PER_CORE_MAX),
+}
 
 
 class ConfigWriteError(ValueError):
@@ -49,6 +55,10 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
         msg = f"unknown config key: {key}"
         raise ConfigWriteError(msg)
     try:
-        return parser(raw)
+        value = parser(raw)
     except (ValueError, TypeError, AttributeError) as exc:
         raise ConfigWriteError(str(exc)) from exc
+    if (bounds := _WRITE_RANGES.get(key)) and not bounds[0] <= value <= bounds[1]:
+        msg = f"{key} must be between {bounds[0]:g} and {bounds[1]:g}, got {raw!r}"
+        raise ConfigWriteError(msg)
+    return value

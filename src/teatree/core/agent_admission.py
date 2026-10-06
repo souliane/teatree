@@ -61,7 +61,14 @@ from teatree.core.admission_governor import (
     read_metered_signal,
     read_quota_signal,
 )
-from teatree.core.admission_pressure import UNREAD_QUOTA, AdmissionPressure, MeteredSignal, PressureBand, QuotaSignal
+from teatree.core.admission_pressure import (
+    UNREAD_QUOTA,
+    AdmissionPressure,
+    MachineSignal,
+    MeteredSignal,
+    PressureBand,
+    QuotaSignal,
+)
 from teatree.core.managers_task_claim import claim_admission_block_reason
 from teatree.core.modelkit.phases import PhaseCost, phase_cost
 from teatree.core.models.task_attempt import TaskAttempt
@@ -319,6 +326,155 @@ def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
     return read_quota_signal(), MeteredSignal(fresh=False)
 
 
+@dataclass(frozen=True)
+class LaneWidths:
+    """How one ceiling splits into seats per cost class — the worker runs one executor per seat."""
+
+    ceiling: AdmissionCeiling
+    reserved: int
+    cheap: int
+
+    @property
+    def expensive(self) -> int:
+        return self.ceiling.value - self.reserved
+
+    @property
+    def cheap_seats(self) -> int:
+        """A ``0`` cheap ceiling folds the cheap class into the shared lane, so its queue may hold every seat."""
+        return self.cheap or self.ceiling.value
+
+
+def _lane_widths(quota: QuotaSignal, machine: MachineSignal) -> LaneWidths:
+    ceiling = admission_ceiling(quota, machine)
+    cheap = _cheap_lane_ceiling()
+    if cheap <= 0:
+        return LaneWidths(ceiling=ceiling, reserved=0, cheap=0)
+    return LaneWidths(ceiling=ceiling, reserved=_drain_reservation(ceiling.value), cheap=min(cheap, ceiling.value))
+
+
+class HeadlessAdmissionJson(TypedDict):
+    ceiling: int
+    cores: int
+    per_core: float
+    machine_ceiling: int
+    weekly_pace: float | None
+    expensive_lane: int
+    cheap_lane: int
+    drain_reserved: int
+    expensive_occupied: int
+    cheap_occupied: int
+    pressure: float
+    band: str
+    expensive_denied: str | None
+    cheap_denied: str | None
+
+
+@dataclass(frozen=True)
+class HeadlessAdmissionStatus:
+    """Every input the headless verdict is decided on, read once; the verdict and ``t3 worker status`` resolve it."""
+
+    widths: LaneWidths
+    pressure: AdmissionPressure
+    exempt: AdmissionPressure
+    live: int
+    occupied: _LaneOccupancy
+    seats_released: int
+    blocked: str = ""
+
+    def verdict(self) -> AgentAdmission:
+        if self.blocked:
+            return AgentAdmission(expensive_denied=self.blocked, cheap_denied=self.blocked)
+        widths, occupied = self.widths, self.occupied
+        ceiling = widths.ceiling.value
+        expensive = (
+            self.pressure.reason
+            if self.pressure.band is PressureBand.HALT
+            else _shed_denial(self.pressure) or _ceiling_denial(ceiling, self.live)
+        )
+        if not widths.cheap:
+            return AgentAdmission(
+                expensive_denied=expensive,
+                cheap_denied=expensive,
+                shared_lane=LaneBound(ceiling=ceiling, headroom=max(0, ceiling - occupied.expensive - occupied.cheap)),
+            )
+        expensive_lane = LaneBound()
+        if widths.reserved and expensive is None:
+            expensive = _reservation_denial(ceiling, widths.reserved, occupied.expensive)
+            expensive_lane = LaneBound(ceiling=widths.expensive, headroom=max(0, widths.expensive - occupied.expensive))
+        # An inherited all-coding fleet can already occupy the reserved seat at
+        # rollout or after a pace reduction. Permit ONE review to drain it, never
+        # a second; ordinary admissions obey the combined ceiling.
+        cheap_ceiling, shared_ceiling = _cheap_capacity(ceiling, widths.reserved, occupied, widths.cheap)
+        cheap = (
+            self.exempt.reason
+            if self.exempt.band is PressureBand.HALT
+            else _ceiling_denial(cheap_ceiling, occupied.cheap, lane="cheap-phase")
+        )
+        return AgentAdmission(
+            expensive_denied=expensive,
+            cheap_denied=cheap,
+            cheap_lane=LaneBound(ceiling=cheap_ceiling, headroom=max(0, cheap_ceiling - occupied.cheap)),
+            expensive_lane=expensive_lane,
+            shared_lane=LaneBound(
+                ceiling=shared_ceiling,
+                headroom=max(0, shared_ceiling - occupied.expensive - occupied.cheap),
+            ),
+            seats_released=self.seats_released,
+        )
+
+    def line(self) -> str:
+        ceiling, widths, verdict = self.widths.ceiling, self.widths, self.verdict()
+        if ceiling.pace is None:
+            pace = "weekly pace unread (unscaled)"
+        else:
+            pace = f"weekly pace {ceiling.pace:.2f}" + (" (scaling capped at 1)" if ceiling.pace > 1 else "")
+        denied = ((PhaseCost.EXPENSIVE, verdict.expensive_denied), (PhaseCost.CHEAP, verdict.cheap_denied))
+        denials = "".join(f"; {cost} denied: {reason}" for cost, reason in denied if reason is not None)
+        return (
+            f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
+            f"({ceiling.machine}) x {pace}; lanes {widths.expensive} expensive + {widths.cheap_seats} cheap "
+            f"({widths.reserved} reserved for the drain); occupied {self.occupied.expensive} expensive + "
+            f"{self.occupied.cheap} cheap; pressure {self.pressure.value:.2f} {self.pressure.band}{denials}"
+        )
+
+    def as_json(self) -> HeadlessAdmissionJson:
+        ceiling, verdict = self.widths.ceiling, self.verdict()
+        return HeadlessAdmissionJson(
+            ceiling=ceiling.value,
+            cores=ceiling.cores,
+            per_core=ceiling.per_core,
+            machine_ceiling=ceiling.machine,
+            weekly_pace=ceiling.pace,
+            expensive_lane=self.widths.expensive,
+            cheap_lane=self.widths.cheap_seats,
+            drain_reserved=self.widths.reserved,
+            expensive_occupied=self.occupied.expensive,
+            cheap_occupied=self.occupied.cheap,
+            pressure=self.pressure.value,
+            band=str(self.pressure.band),
+            expensive_denied=verdict.expensive_denied,
+            cheap_denied=verdict.cheap_denied,
+        )
+
+
+def _read_admission(
+    quota: QuotaSignal, machine: MachineSignal, metered: MeteredSignal, *, blocked: str = ""
+) -> HeadlessAdmissionStatus:
+    task_model = _task_model()
+    return HeadlessAdmissionStatus(
+        widths=_lane_widths(quota, machine),
+        pressure=pressure_for(quota=quota, machine=machine, metered=metered),
+        exempt=pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False)),
+        live=task_model.objects.claimed_agent_count(),
+        occupied=_LaneOccupancy(
+            expensive=task_model.objects.expensive_lane_occupancy(),
+            cheap=task_model.objects.cheap_lane_occupancy(),
+        ),
+        seats_released=task_model.objects.cheap_lane_seats_released(),
+        blocked=blocked,
+    )
+
+
 @request_scope()  # every Task creation runs a verdict, so each settings re-read is paid per row
 def agent_admission_verdict() -> AgentAdmission:
     """Probe the governor ONCE and resolve the verdict for both phase cost classes.
@@ -357,134 +513,39 @@ def agent_admission_verdict() -> AgentAdmission:
     """
     if blocked := claim_admission_block_reason():
         return AgentAdmission(expensive_denied=blocked, cheap_denied=blocked)
-    task_model = _task_model()
     try:
         quota, metered = _lane_budget()
         machine = read_machine_signal()
-        cheap_ceiling = _cheap_lane_ceiling()
         decision = decide_admission(
             quota=quota,
             machine=machine,
             signals=SupplementalAdmissionSignals(metered=metered),
             static_ceiling=None,
         )
-        pressure = pressure_for(quota=quota, machine=machine, metered=metered)
-        try:
-            record_admission_decision(decision=decision, pressure=pressure, lane="headless")
-        except Exception:
-            logger.exception("headless admission telemetry failed; retaining the computed verdict")
-        live = task_model.objects.claimed_agent_count()
-        expensive = (
-            pressure.reason
-            if pressure.band is PressureBand.HALT
-            else _shed_denial(pressure) or _ceiling_denial(decision.ceiling, live)
-        )
-        occupied = _LaneOccupancy(
-            expensive=task_model.objects.expensive_lane_occupancy(),
-            cheap=task_model.objects.cheap_lane_occupancy(),
-        )
-        if cheap_ceiling <= 0:
-            return AgentAdmission(
-                expensive_denied=expensive,
-                cheap_denied=expensive,
-                shared_lane=LaneBound(
-                    ceiling=decision.ceiling,
-                    headroom=max(0, decision.ceiling - occupied.expensive - occupied.cheap),
-                ),
-            )
-        expensive_lane = LaneBound()
-        reserved = _drain_reservation(decision.ceiling)
-        if reserved and expensive is None:
-            expensive = _reservation_denial(decision.ceiling, reserved, occupied.expensive)
-            expensive_lane = LaneBound(
-                ceiling=decision.ceiling - reserved,
-                headroom=max(0, decision.ceiling - reserved - occupied.expensive),
-            )
-        exempt = pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False))
-        # An inherited all-coding fleet can already occupy the reserved seat at
-        # rollout or after a pace reduction. Permit ONE review to drain it, never
-        # a second; ordinary admissions obey the combined ceiling.
-        cheap_ceiling, shared_ceiling = _cheap_capacity(decision.ceiling, reserved, occupied, cheap_ceiling)
-        cheap = (
-            exempt.reason
-            if exempt.band is PressureBand.HALT
-            else _ceiling_denial(cheap_ceiling, occupied.cheap, lane="cheap-phase")
-        )
+        status = _read_admission(quota, machine, metered)
+        verdict = status.verdict()
     except Exception:
         logger.exception("headless admission governor probe failed — admitting (fail-open)")
         return _admit_all()
-    return AgentAdmission(
-        expensive_denied=expensive,
-        cheap_denied=cheap,
-        cheap_lane=LaneBound(ceiling=cheap_ceiling, headroom=max(0, cheap_ceiling - occupied.cheap)),
-        expensive_lane=expensive_lane,
-        shared_lane=LaneBound(
-            ceiling=shared_ceiling,
-            headroom=max(0, shared_ceiling - occupied.expensive - occupied.cheap),
-        ),
-        seats_released=task_model.objects.cheap_lane_seats_released(),
-    )
+    try:
+        record_admission_decision(decision=decision, pressure=status.pressure, lane="headless")
+    except Exception:
+        logger.exception("headless admission telemetry failed; retaining the computed verdict")
+    return verdict
 
 
-class HeadlessAdmissionJson(TypedDict):
-    ceiling: int
-    cores: int
-    per_core: float
-    machine_ceiling: int
-    weekly_pace: float | None
-    expensive_occupied: int
-    cheap_occupied: int
-    pressure: float
-    band: str
-
-
-@dataclass(frozen=True)
-class HeadlessAdmissionStatus:
-    """The headless lane's live ceiling, the parts it is derived from, and who holds its seats."""
-
-    ceiling: AdmissionCeiling
-    pressure: AdmissionPressure
-    expensive_occupied: int
-    cheap_occupied: int
-
-    def line(self) -> str:
-        ceiling = self.ceiling
-        if ceiling.pace is None:
-            pace = "weekly pace unread (unscaled)"
-        else:
-            pace = f"weekly pace {ceiling.pace:.2f}" + (" (scaling capped at 1)" if ceiling.pace > 1 else "")
-        braking = f" — {self.pressure.reason}" if self.pressure.band in {PressureBand.SHED, PressureBand.HALT} else ""
-        return (
-            f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
-            f"({ceiling.machine}) x {pace}; occupied {self.expensive_occupied} expensive + "
-            f"{self.cheap_occupied} cheap; pressure {self.pressure.value:.2f} {self.pressure.band}{braking}"
-        )
-
-    def as_json(self) -> HeadlessAdmissionJson:
-        return HeadlessAdmissionJson(
-            ceiling=self.ceiling.value,
-            cores=self.ceiling.cores,
-            per_core=self.ceiling.per_core,
-            machine_ceiling=self.ceiling.machine,
-            weekly_pace=self.ceiling.pace,
-            expensive_occupied=self.expensive_occupied,
-            cheap_occupied=self.cheap_occupied,
-            pressure=self.pressure.value,
-            band=str(self.pressure.band),
-        )
-
-
+@request_scope()
 def headless_admission_status() -> HeadlessAdmissionStatus:
-    """The verdict's inputs, read without booking a seat or recording a telemetry span."""
+    """The verdict's own read, including a claim-admission block, without booking a seat or recording a span."""
     quota, metered = _lane_budget()
-    machine = read_machine_signal()
-    task_model = _task_model()
-    return HeadlessAdmissionStatus(
-        ceiling=admission_ceiling(quota, machine),
-        pressure=pressure_for(quota=quota, machine=machine, metered=metered),
-        expensive_occupied=task_model.objects.expensive_lane_occupancy(),
-        cheap_occupied=task_model.objects.cheap_lane_occupancy(),
-    )
+    return _read_admission(quota, read_machine_signal(), metered, blocked=claim_admission_block_reason())
+
+
+@request_scope()
+def headless_lane_widths() -> LaneWidths:
+    """The lane widths the verdict admits up to, read without counting occupancy — what the worker sizes to."""
+    quota, _metered = _lane_budget()
+    return _lane_widths(quota, read_machine_signal())
 
 
 def agent_admission_denied_reason(phase: str = "") -> str | None:
@@ -502,7 +563,9 @@ __all__ = [
     "AgentAdmission",
     "HeadlessAdmissionStatus",
     "LaneBound",
+    "LaneWidths",
     "agent_admission_denied_reason",
     "agent_admission_verdict",
     "headless_admission_status",
+    "headless_lane_widths",
 ]

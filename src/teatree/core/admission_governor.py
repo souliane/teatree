@@ -26,8 +26,8 @@ and named so at each call site. The deliberate split is that foreign occupancy B
 producer and only REPORTS on the rest: the admission-pressure scalar bounds intake, because
 slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
 pile, while the agent lanes keep only the binary watermark brake below — scaling their
-already-small ``floor(cores * admission_write_concurrency_per_core)`` ceiling by the same headroom
-would leave a 4-core box ONE expensive slot and starve the drain.
+``floor(cores * admission_write_concurrency_per_core)`` ceiling by the same headroom would,
+at the shipped factor, leave a 4-core box ONE expensive slot and starve the drain.
 
 **The brakes are ONE scalar, not six ``if``s (#4508).** Every watermark below normalises
 to ``1.0`` in :mod:`teatree.core.admission_pressure`, so :func:`decide_admission` refuses
@@ -79,7 +79,7 @@ _MIB_PER_GB = 1024.0
 TOTAL_TEST_WORKERS_PER_CORE = 2
 
 #: TOTAL host agent population per core — deliberately its own constant rather than the
-#: per-lane :data:`~teatree.core.admission.write_ceiling.WRITE_CONCURRENCY_PER_CORE`. A
+#: per-lane :data:`~teatree.config.settings.WRITE_CONCURRENCY_PER_CORE`. A
 #: lane's concurrency bounds that lane; the population a session RESTORE re-creates is a
 #: whole-box fact, and pricing it off a lane setting is exactly the conflation #4108
 #: records (a lane capped at 3 while the box carried enough agents to reach load 58 on 8
@@ -212,7 +212,7 @@ def per_agent_test_workers(
     The share floors at 1 (an agent with zero test workers cannot run its suite), so the
     total bound holds while *active_agents* stays within the total. The admission ceiling,
     the other half of the same governor, reaches ``cores * 2`` only at the per-core
-    factor's 2.0 clamp. Past the total the floor wins: a 50-agent box is already a
+    factor's upper clamp. Past the total the floor wins: a 50-agent box is already a
     governor failure, not a division problem.
     """
     total = max(1, int(cores)) * TOTAL_TEST_WORKERS_PER_CORE

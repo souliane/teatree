@@ -158,8 +158,9 @@ def _agent_admission_report() -> "tuple[str, HeadlessAdmissionJson | None]":
     try:
         status = headless_admission_status()
     except Exception as exc:
-        logger.exception("agent admission status unreadable")
-        return f"agent admission: unavailable ({type(exc).__name__}: {exc})", None
+        logger.debug("agent admission status unreadable", exc_info=True)
+        first_line = next(iter(str(exc).splitlines()), "")
+        return f"agent admission: unavailable ({type(exc).__name__}: {first_line})", None
     return status.line(), status.as_json()
 
 

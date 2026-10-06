@@ -23,7 +23,7 @@ SETTING_HELP: dict[str, str] = {
     "active_loop_schedule": "name of the weekly schedule deciding when the autonomous loops may run",
     "admission_pressure_shed_at": "pressure at which expensive agents are refused while review and ship keep draining",
     "admission_write_concurrency_per_core": (
-        "headless agents admitted per CPU core before weekly pacing, clamped to 0.25-2.0"
+        "agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane"
     ),
     "metered_token_ceiling": "the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset",
     "metered_spend_window_hours": "the window the metered token ceiling is measured over",

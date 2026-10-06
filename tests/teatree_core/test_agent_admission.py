@@ -32,13 +32,14 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.admission_governor import MachineSignal, QuotaSignal, decide_admission
 from teatree.core.agent_admission import (
     AgentAdmission,
     HeadlessAdmissionStatus,
     agent_admission_denied_reason,
     agent_admission_verdict,
     headless_admission_status,
+    headless_lane_widths,
 )
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import PhaseCost
@@ -326,6 +327,9 @@ _CEILING_PARTS = (
     "per_core",
     "machine_ceiling",
     "weekly_pace",
+    "expensive_lane",
+    "cheap_lane",
+    "drain_reserved",
     "expensive_occupied",
     "cheap_occupied",
 )
@@ -373,24 +377,49 @@ class TestHeadlessAdmissionStatus(TestCase):
             "per_core": 1.0,
             "machine_ceiling": 8,
             "weekly_pace": 0.75,
+            "expensive_lane": 5,
+            "cheap_lane": 2,
+            "drain_reserved": 1,
             "expensive_occupied": 2,
             "cheap_occupied": 1,
         }
         assert parts["band"] == str(status.pressure.band)
         assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
-        assert "2 expensive + 1 cheap" in status.line()
+        assert "lanes 5 expensive + 2 cheap (1 reserved for the drain)" in status.line()
+        assert "occupied 2 expensive + 1 cheap" in status.line()
 
-    def test_the_status_ceiling_is_the_verdicts_ceiling(self) -> None:
+    def test_the_status_resolves_to_exactly_the_verdict(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
-        for _ in range(6):  # under 8 minus the one seat reserved for the drain
-            self._claimed("coding")
-        quota = _healthy_quota()
-        with (
-            patch.object(gate_mod, "read_quota_signal", return_value=quota),
-            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
-        ):
-            assert headless_admission_status().ceiling.value == 8
-            assert agent_admission_verdict().denied_for(PhaseCost.EXPENSIVE) is None
+        for claimed in (0, 6, 7, 8):  # under the unreserved seats, at them, then an inherited full fleet
+            with self.subTest(claimed=claimed):
+                Task.objects.all().delete()
+                for _ in range(claimed):
+                    self._claimed("coding")
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+                ):
+                    status = headless_admission_status()
+                    verdict = agent_admission_verdict()
+                    widths = headless_lane_widths()
+
+                assert status.verdict() == verdict
+                assert status.widths == widths
+                assert (
+                    status.as_json()["ceiling"]
+                    == decide_admission(quota=_healthy_quota(), machine=_machine()).ceiling
+                    == 8
+                )
+                assert status.as_json()["expensive_denied"] == verdict.expensive_denied
+                assert status.as_json()["cheap_denied"] == verdict.cheap_denied
+
+    def test_a_claim_admission_block_is_what_the_status_reports(self) -> None:
+        quiescing = "this worker is quiescing for a rolling deploy"
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value=quiescing):
+            status = self._status(_healthy_quota())
+
+        assert status.as_json()["expensive_denied"] == status.as_json()["cheap_denied"] == quiescing
+        assert f"expensive denied: {quiescing}; cheap denied: {quiescing}" in status.line()
 
     def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
         unread = QuotaSignal(
@@ -404,7 +433,7 @@ class TestHeadlessAdmissionStatus(TestCase):
         status = self._status(unread)
 
         assert status.as_json()["weekly_pace"] is None
-        assert status.ceiling.value == 4
+        assert status.widths.ceiling.value == 4
         assert "weekly pace unread" in status.line()
 
     def test_a_braking_band_names_its_cause(self) -> None:
