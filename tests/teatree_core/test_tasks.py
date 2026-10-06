@@ -1102,6 +1102,7 @@ class TestExecuteShip(TestCase):
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestExecuteShipOrphanPrWindow(TestCase):
     """A forge PR opened by ``create_pr`` must never be stranded by a rollback.
 

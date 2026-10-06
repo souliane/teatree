@@ -367,7 +367,8 @@ class ShipExecutor(RunnerBase):
         THE chokepoint both the interactive ``pr create`` async worker and the
         autonomous loop's task-driven ship converge on — the loop route reaches
         ``execute_ship`` without ``_run_ship_gates``, so without this the branch would
-        ship un-gated. Both are inert at their neutral/DARK defaults.
+        ship un-gated. The budget is inert at its neutral default; a diff the debt
+        check cannot read refuses as DID NOT RUN.
 
         The ORDERING is the contract, not an optimisation. Run after the push, these
         refusals answered "refused" for a ship whose PR already existed: the push fires

@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The open-PR signal kinds MyPrsScanner emits (mirrors open_prs._OPEN_PR_SIGNAL_KINDS).
-_MY_PR_SIGNAL_KINDS = frozenset({"my_pr.open", "my_pr.draft_notes", "my_pr.failed"})
+_MY_PR_SIGNAL_KINDS = frozenset({"my_pr.open", "my_pr.draft_notes", "my_pr.failed", "my_pr.manual_action"})
 
 #: Work-lease owner for a PR opened outside the lifecycle (#3561). One identity
 #: for the whole class: the lease answers "is someone already on this branch/PR?",

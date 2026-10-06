@@ -23,7 +23,7 @@ Fail-open on a read failure: a network/auth error fetching the drafts returns
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
-from teatree.cli.review.guarded_read import guarded_read
+from teatree.core.modelkit.gate_verdict import guarded_read
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
@@ -48,7 +48,7 @@ def count_inline_drafts(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> 
     Best-effort: a failed fetch (missing token, network, a test stub without the
     endpoint) returns 0, so the gate fails open rather than refusing every draft
     note whenever the forge is unreachable. The read goes through
-    :func:`~teatree.cli.review.guarded_read.guarded_read`, so that failure is
+    :func:`~teatree.core.modelkit.gate_verdict.guarded_read`, so that failure is
     logged instead of being indistinguishable from "no drafts pending" (#3509).
     """
     endpoint = f"projects/{encoded_repo}/merge_requests/{mr}/draft_notes"

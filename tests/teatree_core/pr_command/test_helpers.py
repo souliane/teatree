@@ -71,11 +71,73 @@ class TestResolveBaseUrl(TestCase):
         assert _resolve_base_url(worktree) == "http://127.0.0.1:8000"
 
 
+class _PageTargetReview:
+    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        return ["/"] if changed_files else []
+
+
+class _PageTargetOverlay:
+    review = _PageTargetReview()
+
+
+def _playwright_unavailable(*_args: object, **_kwargs: object) -> list[visual_qa.PageResult]:
+    msg = "BrowserType.launch: Executable doesn't exist"
+    raise visual_qa.VisualQAUnavailableError(msg)
+
+
 class TestRunVisualQAGate(TestCase):
     def _ticket_and_worktree(self) -> tuple[Ticket, Worktree]:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
         worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/tmp/wt", branch="feat-x")
         return ticket, worktree
+
+    def test_a_browser_that_cannot_start_refuses_as_did_not_run(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        with (
+            patch("teatree.core.management.commands._ship.gates.get_overlay", return_value=_PageTargetOverlay()),
+            patch.object(visual_qa, "changed_files", return_value=["src/app/views/home.html"]),
+            patch.object(visual_qa, "run_check", side_effect=_playwright_unavailable),
+        ):
+            result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
+        assert "playwright install chromium" in result["hint"]
+        assert "--skip-visual-qa" in result["hint"]
+        ticket.refresh_from_db()
+        assert "Executable doesn't exist" in ticket.extra["visual_qa"]["not_run_reason"]
+
+    def test_a_budget_that_ran_out_refuses_as_did_not_run(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+        report = visual_qa.VisualQAReport(
+            targets=["/a", "/b"], pages=[visual_qa.PageResult(url="http://x/a")], base_url="http://x"
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "evaluate", return_value=report),
+        ):
+            result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN")
+        assert "/b" in result["error"]
+
+    def test_an_unreadable_diff_refuses_as_did_not_run(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/78")
+        with tempfile.TemporaryDirectory() as not_a_repo:
+            worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path=not_a_repo, branch="feat-y")
+            with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+                result = _run_visual_qa_gate(ticket, worktree)
+
+        assert result is not None
+        assert result["error"].startswith("[gate:visual_qa] DID NOT RUN: CommandFailedError")
+
+    def test_an_explicit_skip_reads_no_diff(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/79")
+        with tempfile.TemporaryDirectory() as not_a_repo:
+            worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path=not_a_repo, branch="feat-z")
+            with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+                assert _run_visual_qa_gate(ticket, worktree, skip_reason="docs only") is None
 
     def test_skipped_run_does_not_pollute_extra(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
@@ -146,9 +208,6 @@ class TestRunVisualQAGate(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(visual_qa, "changed_files", side_effect=fake_changed_files),
-            patch.object(
-                visual_qa, "evaluate", return_value=visual_qa.VisualQAReport(targets=[], skipped_reason="none")
-            ),
         ):
             assert _run_visual_qa_gate(ticket, invoking) is None
 

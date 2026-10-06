@@ -49,6 +49,8 @@ from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 
 @pytest.fixture(autouse=True)
 def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:

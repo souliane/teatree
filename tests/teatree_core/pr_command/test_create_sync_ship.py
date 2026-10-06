@@ -13,6 +13,8 @@ from teatree.core.models import Session, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY, _SHIP_BACKEND, _shippable_ticket
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 # A commit subject + body that satisfy the deterministic MR title/description
 # gate (#1540), so a test exercising an unrelated invariant (FSM reconcile, no
 # raw transition) is not tripped by the now-active format check.

@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from teatree.config.loader import clone_root
 from teatree.core.fleet import claim
+from teatree.core.forge_push import forge_write_env
 from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.instance_id import instance_id
 from teatree.utils import git, git_remote
@@ -203,10 +204,11 @@ def acquire_issue_claim(issue_url: str) -> claim.Claim | None:
         _record_claim_fault(issue_url, f"missing local clone for {owner_repo_from_issue_url(issue_url)}")
         return None
     _clear_claim_fault(issue_url)
+    credential = forge_write_env(repo)
     try:
-        acquired = claim.acquire(issue_url, repo=repo)
+        acquired = claim.acquire(issue_url, repo=repo, extra_env=credential)
         if acquired is None:
-            acquired = claim.steal_if_expired(issue_url, repo=repo)
+            acquired = claim.steal_if_expired(issue_url, repo=repo, extra_env=credential)
     except claim.FleetClaimUnavailableError as exc:
         logger.warning(
             "fleet_claim ref infra unreachable for %s — failing safe (not claiming)", issue_url, exc_info=True
@@ -237,7 +239,7 @@ def _record_claim_fault(issue_url: str, detail: str) -> None:
         if detail.startswith("missing local clone")
         else "Check refs/teatree/claims/* rules, token write scope, and pre-push hooks."
     )
-    summary = f"Fleet claim for {issue_url} was refused: {detail}. {remedy}"
+    summary = f"Fleet claim for {issue_url} was refused. {remedy} Cause: {detail}"
     try:
         with transaction.atomic():
             issue = KnownIssue.objects.record_signal(
@@ -280,7 +282,8 @@ def issue_claim_still_held(issue_url: str, sha: str, repo: str) -> bool:
     if not sha or not repo:
         return False
     try:
-        return claim.is_held_by_me(issue_url, claim.Claim.from_token(issue_url, sha), repo=repo)
+        held = claim.Claim.from_token(issue_url, sha)
+        return claim.is_held_by_me(issue_url, held, repo=repo, extra_env=forge_write_env(repo))
     except claim.FleetClaimUnavailableError:
         logger.warning(
             "fleet_claim fence: ref infra unreachable for %s — failing safe (treating as not held)",
@@ -360,7 +363,7 @@ def _heartbeat_one(marker: "ImplementedIssueMarker") -> None:
         ttl_seconds=claim.DEFAULT_TTL_SECONDS,
     )
     try:
-        result = claim.heartbeat(held, repo=repo)
+        result = claim.heartbeat(held, repo=repo, extra_env=forge_write_env(repo))
     except claim.FleetClaimUnavailableError:
         logger.warning(
             "fleet_claim heartbeat: ref infra unreachable for %s — leaving claim, retrying next tick",

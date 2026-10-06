@@ -38,9 +38,12 @@ from tests.teatree_core.management_commands._overlays import (
     _patch_overlays,
 )
 
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
-)
+pytestmark = [
+    pytest.mark.usefixtures("readable_ship_tree"),
+    pytest.mark.filterwarnings(
+        "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+    ),
+]
 
 _ISSUE_URL = "https://github.com/souliane/teatree/issues/70"
 
@@ -81,10 +84,11 @@ def _git_boundary(
     Mirrors ``test_close_keyword_gate._git_boundary``: ``last_commit_message``
     is the raw MR-description source, ``commit_messages`` feeds the
     branch-commit scan, ``default_branch`` lets the range be built. Visual QA
-    is patched out (browser boundary).
+    and mandatory E2E are patched out (browser, published-evidence boundaries).
     """
     with (
         patch.object(pr_mod, "_run_visual_qa_gate", return_value=None),
+        patch.object(pr_mod, "_run_e2e_mandatory_gate", return_value=None),
         patch(
             "teatree.core.management.commands._closes_issue_crosscheck.git.last_commit_message",
             return_value=(subject, body),

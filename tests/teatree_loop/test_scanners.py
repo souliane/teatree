@@ -217,15 +217,14 @@ class TestMyPrsScanner:
 
     @pytest.mark.parametrize(
         "status",
-        ["canceled", "cancelled", "skipped", "manual", "blocked", "stale", "neutral", "action_required"],
+        ["canceled", "cancelled", "blocked", "stale", "neutral", "action_required"],
     )
     def test_non_green_terminal_status_is_treated_as_failed(self, status: str) -> None:
         """Not-green == red.
 
-        A pipeline that is not ``success`` and not legitimately
-        in-progress (canceled / skipped / manual-not-run / any unknown
-        terminal state) must surface as action-needed, never silently as
-        a benign open PR.
+        A pipeline that is not ``success``, not settled-by-skipping, not waiting on a
+        manual job and not legitimately in-progress (canceled / any unknown terminal
+        state) must surface as action-needed, never silently as a benign open PR.
         """
         host = FakeCodeHost(
             user="alice",

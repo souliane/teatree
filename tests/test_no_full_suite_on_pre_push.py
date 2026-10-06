@@ -56,6 +56,7 @@ from tests._file_cost import describe_runs, remeasure_offenders, run_pytest_meas
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO_ROOT / ".pre-commit-config.yaml"
+_BRANCH_SCOPE_WRAPPER = "scripts/hooks/branch-push-only.sh"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
@@ -145,10 +146,16 @@ def _push_hooks() -> list[dict]:
     return push
 
 
+def _gate_argv(hook: dict) -> list[str]:
+    """The gate command a push hook runs, seen through the branch-scope wrapper."""
+    argv = str(hook.get("entry") or "").split()
+    return argv[1:] if argv[:1] == [_BRANCH_SCOPE_WRAPPER] else argv
+
+
 def _ci_critical_parity_script_body() -> str:
     matches = [h for h in _push_hooks() if h.get("id") == "ci-critical-parity"]
     assert matches, "ci-critical-parity push hook is missing"
-    entry = matches[0]["entry"].split()
+    entry = _gate_argv(matches[0])
     script = _REPO_ROOT / entry[0]
     assert script.is_file(), f"ci-critical-parity entry {entry[0]!r} must resolve to a repo script"
     return script.read_text()
@@ -189,7 +196,7 @@ class TestNoFullSuiteOnPrePush:
         # unscoped suite either. Resolve `entry` to a repo file when it is one.
         offenders: list[str] = []
         for hook in _push_hooks():
-            entry = (hook.get("entry") or "").split()
+            entry = _gate_argv(hook)
             if not entry:
                 continue
             candidate = _REPO_ROOT / entry[0]

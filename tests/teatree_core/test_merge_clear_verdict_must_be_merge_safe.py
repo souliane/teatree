@@ -65,6 +65,7 @@ def _gh_stub_live_green(argv: list[str]) -> tuple[int, str, str]:
     return (0, merge_path_stdout(joined), "")
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestNonGreenVerdictNeverIssuable(TestCase):
     """The guarded factory refuses to record a non-green reviewer verdict."""
 

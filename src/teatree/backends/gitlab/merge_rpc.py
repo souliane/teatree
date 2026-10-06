@@ -194,7 +194,20 @@ class GitLabApiMergeRpc:
         if not isinstance(pipelines, list):
             return [ROLLUP_QUERY_FAILED]
         entries = cast("list[object]", pipelines)
-        return [cast("RawAPIDict", entry) for entry in entries if isinstance(entry, dict)]
+        rollup = [cast("RawAPIDict", entry) for entry in entries if isinstance(entry, dict)]
+        if not any(str(entry.get("status") or "").lower() == "skipped" for entry in rollup):
+            return rollup
+        allowed = self._allows_merge_on_skipped_pipeline(slug)
+        return [{**entry, "allow_merge_on_skipped_pipeline": allowed} for entry in rollup]
+
+    def _allows_merge_on_skipped_pipeline(self, slug: str) -> bool | None:
+        """The project's "skipped pipelines are considered successful" setting; ``None`` when unreadable."""
+        try:
+            project = self._client.resolve_project(slug)
+        except _READ_FAILURES as exc:
+            logger.warning("GitLab project read of %s failed (%s) — its skipped-pipeline setting is unknown", slug, exc)
+            return None
+        return project.allow_merge_on_skipped_pipeline if project is not None else None
 
     @staticmethod
     def fetch_required_status_check_contexts(*, slug: str, pr_id: int) -> list[RawAPIDict]:

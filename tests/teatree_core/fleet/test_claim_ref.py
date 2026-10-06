@@ -37,6 +37,8 @@ import pytest
 
 from teatree.core.fleet import claim as fleet_claim
 
+from ._git_origin import require_credential
+
 _CTX = multiprocessing.get_context("spawn" if sys.platform == "darwin" else "fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _GATE_TIMEOUT_S = 30.0
@@ -120,7 +122,7 @@ def _acquire_worker(idx: int, work_dir: str, bare: str, clients_root: str) -> No
     _ready_and_wait(work_dir, idx)
     outcome: dict[str, object] = {"won": False, "sha": "", "error": ""}
     try:
-        claim = fleet_claim.acquire(_WORK_KEY, repo=str(client), remote="origin", ttl_seconds=3600.0, now=1000.0)
+        claim = fleet_claim.acquire(_WORK_KEY, repo=str(client), ttl_seconds=3600.0, now=1000.0)
         outcome = {"won": claim is not None, "sha": claim.sha if claim else "", "error": ""}
     except Exception as exc:  # noqa: BLE001 — a worker records its failure for the parent to assert on
         outcome["error"] = repr(exc)
@@ -133,7 +135,7 @@ def _steal_worker(idx: int, work_dir: str, bare: str, clients_root: str, now: fl
     _ready_and_wait(work_dir, idx)
     outcome: dict[str, object] = {"won": False, "sha": "", "error": ""}
     try:
-        claim = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(client), remote="origin", ttl_seconds=100.0, now=now)
+        claim = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(client), ttl_seconds=100.0, now=now)
         outcome = {"won": claim is not None, "sha": claim.sha if claim else "", "error": ""}
     except Exception as exc:  # noqa: BLE001 — a worker records its failure for the parent to assert on
         outcome["error"] = repr(exc)
@@ -211,7 +213,7 @@ def test_steal_impossible_before_ttl(tmp_path: Path) -> None:
     holder_repo = clients / "holder"
     _init_client(holder_repo, bare)
     # Holder claims at t=1000 with ttl=100 -> live until t=1100.
-    held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), remote="origin", ttl_seconds=100.0, now=1000.0)
+    held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), ttl_seconds=100.0, now=1000.0)
     assert held is not None
 
     # Five stealers race at t=1050 (still live).
@@ -220,7 +222,7 @@ def test_steal_impossible_before_ttl(tmp_path: Path) -> None:
     assert all(r["error"] == "" for r in results), [r["error"] for r in results if r["error"]]
     assert [r for r in results if r["won"]] == [], f"a live claim was stolen: {results}"
     # The holder still holds it — no failed steal disturbed the live claim.
-    assert fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo), remote="origin")
+    assert fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo))
 
 
 @pytest.mark.parametrize("n", [2, 10])
@@ -233,7 +235,7 @@ def test_concurrent_steal_after_ttl_has_exactly_one_winner(tmp_path: Path, n: in
     holder_repo = clients / "holder"
     _init_client(holder_repo, bare)
     # Holder claims at t=1000 with ttl=100 -> expired by t=5000.
-    held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), remote="origin", ttl_seconds=100.0, now=1000.0)
+    held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), ttl_seconds=100.0, now=1000.0)
     assert held is not None
 
     results = _run_race(n, _steal_worker, tmp_path, extra=(str(bare), str(clients), 5000.0))
@@ -242,7 +244,7 @@ def test_concurrent_steal_after_ttl_has_exactly_one_winner(tmp_path: Path, n: in
     winners = [r for r in results if r["won"]]
     assert len(winners) == 1, f"expected exactly one steal winner among {n}, got {len(winners)}: {results}"
     # Fencing: the original holder is now stolen-from and must read False.
-    assert not fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo), remote="origin")
+    assert not fleet_claim.is_held_by_me(_WORK_KEY, held, repo=str(holder_repo))
 
 
 def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tmp_path: Path) -> None:
@@ -259,29 +261,29 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     _init_client(dead, bare)
     _init_client(survivor, bare)
 
-    original = fleet_claim.acquire(_WORK_KEY, repo=str(dead), remote="origin", ttl_seconds=10.0, now=1000.0)
+    original = fleet_claim.acquire(_WORK_KEY, repo=str(dead), ttl_seconds=10.0, now=1000.0)
     assert original is not None
     # The holder dies: it never heartbeats. While it is alive (before TTL) no one
     # can steal.
-    assert fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), remote="origin", now=1005.0) is None
-    assert fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead), remote="origin")
+    assert fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), now=1005.0) is None
+    assert fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead))
 
     # After the TTL lapses the survivor steals.
-    stolen = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), remote="origin", ttl_seconds=10.0, now=2000.0)
+    stolen = fleet_claim.steal_if_expired(_WORK_KEY, repo=str(survivor), ttl_seconds=10.0, now=2000.0)
     assert stolen is not None
     assert stolen.sha != original.sha
 
     # The revived original is fenced: it no longer holds the ref, and its own
     # heartbeat CAS (against its stale sha) reports the claim lost.
-    assert not fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead), remote="origin")
-    lost = fleet_claim.heartbeat(original, repo=str(dead), remote="origin", now=2001.0)
+    assert not fleet_claim.is_held_by_me(_WORK_KEY, original, repo=str(dead))
+    lost = fleet_claim.heartbeat(original, repo=str(dead), now=2001.0)
     assert isinstance(lost, fleet_claim.ClaimLost)
     assert lost.expected_sha == original.sha
     assert lost.observed_sha == stolen.sha
     # The survivor can still heartbeat its live claim.
-    beat = fleet_claim.heartbeat(stolen, repo=str(survivor), remote="origin", now=2002.0)
+    beat = fleet_claim.heartbeat(stolen, repo=str(survivor), now=2002.0)
     assert isinstance(beat, fleet_claim.Claim)
-    assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(survivor), remote="origin")
+    assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(survivor))
 
 
 def test_refused_steal_push_is_an_infra_fault_not_a_contended_loss(tmp_path: Path) -> None:
@@ -299,3 +301,50 @@ def test_refused_steal_push_is_an_infra_fault_not_a_contended_loss(tmp_path: Pat
 
     with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="ref is unchanged"):
         fleet_claim.steal_if_expired(_WORK_KEY, repo=str(stealer), now=2000.0)
+
+
+_ROUTED_TOKEN = "routed-claim-credential"
+
+
+def _origin_requiring_credential(tmp_path: Path) -> tuple[Path, Path]:
+    bare = tmp_path / "origin.git"
+    _init_bare(bare)
+    require_credential(bare, _ROUTED_TOKEN)
+    client = tmp_path / "client"
+    _init_client(client, bare)
+    return bare, client
+
+
+def _remote_sha(bare: Path, ref: str) -> str:
+    line = _git("ls-remote", str(bare), ref).strip()
+    return line.split()[0] if line else ""
+
+
+def test_claim_lifecycle_against_an_origin_that_requires_the_routed_credential(tmp_path: Path) -> None:
+    bare, client = _origin_requiring_credential(tmp_path)
+    auth = {"GH_TOKEN": _ROUTED_TOKEN}
+    ref = fleet_claim.claim_ref(_WORK_KEY)
+
+    held = fleet_claim.acquire(_WORK_KEY, repo=str(client), extra_env=auth, now=1000.0)
+    assert held is not None
+    assert _remote_sha(bare, ref) == held.sha
+
+    beat = fleet_claim.heartbeat(held, repo=str(client), extra_env=auth, now=1500.0)
+    assert isinstance(beat, fleet_claim.Claim)
+    assert beat.sha != held.sha
+    assert _remote_sha(bare, ref) == beat.sha
+    assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(client), extra_env=auth)
+
+    fleet_claim.release(beat, repo=str(client), extra_env=auth)
+    assert _remote_sha(bare, ref) == ""
+
+
+def test_a_refused_claim_push_says_why_and_never_echoes_the_credential(tmp_path: Path) -> None:
+    _bare, client = _origin_requiring_credential(tmp_path)
+    stale = "stale-credential-value"
+
+    with pytest.raises(fleet_claim.FleetClaimUnavailableError) as refused:
+        fleet_claim.acquire(_WORK_KEY, repo=str(client), extra_env={"GH_TOKEN": stale})
+
+    assert "credential refused" in str(refused.value)
+    assert stale not in str(refused.value)

@@ -12,6 +12,8 @@ from teatree.core.models import Session, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY, _shippable_ticket
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 
 class TestPrCreateThinWrapper(TestCase):
     """``pr create`` validates gates then triggers ``ticket.ship()`` (#140)."""

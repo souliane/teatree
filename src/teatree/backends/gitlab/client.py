@@ -150,10 +150,10 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return True
 
     def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
-        # GitLab's MR list already carries the pipeline fields GitHub needs a second read for,
-        # so there is no enrichment to skip.
-        del enrich
-        return self._client.list_all_open_mrs(author, updated_after=updated_after)
+        listed = self._client.list_all_open_mrs(author, updated_after=updated_after)
+        if not enrich:
+            return listed
+        return [_pr_reads.enrich_mr_pipeline(self._client, mr) for mr in listed]
 
     def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         return self._client.list_recently_merged_mrs(author, updated_after=updated_after)
@@ -250,7 +250,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
 
-        payload = {"body": body}
+        payload: RawAPIDict = {"body": body}
         return self._client.post_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/notes", payload) or {}
 
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:

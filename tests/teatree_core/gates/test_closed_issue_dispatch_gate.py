@@ -169,7 +169,7 @@ class TestTheGateFailsOpen(TestCase):
     """
 
     def test_a_raising_host_is_not_refused_and_says_so(self) -> None:
-        with self.assertLogs("teatree.core.gates.closed_issue_dispatch_gate", level=logging.WARNING) as logs:
+        with self.assertLogs("teatree.core.modelkit.gate_verdict", level=logging.WARNING) as logs:
             assert _refusal(_ticket(), host=_Host(raises=True)) is None
         assert any("letting the dispatch through" in line for line in logs.output)
 
