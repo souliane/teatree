@@ -22,6 +22,7 @@ from collections.abc import Callable
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -563,6 +564,7 @@ def _keystone_gh_stub(ci: Callable[[list[str]], tuple[int, str, str]]) -> Callab
     return run
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestKeystoneMergeOnRefusedRollupRead(TestCase):
     """``ticket clear`` then ``ticket merge`` on a GitHub Free repo whose rollup read is refused.
 
