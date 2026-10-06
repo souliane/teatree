@@ -9,6 +9,8 @@ resolve a clone.
 import logging
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.config import clone_root
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -81,10 +83,11 @@ def _named_repos(ticket: Ticket) -> list[str]:
     if slug := issue_url_slug(ticket.issue_url):
         return [slug]
     try:
-        return list(get_overlay_for_ticket(ticket).get_workspace_repos())
-    except Exception:
+        overlay = get_overlay_for_ticket(ticket)
+    except ImproperlyConfigured:
         logger.warning("Ticket %s names no repo and overlay %r resolves none", ticket.pk, ticket.overlay, exc_info=True)
         return []
+    return list(overlay.get_workspace_repos())
 
 
 def unambiguous_clone_path(workspace: Path, repo_name: str) -> Path | None:

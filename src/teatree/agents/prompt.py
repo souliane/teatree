@@ -14,6 +14,7 @@ from teatree.agents.result_schema import required_evidence_for_phase
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
     _explicit_load_name,
+    _is_stack_skill,
     _read_skill_contents,
     _read_skill_contents_scoped,
 )
@@ -22,7 +23,6 @@ from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
 from teatree.core.models.task_handoff import dispatch_reason
-from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -200,7 +200,7 @@ def required_skill_delivery(
     directive is not: either missing one makes the dispatch contract false. A
     stack skill is a forced directive in every phase unless it is embedded in full.
     """
-    stack = {name for name in skills if _explicit_load_name(name) in FRAMEWORK_SKILL_NAMES}
+    stack = {name for name in skills if _is_stack_skill(name)}
     if not lifecycle_skill:
         # build_system_context takes its all-inline path without a lifecycle
         # skill, including reactive phases with no _PHASE_TO_SKILL mapping.

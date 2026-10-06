@@ -380,9 +380,11 @@ class TestDispatchDetectionRoot(TestCase):
         assert dispatch_detection_root(ticket) == checkout
 
     def test_a_pr_ticket_with_no_repos_resolves_the_clone_its_url_names(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/pull/5073")
+        widgets = self.workspace / "acme" / "widgets"
+        (widgets / ".git").mkdir(parents=True)
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://github.com/acme/widgets/pull/5073")
 
-        assert dispatch_detection_root(ticket) == self.clone
+        assert dispatch_detection_root(ticket) == widgets
 
     def test_a_ticket_naming_no_repo_resolves_its_overlay_repo_clone(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="architectural-review://teatree/2026-10-06")

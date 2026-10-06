@@ -872,6 +872,22 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
         assert "- t3:demo-overlay: not embedded" not in ctx
         assert "/ac-django" in ctx
 
+    def test_the_directive_is_the_only_place_a_stack_skill_is_listed(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design"):
+            (tmp_dir / name).mkdir()
+            (tmp_dir / name / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                self._coding_task(),
+                skills=["ac-django", "ac-python", "code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+
+        assert "--- STACK SKILLS" not in ctx
+        for name in ("ac-django", "ac-python"):
+            assert [line for line in ctx.splitlines() if f"/{name}" in line] == [f"  - /{name}"]
+
 
 class TestCacheablePrefixStability(TestCase):
     """The stable framing leads the append; per-task content trails it.
