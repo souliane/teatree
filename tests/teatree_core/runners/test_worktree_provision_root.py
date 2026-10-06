@@ -42,9 +42,8 @@ class TestProvisionRootComesFromTheTicket(TestCase):
             make_git_repo(self.clones / repo)
         self.enterContext(patch.object(Path, "home", return_value=self.home))
         self.enterContext(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
-        # `git pull --ff-only` against a clone with no remote is a network call
-        # this fixture has nothing to serve; the provision path ignores its result.
-        self.enterContext(patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True))
+        # The clones have no remote to read a start point from; the root is under test, not the fetch.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="main"))
 
     def _ticket(self, repos: list[str]) -> Ticket:
         ticket, _ = Ticket.objects.update_or_create(

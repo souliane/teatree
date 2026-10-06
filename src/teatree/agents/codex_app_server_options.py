@@ -53,6 +53,10 @@ class CodexAppServerError(RuntimeError):
         return cls("Codex App Server emitted an invalid JSONL protocol message.")
 
     @classmethod
+    def oversize_line(cls, limit: int) -> "CodexAppServerError":
+        return cls(f"Codex App Server emitted a protocol line over the {limit}-byte read limit.")
+
+    @classmethod
     def refused_request(cls, method: str) -> "CodexAppServerError":
         return CodexAppServerRefusalError(f"Codex App Server refused {method!r}.")
 
@@ -155,14 +159,16 @@ def _workspace_roots(options: HarnessOptions) -> tuple[str, ...]:
 
 
 def _codex_config(options: ClaudeAgentOptions) -> dict[str, Any]:
-    config: dict[str, Any] = {}
+    # Apps load the codex_apps MCP server, whose tool calls never reach the approval gate.
+    features: dict[str, bool] = {"apps": False}
+    config: dict[str, Any] = {"features": features}
     mcp_servers = _translate_mcp_servers(options.mcp_servers)
     if mcp_servers:
         config["mcp_servers"] = mcp_servers
     if "WebSearch" in options.disallowed_tools:
         config["web_search"] = "disabled"
     if _DISPATCH_TOOLS & set(options.disallowed_tools):
-        config["features"] = {"multi_agent": False}
+        features["multi_agent"] = False
     return config
 
 

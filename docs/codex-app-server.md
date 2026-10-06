@@ -154,6 +154,12 @@ last verified cache from pass.
   `features.multi_agent = false`; a phase that denies the shell or all file reads
   is not Codex-compatible with the pinned CLI because it has no equivalent
   per-tool deny control.
+- Every thread sets `features.apps = false`, merged into the same `features`
+  table. ChatGPT apps load the `codex_apps` MCP server, whose tool calls bypass
+  the approval gate (its status reply was also a single ~930 KB protocol line).
+  The setting goes on the thread rather than `codex app-server --disable apps`,
+  because on 0.155.1 a thread that sends any `features` table drops the
+  process-level flag.
 - Inline stdio MCP servers are translated and supported. Remote/non-inline MCP
   configurations are rejected.
 - Server-side resume is supported. Claude hooks and native structured output are
@@ -168,6 +174,13 @@ A stream disconnect after `turn/start` is treated as potentially side-effecting
 even if no item arrived, because the client cannot prove what the server did.
 Protocol, schema, unsupported-policy, and programmer failures remain hard
 harness errors, so a broken adapter cannot silently replay work.
+
+The transport reads protocol lines of up to 16 MiB. A longer line fails as a
+named oversize protocol error, a hard harness error, rather than the generic
+"stopped before completing the request". Every stream failure, and a shared
+server failure after startup, is logged; the stream-failure record carries the
+last 2 KiB of the server's stderr, which goes only to the local log and never
+into the error text.
 
 ## Rotation, recovery, and revocation
 
