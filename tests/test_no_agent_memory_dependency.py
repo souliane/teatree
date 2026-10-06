@@ -44,11 +44,10 @@ _DB_SETTINGS: dict[str, object] = {
     "orchestrator_bash_gate_enabled": True,
     "require_human_approval_to_merge": False,
 }
-_DB_LOOP_STATUS = {"dream": "enabled"}
 
 
 def _seed_config_db(db_path: Path) -> None:
-    """Create the DB-home store with the two tables the cold readers query, and seed it."""
+    """Create the DB-home store with the table the cold readers query, and seed it."""
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
@@ -57,22 +56,11 @@ def _seed_config_db(db_path: Path) -> None:
             "value TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
             "UNIQUE(scope, key))"
         )
-        conn.execute(
-            "CREATE TABLE teatree_loop_state "
-            "(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL, "
-            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-        )
         for key, value in _DB_SETTINGS.items():
             conn.execute(
                 "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
                 "VALUES ('', ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
                 (key, json.dumps(value)),
-            )
-        for name, status in _DB_LOOP_STATUS.items():
-            conn.execute(
-                "INSERT INTO teatree_loop_state (name, status, created_at, updated_at) "
-                "VALUES (?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-                (name, status),
             )
         conn.commit()
     finally:
@@ -84,15 +72,14 @@ def _runtime_state_snapshot() -> dict[str, object]:
 
     Every entry resolves through teatree's own DB-home store (or a per-setting
     default) — the worker/loop publishing doctrine, gate enablement across three
-    reader surfaces (the cold CLI reader and the ``teatree_gate`` CLI helper), a
-    factory merge-approval setting, and durable loop state.
+    reader surfaces (the cold CLI reader and the ``teatree_gate`` CLI helper), and a
+    factory merge-approval setting.
     """
     return {
         "mode": cold_reader.str_setting("mode", default="interactive"),
         "bash_gate_cold": cold_reader.bool_setting("orchestrator_bash_gate_enabled", default=True),
         "bash_gate_cli": teatree_gate.gate_is_enabled(),
         "require_human_approval_to_merge": cold_reader.bool_setting("require_human_approval_to_merge", default=True),
-        "dream_loop_status": cold_reader.loop_status("dream"),
     }
 
 
@@ -140,7 +127,6 @@ def test_runtime_state_identical_with_memory_absent_and_populated(
         "bash_gate_cold": True,
         "bash_gate_cli": True,
         "require_human_approval_to_merge": False,
-        "dream_loop_status": "enabled",
     }
 
 

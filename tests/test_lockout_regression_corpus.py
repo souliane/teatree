@@ -643,7 +643,7 @@ class TestValidateMrMetadataMcpArm:
     def _pin_validator(self, monkeypatch: pytest.MonkeyPatch, returncode: int, stderr: str = "") -> None:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
-        monkeypatch.setattr(router.subprocess, "run", lambda *a, **k: result)
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: result)
 
     def test_clean_mcp_mr_create_passes(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

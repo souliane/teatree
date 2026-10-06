@@ -34,7 +34,7 @@ class TestTheScanFitsTheHookBudget:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         hook_clock.now = 25.0
         clean = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=clean) as run:
+        with patch.object(subprocess, "run", return_value=clean) as run:
             assert handle_block_ai_signature(_gh_pr_create("body")) is False
         assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
 
@@ -42,7 +42,7 @@ class TestTheScanFitsTheHookBudget:
         # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
         monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
         monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
-        with patch.object(router.subprocess, "run") as run:
+        with patch.object(subprocess, "run") as run:
             assert handle_block_ai_signature(_gh_pr_create("body")) is False
         assert run.call_count == 0
         assert "no time left in the hook budget" in capsys.readouterr().err
@@ -52,7 +52,7 @@ class TestBlocksBannedTrailer:
     def test_blocks_gh_pr_create_with_generated_with_footer(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_block_ai_signature(_gh_pr_create("body\n\nGenerated with [Claude Code]"))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -72,7 +72,7 @@ class TestBlocksBannedTrailer:
             "tool_input": {"command": "git commit -m 'fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>'"},
         }
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_block_ai_signature(data)
         assert blocked is True
         assert "Co-Authored-By" in run.call_args[1]["input"]
@@ -84,7 +84,7 @@ class TestBlocksBannedTrailer:
             "tool_input": {"title": "t", "body": "desc\n\n\U0001f916 Generated with [Claude Code]"},
         }
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             assert handle_block_ai_signature(data) is True
 
 
@@ -106,7 +106,7 @@ class TestFileBasedMessageIsScanned:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F {msg}"}}
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_block_ai_signature(data)
         assert blocked is True
         assert "Co-Authored-By" in run.call_args[1]["input"]
@@ -117,7 +117,7 @@ class TestFileBasedMessageIsScanned:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": f"gh pr create --title t --body-file {body}"}}
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             assert handle_block_ai_signature(data) is True
         assert "Co-Authored-By" in run.call_args[1]["input"]
 
@@ -157,7 +157,7 @@ class TestFileBasedMessageIsScanned:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{msg}"}}
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+        with patch.object(subprocess, "run", return_value=rejected) as run:
             blocked = handle_block_ai_signature(data)
         assert blocked is True
         assert "Co-Authored-By" in run.call_args[1]["input"]
@@ -184,7 +184,7 @@ class TestFileBasedMessageIsScanned:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F{body}"}}
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(data) is False
 
     def test_clean_body_file_is_allowed(self, monkeypatch, tmp_path):
@@ -193,7 +193,7 @@ class TestFileBasedMessageIsScanned:
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -F {body}"}}
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(data) is False
 
     def test_nonexistent_message_file_fails_open_no_crash(self):
@@ -231,7 +231,7 @@ class TestScannerErrorIsDistinguishedFromFinding:
     def test_scanner_crash_fails_closed_with_scanner_error_not_finding_message(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         crashed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=self._CRASH_STDERR)
-        with patch.object(router.subprocess, "run", return_value=crashed):
+        with patch.object(subprocess, "run", return_value=crashed):
             blocked = handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836"))
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -246,7 +246,7 @@ class TestScannerErrorIsDistinguishedFromFinding:
         # tool error, not a finding — fail closed, clear message.
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         errored = subprocess.CompletedProcess(args=[], returncode=2, stdout="Usage: …", stderr="error: bad")
-        with patch.object(router.subprocess, "run", return_value=errored):
+        with patch.object(subprocess, "run", return_value=errored):
             blocked = handle_block_ai_signature(_gh_pr_create("a clean description"))
         assert blocked is True
         reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
@@ -268,13 +268,13 @@ class TestScannerErrorIsDistinguishedFromFinding:
             stdout="",
             stderr="/home/u/.local/bin/t3: line 4: exec: /gone/deploy/t3: cannot execute: required file not found",
         )
-        with patch.object(router.subprocess, "run", return_value=unexecutable):
+        with patch.object(subprocess, "run", return_value=unexecutable):
             assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
 
     def test_a_t3_that_is_not_found_by_the_shell_fails_open(self, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         missing = subprocess.CompletedProcess(args=[], returncode=127, stdout="", stderr="t3: command not found")
-        with patch.object(router.subprocess, "run", return_value=missing):
+        with patch.object(subprocess, "run", return_value=missing):
             assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
 
     def test_a_scanner_that_ran_and_errored_still_fails_closed(self, monkeypatch, capsys):
@@ -283,14 +283,14 @@ class TestScannerErrorIsDistinguishedFromFinding:
         errored = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="exec format error while reading the body"
         )
-        with patch.object(router.subprocess, "run", return_value=errored):
+        with patch.object(subprocess, "run", return_value=errored):
             assert handle_block_ai_signature(_gh_pr_create("a clean description")) is True
         assert "scanner error" in json.loads(capsys.readouterr().out)["permissionDecisionReason"].lower()
 
     def test_real_finding_still_denies_with_finding_message(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=rejected):
+        with patch.object(subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(_gh_pr_create("body\n\nGenerated with [Claude Code]"))
         assert blocked is True
         reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
@@ -300,7 +300,7 @@ class TestScannerErrorIsDistinguishedFromFinding:
     def test_clean_scan_allows(self, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836")) is False
 
 
@@ -308,7 +308,7 @@ class TestAllowsCleanCases:
     def test_allows_clean_pr_body(self, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
-        with patch.object(router.subprocess, "run", return_value=ok):
+        with patch.object(subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(_gh_pr_create("a clean description\n\nRelates-to #836")) is False
 
     def test_noop_when_not_a_pr_or_commit_command(self, monkeypatch):

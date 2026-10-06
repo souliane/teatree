@@ -16,7 +16,7 @@ the only release.
 
 Liveness is slot-aware via ``lease_is_live``'s ``trust_pid_past_ttl``.
 The GLOBAL ``t3-master`` slot is PID-ANCHORED: an alive ``owner_pid`` keeps the
-lease live past its TTL (a busy owner fires no self-pump so no tick re-claims),
+lease live past its TTL (a busy owner can run past it with no tick re-claiming),
 transferring only on process death or a ``--take-over`` — the TTL is the
 fallback release, and there is no ``renew()`` / background timer (#54): the
 per-tick re-claim IS the heartbeat. A ``loop:<name>`` PER-LOOP slot does NOT

@@ -1,6 +1,6 @@
 """An existing DB carried across the core migration squash: which ``django_migrations`` rows it may keep.
 
-The core history was squashed into ONE migration under a NEW name (never a pre-squash name),
+The core history was squashed into ONE initial migration under a NEW name (never a pre-squash name),
 so it is unapplied on an install that ran the pre-squash chain. The squash's live window
 therefore rewrites that install's core rows in one transaction: every pre-squash core row
 is deleted and the squash is recorded as applied (fake-applied: the schema is already there).
@@ -32,7 +32,7 @@ from django.db.utils import OperationalError
 from django.test import TransactionTestCase
 
 from teatree.core.process_freshness import FreshnessVerdict, LoadedSnapshot, _compare
-from tests.teatree_core._migration_graph import core_head_migration, core_migration_names
+from tests.teatree_core._migration_graph import core_head_migration, core_initial_migration, core_migration_names
 
 #: Pre-squash core migration names an un-cleaned install carries (frozen history, never on disk again).
 _PRE_SQUASH_INITIAL = "0001_initial"
@@ -46,10 +46,10 @@ _PRE_SQUASH_ROWS = (
 
 
 def test_core_is_one_initial_migration_under_a_new_name() -> None:
-    (squash,) = core_migration_names()
-    assert core_head_migration() == squash
-    assert squash not in _PRE_SQUASH_ROWS
-    assert MigrationLoader(None).disk_migrations["core", squash].initial  # disk only, no DB
+    disk = MigrationLoader(None).disk_migrations  # disk only, no DB
+    initials = [name for name in core_migration_names() if disk["core", name].initial]
+    assert initials == [core_initial_migration()]
+    assert not set(core_migration_names()) & set(_PRE_SQUASH_ROWS)
 
 
 @pytest.mark.timeout(480)
@@ -59,7 +59,7 @@ class TestLeftoverPreSquashRows(TransactionTestCase):
         self.addCleanup(self._drop_leftovers)
 
     def _drop_leftovers(self) -> None:
-        self.recorder.migration_qs.filter(app="core").exclude(name=core_head_migration()).delete()
+        self.recorder.migration_qs.filter(app="core").exclude(name__in=core_migration_names()).delete()
 
     def _freshness(self) -> FreshnessVerdict:
         snapshot = LoadedSnapshot(heads={"core": core_head_migration()}, started_at=datetime.now(UTC))
@@ -85,7 +85,8 @@ class TestLeftoverPreSquashRows(TransactionTestCase):
 class TestTheSquashRowIsLoadBearing(TransactionTestCase):
     def test_without_the_squash_row_migrate_bricks_on_the_existing_tables(self) -> None:
         recorder = MigrationRecorder(connection)
-        recorder.record_unapplied("core", core_head_migration())
-        self.addCleanup(recorder.record_applied, "core", core_head_migration())
+        for name in core_migration_names():
+            recorder.record_unapplied("core", name)
+            self.addCleanup(recorder.record_applied, "core", name)
         with pytest.raises(OperationalError, match="already exists"):
             call_command("migrate", "core", "--no-input", verbosity=0)

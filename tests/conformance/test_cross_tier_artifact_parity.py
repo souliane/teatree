@@ -90,7 +90,6 @@ NOT_A_CROSS_TIER_MIRROR: dict[str, str] = {
 PARITY_LANE_ROSTER: dict[str, str] = {
     "loop-registry.json": "tests/test_session_start_bootstrap_hook.py",
     "tick-meta.json": "tests/test_hook_router_cadence_hook.py",
-    "consolidation-registry.json": "tests/test_consolidation_registry_parity.py",
     "skill-metadata.json": "tests/test_skill_metadata_cache_parity.py",
     "statusline.txt": "tests/test_statusline_shell_parity.py",
     "host-projection.json": "tests/test_statusline_shell_parity.py",
@@ -115,7 +114,7 @@ _MIN_CROSS_TIER = 8
 #: scan (dropping ``*.sh``, or dropping ``scripts/lib``) is caught.
 _CROSS_ROOT_ANCHORS: frozenset[str] = frozenset(
     {
-        "consolidation-registry.json",  # hooks/scripts/*.py only
+        "plugin.json",  # hooks/scripts/*.py only
         "statusline.txt",  # hooks/scripts/*.sh only
         "skill-metadata.json",  # scripts/lib/*.py only
     }

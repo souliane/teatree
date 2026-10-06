@@ -27,13 +27,7 @@ from pathlib import Path
 from typing import cast
 
 from teatree.config import value_coercion
-from teatree.config.cold_db import (
-    canonical_config_db,
-    canonical_projection,
-    fetch_one_confirmed,
-    loop_status,
-    row_exists,
-)
+from teatree.config.cold_db import canonical_config_db, canonical_projection, fetch_one_confirmed, row_exists
 
 __all__ = [
     "SettingRead",
@@ -42,7 +36,6 @@ __all__ = [
     "canonical_projection",
     "int_setting",
     "list_setting",
-    "loop_status",
     "main",
     "mapping_setting",
     "overlay_then_global",

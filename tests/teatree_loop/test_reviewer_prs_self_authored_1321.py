@@ -16,8 +16,8 @@ MR and emitted ``reviewer_pr.unreviewed`` (a reviewing task was created).
 
 Gap two — no reconciliation of EXISTING self-authored reviewing tasks. A
 reviewing ``Task`` already created for a self-authored OPEN MR lingered
-forever (the orphan sweep only reaped MERGED/CLOSED PRs), re-surfacing on
-every ``pending-spawn``. The scanner now emits a reconciliation signal so
+forever (the orphan sweep only reaped MERGED/CLOSED PRs) and kept being
+dispatched. The scanner now emits a reconciliation signal so
 the queue self-heals on the next tick.
 
 These tests drive the real scanner against real ``Ticket``/``Task`` rows and
