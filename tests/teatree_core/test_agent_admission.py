@@ -33,7 +33,12 @@ from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
-from teatree.core.agent_admission import AgentAdmission, agent_admission_denied_reason, agent_admission_verdict
+from teatree.core.agent_admission import (
+    AgentAdmission,
+    agent_admission_denied_reason,
+    agent_admission_verdict,
+    review_lane_width,
+)
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
 from teatree.core.modelkit.phases import PhaseCost
 from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, TaskAttempt, Ticket, UsageWindowState
@@ -675,6 +680,12 @@ class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
             patch.object(Task.objects, "cheap_lane_occupancy", return_value=cheap),
         ):
             return agent_admission_verdict()
+
+    def test_the_review_lane_width_follows_its_setting_and_never_drops_below_one(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        assert review_lane_width() == 3
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
+        assert review_lane_width() == 1
 
     def test_a_full_coding_lane_leaves_the_review_lane_its_whole_width(self) -> None:
         verdict = self._verdict(expensive=self._CEILING)

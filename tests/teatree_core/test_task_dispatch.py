@@ -15,8 +15,9 @@ from django.utils import timezone
 
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ModeOverride, Session, Task, Ticket
 from teatree.core.signals import _auto_enqueue_task
+from teatree.core.task_dispatch import admit_waiting_tasks
 from teatree.core.tasks import drain_queue_body
 from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SIGNAL
 
@@ -115,3 +116,22 @@ class TestTheDrainAdmitsExpeditedWorkFirst(_AdmissionCase):
 
         assert drain_queue_body()["enqueued"] == [older.pk]
         assert not self._admitted(newer)
+
+
+class TestAFrozenFactoryAdmitsNothing(_AdmissionCase):
+    def setUp(self) -> None:
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def test_the_off_posture_withholds_every_waiting_row(self) -> None:
+        waiting = self._task("reviewing")
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+
+        assert admit_waiting_tasks(at="test") == []
+        assert not self._admitted(waiting)
+
+    def test_control_an_admitting_fleet_admits_the_same_row(self) -> None:
+        waiting = self._task("reviewing")
+
+        assert admit_waiting_tasks(at="test") == [waiting.pk]
