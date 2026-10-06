@@ -1,12 +1,12 @@
 ---
 name: interactive
-description: "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, and interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
+description: "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
 compatibility: any
 requires:
   - rules
-eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
+eval_exempt: harness-wiring reference plus invariants enforced by deterministic mechanisms, each pinned by its own tests (engagement by tests/test_teatree_opt_in.py); the factory-watch duty is a read-and-route order whose commands and symbols the skill-command and symbol-ref lanes pin, and its detectors are health collectors and doctor checks with their own tests, so it gets a trajectory eval once issue 5069 gives it one pure-read command to anchor on
 metadata:
-  version: 0.0.2
+  version: 0.0.3
 ---
 
 # TeaTree — Interactive Session
@@ -174,6 +174,31 @@ Three readouts lie in the same direction — they say *finished* while work is l
 - **A red pipeline does not prove a lane ran either.** When a metadata validator fails first and gates the rest, every real job shows `skipped` — the tests, the lint, the builds. The failure is loud and the *verification silently did not happen*, which is the more dangerous half.
 
 The rule is one line: **a status is evidence about the reporter, not about the thing.** Before repeating one to a person, name what you actually observed — the count, the SHA, the file — or say you read a status and did not confirm it.
+
+## Factory watch — BLOCKING first (Non-Negotiable)
+
+An attended session is the operator's eyes on the factory. It looks for abnormalities — an agent run without its phase's skills, a missing skill, failing tasks — and handles the blocking ones before anything else. Each abnormality, with its tier, the command that answers it and today's detector (or the issue for the missing one), is in [`skills/interactive/references/factory-watch.md`](references/factory-watch.md); reading the health chip itself is [`/t3:health`](../health/SKILL.md).
+
+**When:** at session start, after every compaction, before any status report to the operator, and at least on every `standing-todo-consolidate` delivery.
+
+**The cheapest bounded reads, in order:** `t3 worker status --json`, `t3 <overlay> health show --json`, `t3 loop self-improve status --limit 30`, `t3 loop preset show`, `t3 tokens --cached --json`. `health show` reconciles before it prints, so it writes. A pure-read `--no-reconcile` flag and an exit-coded `--fail-on blocking` are coming in #5069; neither exists yet.
+
+**`t3 doctor check --json` takes minutes, so it is worth its cost when** health is red with no row naming the cause, a `health-collector-failed` row is open, or the watchdog cannot page. Read only its non-OK findings.
+
+**Tiers:**
+
+- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch.
+- **DEGRADING** — the factory still delivers, but late or with a weaker guard: a shadowed skill, a schedule firing in the wrong timezone (#5053), an override left on past its reason.
+- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore` (#5064), a stale statusline entry.
+
+**BLOCKING preempts the PR board and the todo drain.** Handle each finding in this order:
+
+1. **Find the durable record before filing anything:** a health row, a self-improve firing at the `ticket` rung, or an open issue found through the forge tool's dedupe above. A recurrence EXTENDS that record instead of starting a new one.
+2. **Unblock now** whatever is not implementation — review, merge, answer, re-run — per § "This session does not implement".
+3. **Notify the owner once, for BLOCKING only,** keyed so a repeat is a no-op: `mcp__teatree__notify_user` with `idempotency_key="factory-watch:<fingerprint>"`, or `t3 <overlay> notify dm '<finding>' --idempotency-key factory-watch:<fingerprint>`. Not `notify send`: it records an unregistered key without delivering it. Skip the DM when the finding has already paged through a registered push signal (`teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`).
+4. **Never leave a finding silent:** keep a TODO naming its fingerprint, and close it only on a durable record. When no detector raised it, add one with `t3 <overlay> health add '<fingerprint>: <finding>' --critical` (without `--critical` for DEGRADING).
+
+**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket, so even this starts within the hour rather than at once.
 
 ## Skill Loading
 
