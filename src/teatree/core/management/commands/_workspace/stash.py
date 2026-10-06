@@ -9,7 +9,7 @@ the stash reaper is its only consumer.
 import re
 from dataclasses import dataclass
 
-from teatree.core.management.commands._workspace.preview import preview_line
+from teatree.core.cleanup.preview import preview_line
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

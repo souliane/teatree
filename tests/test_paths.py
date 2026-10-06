@@ -353,6 +353,55 @@ class TestIsolatedEnvDirOpensStampedAtBirth:
         assert paths.IsolatedEnvDir(data_dir).owner == repo_root
 
 
+class TestStampRecordsWhereTheOwnerLives:
+    """The stamp records where the owner physically lives, so another venue's same-named path is not it (#4923)."""
+
+    def test_a_stamp_records_the_owners_location_beside_its_path(self, tmp_path: Path) -> None:
+        env_dir, owner = tmp_path / "slug", tmp_path / "checkout"
+        owner.mkdir()
+
+        paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+
+        assert paths.IsolatedEnvDir(env_dir).owner_location == paths.physical_location(owner)
+        assert paths.IsolatedEnvDir(env_dir).owner_location is not None
+
+    def test_a_legacy_stamp_gains_the_location_of_the_venue_that_next_sees_it(self, tmp_path: Path) -> None:
+        env_dir, owner = tmp_path / "slug", tmp_path / "checkout"
+        env_dir.mkdir()
+        (env_dir / paths.OWNER_STAMP_NAME).write_text(f"{owner}\n", encoding="utf-8")
+        assert paths.IsolatedEnvDir(env_dir).owner_location is None, "control: a legacy stamp records none"
+
+        paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+
+        assert paths.IsolatedEnvDir(env_dir).owner_location == paths.physical_location(owner)
+
+    def test_a_recorded_location_is_never_overwritten_by_another_venue(self, tmp_path: Path) -> None:
+        env_dir, owner = tmp_path / "slug", tmp_path / "checkout"
+        paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+        (env_dir / paths.OWNER_LOCATION_NAME).write_text("259:2:/as/the/host/saw/it\n", encoding="utf-8")
+
+        paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+
+        assert paths.IsolatedEnvDir(env_dir).owner_location == "259:2:/as/the/host/saw/it"
+
+    def test_a_new_owner_drops_the_previous_owners_location(self, tmp_path: Path) -> None:
+        env_dir = tmp_path / "slug"
+        paths.IsolatedEnvDir(env_dir).stamp_owner(tmp_path / "first")
+        (env_dir / paths.OWNER_LOCATION_NAME).write_text("259:2:/first\n", encoding="utf-8")
+
+        paths.IsolatedEnvDir(env_dir).stamp_owner(tmp_path / "second")
+
+        assert paths.IsolatedEnvDir(env_dir).owner_location == paths.physical_location(tmp_path / "second")
+
+    def test_an_unreadable_mount_table_leaves_a_legacy_stamp(self, tmp_path: Path) -> None:
+        env_dir, owner = tmp_path / "slug", tmp_path / "checkout"
+        with patch.object(paths, "physical_location", return_value=None):
+            paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+
+        assert paths.IsolatedEnvDir(env_dir).owner == owner
+        assert paths.IsolatedEnvDir(env_dir).owner_location is None
+
+
 class TestStaleScanStaysCleanAfterSeed:
     def test_canonical_scan_ignores_relocated_isolated_db(self, tmp_path: Path) -> None:
         """H1 end-to-end: a seeded worktree DB must not be flagged on canonical runs."""

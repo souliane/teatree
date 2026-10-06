@@ -1,8 +1,7 @@
-"""Orphan auto-isolated worktree env-dir reaping for ``t3 teatree workspace clean-all``.
+"""Orphan auto-isolated worktree env-dir reaping, for ``workspace clean-all`` and the artifact sweep.
 
-Its own module so :mod:`teatree.core.management.commands._workspace.cleanup`
-stays under the module-health LOC + function caps (mirrors
-``_workspace_docker``). A git worktree's auto-isolated env dir
+A domain module, so the loop's unattended sweep can call it as well as the
+``clean-all`` command (#4923). A git worktree's auto-isolated env dir
 (``~/.local/share/teatree-worktrees/<slug>`` holding a per-worktree
 ``db.sqlite3`` + ``logs/``) lingers after the checkout is gone; this reaps the
 dirs no live checkout owns, never one holding a git checkout (#291, mirroring
@@ -25,12 +24,13 @@ durable mapping grows rather than covering only newly-minted dirs.
 
 Incomplete evidence fails CLOSED — an unreadable directory, a subtree past the
 walk's depth cap, or an unreadable clone registry hides an unknown number of live
-checkouts, so every otherwise-unreferenced dir is kept and the gap reported. That
-rests on the scan reporting everything it did not cover: a skip recording no gap
-left ``complete`` true while the keep-set was short, which is what authorised
-proposing a live checkout's env dir for deletion (#3872). A dir modified at or
-after the keep-set instant is kept for the same reason: the evidence never
-covered it.
+checkouts, so every dir whose own stamp cannot prove it dead is kept and the gap
+reported. That rests on the scan reporting everything it did not cover: a skip
+recording no gap left ``complete`` true while the keep-set was short, which is what
+authorised proposing a live checkout's env dir for deletion (#3872). A dir modified at
+or after the keep-set instant is kept for the same reason: the evidence never
+covered it. A stamp that proves its owner absent at the physical place it was stamped
+does not rest on the walk at all, so a gap elsewhere no longer vetoes it (#4923).
 
 **A scan that skipped nothing can still be blind, so its silence is not evidence
 either (#3872).** Making every skip record a gap closes the case where the walk
@@ -41,24 +41,27 @@ reports ``complete`` — while every host-owned env dir reads as an orphan. The
 blindness is bidirectional (the host cannot see the container's own source volume
 either), so no venue's scan result is a sound liveness test on its own. Only the
 stamp is venue-independent, and
-:mod:`~teatree.core.management.commands._workspace.owner_stamps` is where a
+:mod:`~teatree.core.cleanup.owner_stamps` is where a
 stamped owner's absence is weighed against whether this venue could have observed
 it: a stamp naming an unreachable path, and a dir carrying no stamp at all, are
 both MISSING EVIDENCE — kept with the gap reported, never proof of death.
 """
 
 import shutil
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from teatree import paths
-from teatree.core.cleanup import checkout_registry
+from teatree.core.cleanup import checkout_registry, owner_stamps
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.preview import preview_line
+from teatree.core.cleanup.unshipped_work import ARTIFACT_NAMESPACE as SALVAGE_NAME
 from teatree.core.gates.idle_stack import worktree_protects_against_reap
-from teatree.core.management.commands._workspace import owner_stamps
-from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
+
+_STAMP_NAMES = frozenset({paths.OWNER_STAMP_NAME, paths.OWNER_LOCATION_NAME})
 
 
 def _has_unmappable_live_worktree() -> bool:
@@ -122,7 +125,7 @@ def _row_referenced_slugs() -> set[str]:
     return referenced
 
 
-def _live_checkout_slugs(workspace: Path, root: Path) -> LiveCheckoutSlugs:
+def _live_checkout_slugs(workspace: Path, root: Path, *, deadline: float | None) -> LiveCheckoutSlugs:
     """Union the registered-row and on-disk-checkout evidence into ONE keep-set.
 
     Both sources answer the same question — "does a live checkout own this slug?"
@@ -134,7 +137,7 @@ def _live_checkout_slugs(workspace: Path, root: Path) -> LiveCheckoutSlugs:
     at or after it is provably outside this answer.
     """
     snapshot_at = time.time()
-    registry = checkout_registry.live_checkout_paths(workspace)
+    registry = checkout_registry.live_checkout_paths(workspace, deadline=deadline)
     owner_stamps.stamp_discovered_owners(registry.paths, root)
     slugs = _row_referenced_slugs()
     slugs.update(paths.isolated_slug(Path(checkout)) for checkout in registry.paths)
@@ -189,8 +192,8 @@ def _evidence_gap(env_dir: Path, *, stamp: owner_stamps.OwnerStamp, live: LiveCh
     #3872 one — a stamped owner this venue could never have seen, or no stamp at all.
     Absence of an owner is not proof of death while any of these holds (#706).
     """
-    if live.gaps:
-        return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove any dir is orphan"
+    if live.gaps and stamp.missing_evidence is not None:
+        return f"checkout evidence is incomplete ({'; '.join(live.gaps)}) — cannot prove this dir is orphan"
     if _changed_since(env_dir, live.snapshot_at):
         return "changed after the keep-set was computed — outside this pass's evidence"
     return stamp.missing_evidence
@@ -212,7 +215,9 @@ def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live
     )
 
 
-def reap_orphan_isolated_worktree_roots(workspace: Path, *, dry_run: bool = False) -> list[str]:
+def reap_orphan_isolated_worktree_roots(
+    workspace: Path, *, dry_run: bool = False, deadline: float | None = None
+) -> list[str]:
     """Remove the auto-isolated worktree env dirs PROVEN dead (#291, #3852, #3872).
 
     Each git worktree gets an auto-isolated env dir under
@@ -229,27 +234,72 @@ def reap_orphan_isolated_worktree_roots(workspace: Path, *, dry_run: bool = Fals
     do rather than a list of its deletions.
 
     Four fail-closed guards, all #706-shaped. Unreadable git evidence (``live.gaps``)
-    keeps EVERY dir: an unread clone hides an unknown number of live checkouts. A BUSY
+    keeps every dir its stamp cannot prove dead: an unread clone hides an unknown number
+    of live checkouts, but not one at the place a stamp names. A BUSY
     worktree row with no recorded checkout path (:func:`_has_unmappable_live_worktree`)
     cannot be hashed to a slug, so its in-use isolated DB is indistinguishable from an
     orphan. And the two #3872 guards: a stamped owner this venue could never have
     observed, and a dir carrying no stamp at all, are both missing evidence rather than
     dead — which is why a venue blind to the clones now reclaims nothing instead of
     everything.
+
+    A reclaimable dir is released, never blindly removed: its ``unshipped-work/`` salvage
+    and stamps survive, and one dir that cannot be deleted is reported and skipped. A
+    walk *deadline* only shortens the keep-set into a gap, which stamp-proven dirs ignore.
     """
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():
         return []
-    live = _live_checkout_slugs(workspace, root)
+    live = _live_checkout_slugs(workspace, root, deadline=deadline)
     keep_unmappable_live = _has_unmappable_live_worktree()
     outcomes: list[str] = []
     for env_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        reason = _keep_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
+        reason = (
+            "a symlink, not a dir this root minted — never followed"
+            if env_dir.is_symlink()
+            else _keep_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
+        )
         if reason is not None:
             outcomes.append(f"KEPT '{env_dir.name}': {reason}")
         elif dry_run:
             outcomes.append(preview_line(f"Remove orphan isolated env dir: {env_dir.name}", dry_run=True))
         else:
-            shutil.rmtree(env_dir)
-            outcomes.append(f"Removed orphan isolated worktree root: {env_dir.name}")
+            outcomes.append(_release(env_dir))
     return outcomes
+
+
+def _release(env_dir: Path) -> str:
+    """Delete an orphan env dir except its salvage, stamps last, so a failure leaves it judgeable next pass."""
+    try:
+        entries = sorted(env_dir.iterdir(), key=lambda entry: entry.name in _STAMP_NAMES)
+        salvaged = any(entry.name == SALVAGE_NAME for entry in entries)
+        for entry in entries:
+            if entry.name == SALVAGE_NAME or (salvaged and entry.name in _STAMP_NAMES):
+                continue
+            _remove_entry(entry)
+        if not salvaged:
+            env_dir.rmdir()
+    except OSError as exc:
+        return f"FAILED to remove orphan isolated env dir '{env_dir.name}': {exc} — the next pass retries"
+    if salvaged:
+        return f"Released orphan isolated env dir '{env_dir.name}': kept its {SALVAGE_NAME}/ salvage"
+    return f"Removed orphan isolated worktree root: {env_dir.name}"
+
+
+def _remove_entry(entry: Path) -> None:
+    if entry.is_symlink() or not entry.is_dir():
+        entry.unlink()
+        return
+    _open_for_deletion(entry)
+    shutil.rmtree(entry)
+
+
+def _open_for_deletion(top: Path) -> None:
+    """Give the owner full access to every dir below *top*: the phase-handoff store is created unlistable."""
+    pending = [top]
+    while pending:
+        directory = pending.pop()
+        mode = stat.S_IMODE(directory.lstat().st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            directory.chmod(mode | stat.S_IRWXU)
+        pending.extend(child for child in directory.iterdir() if child.is_dir() and not child.is_symlink())

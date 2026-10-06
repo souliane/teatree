@@ -1,5 +1,9 @@
 """The dormant-artifact sweep — the loss-free reclaim, off the destructive ladder (#4244).
 
+It is also the factory's unattended housekeeping caller (#4923): each pass drains the
+terminal-ticket teardown backlog and releases orphan per-worktree env dirs, both of which
+otherwise waited for an operator to type ``clean-all``.
+
 Its own module because it is its own pass. It has its own scanner
 (:class:`~teatree.loop.scanners.artifact_eviction.ArtifactEvictionScanner`), its own
 cadence, its own marker fields, and — the reason that matters — its own authority:
@@ -12,6 +16,7 @@ this module is the loop-facing wrapper that plans, records, executes and re-reco
 """
 
 import logging
+import time
 
 from django.utils import timezone
 
@@ -31,6 +36,8 @@ logger = logging.getLogger(__name__)
 #: The whole pass — walk, sizing, re-walks, deletions — ends inside this, well under the
 #: resource_pressure tick's 300 s deadline, so it finishes as a recorded partial run.
 ARTIFACT_PASS_BUDGET_SECONDS = 120.0
+#: The orphan env-dir reaper's checkout walk; together with the pass above, inside the 300 s tick.
+ENV_DIR_WALK_BUDGET_SECONDS = 60.0
 
 
 def sweep_artifacts(payload: ActionPayload) -> None:
@@ -52,8 +59,42 @@ def sweep_artifacts(payload: ActionPayload) -> None:
     outcome = EvictionOutcome() if eviction.refusal else evict_artifacts(eviction)
     plan.reclaimed_gb += outcome.freed_bytes / GIB
     append_stopped_deletions(plan, "artifact eviction", outcome.refusal, outcome.skipped)
+    _drain_teardown_backlog(plan)
+    _release_orphan_env_dirs(plan)
     persist_plan(marker, plan, field_name="last_artifact_plan", caller="sweep_artifacts")
     logger.info("sweep_artifacts reclaimed ~%.2f GB", plan.reclaimed_gb)
+
+
+def _drain_teardown_backlog(plan: FreePlan) -> None:
+    from teatree.core.tasks import TeardownDispatch  # noqa: PLC0415 — lazy ORM import
+
+    try:
+        queued = TeardownDispatch.drain_terminal_backlog()
+    except Exception:
+        logger.exception("sweep_artifacts: teardown drain failed — swallowed")
+        plan.steps.append("SKIP terminal-ticket teardown drain — the teardown drain failed (see logs)")
+        return
+    plan.steps.append(f"DRAIN terminal tickets' leftover worktrees: queued {len(queued)} teardown(s)")
+
+
+def _release_orphan_env_dirs(plan: FreePlan) -> None:
+    from teatree.core.cleanup.isolated_roots import (  # noqa: PLC0415 — lazy ORM import
+        reap_orphan_isolated_worktree_roots,
+    )
+
+    deadline = time.monotonic() + ENV_DIR_WALK_BUDGET_SECONDS
+    try:
+        outcomes = reap_orphan_isolated_worktree_roots(worktree_root(), deadline=deadline)
+    except Exception:
+        logger.exception("sweep_artifacts: orphan env-dir reap failed — swallowed")
+        plan.steps.append("SKIP orphan env-dir release — the reaper raised (see logs)")
+        return
+    failed = tuple(line for line in outcomes if line.startswith("FAILED"))
+    released = tuple(line for line in outcomes if not line.startswith(("KEPT", "FAILED")))
+    kept = len(outcomes) - len(released) - len(failed)
+    plan.steps.append(f"RELEASE orphan env dirs: {len(released)} released, {len(failed)} failed, {kept} kept")
+    for line in sampled(released + failed):
+        plan.steps.append(f"  {line}")
 
 
 def _append_artifact_steps(plan: FreePlan, eviction: ArtifactEvictionPlan) -> None:

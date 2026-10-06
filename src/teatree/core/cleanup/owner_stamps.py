@@ -27,7 +27,12 @@ Two conclusions follow, and the reaper draws exactly these:
 *   an UNSTAMPED dir is the same verdict with less to say: nothing recorded its owner,
     so nothing can retire it. Stamping is universal at birth, so this costs only the
     dirs that predate it — reclaimed by running :func:`backfill_owner_stamps` in each
-    venue that can see checkouts, since neither venue sees them all.
+    venue that can see checkouts, since neither venue sees them all;
+*   an observable path is still not proof when the two venues spell one path for two
+    directories (#4923): the container's own home reads a host-only checkout as absent.
+    So the stamp also records where the owner physically lived, and absence counts only
+    where this venue resolves the path to that same place. A stamp predating that record
+    is missing evidence too.
 """
 
 from dataclasses import dataclass
@@ -36,6 +41,7 @@ from pathlib import Path
 from teatree import paths
 from teatree.core.cleanup import checkout_registry
 from teatree.core.worktree.venue import venue_can_observe
+from teatree.mount_identity import physical_location
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +50,8 @@ class OwnerStamp:
 
     owner: Path | None
     observable: bool
+    recorded_location: str | None = None
+    location_here: str | None = None
 
     @property
     def proof_of_life(self) -> str | None:
@@ -62,13 +70,27 @@ class OwnerStamp:
                 f"its owner stamp names {self.owner}, which this venue cannot see"
                 " — missing evidence, not proof of death"
             )
+        if self.recorded_location is None:
+            return (
+                f"its owner stamp names {self.owner} but predates the location record, so this venue cannot"
+                " tell that path from another venue's directory of the same name — missing evidence"
+            )
+        if self.location_here != self.recorded_location:
+            return (
+                f"its owner {self.owner} was stamped at {self.recorded_location}, but that path is"
+                f" {self.location_here} here — another venue's directory, so its absence proves nothing"
+            )
         return None
 
 
 def read_owner_stamp(env_dir: Path, scanned_roots: tuple[Path, ...]) -> OwnerStamp:
     """*env_dir*'s recorded owner and whether this venue is in a position to judge it."""
-    owner = paths.IsolatedEnvDir(env_dir).owner
-    return OwnerStamp(owner, observable=owner is not None and venue_can_observe(owner, scanned_roots))
+    env = paths.IsolatedEnvDir(env_dir)
+    owner = env.owner
+    observable = owner is not None and venue_can_observe(owner, scanned_roots)
+    recorded = env.owner_location if observable else None
+    here = physical_location(owner) if owner is not None and recorded is not None else None
+    return OwnerStamp(owner, observable, recorded, here)
 
 
 def stamp_discovered_owners(checkouts: frozenset[str], root: Path) -> list[str]:

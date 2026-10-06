@@ -18,13 +18,13 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree import paths
-from teatree.core.management.commands._workspace import isolated_roots as reaper
+from teatree.core.cleanup import isolated_roots as reaper
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
-_REAP = "teatree.core.management.commands._workspace.isolated_roots"
+_REAP = "teatree.core.cleanup.isolated_roots"
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
 
 
@@ -460,3 +460,137 @@ class TestLiveCheckoutEvidence(TestCase):
 
         assert not env_dir.exists()
         assert any("Removed orphan isolated worktree root" in line for line in result)
+
+
+class TestEvidenceIsJudgedPerDir(TestCase):
+    """A gap blinds only what it hid, and absence counts only where the stamp's place is seen (#4923).
+
+    The checkout scan always walks home, where a handful of unlistable dirs never
+    clear, so a global veto kept every env dir forever. Lifting it is only safe beside
+    the location record: the container's own home reads a host-only checkout as absent.
+    """
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
+
+    def _reap(self) -> list[str]:
+        return reaper.reap_orphan_isolated_worktree_roots(self.workspace)
+
+    def _unlistable_dir(self) -> Path:
+        locked = self.workspace / "locked"
+        locked.mkdir(mode=0o300)
+        self.addCleanup(locked.chmod, 0o700)
+        return locked
+
+    def test_an_unrelated_gap_no_longer_vetoes_a_location_proven_orphan(self) -> None:
+        self._unlistable_dir()
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "vanished")
+
+        result = self._reap()
+
+        assert not orphan.exists(), result
+        assert any("Removed orphan isolated worktree root" in line and orphan.name in line for line in result)
+
+    def test_the_gap_still_keeps_a_dir_its_stamp_cannot_speak_for(self) -> None:
+        self._unlistable_dir()
+        unstamped = _make_env_dir(self.root, paths.isolated_slug(self.workspace / "never-stamped"))
+
+        result = self._reap()
+
+        assert unstamped.exists()
+        assert any("KEPT" in line and unstamped.name in line and "incomplete" in line for line in result)
+
+    def test_a_stamp_predating_the_location_record_is_kept(self) -> None:
+        owner = self.workspace / "host-only"
+        legacy = _make_env_dir(self.root, paths.isolated_slug(owner))
+        (legacy / paths.OWNER_STAMP_NAME).write_text(f"{owner}\n", encoding="utf-8")
+
+        result = self._reap()
+
+        assert legacy.exists(), "DATA LOSS: a legacy stamp cannot tell this venue's path from the host's"
+        assert any("KEPT" in line and legacy.name in line and "location" in line for line in result)
+
+    def test_an_owner_stamped_in_another_venue_is_kept(self) -> None:
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "host-only")
+        (orphan / paths.OWNER_LOCATION_NAME).write_text("259:2:/srv/host-only\n", encoding="utf-8")
+
+        result = self._reap()
+
+        assert orphan.exists(), "DATA LOSS: absence in the container's home is no proof about the host's"
+        assert any("KEPT" in line and orphan.name in line and "another venue" in line for line in result)
+
+
+class TestGuardedRelease(TestCase):
+    """The delete keeps salvage, survives teatree's own locked dirs, and one failure ends nothing (#4923)."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
+
+    def _reap(self) -> list[str]:
+        return reaper.reap_orphan_isolated_worktree_roots(self.workspace)
+
+    def test_unshipped_work_salvage_survives_the_release(self) -> None:
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "gone")
+        bundle = orphan / "unshipped-work" / "abc123" / "uncommitted.patch"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("diff --git a/x b/x\n", encoding="utf-8")
+
+        result = self._reap()
+
+        assert bundle.exists(), "DATA LOSS: a salvage bundle `workspace restore` reads was deleted"
+        assert not (orphan / "db.sqlite3").exists()
+        assert paths.IsolatedEnvDir(orphan).owner == self.workspace / "gone", "salvage stays attributable"
+        assert any("unshipped-work" in line and orphan.name in line for line in result)
+
+    def test_a_locked_handoff_store_does_not_abort_the_pass(self) -> None:
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "dispatched-from")
+        store = orphan / "handoff"
+        delivery = store / "tmpdelivery"
+        delivery.mkdir(parents=True)
+        (delivery / "handoff.json").write_text("{}", encoding="utf-8")
+        (delivery / "handoff.json").chmod(0o400)
+        delivery.chmod(0o500)
+        store.chmod(0o300)
+        sibling = _make_orphan_env_dir(self.root, self.workspace / "also-gone")
+
+        result = self._reap()
+
+        assert not orphan.exists(), result
+        assert not sibling.exists(), result
+
+    def test_one_failing_dir_does_not_stop_the_rest(self) -> None:
+        first = _make_orphan_env_dir(self.root, self.workspace / "gone-a")
+        second = _make_orphan_env_dir(self.root, self.workspace / "gone-b")
+        failing, survivor = sorted((first, second))
+        real_rmtree = shutil.rmtree
+
+        def refuse_one(path: Path) -> None:
+            if path.is_relative_to(failing):
+                raise PermissionError(13, "Permission denied", str(path))
+            real_rmtree(path)
+
+        with patch(f"{_REAP}.shutil.rmtree", side_effect=refuse_one):
+            result = self._reap()
+
+        assert failing.exists()
+        assert not survivor.exists(), "one undeletable dir used to abort every later dir"
+        assert any("FAILED" in line and failing.name in line for line in result)
+        assert paths.IsolatedEnvDir(failing).owner is not None, "a failed release keeps the dir judgeable"
+
+    def test_a_symlinked_entry_is_never_followed(self) -> None:
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        target = _make_orphan_env_dir(elsewhere, self.workspace / "gone-target")
+        link = self.root / target.name
+        link.symlink_to(target)
+
+        result = self._reap()
+
+        assert (target / "db.sqlite3").exists(), "the reaper deleted through a link it never minted"
+        assert link.is_symlink()
+        assert any("KEPT" in line and link.name in line and "symlink" in line for line in result)

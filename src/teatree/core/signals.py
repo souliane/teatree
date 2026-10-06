@@ -377,8 +377,8 @@ def _enqueue_ticket_transition_task(
     ``_log_ticket_transition``): the ticket was already terminal and its worktrees
     were already reaped, so a re-run would mint a duplicate job for work that no
     longer exists. Re-running teardown for a terminal ticket that still holds
-    worktrees is ``TeardownDispatch.drain_terminal_backlog``'s job — an explicit
-    operator drain, not a side effect of an FSM no-op.
+    worktrees is ``TeardownDispatch.drain_terminal_backlog``'s job — the artifact
+    sweep's cadence-driven drain, not a side effect of an FSM no-op.
 
     The enqueue itself goes through ``TeardownDispatch.enqueue_once``, the shared seam
     that skips a ticket whose teardown is already queued or running. Entering a

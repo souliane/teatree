@@ -8,15 +8,21 @@ ladder's anti-thrash gate does not read.
 """
 
 import datetime as _dt
+import tempfile
+import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from teatree import paths
 from teatree.config import UserSettings
 from teatree.core.cleanup.artifact_eviction import ArtifactEvictionPlan
+from teatree.core.models import Ticket, Worktree
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
@@ -28,7 +34,15 @@ from teatree.loops.timer_chains import MIN_TICK_DEADLINE_SECONDS
 pytestmark = pytest.mark.django_db
 
 _PRESSURE = "teatree.loop.scanners.resource_pressure"
+_REGISTRY = "teatree.core.cleanup.checkout_registry"
 _SIGNAL = "resource.artifacts_reclaimable"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_env_root(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every sweep here also runs the orphan env-dir reaper, which must never see the runner's real root."""
+    empty = tmp_path_factory.mktemp("env-root")
+    monkeypatch.setattr(paths, "auto_isolated_worktrees_dir", lambda: empty)
 
 
 class ReachableWithoutDiskPressureTests(TestCase):
@@ -266,3 +280,76 @@ class BoundedPassTests(TestCase):
         assert "worktree row #85" in recorded
         assert "resolved to /home/teatree/workspace/t3/x" in recorded
         assert "not this venue's" not in recorded, "a row resolved to a venue checkout IS this venue's"
+
+
+@override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend"}})
+class UnattendedHousekeepingTests(TestCase):
+    """The sweep is the unattended caller the teardown backlog and the env-dir reaper never had (#4923).
+
+    Both ran only when an operator typed ``clean-all`` (or never: the drain had no caller),
+    so a long-running factory accumulated terminal tickets' worktrees and orphan control-DB
+    copies until the disk filled. The sweep already runs on its own cadence on a healthy disk.
+    """
+
+    def setUp(self) -> None:
+        from teatree.loop import mechanical_artifacts  # noqa: PLC0415 — deferred
+
+        self.env_root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.env_root))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
+        self.enterContext(
+            patch.object(
+                mechanical_artifacts, "plan_artifact_eviction", return_value=ArtifactEvictionPlan(refusal="control")
+            )
+        )
+
+    def _sweep(self) -> str:
+        from teatree.loop.mechanical_artifacts import sweep_artifacts  # noqa: PLC0415 — deferred
+
+        sweep_artifacts({"artifact_idle_days": 2.0})
+        return ResourcePressureMarker.load().last_artifact_plan
+
+    def _orphan_env_dir(self) -> Path:
+        owner = self.workspace / "merged-and-removed"
+        env_dir = self.env_root / paths.isolated_slug(owner)
+        (env_dir / "logs").mkdir(parents=True)
+        (env_dir / "db.sqlite3").write_bytes(b"x" * 1024)
+        paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
+        return env_dir
+
+    def test_a_terminal_tickets_leftover_worktree_gets_its_teardown_queued(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        ticket.state = Ticket.State.MERGED
+        ticket.save(update_fields=["state"])
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="b")
+
+        plan = self._sweep()
+
+        assert TeardownDispatch.outstanding_for(ticket.pk), "a merged ticket's worktree waited for an operator"
+        assert "queued 1 teardown" in plan, plan
+
+    def test_an_orphan_env_dir_is_released_on_a_healthy_disk(self) -> None:
+        env_dir = self._orphan_env_dir()
+
+        plan = self._sweep()
+
+        assert not env_dir.exists(), plan
+        assert "1 released" in plan, plan
+
+    def test_a_failing_drain_still_lets_the_env_dir_reap_run(self) -> None:
+        env_dir = self._orphan_env_dir()
+
+        with patch.object(TeardownDispatch, "drain_terminal_backlog", side_effect=RuntimeError("db locked")):
+            plan = self._sweep()
+
+        assert not env_dir.exists()
+        assert "teardown drain failed" in plan, plan
+
+    def test_the_env_dir_walk_is_bounded_inside_the_tick(self) -> None:
+        reaper = "teatree.core.cleanup.isolated_roots.reap_orphan_isolated_worktree_roots"
+        with patch(reaper, return_value=[]) as reap:
+            self._sweep()
+
+        deadline = reap.call_args.kwargs["deadline"]
+        assert 0 < deadline - time.monotonic() <= MIN_TICK_DEADLINE_SECONDS / 2

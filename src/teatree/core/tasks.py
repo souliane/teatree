@@ -461,8 +461,8 @@ class TeardownDispatch:
         The operational catch-up for tickets whose worktrees outlived their terminal
         state. Safe to re-run: ``execute_teardown`` re-checks state, the reaper keeps
         any unsynced work, and the enqueue itself deduplicates against an outstanding
-        job, so repeating the drain does not repeat the queue rows. NOT invoked
-        automatically; an operator calls it explicitly to drain the pile-up.
+        job, so repeating the drain does not repeat the queue rows. The loss-free
+        artifact sweep calls it on its cadence (:mod:`teatree.loop.mechanical_artifacts`).
 
         Returns the ticket pks this call actually queued — a ticket whose teardown was
         already outstanding is covered but not re-queued, so it is absent.

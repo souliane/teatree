@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.paths --> teatree.generation
+    teatree.paths --> teatree.mount_identity
     teatree.paths --> teatree.sqlite_snapshot
     teatree.project --> teatree.paths
     teatree.llm --> teatree.utils
@@ -466,6 +467,7 @@ graph TD
     teatree.quality --> teatree.paths
     teatree.quality --> teatree.utils
     teatree.dream_constants
+    teatree.mount_identity
     teatree.sqlite_snapshot
     teatree.request_cache
     teatree.forge_credentials
