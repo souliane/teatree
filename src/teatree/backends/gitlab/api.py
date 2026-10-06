@@ -303,25 +303,6 @@ class GitLabAPI(GitLabHTTPClient):
         self._set_cached(cache_key, result)
         return result
 
-    def get_mr_pipeline(self, project_id: int, mr_iid: int) -> dict[str, str | None]:
-        """Return the latest pipeline status and URL for an MR."""
-        cache_key = f"pipeline:{project_id}:{mr_iid}"
-        cached: dict[str, str | None] | None = self._get_cached(cache_key, _TTL_PIPELINE)
-        if cached is not None:
-            return cached
-        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/pipelines?per_page=1")
-        result: dict[str, str | None]
-        if isinstance(data, list) and data:
-            pipeline = data[0]
-            result = {
-                "status": str(pipeline.get("status", "")),
-                "url": str(pipeline.get("web_url", "")),
-            }
-        else:
-            result = {"status": None, "url": None}
-        self._set_cached(cache_key, result)
-        return result
-
     def get_mr_approvals(self, project_id: int, mr_iid: int) -> dict[str, object]:
         """Return approval count, required count, and approver names for an MR."""
         cache_key = f"approvals:{project_id}:{mr_iid}"

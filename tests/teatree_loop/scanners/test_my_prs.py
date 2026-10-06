@@ -10,9 +10,11 @@ than silently classifying it as a benign open PR.
 import logging
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.core.merge import CodeHostQuery
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher, reset_ci_memo
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import reset_throttle
 from tests.teatree_backends._gitlab_wire import GitLabWire
 from tests.teatree_loop.test_scanners import FakeCodeHost
@@ -201,6 +203,34 @@ def test_a_canceled_merge_train_pipeline_in_front_of_a_green_head_dispatches_no_
     reset_throttle()
 
     signals = MyPrsScanner(host=GitLabCodeHost(client=wire)).scan()
+
+    assert [(signal.kind, action.kind) for signal in signals for action in dispatch([signal])] == [
+        ("my_pr.open", "statusline"),
+    ]
+
+
+def test_a_head_whose_pipeline_gitlab_has_not_created_yet_dispatches_no_debug() -> None:
+    head, older = "a" * 40, "b" * 40
+    mr_url = "https://gitlab.example/group/repo/-/merge_requests/1"
+    wire = GitLabWire(
+        {
+            "user": {"username": "alice"},
+            "merge_requests": [{"iid": 1, "project_id": 42, "sha": head, "title": "GitLab MR", "web_url": mr_url}],
+            "projects/42/merge_requests/1/pipelines": [{"status": "failed", "sha": older, "source": "push"}],
+            "projects/group%2Frepo/merge_requests/1": {"iid": 1, "sha": head},
+            "projects/group%2Frepo/merge_requests/1/pipelines": [{"status": "failed", "sha": older, "source": "push"}],
+        }
+    )
+    host = GitLabCodeHost(client=wire)
+    enricher = BoundedCiEnricher(
+        resolve=lambda _url: CodeHostQuery(
+            ref=PrRef(slug="group/repo", pr_id=1, host_kind="gitlab"), backend=host
+        ).required_checks_status()
+    )
+    reset_throttle()
+    reset_ci_memo()
+
+    signals = MyPrsScanner(host=host, ci_enricher=enricher).scan()
 
     assert [(signal.kind, action.kind) for signal in signals for action in dispatch([signal])] == [
         ("my_pr.open", "statusline"),
