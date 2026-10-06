@@ -121,9 +121,9 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
 
     A non-reviewing phase, or a result without a ``review_verdict``, is a no-op. So is a
     task answerable for NO pull request — an author-role reviewing task keyed by an issue
-    URL is a self-review with no merge guard behind it, and refusing it would strand the
-    author lane rather than protect anything. A task that IS answerable for one and cannot
-    persist there fails loudly instead (#4308).
+    URL is a pre-PR self-review: its verdict stays on the task attempt, where the FSM
+    disposition (``SelfReview``) reads it and a HOLD keeps the ticket in TESTED. A task that
+    IS answerable for one and cannot persist there fails loudly instead (#4308).
     """
     resolved_phase = normalize_phase(phase or task.phase)
     envelope = _returned_review_verdict(result, phase=resolved_phase)

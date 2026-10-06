@@ -15,7 +15,7 @@ from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, pha
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
-from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
@@ -24,7 +24,8 @@ from teatree.core.models.task_claim import fail_claimed as _fail_claimed_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
 from teatree.core.models.task_claim import window_parked as _window_parked
 from teatree.core.models.task_phase_disposition import (
-    dispose_unshippable_review,
+    advance_coded_ticket,
+    advance_self_reviewed_ticket,
     escalate_unmatched_phase_transition,
     transition_source_states,
 )
@@ -424,31 +425,19 @@ class Task(models.Model):
                 and ticket.state in mark_reviewed_externally_source_states
             ):
                 return self._advance_reviewer_ticket(ticket)
+            if phase == "coding":
+                return advance_coded_ticket(self, ticket)
+            if phase == "reviewing" and ticket.state == Ticket.State.TESTED:
+                return advance_self_reviewed_ticket(self, ticket)
             if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
             elif phase == "planning" and ticket.state == Ticket.State.WORK_STARTED:
                 ticket.plan(parent_task=self)
                 ticket.save()
-            elif phase == "coding" and ticket.state == Ticket.State.PLAN_RECORDED:
-                ticket.code(parent_task=self)
-                ticket.save()
-            elif (
-                phase == "coding"
-                and ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED}
-                and has_plan_decision(ticket)
-            ):
-                # A plan recorded off the WORK_STARTED rung (``ticket plan`` / ``skip-planning`` on an
-                # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
-                ticket.code_direct(parent_task=self)
-                ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True, parent_task=self)
                 ticket.save()
-            elif phase == "reviewing" and ticket.state == Ticket.State.TESTED:
-                ticket.review(parent_task=self)
-                ticket.save()
-                dispose_unshippable_review(ticket)
             elif phase == "shipping" and ticket.state == Ticket.State.SELF_REVIEWED:
                 # #1284 (codex #1282-2): the task-based completion path must
                 # enforce the same visited-phases gate the ``pr create`` path

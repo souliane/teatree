@@ -23,6 +23,7 @@ from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown, Verdict, evaluate_gate, read_or_refuse
 from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.branch_currency import require_current_branch
@@ -223,10 +224,34 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             hint="Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
         )
 
+    if held := _held_pre_pr_self_review(ticket):
+        return held
+
     # Gate passed -> the work is attested. Reconcile the FSM so ``ship()``
     # is legal and drain any orphan reviewing task (gate-verified only).
     reconcile_fsm_for_ship(ticket, consume_reviewing_tasks=True)
     return None
+
+
+def _held_pre_pr_self_review(ticket: Ticket) -> ShippingGateFailure | None:
+    """Refuse a ticket with no PR yet whose latest self-review held; a PR's own review gates it after."""
+    if ticket.state not in Ticket.pre_ship_states():
+        return None
+    review = SelfReview.latest_for(ticket)
+    if review is None or not review.is_hold:
+        return None
+    return ShippingGateFailure(
+        allowed=False,
+        error=(
+            f"Self-review HOLD at {review.reviewed_sha or 'an unrecorded head'} (reviewing task {review.task_pk}): "
+            f"{len(review.findings)} finding(s) unaddressed."
+        ),
+        missing=[],
+        hint=(
+            f"Fix the findings — `t3 <overlay> ticket rework-hold {ticket.pk}` queues them as a coding task, "
+            "and a fresh merge_safe self-review clears the hold."
+        ),
+    )
 
 
 def resolve_base_url(worktree: Worktree) -> str:

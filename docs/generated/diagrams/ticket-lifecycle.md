@@ -40,6 +40,7 @@ stateDiagram-v2
     coded --> review_delivered : mark_reviewed_externally
     coded --> ignored : ignore
     tested --> work_started : rework
+    tested --> coded : address_self_review
     tested --> self_reviewed : reconcile_reviewed
     tested --> self_reviewed : review
     tested --> merged : reconcile_merged
@@ -47,6 +48,7 @@ stateDiagram-v2
     tested --> review_delivered : mark_reviewed_externally
     tested --> ignored : ignore
     self_reviewed --> work_started : rework
+    self_reviewed --> coded : address_self_review
     self_reviewed --> self_reviewed : reconcile_reviewed
     self_reviewed --> pr_opened : ship
     self_reviewed --> merged : reconcile_merged

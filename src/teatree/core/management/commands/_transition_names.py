@@ -25,6 +25,7 @@ ALLOWED_TRANSITION_NAMES: tuple[str, ...] = (
     "retrospect",
     "mark_delivered",
     "rework",
+    "address_self_review",
     "reopen",
     "reopen_for_followup",
     # #1077: reviewer concludes an external review with no postable/

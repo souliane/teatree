@@ -66,6 +66,10 @@ def _anti_vacuity_satisfied(ticket: object) -> bool:
     )
 
 
+def _has_open_self_review_hold(ticket: object) -> bool:
+    return bool(get_gate("self_review_hold")(ticket))
+
+
 def _reviewer_with_completed_review(ticket: object) -> bool:
     """Reviewer-role guard — a REVIEWER ticket whose reviewing task has completed."""
     row = cast("Ticket", ticket)
@@ -380,6 +384,18 @@ class Ticket(
         extra = self._extra()
         extra["shipping_skipped"] = "no shippable diff — likely meta or already-shipped work"
         self.extra = extra
+
+    @transition(
+        field="state",
+        source=[State.TESTED, State.SELF_REVIEWED],
+        target=State.CODED,
+        conditions=[_has_open_self_review_hold],
+    )
+    def address_self_review(self, *, parent_task: "Task | None" = None) -> None:
+        """Land the rework of a held self-review at CODED so it is re-tested and re-reviewed."""
+        self._refuse_if_worktree_dirty("coding")
+        self._consume_pending_phase_tasks("coding")
+        self.schedule_testing(parent_task=parent_task)
 
     @transition(
         field="state",

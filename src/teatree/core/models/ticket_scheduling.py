@@ -14,6 +14,7 @@ from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_pa
 
 if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
+    from teatree.core.models.self_review import SelfReview
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
@@ -141,6 +142,22 @@ class TicketSchedulingModel(TicketFacet):
             require_author=True,
             gate="plan_currency",
         )
+
+    def schedule_self_review_rework(self: "Ticket", review_task: "Task", review: "SelfReview") -> "Task":
+        """Mint the coding task that carries a held self-review's findings, parented on that review.
+
+        No ``plan_currency`` gate: a corrective re-entry, like :meth:`schedule_implementing`'s.
+        """
+        return self._schedule_phase_task("coding", review.rework_reason(), review_task, require_author=True)
+
+    def requeue_self_review_rework(self: "Ticket", review: "SelfReview", *, dry_run: bool = False) -> "Task | None":
+        """Supersede the ticket's active tasks and re-queue *review*'s rework, or return the one in flight."""
+        with transaction.atomic():
+            in_flight = self.tasks.pending_in_phase("coding").filter(parent_task_id=review.task_pk).first()
+            if in_flight is not None or dry_run:
+                return in_flight
+            self._cancel_pending_tasks()
+            return self.schedule_self_review_rework(self.tasks.get(pk=review.task_pk), review)
 
     def _schedule_phase_task(
         self: "Ticket",

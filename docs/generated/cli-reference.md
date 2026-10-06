@@ -11960,6 +11960,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              a ticket (#88).                                 │
 │ set-target-branch            Set one repo's stacked-delivery parent branch   │
 │                              for this ticket.                                │
+│ rework-hold                  Re-queue the findings of a self-review HOLD a   │
+│                              ticket was parked past.                         │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
@@ -12017,9 +12019,9 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
  Transition a ticket to a new state. Allowed transition names: scope, start,
  plan, code, code_direct, test, review, ship, request_review, mark_merged,
- retrospect, mark_delivered, rework, reopen, reopen_for_followup,
- mark_review_no_action, mark_reviewed_externally, reconcile_reviewed,
- reconcile_merged, ignore, unignore.
+ retrospect, mark_delivered, rework, address_self_review, reopen,
+ reopen_for_followup, mark_review_no_action, mark_reviewed_externally,
+ reconcile_reviewed, reconcile_merged, ignore, unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │
@@ -12294,6 +12296,24 @@ Usage: t3 teatree ticket set-target-branch [OPTIONS] TICKET_ID REPO BRANCH
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rework-hold`
+
+```
+Usage: t3 teatree ticket rework-hold [OPTIONS] TICKET_ID
+
+ Supersede the ticket's active tasks and queue one coding task carrying its
+ held self-review's findings.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run          Report the rework without writing it.                     │
+│ --json             Emit the outcome as JSON.                                 │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
