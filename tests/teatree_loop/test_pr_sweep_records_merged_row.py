@@ -3,10 +3,10 @@
 # single src/teatree/ mirror dir covers the join.
 """The sweep's own merge must leave its ledger row reading ``merged`` (#3984).
 
-Every other sweep test stubs :meth:`PrApiClient.merge_pr_squash_bound` outright, so
+Every other sweep test stubs :meth:`PrApiClient.merge_pr_bound` outright, so
 none of them can observe what the production merge path writes — the ledger row stayed
 ``open`` for 32 of 33 rows while the whole suite was green. These tests drive the sweep
-through the REAL adapter (``GhPrApiClient.merge_pr_squash_bound`` →
+through the REAL adapter (``GhPrApiClient.merge_pr_bound`` →
 ``execute_bound_merge``) with only the ``gh`` transport stubbed, so they fail if the
 recorder is removed from the merge chokepoint.
 
@@ -97,7 +97,7 @@ def _open_pr(*, checks: tuple[RawAPIDict, ...] = ()) -> PrSummary:
 class _SweepApi:
     """The production merge adapter, with only the two read calls scripted.
 
-    ``merge_pr_squash_bound`` is delegated VERBATIM to :class:`GhPrApiClient`, which is
+    ``merge_pr_bound`` is delegated VERBATIM to :class:`GhPrApiClient`, which is
     what makes this an end-to-end exercise of the sweep's merge path rather than a
     restatement of a stub's return value.
     """
@@ -112,9 +112,9 @@ class _SweepApi:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return self.main_uv_audit_red
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
-        return GhPrApiClient().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+        return GhPrApiClient().merge_pr_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
 
 
 @dataclass(slots=True)

@@ -339,7 +339,7 @@ class TestProvenanceGateUnit(TestCase):
 
 
 class TestBypassPathForkRefused(TestCase):
-    """The solo bypass (``merge_pr_squash_bound`` → ``execute_bound_merge``) also holds a fork.
+    """The solo bypass (``merge_pr_bound`` → ``execute_bound_merge``) also holds a fork.
 
     ``execute_bound_merge`` is the shared chokepoint BOTH merge paths cross. The
     provenance gate fires HERE too (defence-in-depth), so a fork PR cannot slip

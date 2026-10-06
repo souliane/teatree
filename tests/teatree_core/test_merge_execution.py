@@ -34,7 +34,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullRequest, Session, Ticket, Worktree
 from teatree.utils.pr_ref import PrRef
-from tests._forge_stub import merge_path_stdout
+from tests._forge_stub import merge_path_stdout, merge_request_payload
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay, record_merge_prerequisites_for_test, record_owned_pr_for_test
 
@@ -177,9 +177,12 @@ class _GhStub:
         self.merge_rc = merge_rc
         self.required = required or []
         self.calls: list[list[str]] = []
+        self.merge_payloads: list[dict[str, object]] = []
 
     def __call__(self, argv: list[str]) -> tuple[int, str, str]:
         self.calls.append(argv)
+        if (payload := merge_request_payload(argv)) is not None:
+            self.merge_payloads.append(payload)
         joined = " ".join(argv)
         if (meta := _branch_protection_probe(joined, required=self.required)) is not None:
             return meta
@@ -222,9 +225,7 @@ class TestMergeKeystoneHappyPath(TestCase):
         clear = _clear(ticket)
         stub = _GhStub()
         _run(clear, stub)
-        merge_calls = [c for c in stub.calls if "merge" in " ".join(c) and "pulls" in " ".join(c)]
-        assert merge_calls
-        assert f"sha={_SHA}" in merge_calls[0]
+        assert [payload["sha"] for payload in stub.merge_payloads] == [_SHA]
 
 
 class TestMergeKeystonePreconditions(TestCase):
@@ -1352,7 +1353,7 @@ _RED_REQUIRED_ROLLUP = json.dumps(
 class TestExecuteBoundMergeLiveFloor(TestCase):
     """#18: the not-draft + FAILED-live-CI floor at the ``execute_bound_merge`` chokepoint.
 
-    The solo-overlay bypass (``merge_pr_squash_bound`` → ``execute_bound_merge``)
+    The solo-overlay bypass (``merge_pr_bound`` → ``execute_bound_merge``)
     runs NO ``assert_merge_preconditions``, so before #18 a green→red / open→draft
     flip in the TOCTOU window between the sweep's snapshot and the PUT merged
     anyway. These call the primitive directly (no CLEAR/keystone) with a green
@@ -1576,25 +1577,26 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
 class TestNoSquashMerge(TestCase):
     """``ticket merge --no-squash`` lands a merge commit and says so on the consumed CLEAR."""
 
-    def _merge_argv(self, *, squash: bool) -> tuple[list[str], MergeClear]:
+    def _merge_method(self, *, squash: bool) -> tuple[object, MergeClear]:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         stub = _GhStub()
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop", squash=squash)
         clear.refresh_from_db()
-        return next(argv for argv in stub.calls if any(word.endswith("/merge") for word in argv)), clear
+        (payload,) = stub.merge_payloads
+        return payload["merge_method"], clear
 
     def test_no_squash_lands_a_merge_commit_and_records_it_on_the_clear(self) -> None:
-        argv, clear = self._merge_argv(squash=False)
+        method, clear = self._merge_method(squash=False)
 
-        assert "merge_method=merge" in argv
+        assert method == "merge"
         assert clear.merged_without_squash is True
 
     def test_the_default_still_squashes_and_records_nothing(self) -> None:
-        argv, clear = self._merge_argv(squash=True)
+        method, clear = self._merge_method(squash=True)
 
-        assert "merge_method=squash" in argv
+        assert method == "squash"
         assert clear.merged_without_squash is False
 
 

@@ -58,6 +58,7 @@ _MERGE_COMMIT_METHODS = frozenset({"merge", "rebase_merge"})
 class _MergePayload(TypedDict):
     sha: str
     squash: bool
+    merge_commit_message: str
     squash_commit_message: NotRequired[str]
 
 
@@ -271,8 +272,8 @@ class GitLabApiMergeRpc:
     ) -> ForgeMergeResult:
         """``PUT merge_requests/<iid>/merge`` bound to *expected_head_oid*, squashed unless ``squash=False``.
 
-        A squash publishes *message*'s title — GitLab's default ``%{title}`` squash
-        template, pinned so a project template naming ``%{description}`` cannot widen it.
+        Every landed commit carries only *message*: the squash commit its title, the merge
+        commit (a squash on a merge-method project lands one too) its title and body.
 
         Issued NON-idempotently: a merge that reached GitLab and only lost its
         response must not be blindly replayed by the retry transport (the replay
@@ -283,7 +284,7 @@ class GitLabApiMergeRpc:
         endpoint = f"{_mr_endpoint(slug, pr_id)}/merge"
         if not squash and (refusal := self._merge_commit_refusal(slug)):
             return ForgeMergeResult(returncode=1, stdout="", stderr=refusal, merged_sha="")
-        payload: _MergePayload = {"sha": expected_head_oid, "squash": squash}
+        payload: _MergePayload = {"sha": expected_head_oid, "squash": squash, "merge_commit_message": message.as_text()}
         if squash:
             payload["squash_commit_message"] = message.title
         try:

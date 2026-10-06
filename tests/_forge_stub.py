@@ -10,6 +10,7 @@ once per stub.
 """
 
 import json
+from pathlib import Path
 
 CLEAN_PR_TITLE = "Tidy the widget"
 CLEAN_PR_BODY = "Tidies the widget."
@@ -25,3 +26,10 @@ def merge_path_stdout(joined_argv: str, *, otherwise: str = "") -> str:
     if MESSAGE_READ_FIELDS in joined_argv:
         return json.dumps({"title": CLEAN_PR_TITLE, "body": CLEAN_PR_BODY})
     return otherwise
+
+
+def merge_request_payload(argv: list[str]) -> dict[str, object] | None:
+    """The JSON body a bound merge sends as ``gh api --input <file>``, readable only during the call."""
+    if "--input" not in argv:
+        return None
+    return json.loads(Path(argv[argv.index("--input") + 1]).read_text(encoding="utf-8"))

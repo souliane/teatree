@@ -318,7 +318,12 @@ class TestMergePrSquashBound:
         assert (result.returncode, result.merged_sha) == (0, "landed")
         endpoint, payload, idempotent = client.put_calls[0]
         assert endpoint == f"projects/{_ENCODED}/merge_requests/{_IID}/merge"
-        assert payload == {"sha": _SHA, "squash": True, "squash_commit_message": "Tidy the widget"}
+        assert payload == {
+            "sha": _SHA,
+            "squash": True,
+            "squash_commit_message": "Tidy the widget",
+            "merge_commit_message": "Tidy the widget\n\nTidies the widget.",
+        }
         # A blind transport replay of a merge that already LANDED would 405 and brick
         # the keystone; core reconciles then retries, so the transport must not.
         assert idempotent is False
@@ -328,7 +333,11 @@ class TestMergePrSquashBound:
         GitLabApiMergeRpc(client).merge_pr_squash_bound(
             slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE, squash=False
         )
-        assert client.put_calls[0][1] == {"sha": _SHA, "squash": False}
+        assert client.put_calls[0][1] == {
+            "sha": _SHA,
+            "squash": False,
+            "merge_commit_message": "Tidy the widget\n\nTidies the widget.",
+        }
 
     @pytest.mark.parametrize("project", [{"merge_method": "ff"}, {}, None])
     def test_no_squash_refuses_a_project_that_would_not_land_a_merge_commit(self, project: object) -> None:

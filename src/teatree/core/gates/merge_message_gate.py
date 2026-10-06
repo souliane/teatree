@@ -6,9 +6,12 @@ and the merge then sends exactly the scanned text, so the repo's commit-message
 template can never publish anything the scan did not read.
 """
 
+from dataclasses import replace
+
 from teatree.core.backend_protocols import PrMessage
-from teatree.core.gates.privacy_gate import format_refusal, scan_outbound_text
+from teatree.core.gates.privacy_gate import BUILTIN_QUOTE_PATTERN_NAMES, format_refusal, scan_outbound_text
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.hooks import quote_scanner
 from teatree.hooks.ai_signature_scan import scan_text, summary
 from teatree.utils.pr_ref import PrRef
 
@@ -29,7 +32,17 @@ def scanned_merge_message(ref: PrRef, message: PrMessage | None) -> PrMessage:
         msg = f"{target}'s commit message carries an AI-signature trailer — {_REFUSAL}\n{summary(findings)}"
         raise MergePreconditionError(msg)
     privacy = scan_outbound_text(text=text, target_repo=ref.slug, forge=ref.host_kind)
-    if privacy.refused:
-        msg = f"{target}'s commit message fails the public-repo leak scan — {_REFUSAL}\n{format_refusal(privacy)}"
+    if not privacy.is_public:
+        return message
+    # Quotes are judged by the publish hook's structured detector, so a merge never refuses a body pr create admitted.
+    leaks = replace(
+        privacy, matches=tuple(m for m in privacy.matches if m.pattern_name not in BUILTIN_QUOTE_PATTERN_NAMES)
+    )
+    if leaks.refused:
+        msg = f"{target}'s commit message fails the public-repo leak scan — {_REFUSAL}\n{format_refusal(leaks)}"
+        raise MergePreconditionError(msg)
+    if quotes := quote_scanner.scan_text(text).high:
+        names = ", ".join(sorted({finding.name for finding in quotes}))
+        msg = f"{target}'s commit message carries a user quote ({names}) — {_REFUSAL}"
         raise MergePreconditionError(msg)
     return message

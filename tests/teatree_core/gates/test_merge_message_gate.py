@@ -25,6 +25,8 @@ from tests.teatree_core.test_merge_execution import _SHA, _clear, _GhStub, _reco
 _FOOTER = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
 _REF = PrRef(slug="souliane/teatree", pr_id=859)
 _LEAKED_TERM = TEST_TERM_REGISTRY["leak"][0]
+_HOOK_ADMITTED_BODY = "Behavior preservation: the selector moved verbatim, so the merge gate's choice is unchanged."
+_STRUCTURED_QUOTE = '> "Never merge on a Friday," the owner wrote.'
 
 
 @pytest.fixture(autouse=True)
@@ -66,10 +68,6 @@ def _bound_merge(stub: _MessageStub) -> str:
 
 
 class TestScannedMergeMessage(TestCase):
-    def test_an_unread_message_refuses(self) -> None:
-        with pytest.raises(MergePreconditionError, match="could not be read"):
-            scanned_merge_message(_REF, None)
-
     def test_a_robot_footer_refuses_and_names_the_trailer(self) -> None:
         with pytest.raises(MergePreconditionError, match="AI-signature") as refused:
             scanned_merge_message(_REF, PrMessage(title="Tidy the widget", body=f"Tidies it.\n\n{_FOOTER}"))
@@ -105,6 +103,21 @@ class TestPublicTargetLeakScan(TestCase):
             assert _bound_merge(stub)
         assert stub.merge_requests()
 
+    def test_a_body_the_publish_hook_admitted_merges_to_a_public_repo(self) -> None:
+        stub = _MessageStub(body=_HOOK_ADMITTED_BODY)
+        with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True):
+            assert _bound_merge(stub)
+        assert stub.merge_requests()
+
+    def test_a_structured_user_quote_bound_for_a_public_repo_is_refused(self) -> None:
+        stub = _MessageStub(body=_STRUCTURED_QUOTE)
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            pytest.raises(MergePreconditionError, match="blockquote-attributed"),
+        ):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
 
 class TestKeystonePublishesOnlyTheScannedMessage(TestCase):
     def test_a_footer_body_is_refused_before_any_merge_request(self) -> None:
@@ -130,18 +143,18 @@ class TestKeystonePublishesOnlyTheScannedMessage(TestCase):
         stub = _MessageStub(title="Tidy the widget", body="Tidies the widget.\n\nKeeps the gears.")
         _keystone(stub)
 
-        (request,) = stub.merge_requests()
-        assert "commit_title=Tidy the widget (#859)" in request
-        assert "commit_message=Tidies the widget.\n\nKeeps the gears." in request
+        (payload,) = stub.merge_payloads
+        assert payload["commit_title"] == "Tidy the widget (#859)"
+        assert payload["commit_message"] == "Tidies the widget.\n\nKeeps the gears."
 
     def test_a_no_squash_merge_also_sends_the_scanned_message(self) -> None:
         stub = _MessageStub(title="Tidy the widget", body="Tidies the widget.")
         _keystone(stub, squash=False)
 
-        (request,) = stub.merge_requests()
-        assert "merge_method=merge" in request
-        assert "commit_title=Tidy the widget (#859)" in request
-        assert "commit_message=Tidies the widget." in request
+        (payload,) = stub.merge_payloads
+        assert payload["merge_method"] == "merge"
+        assert payload["commit_title"] == "Tidy the widget (#859)"
+        assert payload["commit_message"] == "Tidies the widget."
 
 
 class TestSweepRouteIsGated(TestCase):
@@ -149,7 +162,7 @@ class TestSweepRouteIsGated(TestCase):
         _record_merge_safe_verdict(pr_id=859, sha=_SHA)
         stub = _MessageStub(body=f"Tidies the widget.\n\n{_FOOTER}")
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
-            result = GhPrApiClient().merge_pr_squash_bound(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+            result = GhPrApiClient().merge_pr_bound(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
 
         assert result.merged is False
         assert "AI-signature" in result.refusal

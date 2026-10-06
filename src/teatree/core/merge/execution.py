@@ -333,7 +333,7 @@ def execute_bound_merge(
     head-moved are NOT transient — they raise on the first attempt. Before the
     retry loop, seven gates run — the single chokepoint BOTH merge paths cross
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
-    via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
+    via ``merge_pr_bound`` with NO preconditions run): ``assert_review_verdict_gate``
     (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
     (north-star PR-4 — every ticket needs a clean
     recorded merge-quality verdict at the shipped head), ``assert_ticket_scoped_gates``
@@ -355,7 +355,7 @@ def execute_bound_merge(
     """
     query = CodeHostQuery.for_ref(ref)
     slug, pr_id = ref.slug, ref.pr_id
-    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_squash_bound`` →
+    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_bound`` →
     # here) reaches this shared chokepoint with NO keystone preconditions run, so
     # the provenance gate must fire HERE too — otherwise a fork PR could auto-merge
     # via the bypass path even though the keystone (below) refuses it.
@@ -413,7 +413,7 @@ def _record_pr_landed(ref: PrRef, merged_sha: str) -> str:
     THE "a PR landed" recorder, deliberately at the one chokepoint every merge route
     already crosses. Recording it only in the keystone post hook left the sweep's two
     no-CLEAR routes — the solo-overlay bypass and the uv-audit raw fallback, both of
-    which reach the forge through :meth:`PrApiClient.merge_pr_squash_bound` → here —
+    which reach the forge through :meth:`PrApiClient.merge_pr_bound` → here —
     writing nothing, so a PR the sweep demonstrably merged kept a row reading ``open``
     and every consumer asking "has this ticket's PR landed?" answered ``False``. Placing
     it here means a future third route cannot silently reintroduce that.

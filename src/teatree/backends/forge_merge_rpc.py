@@ -16,6 +16,7 @@ because the deploy image installs ``gh`` only, so a ``glab`` subprocess raised
 import json
 import os
 import shutil
+import tempfile
 from collections.abc import Callable
 from typing import cast
 
@@ -402,24 +403,19 @@ class GhMergeRpc:
         self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:
         """``PUT pulls/<n>/merge`` publishing exactly *message*, never the repo's commit-message template."""
-        endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
-        method = "squash" if squash else "merge"
-        rc, out, err = self._run(
-            [
-                "api",
-                "--method",
-                "PUT",
-                endpoint,
-                "-f",
-                f"merge_method={method}",
-                "-f",
-                f"sha={expected_head_oid}",
-                "-f",
-                f"commit_title={message.title} (#{pr_id})",
-                "-f",
-                f"commit_message={message.body}",
-            ],
-        )
+        payload = {
+            "merge_method": "squash" if squash else "merge",
+            "sha": expected_head_oid,
+            "commit_title": f"{message.title} (#{pr_id})",
+            # An empty commit_message lets GitHub fall back to its template, which lists the unscanned commits.
+            "commit_message": message.body or message.title,
+        }
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete_on_close=False) as body:
+            json.dump(payload, body)
+            body.close()
+            rc, out, err = self._run(
+                ["api", "--method", "PUT", f"repos/{slug}/pulls/{pr_id}/merge", "--input", body.name]
+            )
         merged_sha = ""
         if rc == 0:
             try:

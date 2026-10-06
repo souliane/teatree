@@ -230,16 +230,25 @@ class TestCheckerBehavior:
         assert checker.main([str(src_file)]) == 1
         assert "merge-message-seam" in capsys.readouterr().err
 
-    def test_allows_bound_merge_inside_execute_bound_merge(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("module", "expected_rc"),
+        [
+            ("core/merge/execution.py", 0),
+            ("backends/github/client.py", 0),
+            ("loop/scanners/pr_sweep.py", 1),
+            ("loop/scanners/pr_sweep_gitlab.py", 1),
+        ],
+    )
+    def test_only_execute_bound_merge_and_the_forge_clients_may_call_the_bound_merge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str, expected_rc: int
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        target = tmp_path / "src" / "teatree" / "core" / "merge" / "execution.py"
+        target = tmp_path / "src" / "teatree" / module
         target.parent.mkdir(parents=True)
         target.write_text(
             "host.merge_pr_squash_bound(slug='o/r', pr_id=1, expected_head_oid='x', message=m)\n", encoding="utf-8"
         )
-        assert checker.main([str(target)]) == 0
+        assert checker.main([str(target)]) == expected_rc
 
 
 _MERGE_MESSAGE_METHODS = frozenset({"merge_pr_squash_bound"})

@@ -46,7 +46,7 @@ from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, REFUSING_
 from teatree.core.models import MergeAudit, MergeClear, Ticket, TrustedIdentity
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.pr_ref import PrRef
-from tests._forge_stub import merge_path_stdout
+from tests._forge_stub import merge_path_stdout, merge_request_payload
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
@@ -555,7 +555,7 @@ def _keystone_gh_stub(ci: Callable[[list[str]], tuple[int, str, str]]) -> Callab
         for needle, out in ((".author.login", "souliane"), (".isCrossRepository", "false"), ("isDraft", "false")):
             if needle in joined:
                 return (0, out, "")
-        if "merge_method=" in joined:
+        if merge_request_payload(argv) is not None:
             return (0, '{"sha": "merged0deadbeef"}', "")
         if changed := merge_path_stdout(joined):
             return (0, changed, "")
