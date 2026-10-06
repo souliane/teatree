@@ -22,10 +22,7 @@
 # blocks too, so the list cannot outlive the prose it describes.
 [closed_issue_deferrals]
 "docs/blueprint/memory-consolidation.md" = [2447]
-"hooks/scripts/hook_router.py" = [100]
 "src/teatree/agents/pydantic_ai_config.py" = [3157]
-"src/teatree/cli/loop/app.py" = [100]
-"src/teatree/core/management/commands/loop_dispatch.py" = [100]
 
 # The exact number of markers each file may carry; a file not listed pegs at 0.
 # Over-peg blocks, naming the file, line, and phrase. Under-peg blocks too: a
@@ -36,7 +33,6 @@
 "docs/blueprint/factory-architecture.md" = 1
 "docs/blueprint/memory-consolidation.md" = 1
 "docs/blueprint/rubric-done-gate.md" = 1
-"hooks/scripts/hook_router.py" = 1
 "hooks/scripts/secret_file_print_guard.py" = 1
 "scripts/hooks/check_antipatterns.py" = 1
 "src/teatree/agents/harness.py" = 1
@@ -44,13 +40,11 @@
 "src/teatree/agents/lane_b/compaction.py" = 2
 "src/teatree/agents/lane_b/mcp.py" = 1
 "src/teatree/agents/pydantic_ai_config.py" = 1
-"src/teatree/cli/loop/app.py" = 1
 "src/teatree/config/agent_enums.py" = 1
 "src/teatree/config/settings_loop_flags.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 1
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
-"src/teatree/core/management/commands/loop_dispatch.py" = 1
 "src/teatree/core/models/directive.py" = 2
 "src/teatree/core/models/rubric.py" = 1
 "src/teatree/loop/phases/scan.py" = 1

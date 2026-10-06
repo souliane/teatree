@@ -40,9 +40,9 @@ different live pid → KEEP) from a post-compaction same-session restart
 as "owner process unknown → KEEP" (INV4: bias toward preservation).
 
 The GLOBAL ``t3-master`` slot's liveness is PID-ANCHORED, not TTL-anchored.
-An owner that is alive but BUSY past the tick TTL fires no Stop self-pump, so
-no tick re-claims and the lease TTL-lapses while the owner process is still
-alive. ``claim_ownership`` therefore treats a non-empty ``t3-master`` owner
+An owner that is alive but BUSY past the tick TTL runs no tick, so nothing
+re-claims and the lease TTL-lapses while the owner process is still alive.
+``claim_ownership`` therefore treats a non-empty ``t3-master`` owner
 whose ``owner_pid`` is alive as a LIVE owner — protected past its TTL against
 any non-``take_over`` claim from a DIFFERENT process — so the loop stays with
 the existing process and transfers ONLY on that process's termination or an
@@ -83,7 +83,6 @@ class LoopDriver(models.TextChoices):
     ``--driver external`` override.
     """
 
-    SELF_PUMP = "self_pump"
     LOOP_RUNNER = "loop_runner"
     EXTERNAL = "external"
 

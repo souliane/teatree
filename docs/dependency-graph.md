@@ -90,6 +90,7 @@ graph TD
     teatree.core.admission --> teatree.core.managers_task_claim
     teatree.core.admission --> teatree.core.models
     teatree.core.admission --> teatree.loops.enable_verdict
+    teatree.core.factory.queue_stall --> teatree.core.models
     teatree.core.telemetry --> teatree.core.modelkit
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
@@ -387,6 +388,8 @@ graph TD
     teatree.loop.dispatch --> teatree.loop.dispatch_tables
     teatree.loop.dispatch --> teatree.loop.dispatch_reducer
     teatree.loop.dispatch --> teatree.loop.dispatch_gates
+    teatree.loop.self_improve --> teatree.core.admission
+    teatree.loop.self_improve --> teatree.core.factory.queue_stall
     teatree.loop.self_improve --> teatree.core.models
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners

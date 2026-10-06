@@ -100,10 +100,9 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
 def _persist_agent_dispatches(report: "TickReport") -> None:
     """Convert ``kind="agent"`` actions into Ticket + Task DB rows.
 
-    The DB is the dispatch queue; the ``/loop`` slot's session reads
-    pending Tasks via ``t3 loop pending-spawn`` and spawns sub-agents
-    in-session via its ``Agent`` tool. The statusline is purely visual
-    and never an orchestration channel.
+    The DB is the dispatch queue; the ``t3 worker`` claims each pending
+    Task and runs it headlessly. The statusline is purely visual and never
+    an orchestration channel.
 
     Idempotent: if a Ticket already exists for ``(role, issue_url)`` with
     a non-completed reviewing/coding Task, no new rows are created. The

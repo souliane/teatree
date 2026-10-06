@@ -15,7 +15,7 @@ from django.db import transaction
 
 from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
-from teatree.core.gates.anti_vacuity_gate import is_complete as anti_vacuity_complete
+from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -42,7 +42,6 @@ from teatree.core.models.reviewer_identity import (
     is_independent_reviewer_identity,
     is_non_reviewer_role,
 )
-from teatree.core.models.types import AntiVacuityAttestation
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
@@ -84,12 +83,8 @@ def _additional_evidence_error(
     """Validate the evidence a merge-safe review must return for the owning ticket."""
     if ticket is None or str(envelope.get("verdict", "")).strip().lower() != ReviewVerdict.Verdict.MERGE_SAFE:
         return ""
-    anti_vacuity = result.get("anti_vacuity")
-    if not isinstance(anti_vacuity, dict) or not anti_vacuity_complete(AntiVacuityAttestation(**anti_vacuity)):
-        return (
-            "anti-vacuity recording refused: return ac_coverage and either proven_tests "
-            "(revert fix -> RED) or an explicit no_new_tests claim"
-        )
+    if refusal := anti_vacuity_refusal(result.get("anti_vacuity")):
+        return refusal
     repos = distinct_repos(ticket)
     if len(repos) < _MIN_INTEGRATION_REPOS:
         return ""

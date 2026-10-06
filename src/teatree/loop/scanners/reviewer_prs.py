@@ -121,9 +121,8 @@ def _orphaned_task_signals(
     Scenario the sweep handles: scanner sees an open MR on tick #1 →
     persistence creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
     status=PENDING)``. The MR is merged/closed externally before the slot
-    processes the task. The PENDING task would otherwise linger forever,
-    surfacing on every ``pending-spawn`` and dispatching a reviewer
-    sub-agent for nothing (#998).
+    processes the task. The PENDING task would otherwise linger forever and
+    dispatch a reviewer sub-agent for nothing (#998).
 
     **Only a PENDING task is a candidate (#4901).** A CLAIMED one is a run in
     flight; the claim sweeps own it, and a dead claim they return to PENDING
@@ -347,8 +346,8 @@ class ReviewerPrsScanner:
         A reviewer-role ticket carrying a non-terminal ``reviewing`` task
         whose MR the user authored is wrong — own MRs route to coder/
         debugger + a colleague review-request, never a ``t3:reviewer``
-        sub-agent. The mechanical handler completes the task so
-        ``pending-spawn`` stops surfacing it.
+        sub-agent. The mechanical handler completes the task so it is never
+        dispatched.
 
         A task the #68 auto-review dispatch armed is exempt (#3910): on a solo
         overlay the agent cold-reviewer IS the checker, so that task is the

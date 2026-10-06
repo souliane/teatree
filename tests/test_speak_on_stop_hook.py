@@ -11,6 +11,7 @@ sandboxed sqlite, PATH lookup, and the detached subprocess are faked.
 
 import json
 import sqlite3
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
@@ -104,7 +105,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "all green, shipping now")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             verdict = router.handle_speak_all_on_stop({"transcript_path": transcript})
         assert verdict is None
@@ -121,7 +122,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "all green")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         popen.assert_called_once()
@@ -131,7 +132,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         popen.assert_not_called()
@@ -141,7 +142,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         popen.assert_not_called()
@@ -154,7 +155,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "done")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         argv = popen.call_args.args[0]
@@ -165,7 +166,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", side_effect=lambda b: None if b == "say" else "/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         popen.assert_not_called()
@@ -175,7 +176,7 @@ class TestHandleSpeakAllOnStop:
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", side_effect=lambda b: "/usr/bin/say" if b == "say" else None),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
         popen.assert_not_called()
@@ -186,7 +187,7 @@ class TestHandleSpeakAllOnStop:
         empty.write_text("", encoding="utf-8")
         with (
             patch.object(router.shutil, "which", return_value="/bin/t3"),
-            patch.object(router.subprocess, "Popen") as popen,
+            patch.object(subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": str(empty)})
         popen.assert_not_called()
@@ -202,4 +203,4 @@ class TestHandleSpeakAllOnStop:
     def test_registered_in_stop_chain(self) -> None:
         assert router.handle_speak_all_on_stop in router._HANDLERS["Stop"]
         stop = router._HANDLERS["Stop"]
-        assert stop.index(router.handle_speak_all_on_stop) < stop.index(router.handle_loop_self_pump)
+        assert stop.index(router.handle_speak_all_on_stop) < stop.index(router.handle_hand_back_answers)
