@@ -1,6 +1,6 @@
 """Render a :class:`~teatree.core.models.review_verdict.ReviewVerdict`'s findings (#4476).
 
-A HOLD's findings were persisted on the verdict and counted by ``review
+A verdict's findings were persisted on the verdict and counted by ``review
 status`` — and rendered by nothing, so ``findings_count: 4`` stood in front of
 content no author, reviewer or operator could read without opening the
 database. Worse, the count and the content could disagree: ``review status``
@@ -110,7 +110,7 @@ def render_findings_text(verdict: ReviewVerdict) -> str:
 
 
 def render_findings_markdown(verdict: ReviewVerdict) -> str:
-    """*verdict*'s findings as the PR-comment body, carrying the dedup marker."""
+    """*verdict*'s findings as the PR-comment body, carrying the dedup marker and nothing that signs it."""
     payload = findings_payload(verdict)
     if not payload:
         msg = f"verdict {verdict.pk} has no findings — there is nothing to publish"
@@ -121,11 +121,6 @@ def render_findings_markdown(verdict: ReviewVerdict) -> str:
             f"### Cold review: {verdict.verdict} — {len(payload)} finding(s) @ `{verdict.reviewed_sha[:8]}`",
             "",
             *bullets,
-            "",
-            (
-                f"Reviewer: `{verdict.reviewer_identity}`. Read them again with "
-                f"`t3 <overlay> review findings <pr-url>`; a later merge_safe verdict at this head clears the hold."
-            ),
             "",
             marker_for(verdict),
         ]

@@ -26,12 +26,12 @@ pytestmark = pytest.mark.django_db
 _SHA = "c" * 40
 
 
-def _verdict(findings: list[object], *, sha: str = _SHA) -> ReviewVerdict:
+def _verdict(findings: list[object], *, sha: str = _SHA, verdict: str = "hold") -> ReviewVerdict:
     return ReviewVerdict.objects.create(
         slug="souliane/teatree",
         pr_id=4476,
         reviewed_sha=sha,
-        verdict="hold",
+        verdict=verdict,
         reviewer_identity="cold-reviewer",
         findings=findings,
         blast_class="logic",
@@ -104,6 +104,29 @@ class TestRenderers(TestCase):
         assert "unbounded loop" in body
         assert marker_for(verdict) in body
         assert comment_carries_marker({"body": body}, marker_for(verdict))
+
+    def test_a_merge_safe_body_carries_no_hold_text_reviewer_or_operator_command(self) -> None:
+        verdict = _verdict(
+            [
+                {"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9},
+                {"severity": "minor", "summary": "log the retry", "file": "", "line": 0},
+            ],
+            verdict="merge_safe",
+        )
+        body = render_findings_markdown(verdict)
+        assert "rename x" in body
+        assert "log the retry" in body
+        assert "merge_safe" in body
+        assert "hold" not in body.lower()
+        assert "cold-reviewer" not in body
+        assert "t3 <overlay>" not in body
+
+    def test_a_hold_body_names_the_hold(self) -> None:
+        verdict = _verdict([{"severity": "blocker", "summary": "unbounded loop", "file": "a.py", "line": 9}])
+        body = render_findings_markdown(verdict)
+        assert "hold" in body
+        assert "unbounded loop" in body
+        assert marker_for(verdict) in body
 
     def test_markdown_body_refuses_an_empty_verdict(self) -> None:
         with pytest.raises(FindingsRenderError):

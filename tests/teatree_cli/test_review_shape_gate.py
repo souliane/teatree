@@ -28,6 +28,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.core.review.comment_checks import COLLEAGUE_PROSE_CAP_WORDS
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -371,7 +372,7 @@ class TestAllowLongReviewOverride:
             def current_username(self) -> str:
                 return _AUTHOR_ALICE
 
-        body = "word " * (gate_mod.COLLEAGUE_PROSE_CAP_WORDS + 50)
+        body = "word " * (COLLEAGUE_PROSE_CAP_WORDS + 50)
         assert (
             check_review_shape(
                 api=cast("Any", _Api()),
@@ -643,31 +644,3 @@ class TestShapeGateFailOpenAndCarveOuts:
             inline=False,
         )
         assert msg == ""
-
-    def test_count_paragraphs_splits_on_blank_lines(self) -> None:
-        """Paragraph count splits on one or more blank lines.
-
-        Empty input is zero; single-line non-empty is 1; blank-line
-        separators split into multiple paragraphs.
-        """
-        from teatree.cli.review.shape_gate import _count_paragraphs  # noqa: PLC0415
-
-        assert _count_paragraphs("") == 0
-        assert _count_paragraphs("   ") == 0
-        assert _count_paragraphs("just one paragraph") == 1
-        assert _count_paragraphs("first\n\nsecond") == 2
-        assert _count_paragraphs("a\n\nb\n\nc") == 3
-        # Multiple blank lines collapse to one separator.
-        assert _count_paragraphs("a\n\n\n\nb") == 2
-        # Leading/trailing blank lines do not introduce extra paragraphs.
-        assert _count_paragraphs("\n\na\n\n") == 1
-
-    def test_count_words_splits_on_whitespace(self) -> None:
-        """Word count uses whitespace splitting (``str.split()``)."""
-        from teatree.cli.review.shape_gate import _count_words  # noqa: PLC0415
-
-        assert _count_words("") == 0
-        assert _count_words("   ") == 0
-        assert _count_words("one") == 1
-        assert _count_words("one two three") == 3
-        assert _count_words("one\ntwo\tthree") == 3

@@ -19,9 +19,9 @@ Shape rules (post-#1159):
     reviews can be long-form (self-review summary, evidence block).
 * **Colleague MR**, inline or MR-level — guarded by a **paragraph +
     word count** combination rather than a sentence count. Reject when
-    the body has more than :data:`COLLEAGUE_PROSE_CAP_PARAGRAPHS`
+    the body has more than :data:`~teatree.core.review.comment_checks.COLLEAGUE_PROSE_CAP_PARAGRAPHS`
     paragraphs (blank-line separated) or more than
-    :data:`COLLEAGUE_PROSE_CAP_WORDS` words. The sentence-count
+    :data:`~teatree.core.review.comment_checks.COLLEAGUE_PROSE_CAP_WORDS` words. The sentence-count
     heuristic (#1114) over-rejected legitimate ≤2-sentence findings
     that contained clauses split by semicolons or dashes, while the
     paragraph + word combination still catches the multi-section
@@ -37,12 +37,10 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.modelkit.gate_verdict import guarded_read
+from teatree.core.review.comment_checks import prose_cap_breach
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
-
-COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
-COLLEAGUE_PROSE_CAP_WORDS = 200
 
 _TTL_MR_AUTHOR = 300  # 5 minutes — mirrors `_TTL_USERNAME` shape
 
@@ -107,25 +105,6 @@ def is_colleague_mr(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> bool
     return author != me
 
 
-def _count_paragraphs(body: str) -> int:
-    """Count blank-line-separated paragraphs in ``body``.
-
-    A paragraph is a run of one or more non-empty lines, separated from
-    the next paragraph by one or more blank lines. Leading/trailing
-    blank lines do not introduce extra paragraphs. Empty (or
-    whitespace-only) input returns 0.
-    """
-    text = body.strip()
-    if not text:
-        return 0
-    return sum(1 for chunk in text.split("\n\n") if chunk.strip())
-
-
-def _count_words(body: str) -> int:
-    """Count whitespace-separated tokens in ``body``."""
-    return len(body.split())
-
-
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + inline flag + the #126 override).
     *,
@@ -145,9 +124,8 @@ def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a d
         as ``--allow-long-review``, consistent with the sibling override
         pattern), OR
     * the MR is the current identity's own MR (carve-out), OR
-    * the body fits both the paragraph cap
-        (:data:`COLLEAGUE_PROSE_CAP_PARAGRAPHS`) and the word cap
-        (:data:`COLLEAGUE_PROSE_CAP_WORDS`).
+    * the body fits the colleague prose cap
+        (:func:`~teatree.core.review.comment_checks.prose_cap_breach`).
 
     The steering error names the concrete breach (paragraph count or
     word count) so the agent knows exactly what to tighten, and points
@@ -160,22 +138,10 @@ def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a d
     if not is_colleague_mr(api, encoded_repo, mr):
         return ""
 
-    paragraph_count = _count_paragraphs(body)
-    word_count = _count_words(body)
-
-    if paragraph_count > COLLEAGUE_PROSE_CAP_PARAGRAPHS:
-        return _steering_error(
-            inline=inline,
-            breach=f"{paragraph_count}-paragraph",
-            cap=f"{COLLEAGUE_PROSE_CAP_PARAGRAPHS}-paragraph cap",
-        )
-    if word_count > COLLEAGUE_PROSE_CAP_WORDS:
-        return _steering_error(
-            inline=inline,
-            breach=f"{word_count}-word",
-            cap=f"{COLLEAGUE_PROSE_CAP_WORDS}-word cap",
-        )
-    return ""
+    breach = prose_cap_breach(body)
+    if breach is None:
+        return ""
+    return _steering_error(inline=inline, breach=breach.breach, cap=breach.cap)
 
 
 def _steering_error(*, inline: bool, breach: str, cap: str) -> str:

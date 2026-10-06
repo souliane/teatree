@@ -1,26 +1,33 @@
 """Publish a recorded verdict's findings to the PR they were reached on (#4476).
 
-A HOLD is only actionable where the work is. This is the write half of
+Findings are only actionable where the work is. This is the write half of
 :mod:`teatree.core.review.verdict_findings`: it posts the rendered findings as
-one PR comment, through the two gates every colleague-visible forge body must
-pass — :func:`~teatree.core.send_proxy.route_forge_write` (public-repo leak scan
-+ send-proxy audit/allowlist) and the on-behalf pre-gate.
+one general PR comment. The body first passes the same comment checks as
+``review post-comment`` (:mod:`teatree.core.review.comment_checks`), then the
+two gates every colleague-visible forge body must pass —
+:func:`~teatree.core.send_proxy.route_forge_write` (public-repo leak scan +
+send-proxy audit/allowlist) and the on-behalf pre-gate.
 
 Nothing here degrades a failure to silence. An unresolvable backend raises; a
-blocked post returns the block reason AND DMs the owner the findings, so the
-gate withholding the comment can never also hide its content.
+withheld post returns the reason AND DMs the owner the findings, so the check
+withholding the comment can never also hide its content.
 """
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.checking import build_pr_url
 from teatree.core.models.review_verdict import ReviewVerdict
+from teatree.core.review.comment_checks import findings_comment_refusal
+from teatree.core.review.review_candidate import is_self_authored
 from teatree.core.review.verdict_findings import (
     comment_carries_marker,
     findings_payload,
     marker_for,
     render_findings_markdown,
+    render_findings_text,
 )
+from teatree.core.self_forge_identities import self_identity_set
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -70,8 +77,13 @@ def publish_verdict_findings(
     if _already_published(host, verdict, marker):
         return PublishOutcome(skipped_existing=True, note=f"findings already posted on {target}")
 
-    body = _scrubbed_body(verdict, host_kind=host_kind, target=target)
-    return _post_gated(host, verdict, body=body, target=target)
+    body = render_findings_markdown(verdict)
+    refusal = findings_comment_refusal(body, is_own_pr=lambda: _is_own_pr(host, verdict, host_kind=host_kind))
+    if refusal:
+        _dm_withheld_findings(verdict, target, why=refusal, key_suffix=":comment-check")
+        return PublishOutcome(blocked_reason=f"comment check — {refusal}")
+    scrubbed = _scrubbed_body(verdict, body, host_kind=host_kind, target=target)
+    return _post_gated(host, verdict, body=scrubbed, target=target)
 
 
 def _resolve_backend(verdict: ReviewVerdict) -> "CodeHostBackend":
@@ -101,16 +113,17 @@ def _already_published(host: "CodeHostBackend", verdict: ReviewVerdict, marker: 
     return any(comment_carries_marker(comment, marker) for comment in existing)
 
 
-def _scrubbed_body(verdict: ReviewVerdict, *, host_kind: str, target: str) -> str:
+def _is_own_pr(host: "CodeHostBackend", verdict: ReviewVerdict, *, host_kind: str) -> bool | None:
+    url = build_pr_url(slug=verdict.slug, pr_id=int(verdict.pr_id), code_host=host_kind)
+    if not url:
+        return None
+    return is_self_authored(url, host, self_identity_set(url, host=host))
+
+
+def _scrubbed_body(verdict: ReviewVerdict, body: str, *, host_kind: str, target: str) -> str:
     from teatree.core.send_proxy import route_forge_write  # noqa: PLC0415 — deferred: keeps the import light
 
-    return route_forge_write(
-        forge=host_kind,
-        repo=verdict.slug,
-        text=render_findings_markdown(verdict),
-        action=ACTION,
-        target=target,
-    )
+    return route_forge_write(forge=host_kind, repo=verdict.slug, text=body, action=ACTION, target=target)
 
 
 def _post_gated(host: "CodeHostBackend", verdict: ReviewVerdict, *, body: str, target: str) -> PublishOutcome:
@@ -125,7 +138,7 @@ def _post_gated(host: "CodeHostBackend", verdict: ReviewVerdict, *, body: str, t
     try:
         posted = require_on_behalf_approval(target=target, action=ACTION, publish=_publish)
     except OnBehalfPostBlockedError as exc:
-        _dm_withheld_findings(verdict, target)
+        _dm_withheld_findings(verdict, target, why="on-behalf gate", key_suffix="")
         return PublishOutcome(blocked_reason=str(exc))
     return PublishOutcome(published=True, comment_url=_comment_url(posted, target))
 
@@ -135,21 +148,20 @@ def _comment_url(posted: "RawAPIDict", target: str) -> str:
     return str(url) if url else target
 
 
-def _dm_withheld_findings(verdict: ReviewVerdict, target: str) -> None:
-    """DM the owner the findings the gate withheld — the block must not also hide them.
+def _dm_withheld_findings(verdict: ReviewVerdict, target: str, *, why: str, key_suffix: str) -> None:
+    """DM the owner the findings a check or gate withheld — the block must not also hide them.
 
     Best-effort: a messaging outage must not turn a gate block into a crash that
     loses the block reason the caller is about to report.
     """
     from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: keeps the import light
-    from teatree.core.review.verdict_findings import render_findings_text  # noqa: PLC0415 — deferred
 
     try:
         notify_user(
-            f"Findings for {target} were NOT posted (on-behalf gate).\n{render_findings_text(verdict)}",
+            f"Findings for {target} were NOT posted ({why}).\n{render_findings_text(verdict)}",
             kind=NotifyKind.INFO,
-            idempotency_key=f"review-findings-blocked:{verdict.pk}",
+            idempotency_key=f"review-findings-blocked:{verdict.pk}{key_suffix}",
             audience=NotifyAudience.OWNER_DELIVERY,
         )
     except Exception:  # noqa: BLE001 — the DM is the fallback channel, never the failure mode

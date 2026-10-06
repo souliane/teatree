@@ -1,4 +1,4 @@
-"""A recorded HOLD's findings are readable through the CLI and reach the PR (#4476).
+"""A recorded verdict's findings are readable through the CLI and reach the PR (#4476, #4968).
 
 Before this, ``review status`` reported ``findings_count: 4`` and no surface
 rendered the four: the author could not fix what they could not read, and a
@@ -33,7 +33,7 @@ _URL = "https://github.com/democorp-engineering/widgets/pull/4476"
 _FINDINGS = json.dumps(
     [
         {"severity": "blocker", "summary": "unbounded loop", "file": "a.py", "line": 9},
-        {"severity": "nit", "summary": "rename x", "file": "b.py", "line": 2},
+        {"severity": "nit", "summary": "rename x", "file": "b.py", "line": 0},
     ]
 )
 
@@ -196,6 +196,49 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         assert result["recorded"]
         assert not result["findings_published"]
         assert ReviewVerdict.objects.filter(slug=_SLUG, pr_id=4476).exists()
+
+
+class TestPublishedFindingsPassTheCommentChecks(_FindingsSurfaceBase):
+    """#4968: a published findings comment passes ``review post-comment``'s checks or is withheld."""
+
+    def test_recording_a_merge_safe_verdict_with_several_anchored_findings_withholds_it(self) -> None:
+        self._allow_posting()
+        findings = json.dumps(
+            [
+                {"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9},
+                {"severity": "nit", "summary": "rename y", "file": "b.py", "line": 2},
+                {"severity": "minor", "summary": "log the retry", "file": "c.py", "line": 30},
+            ]
+        )
+        with patch("teatree.loop.sweep_on_demand._sweep_scanner_for_overlay", return_value=None):
+            result = self._record(verdict="merge_safe", findings_json=findings)
+
+        assert result["recorded"]
+        assert not result["findings_published"]
+        assert "multi-finding general note" in cast("str", result["findings_publish_note"])
+        assert not self.host.posted
+
+    def test_publish_findings_reports_a_leak_block_instead_of_raising(self) -> None:
+        self._allow_posting()
+        ReviewVerdict.objects.create(
+            slug="pub/repo",
+            pr_id=4476,
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            findings=[{"severity": "blocker", "summary": "quartzbridge-bank secret in the log"}],
+            blast_class="logic",
+            gh_verify_result="green",
+        )
+        with patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host):
+            result = cast(
+                "dict[str, object]",
+                call_command("review", "publish-findings", "https://github.com/pub/repo/pull/4476"),
+            )
+
+        assert not result["published"]
+        assert result["error"]
+        assert not self.host.posted
 
 
 class TestUnrenderableFindingsAreLoud(_FindingsSurfaceBase):

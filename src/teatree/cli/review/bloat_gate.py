@@ -48,93 +48,7 @@ Sibling gates on the same chain:
 This gate is independent of all three and forge-neutral.
 """
 
-import re
-
-# A stakeholder ``@handle``: an ``@`` at a token boundary followed by a
-# handle. Guarded so an email local-part (``user@example.com``) and a
-# decorator/path token do not register — the ``@`` must not be preceded
-# by a word character (which would make it an email or ``a@b`` infix).
-_HANDLE_RE = re.compile(r"(?<![\w.])@[A-Za-z][\w.-]{1,}\b")
-
-# Inline code spans and fenced blocks: an ``@`` there quotes code, never a person.
-_CODE_SPAN_RE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
-
-# Gherkin / Playwright scenario tags a review of a feature file legitimately names.
-_GHERKIN_TAGS: frozenset[str] = frozenset(
-    {
-        "@automated",
-        "@awaiting-merge",
-        "@blocked",
-        "@critical",
-        "@e2e",
-        "@fixme",
-        "@flaky",
-        "@ignore",
-        "@manual",
-        "@only",
-        "@ready",
-        "@regression",
-        "@sanity",
-        "@serial",
-        "@skip",
-        "@slow",
-        "@smoke",
-        "@wip",
-    }
-)
-
-# A Slack message timestamp: ``<10 digits>.<6 digits>`` (Unix seconds with
-# microsecond suffix), the canonical Slack ``ts``. A plain decimal (a
-# ratio, a version, ``3.14``) has far fewer digits and does not match.
-_SLACK_TS_RE = re.compile(r"\b\d{10}\.\d{6}\b")
-
-# A ticket/PR reference by id: ``#1234`` (issue/PR) or ``!42`` (GitLab
-# MR). The marker must be followed by 2+ digits so a bare ``#`` (a heading,
-# a lint-suppression token) or a single-digit footnote does not register.
-_TICKET_REF_RE = re.compile(r"(?<![\w/])[#!]\d{2,}\b")
-
-# Social-coordination language ("talk to people/a team/a meeting") that
-# turns a tracker reference into project chatter. A bare ``tracked at
-# #1234`` pointer with none of this is the legitimate non-blocker
-# cross-reference (the TODO-gate remediation form), so the id alone passes.
-_COORDINATION_RE = re.compile(
-    r"\b(?:"
-    r"ping(?:\s+the)?\b|"
-    r"sync(?:\s+(?:up|with))?\b|"
-    r"reach\s+out\b|"
-    r"loop\s+in\b|"
-    r"coordinate\s+with\b|"
-    r"check\s+with\b|"
-    r"ask\s+(?:the\s+)?(?:author|team)\b|"
-    r"(?:in|at|during)\s+standup\b|"
-    r"the\s+(?:wider\s+)?team\b|"
-    r"the\s+author\s+should\b"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def references_project_chatter(body: str) -> bool:
-    """Whether ``body`` drags in project chatter unrelated to the diff.
-
-    True when the body names a stakeholder by ``@handle``, quotes a Slack
-    thread by timestamp, or pairs a tracker id (``#1234`` / ``!42``) with
-    social-coordination language (``ping``, ``sync with``, ``in standup``,
-    ``the team``, ``the author should``). A *bare* tracker reference with no
-    coordination directive is NOT chatter — it is the legitimate
-    ``tracked at #1234`` non-blocker pointer.
-    """
-    if not body:
-        return False
-    if _names_a_stakeholder(body) or _SLACK_TS_RE.search(body):
-        return True
-    return bool(_TICKET_REF_RE.search(body) and _COORDINATION_RE.search(body))
-
-
-def _names_a_stakeholder(body: str) -> bool:
-    """Whether ``body`` carries an ``@handle`` outside code spans that is not a Gherkin tag."""
-    prose = _CODE_SPAN_RE.sub(lambda match: " " * len(match.group(0)), body)
-    return any(match.group(0).lower() not in _GHERKIN_TAGS for match in _HANDLE_RE.finditer(prose))
+from teatree.core.review.comment_checks import references_project_chatter
 
 
 def check_review_bloat(*, body: str, allow_bloat: bool = False) -> str:
@@ -146,7 +60,7 @@ def check_review_bloat(*, body: str, allow_bloat: bool = False) -> str:
         load-bearing reference (CLI ``--allow-bloat``), OR
     * the body is empty, OR
     * the body references no project chatter (see
-        :func:`references_project_chatter`).
+        :func:`~teatree.core.review.comment_checks.references_project_chatter`).
 
     Otherwise returns a steering error naming the diff-only rule so the
     agent knows what to drop. The caller short-circuits the GitLab API call

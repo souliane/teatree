@@ -33,65 +33,7 @@ This gate is independent of both. It is forge-neutral: it inspects only
 the comment body and the inline-anchor flag, never the network.
 """
 
-import re
-
-# A ``path.ext:line`` location cite: a dotted file path (so a bare ``foo``
-# or a sentence word does not match — the ``.ext`` is required) followed by
-# ``:<digits>``. The path segment allows directory separators, dashes,
-# underscores, and dots (``a/b-c_d.py``); the extension is 1-8 letters so
-# ``module.py:10`` matches but ``ratio 3:2`` or ``12:30`` (a time) does not.
-_FILE_LINE_RE = re.compile(
-    r"\b[\w./-]+\.[A-Za-z]{1,8}:\d+\b",
-)
-
-# A numbered-list item that names a file: ``1. foo.py`` / ``2) bar/baz.ts``.
-# The leading marker is ``<digits>`` followed by ``.`` or ``)`` at a line
-# start (optionally indented); the item text must contain a dotted file
-# path token somewhere on that line.
-_NUMBERED_ITEM_RE = re.compile(
-    r"^\s*\d+[.)]\s+.*\b[\w./-]+\.[A-Za-z]{1,8}\b",
-    re.MULTILINE,
-)
-
-MIN_DISTINCT_FINDINGS = 2
-
-
-def _distinct_file_line_cites(body: str) -> set[str]:
-    """Return the set of distinct ``path.ext:line`` location cites in ``body``.
-
-    Distinct-by-text: ``foo.py:10`` and ``foo.py:10`` collapse to one, but
-    ``foo.py:10`` and ``foo.py:42`` (two findings in the same file) and
-    ``foo.py:10`` and ``bar.ts:3`` (two files) each count as two — the
-    multi-finding signal is "more than one place the reviewer is pointing
-    at", whether same file or not.
-    """
-    return {m.group(0) for m in _FILE_LINE_RE.finditer(body)}
-
-
-def _numbered_file_items(body: str) -> int:
-    """Count numbered-list items (``1.`` / ``2)``) that each name a file.
-
-    A numbered list where each item cites a file is the other shape of a
-    multi-point per-line review even when the items omit explicit line
-    numbers (``1. foo.py: rename …`` / ``2. bar.py: guard …``).
-    """
-    return sum(1 for _ in _NUMBERED_ITEM_RE.finditer(body))
-
-
-def looks_like_inline_findings(body: str) -> bool:
-    """Whether ``body`` reads as 2+ inline findings crammed into one note.
-
-    True when EITHER the body references
-    :data:`MIN_DISTINCT_FINDINGS`+ distinct ``path.ext:line`` locations OR
-    a numbered finding list has :data:`MIN_DISTINCT_FINDINGS`+ items that
-    each name a file. Both are the "this should have been N inline notes"
-    shape.
-    """
-    if not body:
-        return False
-    if len(_distinct_file_line_cites(body)) >= MIN_DISTINCT_FINDINGS:
-        return True
-    return _numbered_file_items(body) >= MIN_DISTINCT_FINDINGS
+from teatree.core.review.comment_checks import inline_findings_count, looks_like_inline_findings
 
 
 def check_general_inline_findings(*, body: str, inline: bool, force_general: bool = False) -> str:
@@ -118,10 +60,7 @@ def check_general_inline_findings(*, body: str, inline: bool, force_general: boo
         return ""
     if not looks_like_inline_findings(body):
         return ""
-    cites = _distinct_file_line_cites(body)
-    numbered = _numbered_file_items(body)
-    count = max(len(cites), numbered)
-    return _refusal(count)
+    return _refusal(inline_findings_count(body))
 
 
 def _refusal(count: int) -> str:

@@ -31,6 +31,7 @@ from teatree.core.review.verdict_findings import (
     render_findings_text,
 )
 from teatree.core.review.verdict_findings_publish import FindingsPublishError, PublishOutcome, publish_verdict_findings
+from teatree.core.send_proxy import OutboundBlockedError
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -399,7 +400,7 @@ def publish_findings_result(
 
     try:
         outcome = publish_verdict_findings(recorded, host_kind=ref.host_kind)
-    except (FindingsRenderError, FindingsPublishError) as exc:
+    except (FindingsRenderError, FindingsPublishError, OutboundBlockedError) as exc:
         return {
             "slug": ref.slug,
             "pr_id": ref.pr_id,

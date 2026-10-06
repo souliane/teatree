@@ -38,9 +38,10 @@ fields alongside.
 """
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Literal
+
+from teatree.core.review.comment_checks import looks_like_evidence_claim
 
 # Confidence values the schema accepts. ``verified`` is the only value that
 # can pass the gate; ``speculative`` is documented so the agent has a way to
@@ -49,34 +50,6 @@ from typing import Literal
 # per the issue body).
 Confidence = Literal["verified", "speculative"]
 _ALLOWED_CONFIDENCE: frozenset[str] = frozenset({"verified", "speculative"})
-
-# Pattern detection. Anchored on word boundaries so an incidental
-# "the brokerage" or "wrongdoer" does not trip. Two sub-patterns:
-#
-# 1. ``<noun> is/are (missing|wrong|broken|stale)`` — the canonical issue-body
-#    shape ("the helper is missing", "the API signature is wrong").
-# 2. Standalone negation-of-existence phrases — "does not exist", "cannot find",
-#    "there is no", "should not exist", "no such", "missing from" — which
-#    convey the same claim shape without the copula.
-_EVIDENCE_CLAIM_RE = re.compile(
-    r"\b(?:"
-    r"is\s+(?:missing|wrong|broken|stale|incorrect)|"
-    r"are\s+(?:missing|wrong|broken|stale|incorrect)|"
-    r"does\s+not\s+exist|"
-    r"do\s+not\s+exist|"
-    r"doesn'?t\s+exist|"
-    r"don'?t\s+exist|"
-    r"cannot\s+find|"
-    r"can'?t\s+find|"
-    r"there\s+is\s+no\s+(?:such\s+)?[a-z_]+|"
-    r"should\s+not\s+exist|"
-    r"shouldn'?t\s+exist|"
-    r"no\s+such\s+(?:function|method|symbol|file|module|helper|class)|"
-    r"missing\s+from|"
-    r"stale\s+reference"
-    r")\b",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -167,19 +140,6 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if isinstance(item, str)]
-
-
-def looks_like_evidence_claim(body: str) -> bool:
-    """Whether ``body`` reads as an 'X is missing/wrong/broken' claim.
-
-    True when the body matches any of the canonical claim phrases — the
-    pattern set is biased to flag (a false-positive costs the reviewer
-    one structured evidence record; a false-negative recurs the #1280
-    failure mode).
-    """
-    if not body:
-        return False
-    return _EVIDENCE_CLAIM_RE.search(body) is not None
 
 
 def check_finding_evidence(*, body: str, evidence: object) -> str:
