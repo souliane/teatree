@@ -54,7 +54,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # Lowered by #2663, which moved the active-repo tracker (its path extractor, repo-key
 # resolver and handler) into the active_repo_tracking sibling to PAY for registering
 # the over-cap growth advisory — the extract-first rule applied to its own wiring.
-_CEILING_LOC = 3686
+# Lowered to the measured LOC by #4961, which deleted the Stop-hook self-pump and its
+# per-agent consolidation registry.
+_CEILING_LOC = 2897
 
 
 def _count_loc(text: str) -> int:

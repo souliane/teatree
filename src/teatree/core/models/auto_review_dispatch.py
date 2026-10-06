@@ -7,7 +7,7 @@ scanner only logged ``flag_no_review`` and the PR waited for a human to notice.
 
 This model closes that loop: ``enqueue`` records a row keyed on
 ``(slug, pr_id, head_sha)`` and creates the claimable ``Task(phase=reviewing)``
-the loop self-pump dispatches to ``t3:reviewer``. The reviewer cold-reviews the
+the worker dispatches to ``t3:reviewer``. The reviewer cold-reviews the
 PR and records a ``merge_safe`` :class:`ReviewVerdict` bound to the reviewed
 head; recording the verdict triggers the sweep merge on demand
 (``teatree.loop.sweep_on_demand``, #2026) instead of waiting a full tick

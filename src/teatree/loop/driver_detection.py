@@ -11,86 +11,28 @@ worker flock, so a slot claimed while the fleet admits work but no worker is yet
 running detects as driverless and says so.
 """
 
-from teatree.core.loop_lease_liveness import namespace_is_attributable
 from teatree.core.models import LoopDriver
-from teatree.core.session_identity import owner_record
 from teatree.loops.enable_verdict import fleet_admits_work
-from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held, pid_alive
+from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held
 
 
-def detect_driver(session_id: str) -> str:
-    """Resolve the tick driver for ``session_id``, or ``""`` (driverless).
+def detect_driver() -> str:
+    """Resolve the tick driver, or ``""`` (driverless).
 
-    Deterministic precedence, each probe cheap and fail-safe-to-``""`` (any probe
-    exception is swallowed — detection NEVER raises into a claim):
-
-    - :data:`~teatree.core.models.LoopDriver.LOOP_RUNNER` iff the active preset
-        admits work AND a live worker holds the ``WORKER_SINGLETON`` kernel flock. A
-        fleet that admits work with a FREE flock is NOT ``loop_runner`` — that is
-        precisely the "work admitted but nothing running" hole the DRIVERLESS warning
-        must name.
-    - :data:`~teatree.core.models.LoopDriver.SELF_PUMP` iff the loop-registry
-        ``t3-loop-tick-owner`` record names THIS ``session_id`` with a live pid (the
-        Stop self-pump keeps the owning session alive to fire ticks).
-    - else ``""`` (driverless).
+    :data:`~teatree.core.models.LoopDriver.LOOP_RUNNER` iff the active preset admits
+    work AND a live worker holds the ``WORKER_SINGLETON`` kernel flock. A fleet that
+    admits work with a FREE flock is NOT ``loop_runner`` — that is precisely the
+    "work admitted but nothing running" hole the DRIVERLESS warning must name. An
+    attended session holding the loop slot drives nothing.
 
     ``external`` is never auto-detected — a foreign scheduler is invisible to
     teatree, so it is set only via an explicit ``--driver external`` override.
-
-    ``session_id`` is passed in (never re-resolved internally) so the self-pump
-    probe compares against the SAME identity the claim uses — a ``t3 loop claim``
-    running in a Bash-tool subprocess resolves its id via the #1107 registry
-    fallback, and re-resolving here could compare against a different one.
+    Detection NEVER raises into a claim: a probe failure reads as driverless.
     """
-    if _worker_is_driving():
-        return LoopDriver.LOOP_RUNNER.value
-    if _self_pump_is_driving(session_id):
-        return LoopDriver.SELF_PUMP.value
-    return ""
-
-
-def _worker_is_driving() -> bool:
-    """Whether the fleet admits work AND a worker is actually holding the flock."""
     try:
         if not fleet_admits_work():
-            return False
-        # Kernel-flock truth, not ``read_pid`` — a recycled pid can never fake a live
-        # worker. Admitted work with a FREE flock is the "nothing running" hole.
-        return flock_is_held(WORKER_SINGLETON)
+            return ""
+        # Kernel-flock truth, not ``read_pid`` — a recycled pid can never fake a live worker.
+        return LoopDriver.LOOP_RUNNER.value if flock_is_held(WORKER_SINGLETON) else ""
     except Exception:  # noqa: BLE001 — a verdict/flock read failure is not a live worker
-        return False
-
-
-def _self_pump_is_driving(session_id: str) -> bool:
-    """Whether the loop-registry tick-owner record names ``session_id`` with a live pid."""
-    if not session_id:
-        return False
-    try:
-        record = owner_record()
-    except Exception:  # noqa: BLE001 — an unreadable registry is not a live self-pump
-        return False
-    if not record or record.get("session_id") != session_id:
-        return False
-    return _pid_is_alive(record.get("pid"), record.get("pid_namespace"))
-
-
-def _pid_is_alive(pid: object, pid_namespace: object) -> bool:
-    """Whether ``pid`` (an int or a digit string from the registry) names a live process.
-
-    A pid resolves only in the namespace it was recorded in (#4270), so a record written
-    by a sibling container is a collision rather than evidence. An UNRECORDED namespace
-    leaves the pid as the only evidence there is — blank-tolerant here because the
-    verdict only reports a driver, and the record regains a namespace on the owner's next
-    SessionStart.
-    """
-    if not namespace_is_attributable(str(pid_namespace or "")):
-        return False
-    if isinstance(pid, bool) or not isinstance(pid, int | str):
-        return False
-    text = str(pid).strip()
-    if not text.isdigit() or int(text) <= 0:
-        return False
-    try:
-        return pid_alive(int(text))
-    except Exception:  # noqa: BLE001 — a liveness-probe failure is not a live self-pump
-        return False
+        return ""

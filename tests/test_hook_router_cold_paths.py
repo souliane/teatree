@@ -245,11 +245,8 @@ def test_a_start_whose_write_never_reaches_the_session_hands_back_the_answer_and
     assert "THE PARKED HAND-OFF" in context
 
 
-def test_the_hand_back_is_the_last_stop_decision_before_the_loop_pump() -> None:
-    assert [handler.__name__ for handler in router._HANDLERS["Stop"][-2:]] == [
-        "handle_hand_back_answers",
-        "handle_loop_self_pump",
-    ]
+def test_the_hand_back_is_the_last_stop_decision() -> None:
+    assert router._HANDLERS["Stop"][-1].__name__ == "handle_hand_back_answers"
 
 
 # Edit/Write (the plan gate's ticket lookup), Agent (the admission governor) and AskUserQuestion

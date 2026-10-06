@@ -87,12 +87,11 @@ SCRATCH="$(mktemp -d)"
 # The same "<pid> <heartbeat> <deadline>" record deploy.sh keeps, so the watchdog and the doctor
 # read a roll as a convergence in flight; the beat stops with this shell and never holds fd 9.
 ROLL_DEADLINE=$(($(date -u +%s) + DRAIN_TIMEOUT + 3600))
-write_record() { printf '%s %s %s\n' "$$" "$(date -u +%s)" "$ROLL_DEADLINE" >"$DEPLOY_LOCK"; }
-write_record
+write_deploy_record "$$" "$ROLL_DEADLINE"
 (
     exec 9>&-
     while sleep "$RECORD_REFRESH_SECONDS" && kill -0 "$$" 2>/dev/null; do
-        [ ! -s "$DEPLOY_LOCK" ] || write_record || true
+        beat_deploy_record "$$" "$ROLL_DEADLINE" || true
         # A live roll's mkdir lock never ages into a reclaim.
         [ -z "$DEPLOY_LOCK_DIR" ] || touch "$DEPLOY_LOCK_DIR" 2>/dev/null || true
     done

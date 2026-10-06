@@ -55,7 +55,7 @@ def register(loop_app: typer.Typer) -> None:
         driver: str = typer.Option(
             "",
             "--driver",
-            help="Explicit tick driver (self_pump/loop_runner/external); overrides detection. "
+            help="Explicit tick driver (loop_runner/external); overrides detection. "
             "Use 'external' for a foreign scheduler.",
         ),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),

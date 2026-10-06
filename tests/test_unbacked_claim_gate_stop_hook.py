@@ -156,8 +156,8 @@ class TestPassesWhenCitedOrOutOfScope:
 
 
 class TestRegisteredOnTheStopChain:
-    def test_handler_runs_before_the_self_pump(self) -> None:
+    def test_handler_runs_before_the_answer_hand_back(self) -> None:
         names = [handler.__name__ for handler in router._HANDLERS["Stop"]]
 
         assert "handle_unbacked_claim_gate" in names
-        assert names.index("handle_unbacked_claim_gate") < names.index("handle_loop_self_pump")
+        assert names.index("handle_unbacked_claim_gate") < names.index("handle_hand_back_answers")
