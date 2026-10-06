@@ -1,8 +1,8 @@
-"""The durations refresh must be reachable on demand, not only on the daily cron (#4048).
+"""The durations refresh must be reachable on demand, not only on its cron (#4048).
 
 ``refresh-durations`` has never produced a single PR. The ``always()`` fix removed the
-reason, but left the path reachable from one place only: a cron that fires once a day on
-``main``. That makes its first-ever execution a one-shot experiment with 24h between
+reason, but left the path reachable from one place only: a cron on ``main``, now the weekly
+one (#5006). That makes its first-ever execution a one-shot experiment with days between
 attempts — and everything downstream waits on it. ``dev/.test_durations`` covers 11% of
 the test files, pytest-split bin-packs the other 89% at the average, and the shard that
 draws the slow ones reds whichever PR is in flight. Sizing the per-test ceilings needs the
@@ -24,10 +24,14 @@ from pathlib import Path
 
 import yaml
 
+from tests._actions_workflow import CI_WEEKLY_CRON
+
 _CI = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 
 # One expression, repeated verbatim at every site on the refresh path.
-DURATIONS_GATE = "(github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.refresh_durations))"
+DURATIONS_GATE = (
+    f"(github.ref == 'refs/heads/main' && (github.event.schedule == '{CI_WEEKLY_CRON}' || inputs.refresh_durations))"
+)
 
 _DISPATCH_INPUT = "refresh_durations"
 
@@ -56,7 +60,7 @@ class TestTheRefreshIsReachableOnDemand:
         dispatch = _triggers(_workflow()).get("workflow_dispatch")
         assert dispatch is not None, (
             "ci.yml has no `workflow_dispatch` trigger, so `refresh-durations` can only ever run "
-            "on the daily cron — one attempt a day at a job that has never successfully produced a PR."
+            "on the weekly cron — one attempt a week at a job that has never successfully produced a PR."
         )
         assert _DISPATCH_INPUT in (dispatch.get("inputs") or {}), (
             f"`workflow_dispatch` declares no `{_DISPATCH_INPUT}` input, so a manual run cannot ask "
