@@ -44,7 +44,7 @@ Design choices:
 import re
 from typing import TYPE_CHECKING, NamedTuple, cast
 
-from teatree.cli.review.guarded_read import guarded_read
+from teatree.core.modelkit.gate_verdict import guarded_read
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
@@ -132,7 +132,7 @@ def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: 
     the failure mode fail-open — the gate proceeds to allow the post rather
     than refuse every post whenever the forge is unreachable. The fail-open is
     the caller's deliberate choice; the SILENCE was the bug (#3509), so the read
-    goes through :func:`~teatree.cli.review.guarded_read.guarded_read` and a
+    goes through :func:`~teatree.core.modelkit.gate_verdict.guarded_read` and a
     failure is logged rather than presented as a clean empty diff.
     """
     endpoint = f"projects/{encoded_repo}/merge_requests/{mr}/changes?access_raw_diffs=true"

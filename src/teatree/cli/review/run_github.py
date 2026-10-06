@@ -10,7 +10,6 @@ sub-agent parses one contract regardless of which forge the URL names.
 
 from typing import cast
 
-from teatree.cli.review.guarded_read import ReadOutcome
 from teatree.cli.review.run import (
     JSONObject,
     ReviewRunResult,
@@ -21,6 +20,7 @@ from teatree.cli.review.run import (
     _ReviewState,
 )
 from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.core.modelkit.gate_verdict import ReadOutcome
 from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.url_classify import repo_and_iid
 from teatree.utils.run import CommandFailedError

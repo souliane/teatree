@@ -129,6 +129,7 @@ class TestWarnIfOwnerRatificationUnbacked(TestCase):
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestShipExecutorEmitsWarn(TestCase):
     def setUp(self) -> None:
         reset_overlay_cache()

@@ -34,7 +34,10 @@ from teatree.core.runners.ship import (
     should_close_ticket,
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.conftest import CommandOverlay
+
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
@@ -178,6 +181,31 @@ class TestShipExecutor(TestCase):
 
         assert result.ok is False
         assert "debt_delta_gate" in result.detail
+        host.create_pr.assert_not_called()
+        push.assert_not_called()
+
+    def test_loop_ship_path_refuses_when_the_diff_cannot_be_read(self) -> None:
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                debt_delta_gate.git,
+                "branch_diff",
+                side_effect=CommandFailedError(["git", "merge-base"], 1, "", "fatal: no merge base"),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert result.detail.startswith("[gate:debt_delta] DID NOT RUN")
         host.create_pr.assert_not_called()
         push.assert_not_called()
 

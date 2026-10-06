@@ -23,6 +23,8 @@ from teatree.core.models import Session, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 
 def _git_repo_on_branch(root: Path, branch: str) -> Path:
     root.mkdir(parents=True, exist_ok=True)
