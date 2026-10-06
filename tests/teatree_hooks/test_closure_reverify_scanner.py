@@ -353,8 +353,7 @@ class TestWiredIntoRouter:
     def test_stop_event_includes_closure_reverify_advisory(self) -> None:
         assert handle_closure_reverify_stop in router._HANDLERS["Stop"]
 
-    def test_runs_before_loop_self_pump(self) -> None:
-        # The advisory must win its stdout slot ahead of the loop self-pump,
-        # which would otherwise overwrite it with a continuation directive.
+    def test_runs_before_the_answer_hand_back(self) -> None:
+        # The advisory must win its stdout slot ahead of the answer hand-back's block.
         stop_chain = router._HANDLERS["Stop"]
-        assert stop_chain.index(handle_closure_reverify_stop) < stop_chain.index(router.handle_loop_self_pump)
+        assert stop_chain.index(handle_closure_reverify_stop) < stop_chain.index(router.handle_hand_back_answers)

@@ -130,13 +130,14 @@ class TestLoopDispatchCommandConformance(TestCase):
                 role=Ticket.Role.AUTHOR,
             )
             session = Session.objects.create(ticket=ticket, agent_id=phase)
-            Task.objects.create(ticket=ticket, session=session, phase=phase)
+            task = Task.objects.create(ticket=ticket, session=session, phase=phase)
             stdout = StringIO()
-            call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
-            payload = json.loads(stdout.getvalue())
-            entry = next(e for e in payload if e["phase"] == phase)
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+            (entry,) = json.loads(stdout.getvalue())
+            assert entry["phase"] == phase
             assert entry["subagent"] == expected
             assert entry["subagent"] != CHAINING_ORCHESTRATOR
+            task.delete()
 
 
 class TestPendingTaskSignalConformance(TestCase):

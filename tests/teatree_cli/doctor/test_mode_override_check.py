@@ -1,7 +1,7 @@
 """``_check_mode_override_staleness`` — the `t3 doctor` stale-mode-override alarm (#3274, #61).
 
 A standing AFK-class mode override silently suppresses the colleague-facing loops
-(and parks the self-pump for a pump-pausing mode) for as long as it sits — the
+(and masks dispatch for a dispatch-masking mode) for as long as it sits — the
 incident that motivated the finding left one active for ~30h. Post-merge the finding
 keys on the DB ``ModeOverride.set_at`` + the resolved mode's intrinsic booleans. The
 doctor surfaces a WARN naming the deferred loops; a fresh, bounded, or absent

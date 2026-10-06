@@ -238,7 +238,7 @@ class TestLoopOwnerAnchor:
     :class:`LoopLease` row.
     """
 
-    def _status(self, *, owner: str, is_live: bool, driver: str = "self_pump"):
+    def _status(self, *, owner: str, is_live: bool, driver: str = "loop_runner"):
         from teatree.core.managers import OwnershipStatus  # noqa: PLC0415
 
         return OwnershipStatus(owner_session=owner, expires_at=None, is_live=is_live, driver=driver)

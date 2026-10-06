@@ -467,13 +467,9 @@
       "subcommands": []
     },
     {
-      "help": "",
+      "help": "``loop_dispatch`` group root.",
       "name": "loop_dispatch",
       "subcommands": [
-        {
-          "help": "List pending Tasks the ``/loop`` slot should spawn in-session",
-          "name": "pending-spawn"
-        },
         {
           "help": "Atomically claim the oldest pending dispatchable Task, then emit it",
           "name": "claim-next"
@@ -631,7 +627,7 @@
       "subcommands": []
     },
     {
-      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each native Claude `/loop` fires.",
+      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each worker `loop_timer` fires.",
       "name": "loops_tick",
       "subcommands": []
     },

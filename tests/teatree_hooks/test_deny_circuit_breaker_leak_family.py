@@ -39,7 +39,6 @@ _AI_SIG_COMMIT = 'git commit -m "feat: x\n\nCo-Authored-By: a <b@c>"'
 
 def _stub_ai_sig_scanner(monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str = "") -> None:
     completed = subprocess.CompletedProcess([], 1, stdout, stderr)
-    monkeypatch.setattr(router, "run_t3", lambda *_a, **_k: completed)
     monkeypatch.setattr(gate_result, "run_t3", lambda *_a, **_k: completed)
 
 

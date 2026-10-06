@@ -115,7 +115,7 @@ class GateContext:
             program = str(argv[0]) if isinstance(argv, list | tuple) and argv else str(argv)
             return result if Path(program).name.startswith("t3") else real_run(*args, **kwargs)
 
-        self.monkeypatch.setattr(router.subprocess, "run", _run_pinning_only_t3)
+        self.monkeypatch.setattr(subprocess, "run", _run_pinning_only_t3)
 
     def write_state(self, suffix: str, lines: str) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
