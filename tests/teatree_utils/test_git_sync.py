@@ -119,6 +119,41 @@ class TestStrictRemoteReads:
         ):
             remote_heads(str(self.repo), ["main"])
 
+    def test_fetch_branch_retries_a_fetch_that_lost_the_ref_to_a_concurrent_one(self) -> None:
+        _run_git("push", "-q", "origin", "main:refs/heads/moved", cwd=self.repo)
+        hooks = self.tmp / "hooks"
+        hooks.mkdir()
+        hook = hooks / "reference-transaction"
+        hook.write_text(
+            '#!/bin/sh\n[ "$1" = prepared ] || exit 0\n[ -e "$0.failed" ] && exit 0\ntouch "$0.failed"\nexit 1\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+        _run_git("config", "core.hooksPath", str(hooks), cwd=self.repo)
+
+        fetch_branch(str(self.repo), "moved")
+
+        assert (hooks / "reference-transaction.failed").exists(), "the first fetch never failed"
+        tracked = subprocess.run(
+            [_GIT, "-C", str(self.repo), "rev-parse", "--verify", "--quiet", "refs/remotes/origin/moved"],
+            check=False,
+            capture_output=True,
+            env=_clean_env(),
+        )
+        assert tracked.returncode == 0, "the retried fetch did not land the ref"
+
+    def test_a_timed_out_fetch_is_not_retried(self) -> None:
+        with (
+            patch(
+                "teatree.utils.git_run.run_bounded_group",
+                side_effect=subprocess.TimeoutExpired(cmd="git fetch", timeout=1),
+            ) as bounded,
+            pytest.raises(RemoteReadError, match="timed out after"),
+        ):
+            fetch_branch(str(self.repo), "main")
+
+        assert bounded.call_count == 1
+
     def test_fetch_branch_reaches_a_branch_a_single_branch_clone_never_tracked(self) -> None:
         _run_git("push", "-q", "origin", "main:refs/heads/other", cwd=self.repo)
         narrow = self.tmp / "narrow"

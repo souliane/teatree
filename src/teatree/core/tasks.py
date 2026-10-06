@@ -496,7 +496,7 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     loop's own autonomous FSM never stamps either marker, so its flow is
     unchanged.
 
-    A failure on a ticket with no repos yet, or one the runner marks retryable (origin
+    A failure on a ticket with no repos yet, or one the runner marks retryable (a remote
     could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
     and asks the owner only once that budget is spent.
 

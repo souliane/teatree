@@ -57,6 +57,7 @@ from teatree.utils.git_status import (
 )
 from teatree.utils.git_sync import RemoteReadError, fetch, fetch_all_prune, merge_abort, merge_no_edit, rebase
 from teatree.utils.git_worktree import (
+    NoStartPointError,
     commits_absent_from_all_remotes,
     cut_start_point,
     locked_worktree_paths,
@@ -78,6 +79,7 @@ from teatree.utils.git_worktree_query import (
 __all__ = [
     "DETACHED_HEAD",
     "GitRepo",
+    "NoStartPointError",
     "RemoteReadError",
     "WorktreeRecord",
     "branch_delete",

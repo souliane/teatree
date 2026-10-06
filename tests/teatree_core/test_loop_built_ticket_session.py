@@ -22,6 +22,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 from teatree.core.models import Session, Ticket
+from teatree.core.runners.base import RunnerResult
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 
@@ -50,7 +51,7 @@ class TestProvisionRollbackPreservesAttestationSessions(TestCase):
         with patch(
             "teatree.core.management.commands._workspace.ticket_intake.WorktreeProvisioner",
         ) as prov:
-            prov.return_value.run.return_value = type("R", (), {"ok": False, "detail": "provision boom"})()
+            prov.return_value.run.return_value = RunnerResult(ok=False, detail="provision boom")
             with pytest.raises(SystemExit) as exc:
                 call_command("workspace", "ticket", "https://example.com/issues/748")
         assert exc.value.code == 1

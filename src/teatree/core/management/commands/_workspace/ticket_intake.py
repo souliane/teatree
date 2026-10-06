@@ -405,8 +405,9 @@ def finalize_ticket_provision(
 
     The second half of ``workspace ticket``, split from the command module to
     keep it under the per-module LOC cap. Returns the ticket pk on success (or a
-    soft-failure warning), or 0 when an unrecoverable provision aborted and the
-    unattested ticket was discarded.
+    soft-failure warning), or 0 when nothing was provisioned: the unattested
+    ticket is discarded, unless the refusal is one the worker's queued
+    ``execute_provision`` retries.
     """
     branch = cast("TicketExtra", ticket.extra)["branch"]
     # Re-derived from the TICKET as the provisioner derives it, so the dir printed
@@ -422,6 +423,10 @@ def finalize_ticket_provision(
     # worktrees already in place. Single source of truth: the runner.
     result = WorktreeProvisioner(ticket).run()
     if not result.ok and not ticket.worktrees.exists():
+        if result.retryable:
+            write_err(f"  Provisioning deferred: {result.detail}")
+            write_err(f"  Ticket #{ticket.pk} kept: the worker retries provisioning, then asks the owner.")
+            return 0
         write_err(f"  Provisioning failed: {result.detail}")
         # #748: only discard the ticket if it carries NO phase attestation.
         # ``get_or_create`` may have resolved an existing loop/coordinator-built

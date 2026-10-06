@@ -7,8 +7,9 @@ and the #706 "absent from all remotes" guard, all via the
 
 from pathlib import Path
 
+from teatree.utils.git_remote_ops import remote_url
 from teatree.utils.git_run import check, run, run_strict
-from teatree.utils.git_sync import RemoteReadError, fetch_branch, remote_heads
+from teatree.utils.git_sync import fetch_branch, remote_heads
 from teatree.utils.git_upstream import normalize_branch_upstream
 from teatree.utils.git_worktree_query import list_worktrees
 from teatree.utils.run import CommandFailedError, run_checked
@@ -135,22 +136,26 @@ def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
     return check(repo=repo, args=["worktree", "add", "--detach", path, ref])
 
 
-def cut_start_point(repo: str, branch: str, *, base: str) -> str:
-    """The freshly fetched ref a new *branch* is cut from: its own remote tip, else *base*.
+class NoStartPointError(Exception):
+    """The clone lacks the remote, or the remote holds neither ref: a retry reads the same answer."""
 
-    *base* is remote-qualified (``origin/main``). Both are read live from that
-    remote, never from whatever ``refs/remotes/*`` this clone holds, and never
-    from its HEAD: a remote that cannot be read, or holds neither, raises
-    :class:`~teatree.utils.git_sync.RemoteReadError`.
-    """
-    remote, _, base_name = base.partition("/")
-    held = remote_heads(repo, [branch, base_name], remote=remote)
-    start = branch if branch in held else base_name
-    if start not in held:
-        msg = f"{remote} has no {base_name} to cut {branch} from"
-        raise RemoteReadError(msg)
-    fetch_branch(repo, start, remote=remote)
-    return f"{remote}/{start}"
+
+def cut_start_point(repo: str, branch: str, *, base: str) -> str:
+    """The live-fetched ref a new *branch* is cut from — its origin tip, else *base* — never a local ref or HEAD."""
+    base_remote, _, base_name = base.partition("/")
+    wanted = {"origin": [branch]}
+    wanted.setdefault(base_remote, []).append(base_name)
+    if missing := [remote for remote in wanted if not remote_url(repo, remote)]:
+        msg = f"{repo} has no {' or '.join(missing)} remote to cut {branch} from"
+        raise NoStartPointError(msg)
+    held = {f"{remote}/{name}" for remote, names in wanted.items() for name in remote_heads(repo, names, remote=remote)}
+    start = next((ref for ref in (f"origin/{branch}", base) if ref in held), "")
+    if not start:
+        msg = f"{base_remote} has no {base_name} to cut {branch} from"
+        raise NoStartPointError(msg)
+    remote, _, name = start.partition("/")
+    fetch_branch(repo, name, remote=remote)
+    return start
 
 
 def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = "") -> bool:

@@ -599,10 +599,10 @@ A worktree's base is the remote tip, freshly fetched. A local default branch is 
 
 `t3 <overlay> workspace ticket <issue-url-or-id>` is how a worktree is created — it fetches and bases the branch for you, so the freshness rule needs no hand-rolled git. Reaching for `git worktree add` yourself is the § "Fix the CLI, Never Work Around It" case: if the command will not scaffold what you need, fix the command.
 
-**Which base it resolves is configurable, and is never a hardcoded `main`.** `teatree.utils.git_branch.resolve_diff_base` is the single answer, first rung wins: the `T3_DIFF_COVERAGE_BASE` env override, then the `teatree.targetBranch` git config (what a fork whose work lands on an integration branch declares — the same key the main-clone commit guard reads), then the repo's actual `origin/HEAD`, and only as a last resort `origin/main`. So a `master`-default repo bases on `origin/master`, and a fork targeting `development` bases on `origin/development`, with no per-skill list of branch names to keep in sync. Declare a non-default target once: <!-- skill-symbol-ref: `teatree.targetBranch` is a git-config key, not an importable module -->
+**Which base it resolves is configurable, and is never a hardcoded `main`.** `teatree.core.worktree.target_branch.resolve_target_branch` is the single answer, first rung wins: the ticket's `extra['target_branch']` (per repo — a stacked PR basing on something other than the default), then the `target_branch` setting (a whole line of work stacking onto one long-lived integration branch), then the repo's actual `origin/HEAD`, and only as a last resort `origin/main`. So a `master`-default repo bases on `origin/master`, and a line of work targeting `development` bases on `origin/development`, with no per-skill list of branch names to keep in sync. A ticket branch origin already holds starts at its own fetched tip instead. Declare a non-default target once:
 
 ```bash
-git config teatree.targetBranch development   # every PR in this checkout targets it
+t3 <overlay> config_setting set target_branch '"development"' --overlay <overlay>   # every PR of that overlay targets it
 ```
 
 The same resolved base applies to the durable fix for a blocking gate below.

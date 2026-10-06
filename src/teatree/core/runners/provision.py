@@ -55,16 +55,16 @@ def _recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
 
     The provisioning half of the liveness question the reaper asks in
     :mod:`teatree.core.worktree.checkout_liveness`, and the answer it needs is the
-    opposite one. A reaper deletes, so it may act only on proof of DEATH; this
-    short-circuit skips the work that would re-materialise a checkout, so it may
-    act only on proof of LIFE. Anything less falls through and re-provisions, which
+    opposite one. A reaper deletes, so it may act only on proof of DEATH; the
+    preflight refuses to re-materialise a checkout on this answer, so it may act
+    only on proof of LIFE. Anything less falls through and re-provisions, which
     adds a checkout and removes nothing.
 
-    *clone* is the source clone as THIS context reaches it, and it is what makes the
-    conservative half work: a checkout records its admin dir as an absolute path
-    written by whatever context created it, so git answers "not a git repository"
-    here for a checkout that is alive elsewhere. The clone's own admin entry, looked
-    up by name, proves that checkout live and keeps the short-circuit.
+    *clone* is the source clone as THIS context reaches it: a checkout records its
+    admin dir as an absolute path written by whatever context created it, so git
+    answers "not a git repository" here for a checkout that is alive elsewhere. The
+    clone's own admin entry, looked up by name, proves that checkout live, and the
+    preflight then refuses it rather than re-provisioning over it.
     """
     return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
 
@@ -409,12 +409,7 @@ class WorktreeProvisioner(RunnerBase):
     ) -> _RepoPlan | _LiveCheckout | _Refusal:
         """Every check that can refuse *repo_name*, run before any directory, row or worktree exists.
 
-        A recorded checkout git resolves HERE is reused with no network read; one only
-        the clone vouches for is refused, because every git command run inside it fails.
-        A recorded path proven neither falls through to re-provision onto the same row.
-        A worktree to cut gets its start point from a live read of origin, so an origin
-        that cannot be read refuses the whole ticket before any repo is cut. The #2276
-        wrong-repo guard raises rather than refuses.
+        A checkout only the clone vouches for is refused: every git command run inside it fails.
         """
         existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
         recorded = existing.worktree_path if existing else ""
@@ -449,8 +444,10 @@ class WorktreeProvisioner(RunnerBase):
             start_point = git.cut_start_point(
                 str(clone), branch, base=resolve_target_branch(self.ticket, str(clone), branch=branch)
             )
+        except git.NoStartPointError as exc:
+            return _Refusal(f"{repo_name}: {exc}")
         except git.RemoteReadError as exc:
-            return _Refusal(f"{repo_name}: cannot refresh from origin: {exc}", retryable=True)
+            return _Refusal(f"{repo_name}: cannot refresh from its remote: {exc}", retryable=True)
         return _RepoPlan(repo_name, branch, existing, clone=clone, start_point=start_point)
 
     def _provision_repo(self, plan: _RepoPlan | _LiveCheckout, ticket_dir: Path) -> str | None:

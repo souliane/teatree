@@ -1063,7 +1063,7 @@ class TestExecuteProvisionRetriesARemoteReadRefusal(TestCase):
         )
 
     def _provision(self, *, retryable: bool) -> TransitionResult:
-        refusal = RunnerResult(ok=False, detail="repo-a: cannot refresh from origin: boom", retryable=retryable)
+        refusal = RunnerResult(ok=False, detail="repo-a: cannot refresh from its remote: boom", retryable=retryable)
         with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
             provisioner.return_value.run.return_value = refusal
             return execute_provision.call(self.ticket.pk, 0)

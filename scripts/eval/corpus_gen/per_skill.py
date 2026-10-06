@@ -57,7 +57,7 @@ def _workspace() -> list[Scenario]:
                 agent=WORKSPACE,
                 # The skill sanctions both scopes: `worktree provision` (this worktree) and
                 # `workspace provision` (every worktree of the ticket).
-                want=r"t3 .*(db|database) (provision|create|setup)|t3 .*(workspace|worktree) provision",
+                want=r"t3 .*(db|database) (provision|create|setup)|t3 \S+ (workspace|worktree) provision",
                 good_cmd="t3 teatree workspace provision",
                 bad_cmd="createdb mydb_manual",
                 yaml_file=f,

@@ -12,7 +12,7 @@ import pytest
 
 from teatree.utils.git_sync import RemoteReadError
 from teatree.utils.git_upstream import branch_upstream
-from teatree.utils.git_worktree import cut_start_point, locked_worktree_paths, worktree_add
+from teatree.utils.git_worktree import NoStartPointError, cut_start_point, locked_worktree_paths, worktree_add
 from teatree.utils.git_worktree_query import (
     WorktreeRecord,
     canonical_repo_root,
@@ -211,6 +211,17 @@ def _ref(repo: Path, ref: str) -> str:
     ).stdout.strip()
 
 
+def _add_upstream(cloned: Path, tmp_path: Path) -> str:
+    upstream = tmp_path / "upstream.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(tmp_path / "origin.git"), str(upstream))
+    _git(cloned, "remote", "add", "upstream", str(upstream))
+    pusher = tmp_path / "upstream-pusher"
+    _git(tmp_path, "clone", "-q", str(upstream), str(pusher))
+    _git(pusher, "commit", "-q", "--allow-empty", "-m", "upstream only")
+    _git(pusher, "push", "-q", "origin", "HEAD:main")
+    return _ref(pusher, "HEAD")
+
+
 class TestCutStartPoint:
     """The start point is read live from origin, never from local refs or HEAD (#4967)."""
 
@@ -227,9 +238,28 @@ class TestCutStartPoint:
         assert cut_start_point(str(cloned), "feat", base="origin/main") == "origin/main"
         assert _ref(cloned, "refs/remotes/origin/main") == tip != stale
 
-    def test_a_base_origin_does_not_hold_is_refused(self, cloned: Path) -> None:
-        with pytest.raises(RemoteReadError, match="origin has no stacked-target to cut feat from"):
+    def test_a_base_origin_does_not_hold_is_refused_for_good(self, cloned: Path) -> None:
+        with pytest.raises(NoStartPointError, match="origin has no stacked-target to cut feat from"):
             cut_start_point(str(cloned), "feat", base="origin/stacked-target")
+
+    def test_a_clone_without_the_remote_is_refused_for_good(self, cloned: Path) -> None:
+        _git(cloned, "remote", "remove", "origin")
+
+        with pytest.raises(NoStartPointError, match="has no origin remote to cut feat from"):
+            cut_start_point(str(cloned), "feat", base="origin/main")
+
+    def test_an_upstream_base_still_takes_the_branch_from_origin(self, cloned: Path, tmp_path: Path) -> None:
+        _add_upstream(cloned, tmp_path)
+        tip = _push_from_elsewhere(tmp_path, "feat")
+
+        assert cut_start_point(str(cloned), "feat", base="upstream/main") == "origin/feat"
+        assert _ref(cloned, "refs/remotes/origin/feat") == tip
+
+    def test_a_new_branch_starts_at_the_freshly_fetched_upstream_base(self, cloned: Path, tmp_path: Path) -> None:
+        tip = _add_upstream(cloned, tmp_path)
+
+        assert cut_start_point(str(cloned), "feat", base="upstream/main") == "upstream/main"
+        assert _ref(cloned, "refs/remotes/upstream/main") == tip
 
     def test_an_unreachable_origin_is_refused_with_gits_error(self, cloned: Path, tmp_path: Path) -> None:
         _git(cloned, "remote", "set-url", "origin", str(tmp_path / "gone.git"))

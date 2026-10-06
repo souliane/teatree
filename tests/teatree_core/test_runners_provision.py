@@ -1603,6 +1603,30 @@ class TestWorktreeProvisionerCutsFromAFetchedBase(TestCase):
         assert not (self.workspace / "4967-unreachable").exists()
         assert not Worktree.objects.filter(ticket=ticket).exists()
 
+    def test_a_base_origin_lacks_is_refused_without_a_retry(self) -> None:
+        clone = self._clone()
+        ticket = self._ticket(["repo-a"], "4967-stacked")
+        ticket.extra = {**ticket.extra, "target_branch": "stacked-target"}
+        ticket.save(update_fields=["extra"])
+
+        result = self._provision(ticket)
+
+        assert result.ok is False
+        assert "origin has no stacked-target to cut 4967-stacked from" in result.detail
+        assert result.retryable is False, "a retry reads the same absent base"
+        assert len(self._registrations(clone)) == 1
+
+    def test_a_clone_without_an_origin_remote_is_refused_without_a_retry(self) -> None:
+        clone = self._clone()
+        run_git(clone, "remote", "remove", "origin")
+
+        result = self._provision(self._ticket(["repo-a"], "4967-no-origin"))
+
+        assert result.ok is False
+        assert "has no origin remote" in result.detail
+        assert result.retryable is False, "a retry finds the same missing remote"
+        assert len(self._registrations(clone)) == 1
+
     def test_one_unreachable_origin_cuts_no_repo_of_the_ticket(self) -> None:
         clone_a = self._clone("repo-a")
         clone_b = self._clone("repo-b")

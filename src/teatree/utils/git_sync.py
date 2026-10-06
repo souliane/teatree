@@ -24,14 +24,16 @@ class RemoteReadError(Exception):
     """A remote read that failed — never an absent ref. The message is git's own error, redacted."""
 
 
-def _read_remote(repo: str, args: list[str]) -> str:
+def _run_remote(repo: str, args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
-        result = run_with_status(
-            repo=repo, args=args, env=git_env_non_interactive(), timeout=FETCH_PRUNE_TIMEOUT_SECONDS
-        )
+        return run_with_status(repo=repo, args=args, env=git_env_non_interactive(), timeout=FETCH_PRUNE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         msg = f"git {args[0]} timed out after {FETCH_PRUNE_TIMEOUT_SECONDS:.0f}s"
         raise RemoteReadError(msg) from exc
+
+
+def _read_remote(repo: str, args: list[str]) -> str:
+    result = _run_remote(repo, args)
     if result.returncode != 0:
         raise RemoteReadError(redact_secrets(result.stderr.strip()) or f"git {args[0]} exited {result.returncode}")
     return result.stdout
@@ -51,7 +53,10 @@ def remote_heads(repo: str, branches: Iterable[str], remote: str = "origin") -> 
 
 def fetch_branch(repo: str, branch: str, remote: str = "origin") -> None:
     """Refresh ``refs/remotes/<remote>/<branch>`` from *remote*, even in a single-branch clone."""
-    _read_remote(repo, ["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"])
+    args = ["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"]
+    # A concurrent fetch of the same ref (the CLI racing the worker) fails one side with "cannot lock ref".
+    if _run_remote(repo, args).returncode != 0:
+        _read_remote(repo, args)
 
 
 def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
