@@ -1,12 +1,24 @@
-"""The admission rank shared by both headless chokepoints, loop claims and task-list inspection."""
+"""The admission score shared by both headless chokepoints, loop claims and task-list inspection.
+
+One score per waiting task, the sum of named parts, highest first; the older row wins a tie,
+so age is the last part. Every caller orders through :data:`ADMISSION_ORDER`, so a new part
+is added here without touching any of them.
+"""
 
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.expressions import BaseExpression
 
 from teatree.core.modelkit.phases import cheap_phase_spellings, phase_spellings
 
-ADMISSION_RANK_ALIAS = "_admission_rank"
-ADMISSION_ORDER: tuple[str, ...] = (ADMISSION_RANK_ALIAS, "pk")
+ADMISSION_SCORE_ALIAS = "_admission_score"
+ADMISSION_ORDER: tuple[str, ...] = (f"-{ADMISSION_SCORE_ALIAS}", "pk")
+
+#: Stage part: a review-lane row outranks every other row, continuing work outranks a new ticket.
+_REVIEW_STAGE = 400
+_CONTINUING_STAGE = 100
+_NEW_TICKET_STAGE = 0
+#: Priority part: an expedited ticket lifts its work above all unexpedited non-review work, never above a review.
+_EXPEDITED_PRIORITY = 200
 
 
 def _new_ticket_autostart_q() -> Q:
@@ -18,20 +30,25 @@ def _new_ticket_autostart_q() -> Q:
     return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases) & Q(ticket__state__in=initial_states)
 
 
+def _priority_part() -> Case:
+    return Case(
+        When(ticket__expedited=True, then=Value(_EXPEDITED_PRIORITY)),
+        default=Value(0),
+        output_field=IntegerField(),
+    )
+
+
+def _stage_part() -> Case:
+    return Case(
+        When(phase__in=cheap_phase_spellings(), then=Value(_REVIEW_STAGE)),
+        When(_new_ticket_autostart_q(), then=Value(_NEW_TICKET_STAGE)),
+        default=Value(_CONTINUING_STAGE),
+        output_field=IntegerField(),
+    )
+
+
 def admission_priority_annotations() -> dict[str, BaseExpression]:
-    """SQL rank: expedited review 0; review 1; expedited work 2; continuing work 3; new-ticket first phase 4."""
-    review = Q(phase__in=cheap_phase_spellings())
-    expedited = Q(ticket__expedited=True)
-    return {
-        ADMISSION_RANK_ALIAS: Case(
-            When(review & expedited, then=Value(0)),
-            When(review, then=Value(1)),
-            When(expedited, then=Value(2)),
-            When(_new_ticket_autostart_q(), then=Value(4)),
-            default=Value(3),
-            output_field=IntegerField(),
-        )
-    }
+    return {ADMISSION_SCORE_ALIAS: _priority_part() + _stage_part()}
 
 
-__all__ = ["ADMISSION_ORDER", "ADMISSION_RANK_ALIAS", "admission_priority_annotations"]
+__all__ = ["ADMISSION_ORDER", "ADMISSION_SCORE_ALIAS", "admission_priority_annotations"]
