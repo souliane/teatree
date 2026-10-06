@@ -27,10 +27,11 @@ import pytest
 from django.test import TestCase
 from pydantic import ValidationError
 
-from teatree.agents import prompt, skill_injection
+from teatree.agents import prompt
 from teatree.agents.skill_bundle import active_overlay_stage_skills, resolve_skill_bundle
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.overlay import OverlayConfig
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 _STAGE_SENTINEL = "STAGE-SKILL-SENTINEL: additive per-stage overlay skill body, phase-scoped"
@@ -55,7 +56,7 @@ def skills_dir(tmp_path: Path) -> Iterator[Path]:
     _seed_skill(sd, "test", body="# test lifecycle skill")
     _seed_skill(sd, "rules", body="# rules")
     _seed_skill(sd, _STAGE_SKILL_NAME, body=_STAGE_SENTINEL)
-    with patch.object(skill_injection, "DEFAULT_SKILLS_DIR", sd):
+    with patch.object(skill_index, "DEFAULT_SKILLS_DIR", sd):
         yield sd
 
 

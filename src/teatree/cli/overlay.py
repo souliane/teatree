@@ -12,12 +12,13 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.agents.skill_injection import build_subagent_skill_preamble, harness_skills_dirs
+from teatree.agents.skill_injection import build_subagent_skill_preamble
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands
+from teatree.skill_support.index import harness_skills_dirs
 from teatree.utils.django_db import project_env_import_error, project_env_is_drivable, runner_prefix
 from teatree.utils.run import CommandFailedError, run_streamed, spawn
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton

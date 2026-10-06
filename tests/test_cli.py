@@ -335,9 +335,9 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=active),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_requires_index", return_value=[]),
+            patch.object(startup_mod, "build_skill_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
-            patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
+            patch.object(startup_mod, "skill_mtimes", return_value={}),
         ):
             result = runner.invoke(app, ["config", "write-skill-cache"])
             assert result.exit_code == 0
@@ -362,9 +362,9 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=None),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_requires_index", return_value=[]),
+            patch.object(startup_mod, "build_skill_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
-            patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
+            patch.object(startup_mod, "skill_mtimes", return_value={}),
         ):
             result = runner.invoke(app, ["config", "write-skill-cache"])
             assert result.exit_code == 0

@@ -65,12 +65,11 @@ from teatree.agents.runner_route_recording import fallback_reason_for_outcome as
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import stage_skills_or_refusal
+from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.skill_routing import (
     AmbiguousSkillRouteError,
     ConflictingHarnessRoutingError,
@@ -81,7 +80,6 @@ from teatree.agents.usage_window import maybe_park_for_active_window, park_task_
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.worktree.occupancy import (
     WorktreeOccupiedError,
     occupy_ticket_checkout,
@@ -457,16 +455,10 @@ def _preflight(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
         return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
 
-    stage_skills = _stage_skills_or_refusal(task, phase=phase)
-    if isinstance(stage_skills, TaskAttempt):
-        return stage_skills
-
-    skills = resolve_skill_bundle(
-        phase=phase,
-        overlay_skill_metadata=overlay_skill_metadata,
-        worktree_path=dispatch_worktree_path(task.ticket),
-        stage_skills=stage_skills,
-    )
+    staged = staged_skills_or_refusal(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    if isinstance(staged, TaskAttempt):
+        return staged
+    stage_skills, skills = staged
     dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
     if isinstance(dispatch, TaskAttempt):
         return dispatch
@@ -479,10 +471,6 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
     restore = getattr(harness, "restore_unconsumed_resume_thread", None)
     if callable(restore):
         restore()
-
-
-def _stage_skills_or_refusal(task: Task, *, phase: str) -> list[str] | TaskAttempt:
-    return stage_skills_or_refusal(task, phase=phase, stage_skills=stage_skills_for_dispatch)
 
 
 def _resolve_backend_or_failure(

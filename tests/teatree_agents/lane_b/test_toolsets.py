@@ -23,7 +23,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.abstract import AbstractToolset
 from pydantic_ai.toolsets.combined import CombinedToolset
 
-from teatree.agents import skill_injection
 from teatree.agents._runner_options import _disallowed_tools_for_phase
 from teatree.agents.lane_b import toolsets as toolsets_module
 from teatree.agents.lane_b.config import LaneBToolConfig
@@ -32,10 +31,11 @@ from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.prompt import build_system_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.agents.skill_files import SkillFileIndex
-from teatree.agents.skill_injection import harness_skills_dirs
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task, Ticket
+from teatree.skill_support import index as skill_index
+from teatree.skill_support.index import harness_skills_dirs
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
@@ -253,7 +253,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         for patcher in (
             patch.dict(os.environ, {"HOME": str(home)}),
             patch.object(toolsets_module, "build_mcp_toolsets", list),
-            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _REPO_SKILLS),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _REPO_SKILLS),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

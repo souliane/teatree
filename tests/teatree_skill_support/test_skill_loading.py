@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+import teatree.skill_support.index as skill_index_mod
 import teatree.skill_support.loading as skill_loading_mod
 from teatree.skill_support.loading import (
     INTERNALS_SKILL_NAME,
@@ -106,7 +107,8 @@ def test_select_for_agent_launch_explicit_phase(tmp_path: Path):
 
 def test_select_for_agent_launch_explicit_skills(tmp_path: Path):
     result = _launch(tmp_path, explicit_skills=["test", "debug"])
-    assert result.skills == ["test", "debug"]
+    assert result.skills.index("workspace") < result.skills.index("test")
+    assert result.skills.index("systematic-debugging") < result.skills.index("debug")
     assert result.lifecycle_skill == ""
     assert result.ask_user is False
 
@@ -394,21 +396,21 @@ def test_generator_relative_and_name_shaped_skill_paths_are_kept_silently(tmp_pa
     assert not caplog.records
 
 
-def test_a_skill_md_path_whose_directory_is_indexed_raises_no_missing_warning(caplog):
+def test_a_skill_md_path_whose_directory_is_on_disk_raises_no_missing_warning(caplog):
     index = [{"skill": "internals", "requires": []}]
 
     with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
         resolved = SkillLoadingPolicy._resolve_requires_chain(["/repo/skills/internals/SKILL.md"], index)
 
     assert resolved == ["/repo/skills/internals/SKILL.md"]
-    assert not [r for r in caplog.records if "has no SKILL.md" in r.getMessage()]
+    assert not [r for r in caplog.records if "resolves to no SKILL.md" in r.getMessage()]
 
 
-def test_an_unindexed_skill_md_path_still_warns(caplog):
+def test_a_skill_md_path_no_root_holds_still_warns(caplog):
     with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
         SkillLoadingPolicy._resolve_requires_chain(["/repo/skills/ghost/SKILL.md"], [])
 
-    assert [r for r in caplog.records if "has no SKILL.md" in r.getMessage()]
+    assert [r for r in caplog.records if "resolves to no SKILL.md" in r.getMessage()]
 
 
 # ── overlay-companion skills are scoped to overlay work ─────────────
@@ -735,3 +737,51 @@ def test_git_remote_urls_fallback_empty(tmp_path: Path) -> None:
         patch.object(skill_loading_mod.git, "run", return_value=""),
     ):
         assert _git_remote_urls(tmp_path) == []
+
+
+# ── the requires closure resolves against every skill root (#4769) ──
+
+
+def _write_skill(root: Path, name: str, requires: list[str] | None = None) -> None:
+    lines = ["---", f"name: {name}", *(["requires:", *(f"  - {dep}" for dep in requires)] if requires else []), "---"]
+    (root / name).mkdir(parents=True, exist_ok=True)
+    (root / name / "SKILL.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_without_an_index_the_closure_reaches_a_skill_only_an_install_root_holds(tmp_path: Path, monkeypatch):
+    local, installed = tmp_path / "repo-skills", Path.home() / ".agents" / "skills"
+    _write_skill(local, "alpha", requires=["beta"])
+    _write_skill(installed, "beta", requires=["gamma"])
+    _write_skill(installed, "gamma")
+    monkeypatch.setattr(skill_index_mod, "DEFAULT_SKILLS_DIR", local)
+
+    result = SkillLoadingPolicy().select_for_agent_launch(
+        cwd=tmp_path,
+        overlay_skill_metadata={},
+        ticket_status="",
+        explicit_phase="",
+        explicit_skills=["alpha"],
+        overlay_active=False,
+    )
+
+    assert result.skills == ["gamma", "beta", "alpha"]
+
+
+def test_a_required_skill_present_on_disk_raises_no_missing_warning(tmp_path: Path, monkeypatch, caplog):
+    installed = Path.home() / ".agents" / "skills"
+    _write_skill(installed, "beta")
+    monkeypatch.setattr(skill_index_mod, "DEFAULT_SKILLS_DIR", tmp_path / "repo-skills")
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        SkillLoadingPolicy._resolve_requires_chain(["beta"], [])
+
+    assert not [r for r in caplog.records if "resolves to no SKILL.md" in r.getMessage()]
+
+
+def test_a_required_skill_absent_from_every_root_warns(tmp_path: Path, monkeypatch, caplog):
+    monkeypatch.setattr(skill_index_mod, "DEFAULT_SKILLS_DIR", tmp_path / "repo-skills")
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        SkillLoadingPolicy._resolve_requires_chain(["ghost"], [{"skill": "ghost", "requires": []}])
+
+    assert [r for r in caplog.records if "'ghost' resolves to no SKILL.md" in r.getMessage()]

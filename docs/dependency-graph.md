@@ -48,6 +48,7 @@ graph TD
     teatree.skill_support --> teatree.types
     teatree.skill_support --> teatree.utils
     teatree.skill_support --> teatree.project
+    teatree.skill_support --> teatree.provisioning
     teatree.provisioning --> teatree.utils
     teatree.core --> teatree.db
     teatree.core --> teatree.types

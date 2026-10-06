@@ -1,7 +1,6 @@
 """Parse the ``requires:`` and ``companions:`` lists from SKILL.md frontmatter.
 
-The teatree-side twin of ``scripts/lib/requires_parser.py`` — the cold hook
-needs a no-teatree-import copy, teatree code imports this one. ``requires`` is
+The one parser every skill index reads through, the cold hooks included. ``requires`` is
 the hard, transitive skill-dependency edge; ``companions`` is its SOFT
 counterpart — a suggested-not-mandatory list, surfaced but never enforced. There
 is no free-text trigger frontmatter.

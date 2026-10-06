@@ -15,7 +15,6 @@ from pathlib import Path
 import typer
 from django.core.management import call_command
 
-from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
 from teatree.cli.account_switch_recover import recover_account_switch
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
@@ -43,6 +42,7 @@ from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skill_pin import default_record_path
 from teatree.provisioning.skills_cli import SkillsCli, SkillsCliError, refresh_inventory_receipt
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 from teatree.utils.django_bootstrap import ensure_django
 
 setup_app = typer.Typer(
@@ -68,15 +68,15 @@ def _assess_dispatched_skills(
     directories = search_dirs if search_dirs is not None else harness_skills_dirs()
     missing: list[str] = []
     for name in sorted(set(demands)):
-        bare = _bare_skill_name(name)
-        body = _resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
+        bare = bare_skill_name(name)
+        body = resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
         try:
             if body is None or not body.read_text(encoding="utf-8").strip():
                 missing.append(name)
         except (OSError, UnicodeError):
             missing.append(name)
     safe_missing = sorted(
-        {_bare_skill_name(name) for name in missing if _SAFE_SKILL_NAME.fullmatch(_bare_skill_name(name))}
+        {bare_skill_name(name) for name in missing if _SAFE_SKILL_NAME.fullmatch(bare_skill_name(name))}
     )
     # An unsafe name cannot be reported by the boot marker, but still fails ready.
     status = "missing-skills" if missing else "ready"

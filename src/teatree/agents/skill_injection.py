@@ -15,63 +15,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.agents.skill_files import reach_line
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
-
-
-def harness_skills_dirs() -> list[Path]:
-    home = Path.home()
-    candidates = [
-        DEFAULT_SKILLS_DIR,
-        home / ".agents" / "skills",
-        home / ".claude" / "skills",
-        home / ".codex" / "skills",
-    ]
-    return list(dict.fromkeys(candidates))
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
     """The ordered search roots: an explicit single dir, else the harness dirs."""
     return [skills_dir] if skills_dir is not None else harness_skills_dirs()
-
-
-def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
-    """Locate SKILL.md for a skill name within the skills directory."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    candidate = sd / name / "SKILL.md"
-    return candidate if candidate.is_file() else None
-
-
-def _bare_skill_name(name: str) -> str:
-    """Reduce a skill reference to its on-disk directory name.
-
-    A reference reaches this helper qualified (``t3:rules``), as a bare name
-    (``rules``), or as an explicit path (``skills/rules/SKILL.md``). Each maps
-    to the ``skills/<dir>/SKILL.md`` directory that holds the body, so the
-    namespace qualifier and any path prefix are dropped to the directory name —
-    the filesystem key both the embed and the unresolvable-warning check resolve
-    against.
-    """
-    tail = name.rsplit(":", 1)[-1]
-    if tail.endswith("/SKILL.md"):
-        return Path(tail).parent.name
-    return Path(tail).name
-
-
-def _resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
-    """Find the first ``<dir>/<skill>/SKILL.md`` across *skills_dirs*, in order.
-
-    The single skill-reference resolver: the embed, the sub-agent preamble, and
-    the stage-skill unresolvable-warning check all route through it, so the
-    warning and the actual embed can never disagree on a skill's path (#3206).
-    """
-    bare = _bare_skill_name(name)
-    for sd in skills_dirs:
-        found = _find_skill_md(bare, sd)
-        if found is not None:
-            return found
-    return None
 
 
 def _skill_section(name: str, content: str) -> str:
@@ -89,14 +40,14 @@ def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -
     dirs = _resolve_dirs(skills_dir)
     sections: list[str] = []
     for name in skills:
-        skill_md = _resolve_skill_md(name, dirs)
+        skill_md = resolve_skill_md(name, dirs)
         if skill_md is not None:
-            sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+            sections.append(_skill_section(bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
     return _with_reach_line(sections, dirs)
 
 
 def _companion_line(name: str, dirs: Sequence[Path]) -> str:
-    skill_md = _resolve_skill_md(name, dirs)
+    skill_md = resolve_skill_md(name, dirs)
     if skill_md is None:
         return f"- {name}: not embedded — no SKILL.md resolves for it on this host"
     return f"- {name}: not embedded — Read `{skill_md}` when it applies"
@@ -104,7 +55,7 @@ def _companion_line(name: str, dirs: Sequence[Path]) -> str:
 
 def _is_primary(name: str, primary_skills: set[str]) -> bool:
     """Check if a skill name (or path) matches the primary set or always-full list."""
-    bare = _bare_skill_name(name)
+    bare = bare_skill_name(name)
     if name in primary_skills or bare in primary_skills or bare in _ALWAYS_FULL_SKILLS:
         return True
     skill_dir_name = Path(name).parent.name if "/" in name else ""
@@ -144,9 +95,9 @@ def _read_skill_contents_scoped(
     explicit_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
-            skill_md = _resolve_skill_md(name, dirs)
+            skill_md = resolve_skill_md(name, dirs)
             if skill_md is not None:
-                sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
+                sections.append(_skill_section(bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
         elif name in explicit or _explicit_load_name(name) in explicit:
             explicit_names.append(name)
         elif name in suppress or _explicit_load_name(name) in suppress:
@@ -202,11 +153,11 @@ def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Pa
     resolved: list[str] = []
     missing: list[str] = []
     for name in skills:
-        skill_md = _resolve_skill_md(name, skills_dirs)
+        skill_md = resolve_skill_md(name, skills_dirs)
         if skill_md is None:
             missing.append(name)
             continue
-        bare = _bare_skill_name(name)
+        bare = bare_skill_name(name)
         sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
         resolved.append(bare)
     text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + _with_reach_line(sections, skills_dirs) if sections else ""

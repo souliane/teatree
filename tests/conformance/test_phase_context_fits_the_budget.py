@@ -16,13 +16,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.agents import skill_injection
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.prompt import build_system_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.agents.skill_injection import _read_skill_contents_scoped
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task, Ticket
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
@@ -59,7 +59,7 @@ class TestEveryPhaseFitsTheBudget(TestCase):
         with (
             tempfile.TemporaryDirectory() as home,
             patch.dict(os.environ, {"HOME": home}),
-            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
         ):
             for phase in sorted(KNOWN_PHASES):
                 context = _rendered_context(_dispatch_task(phase))
@@ -78,7 +78,7 @@ class TestEveryPhaseFitsTheBudget(TestCase):
                 link.symlink_to(_SKILLS_DIR, target_is_directory=True)
             measured: dict[Path, tuple[int, int]] = {}
             for skills_dir in (short_dir, long_dir):
-                with patch.object(skill_injection, "DEFAULT_SKILLS_DIR", skills_dir):
+                with patch.object(skill_index, "DEFAULT_SKILLS_DIR", skills_dir):
                     context = _rendered_context(task)
                 measured[skills_dir] = (len(context.encode()), _measured_bytes(context, skills_dir))
         assert measured[short_dir][0] != measured[long_dir][0], "the checkout path no longer reaches the context"

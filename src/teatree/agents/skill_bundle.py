@@ -3,7 +3,8 @@ from pathlib import Path
 
 from teatree.agents.phase_agent_skills import declared_skills_for_phase
 from teatree.skill_support.deps import SkillIndex
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
+from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
 __all__ = [
@@ -170,15 +171,11 @@ def stage_skills_for_dispatch(phase: str) -> list[str]:
 
 
 def _skill_body_dirs() -> list[Path]:
-    from teatree.agents.skill_injection import harness_skills_dirs  # noqa: PLC0415 — deferred: keeps import light
-
     return harness_skills_dirs()
 
 
 def _unresolvable(name: str, dirs: list[Path]) -> bool:
-    from teatree.agents.skill_injection import _resolve_skill_md  # noqa: PLC0415 — deferred: keeps import light
-
-    return _resolve_skill_md(name, dirs) is None
+    return resolve_skill_md(name, dirs) is None
 
 
 def _warn_unresolvable_stage_skills(skills: list[str], phase: str) -> None:

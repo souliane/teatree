@@ -10,6 +10,7 @@ from teatree.skill_support.loading import SkillLoadingPolicy
 
 
 def _launch(tmp_path: Path, **overrides):
+    """Selection only: an explicit empty index keeps the ``requires`` closure out of these assertions."""
     policy = SkillLoadingPolicy()
     defaults = {
         "cwd": tmp_path,
@@ -18,9 +19,16 @@ def _launch(tmp_path: Path, **overrides):
         "explicit_phase": "",
         "explicit_skills": [],
         "overlay_active": False,
+        "skill_index": [],
     }
     defaults.update(overrides)
     return policy.select_for_agent_launch(**defaults)
+
+
+def test_agent_launch_without_an_index_loads_the_requires_closure(tmp_path: Path) -> None:
+    result = _launch(tmp_path, explicit_phase="debugging", skill_index=None)
+    assert result.skills[-1] == "debug"
+    assert {"workspace", "systematic-debugging", "rules"} <= set(result.skills)
 
 
 def test_agent_without_status_phase_or_skill_asks_user(tmp_path: Path) -> None:

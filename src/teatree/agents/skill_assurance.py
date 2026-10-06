@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 _EVIDENCE = re.compile(r"^[A-Za-z0-9_./:# -]{4,160}$")
 _LOAD_DIRECTIVE = re.compile(
@@ -44,9 +44,9 @@ class SkillDispatchError(ValueError):
 
 
 def _required_names(skills: Sequence[str], required: set[str]) -> list[str]:
-    names = [_bare_skill_name(name) for name in skills if name in required or _bare_skill_name(name) in required]
+    names = [bare_skill_name(name) for name in skills if name in required or bare_skill_name(name) in required]
     for name in sorted(required):
-        bare = _bare_skill_name(name)
+        bare = bare_skill_name(name)
         if bare not in names:
             names.append(bare)
     return list(dict.fromkeys(names))
@@ -65,11 +65,11 @@ def _explicit_directive_names(rendered_context: str) -> set[str]:
         if stack_block:
             bullet = _STACK_LOAD_BULLET.fullmatch(line)
             if bullet is not None:
-                names.add(_bare_skill_name(bullet.group(1)))
+                names.add(bare_skill_name(bullet.group(1)))
                 continue
             stack_block = False
         if directive := _LOAD_DIRECTIVE.match(line):
-            names.add(_bare_skill_name(directive.group(1)))
+            names.add(bare_skill_name(directive.group(1)))
     return names
 
 
@@ -91,8 +91,8 @@ def recover_truncated_inline_skills(
     directories = list(skills_dirs) if skills_dirs is not None else harness_skills_dirs()
     lines = []
     for name in sorted(required_inline):
-        bare = _bare_skill_name(name)
-        path = _resolve_skill_md(bare, directories)
+        bare = bare_skill_name(name)
+        path = resolve_skill_md(bare, directories)
         if path is None:
             continue  # The ordinary dispatch assessment names the missing body.
         section = f"--- SKILL: {bare} ---\n{path.read_text(encoding='utf-8')}"
@@ -117,12 +117,12 @@ def assess_skill_dispatch(
     explicit = _required_names(skills, required_explicit)
     requested = list(dict.fromkeys([*inline, *explicit]))
     directories = list(skills_dirs) if skills_dirs is not None else harness_skills_dirs()
-    found = [name for name in requested if _resolve_skill_md(name, directories) is not None]
+    found = [name for name in requested if resolve_skill_md(name, directories) is not None]
     missing = [name for name in requested if name not in found]
     injected = [
         name
         for name in inline
-        if (path := _resolve_skill_md(name, directories)) is not None
+        if (path := resolve_skill_md(name, directories)) is not None
         and f"--- SKILL: {name} ---\n{path.read_text(encoding='utf-8')}" in rendered_context
     ]
     directives = _explicit_directive_names(rendered_context)
@@ -162,14 +162,14 @@ def assess_skill_application(
             reference = item.get("evidence")
             if not isinstance(name, str) or not isinstance(reference, str):
                 continue
-            bare = _bare_skill_name(name)
+            bare = bare_skill_name(name)
             reference = reference.strip()
             if bare in requested and _EVIDENCE.fullmatch(reference) and not reference.startswith("/"):
                 # The agent's raw text may contain a path or secret-like token.
                 # Keep only its presence; the receipt is a declaration, not proof.
                 evidence.append({"skill": bare, "evidence": "provided"})
     evidence = list({item["skill"]: item for item in evidence}.values())
-    observed = [_bare_skill_name(name) for name in observed_loads if _bare_skill_name(name) in requested]
+    observed = [bare_skill_name(name) for name in observed_loads if bare_skill_name(name) in requested]
     explicit_observed = set(dispatch["explicit_load"]) <= set(observed)
     declared = bool(requested) and requested <= {item["skill"] for item in evidence} and explicit_observed
     return {

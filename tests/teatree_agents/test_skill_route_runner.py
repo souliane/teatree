@@ -118,7 +118,7 @@ class TestSkillRouteRuntimeFallback(TestCase):
         task = self._task()
         with (
             patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config),
-            patch.object(runner_mod, "resolve_skill_bundle", return_value=skills or ["route-skill"]),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=skills or ["route-skill"]),
             patch.object(Task, "renew_lease", lambda self, **_kw: None),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):

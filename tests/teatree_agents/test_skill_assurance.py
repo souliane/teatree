@@ -216,10 +216,12 @@ def test_other_skill_mention_does_not_replace_required_load_directive(tmp_path: 
         )
 
 
-def test_coding_prompt_delivers_architecture_code_and_stack_loads(tmp_path: Path) -> None:
+def test_coding_prompt_delivers_architecture_code_and_stack_loads() -> None:
     names = ["architecture-design", "code", "ac-django", "demo-overlay"]
+    install_root = Path.home() / ".agents" / "skills"
+    install_root.mkdir(parents=True)
     for name in names:
-        _skill(tmp_path, name)
+        _skill(install_root, name)
     rendered = "\n".join(_coding_phase_directive(["ac-django", "t3:demo-overlay", "code"]))
 
     assurance = assess_skill_dispatch(
@@ -227,7 +229,7 @@ def test_coding_prompt_delivers_architecture_code_and_stack_loads(tmp_path: Path
         required_inline=set(),
         required_explicit=set(names),
         rendered_context=rendered,
-        skills_dirs=[tmp_path],
+        skills_dirs=[install_root],
     )
 
     assert assurance["explicit_load"] == names

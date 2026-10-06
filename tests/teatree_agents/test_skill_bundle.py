@@ -7,21 +7,25 @@ fall-back.
 """
 
 import tempfile
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 from django.test import TestCase
 
 from teatree.agents import skill_bundle
+from teatree.agents.phase_agent_skills import declared_skills_for_phase
 from teatree.agents.skill_bundle import (
     ArchitecturalReviewSkillMissingError,
     resolve_skill_bundle,
     stage_skills_for_dispatch,
 )
 from teatree.config.settings import UserSettings
+from teatree.skill_support import index as skill_index_mod
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 
@@ -157,3 +161,93 @@ class TestArchitecturalReviewSkillReachesTheBundle(TestCase):
             pytest.raises(ArchitecturalReviewSkillMissingError, match="ac-reviewing-skills"),
         ):
             stage_skills_for_dispatch("architectural_review")
+
+
+def _frontmatter_requires(skill_md: Path) -> list[str]:
+    _, frontmatter, _ = skill_md.read_text(encoding="utf-8").split("---", 2)
+    return list(yaml.safe_load(frontmatter).get("requires") or [])
+
+
+def _closure_oracle(names: list[str], roots: list[Path]) -> set[str]:
+    """An independent walk of the on-disk ``requires:`` graph — the bundle must equal it."""
+    seen: set[str] = set()
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        found = next((root / name / "SKILL.md" for root in roots if (root / name / "SKILL.md").is_file()), None)
+        if found is not None:
+            pending.extend(_frontmatter_requires(found))
+    return seen
+
+
+def _install(name: str, body: str) -> Path:
+    path = Path.home() / ".agents" / "skills" / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nname: {name}\n---\n{body}\n", encoding="utf-8")
+    return path
+
+
+def _no_overlay_skills() -> ExitStack:
+    stack = ExitStack()
+    stack.enter_context(patch.object(skill_bundle, "active_overlay_stage_skills", return_value=[]))
+    stack.enter_context(patch.object(skill_bundle, "active_overlay_companion_skills", return_value=[]))
+    stack.enter_context(patch.object(skill_bundle, "active_overlay_review_skills", return_value=[]))
+    stack.enter_context(patch.object(skill_bundle, "active_overlay_pr_review_companion", return_value=""))
+    stack.enter_context(patch("teatree.config.get_effective_settings", return_value=UserSettings()))
+    return stack
+
+
+#: ``find_project_root`` redirects a worktree to its main clone; a test of this tree's skills pins them here.
+_THIS_CHECKOUT_SKILLS = Path(__file__).resolve().parents[2] / "skills"
+
+
+class TestTheRequiresClosureReachesTheDispatchedBundle(TestCase):
+    """#4769: the headless closure resolved against an EMPTY index, dropping every ``requires``."""
+
+    def _bundle(self, phase: str, worktree: str) -> list[str]:
+        with _no_overlay_skills():
+            return resolve_skill_bundle(
+                phase=phase,
+                overlay_skill_metadata={},
+                worktree_path=worktree,
+                stage_skills=stage_skills_for_dispatch(phase),
+            )
+
+    def test_the_review_run_bundle_carries_the_generic_review_companion(self) -> None:
+        _install("ac-reviewing-codebase", "# generic codebase review method")
+        with (
+            tempfile.TemporaryDirectory() as worktree,
+            patch.object(skill_index_mod, "DEFAULT_SKILLS_DIR", _THIS_CHECKOUT_SKILLS),
+        ):
+            bundle = self._bundle("architectural_review", worktree)
+        assert "ac-reviewing-codebase" in bundle
+        assert bundle.index("ac-reviewing-codebase") < bundle.index("architectural-review")
+
+    def test_without_the_requires_line_the_companion_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as local, tempfile.TemporaryDirectory() as worktree:
+            skill = Path(local) / "architectural-review" / "SKILL.md"
+            skill.parent.mkdir()
+            skill.write_text("---\nname: architectural-review\n---\n", encoding="utf-8")
+            _install("ac-reviewing-codebase", "# generic codebase review method")
+            with patch.object(skill_index_mod, "DEFAULT_SKILLS_DIR", Path(local)):
+                bundle = self._bundle("architectural_review", worktree)
+        assert bundle == ["architectural-review"]
+
+    def test_every_headless_phase_bundle_equals_its_on_disk_requires_closure(self) -> None:
+        for phase in ("planning", "reviewing", "coding"):
+            with (
+                self.subTest(phase=phase),
+                tempfile.TemporaryDirectory() as worktree,
+                patch.object(skill_index_mod, "DEFAULT_SKILLS_DIR", _THIS_CHECKOUT_SKILLS),
+            ):
+                roots = skill_index_mod.harness_skills_dirs()
+                declared = declared_skills_for_phase(phase)
+                assert declared, f"{phase} declares no skills, so the closure check would be vacuous"
+                assert set(self._bundle(phase, worktree)) == _closure_oracle(declared, roots)
+
+    def test_the_planning_bundle_now_carries_writing_plans(self) -> None:
+        with tempfile.TemporaryDirectory() as worktree:
+            assert "writing-plans" in self._bundle("planning", worktree)

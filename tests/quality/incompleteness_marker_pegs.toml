@@ -39,7 +39,6 @@
 "hooks/scripts/hook_router.py" = 1
 "hooks/scripts/secret_file_print_guard.py" = 1
 "scripts/hooks/check_antipatterns.py" = 1
-"scripts/lib/requires_parser.py" = 1
 "src/teatree/agents/harness.py" = 1
 "src/teatree/agents/harness_options.py" = 1
 "src/teatree/agents/lane_b/compaction.py" = 2
