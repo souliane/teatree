@@ -17,8 +17,10 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Task, Ticket
+from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.loop.dispatch import DispatchAction, dispatch
@@ -94,6 +96,52 @@ class TestDebugZoneRevived(TestCase):
         assert created == []
         assert not RedMrFixAttempt.objects.filter(pr_url="https://x/pr/12").exists()
         assert "persist:t3:debug" in errors
+
+
+class TestDebugZoneLandsOnTheOwningTicket(TestCase):
+    _PR = "https://github.com/o/r/pull/77"
+
+    def _red(self) -> list[Task]:
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {self._PR}",
+            payload={"pr_url": self._PR, "head_sha": "a" * 40, "overlay": "acme"},
+        )
+        return persist_agent_actions(_agent_actions(signal))
+
+    def _owner(self, state: str = Ticket.State.PR_OPENED) -> Ticket:
+        owner = planned_ticket(issue_url="https://github.com/o/r/issues/70", overlay="acme", state=state)
+        PullRequest.objects.create(ticket=owner, url=self._PR, repo="o/r", iid="77")
+        return owner
+
+    def test_a_red_owned_pr_debugs_its_owner_and_mints_no_url_keyed_ticket(self) -> None:
+        owner = self._owner()
+
+        created = self._red()
+
+        assert [(task.ticket_id, task.phase) for task in created] == [(owner.pk, "debugging")]
+        assert not Ticket.objects.filter(issue_url=self._PR).exists()
+
+    def test_a_later_review_of_that_pr_runs_on_a_reviewer_row_gated_on_the_owner(self) -> None:
+        owner = self._owner()
+        self._red()
+
+        dispatch_row = AutoReviewDispatch.enqueue(slug="o/r", pr_id=77, head_sha="b" * 40, pr_url=self._PR)
+
+        assert dispatch_row is not None
+        assert dispatch_row.task.ticket.role == Ticket.Role.REVIEWER
+        assert gated_ticket_for_review_task(dispatch_row.task) == owner
+
+    def test_an_unowned_pr_keeps_its_url_keyed_ticket(self) -> None:
+        created = self._red()
+
+        assert [task.ticket.issue_url for task in created] == [self._PR]
+
+    def test_a_terminal_owner_is_not_debugged_and_no_phantom_is_minted(self) -> None:
+        self._owner(state=Ticket.State.MERGED)
+
+        assert self._red() == []
+        assert not Ticket.objects.filter(issue_url=self._PR).exists()
 
 
 class TestCodexReviewZoneRevived(TestCase):

@@ -19,11 +19,12 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
-from teatree.core.models import ImplementedIssueMarker, RedMrFixAttempt, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, PullRequest, RedMrFixAttempt, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -205,7 +206,14 @@ def _get_or_create_ticket(
     ``kind`` (#17) is stamped only on a freshly-created row (``defaults``); the
     correction-origin handlers pass ``FIX`` so the fix-record DoD gate and S2
     defect-escape signal actually see the corrective work they are meant to.
+
+    An author dispatch keyed on a PR the ledger already attributes lands on that owning
+    ticket, never on a second, URL-keyed one.
     """
+    if role == Ticket.Role.AUTHOR and (pr := pr_ref_from_url(url)) is not None:
+        owner = PullRequest.objects.owning_ticket(slug=pr.slug, pr_id=pr.pr_id, pr_url=url)
+        if owner is not None:
+            return owner, False
     ticket, created = Ticket.objects.get_or_create(
         issue_url=url,
         defaults={"overlay": overlay, "role": role, "extra": extra or {}, "kind": kind},
@@ -315,7 +323,11 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
             kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
         )
-        if ticket.role != Ticket.Role.AUTHOR or _has_open_work(ticket, phase="debugging"):
+        if (
+            ticket.role != Ticket.Role.AUTHOR
+            or ticket.state in Ticket.marker_release_states()
+            or _has_open_work(ticket, phase="debugging")
+        ):
             return None
         if not claim_red_mr_fix(payload):
             return None
