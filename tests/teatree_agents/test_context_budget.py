@@ -18,6 +18,7 @@ _REPO_SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
 _HEADING_RE = re.compile(r"^## .+$", re.MULTILINE)
 _MARKER_RE = re.compile(r"\n\[…truncated .*?\]", re.DOTALL)
+_CUT_HEADING_RE = re.compile(r"#{2,3} ")
 
 
 class TestEnforceBudget:
@@ -143,27 +144,27 @@ def _kept_text(truncated: str) -> str:
 
 
 def _cut_lands_on_a_heading_boundary(original: str, truncated: str) -> bool:
-    """Whether *truncated* is *original* cut exactly where a ``## `` section starts.
+    """Whether *truncated* is *original* cut exactly where a ``## ``/``### `` section starts.
 
     A byte-prefix cut lands at an arbitrary offset — mid-sentence, mid-word — so
     the surviving text ends with a partial section the reader cannot identify.
     A section-aware cut ends either at the block's end or immediately before a
-    ``## `` heading, so every section that survived survived whole.
+    heading, so every section that survived survived whole.
     """
     kept = _kept_text(truncated)
     if not original.startswith(kept):
         return False
     remainder = original[len(kept) :]
-    return not remainder or remainder.lstrip("\n").startswith("## ")
+    return not remainder or _CUT_HEADING_RE.match(remainder.lstrip("\n")) is not None
 
 
 class TestSectionAwareTruncation:
     """An over-budget block is cut on a ``## `` boundary and names what it dropped.
 
     A byte-prefix cut discards 40-60% of a production skill bundle at an arbitrary
-    offset and tells the agent nothing about which rules went; the agent cannot
-    recover them (this lane has no Skill tool). Dropping whole sections off the
-    tail and naming them converts silent mid-sentence loss into legible elision.
+    offset and tells the agent nothing about which rules went, so it cannot tell
+    what to reload. Dropping whole sections off the tail and naming them converts
+    silent mid-sentence loss into legible elision.
     """
 
     def test_cut_lands_on_a_section_boundary(self) -> None:
@@ -205,6 +206,46 @@ class TestSectionAwareTruncation:
         out = enforce_budget(block, [(block, "the skill body")], max_bytes=1000)
 
         assert len(out.encode()) <= 1000
+
+
+def _subsectioned_block(subsections: int, *, body_bytes: int) -> str:
+    """One ``## `` section made of ``### `` subsections — the shape of review § Workflows."""
+    parts = ["--- SKILL: review ---", "## Workflows", "Workflow intro."]
+    parts.extend(f"### Flow {i}\n{'w' * body_bytes}" for i in range(subsections))
+    return "\n".join(parts)
+
+
+class TestSubsectionAwareTruncation:
+    """A small overage costs about that much, not the whole ``## `` section it lands in."""
+
+    def test_a_small_overage_drops_only_the_trailing_subsections(self) -> None:
+        block = _subsectioned_block(10, body_bytes=2000)
+        max_bytes = len(block.encode()) - 1500
+        out = enforce_budget(block, [(block, "the skill body")], max_bytes=max_bytes)
+
+        kept = _kept_text(out)
+        assert len(out.encode()) <= max_bytes
+        assert "## Workflows\nWorkflow intro." in kept
+        assert "### Flow 8" in kept
+        assert "### Flow 9" not in kept
+        assert "dropped whole sections: review § Workflows > Flow 9." in out
+        assert _cut_lands_on_a_heading_boundary(block, out)
+
+    def test_a_subsection_before_any_section_is_labelled_on_its_own(self) -> None:
+        block = "\n".join(["--- SKILL: ship ---", "### Lone\n" + "l" * 500, "### Tail\n" + "t" * 2000])
+        out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) - 1000)
+
+        assert "dropped whole sections: ship § Tail." in out
+
+    def test_a_heading_inside_a_code_fence_is_never_a_cut_point(self) -> None:
+        fenced = "\n".join(["```markdown", *(f"## Fake {i}\n{'f' * 500}" for i in range(5)), "```"])
+        block = "\n".join(["--- SKILL: ship ---", "## Real\n" + "r" * 200, "## Template", fenced])
+        out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) - 200)
+
+        kept = _kept_text(out)
+        assert "dropped whole sections: ship § Template." in out
+        assert "Fake" not in kept
+        assert kept.count("```") % 2 == 0
 
 
 @pytest.mark.parametrize("phase", ["coding", "reviewing", "shipping", "testing", "planning"])

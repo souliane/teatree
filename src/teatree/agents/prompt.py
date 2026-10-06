@@ -37,10 +37,9 @@ _MAX_PARENT_SUMMARY_LEN = 2000
 # A quarter of the system-context budget keeps the work prompt small beside the skill append.
 _MAX_TICKET_CONTEXT_BYTES = MAX_APPEND_BYTES // 4
 
-# The skills pointer names the on-disk body and NOT the Skill tool: this lane is
-# denied that tool, so pointing at it would name an impossible recovery.
 _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
-_SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — open it with the Read tool; this lane has no Skill tool"
+# Worded like skill_assurance's recovery directive: a harness without the Skill tool reads the file.
+_SKILLS_POINTER = "the full skill — load it with the Skill tool (a harness without one: Read skills/<skill>/SKILL.md)"
 _PARENT_POINTER = "the parent task's recorded result"
 _HANDOFF_POINTER = "Complete predecessor result (source of truth): "
 
