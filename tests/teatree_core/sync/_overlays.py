@@ -97,8 +97,11 @@ def _patch_overlay(overlay: OverlayBase, *, name: str = "test"):
 
 _PROJECT = ProjectInfo(project_id=123, path_with_namespace="org/repo", short_name="repo")
 
+_HEAD_SHA = "a" * 40
+
 _MR_WITH_ISSUE = {
     "web_url": "https://gitlab.com/org/repo/-/merge_requests/42",
+    "sha": _HEAD_SHA,
     "title": "feat: add feature",
     "description": "feat: add feature [none] (https://gitlab.com/org/repo/-/issues/100)\n\nBody",
     "source_branch": "feat/add-feature",
@@ -148,7 +151,9 @@ def _make_mock_client(mrs: list[dict]) -> MagicMock:
     mock.list_recently_merged_mrs.return_value = []
     mock.list_recently_closed_mrs.return_value = []
     mock.resolve_project.return_value = _PROJECT
-    mock.get_mr_pipeline.return_value = {"status": "success", "url": "https://gitlab.com/pipelines/1"}
+    mock.get_mr_pipelines.return_value = [
+        {"status": "success", "sha": _HEAD_SHA, "web_url": "https://gitlab.com/pipelines/1"},
+    ]
     mock.get_mr_approvals.return_value = {"count": 0, "required": 1}
     mock.get_issue.return_value = {"labels": ["Process::Doing"], "title": "Issue title"}
     mock.get_draft_notes_count.return_value = 0

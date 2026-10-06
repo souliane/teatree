@@ -63,7 +63,7 @@ class TestRunPinsTheCwd:
     def test_it_never_inherits_the_callers_directory(self, tmp_path, monkeypatch) -> None:
         monkeypatch.chdir(tmp_path)
         with patch("subprocess.run", return_value=_completed()) as run:
-            t3_invocation.run_t3(["t3", "loop", "pending-spawn"], timeout=9)
+            t3_invocation.run_t3(["t3", "loop", "status"], timeout=9)
         assert Path(run.call_args.kwargs["cwd"]).resolve() != tmp_path.resolve()
 
     def test_an_explicit_cwd_wins(self, tmp_path) -> None:

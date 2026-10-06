@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
-# The mkdir deploy lock a host without flock (macOS) falls back to, shared by deploy.sh and roll.sh.
+# The mkdir deploy lock a host without flock (macOS) falls back to, and the in-progress record
+# both keep in the lock file, shared by deploy.sh and roll.sh.
 # The caller sets DEPLOY_LOCK, DEPLOY_LOCK_MAX_AGE_MINUTES and DEPLOY_LOCK_MAX_RECLAIMS.
+
+# "<pid> <heartbeat> <deadline>". The first write truncates, so no longer record a killed
+# holder left behind survives it.
+write_deploy_record() {
+    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$2" >"$DEPLOY_LOCK"
+}
+
+# A beat rewrites the record in place: `>` empties the file before printf refills it, and a
+# reader caught in that gap sees no convergence at all. One holder's record never changes
+# length (fixed pid and deadline, a 10-digit epoch), so nothing of the old one is left over.
+# Never a rename over it either: the flock lives on this inode. An emptied record stays
+# empty — the exit trap cleared it.
+beat_deploy_record() {
+    [ -s "$DEPLOY_LOCK" ] || return 0
+    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$2" 1<>"$DEPLOY_LOCK"
+}
 
 # `kill -0` cannot answer this alone: it fails with EPERM on ANOTHER USER's live
 # process, and the default lock sits in world-shared /tmp, so a refused signal is

@@ -44,7 +44,6 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
-    monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
     # A headless factory agent runs this suite with the Agent-SDK lane exported
     # (``session_lane``) — an unpinned env would decide the delivery assertions
     # below rather than the gating under test.
@@ -112,7 +111,7 @@ class TestSessionStartBootstrapGating:
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "run /t3:interactive" in ctx
-        assert "t3 loops tick" not in ctx
+        assert "attended loop slot" not in ctx
 
     def test_fresh_session_without_marker_does_not_claim_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_AUTOLOAD", raising=False)
@@ -125,7 +124,7 @@ class TestSessionStartBootstrapGating:
         out = capsys.readouterr().out
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loops tick" in ctx
+        assert "attended loop slot" in ctx
 
     def test_marked_session_claims_ownership(self) -> None:
         _mark_active("teatree-session")
@@ -149,7 +148,7 @@ class TestSessionStartBootstrapGating:
         out = capsys.readouterr().out
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loops tick" in ctx
+        assert "attended loop slot" in ctx
 
 
 # ── handle_track_skill_usage sets marker ──────────────────────────────
@@ -403,7 +402,7 @@ class TestLoopAutoLoadOptInGate:
         self._opt_in(monkeypatch)
         handle_session_start_bootstrap({"session_id": "colleague"})
         out = capsys.readouterr().out
-        assert "t3 loops tick" in out
+        assert "attended loop slot" in out
         assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "colleague"
 
 
@@ -607,7 +606,7 @@ class TestAutoloadSessionStart:
         handle_session_start_bootstrap({"session_id": "owner-default"})
         assert _is_marked_active("owner-default")
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loops tick" in ctx
+        assert "attended loop slot" in ctx
         assert "run /t3:interactive" not in ctx
 
     def test_autoload_on_claims_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -622,7 +621,7 @@ class TestAutoloadSessionStart:
         # autoload is DB-home, so the auto-start how-to points at the config_setting
         # store.
         assert "config_setting set autoload true" in ctx
-        assert "t3 loops tick" not in ctx
+        assert "attended loop slot" not in ctx
         assert _read_loop_registry() == {}
 
     def test_compact_resume_default_off_skips_how_to(self, capsys: pytest.CaptureFixture[str]) -> None:

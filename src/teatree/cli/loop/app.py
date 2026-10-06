@@ -3,26 +3,17 @@
 The autonomous loops run as durable self-rescheduling loop-timer chains that the
 singleton ``t3 worker`` drains (#1796 / PR-28: one ``loop_timer`` chain per enabled
 DB ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own cadence —
-there is no master tick). This CLI manages that lifecycle: ``start`` spawns a Claude
-Code session (the worker drives the reactive infra loops; with none alive, ``t3 worker
-ensure`` starts one, or ``t3 loop <slot> start`` prints the ``/loop`` a session registers); ``stop``
-prints the slot id to unregister; ``list`` / ``status`` read live loop state; and
-the reactive infra loops (``self-improve``, ``slack-answer``, ``drain-queue``) each
-expose their own ``run`` / ``start`` subcommands here.
+there is no master tick). The worker also drains the task queue, claiming each
+pending task headlessly. This CLI manages that lifecycle: ``start`` starts a Claude
+Code session (the ``t3 worker`` runs the loops; with none alive, ``t3 worker ensure``
+starts one); ``stop`` prints the slot id to unregister; ``list`` / ``status`` read
+live loop state; and the reactive infra loops (``self-improve``, ``slack-answer``,
+``drain-queue``) each expose their own ``run`` / ``start`` subcommands here.
 
 Durability model: the worker owns the per-loop tick cadence, so the DB loops run with
 NO Claude Code session open (the SessionStart supervisor keeps at least one worker
-alive; a preset admitting zero loops stops them entirely — there is no fallback plane). Each per-loop
-tick atomically claims the next pending DB unit (``t3 loop claim-next``) and spawns
-ONE fresh, bounded sub-agent for just that unit, which returns; spawning the
-sub-agent requires the Agent tool, which exists only inside a live Claude session,
-so the worker's deadlined tick subprocess dispatches work when a session is present.
-The returning sub-agent's outcome is then recorded (``tasks record-attempt
---claim-token``), which is the only thing that ends the unit. Statelessness across
-ticks is the compaction-proofing — a worker dying mid-task leaves its Task
-reclaimable and the next tick re-dispatches it; so does a worker that returns
-without recording, which is why an unrecorded unit circulates rather than
-completing. Ownership is per-loop (the ``loop:<name>`` lease).
+alive; a preset admitting zero loops stops them entirely — there is no fallback plane).
+Ownership is per-loop (the ``loop:<name>`` lease).
 """
 
 import os
@@ -59,13 +50,8 @@ loop_app = typer.Typer(
         "and the DB loops run with no Claude session open (the SessionStart supervisor "
         "keeps one worker alive; on a headless box start it once from a login "
         "profile). The active preset is the stop condition — one that admits zero loops "
-        "stops them entirely (there is no fallback plane). Each per-loop tick atomically "
-        "claims the next pending unit "
-        "(`t3 loop claim-next`), spawns one fresh bounded sub-agent for it, and records "
-        "the outcome when that sub-agent returns (`tasks record-attempt --claim-token`) "
-        "— the claim is the spawn boundary, not the finish, and an unrecorded unit is "
-        "reclaimed and re-offered rather than ever completing; a "
-        "dying worker leaves its Task reclaimable and the next tick re-dispatches it. "
+        "stops them entirely (there is no fallback plane). The worker also drains the "
+        "task queue, claiming each pending task headlessly. "
         "Check the worker with `t3 worker status`; ensure one is running with "
         "`t3 worker ensure`."
     ),
@@ -129,53 +115,18 @@ def status_command() -> None:
     typer.echo(target.read_text(encoding="utf-8"))
 
 
-@loop_app.command("pending-spawn")
-def pending_spawn_command(
-    *,
-    json_output: bool = typer.Option(False, "--json", help="Emit pending list as JSON."),
-    claimable_only: bool = typer.Option(
-        False,
-        "--claimable-only",
-        help="Report work ONLY when a claim could land (honour the admit budget).",
-    ),
-) -> None:
-    """List pending Tasks for the Stop hook's read-only probe.
-
-    Reads the dispatch DB (``Task`` rows in PENDING status) and prints
-    each with its ``subagent`` hint. This is a pure read with NO claim:
-    The Stop-hook self-pump uses this non-mutating probe to decide whether
-    to offer work. The ``/loop`` slot claims with ``claim-next``.
-
-    ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
-    reports work ONLY when a unit ``claim-next`` could actually claim,
-    so the Stop-hook self-pump stops re-offering a PENDING unit that a
-    full in-flight admit budget will always refuse.
-    """
-    ensure_django()
-
-    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
-
-    kwargs: dict[str, bool] = {}
-    if json_output:
-        kwargs["json_output"] = True
-    if claimable_only:
-        kwargs["claimable_only"] = True
-    call_command("loop_dispatch", "pending-spawn", **kwargs)
-
-
 def _stdin_is_terminal() -> bool:
     """Return whether stdin is a TTY — wrapped so tests can patch around ``runner.invoke``'s stdin replacement."""
     return sys.stdin.isatty()
 
 
-_REGISTER_GUIDANCE = (
+_LOOP_GUIDANCE = (
     "The singleton `t3 worker` owns the per-loop tick cadence, draining the durable "
     "self-rescheduling loop-timer chains — so the DB loops run with no Claude session open. Check it with "
     "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
     "resume or disable an individual loop with `t3 loop resume|disable <name>` (the reconciler "
     "adds/prunes its timer at once). The worker drives the reactive infra loops "
-    "(self-improve, slack-answer, drain-queue) too; with no worker alive, start one with `t3 worker ensure`, "
-    "or register one loop in a session with the `/loop` that `t3 loop <slot> start` prints."
+    "(self-improve, slack-answer, drain-queue) too; with no worker alive, start one with `t3 worker ensure`."
 )
 
 
@@ -185,38 +136,31 @@ def start_command(
     print_only: bool = typer.Option(
         False,
         "--print-only",
-        help="Print the per-loop registration guidance instead of spawning a Claude Code session.",
+        help="Print the loop guidance instead of starting a Claude Code session.",
     ),
 ) -> None:
-    """Spawn a Claude Code session; the t3-master registers each enabled loop's ``/loop``.
+    """Start a Claude Code session; the ``t3 worker`` runs the loops.
 
-    Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
-    model/effort pins). Under #2650 the live set of native Claude ``/loop``s
-    mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
-    ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
-    registers them automatically, so there is no single fat slot to pass on the
-    command line. When ``claude`` is unavailable or the caller is already inside a
-    Claude Code session, prints the per-loop registration guidance instead.
-
-    Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
-    With no session open the loop is paused until the next session start.
+    Looks for ``claude`` on ``PATH`` and execs it with the interactive session
+    model/effort pins. When ``claude`` is unavailable or the caller is already
+    inside a Claude Code session, prints the loop guidance instead.
     """
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():
-        typer.echo("Start a Claude Code session; the t3-master registers each enabled loop's `/loop` automatically.")
+        typer.echo("Start a Claude Code session; the `t3 worker` runs the loops.")
         typer.echo("")
-        typer.echo(_REGISTER_GUIDANCE)
+        typer.echo(_LOOP_GUIDANCE)
         return
 
     claude_bin = shutil.which("claude")
     if not claude_bin:
-        typer.echo("`claude` not found on PATH. Install Claude Code, then start a session — the t3-master")
-        typer.echo("registers each enabled loop's `/loop` automatically.")
+        typer.echo("`claude` not found on PATH. Install Claude Code, then start a session;")
+        typer.echo("the `t3 worker` runs the loops.")
         typer.echo("")
-        typer.echo(_REGISTER_GUIDANCE)
+        typer.echo(_LOOP_GUIDANCE)
         raise typer.Exit(code=1)
 
     argv = [claude_bin, *_session_pin_flags()]
-    typer.echo("Starting Claude Code — the t3-master session registers each enabled loop's `/loop`…")
+    typer.echo("Starting Claude Code; the `t3 worker` runs the loops…")
     os.execv(claude_bin, argv)  # noqa: S606  # Path comes from shutil.which; no shell, no user-controlled input.
 
 

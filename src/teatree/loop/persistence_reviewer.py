@@ -165,7 +165,7 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
     approving review — the existing #959 behaviour) and
     ``REVIEWED_NO_ACTION`` (the reviewer concluded there was nothing to
     post/approve on a bot MR — before #1077 there was no terminal state
-    for this, so the reviewing task re-dispatched every Stop-hook pump
+    for this, so the reviewing task re-dispatched every tick
     forever). ``REVIEWED_NO_ACTION`` is intentionally *not* APPROVED so a
     future genuine review is never hidden; suppression is keyed on the
     head SHA, and a SHA move drops ``last_review_state`` (the #959 reset

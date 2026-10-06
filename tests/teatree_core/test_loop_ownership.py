@@ -461,9 +461,9 @@ class TestEvictStaleOwner(TestCase):
     def test_busy_foreign_owner_past_ttl_with_alive_pid_is_not_evicted(self) -> None:
         """No-hijack invariant: lapsed TTL but ALIVE foreign pid → KEEP (pid-anchored).
 
-        The recurrence root cause: an alive-but-busy owner fires no Stop
-        self-pump, so its lease TTL-lapses while the process is still
-        alive. ``evict_stale_owner`` must treat liveness as pid-anchored
+        The recurrence root cause: an alive-but-busy owner runs no tick,
+        so its lease TTL-lapses while the process is still alive.
+        ``evict_stale_owner`` must treat liveness as pid-anchored
         (consistent with ``claim_ownership`` / ``ownership_status``) — a
         TTL-only ``is_live`` blanked the row to ``session_id=""``, letting
         a fresh SessionStart see an unowned slot and steal the loop. Keep

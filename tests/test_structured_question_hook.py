@@ -999,11 +999,11 @@ class TestWiredIntoRouter:
     def test_stop_event_includes_structured_question_gate(self) -> None:
         assert handle_enforce_structured_question in router._HANDLERS["Stop"]
 
-    def test_runs_before_loop_self_pump(self) -> None:
+    def test_runs_before_the_answer_hand_back(self) -> None:
         # The correctness gate must win the single-stdout slot: it is
-        # registered before handle_loop_self_pump in the Stop chain.
+        # registered before handle_hand_back_answers in the Stop chain.
         stop_chain = router._HANDLERS["Stop"]
-        assert stop_chain.index(handle_enforce_structured_question) < stop_chain.index(router.handle_loop_self_pump)
+        assert stop_chain.index(handle_enforce_structured_question) < stop_chain.index(router.handle_hand_back_answers)
 
 
 def _ask(questions: list[dict]) -> dict:
