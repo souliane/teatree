@@ -74,8 +74,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
-    _check_connector_manifest,
-    _check_mcp_connectivity,
+    _check_declared_services_configured,
     _check_teatree_mcp_liveness,
     _check_teatree_mcp_registration,
 )
@@ -431,27 +430,20 @@ def _run_advisory_finalisers(*, repair: bool) -> None:
 
 
 def _run_mcp_checks(*, repair: bool = False) -> bool:
-    """Every MCP gate, in dependence order; ``False`` when any of them hard-FAILs.
+    """The teatree MCP server and the services it serves; ``False`` when any of them hard-FAILs.
 
-    Grouped so ``run_doctor_checks`` reads as a list of concerns rather than a list of
-    calls. The order is load-bearing: connectivity and the connector manifest run after
-    the account-switch gate (a `/login` invalidates the backend cache), and they share
-    one live `claude mcp list` probe; the exercising liveness check runs last so its
-    spawn sees the post-recovery state.
-
-    Two of the four are advisory by design. `_check_teatree_mcp_registration` is
-    structural — the resolved main clone can legitimately lag a merged change until the
-    next `t3 update`. `_check_teatree_mcp_liveness` is the authoritative one: it spawns
-    the registered `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause
-    (stale tool env / delegation failure / startup over the handshake budget) and the
-    remedy, because `claude mcp list` only ever says `Connection closed` (#4049).
+    `_check_teatree_mcp_registration` is structural and advisory — the resolved main clone
+    can legitimately lag a merged change until the next `t3 update`. The declared-services
+    check FAILs a service an overlay needs that teatree holds no credentials for. The
+    exercising liveness check is authoritative and runs last: it spawns the registered
+    `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause (stale tool env /
+    delegation failure / startup over the handshake budget) and the remedy (#4049).
 
     ``repair`` reaches the liveness check alone: it is the only MCP gate that can mutate
     the operator's env, and it reinstalls the running tool env only when asked.
     """
-    ok = _check_mcp_connectivity()
-    ok = _check_connector_manifest() and ok
     _check_teatree_mcp_registration()
+    ok = _check_declared_services_configured()
     return _check_teatree_mcp_liveness(repair=repair) and ok
 
 

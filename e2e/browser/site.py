@@ -31,10 +31,10 @@ class BrokenSite:
                 return
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        origin = f"http://127.0.0.1:{self._server.server_address[1]}"
-        self.broken_url = f"{origin}/broken"
-        self.clean_url = f"{origin}/clean"
-        self.not_found_url = f"{origin}/diag-404.png"
+        self.origin = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self.broken_url = f"{self.origin}/broken"
+        self.clean_url = f"{self.origin}/clean"
+        self.not_found_url = f"{self.origin}/diag-404.png"
 
     def start(self) -> None:
         threading.Thread(target=self._server.serve_forever, daemon=True).start()

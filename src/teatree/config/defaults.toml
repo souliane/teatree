@@ -225,7 +225,6 @@ orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator tu
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
 plan_edit_gate_enabled = true # bool — refuse a source edit made while the session is still planning
 raw_pr_create_gate_enabled = true # bool — refuse a raw MR/PR create that would open it under the wrong identity
-self_dm_gate_enabled = true # bool — refuse Slack MCP writes to the operator's own DM under the user token
 single_branch_repo_gate_enabled = true # bool — refuse a second branch in a repo declared single-branch
 skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
 standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done while a standing goal is unmet

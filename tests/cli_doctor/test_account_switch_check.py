@@ -3,15 +3,15 @@
 from unittest.mock import patch
 
 from teatree.cli.doctor.checks_session import _check_account_switch
-from teatree.core.account_switch import AccountSwitchOutcome, ConnectorProbeResult
+from teatree.core.account_switch import AccountSwitchOutcome
 
 
-def _outcome(*, switched: bool, probes: tuple[ConnectorProbeResult, ...] = ()) -> AccountSwitchOutcome:
+def _outcome(*, switched: bool) -> AccountSwitchOutcome:
     return AccountSwitchOutcome(
         current_fingerprint="uuid-bbbbbbbb",
         previous_fingerprint="uuid-aaaaaaaa",
         switched=switched,
-        probes=probes,
+        token_health_rows_expired=2 if switched else 0,
     )
 
 
@@ -24,26 +24,16 @@ class TestAccountSwitchDoctorCheck:
             assert _check_account_switch() is True
         assert capsys.readouterr().out == ""
 
-    def test_switch_all_reachable_is_ok(self, capsys):
-        probes = (ConnectorProbeResult(name="slack", reachable=True),)
+    def test_a_recovered_switch_is_ok_with_the_expired_token_health_count(self, capsys):
         with patch(
             "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
+            return_value=_outcome(switched=True),
         ):
             assert _check_account_switch() is True
-        assert "OK" in capsys.readouterr().out
-
-    def test_switch_with_unreachable_connector_fails(self, capsys):
-        probes = (ConnectorProbeResult(name="slack", reachable=False, detail="invalid_auth"),)
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            assert _check_account_switch() is False
         out = capsys.readouterr().out
-        assert "FAIL" in out
-        assert "slack" in out
-        assert "invalid_auth" in out
+        assert out.startswith("OK    Claude account switch recovered (uuid-aaa… → uuid-bbb…)")
+        assert "token health expired (2 row(s))" in out
+        assert "FAIL" not in out
 
     def test_crash_degrades_to_warn_not_abort(self, capsys):
         with patch(

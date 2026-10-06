@@ -93,7 +93,7 @@ The deterministic backstop is the PreToolUse delegation gate
 (`hooks/scripts/orchestrator_delegation_gate.py`), which refuses a Bash call whose shape has
 no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
 into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
-`AskUserQuestion` and MCP connector call is untouched. A sub-agent is never gated — sweeping
+`AskUserQuestion` and MCP tool call is untouched. A sub-agent is never gated — sweeping
 is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
 `t3 <overlay> gate delegation disable` to turn it off.
 

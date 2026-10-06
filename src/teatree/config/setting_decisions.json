@@ -112,10 +112,6 @@
       "decision": "unified-gate",
       "reason": "Folded into the unified gate primitive; the switch goes when it lands"
     },
-    "self_dm_gate_enabled": {
-      "decision": "unified-gate",
-      "reason": "Folded into the unified gate primitive; the switch goes when it lands"
-    },
     "single_branch_repo_gate_enabled": {
       "decision": "unified-gate",
       "reason": "Folded into the unified gate primitive; the switch goes when it lands"

@@ -261,7 +261,7 @@ def test_the_hand_back_is_the_last_stop_decision() -> None:
         ("PreToolUse", "Bash", {"command": "echo done > /tmp/x"}),
         ("PreToolUse", "Bash", {"command": "t3 --help"}),
         ("PreToolUse", "TaskCreate", {"subject": "check the build", "description": "check the build"}),
-        ("PreToolUse", "mcp__claude_ai_Slack__slack_send_message", {"channel": "D1", "text": "hi"}),
+        ("PreToolUse", "mcp__slack__slack_send_message", {"channel": "D1", "text": "hi"}),
         ("PostToolUse", "Read", {"file_path": "/tmp/x"}),
         ("PostToolUse", "Bash", {"command": "ls"}),
     ],

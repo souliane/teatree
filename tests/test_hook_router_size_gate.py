@@ -56,7 +56,9 @@ _ROUTER = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "scripts" /
 # the over-cap growth advisory — the extract-first rule applied to its own wiring.
 # Lowered to the measured LOC by #4961, which deleted the Stop-hook self-pump and its
 # per-agent consolidation registry.
-_CEILING_LOC = 2897
+# Lowered to the measured LOC by #5116, which retired the self-DM Slack-MCP gate and the
+# SessionStart enabled-MCP notice, and read the fail-open switch through the cold reader.
+_CEILING_LOC = 2779
 
 
 def _count_loc(text: str) -> int:

@@ -94,10 +94,6 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
         "denies only an invoked `gh issue comment`/`glab issue note` that bypasses the #162 "
         "issue-hygiene facade, never arbitrary Bash; reads pass, and unexpected errors deny"
     ),
-    "handle_block_self_dm_via_mcp": (
-        "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
-        "bot-token self-DM path and self_dm_gate_enabled kill-switch remain available"
-    ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
     "handle_mirror_question_to_slack": (

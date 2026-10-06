@@ -128,7 +128,6 @@ SETTING_HELP: dict[str, str] = {
     "max_concurrent_local_stacks": "how many tickets may hold a running local stack at once",
     "max_open_prs_per_repo_per_ticket": "open pull requests one ticket may hold in one repo",
     "mcp_slack_write_gate_enabled": "gate MCP Slack writes behind the on-behalf rules",
-    "self_dm_gate_enabled": "refuse Slack MCP writes to the operator's own DM under the user token",
     "merge_wip": "how many merges may be in flight at once",
     "mode": "publishing posture: auto pushes without waiting, interactive asks first",
     "mr_reminder": "when and how often a stale review request is chased",

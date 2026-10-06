@@ -4111,8 +4111,8 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 │                         it via ``pass``.                                     │
 │ slack-provision         Run the full Slack app lifecycle (manifest, scopes,  │
 │                         channels, tokens) idempotently.                      │
-│ recover-account-switch  Detect a Claude account switch, invalidate the       │
-│                         backend cache, re-probe connectors.                  │
+│ recover-account-switch  Detect a Claude account switch and invalidate the    │
+│                         backend and token-health caches.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4182,12 +4182,10 @@ Usage: t3 setup slack-provision [OPTIONS]
 ```
 Usage: t3 setup recover-account-switch [OPTIONS]
 
- Detect a Claude account switch, invalidate the backend cache, re-probe
- connectors.
+ Detect a Claude account switch and invalidate the backend and token-health
+ caches.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each connector reconnect URL in a browser   │
-│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5728,10 +5726,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve      Run the structured-search MCP server over stdio (blocks until     │
-│            stdin closes).                                                    │
-│ reconnect  Reconnect (or print exact steps for) every declared-but-down      │
-│            claude.ai connector.                                              │
+│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
+│        closes).                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5757,26 +5753,6 @@ Usage: t3 mcp serve [OPTIONS]
  :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 mcp reconnect`
-
-```
-Usage: t3 mcp reconnect [OPTIONS]
-
- Reconnect (or print exact steps for) every declared-but-down claude.ai
- connector.
-
- claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
- via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
- per down connector across every registered overlay's manifest, and exits
- non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each reconnect URL in a browser             │
-│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

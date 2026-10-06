@@ -5,9 +5,11 @@ Outside ``testpaths=[tests]``: CI's browser job runs it with
 """
 
 from http import HTTPStatus
+from pathlib import Path
 
-from e2e.browser.pom import BrowserCli, require_launchable_browser
+from e2e.browser.pom import BrowserCli, require_findings, require_launchable_browser
 from e2e.browser.site import BrokenSite
+from teatree.visual_qa import run_check
 
 
 def test_open_reports_the_console_error_and_the_failed_request(site: BrokenSite, browser: BrowserCli) -> None:
@@ -42,3 +44,13 @@ def test_steps_reuse_one_headless_browser_until_close(site: BrokenSite, browser:
 
 def test_the_doctor_probe_launches_the_installed_headless_browser() -> None:
     require_launchable_browser()
+
+
+def test_the_visual_qa_gate_reports_the_page_through_the_same_recorder(site: BrokenSite, tmp_path: Path) -> None:
+    [page] = run_check(["/broken"], site.origin, screenshot_dir=str(tmp_path))
+
+    require_findings(
+        {(error.kind, error.message) for error in page.errors},
+        ("console", "diag-boom"),
+        ("http", f"HTTP 404: {site.not_found_url}"),
+    )

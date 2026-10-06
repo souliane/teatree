@@ -1,20 +1,17 @@
-"""Deny a direct MCP Slack WRITE — every Slack write goes through the ``t3`` CLI (#1196).
+"""Deny a direct MCP Slack WRITE — every Slack write goes through teatree (#1196).
 
-A direct ``mcp__*slack*`` write tool (post / reply / reaction / update / delete /
-upload) bypasses teatree's Slack egress chokepoint (``src/teatree/backends/slack/``
-under the on-behalf gate, the voice classifier, the verify-by-re-read contract),
-so a message can land under the user's identity with none of those guarantees.
-This gate closes that bypass at the ``PreToolUse`` boundary: a Slack MCP WRITE is
-denied and redirected to the sanctioned CLI; a recognised Slack MCP READ (history
-/ list / search / get / info / …) passes through untouched. The classification is
-default-DENY (:func:`is_slack_mcp_write`) — a tool whose shape the READ roster
-does not recognise is a write, so a Slack MCP surface added after this roster
-cannot slip through on a missing verb.
-
-Narrower and complementary to ``handle_block_self_dm_via_mcp`` (which refuses only
-a self-DM write, fail-closed on unreadable config): this gate refuses EVERY Slack
-MCP write regardless of destination, so the direct-MCP path is closed wholesale.
-The two coexist — whichever fires first in the chain emits the deny.
+A Slack write tool on any MCP server but teatree's own (post / reply / reaction /
+update / delete / upload) bypasses teatree's Slack egress chokepoint
+(``src/teatree/backends/slack/`` under the on-behalf gate, the voice classifier, the
+verify-by-re-read contract), so a message can land under the user's identity with
+none of those guarantees. This gate closes that bypass at the ``PreToolUse``
+boundary: such a write is denied, whatever its destination, and redirected to the
+sanctioned CLI; a recognised Slack MCP READ (history / list / search / get / info /
+…) passes through untouched. The classification is default-DENY
+(:func:`is_slack_mcp_write`) — a tool whose shape the READ roster does not recognise
+is a write, so a Slack MCP surface added after this roster cannot slip through on a
+missing verb. teatree's own MCP server is the sanctioned path, not a bypass: its
+Slack tools run through those same backends and gates.
 
 Cold-import safe: the live ``PreToolUse`` hook is a bare ``python3`` subprocess
 with no guarantee ``teatree`` is importable, so the module top imports only stdlib.
@@ -81,9 +78,14 @@ _DENY_REASON = (
 )
 
 
+#: teatree's own server as a client names it: bare (``.mcp.json``) or plugin-scoped (``plugin_<plugin>_<server>``).
+TEATREE_MCP_SERVERS: frozenset[str] = frozenset({"teatree", "plugin_t3_teatree"})
+
+
 def is_slack_mcp_tool(tool_name: str) -> bool:
-    """Whether *tool_name* is any Slack MCP tool (``mcp__*slack*``)."""
-    return tool_name.startswith("mcp__") and "slack" in tool_name.lower()
+    """Whether *tool_name* is a Slack MCP tool (``mcp__*slack*``) on a server other than teatree's."""
+    server = tool_name.removeprefix("mcp__").split("__", 1)[0]
+    return tool_name.startswith("mcp__") and "slack" in tool_name.lower() and server not in TEATREE_MCP_SERVERS
 
 
 def is_slack_mcp_write(tool_name: str) -> bool:

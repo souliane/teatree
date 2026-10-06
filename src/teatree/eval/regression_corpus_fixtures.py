@@ -109,17 +109,6 @@ def unused_pid() -> int:
     return 2_147_483_000
 
 
-class StubBackend:
-    """A messaging backend whose ``auth_test`` reports a fixed reachability."""
-
-    def __init__(self, *, ok: bool) -> None:
-        self._ok = ok
-        self.name = "slack"
-
-    def auth_test(self) -> dict:
-        return {"ok": self._ok} if self._ok else {"ok": False, "error": "invalid_auth"}
-
-
 def seed_repo_behind_but_clean(work: Path) -> tuple[Path, str]:
     """Build a repo whose feature SHA is behind ``origin/main`` but conflict-free."""
     origin = work / "origin2"

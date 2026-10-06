@@ -50,7 +50,6 @@ DECLARED_GATES = frozenset(
         "raw_pid_kill",
         "raw_review_post",
         "secret_file_print",
-        "self_dm",
         "single_branch_repo",
         "skill-loading-enforcement",
         "unapprovable_author_create",

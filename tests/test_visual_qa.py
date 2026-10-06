@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from teatree import visual_qa
+from teatree.browser.evidence import BrowserEvent
 from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
@@ -154,6 +155,39 @@ class TestRunCheckLaunchesHeadless:
         visual_qa.run_check([], base_url="http://x", screenshot_dir=str(tmp_path))
 
         assert launcher.call_args.kwargs.get("headless") is True
+
+
+class TestFindingRules:
+    """The gate's findings: console errors, page errors, and HTTP errors other than 401/403."""
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            (BrowserEvent("console", text="boom", level="error"), ("console", "boom")),
+            (BrowserEvent("pageerror", text="TypeError: x"), ("page", "TypeError: x")),
+            (BrowserEvent("response", url="http://h/a.js", status=404), ("http", "HTTP 404: http://h/a.js")),
+            (BrowserEvent("response", url="http://h/api", status=500), ("http", "HTTP 500: http://h/api")),
+        ],
+    )
+    def test_a_finding_keeps_its_kind_and_message(self, event: BrowserEvent, expected: tuple[str, str]) -> None:
+        error = visual_qa._page_error("http://h/", event)
+
+        assert error is not None
+        assert (error.kind, error.message) == expected
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            BrowserEvent("console", text="hello", level="warning"),
+            BrowserEvent("response", url="http://h/me", status=401),
+            BrowserEvent("response", url="http://h/admin", status=403),
+            BrowserEvent("response", url="http://h/", status=200),
+            BrowserEvent("requestfailed", text="net::ERR_ABORTED", url="http://h/x", method="GET"),
+            BrowserEvent("navigation", url="http://h/"),
+        ],
+    )
+    def test_everything_else_is_not_a_finding(self, event: BrowserEvent) -> None:
+        assert visual_qa._page_error("http://h/", event) is None
 
 
 class TestVisualQAReport:

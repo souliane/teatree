@@ -8,11 +8,15 @@ accompanies every deny case.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 from hooks.scripts.hook_router import handle_block_mcp_slack_write
-from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_write
+from hooks.scripts.mcp_slack_write_guard import TEATREE_MCP_SERVERS, is_slack_mcp_write
+from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _event(tool_name: str, tool_input: dict | None = None) -> dict:
@@ -33,7 +37,7 @@ class TestDeniesSlackMcpWrites:
         "tool_name",
         [
             "mcp__slack__slack_send_message",
-            "mcp__claude_ai_Slack__slack_add_reaction",
+            "mcp__Slack__slack_add_reaction",
             "mcp__slack__chat_postMessage",
             "mcp__slack__reactions_add",
             "mcp__slack__chat_update",
@@ -61,8 +65,8 @@ class TestDeniesUnrecognisedSlackTools:
     @pytest.mark.parametrize(
         "tool_name",
         [
-            "mcp__claude_ai_Slack__slack_create_conversation",
-            "mcp__claude_ai_Slack__slack_create_canvas",
+            "mcp__Slack__slack_create_conversation",
+            "mcp__Slack__slack_create_canvas",
             "mcp__slack__conversations_invite",
             "mcp__slack__slack_pin_message",
             "mcp__slack__admin_conversations_archive",
@@ -85,7 +89,7 @@ class TestAllowsReadsAndNonSlack:
             "mcp__slack__users_info",
             # A pure READ whose noun happens to carry a write verb — the
             # substring classifier blocked it and pointed at no CLI equivalent.
-            "mcp__claude_ai_Slack__slack_get_reactions",
+            "mcp__Slack__slack_get_reactions",
             "mcp__glab__glab_mr_create",
             "mcp__notion__create_page",
             "Bash",
@@ -94,6 +98,42 @@ class TestAllowsReadsAndNonSlack:
     def test_read_or_non_slack_tool_passes(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_block_mcp_slack_write(_event(tool_name)) is False
         assert _parse_deny(capsys) is None
+
+
+class TestTeatreesOwnServerIsNotADirectSlackWrite:
+    """teatree's own MCP Slack tools go through its backends and egress gates, so the guard lets them by."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__teatree__slack_react",
+            "mcp__plugin_t3_teatree__slack_react",
+            "mcp__plugin_t3_teatree__slack_mentions",
+        ],
+    )
+    def test_a_teatree_server_tool_passes(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_mcp_slack_write(_event(tool_name)) is False
+        assert _parse_deny(capsys) is None
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__teatree_x__slack_react",
+            "mcp__plugin_t3_teatreex__slack_react",
+            "mcp__xteatree__slack_send_message",
+            "mcp__slack__teatree_send_message",
+        ],
+    )
+    def test_a_lookalike_server_is_still_denied(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_mcp_slack_write(_event(tool_name)) is True
+        assert _parse_deny(capsys) is not None
+
+    def test_the_exempt_servers_are_the_names_teatree_registers(self) -> None:
+        plugin = json.loads((_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["name"]
+        declared = json.loads((_ROOT / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+
+        assert set(declared) == {TEATREE_MCP_SERVER_NAME}
+        assert {TEATREE_MCP_SERVER_NAME, f"plugin_{plugin}_{TEATREE_MCP_SERVER_NAME}"} == TEATREE_MCP_SERVERS
 
 
 class TestClassifier:

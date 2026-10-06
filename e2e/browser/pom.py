@@ -40,6 +40,11 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def require_findings(found: set[tuple[str, str]], *expected: tuple[str, str]) -> None:
+    if missing := set(expected) - found:
+        _fail(f"findings {sorted(missing)} missing from {sorted(found)}")
+
+
 def require_launchable_browser() -> None:
     if (failure := launch_probe()) is not None:
         _fail(failure)
