@@ -20,11 +20,19 @@ completion — 306 runner-minutes burned after cancels. ``!cancelled()`` overrid
 the skip just the same and turns false once the run is cancelled.
 """
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
+from tests._actions_workflow import CI_WEEKLY_CRON, github_context, job_results, load, render, step_runs
+
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+_BASH = shutil.which("bash") or "/bin/bash"
+_PULL_REQUEST = github_context("pull_request", ref="refs/pull/42/merge")
 
 _SKIP_OVERRIDES = ("always()", "!cancelled()")
 
@@ -81,11 +89,23 @@ class TestSupersededPullRequestWavesStop:
         )
 
     def test_the_cancel_immune_jobs_never_run_on_a_pull_request(self) -> None:
-        jobs = _jobs(_WORKFLOWS / "ci.yml")
-        for name in sorted(_SCHEDULED_CANCEL_IMMUNE):
-            condition = _condition(jobs[name])
-            assert "github.event_name == 'schedule'" in condition, f"{name} must stay schedule-gated"
-            assert "pull_request" not in condition, f"{name} keeps `always()` only because no PR reaches it"
+        results = job_results(load(), _PULL_REQUEST, outputs={"preflight": {"run_heavy_python": "true"}})
+        reached = {name for name in _SCHEDULED_CANCEL_IMMUNE if results[name] != "skipped"}
+        assert not reached, f"{sorted(reached)} keep `always()` only because no pull request reaches them"
+
+    def test_a_superseded_wave_uploads_no_shard_artifacts_while_a_failed_leg_still_does(self) -> None:
+        upload = next(
+            step
+            for step in load()["jobs"]["test-shard"]["steps"]
+            if "shard-artifacts-" in str((step.get("with") or {}).get("name", ""))
+        )
+        context = {"github": _PULL_REQUEST}
+        assert step_runs(upload, context, earlier_step_failed=True, cancelled=False), (
+            "a leg whose tests failed must still hand its coverage and shard stats to the combiner"
+        )
+        assert not step_runs(upload, context, earlier_step_failed=False, cancelled=True), (
+            "a cancelled, superseded wave must not spend runner time uploading artifacts nobody reads"
+        )
 
     def test_the_heavy_lanes_override_the_skipped_preflight_with_not_cancelled(self) -> None:
         jobs = _jobs(_WORKFLOWS / "ci.yml")
@@ -100,11 +120,37 @@ class TestSupersededPullRequestWavesStop:
 class TestRefreshDurationsStaysReachable:
     """The specific job whose silent skip left the shard split blind."""
 
-    def test_it_runs_on_a_scheduled_run_whatever_the_shards_did(self) -> None:
-        job = _jobs(_WORKFLOWS / "ci.yml")["refresh-durations"]
-        condition = _condition(job)
-        assert "always()" in condition
-        assert "github.event_name == 'schedule'" in condition
+    def test_it_runs_on_the_weekly_run_whatever_the_shards_did(self) -> None:
         # #4603: gating on a green lane was a second way to never run — the durations that
         # unbalance the split are what red the leg that then vetoed the refresh.
-        assert "needs.test-shard.result" not in condition
+        weekly = github_context("schedule", schedule=CI_WEEKLY_CRON)
+        results = job_results(load(), weekly, failing=frozenset({"test-shard"}))
+        assert results["refresh-durations"] != "skipped"
+
+
+class TestARequiredCheckIsNeverSkippedByAFailedImageBuild:
+    """A skipped required check passes branch protection, so `lint` must red when it has no image."""
+
+    def test_lint_runs_when_build_image_failed(self) -> None:
+        results = job_results(load(), _PULL_REQUEST, failing=frozenset({"build-image"}))
+        assert results["lint"] != "skipped", "a skipped `lint` would let a pull request merge without lint"
+
+    @pytest.mark.parametrize(
+        ("build_image", "passes"),
+        [("success", True), ("failure", False), ("skipped", False), ("cancelled", False)],
+    )
+    def test_its_first_step_reds_unless_the_image_was_built(
+        self, build_image: str, *, passes: bool, tmp_path: Path
+    ) -> None:
+        guard = load()["jobs"]["lint"]["steps"][0]
+        context = {"needs": {"build-image": {"result": build_image}}}
+        env = {name: str(render(value, context)) for name, value in (guard.get("env") or {}).items()}
+        result = subprocess.run(
+            [_BASH, "-c", str(guard["run"])],
+            capture_output=True,
+            text=True,
+            env={"PATH": os.environ["PATH"], "HOME": str(tmp_path), **env},
+            cwd=tmp_path,
+            check=False,
+        )
+        assert (result.returncode == 0) is passes, result.stderr
