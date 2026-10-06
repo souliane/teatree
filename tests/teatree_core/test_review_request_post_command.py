@@ -38,7 +38,7 @@ from teatree.core.models import (
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
-_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
+_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="review-channel", token="xoxp")
 _CMD = "teatree.core.management.commands.review_request_post"
 _FORGE = "teatree.core.backend_factory.code_host_from_overlay"
 _SHA = "a" * 40

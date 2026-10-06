@@ -65,7 +65,7 @@ class _EmptyUsernameConfig:
     channel_id: str
 
     def get_review_broadcast_channels(self) -> list[tuple[str, str]]:
-        return [("the-review-team", self.channel_id)]
+        return [("review-channel", self.channel_id)]
 
     def get_gitlab_username(self) -> str:
         return ""
