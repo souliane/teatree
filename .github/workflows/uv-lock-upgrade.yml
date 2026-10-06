@@ -8,15 +8,20 @@
 #
 # This workflow closes that residual gap: once a week it runs
 # ``uv lock --upgrade``, and if the lockfile changed it opens (or updates) a
-# PR against main so a human can review and merge the hash refresh.
+# PR against main carrying the hash refresh.
 #
 # souliane/teatree#4437: it also CLASSIFIES what the resolve moved
 # (``scripts/ci/lock_delta.py``) and self-merges only a patch-only one. A minor,
 # a major, or a version the classifier cannot read withholds auto-merge and
-# routes the PR to the factory's careful review (cold review of the diff and tests,
-# then merge; a bump is never refused) — a boundary crossing is a framework migration, not a
-# hash refresh, and must not land unattended over a weekend. The same classifier
+# routes the PR to the factory's cold review of the diff and tests, then merge —
+# a bump is never refused, but a boundary crossing is a framework migration, not
+# a hash refresh, so it does not merge on green alone. The same classifier
 # renders the PR body, so what the body claims is what the lockfile resolved.
+#
+# souliane/teatree#4569: the version verdict cannot see PATHS, so arming also
+# needs ``scripts/ci/refresh_scope.py`` (only uv.lock, dist/sbom.json and
+# docs/generated/** changed), and ``lock-refresh-scope.yml`` re-asks it on every
+# later push to the branch.
 #
 # Cadence: Sunday 03:00 UTC — offset from the dependabot weekly window so the
 # lock refresh sees any constraint bumps that landed during the week.
@@ -141,8 +146,8 @@ jobs:
             exit 1
           fi
           # #4437: reuse an already-open refresh PR's branch. A review-required resolve
-          # does not merge, and the same boundary is still there next Sunday, so a dated
-          # branch would stack one more identical PR every week until a human acted.
+          # waits for its review, and the same boundary is still there next Sunday, so a
+          # dated branch would stack one more identical PR every week until it merged.
           EXISTING="$(gh pr list --state open --limit 100 --json headRefName \
             -q '[.[].headRefName | select(startswith("chore/uv-lock-upgrade"))][0] // empty')"
           BRANCH="${EXISTING:-chore/uv-lock-upgrade-$(date +%Y-%W)}"
@@ -166,15 +171,18 @@ jobs:
               --base main \
               --label "dependencies"
           fi
+          SCOPE_OK=false
+          python scripts/ci/refresh_scope.py --base origin/main --head HEAD && SCOPE_OK=true
           # Self-merge once green ONLY when every move is patch-level inside its pinned
           # series (#3245 wanted the backlog gone, not a framework migration landing over
-          # a weekend). Best-effort: if the repo has not enabled auto-merge, warn — the PR
-          # still carries CI and the loop's trusted-merge path can land it.
-          if [ "${AUTO_MERGE:-}" = "true" ]; then
+          # a weekend) AND only lock/generated paths changed (#4569). Best-effort: if the
+          # repo has not enabled auto-merge, warn — the PR still carries CI and the loop's
+          # trusted-merge path can land it.
+          if [ "${AUTO_MERGE:-}" = "true" ] && [ "$SCOPE_OK" = "true" ]; then
             gh pr merge "$BRANCH" --auto --squash --delete-branch \
               || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."
           else
-            echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it goes to the factory's cold review, then merges. The PR body names what moved."
+            echo "::warning::$BRANCH crosses a feature/major boundary, carries a version the classifier could not read, or changes more than lock/generated paths, so auto-merge is withheld — it goes to the factory's cold review, then merges. The PR body names what moved."
             # The branch is reused, so clear an auto-merge a previous patch-only run armed.
             gh pr merge "$BRANCH" --disable-auto || true
           fi
