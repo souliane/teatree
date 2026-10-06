@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
+from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import landing_verification_error
@@ -149,7 +150,8 @@ def record_result_envelope(
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
-    Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
+    Validation order: the measured key-drift aliases are normalized
+    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
     LANDING check (coding/debugging must have committed) → the PLAN record (a planning
     envelope whose plan is refused fails the attempt, never the recorder) —
@@ -185,6 +187,7 @@ def record_result_envelope(
     transition).
     """
     usage = usage or AttemptUsage()
+    result = normalize_envelope_aliases(result)
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
