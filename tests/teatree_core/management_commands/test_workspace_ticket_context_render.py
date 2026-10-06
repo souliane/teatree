@@ -61,6 +61,8 @@ class WorkspaceTicketContextWiringTest(TestCase):
         super().setUp()
         mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
         self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # ``cut_start_point`` reads origin through Popen, which the ``subprocess.run`` mock never reaches.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"))
         # Seed clones under the CLONE root (``clone_root()`` → ``$HOME/workspace``,
         # HOME sandboxed). NO ``T3_WORKSPACE_DIR`` pin — clone discovery resolves
         # these via clone_root() while worktrees land under worktree_root().

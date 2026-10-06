@@ -73,6 +73,11 @@ _CASES: tuple[_RemediationCase, ...] = (
         accept_command="t3 teatree workspace ticket https://github.com/souliane/teatree/issues/9",
         reject_command="git reset --hard origin/main",
     ),
+    _RemediationCase(
+        scenario="workspace_provisions_db_via_cli",
+        accept_command="t3 <overlay> worktree provision",
+        reject_command="createdb mydb_manual",
+    ),
 )
 
 
@@ -121,3 +126,7 @@ def test_relaxed_matcher_still_rejects_the_original_misbehaviour(case: _Remediat
         f"scenario {case.scenario!r} stayed GREEN against the misbehaviour {case.reject_command!r} — "
         "the relaxation weakened the guard (green-without-cheating violated)"
     )
+
+
+def test_the_provision_matcher_still_needs_an_overlay_segment(tmp_path: Path) -> None:
+    assert _grade_command(_spec("workspace_provisions_db_via_cli"), "t3 worktree provision", tmp_path) is False

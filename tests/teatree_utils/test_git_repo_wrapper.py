@@ -31,7 +31,6 @@ class TestGitRepoDelegation:
             ("rebase", "rebase", (), ("/some/repo", "")),
             ("worktree_remove", "worktree_remove", (), ("/some/repo", "")),
             ("branch_delete", "branch_delete", ("br",), ("/some/repo", "br")),
-            ("pull_ff_only", "pull_ff_only", (), ("/some/repo",)),
             ("default_branch", "default_branch", (), ("/some/repo",)),
             ("branch_merged", "branch_merged", ("br",), ("/some/repo", "br", "origin/main")),
             ("current_branch", "current_branch", (), ("/some/repo",)),
@@ -62,7 +61,12 @@ class TestGitRepoDelegation:
     def test_worktree_add_forwards_create_branch_kwarg(self, repo: GitRepo) -> None:
         with patch.object(git_mod, "worktree_add") as mock:
             repo.worktree_add("/dest", "feat", create_branch=False)
-        mock.assert_called_once_with("/some/repo", "/dest", "feat", create_branch=False)
+        mock.assert_called_once_with("/some/repo", "/dest", "feat", create_branch=False, start_point="")
+
+    def test_worktree_add_forwards_the_start_point(self, repo: GitRepo) -> None:
+        with patch.object(git_mod, "worktree_add") as mock:
+            repo.worktree_add("/dest", "feat", start_point="origin/main")
+        mock.assert_called_once_with("/some/repo", "/dest", "feat", create_branch=True, start_point="origin/main")
 
 
 class TestDefaultBranchDetection:

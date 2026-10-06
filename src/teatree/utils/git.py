@@ -7,7 +7,7 @@ The git surface is partitioned by concern across sibling modules under
 - :mod:`teatree.utils.git_branch` — branch/ref discovery.
 - :mod:`teatree.utils.git_commit` — commit/log/rev-list/message ops.
 - :mod:`teatree.utils.git_status` — working-tree status + diff capture.
-- :mod:`teatree.utils.git_sync` — fetch/rebase/merge/pull.
+- :mod:`teatree.utils.git_sync` — fetch, remote reads, rebase, merge.
 - :mod:`teatree.utils.git_worktree` — worktree management + teardown guards.
 - :mod:`teatree.utils.git_remote_ops` — invoking remote/config ops.
 
@@ -55,9 +55,11 @@ from teatree.utils.git_status import (
     status_porcelain_strict,
     status_porcelain_z_strict,
 )
-from teatree.utils.git_sync import fetch, fetch_all_prune, merge_abort, merge_no_edit, pull_ff_only, rebase
+from teatree.utils.git_sync import RemoteReadError, fetch, fetch_all_prune, merge_abort, merge_no_edit, rebase
 from teatree.utils.git_worktree import (
+    NoStartPointError,
     commits_absent_from_all_remotes,
+    cut_start_point,
     locked_worktree_paths,
     recovered_head_sha_after_ref_gone,
     worktree_add,
@@ -77,6 +79,8 @@ from teatree.utils.git_worktree_query import (
 __all__ = [
     "DETACHED_HEAD",
     "GitRepo",
+    "NoStartPointError",
+    "RemoteReadError",
     "WorktreeRecord",
     "branch_delete",
     "branch_diff",
@@ -88,6 +92,7 @@ __all__ = [
     "commits_absent_from_all_remotes",
     "config_value",
     "current_branch",
+    "cut_start_point",
     "default_branch",
     "fetch",
     "fetch_all_prune",
@@ -105,7 +110,6 @@ __all__ = [
     "merge_abort",
     "merge_base",
     "merge_no_edit",
-    "pull_ff_only",
     "rebase",
     "recovered_head_sha_after_ref_gone",
     "remote_slug",
@@ -172,9 +176,6 @@ class GitRepo:
     def branch_delete(self, branch: str = "") -> bool:
         return branch_delete(self.path, branch)
 
-    def pull_ff_only(self) -> bool:
-        return pull_ff_only(self.path)
-
     def default_branch(self) -> str:
         return default_branch(self.path)
 
@@ -205,5 +206,5 @@ class GitRepo:
     def commit_messages(self, range_spec: str = "") -> list[str]:
         return commit_messages(self.path, range_spec)
 
-    def worktree_add(self, path: str, branch: str, *, create_branch: bool = True) -> bool:
-        return worktree_add(self.path, path, branch, create_branch=create_branch)
+    def worktree_add(self, path: str, branch: str, *, create_branch: bool = True, start_point: str = "") -> bool:
+        return worktree_add(self.path, path, branch, create_branch=create_branch, start_point=start_point)

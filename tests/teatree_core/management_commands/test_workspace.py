@@ -404,6 +404,8 @@ class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):
         super().setUp()
         mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
         self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # ``cut_start_point`` reads origin through Popen, which the ``subprocess.run`` mock never reaches.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"))
         # Seed clones at the realistic NAMESPACED clone-root layout
         # ``~/workspace/<ns>/<repo>`` (HOME sandboxed by the autouse fixture).
         # No ``T3_WORKSPACE_DIR`` pin: clone_root() defaults to ``~/workspace``.
@@ -649,6 +651,8 @@ class TestWorkspaceTicket(TestCase):
         self.enterContext(
             patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
         )
+        # ``cut_start_point`` reads origin through Popen, which the ``subprocess.run`` mock never reaches.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"))
         # Seed the host-style clones the provisioner expects under HOME/workspace.
         # Tests that override T3_WORKSPACE_DIR ignore these and create their own.
         workspace = Path(os.environ["HOME"]) / "workspace"
@@ -992,7 +996,7 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
-    def test_partial_failure_when_one_repo_has_no_clone(self) -> None:
+    def test_one_repo_with_no_clone_cuts_no_worktree_for_any_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -1009,12 +1013,13 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                pytest.raises(SystemExit) as exc,
             ):
-                ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
+                call_command("workspace", "ticket", "https://example.com/issues/81")
 
-            ticket = Ticket.objects.get(pk=ticket_id)
-            assert ticket.worktrees.count() == 1
-            assert ticket.worktrees.get().repo_path == "backend"
+            assert exc.value.code == 1
+            assert Worktree.objects.count() == 0
+            assert not Ticket.objects.filter(issue_url="https://example.com/issues/81").exists()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
@@ -1065,8 +1070,8 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "frontend").mkdir()
             (workspace / "frontend" / ".git").mkdir()
 
-            mock_pull = MagicMock()
-            mock_pull.returncode = 0
+            mock_git = MagicMock()
+            mock_git.returncode = 0
 
             mock_add = MagicMock()
             mock_add.returncode = 1
@@ -1075,7 +1080,7 @@ class TestWorkspaceTicket(TestCase):
             def side_effect(cmd, **kwargs):
                 if "worktree" in cmd:
                     return mock_add
-                return mock_pull
+                return mock_git
 
             with (
                 patch.object(workspace_mod, "_worktree_root", return_value=workspace),
@@ -1129,7 +1134,7 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "backend").mkdir()
             (workspace / "backend" / ".git").mkdir()
 
-            mock_pull = MagicMock(returncode=0)
+            mock_git = MagicMock(returncode=0)
             mock_add_b_fail = MagicMock(returncode=1, stderr="fatal: a branch named 'x' already exists")
             mock_add_ok = MagicMock(returncode=0)
 
@@ -1141,7 +1146,7 @@ class TestWorkspaceTicket(TestCase):
                     if call_count["worktree"] == 1:
                         return mock_add_b_fail  # first try with -b fails
                     return mock_add_ok  # retry without -b succeeds
-                return mock_pull
+                return mock_git
 
             with (
                 patch.object(workspace_mod, "_worktree_root", return_value=workspace),
@@ -1172,13 +1177,13 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "frontend").mkdir()
             (workspace / "frontend" / ".git").mkdir()
 
-            mock_pull = MagicMock(returncode=0)
+            mock_git = MagicMock(returncode=0)
             mock_add_ok = MagicMock(returncode=0)
             mock_add_fail = MagicMock(returncode=1, stderr="fatal: some error")
 
             def side_effect(cmd, **kwargs):
                 if "worktree" not in cmd:
-                    return mock_pull
+                    return mock_git
                 # backend succeeds, frontend fails
                 # Check -C argument for repo path (git.worktree_add uses -C instead of cwd)
                 repo = ""
