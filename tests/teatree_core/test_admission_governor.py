@@ -9,9 +9,11 @@ merge loop for weeks.
 
 import datetime as dt
 import math
+from io import StringIO
 from unittest.mock import patch
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
@@ -47,6 +49,7 @@ from teatree.core.admission_pressure import (
     PressureBand,
     admission_pressure,
 )
+from teatree.core.models import ConfigSetting
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
@@ -856,6 +859,66 @@ class TestWriteConcurrencyRaise:
     def test_total_test_workers_stay_bounded_as_agents_rise(self) -> None:
         """The melt driver the old 0.25 was calibrated against, now bounded independently."""
         assert per_agent_test_workers(cores=8, active_agents=4) * 4 <= 8 * 2
+
+
+_PER_CORE_SETTING = "admission_write_concurrency_per_core"
+
+
+class TestTheWriteConcurrencyFactorIsAnOperatorSetting(TestCase):
+    """The per-core factor widens the WRITE ceiling; the weekly pace and the brakes keep their say."""
+
+    def _ceiling(self, configured: object, *, weekly_utilization: float = 0.5) -> int:
+        ConfigSetting.objects.set_value(_PER_CORE_SETTING, configured)
+        quota = _quota(weekly_utilization=weekly_utilization, seconds_to_weekly_reset=_WEEK * 0.5)
+        return decide_admission(quota=quota, machine=_machine(cores=8)).ceiling
+
+    def test_one_agent_per_core_on_pace(self) -> None:
+        assert self._ceiling(1.0) == 8
+
+    def test_the_weekly_pace_still_scales_the_raised_ceiling(self) -> None:
+        assert self._ceiling(1.0, weekly_utilization=0.625) == 6
+
+    def test_no_row_keeps_half_an_agent_per_core(self) -> None:
+        assert decide_admission(quota=_quota(), machine=_machine(cores=8)).ceiling == 4
+
+    def test_the_operator_sets_it_from_the_cli(self) -> None:
+        call_command("config_setting", "set", _PER_CORE_SETTING, "1.0")
+        assert decide_admission(quota=_quota(), machine=_machine(cores=8)).ceiling == 8
+
+    def test_an_overlay_scoped_cli_write_is_refused(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", _PER_CORE_SETTING, "1.0", overlay="x", stderr=StringIO())
+        assert not ConfigSetting.objects.filter(key=_PER_CORE_SETTING).exists()
+
+    def test_the_cli_refuses_a_value_outside_the_range(self) -> None:
+        stderr = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", _PER_CORE_SETTING, "4", stderr=stderr)
+        assert "between 0.25 and 2" in stderr.getvalue()
+        assert not ConfigSetting.objects.filter(key=_PER_CORE_SETTING).exists()
+
+    def test_a_value_outside_the_range_is_clamped(self) -> None:
+        for configured, expected in ((5.0, 16), (2.0, 16), (0.1, 2), (0.25, 2)):
+            with self.subTest(configured=configured):
+                assert self._ceiling(configured) == expected
+
+    def test_an_unreadable_value_keeps_the_shipped_factor(self) -> None:
+        for configured in ("not-a-number", "nan", "inf"):
+            with self.subTest(configured=configured):
+                assert self._ceiling(configured) == 4
+
+    def test_a_malformed_row_is_logged_not_swallowed(self) -> None:
+        with self.assertLogs("teatree.core.admission.write_ceiling", "ERROR") as logs:
+            self._ceiling("not-a-number")
+        assert any(_PER_CORE_SETTING in line for line in logs.output)
+
+    def test_the_load_brake_halts_whatever_the_factor(self) -> None:
+        for factor in (0.25, 0.5, 2.0):
+            with self.subTest(factor=factor):
+                ConfigSetting.objects.set_value(_PER_CORE_SETTING, factor)
+                decision = _decide(machine=_machine(cores=8, load1=8 * BRAKE_LOAD_PER_CORE + 1))
+                assert not decision.admit
+                assert decision.cause == "load"
 
 
 class TestBoxLoadHeadroom:
