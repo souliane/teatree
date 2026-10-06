@@ -171,6 +171,9 @@ class TestDmOnlyManifest:
     def test_full_profile_bot_can_join_manage_and_write_private_channels(self) -> None:
         assert {"channels:join", "channels:manage", "groups:write"} <= set(manifest_bot_scopes("full"))
 
+    def test_full_profile_bot_can_resolve_a_user_group_handle(self) -> None:
+        assert "usergroups:read" in manifest_bot_scopes("full")
+
     def test_full_profile_user_scopes_are_exact(self) -> None:
         assert set(build_manifest(overlay_name="acme")["oauth_config"]["scopes"]["user"]) == {
             "canvases:read",

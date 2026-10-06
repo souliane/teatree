@@ -57,7 +57,7 @@ def _github_payload(login: str) -> dict[str, object]:
 
 class TestIssueAuthorLogin(TestCase):
     def test_reads_both_forge_shapes(self) -> None:
-        assert issue_author_login(_gitlab_payload("adrien.cossa")) == "adrien.cossa"
+        assert issue_author_login(_gitlab_payload("alice.example")) == "alice.example"
         assert issue_author_login(_github_payload("souliane")) == "souliane"
 
     def test_missing_or_malformed_author_is_empty(self) -> None:
@@ -70,11 +70,11 @@ class TestSelfIdentitySet(TestCase):
     def test_unions_aliases_declared_bots_and_current_user(self) -> None:
         host = _FakeHost({}, current_user="factory-bot")
         with (
-            patch("teatree.core.self_forge_identities._configured_aliases", return_value=("Adrien.Cossa",)),
+            patch("teatree.core.self_forge_identities._configured_aliases", return_value=("Alice.Example",)),
             patch("teatree.core.self_forge_identities.declared_identities_for_url", return_value=("Declared-Bot",)),
         ):
             resolved = self_identity_set(_GITLAB_ISSUE, host=host)
-        assert resolved == {"adrien.cossa", "declared-bot", "factory-bot"}
+        assert resolved == {"alice.example", "declared-bot", "factory-bot"}
 
     def test_a_host_that_cannot_name_itself_narrows_but_never_raises(self) -> None:
         class _Broken(_FakeHost):
@@ -83,10 +83,10 @@ class TestSelfIdentitySet(TestCase):
                 raise RuntimeError(msg)
 
         with (
-            patch("teatree.core.self_forge_identities._configured_aliases", return_value=("adrien.cossa",)),
+            patch("teatree.core.self_forge_identities._configured_aliases", return_value=("alice.example",)),
             patch("teatree.core.self_forge_identities.declared_identities_for_url", return_value=()),
         ):
-            assert self_identity_set(_GITLAB_ISSUE, host=_Broken({})) == {"adrien.cossa"}
+            assert self_identity_set(_GITLAB_ISSUE, host=_Broken({})) == {"alice.example"}
 
     def test_trusted_issue_authors_never_widens_the_self_set(self) -> None:
         """A trusted colleague is trusted to REVIEW, never to have their ticket edited.
@@ -97,7 +97,7 @@ class TestSelfIdentitySet(TestCase):
         turns this red.
         """
         settings = SimpleNamespace(
-            user_identity_aliases=("adrien.cossa",),
+            user_identity_aliases=("alice.example",),
             trusted_issue_authors=("colleague",),
         )
         with (
@@ -105,7 +105,7 @@ class TestSelfIdentitySet(TestCase):
             patch("teatree.core.self_forge_identities.declared_identities_for_url", return_value=()),
         ):
             resolved = self_identity_set(_GITLAB_ISSUE, host=_FakeHost({}))
-        assert resolved == {"adrien.cossa"}
+        assert resolved == {"alice.example"}
 
 
 class TestDeclaredIdentitiesAreReadOnce(TestCase):
@@ -150,15 +150,15 @@ class TestDeclaredIdentitiesAreReadOnce(TestCase):
 
 class TestIssueAuthorIsSelf(TestCase):
     def test_case_folds_both_sides(self) -> None:
-        assert issue_author_is_self("Adrien.Cossa", {"adrien.cossa"}) is True
-        assert issue_author_is_self("adrien.cossa", {"ADRIEN.COSSA"}) is True
+        assert issue_author_is_self("Alice.Example", {"alice.example"}) is True
+        assert issue_author_is_self("alice.example", {"ALICE.EXAMPLE"}) is True
 
     def test_unknown_author_is_not_self(self) -> None:
-        assert issue_author_is_self("colleague", {"adrien.cossa"}) is False
+        assert issue_author_is_self("colleague", {"alice.example"}) is False
 
     def test_empty_author_fails_closed(self) -> None:
-        assert issue_author_is_self("", {"adrien.cossa"}) is False
-        assert issue_author_is_self("   ", {"adrien.cossa"}) is False
+        assert issue_author_is_self("", {"alice.example"}) is False
+        assert issue_author_is_self("   ", {"alice.example"}) is False
 
 
 class TestRequireSelfAuthoredIssue(TestCase):
@@ -166,10 +166,10 @@ class TestRequireSelfAuthoredIssue(TestCase):
         return patch("teatree.core.self_forge_identities.self_identity_set", return_value=set(names))
 
     def test_owner_authored_issue_is_allowed_and_returns_the_fresh_payload(self) -> None:
-        host = _FakeHost(_gitlab_payload("adrien.cossa"))
-        with self._identities("adrien.cossa"):
+        host = _FakeHost(_gitlab_payload("alice.example"))
+        with self._identities("alice.example"):
             fresh = require_self_authored_issue(host=host, issue_url=_GITLAB_ISSUE)
-        assert fresh["author"] == {"username": "adrien.cossa"}
+        assert fresh["author"] == {"username": "alice.example"}
         assert host.calls == [_GITLAB_ISSUE], "authority comes from a fetch at write time, never a cached candidate"
 
     def test_factory_bot_authored_issue_is_allowed(self) -> None:
@@ -179,22 +179,22 @@ class TestRequireSelfAuthoredIssue(TestCase):
 
     def test_colleague_authored_issue_is_refused(self) -> None:
         host = _FakeHost(_gitlab_payload("someone.else"))
-        with self._identities("adrien.cossa"), pytest.raises(ExternalIssueRefusedError) as caught:
+        with self._identities("alice.example"), pytest.raises(ExternalIssueRefusedError) as caught:
             require_self_authored_issue(host=host, issue_url=_GITLAB_ISSUE)
         assert caught.value.author == "someone.else"
         assert _GITLAB_ISSUE in str(caught.value)
 
     def test_absent_author_is_refused(self) -> None:
         host = _FakeHost({"web_url": _GITLAB_ISSUE})
-        with self._identities("adrien.cossa"), pytest.raises(ExternalIssueRefusedError):
+        with self._identities("alice.example"), pytest.raises(ExternalIssueRefusedError):
             require_self_authored_issue(host=host, issue_url=_GITLAB_ISSUE)
 
     def test_unreadable_issue_is_refused_not_assumed_ours(self) -> None:
         host = _FakeHost(RuntimeError("forge down"))
-        with self._identities("adrien.cossa"), pytest.raises(ExternalIssueRefusedError):
+        with self._identities("alice.example"), pytest.raises(ExternalIssueRefusedError):
             require_self_authored_issue(host=host, issue_url=_GITLAB_ISSUE)
 
     def test_error_payload_is_refused(self) -> None:
         host = _FakeHost({"error": "Issue not found"})
-        with self._identities("adrien.cossa"), pytest.raises(ExternalIssueRefusedError):
+        with self._identities("alice.example"), pytest.raises(ExternalIssueRefusedError):
             require_self_authored_issue(host=host, issue_url=_GITLAB_ISSUE)
