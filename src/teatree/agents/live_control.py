@@ -211,7 +211,7 @@ class LiveSessionController:
         digest, settled = entry
         if digest != _digest(text):
             return ControlReceipt.rejected(command_id, self.task.pk, RejectCode.DUPLICATE_MISMATCH)
-        return settled.result() if settled.done() and not settled.cancelled() else None
+        return settled.result() if settled.done() else None
 
     async def steer(self, text: str, *, command_id: str, wait: float) -> ControlReceipt:
         entry = self._receipts.get(command_id)
@@ -228,7 +228,7 @@ class LiveSessionController:
         try:
             receipt = await self._deliver(text, command_id, wait)
         except asyncio.CancelledError:
-            settled.cancel()
+            settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
             raise
         finally:
             self._in_flight.discard(settled)
