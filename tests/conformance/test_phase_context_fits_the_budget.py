@@ -44,7 +44,7 @@ def _dispatch_task(phase: str) -> Task:
 
 
 def _rendered_context(task: Task) -> str:
-    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=SkillMetadata(), worktree_path=_REPO_ROOT)
+    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT)
     return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase))
 
 
