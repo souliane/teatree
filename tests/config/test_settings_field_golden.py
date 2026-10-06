@@ -111,6 +111,7 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "review_exempt_repos",
         "review_exempt_repos_count_toward_group_readiness",
         "review_nag_max_interval_days",
+        "review_nag_reask_mention",
         "review_skill",
         "review_skill_alternates",
         "scanner_overlay_scope",

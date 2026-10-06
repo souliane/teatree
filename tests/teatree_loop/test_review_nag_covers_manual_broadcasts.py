@@ -65,7 +65,6 @@ class FakeSlack:
 
     posts: list[dict[str, Any]] = field(default_factory=list)
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
-    usergroup_id: str = ""
     dm_channel: str = "D-USER"
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
@@ -113,9 +112,12 @@ class FakeSlack:
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
 
+    def resolve_usergroup_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
     def resolve_user_id(self, handle: str) -> str:
-        if handle == "engineers":
-            return self.usergroup_id
+        _ = handle
         return ""
 
     def auth_test(self) -> RawAPIDict:

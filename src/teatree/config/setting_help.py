@@ -174,6 +174,7 @@ SETTING_HELP: dict[str, str] = {
     "review_exempt_repos": "repos whose merge requests need no review request (a `!` prefix un-exempts one)",
     "review_exempt_repos_count_toward_group_readiness": "let review-exempt merge requests still hold their work group",
     "review_nag_max_interval_days": "ceiling on the review nag's widening re-ask interval",
+    "review_nag_reask_mention": "user group id or handle, or user handle, the review nag's re-ask mentions",
     "review_skill": "skill a review dispatch runs",
     "review_skill_alternates": "extra skills whose recorded run also satisfies the reviewing-phase evidence gate",
     "scanner_overlay_scope": "overlays the full-fleet scanners sweep; empty sweeps every registered overlay",

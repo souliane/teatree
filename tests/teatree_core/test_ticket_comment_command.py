@@ -25,7 +25,7 @@ pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 _ISSUE_URL = "https://gitlab.com/org/repo/-/work_items/469"
-_OWNER = "adrien.cossa"
+_OWNER = "alice.example"
 
 
 @pytest.fixture(autouse=True)

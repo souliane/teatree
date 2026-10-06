@@ -15,10 +15,10 @@ class TicketContextFieldTest(TestCase):
 
     def test_context_persists_free_text(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
-        ticket.context = "dev_lr_id = 5842"
+        ticket.context = "dev_lr_id = 1234"
         ticket.save()
         ticket.refresh_from_db()
-        assert ticket.context == "dev_lr_id = 5842"
+        assert ticket.context == "dev_lr_id = 1234"
 
     def test_context_column_present_in_db_schema(self) -> None:
         """The migration is applied — the column exists on the table."""
@@ -30,10 +30,10 @@ class TicketContextFieldTest(TestCase):
 class TicketContextAppendTest(TestCase):
     def test_append_context_prefixes_timestamp_block(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3")
-        ticket.append_context("dev_lr_id = 5842")
+        ticket.append_context("dev_lr_id = 1234")
         ticket.refresh_from_db()
         assert re.fullmatch(
-            r"\n\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] dev_lr_id = 5842",
+            r"\n\n\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] dev_lr_id = 1234",
             ticket.context,
         )
 
