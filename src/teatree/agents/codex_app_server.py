@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TERMINATE_SECONDS = 5.0
+# A ChatGPT login's mcpServerStatus/list reply measured ~930 KB on one line; asyncio's default is 64 KiB.
+PROTOCOL_LINE_LIMIT = 16 * 1024 * 1024
+_STDERR_TAIL_BYTES = 2048
 
 
 def transport_close_seconds() -> float:
@@ -98,6 +101,7 @@ class CodexAppServerSession:
         self._stdout_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._stream_failure: CodexAppServerError | HarnessFallbackError | None = None
+        self._stderr_tail = b""
         self._closing = False
         self.translator = CodexEventTranslator()
         self._tool_events = CodexToolEvents()
@@ -117,6 +121,7 @@ class CodexAppServerSession:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=PROTOCOL_LINE_LIMIT,
             )
             self._stdout_task = asyncio.create_task(self._read_stdout())
             self._stderr_task = asyncio.create_task(self._drain_stderr())
@@ -218,12 +223,18 @@ class CodexAppServerSession:
             if task is not None:
                 with suppress(asyncio.CancelledError, CodexAppServerError):
                     await task
+        self._log_stream_failure()
         for task in tuple(self._server_request_tasks):
             task.cancel()
         for task in tuple(self._server_request_tasks):
             with suppress(asyncio.CancelledError):
                 await task
         self._fail_pending(CodexAppServerError.stopped())
+
+    def _log_stream_failure(self) -> None:
+        if self._stream_failure is not None:
+            stderr_tail = self._stderr_tail.decode(errors="replace")
+            logger.warning("Codex App Server stream failed: %s; stderr tail: %r", self._stream_failure, stderr_tail)
 
     async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._stream_failure is not None:
@@ -270,7 +281,7 @@ class CodexAppServerSession:
             return
         failure: CodexAppServerError | HarnessFallbackError = CodexAppServerError.stopped()
         try:
-            while line := await process.stdout.readline():
+            while line := await self._read_protocol_line(process.stdout):
                 self._route_stdout_line(line)
             if not self._closing:
                 failure = transport_error(
@@ -285,6 +296,14 @@ class CodexAppServerSession:
                 self._stream_failure = failure
                 self._fail_pending(failure)
                 self._events.put_nowait(_StreamFailure(failure))
+
+    @staticmethod
+    async def _read_protocol_line(stdout: asyncio.StreamReader) -> bytes:
+        try:
+            return await stdout.readline()
+        except ValueError as exc:
+            # StreamReader.readline re-raises LimitOverrunError as a bare ValueError.
+            raise CodexAppServerError.oversize_line(PROTOCOL_LINE_LIMIT) from exc
 
     def _route_stdout_line(self, line: bytes) -> None:
         try:
@@ -372,8 +391,8 @@ class CodexAppServerSession:
         process = self.process
         if process is None or process.stderr is None:
             return
-        while await process.stderr.read(65536):
-            pass
+        while chunk := await process.stderr.read(65536):
+            self._stderr_tail = (self._stderr_tail + chunk)[-_STDERR_TAIL_BYTES:]
 
     async def _next_event(self) -> dict[str, Any]:
         event = await self.next_transport_event()
