@@ -1,3 +1,5 @@
+# test-path: cross-cutting
+# Drives hooks/scripts/session_start_skills.py through hook_router; no src/teatree mirror.
 """``autoload = true`` must put the context skills in the FIRST turn's context (#3869).
 
 SessionStart is the one skill-selection path, so the skills arrive before the first turn —
