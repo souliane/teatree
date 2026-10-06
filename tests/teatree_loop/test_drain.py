@@ -9,7 +9,7 @@ driven without wall-clock time.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
@@ -33,7 +33,10 @@ from teatree.loop.drain import (
     DrainProgress,
     DrainReport,
     GenerationNotDrainableError,
+    QuiescePayload,
+    QuiesceStatus,
     drain_worker,
+    quiesce_status,
     set_worker_quiescing,
 )
 from tests.factories import TaskFactory, planned_ticket
@@ -261,3 +264,46 @@ class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
 
         assert claimed == self.task
         assert _build_options(claimed, "ctx", phase="coding", skills=[]).resume == _RESUMED_SESSION
+
+
+_DRAIN_STARTED = datetime(2026, 10, 6, 16, 26, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("status", "line", "payload"),
+    [
+        pytest.param(
+            QuiesceStatus(since=_DRAIN_STARTED, age_seconds=725.4, in_flight=[5461, 5462]),
+            "deploy drain: quiescing since 16:26Z (12m), waiting on task(s) 5461, 5462, "
+            "which checkpoint at their next heartbeat",
+            {"since": "2026-10-06T16:26:00+00:00", "age_seconds": 725, "in_flight": [5461, 5462]},
+            id="dated-with-runs-in-flight",
+        ),
+        pytest.param(
+            QuiesceStatus(since=None, age_seconds=None, in_flight=[]),
+            "deploy drain: quiescing outside the config store, so undateable, no task in flight",
+            {"since": None, "age_seconds": None, "in_flight": []},
+            id="undateable-and-idle",
+        ),
+    ],
+)
+def test_a_quiesced_worker_reports_its_drain(status: QuiesceStatus, line: str, payload: QuiescePayload) -> None:
+    assert status.status_line() == line
+    assert status.as_json() == payload
+
+
+class TestQuiesceStatus(django.test.TestCase):
+    def test_an_open_gate_reports_no_drain(self) -> None:
+        set_worker_quiescing(value=False)
+
+        assert quiesce_status() is None
+
+    def test_a_quiesced_worker_is_dated_by_its_gate_row(self) -> None:
+        set_worker_quiescing(value=True)
+        ConfigSetting.objects.filter(key="worker_quiescing").update(updated_at=timezone.now() - timedelta(minutes=3))
+
+        status = quiesce_status()
+
+        assert status is not None
+        assert status.since is not None
+        assert 170 <= (status.age_seconds or 0) <= 200

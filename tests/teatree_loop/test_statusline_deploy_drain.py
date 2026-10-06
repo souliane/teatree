@@ -1,6 +1,7 @@
 """The loop line shows a deploy drain while it lasts, so a frozen queue is never silent (#5089)."""
 
 import datetime as dt
+from unittest.mock import patch
 
 import django.test
 from django.utils import timezone
@@ -26,3 +27,11 @@ class TestTheDeployDrainChip(django.test.TestCase):
         TaskFactory().claim(claimed_by="worker-A", lease_seconds=900)
 
         assert not any("deploy drain" in line for line in live_loops_anchor())
+
+    def test_an_unreadable_drain_drops_only_the_chip(self) -> None:
+        set_worker_quiescing(value=True)
+
+        with patch("teatree.loop.statusline_loops.quiesce_status", side_effect=RuntimeError("control DB locked")):
+            lines = live_loops_anchor()
+
+        assert not any("deploy drain" in line for line in lines)

@@ -112,7 +112,7 @@ class QuiesceStatus:
         return f"deploy drain: quiescing {when}, {waiting}"
 
 
-def quiescing_gate_set_at() -> datetime | None:
+def _quiescing_gate_set_at() -> datetime | None:
     """When the newest ON ``worker_quiescing`` row was written — ``None`` when env or file resolved it ON."""
     from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM needs the app registry
 
@@ -132,7 +132,7 @@ def quiesce_status() -> QuiesceStatus | None:
 
     if not worker_is_quiescing():
         return None
-    since = quiescing_gate_set_at()
+    since = _quiescing_gate_set_at()
     age = (timezone.now() - since).total_seconds() if since is not None else None
     return QuiesceStatus(since=since, age_seconds=age, in_flight=_still_claimed_pks(""))
 
@@ -230,6 +230,5 @@ __all__ = [
     "QuiesceStatus",
     "drain_worker",
     "quiesce_status",
-    "quiescing_gate_set_at",
     "set_worker_quiescing",
 ]
