@@ -315,6 +315,7 @@ class TestApplyPhaseTransitionEscalation(TestCase):
         pending = DeferredQuestion.pending()
         assert pending.count() == 1, "a genuine FSM wedge must escalate, never silently drop"
         assert "FSM wedge" in pending.first().question
+        assert pending.first().audience == DeferredQuestion.Audience.INTERNAL
 
     def test_wedge_escalation_is_deduped_across_replays(self) -> None:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
@@ -326,6 +327,39 @@ class TestApplyPhaseTransitionEscalation(TestCase):
         coding_task._apply_phase_transition()
 
         assert DeferredQuestion.pending().count() == 1, "an at-least-once replay must not flood the question queue"
+
+    def test_a_dismissed_wedge_is_never_re_raised_by_a_replay(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        coding_task = self._completed_task(ticket, "coding")
+        coding_task._apply_phase_transition()
+        DeferredQuestion.pending().get().mark_stale("operator dismissed")
+
+        Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+        Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+        assert DeferredQuestion.objects.count() == 1
+        assert not DeferredQuestion.pending().exists()
+
+    def test_a_new_completed_task_on_the_same_wedge_records_its_own_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        self._completed_task(ticket, "coding")._apply_phase_transition()
+        DeferredQuestion.pending().get().mark_stale("operator dismissed")
+
+        self._completed_task(ticket, "coding")._apply_phase_transition()
+
+        assert DeferredQuestion.objects.count() == 2
+        assert DeferredQuestion.pending().count() == 1
+
+    def test_an_unplanned_early_planning_completion_stays_put_with_one_internal_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        planning = self._completed_task(ticket, "planning")
+
+        assert planning._apply_phase_transition() is False
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.INTERNAL).count() == 1
+        assert not DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.OWNER_QUESTION).exists()
 
     def test_idempotent_replay_past_target_does_not_escalate(self) -> None:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415

@@ -8,6 +8,7 @@ wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 """
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.phases import normalize_phase
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+#: The dedupe marker one wedge records under; ``task`` is 0 for a sessionless refusal (``execute_retrospect``).
+PHASE_WEDGE_MARKER = "fsm-wedge:{ticket}:{phase}:{task}"
+PHASE_WEDGE_MARKER_RE = re.compile(r"^fsm-wedge:(?P<ticket>\d+):(?P<phase>[a-z_]+):(?P<task>\d+)$")
 
 #: The lifecycle-FSM target state each phase's completion should reach. A
 #: completed phase task whose ticket sits BEHIND its target with no matching
@@ -128,30 +133,24 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     record_stuck_transition_question(task, phase=phase, ticket=ticket)
 
 
-def record_stuck_transition_question(task: "Task", *, phase: str, ticket: Ticket) -> None:
-    """Record a durable, deduped ``DeferredQuestion`` for an FSM wedge (§17.1 inv 9).
+def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket: Ticket, refusal: str = "") -> None:
+    """Record an FSM wedge once per completed task, INTERNAL, on the box's own health queue (§17.1 inv 9).
 
-    Reuses the away-mode escalation queue (statusline / ``t3 teatree
-    questions list`` / Slack DM drain) rather than a new surface — the same
-    channel ``task_repair._escalate_stall`` uses. Deduped per (ticket,
-    phase) on ``tool_use_id`` so an at-least-once replay of the same wedge
-    does not flood the queue.
+    Sticky across every row carrying the marker, answered or dismissed, so the replay sweep
+    re-running the same latest task can never re-raise it; a new completed task is a new
+    wedge and gets its own row. ``lifecycle_incident`` reads these rows as ``phase_wedge``.
     """
     from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM/app-registry
 
-    dedup_key = f"fsm-wedge:{ticket.pk}:{phase}"
-    already = DeferredQuestion.objects.filter(
-        tool_use_id=dedup_key,
-        answered_at__isnull=True,
-        dismissed_at__isnull=True,
-    ).exists()
-    if already:
+    marker = PHASE_WEDGE_MARKER.format(ticket=ticket.pk, phase=phase, task=task.pk if task else 0)
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"
-    question = (
-        f"FSM wedge on {where}: the {phase!r} phase completed (task {task.pk}) but no "
-        f"lifecycle transition matched from state {ticket.state!r}, so the ticket cannot "
-        f"advance and is stuck before {phase!r}. How should it proceed — rework the "
-        f"earlier phases, or ignore?"
+    by_task = f" (task {task.pk})" if task else ""
+    cause = refusal or f"no lifecycle transition matched from state {ticket.state!r}"
+    DeferredQuestion.record(
+        f"FSM wedge on {where}: the {phase!r} phase completed{by_task} but the ticket cannot advance: {cause}",
+        task_session=task.session if task else None,
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
     )
-    DeferredQuestion.record(question, task_session=task.session, tool_use_id=dedup_key)
