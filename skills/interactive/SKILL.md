@@ -189,16 +189,16 @@ An attended session is the operator's eyes on the factory. It looks for abnormal
 
 - **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch.
 - **DEGRADING** — the factory still delivers, but late or with a weaker guard: a shadowed skill, a schedule firing in the wrong timezone (#5053), an override left on past its reason.
-- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore` (#5064), a stale statusline entry.
+- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore`, a stale statusline entry.
 
 **BLOCKING preempts the PR board and the todo drain.** Handle each finding in this order:
 
 1. **Find the durable record before filing anything:** a health row, a self-improve firing at the `ticket` rung, or an open issue found through the forge tool's dedupe above. A recurrence EXTENDS that record instead of starting a new one.
-2. **Unblock now** whatever is not implementation — review, merge, answer, re-run — per § "This session does not implement".
-3. **Notify the owner once, for BLOCKING only,** keyed so a repeat is a no-op: `mcp__teatree__notify_user` with `idempotency_key="factory-watch:<fingerprint>"`, or `t3 <overlay> notify dm '<finding>' --idempotency-key factory-watch:<fingerprint>`. Not `notify send`: it records an unregistered key without delivering it. Skip the DM when the finding has already paged through a registered push signal (`teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`).
-4. **Never leave a finding silent:** keep a TODO naming its fingerprint, and close it only on a durable record. When no detector raised it, add one with `t3 <overlay> health add '<fingerprint>: <finding>' --critical` (without `--critical` for DEGRADING).
+2. **Unblock now** whatever is not implementation — review, merge, answer, re-run — per § "This session does not implement". Unblocking never stops an in-flight agent; let it finish. A review or critic starved behind newer tasks goes to a cold reviewer at once ([`/t3:review`](../review/SKILL.md)), not to the back of the factory queue.
+3. **Notify the owner once per episode, for BLOCKING only:** `mcp__teatree__notify_user` with `idempotency_key="factory-watch:<fingerprint>:<opened-on>"`, or `t3 <overlay> notify dm '<finding>' --idempotency-key factory-watch:<fingerprint>:<opened-on>`, where `<opened-on>` is the UTC date this episode was first seen. A sent key never expires, so without it a recurrence would never page. Not `notify send`: it records an unregistered key without delivering it. Skip the DM when the finding has already paged through a registered push signal (`teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`).
+4. **Never leave a finding silent:** keep a TODO naming its fingerprint and DM key, so a re-read after compaction reuses the key, and close it only on a durable record. When no detector raised it, add one with `t3 <overlay> health add '<fingerprint>: <finding>' --critical` (without `--critical` for DEGRADING).
 
-**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket, so even this starts within the hour rather than at once.
+**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket — its reviews included — so even this starts within the hour rather than at once.
 
 ## Skill Loading
 
