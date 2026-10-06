@@ -31,6 +31,7 @@ def _new_ticket_autostart_q() -> Q:
 
 
 def _priority_part() -> Case:
+    """P, the ticket's priority — today ``Ticket.expedited``, the one source a label-driven priority replaces."""
     return Case(
         When(ticket__expedited=True, then=Value(_EXPEDITED_PRIORITY)),
         default=Value(0),
