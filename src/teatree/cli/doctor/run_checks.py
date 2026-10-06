@@ -27,6 +27,7 @@ from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
+from teatree.cli.doctor.checks_browser import _check_browser_ready
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
 from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool
 from teatree.cli.doctor.checks_cold_hooks import (
@@ -73,7 +74,6 @@ from teatree.cli.doctor.checks_loop import (
     _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
-    _check_chrome_devtools_mcp_suggestion,
     _check_connector_manifest,
     _check_mcp_connectivity,
     _check_teatree_mcp_liveness,
@@ -144,11 +144,10 @@ def _optional_tooling_advisories() -> None:
     """Surfacing-only advisories for optional tooling (never gate the exit code).
 
     #3263 WARNs when this box serves the admin dashboard but its loopback
-    "Debug session" terminal's ttyd is missing. #3271 INFO-suggests the OPTIONAL
-    chrome-devtools MCP e2e/debug aid when absent (teatree's runtime requires zero
-    MCP). #3232 WARNs when the operator opted into the containerized ``t3`` workflow
-    but a piece the wrapper depends on (compose stack, the executable ``deploy/t3``
-    entry, the docker CLI, a non-drifted alias path) is missing — silent inside a
+    "Debug session" terminal's ttyd is missing. #3232 WARNs when the operator opted
+    into the containerized ``t3`` workflow but a piece the wrapper depends on
+    (compose stack, the executable ``deploy/t3`` entry, the docker CLI, a
+    non-drifted alias path) is missing — silent inside a
     container and on a host that never opted in. The tmpfs-headroom check WARNs when
     a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
@@ -163,7 +162,6 @@ def _optional_tooling_advisories() -> None:
     :func:`run_doctor_checks`, not advisories here.)
     """
     _check_ttyd_for_dashboard()
-    _check_chrome_devtools_mcp_suggestion()
     _check_tmp_tmpfs_headroom()
     _check_tmp_tmpfs_sizing()
     _check_scratch_sweep_probe()
@@ -200,6 +198,21 @@ def _run_worker_gates() -> bool:
     ceiling = _check_resume_ceiling_reachable()
     restart_loop = _check_clean_exit_restart_loop()
     return running and holder and skills and memory and ceiling and restart_loop
+
+
+def _run_host_capacity_gates(*, repair: bool) -> bool:
+    """What this host must be able to do, each a HARD FAIL, each run so every finding shows.
+
+    Root-filesystem headroom (#3852) is percent-shaped, so a box on a trajectory to full is
+    named long before the absolute-GB scanner thresholds fire. Agent-spawn headroom (#4301)
+    checks argv+envp against ARG_MAX, whose exhaustion kills a dispatch at execve. The
+    headless browser must launch, or `t3 browser` and the visual-QA gate cannot run;
+    ``repair`` installs it.
+    """
+    disk = _check_root_disk_headroom()
+    spawn = _check_agent_spawn_headroom()
+    browser = _check_browser_ready(repair=repair)
+    return disk and spawn and browser
 
 
 def _run_schema_freshness_gates() -> bool:
@@ -603,17 +616,10 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # :func:`_run_worker_gates` — each is evaluated independently so every finding shows.
     ok = _run_worker_gates() and ok
 
-    # Root-filesystem headroom (#3852): role-independent and percent-shaped, so a
-    # box on a trajectory to full is named long before the absolute-GB scanner
-    # thresholds fire. CRITICAL hard-FAILs — a full disk stops every other subsystem.
-    ok = _check_root_disk_headroom() and ok
+    ok = _run_host_capacity_gates(repair=repair) and ok
 
-    # Agent-spawn headroom (#4301): argv+envp against ARG_MAX, the budget whose
-    # exhaustion kills a dispatch at execve with no partial degradation.
-    ok = _check_agent_spawn_headroom() and ok
-
-    # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
-    # wiring) — all surfacing-only, never gating the exit code.
+    # Optional-tooling advisories (ttyd / containerized-t3 wiring) — all
+    # surfacing-only, never gating the exit code.
     _optional_tooling_advisories()
 
     # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —

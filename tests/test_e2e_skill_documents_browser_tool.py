@@ -1,27 +1,17 @@
-# test-path: cross-cutting — asserts a skills/e2e doc invariant; the
-# browser_diagnosis import is only the shared flag constant, not the unit under test.
-"""The e2e skill must document chrome-devtools-mcp as the default browser tool.
-
-chrome-devtools-mcp replaced the Claude-in-Chrome extension as teatree's browser
-tool: it drives its own Chrome over CDP with no claude.ai account and no
-extension pairing, so the old account-switch / extension-popup fragility is gone.
-The e2e skill must carry this so an agent reading it before a browser run knows
-the tool, the registration path, and how to pre-authorize it for an unattended
-run — while deterministic E2E stays on Playwright.
+# test-path: cross-cutting — asserts a skills/e2e doc invariant against the `t3 browser` CLI it documents.
+"""The e2e skill documents `t3 browser` as the browser tool, and it matches the CLI.
 
 The skill's documentation is its SKILL.md spine PLUS the ``references/`` files the
-spine points at, so each invariant holds when ANY of those documents carries it —
-progressive disclosure (``/t3:rules`` § "Split Long Skills") moves mechanics out of
-the body, and a guard reading only the body would forbid that split.
-
-Doc-invariant guard in the spirit of ``test_ship_skill_documents_skip_flags``.
+spine points at, so each invariant holds when ANY of those documents carries it.
 Per ``/t3:code`` § 5d the relationship assertions scan every occurrence of the
 anchor token rather than keying on the first match.
 """
 
+import re
 from pathlib import Path
 
-from teatree.core.evidence.browser_diagnosis import CHROME_DEVTOOLS_HEADLESS_FLAG
+from teatree.browser.session import Verb
+from teatree.cli.browser import browser_app
 
 _E2E_SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "e2e"
 _E2E_DOCS: tuple[str, ...] = tuple(
@@ -48,72 +38,32 @@ def _any_doc_window_contains(anchor: str, *, must_include: str, radius: int) -> 
     return any(_any_window_contains(text, anchor, must_include=must_include, radius=radius) for text in _E2E_DOCS)
 
 
-class TestE2ESkillDocumentsBrowserTool:
-    def test_has_browser_tool_subsection(self) -> None:
-        assert _any_doc_contains("Browser tool: chrome-devtools-mcp"), (
-            "the e2e skill must carry a 'Browser tool: chrome-devtools-mcp' subsection "
-            "naming chrome-devtools-mcp as teatree's default browser tool."
-        )
+def test_has_the_browser_tool_section() -> None:
+    assert _any_doc_contains("## Browser tool: `t3 browser` (Playwright, headless)")
 
-    def test_names_default_browser_tool(self) -> None:
-        assert _any_doc_window_contains(
-            "chrome-devtools-mcp",
-            must_include="default browser tool",
-            radius=200,
-        ), "the e2e skill must state chrome-devtools-mcp is the default browser tool."
 
-    def test_needs_no_account_or_extension_pairing(self) -> None:
-        assert _any_doc_window_contains(
-            "no claude.ai account",
-            must_include="extension pairing",
-            radius=120,
-        ), (
-            "the e2e skill must state chrome-devtools-mcp needs no claude.ai account and "
-            "no browser-extension pairing (the account-switch / extension fragility is gone)."
-        )
+def test_documents_every_browser_command_the_cli_has() -> None:
+    commands = sorted(command.name or command.callback.__name__ for command in browser_app.registered_commands)
 
-    def test_documents_registration_command(self) -> None:
-        assert _any_doc_contains("t3 mcp browser-diagnosis"), (
-            "the e2e skill must name `t3 mcp browser-diagnosis` as the registration path."
-        )
-        assert _any_doc_contains("claude mcp add chrome-devtools"), (
-            "the e2e skill must show the `claude mcp add chrome-devtools` registration line."
-        )
+    assert commands == ["act", "close", "inspect", "open"]
+    assert [name for name in commands if not _any_doc_contains(f"`t3 browser {name}")] == []
 
-    def test_registration_line_is_headless(self) -> None:
-        assert _any_doc_contains(f"chrome-devtools-mcp@latest {CHROME_DEVTOOLS_HEADLESS_FLAG}"), (
-            "the e2e skill's registration line must carry the headless flag — upstream defaults it "
-            "to false, so omitting it opens a visible Chrome window on the user's desktop."
-        )
-        assert _any_doc_window_contains(
-            "--headless",
-            must_include="never headed",
-            radius=600,
-        ), "the e2e skill must state teatree always runs the browser headless, never headed."
 
-    def test_documents_unattended_allow_rule(self) -> None:
-        assert _any_doc_contains("mcp__chrome-devtools__*"), (
-            "the e2e skill must give the `mcp__chrome-devtools__*` allow-rule to pre-authorize "
-            "the tool for an unattended run."
-        )
+def test_documents_every_act_verb() -> None:
+    assert [verb for verb in Verb if not _any_doc_contains(f"| `{verb}` |")] == []
 
-    def test_documents_mcp_specifier_has_no_domain_argument(self) -> None:
-        """The research finding must be recorded: MCP specifiers take no argument pattern."""
-        assert _any_doc_window_contains(
-            "mcp__chrome-devtools",
-            must_include="domain",
-            radius=600,
-        ), (
-            "the e2e skill must show the MCP allow-rule form for the browser tool and note "
-            "MCP specifiers cannot constrain by domain (no wildcard subdomains)."
-        )
 
-    def test_deterministic_e2e_stays_on_playwright(self) -> None:
-        assert _any_doc_window_contains(
-            "Playwright",
-            must_include="chrome-devtools-mcp",
-            radius=300,
-        ), (
-            "the e2e skill must keep deterministic E2E on Playwright, with chrome-devtools-mcp "
-            "as the agentic nav/interaction + diagnosis lane, never the enforcement lane."
-        )
+def test_states_the_browser_always_runs_headless() -> None:
+    assert _any_doc_window_contains("headless", must_include="never headed", radius=200)
+    assert _any_doc_contains("has no headed mode")
+
+
+def test_deterministic_e2e_stays_on_the_e2e_runner() -> None:
+    assert _any_doc_window_contains("`t3 browser`", must_include="never the enforcement lane", radius=400)
+
+
+def test_names_no_mcp_server_but_teatrees() -> None:
+    foreign = re.compile(r"mcp__(?!teatree__|plugin_t3_teatree__)\w+")
+
+    assert [match for text in _E2E_DOCS for match in foreign.findall(text)] == []
+    assert not _any_doc_contains("claude mcp add")

@@ -6,44 +6,10 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 
 import shutil
 import sys
-from pathlib import Path
 
 import typer
 
 from teatree.utils.uv_constraints import uv_tool_install_hint
-
-_CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
-
-
-def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path | None = None) -> bool:
-    """INFO-suggest the OPTIONAL chrome-devtools MCP e2e aid when it is absent (#3271).
-
-    chrome-devtools MCP gives an interactive DOM/console/network view that makes
-    authoring and debugging Playwright e2e specs far more tractable. It is a
-    pure developer-experience recommendation — teatree's runtime requires zero
-    MCP — so this is an ``INFO`` suggestion, never a ``WARN``/``FAIL``, and its
-    absence gates nothing (always returns ``True``). Silent when it is already
-    configured. Crash-proof: any read error degrades to a silent pass.
-    """
-    try:
-        from teatree.core.mcp_connectivity import read_enabled_mcp_servers  # noqa: PLC0415 — deferred: light import
-
-        names = {server.name for server in read_enabled_mcp_servers(home=home, cwd=cwd)}
-    except Exception:  # noqa: BLE001 — an optional suggestion must never crash or gate the doctor run
-        return True
-    if _CHROME_DEVTOOLS_MCP_NAME in names:
-        return True
-    from teatree.core.evidence.browser_diagnosis import (  # noqa: PLC0415 — deferred: light import
-        chrome_devtools_add_command,
-    )
-
-    typer.echo(
-        "INFO  chrome-devtools MCP is an OPTIONAL aid for authoring/debugging Playwright "
-        "e2e specs (live DOM, console, network, screenshots). Enable it with "
-        f"`{chrome_devtools_add_command()}` (needs a "
-        "Chrome executable). It is never required — its absence gates nothing."
-    )
-    return True
 
 
 def _check_mcp_connectivity() -> bool:

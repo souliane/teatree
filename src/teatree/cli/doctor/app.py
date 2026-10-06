@@ -61,7 +61,6 @@ from teatree.cli.doctor.checks_loop import (
     _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
-    _check_chrome_devtools_mcp_suggestion,
     _check_connector_manifest,
     _check_mcp_connectivity,
     _check_teatree_mcp_liveness,
@@ -144,7 +143,6 @@ __all__ = (
     "_check_aged_sweep_skips",
     "_check_agent_session_pins",
     "_check_box_occupancy",
-    "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",
     "_check_compose_output_root_pinned",

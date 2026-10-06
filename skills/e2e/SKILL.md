@@ -27,16 +27,25 @@ Playwright-based end-to-end testing for overlay target applications. Covers writ
 
 Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
-## Browser tool: chrome-devtools-mcp (default)
+## Browser tool: `t3 browser` (Playwright, headless)
 
-Agentic browser work — driving a deployed page (navigate/click/fill/upload) and inspecting it (network / console / DOM / screenshots) — runs through **chrome-devtools-mcp**, teatree's default browser tool. It is Google's `chrome-devtools-mcp` server, driving its own Chrome over the DevTools Protocol. Crucially it needs **no claude.ai account and no browser-extension pairing** — the whole account-switch / extension-popup / "logged in ≠ connected" fragility of the old Claude-in-Chrome extension is gone. Deterministic E2E stays on **Playwright** (below); chrome-devtools-mcp is the agentic nav/interaction + diagnosis lane, never the perf/trace enforcement lane.
+Agentic browser work — driving a deployed page (navigate, click, fill, upload) and inspecting what it did (console, page errors, failed requests, HTTP errors, the accessibility tree, a screenshot) — runs through **`t3 browser`**, a headless Playwright browser held open per worktree. It needs no MCP server, and one browser lives across steps, so a later step still sees what an earlier step caused. Deterministic E2E stays on `t3 <overlay> e2e run` (below); `t3 browser` is the agentic navigation and diagnosis lane, never the enforcement lane.
 
-**Always headless, never headed (non-negotiable).** Every browser teatree drives — chrome-devtools-mcp *and* Playwright — runs headless. A visible window on the user's desktop is never acceptable from a background/headless agent.
+```bash
+t3 browser open <url>                   # launch or reuse this worktree's browser, load the page, print what it did
+t3 browser act click 'role=button[name="Save"]'   # one interaction, then what it caused
+t3 browser inspect                      # accessibility snapshot, HTML and screenshot, plus every finding since the load
+t3 browser close                        # end the session
+```
 
-- **chrome-devtools-mcp:** `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) registers a headless browser server. Run `t3 mcp browser-diagnosis` for the `claude mcp add` line and re-register any server missing `--headless=true`. Performance and trace enforcement remains in Playwright.
-- **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
+Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed in the browser with these before any root-cause claim, not guessed from the server side.
 
-The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` line and the tools it surfaces, the `~/.claude/settings.json` pre-authorization entry, and the finding that MCP allow-rules carry no domain form are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
+**Always headless, never headed (non-negotiable).** Every browser teatree drives runs headless. A visible window on the user's desktop is never acceptable from a background/headless agent.
+
+- **`t3 browser`** has no headed mode.
+- **Playwright E2E:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `--headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
+
+The session mechanics, every `act` verb, the output format, provisioning and the owner-facing Playwright tools are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
 
 ## Running E2E Tests
 

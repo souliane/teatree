@@ -79,6 +79,9 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # tests/teatree_cli/doctor/test_root_disk_headroom_check.py; pin it to a pass
     # here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_root_disk_headroom", lambda: True)
+    # The headless-browser gate launches a real Chromium; CI's unit lane installs none.
+    # Both outcomes are exercised in tests/teatree_cli/doctor/test_checks_browser.py.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_browser_ready", lambda *, repair: True)
     # The dream-pass staleness escalation gate (#3993) reads the real DreamRunMarker
     # row — on this runner's own control DB it is genuinely stale, so it FAILs
     # deterministically off-box for a reason unrelated to the doctor's dispatch under

@@ -877,17 +877,6 @@ class _PrePublishGateSettings:
     # default flipped to ON after the CI `selection-audit` soak showed the scoped
     # selection never missed a whole-tree finding. The flag survives as a per-overlay
     # escape hatch; the CI whole-tree backstop is never removed regardless.
-    # chrome-devtools-mcp is teatree's DEFAULT browser tool (navigation,
-    # interaction, and network / console / DOM inspection over CDP — no claude.ai
-    # account or extension pairing). When true, `t3 mcp browser-diagnosis` emits
-    # the `claude mcp add` command that registers Google's chrome-devtools-mcp so
-    # an agent can drive and inspect a deployed page before proposing a root cause
-    # for browser-visible breakage. Default ON; perf/trace *enforcement* stays in
-    # the deterministic Playwright lane, never this server. Per-overlay
-    # overridable (DB-home) — turn OFF only on a host that cannot run the server.
-    # Upstream chrome-devtools-mcp launches a VISIBLE Chrome by default. teatree runs
-    # 100% headless, so the registration line passes `--headless=true` unless an
-    # operator explicitly opts into a headed browser. Per-overlay overridable (DB-home).
     colleague_repo_url_pattern: str = ""
     # Names THIS box in the dashboard header. Empty ships as the default because a
     # machine name cannot be a shipped constant; the header resolves empty to the

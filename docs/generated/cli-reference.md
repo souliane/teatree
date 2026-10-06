@@ -5728,12 +5728,10 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve              Run the structured-search MCP server over stdio (blocks   │
-│                    until stdin closes).                                      │
-│ reconnect          Reconnect (or print exact steps for) every                │
-│                    declared-but-down claude.ai connector.                    │
-│ browser-diagnosis  Report the chrome-devtools-mcp registration (the default  │
-│                    browser tool, default on).                                │
+│ serve      Run the structured-search MCP server over stdio (blocks until     │
+│            stdin closes).                                                    │
+│ reconnect  Reconnect (or print exact steps for) every declared-but-down      │
+│            claude.ai connector.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5779,25 +5777,6 @@ Usage: t3 mcp reconnect [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --open          Best-effort open each reconnect URL in a browser             │
 │                 (fail-open).                                                 │
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 mcp browser-diagnosis`
-
-```
-Usage: t3 mcp browser-diagnosis [OPTIONS]
-
- Report the chrome-devtools-mcp registration (the default browser tool, default
- on).
-
- Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
- exact ``claude mcp add`` line that registers it — so an agent can drive and
- inspect a deployed page (navigate/click/fill, network/console/DOM) before
- proposing a root cause for browser-visible breakage. No enforcement; a
- diagnostic and interaction aid only.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -30,3 +30,27 @@ def _locked_playwright_version() -> str:
 
 def test_the_e2e_image_matches_the_locked_playwright() -> None:
     assert _image_playwright_version() == _locked_playwright_version()
+
+
+_DEPLOY_SYSTEM_DEPS = re.compile(r"npx --yes playwright@(\d+\.\d+\.\d+) install-deps chromium")
+_STAGE = re.compile(r"^FROM \S+ AS (\S+)$", re.MULTILINE)
+_HEADLESS_SHELL_INSTALL = "-m playwright install chromium-headless-shell"
+
+
+def _deploy_stages() -> dict[str, str]:
+    dockerfile = (_ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
+    starts = list(_STAGE.finditer(dockerfile))
+    return {
+        start.group(1): dockerfile[start.end() : stop.start() if stop else len(dockerfile)]
+        for start, stop in zip(starts, [*starts[1:], None], strict=True)
+    }
+
+
+def test_the_deploy_image_carries_the_system_libraries_of_the_locked_playwright() -> None:
+    assert _locked_playwright_version() in _DEPLOY_SYSTEM_DEPS.findall(_deploy_stages()["system"])
+
+
+def test_every_runtime_env_installs_its_own_headless_shell() -> None:
+    stages = _deploy_stages()
+
+    assert [name for name in ("generation-base", "headless") if _HEADLESS_SHELL_INSTALL not in stages[name]] == []

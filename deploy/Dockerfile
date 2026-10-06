@@ -125,25 +125,21 @@ RUN apt-get update -qq && \
 # user with no sudo, so a runtime `apt-get` is impossible, and would not survive
 # container recreation even if it were.
 #
-# The BROWSER is deliberately NOT baked here — fcf390cc5 provisions it from the
-# managed E2E clone, whose own `@playwright/test` pins the build, precisely so an
-# image-level browser cannot drift from the suite. Only the libraries live here.
-#
 # Resolved by Playwright's own CLI rather than a hand-listed apt set: the list is
 # `playwright-core`'s nativeDeps for this release, so it is whatever the pinned
 # browser actually links, not a list that rots silently. Re-basing on
 # mcr.microsoft.com/playwright buys the same property and costs the ubuntu digest
 # pin and the shared toolchain with dev/Dockerfile.test — the two properties the
-# top of this file exists to protect — while baking a second browser no role runs.
+# top of this file exists to protect.
 #
-# THE SEAM, stated rather than left as a trap: the libraries come from HERE, the
-# browser from THERE, and nothing mechanically ties the two. 1.57.0 is what the
-# managed clone's own `package-lock.json` resolves `@playwright/test` to today —
-# read it there before assuming, since it is the clone that decides. Moving that
-# lock onto a release which adds a system dependency leaves this image short of
-# it, and the symptom is the launch failure above naming a missing `.so`; bump
-# this pin in the same change.
+# TWO PINS, TWO SOURCES. teatree's own browser (`t3 browser`, the visual-QA gate)
+# is the uv.lock playwright's headless shell, which each runtime env installs
+# below; tests/test_e2e_browser_image_matches_lock.py binds this version to the
+# lock. The managed E2E clone pins its own build through its `package-lock.json`
+# (1.57.0 today — read it there, the clone decides) and installs that browser
+# itself at run time; bump its line here when that lock moves.
 RUN npx --yes playwright@1.57.0 install-deps chromium && \
+    npx --yes playwright@1.63.0 install-deps chromium && \
     rm -rf /var/lib/apt/lists/*
 
 # The OS packages the HOSTED PROJECT needs at IMPORT time — the third class after "tools
@@ -363,7 +359,8 @@ COPY ${TEATREE_CORE_SUBDIR:+${TEATREE_CORE_SUBDIR}/}deploy/claude-settings.templ
 
 # ============================================================
 # Immutable generation, in two layers deploy/build-generation.sh builds from `git archive <sha>`.
-# generation-base carries the interpreter, the locked runtime dependencies and prek; it is built
+# generation-base carries the interpreter, the locked runtime dependencies, prek and the locked
+# playwright's headless shell (installed as teatree into its own ~/.cache); it is built
 # from the dependency inputs alone, tagged by their hash and reused unchanged by every commit
 # whose inputs match. generation adds only the commit's source, sealed root-owned read-only, so
 # a container runs exactly the commit its revision label names.
@@ -390,6 +387,8 @@ RUN --mount=type=bind,target=/tmp/base-context \
     "$uv" pip install --python /opt/teatree/venv/bin/python "prek==$prek_version" && \
     rm -rf "$deps" && \
     chown -R root:root /opt/teatree/venv /opt/teatree/uv-constraints.txt "$UV_PYTHON_INSTALL_DIR"
+USER teatree
+RUN /opt/teatree/venv/bin/python -m playwright install chromium-headless-shell
 
 FROM ${TEATREE_BASE_IMAGE} AS generation
 ARG TEATREE_GENERATION
@@ -471,4 +470,5 @@ RUN git clone "$TEATREE_REPO_URL" "$TEATREE_CLONE_DIR" && \
         --directory "$TEATREE_CLONE_DIR" -o "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
     uv tool install --editable "${TEATREE_CLONE_DIR}[slack]" --python 3.13 \
         --constraints "${TEATREE_CLONE_DIR}/uv-constraints.txt" && \
-    uv tool install "prek==$(locked-version.sh "$TEATREE_CLONE_DIR/uv.lock" prek)"
+    uv tool install "prek==$(locked-version.sh "$TEATREE_CLONE_DIR/uv.lock" prek)" && \
+    "$UV_TOOL_DIR/teatree/bin/python" -m playwright install chromium-headless-shell

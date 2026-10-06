@@ -114,23 +114,3 @@ def reconnect(
         typer.echo(f"Opened {opened} reconnect URL(s) in a browser.")
     if not outcome.ok:
         raise typer.Exit(code=1)
-
-
-@mcp_app.command(name="browser-diagnosis")
-def browser_diagnosis() -> None:
-    """Report the chrome-devtools-mcp registration (the default browser tool, default on).
-
-    Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
-    exact ``claude mcp add`` line that registers it — so an agent can drive and
-    inspect a deployed page (navigate/click/fill, network/console/DOM) before
-    proposing a root cause for browser-visible breakage. No enforcement; a
-    diagnostic and interaction aid only.
-    """
-    ensure_django()
-
-    from teatree.core.evidence.browser_diagnosis import (  # noqa: PLC0415 — deferred post-bootstrap: reads a Django setting
-        resolve_browser_diagnosis,
-    )
-
-    registration = resolve_browser_diagnosis()
-    typer.echo(registration.message)
