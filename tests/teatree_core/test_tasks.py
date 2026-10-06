@@ -1048,6 +1048,43 @@ class TestExecuteProvisionRetriesARepoLessTicket(TestCase):
         assert self._questions() == []
 
 
+class TestExecuteProvisionRetriesARemoteReadRefusal(TestCase):
+    """A provision refused because origin could not be read retries before asking (#4967)."""
+
+    def setUp(self) -> None:
+        self.queue = execute_provision.get_backend()
+        self.queue.clear()
+        self.ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/5",
+            repos=["repo-a"],
+            extra={"branch": "5-x"},
+            state=Ticket.State.WORK_STARTED,
+        )
+
+    def _provision(self, *, retryable: bool) -> TransitionResult:
+        refusal = RunnerResult(ok=False, detail="repo-a: cannot refresh from its remote: boom", retryable=retryable)
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = refusal
+            return execute_provision.call(self.ticket.pk, 0)
+
+    def _questions(self) -> list[DeferredQuestion]:
+        return list(DeferredQuestion.objects.filter(dedupe_marker=f"provision-failure:{self.ticket.pk}"))
+
+    def test_a_retryable_refusal_queues_a_retry_instead_of_asking(self) -> None:
+        self._provision(retryable=True)
+
+        (queued,) = self.queue.results
+        assert queued.args == [self.ticket.pk, 1]
+        assert self._questions() == []
+
+    def test_a_refusal_that_is_not_retryable_asks_at_once(self) -> None:
+        self._provision(retryable=False)
+
+        assert self.queue.results == []
+        assert len(self._questions()) == 1
+
+
 class TestExecuteShip(TestCase):
     def _ticket_in_shipped(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test")
