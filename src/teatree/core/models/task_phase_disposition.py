@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket import Ticket
 
 if TYPE_CHECKING:
@@ -127,15 +128,29 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     phase's target state: at-or-past target is an idempotent replay; behind
     target is a wedge. A free-form (non-lifecycle) phase has no target and
     is expected to no-op. A terminal/abandoned ticket is never a wedge.
+
+    One at-or-past case is not a replay: a pre-merge planning task (a re-plan) that nothing
+    followed owes its plan a coding task, so it queues one or records why it could not.
     """
-    # A terminal ticket is never a wedge. REVIEW_DELIVERED/IGNORED are off the
-    # author ladder, where :func:`phase_output_reached` answers False, so the
-    # is_settled short-circuit is what keeps them out of the escalation.
-    if _PHASE_TARGET_STATE.get(phase) is None or ticket.is_settled:
+    # REVIEW_DELIVERED/IGNORED are off the author ladder, where phase_output_reached answers False.
+    if _PHASE_TARGET_STATE.get(phase) is None or ticket.state in Ticket.marker_release_states():
         return
     if phase_output_reached(ticket, phase):
-        return  # idempotent replay — the ticket already advanced past this phase's target
+        if (
+            phase == "planning"
+            and ticket.state not in Ticket.merged_states()
+            and not ticket.tasks.filter(pk__gt=task.pk).exists()
+        ):
+            _queue_planned_work_or_refuse(task, ticket)
+        return
     record_stuck_transition_question(task, phase=phase, ticket=ticket)
+
+
+def _queue_planned_work_or_refuse(task: "Task", ticket: Ticket) -> None:
+    try:
+        ticket.schedule_planned_work(parent_task=task)
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(task, phase="planning", ticket=ticket, refusal=f"its plan has no task: {exc}")
 
 
 def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket: Ticket, refusal: str = "") -> None:

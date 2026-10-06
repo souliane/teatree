@@ -350,6 +350,54 @@ class TestApplyPhaseTransitionEscalation(TestCase):
         assert DeferredQuestion.objects.count() == 2
         assert DeferredQuestion.pending().count() == 1
 
+    def test_a_re_plan_completed_past_plan_recorded_queues_its_coding_task_once(self) -> None:
+        for state in (Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED):
+            with self.subTest(state=state):
+                ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+                record_test_plan(ticket)
+                planning = self._completed_task(ticket, "planning")
+
+                planning._apply_phase_transition()
+                Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+                coding = Task.objects.get(ticket=ticket, phase="coding")
+                assert coding.parent_task_id == planning.pk
+                assert coding.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_re_plan_whose_coding_mint_is_refused_records_the_refusal(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEW_REQUESTED)
+        planning = self._completed_task(ticket, "planning")
+
+        planning._apply_phase_transition()
+        planning._apply_phase_transition()
+
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        row = DeferredQuestion.pending().get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert "no PlanArtifact" in row.question
+
+    def test_an_old_planning_task_on_merged_work_queues_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.RETRO_RECORDED)
+        record_test_plan(ticket)
+
+        self._completed_task(ticket, "planning")._apply_phase_transition()
+
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_planning_completion_already_followed_by_a_task_queues_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        record_test_plan(ticket)
+        planning = self._completed_task(ticket, "planning")
+        self._completed_task(ticket, "coding").delete()
+        Task.objects.create(ticket=ticket, session=planning.session, phase="coding", status=Task.Status.FAILED)
+
+        planning._apply_phase_transition()
+
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
+        assert not DeferredQuestion.objects.exists()
+
     def test_an_unplanned_early_planning_completion_stays_put_with_one_internal_row(self) -> None:
         ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
         planning = self._completed_task(ticket, "planning")
