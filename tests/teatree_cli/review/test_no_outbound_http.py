@@ -1,3 +1,5 @@
+# test-path: cross-cutting — pins the cli/review conftest's outbound-HTTP ban; the gate_verdict
+# reader is only the swallowing read it is exercised through, not the unit under test.
 """The package-wide outbound-HTTP ban proves itself, so `attempts == 0` means something.
 
 An autouse fixture that silently failed to patch is indistinguishable from one that

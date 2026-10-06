@@ -415,6 +415,7 @@ class TestExpediteMergeTime(TestCase):
         assert clear.consumed_at is None
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestExpediteCliRoundTrip(TestCase):
     """The ``ticket clear --expedite-authorize`` → ``ticket merge --expedite-authorized`` seam."""
 

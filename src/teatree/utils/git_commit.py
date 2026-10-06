@@ -6,7 +6,7 @@ history mutators (soft-reset, commit), all via the
 :mod:`teatree.utils.git_run` runners.
 """
 
-from teatree.utils.git_branch import resolve_diff_base
+from teatree.utils import git_branch
 from teatree.utils.git_run import run, run_strict
 
 
@@ -23,7 +23,7 @@ def branch_diff(repo: str = ".", target: str = "") -> str:
     parser is independent of a user's ``diff.noprefix`` config. Raises
     ``CommandFailedError`` when git cannot diff, never an empty diff.
     """
-    base = merge_base(repo, target or resolve_diff_base(repo))
+    base = merge_base(repo, target or git_branch.resolve_diff_base(repo))
     return run_strict(repo=repo, args=["diff", base, "HEAD", "--src-prefix=a/", "--dst-prefix=b/"])
 
 

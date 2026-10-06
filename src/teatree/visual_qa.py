@@ -12,7 +12,7 @@ explicit skip bypasses it.
 The gate is a precondition of PR creation: ``pr create`` calls
 ``_run_visual_qa_gate`` before composing the PR, persists the summary on
 ``Ticket.extra['visual_qa']`` so the result survives in the FSM history,
-and refuses to create the PR when findings are present.
+and refuses to create the PR when findings are present or the check did not run.
 """
 
 import contextlib

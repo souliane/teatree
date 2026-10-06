@@ -102,6 +102,18 @@ _strip_git_hook_env()
 
 
 @pytest.fixture
+def readable_ship_tree() -> Iterator[None]:
+    """Answer the ship and CLEAR gates' git evidence reads with a clean tree, for a fixture worktree git cannot read."""
+    with (
+        patch("teatree.utils.git.head_sha", return_value="f" * 40),
+        patch("teatree.utils.git.branch_diff", return_value=""),
+        patch("teatree.visual_qa.changed_files", return_value=[]),
+        patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
+    ):
+        yield
+
+
+@pytest.fixture
 def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give outbound tests the classed registry a configured installation has."""
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)

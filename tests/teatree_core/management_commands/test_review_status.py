@@ -217,6 +217,7 @@ class TestStatusCommand(TestCase):
             call_command("review", "status", "not-a-pr-url")
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestTicketClearRecordsVerdict(TestCase):
     def test_issuing_a_clear_records_a_merge_safe_verdict_sibling(self) -> None:
         ticket = TicketFactory()
