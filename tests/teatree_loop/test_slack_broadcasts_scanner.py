@@ -304,10 +304,10 @@ class TestTrustedSetAndAdversarial(TestCase):
         # ``current_gitlab_username``) is still the user's own work → skip eyes.
         from teatree.core.models import TrustedIdentity  # noqa: PLC0415
 
-        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="alice.example")
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
-        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="adrien.cossa")}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="alice.example")}
         scanner = SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
@@ -324,7 +324,7 @@ class TestTrustedSetAndAdversarial(TestCase):
     def test_untrusted_public_author_signal_flags_adversarial(self) -> None:
         from teatree.core.models import TrustedIdentity  # noqa: PLC0415
 
-        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="alice.example")
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
         states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="evilhacker")}

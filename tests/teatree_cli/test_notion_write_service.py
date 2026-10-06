@@ -17,7 +17,7 @@ from teatree.core.models import OnBehalfApproval
 from teatree.mcp.services_notion import NewNotionPage, NotionComment
 from tests.teatree_backends.notion._fake_notion import install_fake_notion
 
-_OWNER = "adrien.cossa"
+_OWNER = "alice.example"
 _BODY = "## A\n\nbody one\n"
 _ROOT_ID = "33333333-3333-3333-3333-333333333333"
 

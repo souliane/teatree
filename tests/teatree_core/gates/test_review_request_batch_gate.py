@@ -50,7 +50,7 @@ _POST_CMD = "teatree.core.management.commands.review_request_post"
 _CHECK_CMD = "teatree.core.management.commands.review_request_check"
 
 _TICKET = "org/tracker#42"
-_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
+_TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="review-channel", token="xoxp")
 
 
 def _url(number: int, *, slug: str = "org/repo") -> str:

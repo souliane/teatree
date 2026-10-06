@@ -230,7 +230,7 @@ class TicketDispositionScannerAliasTests(TestCase):
 
     OVERLAY = "acme"
     URL = "https://example.com/issues/300"
-    ALIASES: tuple[str, ...] = ("adrien.work", "souliane", "acme.work")
+    ALIASES: tuple[str, ...] = ("alice.work", "souliane", "acme.work")
 
     def _scanner(
         self,
@@ -252,17 +252,17 @@ class TicketDispositionScannerAliasTests(TestCase):
         return {"state": "opened", "assignees": assignees, "labels": [{"name": "ready"}]}
 
     def test_alias_to_alias_reassign_is_suppressed(self) -> None:
-        """old=adrien.work, new=[souliane] with both in aliases → no signal."""
+        """old=alice.work, new=[souliane] with both in aliases → no signal."""
         self._ticket()
-        host = _Host(user="adrien.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "souliane"}])})
+        host = _Host(user="alice.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "souliane"}])})
         signals = self._scanner(host).scan()
         assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == []
 
     def test_alias_to_multiple_aliases_reassign_is_suppressed(self) -> None:
-        """old=adrien.work, new=[souliane, acme.work] all in aliases → no signal."""
+        """old=alice.work, new=[souliane, acme.work] all in aliases → no signal."""
         self._ticket()
         host = _Host(
-            user="adrien.work",
+            user="alice.work",
             issues_by_url={
                 self.URL: self._issue(assignees=[{"username": "souliane"}, {"username": "acme.work"}]),
             },
@@ -271,18 +271,18 @@ class TicketDispositionScannerAliasTests(TestCase):
         assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == []
 
     def test_alias_to_colleague_still_renders(self) -> None:
-        """old=adrien.work (alias), new=[some-colleague] (not alias) → signal kept."""
+        """old=alice.work (alias), new=[some-colleague] (not alias) → signal kept."""
         self._ticket()
-        host = _Host(user="adrien.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "colleague"}])})
+        host = _Host(user="alice.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "colleague"}])})
         signal = next(s for s in self._scanner(host).scan() if s.payload["reason"] == "unassigned")
-        assert signal.payload["old_owner"] == "adrien.work"
+        assert signal.payload["old_owner"] == "alice.work"
         assert signal.payload["new_owners"] == ["colleague"]
 
     def test_alias_to_mixed_alias_and_colleague_still_renders(self) -> None:
         """New contains one alias and one colleague → not fully within the alias set → keep the signal."""
         self._ticket()
         host = _Host(
-            user="adrien.work",
+            user="alice.work",
             issues_by_url={self.URL: self._issue(assignees=[{"username": "souliane"}, {"username": "colleague"}])},
         )
         signal = next(s for s in self._scanner(host).scan() if s.payload["reason"] == "unassigned")
@@ -299,7 +299,7 @@ class TicketDispositionScannerAliasTests(TestCase):
     def test_empty_aliases_default_keeps_legacy_behaviour(self) -> None:
         """With no aliases configured (default), every reassign still renders."""
         self._ticket()
-        host = _Host(user="adrien.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "souliane"}])})
+        host = _Host(user="alice.work", issues_by_url={self.URL: self._issue(assignees=[{"username": "souliane"}])})
         signals = self._scanner(host, aliases=()).scan()
         assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == ["unassigned"]
 
@@ -307,7 +307,7 @@ class TicketDispositionScannerAliasTests(TestCase):
         """A self-handoff that ALSO has issue_closed must still emit issue_closed."""
         self._ticket()
         host = _Host(
-            user="adrien.work",
+            user="alice.work",
             issues_by_url={
                 self.URL: {
                     "state": "closed",
