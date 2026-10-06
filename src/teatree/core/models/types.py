@@ -46,6 +46,7 @@ class VisualQAPageDetail(TypedDict):
 class VisualQASummary(TypedDict, total=False):
     targets: list[str]
     skipped_reason: str
+    not_run_reason: str
     base_url: str
     pages_checked: int
     errors: int

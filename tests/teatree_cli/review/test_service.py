@@ -12,8 +12,8 @@ from unittest import mock
 
 import pytest
 
-from teatree.cli.review.guarded_read import ReadRefusedError
 from teatree.cli.review.service import ReviewService
+from teatree.core.modelkit.gate_verdict import EvidenceUnavailableError
 
 
 def _broken_overlay() -> mock._patch:
@@ -48,6 +48,6 @@ class TestResolveBaseUrl:
         with (
             mock.patch.dict(os.environ, env, clear=True),
             _broken_overlay(),
-            pytest.raises(ReadRefusedError),
+            pytest.raises(EvidenceUnavailableError),
         ):
             self._service()._resolve_base_url()

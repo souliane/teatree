@@ -10,6 +10,8 @@ from ``git diff HEAD``).
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from teatree.cli.enforcement_tools import diff_coverage
 from teatree.utils.git import branch_diff, full_worktree_diff
 from teatree.utils.git_run import run_strict
@@ -63,6 +65,13 @@ def test_branch_diff_is_committed_diff_vs_base_not_worktree(tmp_path: Path) -> N
     assert "def feature" not in worktree
     assert "def dirty" in worktree
     assert "def untracked" in worktree
+
+
+def test_branch_diff_defaults_to_the_resolved_diff_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo_with_committed_branch_and_worktree_dirt(tmp_path)
+    monkeypatch.setenv("T3_DIFF_COVERAGE_BASE", "refs/heads/main")
+
+    assert "def feature" in _added_lines(branch_diff(str(repo)))
 
 
 def test_diff_coverage_cli_uses_branch_diff_not_worktree(tmp_path: Path) -> None:

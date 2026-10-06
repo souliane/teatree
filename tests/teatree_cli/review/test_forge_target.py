@@ -26,11 +26,11 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.review import forge_target as forge_target_mod
-from teatree.cli.review.guarded_read import ReadRefusedError
 from teatree.cli.review.mcp_seam import _build_review_poster
 from teatree.cli.review.service import ReviewService
 from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core.authoring_credential import gitlab_token_for_remote, reset_authoring_credential_cache
+from teatree.core.modelkit.gate_verdict import EvidenceUnavailableError
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.overlay_loader import OverlayConfigResolver
 from teatree.utils.git_remote import slug_from_remote
@@ -106,7 +106,7 @@ class TestBaseUrlComesFromTheOwningOverlay:
 
     def test_a_repo_no_overlay_owns_still_refuses_rather_than_guessing(self, multi_overlay_install) -> None:
         """Unowned + ambiguous is the case with no safe answer — refuse, never pick one."""
-        with pytest.raises(ReadRefusedError):
+        with pytest.raises(EvidenceUnavailableError):
             ReviewService(token="t", repo="nobody/knows")._resolve_base_url()
 
     def test_an_explicit_env_url_is_still_the_operator_override(

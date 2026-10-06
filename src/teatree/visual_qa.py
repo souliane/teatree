@@ -5,8 +5,9 @@ silent-render regressions: page crashes, console errors, raw ``app.*``
 translation keys, blocking asset 404s.
 
 Designed as a fast pre-push gate, not a regression suite.  Hard caps keep
-the gate well under 60 seconds per PR.  When Playwright is unavailable
-the gate skips with a clear message instead of blocking the push.
+the gate well under 60 seconds per PR.  When Playwright is unavailable the
+report records that the check did not run, which the gate refuses; only an
+explicit skip bypasses it.
 
 The gate is a precondition of PR creation: ``pr create`` calls
 ``_run_visual_qa_gate`` before composing the PR, persists the summary on
@@ -19,6 +20,7 @@ import fnmatch
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -68,7 +70,7 @@ _TRANSLATION_KEY_RE = re.compile(r"\bapp\.[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){1,}\b"
 
 
 class VisualQAUnavailableError(RuntimeError):
-    """Raised when Playwright cannot run — gate fails open with a message."""
+    """Raised when Playwright cannot run — the check did not run, so it cannot pass."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +93,7 @@ class VisualQAReport:
     pages: list[PageResult] = field(default_factory=list)
     skipped_reason: str = ""
     base_url: str = ""
+    not_run_reason: str = ""
 
     @property
     def unchecked(self) -> list[str]:
@@ -127,6 +130,7 @@ class VisualQAReport:
         return VisualQASummary(
             targets=list(self.targets),
             skipped_reason=self.skipped_reason,
+            not_run_reason=self.not_run_reason,
             base_url=self.base_url,
             pages_checked=len(self.pages),
             errors=self.total_errors,
@@ -137,9 +141,12 @@ class VisualQAReport:
 # ── Detection ────────────────────────────────────────────────────────
 
 
-def changed_files(repo: str = ".", base: str = "origin/main") -> list[str]:
-    """Return paths changed on the current branch vs *base*."""
-    out = git.run(repo=repo, args=["diff", "--name-only", f"{base}...HEAD"])
+def changed_files(repo: str = ".", base: str = "") -> list[str]:
+    """Return paths changed on the current branch vs *base* (default: the resolved diff base).
+
+    Raises ``CommandFailedError`` when git cannot diff, so a failed read never reads as "no changes".
+    """
+    out = git.run_strict(repo=repo, args=["diff", "--name-only", f"{base or git.resolve_diff_base(repo)}...HEAD"])
     return [line for line in out.splitlines() if line]
 
 
@@ -185,8 +192,7 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     """Load each target URL and capture errors + a single screenshot.
 
     Returns one ``PageResult`` per target.  Raises
-    ``VisualQAUnavailableError`` when Playwright cannot start so callers
-    can fail open with a clear message rather than blocking the push.
+    ``VisualQAUnavailableError`` when Playwright cannot start.
     """
     try:
         from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: heavy/optional dep at call site
@@ -274,7 +280,7 @@ def _slug(target: str, index: int) -> str:
 
 def evaluate(
     *,
-    diff: list[str],
+    read_diff: Callable[[], list[str]],
     overlay: OverlayBase | None,
     base_url: str,
     skip_reason: str = "",
@@ -282,23 +288,23 @@ def evaluate(
 ) -> VisualQAReport:
     """Run the full gate end to end and return the report.
 
-    Single entry point used by the shipping gate.  Returns an empty
-    report (``has_errors == False``) when the gate is bypassed, when no
-    frontend changes are detected, or when Playwright is unavailable.
-    Callers decide what to do with the report (block, warn, record).
+    Single entry point used by the shipping gate.  An explicit bypass returns
+    a skipped report without reading the diff; no frontend change returns a
+    clean one.  Playwright being unavailable sets ``not_run_reason`` and leaves
+    every target unchecked, so the report has errors.
     """
     run, bypass_reason = should_run(skip_reason=skip_reason, env=env)
     if not run:
         return VisualQAReport(targets=[], skipped_reason=bypass_reason)
 
-    targets = detect_targets(diff, overlay)
+    targets = detect_targets(read_diff(), overlay)
     if not targets:
         return VisualQAReport(targets=[], skipped_reason="no frontend changes")
 
     try:
         pages = run_check(targets, base_url)
     except VisualQAUnavailableError as exc:
-        return VisualQAReport(targets=targets, skipped_reason=str(exc), base_url=base_url)
+        return VisualQAReport(targets=targets, base_url=base_url, not_run_reason=str(exc))
 
     return VisualQAReport(targets=targets, pages=pages, base_url=base_url)
 
@@ -311,6 +317,9 @@ def format_report(report: VisualQAReport) -> str:
     lines = ["## Visual QA", ""]
     if report.skipped_reason:
         lines.append(f"_skipped: {report.skipped_reason}_")
+        return "\n".join(lines) + "\n"
+    if report.not_run_reason:
+        lines.append(f"_did not run: {report.not_run_reason}_")
         return "\n".join(lines) + "\n"
     if not report.targets:
         lines.append("_no frontend changes detected_")

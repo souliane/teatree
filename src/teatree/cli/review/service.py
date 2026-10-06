@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 
     from teatree.backends.gitlab.api import GitLabAPI
     from teatree.cli.review.batch_post import InlineNote
-    from teatree.cli.review.guarded_read import ReadOutcome
+    from teatree.core.modelkit.gate_verdict import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
 # after extraction to :mod:`teatree.cli.review.diff` /

@@ -13,7 +13,7 @@ survives that, and it is what the tests around it assert on.
 import httpx
 import pytest
 
-from teatree.cli.review.guarded_read import guarded_read
+from teatree.core.modelkit.gate_verdict import guarded_read
 from tests.teatree_cli.review.conftest import OutboundHttpBan
 
 

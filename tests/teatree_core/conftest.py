@@ -312,6 +312,17 @@ def _routed_merge_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def readable_ship_tree() -> Iterator[None]:
+    """Answer the ship gates' git evidence reads with a clean tree for a fixture worktree git cannot read."""
+    with (
+        patch("teatree.utils.git.head_sha", return_value="f" * 40),
+        patch("teatree.utils.git.branch_diff", return_value=""),
+        patch("teatree.visual_qa.changed_files", return_value=[]),
+    ):
+        yield
+
+
+@pytest.fixture
 def mock_command_overlay() -> Iterator[None]:
     """Patch _discover_overlays to return a CommandOverlay instance."""
     with patch(

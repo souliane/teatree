@@ -6,6 +6,7 @@ history mutators (soft-reset, commit), all via the
 :mod:`teatree.utils.git_run` runners.
 """
 
+from teatree.utils.git_branch import resolve_diff_base
 from teatree.utils.git_run import run, run_strict
 
 
@@ -13,16 +14,17 @@ def merge_base(repo: str = ".", target: str = "origin/main") -> str:
     return run_strict(repo=repo, args=["merge-base", target, "HEAD"])
 
 
-def branch_diff(repo: str = ".", target: str = "origin/main") -> str:
-    """Diff of this branch's commits against their merge-base with *target*.
+def branch_diff(repo: str = ".", target: str = "") -> str:
+    """Diff of this branch's commits against their merge-base with *target* (default: the resolved diff base).
 
     Measures what the branch actually changes (``<merge-base>..HEAD``), so a
     per-diff gate sees the PR's committed lines and never the clone's unrelated
     uncommitted edits. Prefixes are forced (``a/``/``b/``) so the unified-diff
-    parser is independent of a user's ``diff.noprefix`` config.
+    parser is independent of a user's ``diff.noprefix`` config. Raises
+    ``CommandFailedError`` when git cannot diff, never an empty diff.
     """
-    base = merge_base(repo, target)
-    return run(repo=repo, args=["diff", base, "HEAD", "--src-prefix=a/", "--dst-prefix=b/"])
+    base = merge_base(repo, target or resolve_diff_base(repo))
+    return run_strict(repo=repo, args=["diff", base, "HEAD", "--src-prefix=a/", "--dst-prefix=b/"])
 
 
 def rev_count(repo: str = ".", range_spec: str = "") -> int:
