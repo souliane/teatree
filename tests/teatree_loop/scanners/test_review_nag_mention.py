@@ -36,10 +36,6 @@ class _SlackDirectory:
 
 
 class TestReaskMention(TestCase):
-    def setUp(self) -> None:
-        review_nag_mention._warn_unresolved_mention_once.cache_clear()
-        self.addCleanup(review_nag_mention._warn_unresolved_mention_once.cache_clear)
-
     def test_a_group_id_renders_a_group_mention_without_a_lookup(self) -> None:
         ConfigSetting.objects.set_value("review_nag_reask_mention", "S0REVIEWERS")
         directory = _SlackDirectory()

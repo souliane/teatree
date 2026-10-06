@@ -37,3 +37,7 @@ def _warn_unresolved_mention_once(overlay_name: str, configured: str) -> None:
         configured,
         overlay_name,
     )
+
+
+def reset_unresolved_mention_warnings() -> None:
+    _warn_unresolved_mention_once.cache_clear()
