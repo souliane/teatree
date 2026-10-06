@@ -10,10 +10,12 @@ sibling ``mark_review_no_action``.
 
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from tests.factories import planned_ticket, record_test_plan
@@ -236,6 +238,57 @@ class TestApplyPhaseTransitionCodingBeforePlanned(TestCase):
         assert fired is False
         assert ticket.state == Ticket.State.NOT_STARTED
         assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+
+class TestPlanningCompletionOnAnEarlyPlannedTicket(TestCase):
+    """A planning completion with a recorded plan has one resolution: walk scope -> start -> plan."""
+
+    def _completed_planning(self, state: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+        record_test_plan(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.COMPLETED)
+        return ticket, task
+
+    def test_live_and_replayed_completions_advance_to_plan_recorded_and_mint_coding(self) -> None:
+        for state in (Ticket.State.NOT_STARTED, Ticket.State.SCOPED):
+            with self.subTest(state=state, path="live"):
+                ticket, task = self._completed_planning(state)
+
+                assert task._apply_phase_transition() is True
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.PLAN_RECORDED
+                assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=task).count() == 1
+            with self.subTest(state=state, path="replay"):
+                ticket, _task = self._completed_planning(state)
+
+                Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert not DeferredQuestion.objects.exists()
+
+    def test_claimed_complete_advances_a_not_started_planned_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        record_test_plan(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        task.claim(claimed_by="loop")
+
+        task.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
+
+    def test_work_started_without_a_plan_still_refuses(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.COMPLETED)
+
+        with pytest.raises(NoPlanArtifactError):
+            task._apply_phase_transition()
 
 
 class TestApplyPhaseTransitionEscalation(TestCase):
