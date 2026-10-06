@@ -145,7 +145,7 @@ def t3_reports(
             raise raises
         return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
 
-    with patch.object(router.subprocess, "run", side_effect=dispatch):
+    with patch.object(subprocess, "run", side_effect=dispatch):
         yield measurement
 
 

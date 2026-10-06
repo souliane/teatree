@@ -36,12 +36,12 @@ class _FanoutDispatchTest(TestCase):
 
     def _entry(self) -> dict:
         stdout = StringIO()
-        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         return json.loads(stdout.getvalue())[0]
 
 
 class TestRouteInvarianceAgainstRealComposer(_FanoutDispatchTest):
-    """Assert against the real ``pending-spawn`` interactive payload."""
+    """Assert against the real ``claim-next`` dispatch payload."""
 
     def test_payload_always_carries_a_fanout_directive_key(self) -> None:
         self._reviewer_task()

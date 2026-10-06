@@ -97,7 +97,7 @@ def _t3_reports(stdout: str, *, returncode: int = 0, raises: Exception | None = 
             raise raises
         return subprocess.CompletedProcess(args=argv, returncode=returncode, stdout=stdout, stderr="")
 
-    with patch.object(router.subprocess, "run", side_effect=dispatch):
+    with patch.object(subprocess, "run", side_effect=dispatch):
         yield
 
 

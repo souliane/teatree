@@ -1408,7 +1408,8 @@ A convergence is detected three ways, any one sufficient:
   is visible; without that mount the probe degrades to the signals below.
 - **The deploy's own in-progress record.** `deploy.sh` writes `<pid> <heartbeat> <deadline>`
   into that same lock file once it holds the flock, refreshes the heartbeat every 60s
-  from a background loop that stops with it, and truncates the record on exit.
+  in place (never truncate-then-write, which a reader can catch empty) from a background
+  loop that stops with it, and truncates the record on exit.
   `/proc/locks` is filtered by pid namespace, so the flock itself is invisible from the
   watchdog *container*; this record is what crosses the boundary, and a crash loop cannot
   write it. It counts as a live holder while its heartbeat is under 180s old (three
