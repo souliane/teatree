@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 _REPO = "acme/widgets"
 _ISSUE = "https://gitlab.com/acme/widgets/-/issues/7"
-_OWNER = "adrien.cossa"
+_OWNER = "alice.example"
 
 
 @pytest.fixture(autouse=True)

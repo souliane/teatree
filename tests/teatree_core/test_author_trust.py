@@ -31,7 +31,7 @@ _PUBLIC = "souliane/teatree"
 def _seed_known() -> None:
     TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
     TrustedIdentity.objects.get_or_create(platform="github", handle="trusted-bot")
-    TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+    TrustedIdentity.objects.get_or_create(platform="gitlab", handle="alice.example")
 
 
 def _public() -> AbstractContextManager[object]:
@@ -52,9 +52,9 @@ class TestTrustedIdentityManager(TestCase):
             ("Souliane", ""),
             ("SOULIANE", "github"),
             ("trusted-bot", "github"),
-            ("adrien.cossa", "gitlab"),
-            ("adrien.cossa", ""),
-            ("adrien.cossa", "github"),  # platform-tolerant: handle trusted on any forge
+            ("alice.example", "gitlab"),
+            ("alice.example", ""),
+            ("alice.example", "github"),  # platform-tolerant: handle trusted on any forge
         ):
             with self.subTest(handle=handle, platform=platform):
                 assert TrustedIdentity.objects.is_trusted(handle, platform) is True
@@ -65,7 +65,7 @@ class TestTrustedIdentityManager(TestCase):
                 assert TrustedIdentity.objects.is_trusted(handle) is False
 
     def test_trusted_handles_union_lowercased(self) -> None:
-        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "trusted-bot", "adrien.cossa"}
+        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "trusted-bot", "alice.example"}
 
 
 class TestClassifyAuthorPublicRepo(TestCase):
@@ -76,7 +76,7 @@ class TestClassifyAuthorPublicRepo(TestCase):
         cases = (
             (_PUBLIC, "souliane", "github"),
             (_PUBLIC, "trusted-bot", "github"),
-            ("adrien.cossa/proj", "adrien.cossa", "gitlab"),
+            ("alice.example/proj", "alice.example", "gitlab"),
         )
         for slug, author, host_kind in cases:
             with self.subTest(author=author), _public():
@@ -114,8 +114,8 @@ class TestEmptyTableConfigFallback(TestCase):
     def test_empty_db_falls_back_to_user_identity_aliases(self) -> None:
         assert not TrustedIdentity.objects.exists()
         with patch("teatree.config.get_effective_settings") as mock_settings:
-            mock_settings.return_value.user_identity_aliases = ["souliane", "adrien.cossa"]
-            assert author_trust.trusted_handles() == {"souliane", "adrien.cossa"}
+            mock_settings.return_value.user_identity_aliases = ["souliane", "alice.example"]
+            assert author_trust.trusted_handles() == {"souliane", "alice.example"}
 
     def test_config_fallback_classifies_public_author(self) -> None:
         with _public(), patch("teatree.config.get_effective_settings") as mock_settings:

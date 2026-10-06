@@ -719,6 +719,25 @@ class TestPlanRestrictedRepo:
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
 
+    def test_plan_restricted_unreadable_actions_read_is_indeterminate_not_red(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with (
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value=None),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.is_plan_restricted", return_value=True),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.plan_restricted_actions_verdict",
+                return_value="unreadable",
+            ),
+        ):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "required_checks_indeterminate"
+
     def test_not_plan_restricted_indeterminate_still_skips_closed(self) -> None:
         # A genuine (non-plan-restriction) indeterminate branch-protection read
         # must keep failing closed with the original reason — unchanged behaviour.

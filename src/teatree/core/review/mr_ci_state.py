@@ -7,11 +7,15 @@ triage scanner and the open-merge-request scanner cannot disagree about what
 "green" means.
 
 :data:`CI_BY_STATUS` is deliberately an ALLOWLIST rather than a
-green-or-else split. A cancelled, skipped or manual pipeline, and any status
+green-or-else split. A cancelled or manual pipeline, and any status
 nobody has seen, resolve to ``UNKNOWN`` — never satisfying a green and never
 naming a failure the author could act on — because a status outside the table
 is a status this code does not understand, and guessing which side of the line
 it falls on is how a not-passed pipeline gets read as passed.
+
+A ``skipped`` pipeline (every job excluded by ``rules:``) is settled, so this
+review-readiness vocabulary reads it as green. Whether it may MERGE is a separate
+question the merge gate answers from the project's own setting.
 """
 
 from typing import cast
@@ -29,6 +33,7 @@ GREEN_STATUSES = frozenset({"success", "succeeded", "passed"})
 #: The forge's pipeline vocabulary, reduced to the states the ladder reads.
 CI_BY_STATUS: dict[str, CiState] = {
     **dict.fromkeys(GREEN_STATUSES, CiState.GREEN),
+    "skipped": CiState.GREEN,
     "running": CiState.PENDING,
     "pending": CiState.PENDING,
     "created": CiState.PENDING,

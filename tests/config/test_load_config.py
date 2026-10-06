@@ -103,8 +103,8 @@ class TestDbTierGlobalResolution(TestCase):
         assert get_effective_settings().require_human_approval_to_answer is False
 
     def test_user_identity_aliases_db(self) -> None:
-        ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"])
-        assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
+        ConfigSetting.objects.set_value("user_identity_aliases", ["alice.work", "souliane", "alice.example"])
+        assert get_effective_settings().user_identity_aliases == ["alice.work", "souliane", "alice.example"]
 
     def test_clean_ignore_db(self) -> None:
         ConfigSetting.objects.set_value("clean_ignore", ["spike/*", "dev-override"])

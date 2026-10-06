@@ -45,7 +45,7 @@ _MOCK_OVERLAY = {"t3-teatree": CommandOverlay()}
 def _seed_known() -> None:
     TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
     TrustedIdentity.objects.get_or_create(platform="github", handle="trusted-bot")
-    TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+    TrustedIdentity.objects.get_or_create(platform="gitlab", handle="alice.example")
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:

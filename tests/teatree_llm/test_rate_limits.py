@@ -3,9 +3,9 @@ r"""The foundation rate-limit reader (``teatree.llm.rate_limits``).
 DB-free, network-free: every test drives a fake :class:`~teatree.llm.rate_limits.Transport`
 returning a canned ``(status, headers)`` pair, so the parsing is verified against the
 exact wire headers without a real ``/v1/messages`` call. A 200 and a 429 are asserted
-to parse ALIKE (both carry the rate-limit headers); only a non-{200,429} status or a
-transport error is a failure. The token is asserted to sign the request yet never
-appear on the returned snapshot.
+to parse ALIKE (both carry the rate-limit headers); a non-{200,429} status, a response
+with no unified rate-limit header, or a transport error is a failure. The token is
+asserted to sign the request yet never appear on the returned snapshot.
 """
 
 import datetime as dt
@@ -144,7 +144,7 @@ class TestHeaderParsing:
         assert throttled.overage.utilization == pytest.approx(0.95)
 
     def test_missing_headers_default_to_empty_and_none(self) -> None:
-        snap = _read(200, {})
+        snap = RateLimitSnapshot.from_headers({})
         assert snap.organization_id == ""
         assert snap.unified_5h_status == ""
         assert snap.unified_5h_reset is None
@@ -153,7 +153,7 @@ class TestHeaderParsing:
     def test_absent_utilization_is_unknown_not_zero(self) -> None:
         # 0.0 reads as "measured, fully free" — the report then shows 0% headroom used
         # for a window Anthropic never reported.
-        snap = _read(200, {})
+        snap = RateLimitSnapshot.from_headers({})
         assert snap.unified_5h_utilization is None
         assert snap.unified_7d_utilization is None
         assert snap.overage.utilization is None
@@ -188,7 +188,7 @@ class TestUnifiedVerdictHeaders:
         assert _read(200, {_UNIFIED_STATUS: "rejected", _CLAIM: claim}).representative_claim == claim
 
     def test_absent_verdict_headers_are_empty_strings(self) -> None:
-        snap = _read(200, {})
+        snap = RateLimitSnapshot.from_headers({})
         assert snap.unified_status == ""
         assert snap.representative_claim == ""
 
@@ -216,7 +216,7 @@ class TestOverageHeaders:
         assert _read(200, {_OVERAGE_IN_USE: raw}).overage.in_use is in_use
 
     def test_absent_overage_headers_yield_the_empty_state(self) -> None:
-        assert _read(200, {}).overage == OverageUsage()
+        assert RateLimitSnapshot.from_headers({}).overage == OverageUsage()
 
 
 class TestDefaultTransport:
@@ -244,6 +244,15 @@ class TestFailureModes:
         with pytest.raises(RateLimitProbeError):
             read_rate_limits("t", is_oauth=False, transport=boom)
 
+    @pytest.mark.parametrize("status", [200, 429])
+    @pytest.mark.parametrize("is_oauth", [True, False])
+    def test_an_answer_without_any_unified_header_raises_instead_of_reading_healthy(
+        self, status: int, *, is_oauth: bool
+    ) -> None:
+        bare = {_ORG: "org-abc123", _RETRY_AFTER: "60", "content-type": "application/json"}
+        with pytest.raises(RateLimitProbeError, match="no anthropic-ratelimit-unified"):
+            _read(status, bare, is_oauth=is_oauth)
+
 
 class TestRequestSigningAndTokenSafety:
     def test_token_signs_the_request_but_is_absent_from_the_snapshot(self) -> None:
@@ -253,16 +262,30 @@ class TestRequestSigningAndTokenSafety:
         assert "sk-super-secret" not in repr(snapshot), "the token must never be carried on the snapshot"
 
     def test_oauth_probe_sends_the_beta_header_and_api_key_probe_does_not(self) -> None:
-        oauth = _RecordingTransport(ProbeResponse(status_code=200, headers={}))
+        oauth = _RecordingTransport(ProbeResponse(status_code=200, headers=_FULL_HEADERS))
         read_rate_limits("t", is_oauth=True, transport=oauth)
         assert oauth.headers["anthropic-beta"] == "oauth-2025-04-20"
 
-        api_key = _RecordingTransport(ProbeResponse(status_code=200, headers={}))
+        api_key = _RecordingTransport(ProbeResponse(status_code=200, headers=_FULL_HEADERS))
         read_rate_limits("t", is_oauth=False, transport=api_key)
         assert "anthropic-beta" not in api_key.headers
 
+    def test_oauth_probe_carries_the_claude_code_system_prompt_and_api_key_probe_does_not(self) -> None:
+        # Without it a subscription token's probe is answered with a bare 429 and no unified headers.
+        oauth = _RecordingTransport(ProbeResponse(status_code=200, headers=_FULL_HEADERS))
+        read_rate_limits("t", is_oauth=True, transport=oauth)
+        assert oauth.body["system"] == "You are Claude Code, Anthropic's official CLI for Claude."
+
+        api_key = _RecordingTransport(ProbeResponse(status_code=200, headers=_FULL_HEADERS))
+        read_rate_limits("t", is_oauth=False, transport=api_key)
+        assert "system" not in api_key.body
+
+        metered = _RecordingTransport(ProbeResponse(status_code=200, headers=_METERED_HEADERS))
+        read_api_key_status("sk", transport=metered)
+        assert "system" not in metered.body
+
     def test_probe_body_is_a_one_token_ping(self) -> None:
-        transport = _RecordingTransport(ProbeResponse(status_code=200, headers={}))
+        transport = _RecordingTransport(ProbeResponse(status_code=200, headers=_FULL_HEADERS))
         read_rate_limits("t", is_oauth=False, transport=transport)
         assert transport.body["model"] == "claude-sonnet-5-5"
         assert transport.body["max_tokens"] == 1

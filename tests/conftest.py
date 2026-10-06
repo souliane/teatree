@@ -25,11 +25,13 @@ from teatree.core.admission import machine_load
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
+from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
 from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
+from teatree.loop.scanners.review_nag_mention import reset_unresolved_mention_warnings
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -99,6 +101,18 @@ def _strip_git_hook_env() -> None:
 
 
 _strip_git_hook_env()
+
+
+@pytest.fixture
+def readable_ship_tree() -> Iterator[None]:
+    """Answer the ship and CLEAR gates' git evidence reads with a clean tree, for a fixture worktree git cannot read."""
+    with (
+        patch("teatree.utils.git.head_sha", return_value="f" * 40),
+        patch("teatree.utils.git.branch_diff", return_value=""),
+        patch("teatree.visual_qa.changed_files", return_value=[]),
+        patch("teatree.core.management.commands._clear_preflight.resolve_clear_changed_files", return_value=[]),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -256,16 +270,26 @@ def _reset_stripped_key_warnings() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_unresolved_mention_warnings() -> Iterator[None]:
+    """The unresolved re-ask mention warning is once-per-process, so a leaked pair silences a later test's."""
+    reset_unresolved_mention_warnings()
+    yield
+    reset_unresolved_mention_warnings()
+
+
+@pytest.fixture(autouse=True)
 def _reset_declaration_caches() -> Iterator[None]:
     """Drop the process-memoised repo declarations so one test's config never answers another's."""
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_unmatched_head_reports()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
     container_is_the_sandbox.cache_clear()
     yield
     reset_single_branch_cache()
     reset_ci_memo()
+    reset_unmatched_head_reports()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
     container_is_the_sandbox.cache_clear()

@@ -102,6 +102,11 @@ class NoopMessagingBackend:
         return ""
 
     @staticmethod
+    def resolve_usergroup_id(handle: str) -> str:
+        _ = handle
+        return ""
+
+    @staticmethod
     def auth_test() -> RawAPIDict:
         return {}
 

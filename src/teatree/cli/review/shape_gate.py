@@ -36,7 +36,7 @@ forge-neutral — future GitHub PR support is a single-method extension
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
-from teatree.cli.review.guarded_read import guarded_read
+from teatree.core.modelkit.gate_verdict import guarded_read
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
@@ -59,7 +59,7 @@ def fetch_mr_author(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> str:
 
     A FAILED author read still returns ``""`` — failing closed here would break
     every on-behalf review post and every existing test stub — but it goes through
-    :func:`~teatree.cli.review.guarded_read.guarded_read`, so the failure is logged
+    :func:`~teatree.core.modelkit.gate_verdict.guarded_read`, so the failure is logged
     rather than silently reading as "not a colleague MR" (#3509).
     """
     cache_key = f"mr_author:{encoded_repo}:{mr}"

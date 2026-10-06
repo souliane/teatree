@@ -25,6 +25,8 @@ from teatree.core.management.commands._clear_branch_currency import check_clear_
 from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.core.overlay import OverlayReview
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 
 def _git(cwd: Path, *args: str) -> str:
     result = subprocess.run(

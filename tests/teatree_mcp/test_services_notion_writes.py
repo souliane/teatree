@@ -24,7 +24,7 @@ from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 from tests.teatree_mcp._call_tool_result import structured
 
 _ROOTS = "teatree.backends.notion.write_guard.notion_write_roots"
-_OWNER = "adrien.cossa"
+_OWNER = "alice.example"
 _REPLACE = "notion_replace"
 
 

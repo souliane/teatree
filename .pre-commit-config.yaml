@@ -26,6 +26,14 @@ repos:
         always_run: true
         stages: [commit]
 
+      - id: refuse-tracked-ignored-files
+        name: Refuse tracked files that a .gitignore rule matches
+        language: system
+        entry: scripts/hooks/refuse-tracked-ignored-files.sh
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+
       - id: refuse-public-push-with-leak
         name: Refuse pushing a privacy-leaking diff to a PUBLIC repo (#685)
         language: system
@@ -37,7 +45,7 @@ repos:
       - id: refuse-push-to-foreign-mr
         name: Refuse pushing to a branch that backs a teammate's open MR (#2211)
         language: system
-        entry: scripts/hooks/refuse-push-to-foreign-mr.sh
+        entry: scripts/hooks/branch-push-only.sh scripts/hooks/refuse-push-to-foreign-mr.sh
         pass_filenames: false
         always_run: true
         stages: [push]
@@ -385,7 +393,7 @@ repos:
       - id: eval-pinned-regressions
         name: Pinned-regressions eval lane (every past process failure pinned as a deterministic git/FSM check; token-free)
         language: system
-        entry: uv run t3 eval pinned-regressions
+        entry: scripts/hooks/branch-push-only.sh uv run t3 eval pinned-regressions
         pass_filenames: false
         always_run: true
         stages: [push]
@@ -516,21 +524,21 @@ repos:
       - id: ci-critical-parity
         name: CI-critical parity (never-lockout contract + capped conformance core + incremental push gate; path-scoped)
         language: system
-        entry: dev/push-gate.sh
+        entry: scripts/hooks/branch-push-only.sh dev/push-gate.sh
         pass_filenames: false
         always_run: true
         stages: [push]
       - id: doc-update-gate
         name: README/BLUEPRINT update gate (#1461)
         language: system
-        entry: uv run python scripts/hooks/check_doc_update.py
+        entry: scripts/hooks/branch-push-only.sh uv run python scripts/hooks/check_doc_update.py
         pass_filenames: false
         always_run: true
         stages: [push]
       - id: e2e-no-skip-gate
         name: E2E no-skip gate (no test.skip/only/fixme or // TODO in staged specs)
         language: system
-        entry: uv run python scripts/hooks/check_e2e_no_skip.py
+        entry: scripts/hooks/branch-push-only.sh uv run python scripts/hooks/check_e2e_no_skip.py
         pass_filenames: false
         always_run: true
         stages: [push]
@@ -551,7 +559,7 @@ repos:
       - id: comment-density
         name: Near-zero-comments gate (added comments must not restate the code)
         language: system
-        entry: uv run python scripts/hooks/check_comment_density.py
+        entry: scripts/hooks/branch-push-only.sh uv run python scripts/hooks/check_comment_density.py
         pass_filenames: false
         always_run: true
         stages: [push]
@@ -559,7 +567,7 @@ repos:
         name: ensure PR exists (no-orphan invariant)
         language: system
         # --all-packages: a member-dir `uv run` registers only t3-teatree, so no overlay's bot declaration is visible.
-        entry: uv run --all-packages t3 teatree pr ensure-pr
+        entry: scripts/hooks/branch-push-only.sh uv run --all-packages t3 teatree pr ensure-pr
         pass_filenames: false
         always_run: true
         stages: [push]

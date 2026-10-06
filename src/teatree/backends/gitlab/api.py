@@ -23,6 +23,7 @@ _ = (_MAX_PAGES, _resolve_token)  # re-exported for the tests/callers that read 
 
 # TTL constants for response caching (seconds)
 _TTL_PIPELINE = 60
+_TTL_PROJECT = 600
 _TTL_APPROVALS = 60
 _TTL_DISCUSSIONS = 120
 _TTL_ISSUE = 300
@@ -73,10 +74,13 @@ class GitLabAPI(GitLabHTTPClient):
 
         The ``None`` verdict is deliberately NOT cached (mirrors F4.5): a 404
         seen during a transient outage must not pin the slug as unresolvable for
-        the process lifetime — only a successfully-resolved project is cached.
+        the process lifetime — only a successfully-resolved project is cached, and only
+        for ``_TTL_PROJECT`` so a changed project setting reaches a long-running worker.
         """
-        if repo_path in self._project_cache:
-            return self._project_cache[repo_path]
+        cache_key = f"project:{repo_path}"
+        cached: ProjectInfo | None = self._get_cached(cache_key, _TTL_PROJECT)
+        if cached is not None:
+            return cached
 
         try:
             data = self.get_json(f"projects/{repo_path.replace('/', '%2F')}")
@@ -87,13 +91,15 @@ class GitLabAPI(GitLabHTTPClient):
         if not isinstance(data, dict):
             return None
 
+        skipped_merges = data.get("allow_merge_on_skipped_pipeline")
         info = ProjectInfo(
             project_id=_as_int(data["id"]),
             path_with_namespace=str(data["path_with_namespace"]),
             short_name=str(data["path"]),
             default_branch=str(data.get("default_branch") or "main"),
+            allow_merge_on_skipped_pipeline=skipped_merges if isinstance(skipped_merges, bool) else None,
         )
-        self._project_cache[repo_path] = info
+        self._set_cached(cache_key, info)
         return info
 
     def resolve_project_from_remote(self, repo_dir: str = ".") -> ProjectInfo | None:
@@ -286,22 +292,14 @@ class GitLabAPI(GitLabHTTPClient):
         data = self.get_json(f"merge_requests?{urlencode(query)}")
         return data if isinstance(data, list) else []
 
-    def get_mr_pipeline(self, project_id: int, mr_iid: int) -> dict[str, str | None]:
-        """Return the latest pipeline status and URL for an MR."""
-        cache_key = f"pipeline:{project_id}:{mr_iid}"
-        cached: dict[str, str | None] | None = self._get_cached(cache_key, _TTL_PIPELINE)
+    def get_mr_pipelines(self, project_id: int, mr_iid: int) -> list[RawMR]:
+        """The MR's pipelines, newest first — the same first page the merge gate reads."""
+        cache_key = f"pipelines:{project_id}:{mr_iid}"
+        cached: list[RawMR] | None = self._get_cached(cache_key, _TTL_PIPELINE)
         if cached is not None:
             return cached
-        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/pipelines?per_page=1")
-        result: dict[str, str | None]
-        if isinstance(data, list) and data:
-            pipeline = data[0]
-            result = {
-                "status": str(pipeline.get("status", "")),
-                "url": str(pipeline.get("web_url", "")),
-            }
-        else:
-            result = {"status": None, "url": None}
+        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/pipelines")
+        result = [entry for entry in data if isinstance(entry, dict)] if isinstance(data, list) else []
         self._set_cached(cache_key, result)
         return result
 

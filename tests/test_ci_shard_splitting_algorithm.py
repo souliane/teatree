@@ -9,10 +9,11 @@ invocation could silently regress the rebalance while every gate still passes:
     default chunk split, which is what turns a balanced ``dev/.test_durations`` into balanced shards.
 * ``--doctest-modules`` — the doctest items run in the SAME sharded lane, so their durations are
     measurable there (and their coverage counts toward the combined floor).
-* the scheduled ``--store-durations --clean-durations`` record — the daily lane is where the
+* the scheduled ``--store-durations --clean-durations`` record — the weekly lane is where the
     previously-unrecorded ``tests/quality`` + doctest durations are captured for the refresh PR, so
     the committed file stops ballasting them blindly. Recording must NOT happen on PR/push runs
-    (that would pay the store write on every PR); it is gated to the ``schedule`` event only.
+    (that would pay the store write on every PR); it is gated to the weekly cron and an explicit
+    refresh dispatch.
 
 Locking the invocation, not the balance itself: the balance is data (``dev/.test_durations``, kept
 fresh by the scheduled ``refresh-durations`` job on representative CI hardware), but the flags that
@@ -22,7 +23,10 @@ consume that data are code and belong under a regression guard.
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
+
+from tests._actions_workflow import CI_WEEKLY_CRON, github_context, render
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
@@ -66,9 +70,20 @@ class TestScheduledRunRecordsDurations:
             "unrecorded tests/quality + doctest items) for the refresh-durations PR (#3160)."
         )
 
-    def test_recording_is_gated_to_the_schedule_event_only(self) -> None:
-        run = _shard_run()
-        assert "github.event_name == 'schedule'" in run, (
-            "Duration recording must be gated to the daily schedule; recording on every PR/push "
-            "would pay the store write on the critical path (#3160)."
+    @pytest.mark.parametrize(
+        ("github", "inputs", "records"),
+        [
+            (github_context("schedule", schedule=CI_WEEKLY_CRON), {}, True),
+            (github_context("workflow_dispatch"), {"refresh_durations": True}, True),
+            (github_context("workflow_dispatch"), {"refresh_durations": False}, False),
+            (github_context("push"), {}, False),
+            (github_context("pull_request", ref="refs/pull/42/merge"), {}, False),
+        ],
+        ids=["weekly", "refresh-dispatch", "plain-dispatch", "push", "pull-request"],
+    )
+    def test_only_a_refresh_run_records(self, github: dict[str, Any], inputs: dict[str, Any], *, records: bool) -> None:
+        rendered = str(render(_shard_run(), {"github": github, "inputs": inputs}))
+        assert ("--store-durations --clean-durations" in rendered) is records, (
+            "Duration recording belongs to the weekly cron and an explicit refresh dispatch; recording "
+            "on every PR/push would pay the store write on the critical path (#3160)."
         )
