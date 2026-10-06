@@ -69,6 +69,15 @@ class TestRoutingToTheOwningDomain:
 
         assert replaced == [(str(clone / "deploy" / "t3"), [str(clone / "deploy" / "t3"), "mcp", "serve"])]
 
+    def test_delegation_keeps_the_read_only_flag(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A delegating install must not trade the read-only server for the full one."""
+        replaced: list[list[str]] = []
+        monkeypatch.setattr(os, "execv", lambda _path, argv: replaced.append(argv))
+
+        delegate_to_owning_domain(["--read-only"])
+
+        assert replaced == [[str(clone / "deploy" / "t3"), "mcp", "serve", "--read-only"]]
+
     def test_delegation_declares_a_container_side_cwd(self, clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without it the wrapper REFUSES: a client's cwd is routinely a checkout it cannot see.
 

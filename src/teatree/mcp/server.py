@@ -8,15 +8,19 @@ wrapper crosses into Django's synchronous ORM through ``sync_to_async`` (the
 framework-standard async-safe boundary) and returns the already-serialized JSON
 the underlying function produced.
 
-The surface is NOT read-only. Alongside the read tools it exposes gate-preserving
+The full surface is NOT read-only. Alongside the read tools it exposes gate-preserving
 write tools (:mod:`teatree.mcp.write_tools` — ``pr_create``, ``pr_merge``,
 ``notify_user``, ``config_setting_set`` … and the per-service forge/slack writes):
 each write handler calls the exact seam the corresponding ``t3`` CLI command
 calls, so every gate (shipping-phase FSM, sanctioned-merge keystone, on-behalf
-verdict, leak scrub / send-proxy) fires identically on both surfaces — the
-orchestrator-decides / loop-executes topology is preserved through the seams, not
-by withholding writes. The read tools carry ``read_only_hint``; the write tools
-name their gated seam in :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
+verdict, leak scrub / send-proxy) fires identically on both surfaces. The read
+tools carry ``read_only_hint``; the write tools name their gated seam in
+:data:`teatree.mcp.write_tools.TOOL_SEAMS`.
+
+``build_server(read_only=True)`` (``t3 mcp serve --read-only``, what a headless
+phase without the ``mcp_write`` capability launches) registers only the tools
+annotated ``read_only_hint`` — every core, service, mailbox and overlay tool passes
+the one registration choke point, and a tool with no annotation counts as a write.
 
 The live agent mailbox is a separate, room-scoped communication surface, present
 only when the runner binds this MCP child to a running TeaTree task.
@@ -74,11 +78,15 @@ class _NoShadowServer(MCPServer):
     absent from the surface while its instruction line still advertises it, and
     an overlay that believes it replaced a built-in has in fact replaced nothing.
     Refusing at build time is loud, deterministic, and names both claimants.
+
+    Every tool reaches the surface through :meth:`add_tool`, so it is also where a
+    *read_only* server withholds each tool not annotated ``read_only_hint``.
     """
 
-    def __init__(self, name: str, *, instructions: str) -> None:
+    def __init__(self, name: str, *, instructions: str, read_only: bool) -> None:
         super().__init__(name, instructions=instructions)
         self.registered_names: set[str] = set()
+        self.read_only = read_only
 
     @override
     def add_tool(
@@ -92,6 +100,8 @@ class _NoShadowServer(MCPServer):
         meta: dict[str, Any] | None = None,
         structured_output: bool | None = None,
     ) -> None:
+        if self.read_only and not (annotations and annotations.read_only_hint):
+            return
         # A callable carrying no ``__name__`` (a partial, a callable object) has no name
         # to collide on here; mcp's own name derivation refuses it a line later.
         tool_name = name or getattr(fn, "__name__", "")
@@ -195,6 +205,17 @@ def overlay_tool_groups(declared: frozenset[Service]) -> list[tuple[str, McpTool
     ]
 
 
+def _write_tool_names(overlay_groups: list[tuple[str, McpToolGroup]]) -> frozenset[str]:
+    overlay_writes = (tool.name for _, group in overlay_groups for tool in group.tools if tool.is_write)
+    return frozenset(write_tools.TOOL_SEAMS).union(agent_mailbox.TOOL_SEAMS, overlay_writes)
+
+
+def _read_only_instructions(instructions: str, *, withheld: frozenset[str]) -> str:
+    withheld_lines = tuple(f"- {name}(" for name in withheld)
+    kept = (line for line in instructions.split("\n") if not line.startswith(withheld_lines))
+    return "\n".join(kept) + _READ_ONLY_NOTICE
+
+
 def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
     """Every write tool that names a gated seam — core's plus every admitted overlay's.
 
@@ -217,6 +238,11 @@ _PREAMBLE = (
     "(see the write-tool section at the end).\n"
     "\n"
     "Read tools:\n"
+)
+
+_READ_ONLY_NOTICE = (
+    "\n\nThis server is read-only for this dispatch: no write tool is registered. "
+    "Return what you would have written in your result envelope."
 )
 
 
@@ -518,12 +544,13 @@ _FACTORY_SCORE_TOOL = _ReadTool(
 )
 
 
-def build_server() -> MCPServer:
+def build_server(*, read_only: bool = False) -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
+    *read_only* withholds every write tool and drops its line from the instructions.
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
@@ -552,7 +579,9 @@ def build_server() -> MCPServer:
         )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
     )
-    server = _NoShadowServer("teatree", instructions=instructions)
+    if read_only:
+        instructions = _read_only_instructions(instructions, withheld=_write_tool_names(overlay_groups))
+    server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only)
     for tool in read_tools:
         server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):

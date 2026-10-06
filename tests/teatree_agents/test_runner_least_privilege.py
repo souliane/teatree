@@ -9,7 +9,8 @@ sanctioned user-contact path is ``needs_user_input`` → DeferredQuestion → Sl
 Second, the per-phase complement: a verdict-producing review-phase dispatch keeps the
 shell it needs to cold-check-out the head and record its verdict, and is UNABLE to
 mutate source (``Write``/``Edit``), while a work phase's capability tools
-(Read/Write/Edit/Bash) are untouched by the floor.
+(Read/Write/Edit/Bash) are untouched by the floor. Third, the teatree MCP server: only
+a phase holding ``mcp_write`` launches it with its write tools, and no other server loads.
 """
 
 from django.test import TestCase
@@ -79,21 +80,13 @@ class TestBuildOptionsHarnessPin(TestCase):
         assert "Write" in options.disallowed_tools
         assert "Edit" in options.disallowed_tools
 
-    def test_review_dispatch_reaches_the_teatree_mcp_review_tools(self) -> None:
-        # Reviewing is a non-reader phase, so — unlike the #116 reader lockdown —
-        # it loads the default settings sources (the project `.mcp.json` teatree MCP
-        # server) with no strict-MCP restriction. The review MCP tools (github_pr_diff
-        # / review_post_comment / task_complete) therefore reach the spawn, and none
-        # are named in the built-in-only disallow list.
+    def test_review_dispatch_reaches_the_teatree_mcp_reads_but_not_its_writes(self) -> None:
+        # A reviewer records its verdict through the envelope or the shell, so its
+        # teatree server is the read-only one; the reads are never name-denied.
         options = self._options_for("reviewing")
         assert options.setting_sources is None
-        assert options.strict_mcp_config is False
-        for tool in (
-            "mcp__teatree__github_pr_diff",
-            "mcp__teatree__review_post_comment",
-            "mcp__teatree__task_complete",
-        ):
-            assert tool not in options.disallowed_tools, tool
+        assert list(options.mcp_servers["teatree"]["args"]) == ["mcp", "serve", "--read-only"]
+        assert "mcp__teatree__github_pr_diff" not in options.disallowed_tools
 
     def test_every_verdict_review_dispatch_comes_up_with_a_shell(self) -> None:
         # End-to-end regression for the live outage: two auto-dispatched
@@ -135,7 +128,58 @@ class TestBuildOptionsHarnessPin(TestCase):
             server = self._options_for(phase).mcp_servers.get("teatree")
             assert server is not None, phase
             assert server["command"] == "t3"
-            assert list(server["args"]) == ["mcp", "serve"]
+            assert list(server["args"])[:2] == ["mcp", "serve"]
+
+
+class TestTeatreeMcpLeastPrivilege(TestCase):
+    """A phase without the ``mcp_write`` capability launches the read-only teatree server."""
+
+    READ_ONLY_PHASES = (
+        "scanning_news",
+        "triage_assessing",
+        "answering",
+        "directive_interpreting",
+        "critic_reviewing",
+        "requesting_review",
+        "reviewing",
+        "codex_reviewing",
+        "codex_adversarial_reviewing",
+        "e2e_reviewing",
+        "planning",
+        "scoping",
+        "bughunt",
+        "dogfood_smoke",
+        "eval_local",
+        "backlog_sweep",
+        "retro",
+        "no-such-phase",
+    )
+    GRANTED_PHASES = ("coding", "testing", "e2e", "debugging", "shipping", "architectural_review")
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _options_for(self, phase: str):
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        return _build_options(task, "ctx", phase=phase, skills=[])
+
+    def test_a_read_only_phase_launches_the_read_only_server(self) -> None:
+        for phase in self.READ_ONLY_PHASES:
+            with self.subTest(phase=phase):
+                options = self._options_for(phase)
+                assert list(options.mcp_servers["teatree"]["args"]) == ["mcp", "serve", "--read-only"]
+
+    def test_a_granted_phase_launches_the_full_server(self) -> None:
+        for phase in self.GRANTED_PHASES:
+            with self.subTest(phase=phase):
+                assert list(self._options_for(phase).mcp_servers["teatree"]["args"]) == ["mcp", "serve"]
+
+    def test_every_headless_spawn_loads_only_the_injected_server(self) -> None:
+        for phase in (*self.READ_ONLY_PHASES, *self.GRANTED_PHASES):
+            with self.subTest(phase=phase):
+                assert self._options_for(phase).strict_mcp_config is True
 
 
 class TestWritePermissionMode(TestCase):

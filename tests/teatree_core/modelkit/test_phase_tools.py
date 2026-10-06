@@ -2,10 +2,22 @@ import pytest
 
 from teatree.core.modelkit.phase_tools import (
     ALL_TOOLS,
+    MCP_WRITE,
     VERDICT_REVIEW_PHASES,
     disallowed_tools_for_phase,
     tools_for_phase,
 )
+from teatree.core.modelkit.phases import KNOWN_PHASES
+
+MCP_WRITE_PHASES = frozenset({"coding", "testing", "e2e", "debugging", "shipping", "architectural_review"})
+
+
+class TestMcpWriteGrant:
+    def test_only_the_authoring_and_shipping_phases_may_write_through_mcp(self) -> None:
+        assert {phase for phase in KNOWN_PHASES if MCP_WRITE in tools_for_phase(phase)} == MCP_WRITE_PHASES
+
+    def test_an_unknown_phase_gets_no_mcp_write(self) -> None:
+        assert MCP_WRITE not in tools_for_phase("no-such-phase")
 
 
 class TestToolsForPhase:

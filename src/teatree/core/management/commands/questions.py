@@ -37,6 +37,7 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
+from teatree.core.session_identity import is_agent_sdk_process
 from teatree.core.table_output import print_table
 
 
@@ -239,6 +240,7 @@ class Command(MachineOutputCommand):
         self,
         question_id: int,
         text: Annotated[str, typer.Argument(help="The user's answer.")],
+        *,
         resolver_id: Annotated[
             str,
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
@@ -247,6 +249,7 @@ class Command(MachineOutputCommand):
             list[int] | None,
             typer.Option("--also", help="Another question this same answer resolves (repeatable)."),
         ] = None,
+        agent_surface: Annotated[bool, typer.Option("--agent-surface", hidden=True)] = False,
     ) -> str:
         """Resolve pending questions with a user answer (resumes any parked headless task).
 
@@ -265,6 +268,12 @@ class Command(MachineOutputCommand):
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
+        # An owner-only decision (directive ratification) must tell the owner's terminal from an agent.
+        resolved_via = (
+            DeferredQuestion.ResolvedVia.AGENT
+            if agent_surface or is_agent_sdk_process()
+            else DeferredQuestion.ResolvedVia.LOCAL
+        )
         answered: list[int] = []
         skipped: list[int] = []
         for target in [question_id, *(also or [])]:
@@ -274,7 +283,7 @@ class Command(MachineOutputCommand):
                     if row is None:
                         skipped.append(target)
                         continue
-                    row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
+                    row.resolved_via = resolved_via
                     row.save(update_fields=["resolved_via"])
                     DeferredQuestionAudit.objects.create(
                         question=row,

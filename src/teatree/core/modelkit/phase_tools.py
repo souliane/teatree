@@ -22,6 +22,9 @@ from typing import Final
 
 from teatree.core.modelkit.phases import normalize_phase
 
+#: Grants the teatree MCP server's write tools; a phase without it gets ``t3 mcp serve --read-only``.
+MCP_WRITE: Final = "mcp_write"
+
 #: Every capability tool name Lane B can expose. A phase's allowance is a subset;
 #: the complement (universe minus allowance) is the disallow list Lane A injects.
 ALL_TOOLS: Final[frozenset[str]] = frozenset(
@@ -36,6 +39,7 @@ ALL_TOOLS: Final[frozenset[str]] = frozenset(
         "dispatch_subtask",
         "recall_memory",
         "record_attempt",
+        MCP_WRITE,
     }
 )
 
@@ -94,12 +98,10 @@ ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 #: verify-gates`` / ``git`` / ``git log -S`` archaeology, and RECORD the verdict via
 #: ``t3 <overlay> review record`` / ``t3 review post-comment`` — with NO write/edit (a review
 #: never mutates source), so they stay least-privilege while being ABLE to produce a
-#: merge_safe/hold verdict (F4). The teatree MCP review
-#: tools (``mcp__teatree__github_pr_diff`` / ``review_post_comment`` /
-#: ``task_complete``) are MCP-server tools, not built-in capabilities, so they are
-#: never in the disallow complement and reach the spawn independently of this table.
-#: An unknown phase falls back to read-only (:func:`tools_for_phase`) —
-#: deny-by-default, so a new phase never silently inherits shell/write until it is
+#: merge_safe/hold verdict (F4). The teatree MCP server's read tools reach every
+#: phase that mounts it; its write tools need :data:`MCP_WRITE`, which only the
+#: authoring phases and ``shipping`` hold. An unknown phase falls back to read-only
+#: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently inherits shell/write until it is
 #: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
 #: explicit entry here (the ``test_registry_parity`` totality lane), so the
 #: read-only fallback is defense-in-depth for a genuinely unregistered phase, never
@@ -130,7 +132,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # finds the real core seam and drafts a sketch, never edits or shells out.
     "directive_interpreting": _READ_ONLY | _WEB,
     "bughunt": _READ_ONLY | {"shell", "dispatch_subtask"},
-    "shipping": _READ_ONLY | {"shell", "record_attempt"},
+    "shipping": _READ_ONLY | {"shell", "record_attempt", MCP_WRITE},
     "answering": _READ_ONLY | _WEB,
     "retro": _READ_ONLY | _WRITE,
     # Scanner-dispatched phases (#3386): a loop scanner writes these directly to
@@ -152,7 +154,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # (``_resolve_task_cwd``), which the write tools may NOT mutate —
     # ``core.gates.main_clone_guard`` denies an Edit/Write landing there, so the
     # authoring happens in the worktree the phase cuts off that clone.
-    "architectural_review": _READ_ONLY | _WEB | _WRITE | {"shell"},
+    "architectural_review": _READ_ONLY | _WEB | _WRITE | {"shell", MCP_WRITE},
     # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` to run
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.

@@ -24,11 +24,14 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
+from hooks.scripts.session_lane import LANE_SDK, session_lane
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import (
+    AGENT_SDK_ENV_VARS,
     SESSION_ID_ENV_VARS,
     current_session_id,
     current_session_pid,
+    is_agent_sdk_process,
     session_id_from_env,
 )
 from teatree.loop.session_identity import current_session_id as loop_entry_point
@@ -388,3 +391,33 @@ class TestLoopEntryPointCannotBePoisonedByAnImportUnderPatch:
             assert loop_entry_point() == "patched-sess"
         with patch.dict(os.environ, {"T3_LOOP_SESSION_ID": "env-sess"}, clear=True):
             assert loop_entry_point() == "env-sess"
+
+
+_HARNESS_ENVS = (
+    {},
+    {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"},
+    {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"},
+    {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"},
+    {"CLAUDE_CODE_ENTRYPOINT": " SDK-ts "},
+    {"CLAUDE_AGENT_SDK_VERSION": "0.2.161"},
+    {"CLAUDE_AGENT_SDK_VERSION": "  "},
+    {"CLAUDE_AGENT_SDK_VERSION": "0.2.161", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"},
+)
+
+
+class TestIsAgentSdkProcess:
+    """The src reading of the harness env contract agrees with the hooks' one."""
+
+    @pytest.mark.parametrize("env", _HARNESS_ENVS)
+    def test_agrees_with_the_hook_lane_reader(self, env: dict[str, str]) -> None:
+        with patch.dict(os.environ, env, clear=True):
+            assert is_agent_sdk_process(env) is (session_lane() == LANE_SDK)
+
+    def test_the_contract_names_both_signature_variables(self) -> None:
+        assert set(AGENT_SDK_ENV_VARS) == {"CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT"}
+
+    def test_an_sdk_spawn_is_an_agent(self) -> None:
+        assert is_agent_sdk_process({"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}) is True
+
+    def test_a_terminal_is_not_an_agent(self) -> None:
+        assert is_agent_sdk_process({}) is False

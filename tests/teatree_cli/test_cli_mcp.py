@@ -50,7 +50,7 @@ class TestServeCommand:
                 patch("teatree.cli.mcp.ensure_django"),
                 patch(
                     "teatree.mcp.server.build_server",
-                    side_effect=lambda: factories.append(services_notion._factory_registry.factory),
+                    side_effect=lambda **_: factories.append(services_notion._factory_registry.factory),
                 ),
             ):
                 runner.invoke(_app, [])
@@ -69,8 +69,20 @@ class TestServeCommand:
 
         assert result.exit_code == 0
         ensure_mock.assert_called_once_with()
-        build_mock.assert_called_once_with()
+        build_mock.assert_called_once_with(read_only=False)
         build_mock.return_value.run.assert_called_once_with("stdio")
+
+    def test_the_read_only_flag_reaches_the_server_and_the_delegation(self) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.cli.mcp.delegate_to_owning_domain") as delegate_mock,
+            patch("teatree.mcp.server.build_server") as build_mock,
+        ):
+            result = runner.invoke(_app, ["--read-only"])
+
+        assert result.exit_code == 0
+        delegate_mock.assert_called_once_with(["--read-only"])
+        build_mock.assert_called_once_with(read_only=True)
 
 
 class TestBrowserDiagnosisCommand:

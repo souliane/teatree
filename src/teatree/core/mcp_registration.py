@@ -27,6 +27,8 @@ MCP_JSON_FILENAME = ".mcp.json"
 TEATREE_MCP_SERVER_NAME = "teatree"
 EXPECTED_COMMAND = "t3"
 EXPECTED_ARGS = ("mcp", "serve")
+#: Appended for a dispatch whose phase may not write through the server.
+READ_ONLY_ARG = "--read-only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +110,7 @@ __all__ = [
     "EXPECTED_ARGS",
     "EXPECTED_COMMAND",
     "MCP_JSON_FILENAME",
+    "READ_ONLY_ARG",
     "TEATREE_MCP_SERVER_NAME",
     "McpRegistrationOutcome",
     "mcp_json_path",

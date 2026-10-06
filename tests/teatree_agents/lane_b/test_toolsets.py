@@ -139,8 +139,14 @@ class TestHardDenyWithinAssembledToolsets:
 class TestMcpHonoursEmptyPhaseAllowance:
     def _pin_sentinel_mcp(self, monkeypatch: pytest.MonkeyPatch) -> AbstractToolset[None]:
         sentinel: AbstractToolset[None] = CombinedToolset([])
-        monkeypatch.setattr(toolsets_module, "build_mcp_toolsets", lambda: [sentinel])
+        monkeypatch.setattr(toolsets_module, "build_mcp_toolsets", lambda **_: [sentinel])
         return sentinel
+
+    def test_the_mounted_server_matches_the_phase_grant(self) -> None:
+        for phase, read_only in (("reviewing", True), ("planning", True), ("shipping", False), ("coding", False)):
+            with patch.object(toolsets_module, "build_mcp_toolsets", return_value=[]) as built:
+                build_lane_b_toolsets(LaneBToolConfig(phase=phase))
+            built.assert_called_once_with(read_only=read_only)
 
     def test_none_phase_gets_no_mcp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # short_describe maps to the empty (NON-None) allowance — it may call NOTHING,
@@ -252,7 +258,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         (home := self.scratch / "empty-home").mkdir()
         for patcher in (
             patch.dict(os.environ, {"HOME": str(home)}),
-            patch.object(toolsets_module, "build_mcp_toolsets", list),
+            patch.object(toolsets_module, "build_mcp_toolsets", return_value=[]),
             patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _REPO_SKILLS),
         ):
             patcher.start()

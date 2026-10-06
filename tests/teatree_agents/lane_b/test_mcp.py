@@ -1,12 +1,34 @@
+import sys
+from dataclasses import dataclass
+from types import SimpleNamespace
+
 import pytest
 
 from teatree.agents.lane_b import mcp
 
 
+@dataclass(frozen=True)
+class _FakeStdio:
+    command: str
+    args: list[str]
+
+
+@pytest.mark.parametrize(("read_only", "args"), [(True, ["mcp", "serve", "--read-only"]), (False, ["mcp", "serve"])])
+def test_the_launched_server_matches_the_phase_grant(
+    monkeypatch: pytest.MonkeyPatch, *, read_only: bool, args: list[str]
+) -> None:
+    monkeypatch.setattr(mcp, "mcp_client_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "pydantic_ai.mcp", SimpleNamespace(MCPServerStdio=_FakeStdio))
+
+    [server] = mcp.build_mcp_toolsets(read_only=read_only)
+
+    assert (server.command, server.args) == ("t3", args)
+
+
 class TestMcpToolsets:
     def test_degrades_to_empty_when_client_absent(self, monkeypatch) -> None:
         monkeypatch.setattr(mcp, "mcp_client_available", lambda: False)
-        assert mcp.build_mcp_toolsets() == []
+        assert mcp.build_mcp_toolsets(read_only=True) == []
 
     def test_present_but_unusable_client_degrades_instead_of_crashing(self, monkeypatch) -> None:
         # `pydantic-ai-slim[mcp]` resolves `fastmcp-slim`, whose client imports
@@ -17,23 +39,7 @@ class TestMcpToolsets:
         # that name exists".
         monkeypatch.setattr(mcp, "find_spec", lambda _name: object())
         assert mcp.mcp_client_available() is False
-        assert mcp.build_mcp_toolsets() == []
+        assert mcp.build_mcp_toolsets(read_only=False) == []
 
-    def test_command_default_is_the_teatree_read_only_server(self) -> None:
+    def test_command_default_is_the_teatree_server(self) -> None:
         assert mcp.TEATREE_MCP_STDIO_COMMAND == ("t3", "mcp", "serve")
-
-    @pytest.mark.skipif(not mcp.mcp_client_available(), reason="pydantic_ai MCP client (fastmcp) not installed")
-    def test_builds_a_stdio_server_when_client_present(self, monkeypatch) -> None:
-        import pydantic_ai.mcp as pai_mcp  # noqa: PLC0415 — module import fails without the fastmcp extra; guarded by skipif.
-
-        captured: dict = {}
-
-        class _FakeStdio:
-            def __init__(self, command: str, *, args: list[str]) -> None:
-                captured["command"] = command
-                captured["args"] = args
-
-        monkeypatch.setattr(pai_mcp, "MCPServerStdio", _FakeStdio)
-        toolsets = mcp.build_mcp_toolsets(command=("t3", "mcp", "serve"))
-        assert len(toolsets) == 1
-        assert captured == {"command": "t3", "args": ["mcp", "serve"]}
