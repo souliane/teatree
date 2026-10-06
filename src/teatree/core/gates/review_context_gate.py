@@ -53,11 +53,17 @@ def is_complete(context: ReviewContext) -> bool:
     diff. An empty or partial record does not satisfy the gate — recording the
     artifact must mean the work was done, not merely that the command ran.
     """
-    work_item = str(context.get("work_item", "")).strip()
+    return not missing_review_context_fields(context)
+
+
+def missing_review_context_fields(context: ReviewContext) -> list[str]:
     documents = context.get("documents") or []
-    analysis = str(context.get("analysis", "")).strip()
-    has_documents = isinstance(documents, list) and any(str(d).strip() for d in documents)
-    return bool(work_item) and has_documents and bool(analysis)
+    present = {
+        "work_item": bool(str(context.get("work_item", "")).strip()),
+        "documents": isinstance(documents, list) and any(str(d).strip() for d in documents),
+        "analysis": bool(str(context.get("analysis", "")).strip()),
+    }
+    return [field for field, ok in present.items() if not ok]
 
 
 def check_review_context(ticket: "Ticket") -> None:

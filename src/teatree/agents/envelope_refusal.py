@@ -25,7 +25,15 @@ The refusal itself stays: a success you cannot parse is not evidence of success.
 What this module makes possible is a BOUNDED, satisfiable correction of it.
 """
 
-from teatree.agents.result_schema import conditional_evidence_for_phase, required_evidence_for_phase
+from collections.abc import Mapping, Sequence
+from typing import cast
+
+from teatree.agents.result_schema import (
+    RESULT_JSON_SCHEMA,
+    JSONSchema,
+    conditional_evidence_for_phase,
+    required_evidence_for_phase,
+)
 
 #: Prefix the agent runner stamps on a run that emitted no JSON object at all.
 NO_ENVELOPE_PREFIX = "no_result_envelope: "
@@ -60,6 +68,12 @@ MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
 #: the run it was supposed to name usually exists and it named the wrong thing.
 MALFORMED_TICKET_SWEEP_PREFIX = "malformed ticket_sweep: "
 
+#: Prefixes the reviewing recorders stamp on a returned ``review_context`` / ``anti_vacuity``
+#: block they cannot record. Their tails name keys, never a phrase ``classify_failure`` reads
+#: as another kind (``unexpected keys``, ``missing required evidence``).
+REVIEW_CONTEXT_REFUSAL_PREFIX = "review context recording refused: "
+ANTI_VACUITY_REFUSAL_PREFIX = "anti-vacuity recording refused: "
+
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
 #: failure, a review verdict the reviewer legitimately withheld).
@@ -71,6 +85,17 @@ _RECORDER_REFUSAL_MARKERS = (
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
     MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
     MALFORMED_TICKET_SWEEP_PREFIX.strip().casefold(),
+    REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
+    ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
+)
+
+#: The recorder refusals a REVIEWER fixes by re-emitting its envelope. ``missing required
+#: evidence`` is left out: a reviewing run that returned no verdict withheld a judgement.
+_REVIEW_SHAPE_REFUSAL_MARKERS = (
+    "unexpected keys",
+    MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+    REVIEW_CONTEXT_REFUSAL_PREFIX.strip().casefold(),
+    ANTI_VACUITY_REFUSAL_PREFIX.strip().casefold(),
 )
 
 
@@ -87,6 +112,22 @@ def is_recorder_refusal(error: str) -> bool:
     """Whether *error* is a RECORDER-side refusal of a parsed-but-unusable envelope."""
     haystack = error.casefold()
     return any(marker in haystack for marker in _RECORDER_REFUSAL_MARKERS)
+
+
+def is_review_shape_refusal(error: str) -> bool:
+    """Whether *error* refused a reviewer's envelope for a misnamed, misplaced or malformed key."""
+    haystack = error.casefold()
+    return any(marker in haystack for marker in _REVIEW_SHAPE_REFUSAL_MARKERS)
+
+
+def returned_block_refusal(prefix: str, block: str, raw: Mapping[str, object], problems: Sequence[str]) -> str:
+    """The refusal of a returned *block*: its *problems*, plus any key the schema's *block* does not take."""
+    properties = cast("JSONSchema", RESULT_JSON_SCHEMA["properties"])
+    expected = list(cast("JSONSchema", cast("JSONSchema", properties[block])["properties"]))
+    named = list(problems)
+    if unknown := sorted(set(raw) - set(expected)):
+        named.append(f"unknown keys {', '.join(unknown)} — {block} takes only {', '.join(expected)}")
+    return prefix + "; ".join(named)
 
 
 def required_keys_phrase(phase: str) -> str:
@@ -117,4 +158,12 @@ def corrective_instruction(phase: str) -> str:
         f"your last run omitted the required trailing JSON result envelope "
         f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
         "plain JSON, nothing after it."
+    )
+
+
+def refused_envelope_instruction(refusal: str) -> str:
+    """The one-shot corrective note for an envelope the recorder refused by name."""
+    return (
+        f"your last run's result envelope was refused ({refusal}) — re-emit the complete envelope "
+        "with exactly those keys corrected, as the last thing you write, plain JSON, nothing after it."
     )
