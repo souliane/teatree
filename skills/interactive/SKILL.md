@@ -183,13 +183,13 @@ An attended session is the operator's eyes on the factory. It looks for abnormal
 
 **The cheapest bounded reads, in order:** `t3 worker status --json`, `t3 <overlay> health show --json`, `t3 loop self-improve status --limit 30`, `t3 loop preset show`, `t3 tokens --cached --json`. `health show` reconciles before it prints, so it writes. A pure-read `--no-reconcile` flag and an exit-coded `--fail-on blocking` are coming in #5069; neither exists yet.
 
-**`t3 doctor check --json` takes minutes, so it is worth its cost when** health is red with no row naming the cause, a `health-collector-failed` row is open, or the watchdog cannot page. Read only its non-OK findings.
+**`t3 doctor check --json` takes minutes, so it is worth its cost when** health is red with no row naming the cause, a `health-collector-failed` row is open, or the watchdog pages nobody (it records a doctor FAIL on the pulled surface, `notify digest`). Read only its non-OK findings.
 
 **Tiers:**
 
-- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch.
+- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch (`t3 ci fetch-errors main`).
 - **DEGRADING** — the factory still delivers, but late or with a weaker guard: a shadowed skill, a schedule firing in the wrong timezone (#5053), an override left on past its reason.
-- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore`, a stale statusline entry.
+- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore` (`git ls-files -ci --exclude-standard`), a stale statusline entry.
 
 **BLOCKING preempts the PR board and the todo drain.** Handle each finding in this order:
 
@@ -198,7 +198,7 @@ An attended session is the operator's eyes on the factory. It looks for abnormal
 3. **Notify the owner once per episode, for BLOCKING only:** `mcp__teatree__notify_user` with `idempotency_key="factory-watch:<fingerprint>:<opened-on>"`, or `t3 <overlay> notify dm '<finding>' --idempotency-key factory-watch:<fingerprint>:<opened-on>`, where `<opened-on>` is the UTC date this episode was first seen. A sent key never expires, so without it a recurrence would never page. Not `notify send`: it records an unregistered key without delivering it. Skip the DM when the finding has already paged through a registered push signal (`teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`).
 4. **Never leave a finding silent:** keep a TODO naming its fingerprint and DM key, so a re-read after compaction reuses the key, and close it only on a durable record. When no detector raised it, add one with `t3 <overlay> health add '<fingerprint>: <finding>' --critical` (without `--critical` for DEGRADING).
 
-**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket — its reviews included — so even this starts within the hour rather than at once.
+**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket-pk> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket — its reviews included — so even this starts within the hour rather than at once.
 
 ## Skill Loading
 
