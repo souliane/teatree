@@ -17,8 +17,10 @@ from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.checkout_disposal import disposal_refusal
+from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
 from teatree.core.worktree.clone_provision import ensure_clone
+from teatree.core.worktree.target_branch import resolve_target_branch
 from teatree.core.worktree.ticket_workspace import (
     TicketWorkspaceDivergenceError,
     assert_joins_ticket_workspace,
@@ -29,6 +31,7 @@ from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_remote_project_path
+from teatree.utils.git_run import git_env_without_overrides, run_with_status
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -64,6 +67,52 @@ def _recorded_checkout_is_live(recorded: str, *, clone: Path | None) -> bool:
     up by name, proves that checkout live and keeps the short-circuit.
     """
     return probe_checkout(Path(recorded), clone=clone) is CheckoutState.CHECKOUT
+
+
+def _unreadable_checkout_reason(checkout: Path) -> str:
+    """Why a checkout git cannot read HERE is refused — never re-created, never removed."""
+    cause = wrong_venue_reason(checkout)
+    if not cause:
+        probe = run_with_status(repo=str(checkout), args=["rev-parse", "--git-dir"], env=git_env_without_overrides())
+        cause = f"{checkout} is a live checkout git cannot read in this execution context ({probe.stderr.strip()})"
+    return f"{cause}; re-provision or remove it from the context that owns it"
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveCheckout:
+    """A recorded checkout git resolves here, reused as it stands with no network read."""
+
+    repo_name: str
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RepoPlan:
+    """A repo the preflight cleared: cut at *start_point*, or record the checkout at *adopt_path*."""
+
+    repo_name: str
+    branch: str
+    existing: Worktree | None
+    clone: Path
+    start_point: str = ""
+    adopt_path: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Refusal:
+    reason: str
+    retryable: bool = False
+
+
+def _refused(refusals: list[_Refusal]) -> RunnerResult:
+    """The whole ticket refused before anything was cut; retryable only when every refusal is."""
+    for refusal in refusals:
+        logger.error("%s", refusal.reason)
+    return RunnerResult(
+        ok=False,
+        detail="refused before cutting any worktree — " + "; ".join(refusal.reason for refusal in refusals),
+        retryable=all(refusal.retryable for refusal in refusals),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +255,9 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     on_branch = next((entry for entry in leftovers if entry.branch == branch), None)
 
     if at_path is not None and at_path.branch == branch:
+        if probe_checkout(wt_path) is not CheckoutState.CHECKOUT:
+            logger.error("Cannot provision %s at %s: %s", branch, wt_str, _unreadable_checkout_reason(wt_path))
+            return None
         logger.info("Adopting the existing worktree for %s at %s (idempotent re-provision)", branch, wt_str)
         return wt_str
 
@@ -312,33 +364,39 @@ class WorktreeProvisioner(RunnerBase):
         except TicketWorkspaceDivergenceError as exc:
             logger.exception("Ticket workspace is already split")
             return RunnerResult(ok=False, detail=str(exc))
+        preflight = [
+            self._preflight(clone_root_path, repo_name, branches.get(repo_name, branch), adopt.get(repo_name, ""))
+            for repo_name in repos
+        ]
+        if refusals := [outcome for outcome in preflight if isinstance(outcome, _Refusal)]:
+            return _refused(refusals)
+
         if any(repo_name not in adopt for repo_name in repos):
             ticket_dir.mkdir(parents=True, exist_ok=True)
+        plans = [outcome for outcome in preflight if not isinstance(outcome, _Refusal)]
+        return self._cut(plans, ticket_dir, provisioned=dict(extra.get("provision") or {}))
 
-        provisioned: dict[str, str] = dict(extra.get("provision") or {})
+    def _cut(
+        self, plans: list[_RepoPlan | _LiveCheckout], ticket_dir: Path, *, provisioned: dict[str, str]
+    ) -> RunnerResult:
+        """Phase two: materialise every preflighted repo; a failure here fails only that repo."""
         failed: list[str] = []
         divergence_detail = ""
 
-        for repo_name in repos:
+        for plan in plans:
             try:
-                wt_path = self._provision_repo(
-                    clone_root_path,
-                    repo_name,
-                    ticket_dir,
-                    branch=branches.get(repo_name, branch),
-                    adopt_path=adopt.get(repo_name, ""),
-                )
+                wt_path = self._provision_repo(plan, ticket_dir)
             except TicketWorkspaceDivergenceError as exc:
                 logger.exception("Candidate worktree would split the ticket workspace")
                 divergence_detail = str(exc)
                 break
             if wt_path is None:
-                failed.append(repo_name)
+                failed.append(plan.repo_name)
             else:
-                provisioned[repo_name] = wt_path
+                provisioned[plan.repo_name] = wt_path
 
         # #800 N3: canonical locked RMW (was an unlocked extra save).
-        ticket.merge_extra(set_keys={"provision": provisioned})
+        self.ticket.merge_extra(set_keys={"provision": provisioned})
 
         if divergence_detail:
             return RunnerResult(ok=False, detail=divergence_detail)
@@ -346,59 +404,92 @@ class WorktreeProvisioner(RunnerBase):
             return RunnerResult(ok=False, detail=f"failed to create worktrees for: {', '.join(failed)}")
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
 
-    def _provision_repo(
-        self, clones_root: Path, repo_name: str, ticket_dir: Path, *, branch: str, adopt_path: str
-    ) -> str | None:
-        """Materialise one repo's ``Worktree`` row + checkout; return its path or ``None``.
+    def _preflight(
+        self, clones_root: Path, repo_name: str, branch: str, adopt_path: str
+    ) -> _RepoPlan | _LiveCheckout | _Refusal:
+        """Every check that can refuse *repo_name*, run before any directory, row or worktree exists.
 
-        Idempotent: a repo whose recorded worktree_path still holds a LIVE checkout
-        is a no-op, and one whose checkout this context cannot prove is there falls
-        through to re-provision onto the same row — a recorded path is a claim, not
-        a checkout, and trusting the claim alone is what turns a vanished checkout
-        into a provision that can never succeed again. Proof of life is
-        :func:`_recorded_checkout_is_live`. In adopt mode (*adopt_path* set) the
-        existing checkout is recorded verbatim — see :meth:`_create`. On a failed
-        ``git worktree add`` — or a RAISED refusal such as the #2276 wrong-repo
-        guard — the just-created row is rolled back so the ticket carries no
-        half-provisioned repo.
+        A recorded checkout git resolves HERE is reused with no network read; one only
+        the clone vouches for is refused, because every git command run inside it fails.
+        A recorded path proven neither falls through to re-provision onto the same row.
+        A worktree to cut gets its start point from a live read of origin, so an origin
+        that cannot be read refuses the whole ticket before any repo is cut. The #2276
+        wrong-repo guard raises rather than refuses.
         """
         existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
-        recorded = (existing.extra or {}).get("worktree_path", "") if existing else ""
-        if recorded and _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
-            return recorded
+        recorded = existing.worktree_path if existing else ""
+        if recorded:
+            if probe_checkout(Path(recorded)) is CheckoutState.CHECKOUT:
+                return _LiveCheckout(repo_name, recorded)
+            if _recorded_checkout_is_live(recorded, clone=find_clone_path(clones_root, repo_name)):
+                return _Refusal(f"{repo_name}: {_unreadable_checkout_reason(Path(recorded))}")
 
         if refusal := self._single_branch_refusal(repo_name, branch):
-            logger.error("%s", refusal)
-            return None
+            return _Refusal(refusal)
+
+        if adopt_path:
+            clone = find_clone_path(clones_root, repo_name) or _clone_dir_from_worktree(adopt_path)
+            return _RepoPlan(repo_name, branch, existing, clone=clone or Path(adopt_path), adopt_path=adopt_path)
+        return self._plan_cut(clones_root, repo_name, branch, existing)
+
+    def _plan_cut(
+        self, clones_root: Path, repo_name: str, branch: str, existing: Worktree | None
+    ) -> _RepoPlan | _Refusal:
+        """The clone and the freshly fetched start point a new worktree for *repo_name* is cut from."""
+        clone = ensure_clone(clones_root, repo_name, get_overlay_for_ticket(self.ticket))
+        if clone is None:
+            return _Refusal(
+                f"No git clone found or creatable for {repo_name} under {clones_root} "
+                f"(looked at {clones_root / repo_name} and one-level subdirs)"
+            )
+        # #2276: ``find_clone_path`` resolves by basename, so a sibling clone of the same name could be cut.
+        if is_remote_project_path(repo_name):
+            guard_repo_remote_slug(str(clone), repo_name)
+        try:
+            start_point = git.cut_start_point(
+                str(clone), branch, base=resolve_target_branch(self.ticket, str(clone), branch=branch)
+            )
+        except git.RemoteReadError as exc:
+            return _Refusal(f"{repo_name}: cannot refresh from origin: {exc}", retryable=True)
+        return _RepoPlan(repo_name, branch, existing, clone=clone, start_point=start_point)
+
+    def _provision_repo(self, plan: _RepoPlan | _LiveCheckout, ticket_dir: Path) -> str | None:
+        """Materialise one preflighted repo's ``Worktree`` row + checkout; return its path or ``None``.
+
+        A live recorded checkout is a no-op. On a failed ``git worktree add`` — or a
+        RAISED refusal — the just-created row is rolled back so the ticket carries no
+        half-provisioned repo.
+        """
+        if isinstance(plan, _LiveCheckout):
+            return plan.path
 
         # Most rows are registered HERE rather than at the ad-hoc adopt seam, and
         # ``adopt_path`` records a checkout verbatim — wherever the operator ran from.
-        slot = Path(adopt_path) if adopt_path else ticket_dir / Path(repo_name).name
+        slot = Path(plan.adopt_path) if plan.adopt_path else ticket_dir / Path(plan.repo_name).name
         assert_joins_ticket_workspace(self.ticket, slot)
 
-        worktree = existing or Worktree.objects.create(
+        worktree = plan.existing or Worktree.objects.create(
             ticket=self.ticket,
-            repo_path=repo_name,
-            branch=branch,
+            repo_path=plan.repo_name,
+            branch=plan.branch,
             overlay=self.ticket.overlay,
         )
 
         try:
-            created = self._create(clones_root, repo_name, slot, branch, adopt_path=adopt_path)
+            created = self._create(plan, slot)
         except Exception:
-            # A RAISED refusal (the #2276 wrong-repo guard) is a failed provision exactly
-            # as a ``None`` return is, so it must roll the row back too — otherwise the
-            # loud refusal strands a Worktree row for a repo that was never provisioned.
-            if existing is None:
+            # A RAISED failure is a failed provision exactly as a ``None`` return is,
+            # so it must roll the row back too — never strand a row for an unprovisioned repo.
+            if plan.existing is None:
                 worktree.delete()
             raise
         if created is None:
-            if existing is None:
+            if plan.existing is None:
                 worktree.delete()  # roll back only the row we just created, never a reused one
             return None
 
         wt_path, clone_path = created
-        worktree.branch = branch
+        worktree.branch = plan.branch
         worktree.extra = {
             **(worktree.extra or {}),
             "worktree_path": wt_path,
@@ -439,86 +530,50 @@ class WorktreeProvisioner(RunnerBase):
         """
         return ticket_workspace_dir_or_refuse(ticket)
 
-    def _create(
-        self, clones_root: Path, repo_name: str, wt_path: Path, branch: str, *, adopt_path: str = ""
-    ) -> tuple[str, Path] | None:
-        """Run ``git worktree add`` for one repo, or record an adopted checkout (#2275).
+    def _create(self, plan: _RepoPlan, wt_path: Path) -> tuple[str, Path] | None:
+        """Run ``git worktree add`` for one preflighted repo, or record an adopted checkout (#2275).
 
-        *clones_root* is the CLONE root (``config.clone_root()``, ``~/workspace``)
-        — where source clones are DISCOVERED — NOT the WORKTREE root the new
-        worktree lands under (that is *wt_path*'s parent). Returns
-        ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
-        found or creatable, a slot this context cannot clear, or ``git worktree add``
-        rejected the path).
+        Returns ``(worktree_path, clone_path)`` on success or ``None`` on failure (a
+        slot this context cannot clear, or ``git worktree add`` rejected the path).
 
-        A missing clone is CLONED from the remote the ticket's overlay declares,
-        rather than failing outright, so a runtime owning an empty clone root (the
-        containerized stack's own workspace volume) provisions without an operator
-        pre-seeding it. An overlay that declares no remote for the repo keeps the
-        old failure.
-
-        *adopt_path* (#2275): when set, the branch's worktree already exists on
-        disk (the operator ran ``workspace ticket --adopt`` from inside it), so its
-        path is recorded verbatim — never ``git worktree add`` (git would refuse
-        the already-checked-out branch and it would create a second dir). The
-        backing clone is the discovered clone, or the checkout's own shared git dir
-        when it lives outside *clones_root*. Adoption never triggers a clone: the
-        checkout is already there, so a network fetch would be pure cost.
+        An adopted checkout already exists on disk (the operator ran ``workspace
+        ticket --adopt`` from inside it), so its path is recorded verbatim — never
+        ``git worktree add``, which would refuse the checked-out branch and create a
+        second dir.
         """
-        if adopt_path:
-            clone_path = find_clone_path(clones_root, repo_name) or _clone_dir_from_worktree(adopt_path)
-            return adopt_path, clone_path or Path(adopt_path)
-
-        repo_path = ensure_clone(clones_root, repo_name, get_overlay_for_ticket(self.ticket))
-        if repo_path is None:
-            logger.warning(
-                "No git clone found or creatable for %s under %s (looked at %s and one-level subdirs)",
-                repo_name,
-                clones_root,
-                clones_root / repo_name,
-            )
-            return None
-
-        # #2276: ``find_clone_path`` resolves by basename — via the flat root and a
-        # one-level scan — so a SIBLING clone of the same name (a different
-        # ``origin``) would be cut silently. When ``repo_name`` is a forge PROJECT
-        # PATH it carries a canonical remote identity to enforce — refuse loudly if
-        # the resolved clone's ``origin`` is a different repo, before ``git worktree
-        # add``. A bare basename has no path to compare against, so the guard is
-        # skipped (it must never crash the legitimate ``--repos <basename>`` flow).
-        if is_remote_project_path(repo_name):
-            guard_repo_remote_slug(str(repo_path), repo_name)
+        if plan.adopt_path:
+            return plan.adopt_path, plan.clone
 
         # #3234: reconcile whatever a prior failed attempt left behind BEFORE adding.
         # A leftover worktree/branch makes ``git worktree add`` refuse both the path
         # and the branch, which stranded the ticket at ``work_started`` forever.
-        slot = _reconcile_leftover_worktree(repo_path, wt_path, branch, ticket_id=self.ticket.pk)
+        slot = _reconcile_leftover_worktree(plan.clone, wt_path, plan.branch, ticket_id=self.ticket.pk)
         if slot is None:
             return None
         if slot:
-            return slot, repo_path
+            return slot, plan.clone
 
-        return self._materialise(repo_path, wt_path, branch, repo_name)
+        return self._materialise(plan, wt_path)
 
     @staticmethod
-    def _materialise(repo_path: Path, wt_path: Path, branch: str, repo_name: str) -> tuple[str, Path] | None:
+    def _materialise(plan: _RepoPlan, wt_path: Path) -> tuple[str, Path] | None:
         """``git worktree add`` into a CLEARED slot, rolled back if a later step fails.
 
-        Retries without ``-b`` so partial-failure recovery picks up an existing branch.
-        Every step that runs after the checkout exists sits behind the one rollback
-        boundary here, so a new step cannot be added without inheriting it (#3234).
+        A new branch starts at the preflight's freshly fetched start point; an existing
+        local branch is checked out as it stands. Every step that runs after the
+        checkout exists sits behind the one rollback boundary here, so a new step
+        cannot be added without inheriting it (#3234).
         """
-        git.pull_ff_only(str(repo_path))
-
-        ok = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=True)
+        repo, branch = str(plan.clone), plan.branch
+        ok = git.worktree_add(repo, str(wt_path), branch, start_point=plan.start_point)
         if not ok:
-            ok = git.worktree_add(str(repo_path), str(wt_path), branch, create_branch=False)
+            ok = git.worktree_add(repo, str(wt_path), branch, create_branch=False)
         if not ok:
-            logger.warning("Failed to create worktree for %s at %s", repo_name, wt_path)
+            logger.warning("Failed to create worktree for %s at %s", plan.repo_name, wt_path)
             return None
 
         try:
-            WorktreeProvisioner._finalize(repo_path, wt_path)
+            WorktreeProvisioner._finalize(plan.clone, wt_path)
         except Exception:
             # #3234: a step that fails AFTER the worktree exists must not strand it —
             # the leftover is exactly what refuses the next ``git worktree add``. The
@@ -528,13 +583,13 @@ class WorktreeProvisioner(RunnerBase):
             logger.exception(
                 "Provision step failed after creating the worktree for %s at %s — tearing it down so the "
                 "retry starts clean (#3234).",
-                repo_name,
+                plan.repo_name,
                 wt_path,
             )
-            _tear_down_worktree(str(repo_path), str(wt_path), branch)
+            _tear_down_worktree(repo, str(wt_path), branch)
             return None
 
-        return str(wt_path), repo_path
+        return str(wt_path), plan.clone
 
     @staticmethod
     def _finalize(repo_path: Path, wt_path: Path) -> None:

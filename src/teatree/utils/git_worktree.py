@@ -8,6 +8,7 @@ and the #706 "absent from all remotes" guard, all via the
 from pathlib import Path
 
 from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_sync import RemoteReadError, fetch_branch, remote_heads
 from teatree.utils.git_upstream import normalize_branch_upstream
 from teatree.utils.git_worktree_query import list_worktrees
 from teatree.utils.run import CommandFailedError, run_checked
@@ -134,50 +135,42 @@ def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
     return check(repo=repo, args=["worktree", "add", "--detach", path, ref])
 
 
-def remote_branch_start_point(repo: str, branch: str, remote: str = "origin") -> str:
-    """``<remote>/<branch>`` when the branch exists on *remote*, else ``""``.
+def cut_start_point(repo: str, branch: str, *, base: str) -> str:
+    """The freshly fetched ref a new *branch* is cut from: its own remote tip, else *base*.
 
-    Resolved against the REMOTE, not against whatever ``refs/remotes/*`` this
-    clone happens to hold: a targeted ``git fetch <remote> <branch>`` runs first
-    so a clone that has never seen the branch (or whose tracking ref is stale)
-    still answers correctly. A branch that genuinely does not exist upstream
-    makes the fetch exit non-zero, which is the expected "no start point" answer
-    and never an error.
+    *base* is remote-qualified (``origin/main``). Both are read live from that
+    remote, never from whatever ``refs/remotes/*`` this clone holds, and never
+    from its HEAD: a remote that cannot be read, or holds neither, raises
+    :class:`~teatree.utils.git_sync.RemoteReadError`.
     """
-    check(repo=repo, args=["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"])
-    ref = f"refs/remotes/{remote}/{branch}"
-    return f"{remote}/{branch}" if run(repo=repo, args=["rev-parse", "--verify", "--quiet", ref]) else ""
+    remote, _, base_name = base.partition("/")
+    held = remote_heads(repo, [branch, base_name], remote=remote)
+    start = branch if branch in held else base_name
+    if start not in held:
+        msg = f"{remote} has no {base_name} to cut {branch} from"
+        raise RemoteReadError(msg)
+    fetch_branch(repo, start, remote=remote)
+    return f"{remote}/{start}"
 
 
-def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
-    """``git worktree add`` for *branch*, born from its REMOTE tip when one exists.
+def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True, start_point: str = "") -> bool:
+    """``git worktree add`` for *branch* — a created branch is born at an explicit *start_point*.
 
-    ``-b <branch>`` with no start point forks the clone's current HEAD — the
-    default branch — so provisioning a ticket's EXISTING remote branch silently
-    produced a same-named local branch carrying default-branch content. Every
-    consumer downstream then read the default branch's files while believing it
-    read the ticket's: the frontend i18n mirror is the case that surfaced it,
-    filled from ``master`` so every key the ticket ADDS rendered raw.
-
-    So a created branch starts at ``origin/<branch>`` whenever the remote holds
-    one (git then sets up tracking), and only falls back to HEAD for a branch
-    that is genuinely new.
+    ``-b <branch>`` with no start point forks the clone's current HEAD, whatever
+    the main clone happens to have checked out, so a created branch without one
+    is refused outright rather than defaulted; :func:`cut_start_point` is where a
+    caller gets one.
 
     Whatever tracking git derives from that start point is then normalised
-    (#4225): under ``branch.autoSetupMerge = inherit`` the HEAD fallback copies
-    the DEFAULT branch's upstream onto the new branch, so ``git push`` on it aims
-    at ``main`` under ``push.default = upstream``. Only the created branch is
-    normalised — an existing branch's upstream is the repair command's business,
-    not a side effect of checking it out.
+    (#4225): a branch cut from ``origin/main`` would otherwise track ``main``,
+    and ``git push`` on it aims at ``main`` under ``push.default = upstream``.
+    Only the created branch is normalised — an existing branch's upstream is the
+    repair command's business, not a side effect of checking it out.
     """
-    args = ["worktree", "add"]
-    if create_branch:
-        args.extend(["-b", branch])
-    args.append(path)
-    if not create_branch:
-        args.append(branch)
-    elif start_point := remote_branch_start_point(repo, branch):
-        args.append(start_point)
+    if create_branch and not start_point:
+        msg = f"refusing to create {branch} without a start point: it would fork whatever HEAD {repo} has"
+        raise ValueError(msg)
+    args = ["worktree", "add", "-b", branch, path, start_point] if create_branch else ["worktree", "add", path, branch]
     try:
         run_checked(["git", "-C", repo, *args])
     except CommandFailedError:

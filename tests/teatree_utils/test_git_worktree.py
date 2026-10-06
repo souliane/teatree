@@ -10,8 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from teatree.utils.git_sync import RemoteReadError
 from teatree.utils.git_upstream import branch_upstream
-from teatree.utils.git_worktree import locked_worktree_paths, worktree_add
+from teatree.utils.git_worktree import cut_start_point, locked_worktree_paths, worktree_add
 from teatree.utils.git_worktree_query import (
     WorktreeRecord,
     canonical_repo_root,
@@ -20,7 +21,7 @@ from teatree.utils.git_worktree_query import (
     list_worktrees,
     worktree_for_branch,
 )
-from teatree.utils.run import run_checked
+from teatree.utils.run import run_allowed_to_fail, run_checked
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -165,13 +166,8 @@ def cloned(tmp_path: Path) -> Path:
 class TestWorktreeAddUpstream:
     """``worktree_add`` never leaves a branch tracking someone else's ref (#4225)."""
 
-    def test_a_new_branch_does_not_inherit_the_default_branchs_upstream(self, cloned: Path, tmp_path: Path) -> None:
-        # `inherit` is the operator config that turns worktree_add's own
-        # no-start-point fallback into a generator: without the normalisation the
-        # new branch comes out carrying refs/heads/main.
-        _git(cloned, "config", "branch.autoSetupMerge", "inherit")
-
-        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat") is True
+    def test_a_branch_cut_from_the_default_branch_does_not_track_it(self, cloned: Path, tmp_path: Path) -> None:
+        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat", start_point="origin/main") is True
         assert branch_upstream(str(cloned), "feat").merge_ref == ""
 
     def test_an_existing_remote_branch_still_tracks_its_own_ref(self, cloned: Path, tmp_path: Path) -> None:
@@ -180,7 +176,7 @@ class TestWorktreeAddUpstream:
         _git(cloned, "worktree", "remove", str(tmp_path / "seed"))
         _git(cloned, "branch", "-D", "feat")
 
-        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat") is True
+        assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat", start_point="origin/feat") is True
         assert branch_upstream(str(cloned), "feat").merge_ref == "refs/heads/feat"
 
     def test_checking_out_an_existing_branch_leaves_its_upstream_alone(self, cloned: Path, tmp_path: Path) -> None:
@@ -189,3 +185,54 @@ class TestWorktreeAddUpstream:
 
         assert worktree_add(str(cloned), str(tmp_path / "wt"), "feat", create_branch=False) is True
         assert branch_upstream(str(cloned), "feat").merge_ref == "refs/heads/main"
+
+
+class TestWorktreeAddNeedsAStartPoint:
+    def test_a_created_branch_without_one_is_refused_before_git_runs(self, cloned: Path, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="without a start point"):
+            worktree_add(str(cloned), str(tmp_path / "wt"), "feat")
+
+        assert not (tmp_path / "wt").exists()
+
+
+def _push_from_elsewhere(tmp_path: Path, branch: str) -> str:
+    other = tmp_path / "elsewhere"
+    if not other.exists():
+        _git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(other))
+    _git(other, "checkout", "-q", "-B", branch, "origin/main")
+    _git(other, "commit", "-q", "--allow-empty", "-m", f"work on {branch}")
+    _git(other, "push", "-q", "origin", branch)
+    return run_checked(["git", "-C", str(other), "rev-parse", "HEAD"]).stdout.strip()
+
+
+def _ref(repo: Path, ref: str) -> str:
+    return run_allowed_to_fail(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref], expected_codes=None
+    ).stdout.strip()
+
+
+class TestCutStartPoint:
+    """The start point is read live from origin, never from local refs or HEAD (#4967)."""
+
+    def test_a_branch_origin_holds_starts_at_its_fetched_tip(self, cloned: Path, tmp_path: Path) -> None:
+        tip = _push_from_elsewhere(tmp_path, "feat")
+
+        assert cut_start_point(str(cloned), "feat", base="origin/main") == "origin/feat"
+        assert _ref(cloned, "refs/remotes/origin/feat") == tip
+
+    def test_a_new_branch_starts_at_the_freshly_fetched_base(self, cloned: Path, tmp_path: Path) -> None:
+        stale = _ref(cloned, "refs/remotes/origin/main")
+        tip = _push_from_elsewhere(tmp_path, "main")
+
+        assert cut_start_point(str(cloned), "feat", base="origin/main") == "origin/main"
+        assert _ref(cloned, "refs/remotes/origin/main") == tip != stale
+
+    def test_a_base_origin_does_not_hold_is_refused(self, cloned: Path) -> None:
+        with pytest.raises(RemoteReadError, match="origin has no stacked-target to cut feat from"):
+            cut_start_point(str(cloned), "feat", base="origin/stacked-target")
+
+    def test_an_unreachable_origin_is_refused_with_gits_error(self, cloned: Path, tmp_path: Path) -> None:
+        _git(cloned, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
+
+        with pytest.raises(RemoteReadError, match="does not appear to be a git repository"):
+            cut_start_point(str(cloned), "feat", base="origin/main")

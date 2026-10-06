@@ -496,8 +496,9 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     loop's own autonomous FSM never stamps either marker, so its flow is
     unchanged.
 
-    A failure on a ticket with no repos yet re-enqueues itself as *attempt* + 1 on
-    ``NO_REPOS_RETRY_DELAYS`` and asks the owner only once that budget is spent.
+    A failure on a ticket with no repos yet, or one the runner marks retryable (origin
+    could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
+    and asks the owner only once that budget is spent.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
@@ -520,7 +521,7 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     result = WorktreeProvisioner(ticket).run()
     if not result.ok:
         logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
-        if not ticket.repos and _retry_provision_later(ticket_id, attempt):
+        if (not ticket.repos or result.retryable) and _retry_provision_later(ticket_id, attempt):
             return {"ticket_id": ticket_id, "ok": False, "detail": f"{result.detail}; retry {attempt + 1} queued"}
         record_provision_failure_question(ticket, result.detail, retries=attempt)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}

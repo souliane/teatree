@@ -560,7 +560,7 @@ current inspection says the tree is clean.
 A local `main` is stale the moment anything merges upstream, so a branch forked from it carries a base nobody else shares and conflicts on every later merge. Every new branch starts from a freshly-fetched `origin/main` — never from whatever the local ref happens to hold.
 
 ```bash
-# RIGHT — the sanctioned path: it fast-forwards the clone's default branch, then forks the branch off that:
+# RIGHT — the sanctioned path: it fetches the target from origin and cuts the branch there, or refuses:
 t3 <overlay> workspace ticket <issue-url-or-id>
 
 # RIGHT — no ticket, ad-hoc branch: name origin/main as the start point explicitly.
