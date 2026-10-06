@@ -20,14 +20,14 @@ from teatree import standing_directives_cache
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Mode, Prompt
 from teatree.loop.standing_directives import (
+    DISPATCH_LOOP,
     MAX_DIRECTIVE_CHARS,
     SCOPE_ATTENDED,
     SCOPE_ATTENDED_SINGLETON,
-    SELF_PUMP_LOOP,
     STANDING_DIRECTIVES,
     ResolvedDirective,
     StandingDirective,
-    _self_pump_paused,
+    _dispatch_masked,
     compiled_directives,
     golden_rule_cadence_seconds,
     override_prompt_name,
@@ -349,21 +349,21 @@ _DEGRADED_STORE = "no such table: core_modeoverride"
 
 
 class TestTheSelfPumpBrake(TestCase):
-    """A mode masking the self-pump's loop off is one where nothing should be driving work."""
+    """A mode masking the dispatch loop off is one where nothing should be driving work."""
 
     @staticmethod
     def _resolved(*, pauses: bool, source: str = "override") -> ResolvedMode:
-        entries = {SELF_PUMP_LOOP: False} if pauses else {SELF_PUMP_LOOP: True}
+        entries = {DISPATCH_LOOP: False} if pauses else {DISPATCH_LOOP: True}
         mode = Mode(name="off" if pauses else "present", entries=entries)
         return ResolvedMode(mode=mode, source=source, until=None, reason="test")
 
-    def test_a_paused_self_pump_drops_the_work_driving_slots_and_keeps_the_golden_rule(self) -> None:
+    def test_a_masked_dispatch_drops_the_work_driving_slots_and_keeps_the_golden_rule(self) -> None:
         with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=True)):
             resolved = resolve_standing_directives()
 
         assert [r.slot_id for r in resolved] == ["standing-golden-rule"]
 
-    def test_a_paused_self_pump_is_published_too(self) -> None:
+    def test_a_masked_dispatch_is_published_too(self) -> None:
         with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=True)):
             publish()
 
@@ -373,7 +373,7 @@ class TestTheSelfPumpBrake(TestCase):
 
     def test_a_mode_that_does_not_pause_the_pump_delivers_everything(self) -> None:
         with mock.patch(_MODE_RESOLVER, return_value=self._resolved(pauses=False, source="schedule")):
-            braked = _self_pump_paused()
+            braked = _dispatch_masked()
             resolved = resolve_standing_directives()
 
         assert braked is False
@@ -383,7 +383,7 @@ class TestTheSelfPumpBrake(TestCase):
         # #4196: the override/schedule layer stops at ``None`` when neither governs, so
         # braking on it would ignore the configured default mode entirely.
         with mock.patch("teatree.loop.preset_resolution._resolve_active_preset", return_value=None):
-            braked = _self_pump_paused()
+            braked = _dispatch_masked()
             resolved = resolve_standing_directives()
 
         assert braked is False
@@ -409,7 +409,7 @@ class TestTheSelfPumpBrake(TestCase):
         )
 
         with degraded, self.assertNoLogs("teatree.core.mode_resolution"):
-            braked = _self_pump_paused()
+            braked = _dispatch_masked()
 
         assert braked is False
 
@@ -428,7 +428,7 @@ class TestTheSelfPumpBrake(TestCase):
             mock.patch("teatree.core.mode_resolution._resolve_active_mode", side_effect=_degrade),
             self.assertLogs("teatree.tests.bystander", level="WARNING") as captured,
         ):
-            braked = _self_pump_paused()
+            braked = _dispatch_masked()
 
         assert braked is False
         assert captured.output
@@ -436,7 +436,7 @@ class TestTheSelfPumpBrake(TestCase):
     def test_a_raising_mode_resolver_fails_open_to_delivering(self) -> None:
         # Polarity: never suppress a rule because the brake could not be read.
         with mock.patch(_MODE_RESOLVER, side_effect=RuntimeError("no mode table")):
-            braked = _self_pump_paused()
+            braked = _dispatch_masked()
             resolved = resolve_standing_directives()
 
         assert braked is False

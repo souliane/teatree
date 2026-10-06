@@ -63,16 +63,9 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 worker alive; on a headless box start it once from a login   │
 │                 profile). The active preset is the stop condition — one that │
 │                 admits zero loops stops them entirely (there is no fallback  │
-│                 plane). Each per-loop tick atomically claims the next        │
-│                 pending unit (`t3 loop claim-next`), spawns one fresh        │
-│                 bounded sub-agent for it, and records the outcome when that  │
-│                 sub-agent returns (`tasks record-attempt --claim-token`) —   │
-│                 the claim is the spawn boundary, not the finish, and an      │
-│                 unrecorded unit is reclaimed and re-offered rather than ever │
-│                 completing; a dying worker leaves its Task reclaimable and   │
-│                 the next tick re-dispatches it. Check the worker with `t3    │
-│                 worker status`; ensure one is running with `t3 worker        │
-│                 ensure`.                                                     │
+│                 plane). The worker also drains the task queue, claiming each │
+│                 pending task headlessly. Check the worker with `t3 worker    │
+│                 status`; ensure one is running with `t3 worker ensure`.      │
 │ goal            Standing verified-green goals (PR-25).                       │
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
@@ -4328,14 +4321,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  and the DB loops run with no Claude session open (the SessionStart supervisor
  keeps one worker alive; on a headless box start it once from a login profile).
  The active preset is the stop condition — one that admits zero loops stops
- them entirely (there is no fallback plane). Each per-loop tick atomically
- claims the next pending unit (`t3 loop claim-next`), spawns one fresh bounded
- sub-agent for it, and records the outcome when that sub-agent returns (`tasks
- record-attempt --claim-token`) — the claim is the spawn boundary, not the
- finish, and an unrecorded unit is reclaimed and re-offered rather than ever
- completing; a dying worker leaves its Task reclaimable and the next tick
- re-dispatches it. Check the worker with `t3 worker status`; ensure one is
- running with `t3 worker ensure`.
+ them entirely (there is no fallback plane). The worker also drains the task
+ queue, claiming each pending task headlessly. Check the worker with `t3 worker
+ status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -4344,9 +4332,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ tick             Run one user-manual full-scan tick by hand: scan every      │
 │                  overlay, dispatch, render.                                  │
 │ status           Show the loop's last-rendered statusline.                   │
-│ pending-spawn    List pending Tasks for the Stop hook's read-only probe.     │
-│ start            Spawn a Claude Code session; the t3-master registers each   │
-│                  enabled loop's ``/loop``.                                   │
+│ start            Start a Claude Code session; the ``t3 worker`` runs the     │
+│                  loops.                                                      │
 │ stop             Print how to stop the durable, worker-driven loops.         │
 │ claim            Claim the session-scoped t3-master slot for this Claude     │
 │                  session (#1073).                                            │
@@ -4434,53 +4421,20 @@ Usage: t3 loop status [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 loop pending-spawn`
-
-```
-Usage: t3 loop pending-spawn [OPTIONS]
-
- List pending Tasks for the Stop hook's read-only probe.
-
- Reads the dispatch DB (``Task`` rows in PENDING status) and prints
- each with its ``subagent`` hint. This is a pure read with NO claim:
- The Stop-hook self-pump uses this non-mutating probe to decide whether
- to offer work. The ``/loop`` slot claims with ``claim-next``.
-
- ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
- reports work ONLY when a unit ``claim-next`` could actually claim,
- so the Stop-hook self-pump stops re-offering a PENDING unit that a
- full in-flight admit budget will always refuse.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json                    Emit pending list as JSON.                         │
-│ --claimable-only          Report work ONLY when a claim could land (honour   │
-│                           the admit budget).                                 │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 loop start`
 
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session; the t3-master registers each enabled loop's
- ``/loop``.
+ Start a Claude Code session; the ``t3 worker`` runs the loops.
 
- Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
- model/effort pins). Under #2650 the live set of native Claude ``/loop``s
- mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
- ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
- registers them automatically, so there is no single fat slot to pass on the
- command line. When ``claude`` is unavailable or the caller is already inside a
- Claude Code session, prints the per-loop registration guidance instead.
-
- Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
- With no session open the loop is paused until the next session start.
+ Looks for ``claude`` on ``PATH`` and execs it with the interactive session
+ model/effort pins. When ``claude`` is unavailable or the caller is already
+ inside a Claude Code session, prints the loop guidance instead.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only          Print the per-loop registration guidance instead of    │
-│                       spawning a Claude Code session.                        │
+│ --print-only          Print the loop guidance instead of starting a Claude   │
+│                       Code session.                                          │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4516,9 +4470,9 @@ Usage: t3 loop claim [OPTIONS]
 │                          hand-off (#1073).                                   │
 │ --slot             TEXT  t3-master slot name (default: t3-master).           │
 │                          [default: t3-master]                                │
-│ --driver           TEXT  Explicit tick driver                                │
-│                          (self_pump/loop_runner/external); overrides         │
-│                          detection. Use 'external' for a foreign scheduler.  │
+│ --driver           TEXT  Explicit tick driver (loop_runner/external);        │
+│                          overrides detection. Use 'external' for a foreign   │
+│                          scheduler.                                          │
 │ --json                   Emit JSON.                                          │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯

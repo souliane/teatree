@@ -80,7 +80,7 @@ class ReviewDispatcher(Protocol):
     The production adapter records an
     :class:`teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row
     (deduped per ``(slug, pr_id, head_sha)``) and creates the
-    ``Task(phase=reviewing)`` the loop self-pump dispatches to ``t3:reviewer``.
+    ``Task(phase=reviewing)`` the worker dispatches to ``t3:reviewer``.
     Returns ``True`` when a new task was armed, ``False`` when a task for this
     head already exists (the dedup no-op).
     """

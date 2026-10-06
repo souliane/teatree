@@ -48,8 +48,7 @@ def derive_loop_name(prompt: str) -> str:
     prompt = prompt.strip()
 
     # 1. A teatree loop-tick prompt → a stable readable name: a per-loop tick
-    # (#2650) shows that loop's OWN name (the native `/loop` it drives), the
-    # legacy fat-tick prompt shows "tick".
+    # (#2650) shows that loop's OWN name, the legacy fat-tick prompt shows "tick".
     per_loop = loop_name_from_prompt(prompt)
     if per_loop is not None or prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
         return (per_loop or "tick")[:_LOOP_NAME_MAX]

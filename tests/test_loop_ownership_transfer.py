@@ -1,34 +1,30 @@
-"""Tests for session-bound loop durability via the single tick-owner record.
+"""Tests for the host's attended loop slot — the single owner record in ``loop-registry.json``.
 
-Behavior contract (#786 WS3 — the immortal-singleton roster is RETIRED):
-
-Zero open Claude sessions => the loop is DEAD (ACCEPTED, by design; the
-``t3 loop tick`` cron only fires inside a session). The loop is driven by
-that cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``; SessionStart no
-longer spawns/re-spawns a fixed roster. SessionStart only records which
-single *session* is the loop-tick owner (Django-free, so the #758/#810
-Stop self-pump can gate on it). Owner dies / another session opens => the
-new session becomes tick-owner and keeps ticking (nothing to re-spawn —
-statelessness across ticks is the compaction-proofing). A live concurrent
-owner => the second session stays idle (no competing tick), never evicts
-the live owner. All registry writes are flock-guarded (serialized), and
-the read->decide->write is one flock transaction so two simultaneous
-fresh sessions can NEVER both claim ownership.
+The ``t3 worker`` runs every loop with or without a session; SessionStart only records which
+single *session* holds the attended loop slot (Django-free). Owner dies / another session
+opens => the new session takes the slot. A live concurrent owner => the second session is
+told who holds it and never evicts it. All registry writes are flock-guarded (serialized),
+and the read->decide->write is one flock transaction so two simultaneous fresh sessions can
+NEVER both claim ownership.
 
 These exercise the real ``hook_router`` registry + SessionStart/SessionEnd
 handlers under a temp ``T3_LOOP_REGISTRY_DIR``.
 """
 
+import contextlib
 import json
 import multiprocessing
 import multiprocessing.synchronize
 import os
+import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import loop_registry_liveness
 from hooks.scripts.hook_router import (
     _OWNER_LOOP,
     _read_loop_registry,
@@ -77,11 +73,13 @@ class TestTickOwnerRecord:
         assert entry["pid"] == os.getppid()
         assert "spawn_brief" not in entry  # briefs retired
 
-    def test_no_owner_is_tick_dispatch_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_no_owner_takes_the_slot_and_is_told_the_worker_runs_the_loops(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         handle_session_start_bootstrap({"session_id": "first", "agent_id": "a1"})
         ctx = _ctx(capsys).lower()
-        assert "t3 loops tick" in ctx
-        assert "claim-next" in ctx
+        assert "holds this host's attended loop slot" in ctx
+        assert "t3 worker" in ctx
         assert "from its brief" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "first"
 
@@ -97,7 +95,7 @@ class TestDeadOwnerReclaim:
         # "nothing to re-spawn" (the negation IS the point) — what must be
         # absent is the retired roster vocabulary + the stale ghost
         # agentId being surfaced for resume.
-        assert "t3 loops tick" in ctx
+        assert "holds this host's attended loop slot" in ctx
         for retired in ("from its brief", "takeover", "resume by", "ghost", "t3-main-loop", "t3-bug-hunt"):
             assert retired not in ctx
         entry = _read_loop_registry()[_OWNER_LOOP]
@@ -113,7 +111,7 @@ class TestConcurrentLiveOwnerStaysIdle:
         handle_session_start_bootstrap({"session_id": "second-2", "agent_id": "agent-2"})
 
         ctx = _ctx(capsys).lower()
-        assert "stay idle" in ctx or "do not arm" in ctx
+        assert "another live session" in ctx
         assert "owner-1" in ctx  # names the live owner
         owner = _read_loop_registry()[_OWNER_LOOP]
         assert owner["session_id"] == "owner-1"
@@ -121,11 +119,7 @@ class TestConcurrentLiveOwnerStaysIdle:
 
 
 class TestSameSessionRestartStaysOwner:
-    """Post-compaction same-session restart: still owner, keep ticking.
-
-    Nothing to resume-by-agentId (no roster of sub-agents) — the cron
-    simply keeps ticking under the same owner session.
-    """
+    """Post-compaction same-session restart: still the slot owner, nothing to resume."""
 
     def test_same_session_restart_is_idempotent_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
         _write_loop_registry(_owner_entry("owner-1", "agent-owner", os.getppid()))
@@ -133,7 +127,7 @@ class TestSameSessionRestartStaysOwner:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-owner"})
 
         ctx = _ctx(capsys).lower()
-        assert "t3 loops tick" in ctx
+        assert "holds this host's attended loop slot" in ctx
         assert "resume by" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 
@@ -245,12 +239,11 @@ def _race_round(
 
 def _is_owner_directive(ctx: str) -> bool:
     low = ctx.lower()
-    return "loop owner" in low and "stay idle" not in low
+    return "this session holds this host's attended loop slot" in low
 
 
 def _is_non_owner_directive(ctx: str) -> bool:
-    low = ctx.lower()
-    return "stay idle" in low or "do not arm" in low
+    return "another live session" in ctx.lower()
 
 
 @pytest.mark.timeout(300)
@@ -314,3 +307,99 @@ class TestConcurrentFreshClaimIsAtomic:
             session_ids = {entry["session_id"] for entry in data.values()}
             assert len(session_ids) == 1, f"round {rnd}: mixed ownership {session_ids}"
             assert session_ids <= {"sessionA", "sessionB"}
+
+
+@contextlib.contextmanager
+def _teatree_unimportable() -> Iterator[None]:
+    """Make ``import teatree*`` raise, as in a hook interpreter with no teatree on ``sys.path``."""
+
+    class _BlockTeatree:
+        def find_spec(self, name: str, path: object = None, target: object = None) -> None:
+            if name == "teatree" or name.startswith("teatree."):
+                msg = f"No module named {name!r}"
+                raise ModuleNotFoundError(msg)
+
+    saved = {k: v for k, v in sys.modules.items() if k == "teatree" or k.startswith("teatree.")}
+    for k in saved:
+        del sys.modules[k]
+    finder = _BlockTeatree()
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            sys.meta_path.remove(finder)
+        sys.modules.update(saved)
+
+
+class TestOwnershipDegradesWithoutTeatree:
+    """#810: a hook must never raise to the session when ``teatree`` is unimportable."""
+
+    def test_session_owns_loop_false_when_teatree_unimportable(self) -> None:
+        _write_loop_registry(_owner_entry("owner-y", "a", _live_pid()))
+        with _teatree_unimportable():
+            assert loop_registry_liveness.session_owns_loop("owner-y") is False
+
+    def test_prune_dead_owner_degrades_when_teatree_unimportable(self) -> None:
+        registry = _owner_entry("s", "a", _live_pid())
+        with _teatree_unimportable():
+            assert loop_registry_liveness.prune_dead_owner(registry) == {}
+
+
+#: Above the kernel's maximum pid, so no process can ever hold it here.
+_DEAD_PID = 2**22 + 7
+
+
+class TestDeadEntriesArePrunedWhateverNamespaceTheyName:
+    def test_a_dead_entry_is_pruned_whatever_namespace_it_names(self) -> None:
+        entry = {"session_id": "s", "pid": _DEAD_PID, "pid_namespace": "pid:[4026532000]"}
+
+        assert loop_registry_liveness.prune_dead_owner({_OWNER_LOOP: entry}) == {}
+
+    def test_a_legacy_entry_without_a_namespace_is_still_pruned_when_dead(self) -> None:
+        assert loop_registry_liveness.prune_dead_owner({_OWNER_LOOP: {"session_id": "s", "pid": _DEAD_PID}}) == {}
+
+
+class TestForeignNamespaceOwnerIsStillReclaimable:
+    """A record this reader cannot attribute must not wedge the registry (#4270).
+
+    Nothing behind this file expires a record, and a restarted container never returns to
+    its old pid namespace — so a keep an owner can never contradict would be permanent and
+    every session on the box would stop driving the loop-driven Stop gates.
+    """
+
+    SIBLING_CONTAINER = "pid:[4026532000]"
+
+    @pytest.fixture(autouse=True)
+    def _foreign_reader(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.core.loop_lease_liveness.reader_pid_namespace", lambda: "pid:[4026531000]")
+
+    def _own_from_sibling_container(self, pid: int) -> None:
+        _write_loop_registry(
+            {
+                _OWNER_LOOP: {
+                    "session_id": "gone-with-its-container",
+                    "agent_id": "a",
+                    "pid": pid,
+                    "pid_namespace": self.SIBLING_CONTAINER,
+                    "heartbeat_ts": int(time.time()),
+                }
+            }
+        )
+
+    def test_a_dead_foreign_owner_stops_owning_the_loop(self) -> None:
+        self._own_from_sibling_container(_DEAD_PID)
+
+        assert loop_registry_liveness.session_owns_loop("gone-with-its-container") is False
+
+    def test_a_dead_foreign_owner_does_not_stop_a_fresh_session_driving(self) -> None:
+        self._own_from_sibling_container(_DEAD_PID)
+
+        assert router._session_drives_loop("fresh-session") is True
+
+    def test_a_live_foreign_owner_still_owns_and_drives(self) -> None:
+        # The control: both readers DO read this fixture's record.
+        self._own_from_sibling_container(os.getpid())
+
+        assert loop_registry_liveness.session_owns_loop("gone-with-its-container") is True
+        assert router._session_drives_loop("fresh-session") is False

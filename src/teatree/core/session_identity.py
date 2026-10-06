@@ -21,7 +21,7 @@ session id ONLY in the hook JSON payload, never as an env var inside a
 Bash-tool subprocess, so in agent-driven mode the session-id env vars are
 empty and ``current_session_id()`` returned ``""`` → ``t3 loop claim``
 hard-refused → t3-master could never be claimed → every owner-gated slot
-(#1075 reactive answer, self-improve, the claim-next spawn pump) was
+(#1075 reactive answer, self-improve) was
 permanently dead (131 user DMs reacted/answered never). The precedence is
 now:
 
@@ -135,18 +135,6 @@ def _owner_record_from_loop_registry() -> dict | None:
     return owner if isinstance(owner, dict) else None
 
 
-def owner_record() -> dict | None:
-    """The durable ``t3-loop-tick-owner`` registry record, or ``None`` (public accessor).
-
-    Exposes the same record :func:`_session_id_from_loop_registry` /
-    :func:`_pid_from_loop_registry` read (session id + pid of the tick owner)
-    so the driver-detection seam (:func:`teatree.loop.driver_detection.detect_driver`)
-    can decide self-pump without redeclaring the registry path logic a third
-    time. Fails open to ``None`` on any read error.
-    """
-    return _owner_record_from_loop_registry()
-
-
 def _session_id_from_loop_registry() -> str:
     """The tick-owner's durable session id from the loop registry, ``""`` on any error."""
     owner = _owner_record_from_loop_registry()
@@ -188,12 +176,10 @@ def current_session_pid() -> int | None:
 
         ``T3_LOOP_SESSION_PID`` env → loop-registry owner record → ``None``
 
-    The Stop self-pump exports ``T3_LOOP_SESSION_PID`` (the durable session
-    pid, the same value ``SessionStart`` records in the registry) into the
-    tick command, so the env path resolves the durable pid even in an
-    env-restricted subprocess where the loop registry is unreadable. The
-    registry path is the lower-precedence fallback: the ``SessionStart``
-    hook records the durable session pid alongside the session id
+    ``T3_LOOP_SESSION_PID`` is a manual override for an env-restricted
+    subprocess where the loop registry is unreadable. The registry path is
+    the lower-precedence fallback: the ``SessionStart`` hook records the
+    durable session pid alongside the session id
     (``hook_router._tick_owner_record`` stores ``os.getppid()`` of the
     SessionStart hook, whose parent IS the persistent session process).
     Without either source the resolver returns ``None`` so the caller
@@ -308,7 +294,6 @@ __all__ = [
     "is_loop_runner_session",
     "is_unattended_unauthorized_write",
     "loop_principal",
-    "owner_record",
     "runner_identity_env",
     "runner_principal",
     "session_id_from_env",
