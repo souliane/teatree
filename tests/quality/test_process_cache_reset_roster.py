@@ -170,6 +170,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.worktree.branch_classification:_merged_pr_head_sha": "reset_forge_probe_cache",
     "teatree.core.worktree.branch_classification:_pr_merge_commit_sha": "reset_forge_probe_cache",
     "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",
+    "teatree.core.review.gitlab_head_pipeline:_REPORTED_UNMATCHED": "reset_unmatched_head_reports",
     # The once-per-process unlink of the degraded-read marker. Exhausted by an earlier test,
     # a later one's healthy read leaves a marker it asserts was cleared.
     "teatree.config.override_read_health:note_healthy_read": "_reset_declaration_caches",

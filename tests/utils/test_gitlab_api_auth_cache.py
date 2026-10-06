@@ -97,7 +97,7 @@ class TestGitLabAPICacheHits:
         assert client.get_work_item_status("org/repo", 1) == "In progress"
         assert len(graphql_calls) == 1
 
-    def test_get_mr_pipeline_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_get_mr_pipelines_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = gitlab_api.GitLabAPI(token="t")
         calls = []
         monkeypatch.setattr(
@@ -105,9 +105,9 @@ class TestGitLabAPICacheHits:
             "get_json",
             lambda ep: calls.append(1) or [{"status": "success", "web_url": "https://ci/1"}],
         )
-        client.get_mr_pipeline(1, 1)
-        result = client.get_mr_pipeline(1, 1)
-        assert result["status"] == "success"
+        client.get_mr_pipelines(1, 1)
+        result = client.get_mr_pipelines(1, 1)
+        assert result[0]["status"] == "success"
         assert len(calls) == 1
 
     def test_get_mr_approvals_returns_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
