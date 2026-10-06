@@ -30,7 +30,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.bloat_gate import check_review_bloat, references_project_chatter
-from teatree.cli.review.guarded_read import ReadOutcome
+from teatree.core.modelkit.gate_verdict import ReadOutcome
 from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

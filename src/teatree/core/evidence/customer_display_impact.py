@@ -11,10 +11,10 @@ So the only input that can mark a path safe is the overlay's set of
 path — one the overlay considers display-impacting AND one the overlay's rules
 never anticipated — resolves to impacting. This is deliberate: an unanticipated
 path is not proof of no impact, it is a gap the rules did not cover, so it must
-not silently skip the gate. The empty diff is treated the same way: ambiguous
-(a diff that failed to enumerate, not a verified no-op), so it resolves to
-impacting too. Only when *every* path is explicitly non-impacting does the set
-resolve to ``False`` — the single safe-to-skip case.
+not silently skip the gate. Only when *every* path is explicitly non-impacting
+does the set resolve to ``False`` — which includes the empty set, because the
+gate only ever classifies a diff it actually read; a diff that could not be read
+refuses upstream (``resolve_gate_inputs``) and never reaches this function.
 
 The classifier owns no I/O and no ORM: it is a pure function over the file list
 and the non-impacting glob tuple, so it is exhaustively testable and the same
@@ -34,10 +34,7 @@ def is_non_impacting_path(path: str, non_impacting: Sequence[str]) -> bool:
 def classify_paths(changed_files: Sequence[str], non_impacting: Sequence[str]) -> bool:
     """True iff the changed-file set could impact customer display (fail-closed).
 
-    Returns ``False`` only when the set is non-empty and *every* path matches a
-    ``non_impacting`` glob. Any impacting path, any unanticipated path, and the
-    empty set all return ``True``.
+    Returns ``False`` only when *every* path matches a ``non_impacting`` glob (a
+    verified empty diff included). Any impacting or unanticipated path returns ``True``.
     """
-    if not changed_files:
-        return True
     return not all(is_non_impacting_path(path, non_impacting) for path in changed_files)

@@ -17,10 +17,11 @@ from teatree import visual_qa
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
-from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
+from teatree.core.gates.e2e_mandatory_gate import evaluate_e2e_mandatory
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.management.commands._ship.exec import ShippingGateFailure
 from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
+from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown, Verdict, evaluate_gate, read_or_refuse
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import VisualQASummary
 from teatree.core.overlay_loader import get_overlay
@@ -238,14 +239,30 @@ def resolve_base_url(worktree: Worktree) -> str:
     return urls.get("frontend") or urls.get("backend") or "http://127.0.0.1:8000"
 
 
+_VISUAL_QA_NOT_RUN_HINT = (
+    "Repair what the error names (a missing browser: `playwright install chromium`; an unreadable diff: "
+    "a fetchable base ref) and retry, or pass --skip-visual-qa '<reason>' to bypass on purpose."
+)
+
+
+def _visual_qa_verdict(report: visual_qa.VisualQAReport) -> Verdict:
+    if report.total_errors:
+        return Refuse(f"Visual QA found {report.total_errors} blocking finding(s).")
+    if report.not_run_reason:
+        return Unknown(f"the browser could not start ({report.not_run_reason})")
+    if report.unchecked:
+        return Unknown(f"the {visual_qa.TOTAL_TIMEOUT_S}s budget ran out before {', '.join(report.unchecked)}")
+    return Pass()
+
+
 def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str = "") -> VisualQAGateFailure | None:
     """Run the pre-push browser sanity gate before PR creation.
 
-    Records a JSON summary on ``ticket.extra['visual_qa']`` when the gate
-    actually ran (i.e. not skipped for env/flag reasons) so the result
-    survives in the FSM history.  Returns an error dict when blocking
-    findings are present so the caller can refuse PR creation, or
-    ``None`` when the gate passes / is skipped.
+    Records a JSON summary on ``ticket.extra['visual_qa']`` when pages were
+    checked or the gate blocks, so the result survives in the FSM history.
+    Returns an error dict on findings AND when the check did not run (the
+    diff was unreadable, the browser could not start, the budget ran out),
+    or ``None`` when it passed or was explicitly skipped.
 
     #776 N1: the worktree is the one the caller already resolved and is about to
     ship, handed down like every sibling gate takes it, so visual QA scans the
@@ -257,24 +274,37 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
     base_url = resolve_base_url(worktree)
 
     overlay = get_overlay()
-    diff = visual_qa.changed_files(repo=repo_path)
-    report = visual_qa.evaluate(diff=diff, overlay=overlay, base_url=base_url, skip_reason=skip_reason)
+    result = evaluate_gate(
+        "visual_qa",
+        collect=lambda: visual_qa.evaluate(
+            read_diff=lambda: visual_qa.changed_files(repo=repo_path),
+            overlay=overlay,
+            base_url=base_url,
+            skip_reason=skip_reason,
+        ),
+        judge=_visual_qa_verdict,
+    )
+    report = result.evidence
 
     # Only persist when the gate produced a meaningful signal — skipping a
     # no-op run keeps the FSM history readable.
-    if report.pages or report.has_errors:
+    if report is not None and (report.pages or report.has_errors):
         # #800 N3: canonical locked RMW — concurrent pr_urls (ship
         # worker) writer no longer clobbers visual_qa.
         ticket.merge_extra(set_keys={"visual_qa": report.summary()})
 
-    if not report.has_errors:
+    if result.passed:
         return None
     return VisualQAGateFailure(
         allowed=False,
-        error=f"Visual QA found {report.total_errors} blocking finding(s).",
-        visual_qa=report.summary(),
-        report_markdown=visual_qa.format_report(report),
-        hint="Fix the findings, or pass --skip-visual-qa <reason> to bypass.",
+        error=result.render(),
+        visual_qa=report.summary() if report is not None else VisualQASummary(),
+        report_markdown=visual_qa.format_report(report) if report is not None else "",
+        hint=(
+            _VISUAL_QA_NOT_RUN_HINT
+            if isinstance(result.verdict, Unknown)
+            else "Fix the findings, or pass --skip-visual-qa <reason> to bypass."
+        ),
     )
 
 
@@ -294,33 +324,21 @@ class E2EMandatoryGateFailure(TypedDict):
 def run_e2e_mandatory_gate(ticket: Ticket, worktree: Worktree) -> E2EMandatoryGateFailure | None:
     """Refuse a customer-display-impacting ship without green E2E evidence (#1967).
 
-    Reads the diff (the same ``origin/main...HEAD`` source the visual-QA gate
-    uses) and head SHA from the worktree the caller resolved and is about to
-    ship, asks the active overlay to classify display impact, then runs the
-    mandatory-E2E gate. A recorded user bypass at the reviewed tree is consumed
-    single-use here. Returns a structured failure naming both remedies on a
-    block, or ``None`` when the gate passes.
-
-    When the worktree path or head SHA cannot be resolved (no real repo, git
-    error) the gate cannot bind to a tree — it returns ``None`` (unverifiable,
-    not a confirmed block), mirroring the inconclusive posture of
-    :func:`assert_commits_ahead_of_base` / the branch-currency gate.
+    Reads the diff (the same resolved-base source the visual-QA gate uses) and
+    head SHA from the worktree the caller resolved and is about to ship, asks the
+    active overlay to classify display impact, then runs the mandatory-E2E gate.
+    A recorded user bypass at the reviewed tree is consumed single-use here.
+    Returns a structured failure naming both remedies on a block, or ``None``
+    when the gate passes. A HEAD git cannot read means the gate did not run, so
+    it refuses; so does an unreadable diff no evidence or bypass covers.
     """
     repo_path = worktree.worktree_path or worktree.repo_path
-    try:
-        head = git.head_sha(repo=repo_path)
-        diff = visual_qa.changed_files(repo=repo_path)
-    except (CommandFailedError, RuntimeError, ValueError):
-        return None
-    if not head:
-        return None
-
-    inputs = resolve_gate_inputs(ticket, changed_files=diff, head_sha=head)
-    try:
-        check_e2e_mandatory(inputs)
-    except E2EMandatoryGateError as exc:
-        return E2EMandatoryGateFailure(allowed=False, error=str(exc))
-    return None
+    refusal = evaluate_e2e_mandatory(
+        ticket,
+        read_head=lambda: read_or_refuse(f"the HEAD of {repo_path}", lambda: git.head_sha(repo=repo_path)),
+        read_diff=lambda: visual_qa.changed_files(repo=repo_path),
+    )
+    return E2EMandatoryGateFailure(allowed=False, error=refusal) if refusal else None
 
 
 class PrBudgetGateFailure(TypedDict):
@@ -391,7 +409,7 @@ def run_debt_delta_gate(ticket: Ticket, worktree: Worktree) -> DebtDeltaGateFail
     Resolves the ship worktree's repo path and delegates to the shared
     :func:`evaluate_debt_delta` orchestration (the same one the ``ensure-pr`` orphan
     path uses), wrapping its refusal message into the ship-gate chain's return style.
-    Inert at the DARK default and a no-op on an unverifiable worktree.
+    A worktree whose diff cannot be read refuses as DID NOT RUN.
     """
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
     error = evaluate_debt_delta(ticket, repo_path)

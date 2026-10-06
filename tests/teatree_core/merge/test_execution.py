@@ -279,6 +279,13 @@ class TestUnreadableForgeStillRefuses(TestCase):
         ):
             assert_ci_not_failed(self._query())
 
+    def test_a_missing_gh_executable_never_reads_as_green(self) -> None:
+        def absent_gh(_argv: list[str]) -> tuple[int, str, str]:
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+
+        with patch(_GH_RUNNER, return_value=absent_gh), pytest.raises((FileNotFoundError, MergePreconditionError)):
+            assert_ci_not_failed(self._query())
+
     def test_a_genuinely_failing_check_still_reports_failed_and_still_refuses(self) -> None:
         """The over-correction guard: a real red must not be laundered into ``unreadable``.
 

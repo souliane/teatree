@@ -38,6 +38,7 @@ _BOT_SCOPES = [
     "mpim:read",
     "reactions:read",
     "reactions:write",
+    "usergroups:read",
     "users:read",
     "users:read.email",
 ]

@@ -42,12 +42,12 @@ class TestBlocksReviewerAssignment:
         "command",
         [
             # The exact CLI surface that assigned a reviewer on the user's own MR.
-            "glab mr update 7624 --reviewer WouterLachat",
-            "glab mr update 7624 --reviewers WouterLachat,souliane",
-            "glab mr update --reviewer WouterLachat -R acme-eng/widget-app",
+            "glab mr update 7624 --reviewer reviewer-a",
+            "glab mr update 7624 --reviewers reviewer-a,souliane",
+            "glab mr update --reviewer reviewer-a -R acme-eng/widget-app",
             # glab mr CREATE that assigns a reviewer at creation time.
-            "glab mr create --title 'fix: x (proj#1)' --description 'b' --reviewer WouterLachat",
-            "glab mr create --reviewers WouterLachat,souliane",
+            "glab mr create --title 'fix: x (proj#1)' --description 'b' --reviewer reviewer-a",
+            "glab mr create --reviewers reviewer-a,souliane",
             # gh pr CREATE assigning a reviewer — long flag and short -r.
             "gh pr create --title 'fix: x' --body 'b' --reviewer octocat",
             "gh pr create -r octocat -r hubot",
@@ -76,7 +76,7 @@ class TestBlocksReviewerAssignment:
         event = {
             "session_id": "sess-reviewer",
             "tool_name": tool_name,
-            "tool_input": {"iid": 7624, "reviewer": "WouterLachat"},
+            "tool_input": {"iid": 7624, "reviewer": "reviewer-a"},
         }
         assert router.handle_block_self_reviewer_assign(event) is True
         deny = _parse_deny(capsys)
@@ -120,12 +120,12 @@ class TestAllowsNonReviewerSurfaces:
 
 class TestNeverLockout:
     def test_per_call_token_allows(self, capsys: pytest.CaptureFixture[str]) -> None:
-        command = "glab mr update 7624 --reviewer WouterLachat  # [reviewer-ok: colleague MR, vetted]"
+        command = "glab mr update 7624 --reviewer reviewer-a  # [reviewer-ok: colleague MR, vetted]"
         assert router.handle_block_self_reviewer_assign(_bash(command)) is False
         assert _parse_deny(capsys) is None
 
     def test_empty_token_does_not_allow(self, capsys: pytest.CaptureFixture[str]) -> None:
-        command = "glab mr update 7624 --reviewer WouterLachat  # [reviewer-ok: ]"
+        command = "glab mr update 7624 --reviewer reviewer-a  # [reviewer-ok: ]"
         assert router.handle_block_self_reviewer_assign(_bash(command)) is True
         deny = _parse_deny(capsys)
         assert deny is not None

@@ -313,6 +313,10 @@ class _FakeMessaging:
         _ = handle
         return ""
 
+    def resolve_usergroup_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
     def auth_test(self) -> dict[str, object]:
         return {}
 

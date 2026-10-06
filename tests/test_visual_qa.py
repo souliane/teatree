@@ -1,8 +1,18 @@
 """Unit tests for the pre-push browser sanity gate."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from teatree import visual_qa
+from teatree.utils.run import CommandFailedError
+from tests._git_repo import make_git_repo, run_git
+
+
+def _unreadable_diff() -> list[str]:
+    msg = "the diff must not be read"
+    raise AssertionError(msg)
 
 
 class TestMatchesTriggers:
@@ -72,35 +82,58 @@ class TestShouldRun:
 
 class TestEvaluate:
     def test_skipped_reason_returned(self) -> None:
-        report = visual_qa.evaluate(diff=["a.html"], overlay=None, base_url="http://x", skip_reason="not relevant")
+        report = visual_qa.evaluate(
+            read_diff=_unreadable_diff, overlay=None, base_url="http://x", skip_reason="not relevant"
+        )
         assert report.skipped_reason == "--skip: not relevant"
         assert report.pages == []
 
     def test_no_targets_skipped(self) -> None:
-        report = visual_qa.evaluate(diff=["a.py"], overlay=None, base_url="http://x")
+        report = visual_qa.evaluate(read_diff=lambda: ["a.py"], overlay=None, base_url="http://x")
         assert report.skipped_reason == "no frontend changes"
         assert report.pages == []
 
     def test_env_disabled_skipped(self) -> None:
         report = visual_qa.evaluate(
-            diff=["a.html"],
+            read_diff=_unreadable_diff,
             overlay=None,
             base_url="http://x",
             env={"T3_VISUAL_QA": "disabled"},
         )
         assert "T3_VISUAL_QA=disabled" in report.skipped_reason
 
-    def test_playwright_unavailable_returns_report(self, monkeypatch) -> None:
+    def test_playwright_unavailable_did_not_run(self, monkeypatch) -> None:
         message = "browser missing"
 
         def _raise(*args: object, **kwargs: object) -> object:
             raise visual_qa.VisualQAUnavailableError(message)
 
         monkeypatch.setattr(visual_qa, "run_check", _raise)
-        report = visual_qa.evaluate(diff=["a.html"], overlay=None, base_url="http://x")
-        assert report.skipped_reason == message
+        report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=None, base_url="http://x")
+        assert report.not_run_reason == message
+        assert report.skipped_reason == ""
         assert report.targets == ["/"]
-        assert not report.has_errors
+        assert report.has_errors
+        assert f"did not run: {message}" in visual_qa.format_report(report)
+
+
+class TestChangedFilesReadsTheResolvedBase:
+    def test_an_unresolvable_base_raises_rather_than_reading_no_changes(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("T3_DIFF_COVERAGE_BASE", raising=False)
+        repo = make_git_repo(tmp_path / "repo")
+
+        with pytest.raises(CommandFailedError):
+            visual_qa.changed_files(repo=str(repo))
+
+    def test_the_configured_diff_base_is_honoured(self, tmp_path: Path, monkeypatch) -> None:
+        repo = make_git_repo(tmp_path / "repo")
+        run_git(repo, "checkout", "-q", "-b", "feature")
+        (repo / "page.html").write_text("<p>page</p>")
+        run_git(repo, "add", "page.html")
+        run_git(repo, "commit", "-q", "-m", "page")
+        monkeypatch.setenv("T3_DIFF_COVERAGE_BASE", "refs/heads/main")
+
+        assert visual_qa.changed_files(repo=str(repo)) == ["page.html"]
 
 
 class TestRunCheckLaunchesHeadless:
@@ -138,7 +171,7 @@ class TestVisualQAReport:
         assert "Not checked" in visual_qa.format_report(report)
 
     def test_a_skipped_report_is_not_reported_incomplete(self) -> None:
-        report = visual_qa.VisualQAReport(targets=["/a"], skipped_reason="playwright is not installed")
+        report = visual_qa.VisualQAReport(targets=["/a"], skipped_reason="--skip: docs only")
         assert report.unchecked == []
         assert report.has_errors is False
 

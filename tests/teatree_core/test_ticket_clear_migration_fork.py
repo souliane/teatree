@@ -28,6 +28,8 @@ from teatree.core.migration_leaf_probe import MigrationLeafConflict
 from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.core.overlay import OverlayReview
 
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
 _BASE_MIGRATION = (
     "from django.db import migrations\n\n\n"
     "class Migration(migrations.Migration):\n"

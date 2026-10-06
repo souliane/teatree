@@ -7,6 +7,8 @@ non-impacting and BLOCKS when it is impacting with no evidence — the classifie
 verdict is what flips the outcome.
 """
 
+import tempfile
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -15,7 +17,9 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import pr as pr_command
-from teatree.core.models import E2eMandatoryRun, Ticket
+from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate
+from teatree.core.models import E2eMandatoryRun, Ticket, Worktree
+from tests._git_repo import make_git_repo, run_git
 
 from ._shared import _MOCK_OVERLAY, _shippable_ticket
 
@@ -36,6 +40,7 @@ class _ImpactingOverlay:
     review = _ImpactingReview()
 
 
+@pytest.mark.usefixtures("readable_ship_tree")
 class TestPrCreateE2EMandatory(TestCase):
     def _create(self, ticket: Ticket) -> dict[str, object]:
         with (
@@ -82,3 +87,30 @@ class TestPrCreateE2EMandatory(TestCase):
         ticket.refresh_from_db()
         assert result.get("allowed") is False
         assert ticket.state != Ticket.State.PR_OPENED
+
+
+class TestShipE2EGateNeedsAReadableTree(TestCase):
+    """The ship side binds to a tree git can read; one it cannot read did not run, never a pass."""
+
+    def test_a_worktree_git_cannot_read_did_not_run(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/90")
+        with tempfile.TemporaryDirectory() as not_a_repo:
+            worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path=not_a_repo, branch="feat")
+            with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+                failure = run_e2e_mandatory_gate(ticket, worktree)
+
+        assert failure is not None
+        assert failure["error"].startswith("[gate:e2e_mandatory] DID NOT RUN")
+        assert "HEAD" in failure["error"]
+
+    def test_green_evidence_at_head_covers_a_diff_with_no_base_to_read(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/91")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_git_repo(Path(tmp) / "repo")
+            head = run_git(repo, "rev-parse", "HEAD")
+            E2eMandatoryRun.record(
+                ticket=ticket, head_sha=head, spec="e2e/x.spec.ts", result="green", posted_url="https://example.com/n/1"
+            )
+            worktree = Worktree.objects.create(ticket=ticket, overlay="test", repo_path=str(repo), branch="main")
+            with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+                assert run_e2e_mandatory_gate(ticket, worktree) is None
