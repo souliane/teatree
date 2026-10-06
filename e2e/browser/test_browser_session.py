@@ -32,6 +32,7 @@ def test_steps_reuse_one_headless_browser_until_close(site: BrokenSite, browser:
     keeper = browser.keeper_pid()
     browser.step("act", "click", "text=Go")
     inspection = browser.step("inspect")
+    browser.step("open", site.clean_url)
 
     browser.require_one_headless_keeper(keeper)
     inspection.require_console("diag-boom", "diag-clicked")
