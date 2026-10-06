@@ -231,11 +231,33 @@ class TestSubsectionAwareTruncation:
         assert "dropped whole sections: review § Workflows > Flow 9." in out
         assert _cut_lands_on_a_heading_boundary(block, out)
 
-    def test_a_subsection_before_any_section_is_labelled_on_its_own(self) -> None:
-        block = "\n".join(["--- SKILL: ship ---", "### Lone\n" + "l" * 500, "### Tail\n" + "t" * 2000])
+    def test_a_subsection_before_any_section_of_its_skill_is_labelled_on_its_own(self) -> None:
+        block = "\n".join(
+            [
+                "--- SKILL: review ---",
+                "## Workflows\nw",
+                "--- SKILL: ship ---",
+                "### Lone\nl",
+                "### Tail\n" + "t" * 2000,
+            ]
+        )
         out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) - 1000)
 
         assert "dropped whole sections: ship § Tail." in out
+
+    def test_an_unclosed_fence_does_not_hide_the_next_skills_headings(self) -> None:
+        block = "\n".join(
+            [
+                "--- SKILL: ship ---",
+                "## Example\n```\nunclosed",
+                "--- SKILL: review ---",
+                "## Head\nh",
+                "## Tail\n" + "t" * 2000,
+            ]
+        )
+        out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) - 1000)
+
+        assert "dropped whole sections: review § Tail." in out
 
     def test_a_heading_inside_a_code_fence_is_never_a_cut_point(self) -> None:
         fenced = "\n".join(["```markdown", *(f"## Fake {i}\n{'f' * 500}" for i in range(5)), "```"])
