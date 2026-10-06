@@ -25,7 +25,7 @@ from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.models import ConfigSetting, ReviewEvidence, Ticket
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
-from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
+from teatree.mcp.write_tool_run import run_command, run_emitting_command
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 from tests.teatree_core.test_review_request_guard import FakeClient
@@ -149,16 +149,6 @@ class TestReviewRequestPostTool(TestCase):
 
 
 class TestJsonEmittingCommandHelpers(TestCase):
-    def test_last_json_object_skips_noise_and_returns_the_last_object(self) -> None:
-        # Reversed scan hits, in order: an invalid-JSON braces line (suppressed),
-        # an unclosed-brace line (not a braces pair), a prose line, then the real
-        # verdict object.
-        text = '{"action": "post"}\ntrailing prose\n{unclosed\n{bad json}'
-        assert _last_json_object(text) == {"action": "post"}
-
-    def test_last_json_object_returns_none_without_a_json_object(self) -> None:
-        assert _last_json_object("just prose\nmore prose") is None
-
     def test_run_emitting_command_surfaces_stderr_when_no_json(self) -> None:
         def _boom(_command: str, *_args: object, **_kwargs: object) -> None:
             sys.stderr.write("boom: bad input")

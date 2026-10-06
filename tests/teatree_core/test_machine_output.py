@@ -9,7 +9,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django_typer.management import TyperCommand, command
 
-from teatree.core.machine_output import MachineOutputCommand, call_command_streamed, emit, to_jsonable
+from teatree.core.machine_output import MachineOutputCommand, call_command_streamed, emit, last_json_object, to_jsonable
 
 
 class _Color(enum.Enum):
@@ -50,6 +50,15 @@ class TestToJsonable:
 
     def test_unknown_leaf_degrades_to_str(self) -> None:
         assert to_jsonable(object()) is not None  # str(object) — no raise
+
+
+class TestLastJsonObject:
+    def test_skips_noise_and_returns_the_last_object(self) -> None:
+        text = '{"action": "post"}\ntrailing prose\n{unclosed\n{bad json}'
+        assert last_json_object(text) == {"action": "post"}
+
+    def test_returns_none_without_a_json_object(self) -> None:
+        assert last_json_object("just prose\nmore prose") is None
 
 
 class TestEmit:

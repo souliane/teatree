@@ -60,6 +60,7 @@ from teatree.loop.scanners import (
     ReviewNagScanner,
     ReviewRequestMergeReactScanner,
     ReviewRequestResumeScanner,
+    ReviewRequestSendScanner,
     ScanSignal,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -219,7 +220,11 @@ def _ship_jobs_for_overlay(
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
-    triage_scanner = _mr_triage_scanner_for(backend, ci_enricher=ci_enricher)
+    triage_scanner = _mr_triage_scanner_for(
+        backend,
+        ci_enricher=ci_enricher,
+        ask_owner_on_missing_review=not _colleague_egress_selected(backend),
+    )
     if triage_scanner is not None:
         jobs.append(_ScannerJob(scanner=triage_scanner, overlay=tag))
     return jobs
@@ -300,6 +305,11 @@ def _repo_owner_resolver(backend: OverlayBackends) -> Callable[[str], RepoOwner]
     return overlay.review.repo_owner_for_slug
 
 
+def _colleague_egress_selected(backend: OverlayBackends) -> bool:
+    """Whether this tick selects the scanners that act outward under the owner's name."""
+    return backend.messaging is not None and not egress_forbidden()
+
+
 def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     """The colleague-facing review posts (overlay-scoped). Intake is the unified ``issue_intake`` job.
 
@@ -312,7 +322,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
     tag = backend.name
     owner_identities = _user_identity_aliases_for_overlay(tag)
     jobs: list[_ScannerJob] = []
-    if backend.messaging is not None and not egress_forbidden():
+    if _colleague_egress_selected(backend):
         jobs.extend(
             (
                 _ScannerJob(
@@ -345,6 +355,9 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                 ),
             ),
         )
+        triage = _mr_triage_scanner_for(backend, ci_enricher=BoundedCiEnricher())
+        if triage is not None:
+            jobs.append(_ScannerJob(scanner=ReviewRequestSendScanner(triage=triage), overlay=tag))
     return jobs
 
 

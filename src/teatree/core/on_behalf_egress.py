@@ -160,6 +160,14 @@ def _observe_egress_errors(
         raise
 
 
+def observed_channel_post(*, target: str, action: str, channel: str, publish: Callable[[], RawAPIDict]) -> RawAPIDict:
+    """A gated caller's own channel post, suppressed and reported by a preview exactly as this egress's are."""
+    destination = EgressDestination(channel=channel)
+    with _observe_egress_errors(target, action, EgressKind.POST, destination=destination):
+        response = run_egress_transport(target, action, EgressKind.POST, publish)
+    return _observe_egress(target, action, EgressKind.POST, response, destination=destination)
+
+
 class _PublishDidNotLandError(Exception):
     """Carries the raw body of a wire call that did not put the artifact on the surface.
 
@@ -422,5 +430,6 @@ __all__ = [
     "OnBehalfPostBlockedError",
     "OnBehalfSlackEgress",
     "observe_on_behalf_egress",
+    "observed_channel_post",
     "suppress_on_behalf_egress",
 ]

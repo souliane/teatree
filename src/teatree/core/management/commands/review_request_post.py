@@ -45,6 +45,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
+from teatree.core.egress_transport import egress_suppressed
 from teatree.core.gates.review_request_batch_gate import refusal_payload, work_group_batch_refusal
 from teatree.core.gates.review_request_draft_gate import draft_refusal_reason
 from teatree.core.gates.review_request_guard import (
@@ -57,6 +58,7 @@ from teatree.core.gates.review_request_guard import (
 from teatree.core.gates.review_request_state_gate import check_reviewed_state
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
+from teatree.core.on_behalf_egress import observed_channel_post
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -317,7 +319,12 @@ class Command(TyperCommand):
                 action=_ACTION,
                 context=OnBehalfContext(overlay=overlay_name or None, own_mr=True, target=canonical),
                 publish=lambda: _posted_or_raise(
-                    messaging.post_message(channel=target.channel_id, text=text, thread_ts=""),
+                    observed_channel_post(
+                        target=canonical,
+                        action=_ACTION,
+                        channel=target.channel_id,
+                        publish=lambda: messaging.post_message(channel=target.channel_id, text=text, thread_ts=""),
+                    ),
                 ),
             )
         except OnBehalfPostBlockedError as err:
@@ -336,7 +343,8 @@ class Command(TyperCommand):
                 exit_code=2,
             )
         ts = str(resp.get("ts", ""))
-        permalink = messaging.get_permalink(channel=target.channel_id, ts=ts)
+        previewed = egress_suppressed()
+        permalink = "" if previewed else messaging.get_permalink(channel=target.channel_id, ts=ts)
 
         # Finalize the guard's claim (#1508). ``should_post_review_request``
         # took the ``ReviewRequestPost`` get_or_create claim with an empty
@@ -353,13 +361,14 @@ class Command(TyperCommand):
 
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 
-        persist_review_message(
-            mr_url=canonical,
-            iid=_ticket_iid_for(canonical, ticket_id),
-            permalink=permalink,
-            channel=target.channel_id,
-            when=timezone.now(),
-        )
+        if not previewed:
+            persist_review_message(
+                mr_url=canonical,
+                iid=_ticket_iid_for(canonical, ticket_id),
+                permalink=permalink,
+                channel=target.channel_id,
+                when=timezone.now(),
+            )
         notify_user_on_behalf_post(
             target=canonical,
             action=_ACTION,

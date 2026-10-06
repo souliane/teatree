@@ -56,6 +56,10 @@ class TestAfkSelectsNoColleagueWork(django.test.TestCase):
         """The review loop still does useful work — it just never picks up a colleague's MR."""
         assert self._scanner_names(Domain.REVIEW, "afk"), "afk selected no review work at all"
 
+    def test_the_review_request_sender_is_selected_present_and_not_afk(self) -> None:
+        assert "review_request_send" in self._scanner_names(Domain.FOLLOWUP, "present")
+        assert "review_request_send" not in self._scanner_names(Domain.FOLLOWUP, "afk")
+
     def test_the_inbound_reply_posts_are_selected_present_and_not_afk(self) -> None:
         present = self._scanner_names(Domain.FOLLOWUP, "present")
         afk = self._scanner_names(Domain.FOLLOWUP, "afk")

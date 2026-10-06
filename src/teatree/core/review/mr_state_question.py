@@ -42,10 +42,6 @@ _OWNER_QUESTION_OBSERVER: ContextVar[Callable[[str], None] | None] = ContextVar(
     default=None,
 )
 
-#: Open state questions the owner is asked to hold at once, so a backlog of undecidable
-#: merge requests arrives as a pair rather than a flood nobody answers.
-MAX_OPEN_QUESTIONS = 2
-
 
 @contextmanager
 def observe_owner_question_creation(observer: Callable[[str], None]) -> Iterator[None]:
@@ -102,6 +98,13 @@ def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> De
     if (observer := _OWNER_QUESTION_OBSERVER.get()) is not None:
         observer(mr_url)
     return question
+
+
+def retire_mr_state_question(mr_url: str, *, reason: str) -> None:
+    """Mark *mr_url*'s open state question stale, freeing its slot under the cap."""
+    question = DeferredQuestion.pending().filter(dedupe_marker=mr_state_marker(mr_url)).first()
+    if question is not None:
+        question.mark_stale(reason)
 
 
 def _question_text(*, mr_url: str, reason: str) -> str:

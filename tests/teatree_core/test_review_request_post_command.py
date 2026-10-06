@@ -26,6 +26,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.core.backend_protocols import DraftState
+from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import (
     ConfigSetting,
@@ -35,6 +36,7 @@ from teatree.core.models import (
     ReviewRequestPost,
     Ticket,
 )
+from teatree.core.on_behalf_egress import EgressAttempt, observe_on_behalf_egress
 from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
@@ -774,6 +776,36 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert _MR_URL in data
         assert data[_MR_URL]["channel"] == "C_REVIEW"
         assert data[_MR_URL]["permalink"].startswith("https://team.slack.com/archives/C_REVIEW/")
+
+    def test_a_preview_decides_the_same_post_and_makes_none_of_it(self) -> None:
+        """The control is the case above: the same gates, a real post and a persisted permalink."""
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.REVIEW_REQUESTED,
+            issue_url="https://gitlab.com/org/repo/-/issues/385",
+        )
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        attempts: list[EgressAttempt] = []
+
+        def _preview(_target: str, _action: str, _kind: EgressKind) -> dict[str, object]:
+            return {"ok": True, "ts": "dry-run"}
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+            suppress_on_behalf_egress(_preview),
+            observe_on_behalf_egress(attempts.append),
+        ):
+            code, payload = _run("--title", "fix(scope): thing", "--ticket-id", str(ticket.pk))
+
+        assert (code, payload["action"]) == (0, "post")
+        assert backend.posts == []
+        assert [(a.action, a.outcome.value, a.channel) for a in attempts] == [
+            ("review_request_post", "posted", "C_REVIEW")
+        ]
+        assert not list(self._tmp.rglob("mr_review_messages.json"))
 
     def test_draft_mr_refused_before_claim(self) -> None:
         """A draft MR refuses ``draft_mr`` (exit 2) BEFORE any dedup claim row is taken."""
