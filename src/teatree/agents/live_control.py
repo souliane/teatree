@@ -6,11 +6,14 @@ model obedience. The only per-harness surface is :class:`SteerableSession`.
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import monotonic
 from typing import Protocol, TypedDict, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 MAX_INPUT_BYTES = 16_384
 MAX_PENDING_INPUTS = 4
@@ -225,11 +228,15 @@ class LiveSessionController:
         settled: asyncio.Future[ControlReceipt] = asyncio.get_running_loop().create_future()
         self._receipts[command_id] = (_digest(text), settled)
         self._in_flight.add(settled)
+        unknown = ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY)
         try:
             receipt = await self._deliver(text, command_id, wait)
         except asyncio.CancelledError:
-            settled.set_result(ControlReceipt(command_id, self.task.pk, ControlOutcome.UNKNOWN_DELIVERY))
+            settled.set_result(unknown)
             raise
+        except Exception:
+            logger.warning("Task %s: delivery of command %s failed mid-flight", self.task.pk, command_id, exc_info=True)
+            receipt = unknown
         finally:
             self._in_flight.discard(settled)
         settled.set_result(receipt)
