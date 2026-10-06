@@ -263,6 +263,7 @@ class TeatreeSettingsSchema(BaseSettings):
         bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY
     ]
     review_nag_max_interval_days: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
+    review_nag_reask_mention: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_OVERLAY] = ""
     review_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     review_skill_alternates: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]
     scanner_overlay_scope: Annotated[list[str], BeforeValidator(_parse_str_list), _DEFAULT_OVERLAY]

@@ -134,6 +134,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "notion_write_denied_roots": _parse_str_list,
     "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_max_interval_days": _parse_strict_int,
+    "review_nag_reask_mention": _parse_strict_str,
     "review_exempt_repos": _parse_str_list,
     "review_exempt_repos_count_toward_group_readiness": _parse_strict_bool,
     "mr_title_regex": _parse_strict_str,

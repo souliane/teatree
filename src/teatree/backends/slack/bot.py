@@ -63,6 +63,7 @@ from teatree.backends.slack.web_ops import join_conversation as join_slack_conve
 from teatree.backends.slack.web_ops import open_im_channel, read_ext_shared, read_permalink, run_auth_test
 from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
+from teatree.backends.slack.web_reads import resolve_usergroup_id as resolve_slack_usergroup_id
 from teatree.slack_mrkdwn import wrap_slack_message
 from teatree.types import ChannelReadRefusedError, RawAPIDict
 
@@ -574,3 +575,6 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def resolve_user_id(self, handle: str) -> str:
         """Look up a Slack user id from a handle (``@alice`` or ``alice``)."""
         return resolve_slack_user_id(get=self._get, handle=handle)
+
+    def resolve_usergroup_id(self, handle: str) -> str:
+        return resolve_slack_usergroup_id(get=self._get, handle=handle)

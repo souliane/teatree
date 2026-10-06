@@ -35,6 +35,7 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.post_routed(channel="C", text="hi") == {}
     assert backend.react_routed(channel="C", ts="123", emoji="eyes") == {}
     assert backend.resolve_user_id("alice") == ""
+    assert backend.resolve_usergroup_id("reviewers") == ""
     assert backend.post_audio_dm(channel="C", filepath="/tmp/x.m4a", text="hi", title="t") == {}
 
 
@@ -235,6 +236,23 @@ def test_slack_resolve_user_id_returns_empty_on_no_match(monkeypatch: pytest.Mon
 def test_slack_resolve_user_id_empty_handle_returns_empty() -> None:
     backend = SlackBotBackend(bot_token="xoxb-test")
     assert backend.resolve_user_id("@") == ""
+
+
+def test_slack_resolve_usergroup_id_reads_usergroups_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        if url.endswith("/usergroups.list"):
+            return httpx.Response(
+                200,
+                json={"ok": True, "usergroups": [{"id": "S0REVIEWERS", "handle": "reviewers"}]},
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.resolve_usergroup_id("@reviewers") == "S0REVIEWERS"
+    assert backend.resolve_user_id("reviewers") == ""
 
 
 def test_slack_inbound_methods_return_empty_until_socket_mode_enqueues() -> None:

@@ -41,9 +41,9 @@ def _owner_host() -> MagicMock:
     host.get_issue.return_value = {
         "web_url": _ISSUE_URL,
         "description": "Original body.",
-        "author": {"username": "adrien.cossa"},
+        "author": {"username": "alice.example"},
     }
-    host.current_user.return_value = "adrien.cossa"
+    host.current_user.return_value = "alice.example"
     host.repo_for_issue_url.return_value = "org/repo"
     host.post_issue_comment.return_value = {"id": 4242}
 

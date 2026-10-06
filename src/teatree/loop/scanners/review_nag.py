@@ -1,12 +1,15 @@
-"""Widening ``@engineers :pray:`` re-ping for unreviewed MRs in the review channel (#1084 follow-up).
+"""Widening re-ask for unreviewed MRs in the review channel (#1084 follow-up).
 
 The user posts MRs to the review channel; the bot tracks each in a
 ``ReviewRequestPost`` row. This scanner walks the open rows each tick and, when
 an MR has had **no activity for its current re-ask interval** — no thread reply,
 no reaction — and is still live-open, non-draft, unapproved and unpaused, posts
-exactly ONE thread reply: the ``@engineers`` subteam mention + `` :pray:`` on
+exactly ONE thread reply: the configured re-ask mention + `` :pray:`` on
 ``(channel, thread_ts)``. The post stays behind the #960 on-behalf gate
 (``OnBehalfSlackEgress``).
+
+Mention. :mod:`teatree.loop.scanners.review_nag_mention` resolves the
+per-overlay ``review_nag_reask_mention`` setting; empty re-asks with no mention.
 
 Cadence. The interval is ``TriageThresholds.nag_interval_for_attempt(owner,
 nag_count)`` — the repo owner's base interval times the Fibonacci step for the
@@ -63,6 +66,7 @@ from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.review_nag_mention import reask_mention
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.utils.url_slug import pr_ref_from_url
@@ -101,7 +105,7 @@ def _epoch(ts: str) -> float:
 
 @dataclass(slots=True)
 class ReviewNagScanner:
-    """Walk ``ReviewRequestPost`` rows and re-ping ``@engineers`` on a widening schedule.
+    """Walk ``ReviewRequestPost`` rows and re-ask for review on a widening schedule.
 
     Stateless beyond the DB rows it walks. Safe to invoke from every loop tick —
     at most one re-ping per row per window, enforced by the ``last_nag_at`` /
@@ -161,7 +165,7 @@ class ReviewNagScanner:
             return blocked
         if thresholds.nag_backoff_at_cap(owner, post.nag_count):
             return _ask_owner_for_state(post, interval)
-        return self._post_engineers_pray(post, messaging, right_now)
+        return self._post_reask(post, messaging, right_now)
 
     def _due_for_a_re_ask(
         self,
@@ -274,7 +278,7 @@ class ReviewNagScanner:
             return _unreadable_state_skip(post, f"the open state came back {open_state.value}")
         return None
 
-    def _post_engineers_pray(
+    def _post_reask(
         self,
         post: ReviewRequestPost,
         messaging: MessagingBackend,
@@ -288,7 +292,8 @@ class ReviewNagScanner:
         if claim is None:
             return None
 
-        text = f"{_engineers_mention(messaging)} :pray:"
+        mention = reask_mention(messaging, overlay_name=self.overlay_name)
+        text = f"{mention} :pray:" if mention else ":pray:"
         try:
             response = OnBehalfSlackEgress(messaging).post(
                 channel=post.slack_channel_id,
@@ -335,7 +340,7 @@ class ReviewNagScanner:
         post.last_nag_reply_ts = reply_ts
         return ScanSignal(
             kind="review_nag.ping",
-            summary=f"Re-pinged @engineers for {post.mr_url} (re-ask #{claim.nag_count})",
+            summary=f"Re-asked for review of {post.mr_url} (re-ask #{claim.nag_count})",
             payload={"mr_url": post.mr_url, "post_id": post.pk, "nag_count": claim.nag_count},
         )
 
@@ -563,13 +568,3 @@ def _approval_state(host: CodeHostBackend, slug: str, pr_id: int) -> ApprovalRea
     # correctly: GitHub hard-codes ``approved_by=[]`` unconditionally (#8), so reading its
     # truthiness misreads every GitHub-backed approval as NOT_APPROVED and nags forever.
     return ApprovalReadState.APPROVED if state["approvals_left"] <= 0 else ApprovalReadState.NOT_APPROVED
-
-
-def _engineers_mention(messaging: MessagingBackend) -> str:
-    try:
-        usergroup_id = messaging.resolve_user_id("engineers")
-    except Exception:  # noqa: BLE001 — never crash on a lookup failure.
-        usergroup_id = ""
-    if usergroup_id:
-        return f"<!subteam^{usergroup_id}>"
-    return "@engineers"
