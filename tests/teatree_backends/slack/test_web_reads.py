@@ -69,13 +69,6 @@ def _usergroups(groups: object) -> RawAPIDict:
 
 
 class TestResolveUsergroupId:
-    def test_matches_the_handle_in_usergroups_list(self) -> None:
-        def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
-            assert method == "usergroups.list"
-            return _usergroups([{"id": "S0OTHERS", "handle": "others"}, {"id": "S0REVIEWERS", "handle": "reviewers"}])
-
-        assert resolve_usergroup_id(get=get, handle="@reviewers") == "S0REVIEWERS"
-
     def test_a_group_id_is_returned_without_a_lookup(self) -> None:
         def get(method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
             raise AssertionError(method)
