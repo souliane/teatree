@@ -393,19 +393,25 @@ def test_a_protocol_failure_while_reading_the_status_is_not_recorded_as_an_unrea
     tmp_path: Path, unsandboxed: CodexAppServerOptions, kind: str
 ) -> None:
     session, _log, manager = _open(kind, tmp_path, unsandboxed, "garbage_status")
+    command, _log = _command(tmp_path, "garbage_status")
+    managers = [] if manager is None else [manager]
+
+    def fresh_manager(code_home: Path) -> SharedCodexAppServer:
+        managers.append(SharedCodexAppServer(code_home=code_home, cache=_FakeCache(), command=command, process_env={}))
+        return managers[-1]
 
     async def start() -> None:
         await session.start()
 
     try:
         with (
-            patch("teatree.agents.codex_shared_app_server.shared_codex_app_server", return_value=manager),
-            pytest.raises(CodexAppServerError) as failed,
+            patch("teatree.agents.codex_shared_app_server.shared_codex_app_server", side_effect=fresh_manager),
+            pytest.raises(CodexAppServerError, match="emitted an invalid JSONL protocol message") as failed,
         ):
             asyncio.run(start())
     finally:
-        if manager is not None:
-            manager.close()
+        for opened in managers:
+            opened.close()
 
     assert not isinstance(failed.value, HarnessFallbackError)
     assert "could not be read" not in str(failed.value)
