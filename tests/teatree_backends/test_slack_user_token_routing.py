@@ -35,8 +35,7 @@ def _capturing_get(captured: list[dict[str, object]]) -> object:
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         captured.append({"url": url, **kwargs})
         if url.endswith("/conversations.info"):
-            # The token-selection policy probes Connect membership here;
-            # C0DEMOCHAN1 is the real Slack-Connect #the-review-team.
+            # The token-selection policy probes Connect membership here.
             return httpx.Response(
                 200,
                 json={"ok": True, "channel": {"is_ext_shared": True}},

@@ -30,7 +30,7 @@ class ReviewRequestPost(models.Model):
     slack_channel_id = models.CharField(max_length=64)
     slack_thread_ts = models.CharField(max_length=64)
     bot_id = models.CharField(max_length=64, blank=True)
-    # When the ``@engineers :pray:`` re-ping last fired (#1084 follow-up).
+    # When the review nag's re-ask last fired (#1084 follow-up).
     # Null ⇒ never re-pinged; the scanner reads it to enforce no double-ping within
     # the current window. Claimed together with ``nag_count`` in one conditional UPDATE.
     last_nag_at = models.DateTimeField(null=True, blank=True)

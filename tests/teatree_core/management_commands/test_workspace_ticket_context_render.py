@@ -38,11 +38,11 @@ class RenderTicketContextTest(TestCase):
         assert render_ticket_context("   \n  ") == ""
 
     def test_present_context_renders_collapsed_block(self) -> None:
-        text = render_ticket_context("[2026-05-18 09:00] dev_lr_id = 5842")
+        text = render_ticket_context("[2026-05-18 09:00] dev_lr_id = 1234")
         assert text.startswith("\n\n")
         assert "<details>" in text
         assert "<summary>Ticket context (durable knowledge store)</summary>" in text
-        assert "dev_lr_id = 5842" in text
+        assert "dev_lr_id = 1234" in text
         assert "</details>" in text
         assert "truncated" not in text
 
@@ -77,7 +77,7 @@ class WorkspaceTicketContextWiringTest(TestCase):
         Ticket.objects.create(
             overlay="test",
             issue_url="https://example.com/issues/600",
-            context="\n\n[2026-05-18 09:00] dev_lr_id = 5842 (used by Wouter for Round 2)",
+            context="\n\n[2026-05-18 09:00] dev_lr_id = 1234 (used by bob for Round 2)",
         )
         out = StringIO()
         with patch.object(workspace_mod.Command, "print_result", new=False, create=True):
@@ -86,7 +86,7 @@ class WorkspaceTicketContextWiringTest(TestCase):
         text = out.getvalue()
         assert "<details>" in text
         assert "Ticket context (durable knowledge store)" in text
-        assert "dev_lr_id = 5842" in text
+        assert "dev_lr_id = 1234" in text
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
