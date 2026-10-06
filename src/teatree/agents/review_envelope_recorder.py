@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, cast
 from django.db import transaction
 
 from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
+from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
+from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -49,7 +51,7 @@ from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
-    from teatree.core.models.types import RubricGrade
+    from teatree.core.models.types import FixRecord, RubricGrade
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
 #: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
@@ -280,7 +282,11 @@ def _record_verdict_and_grades(
     vouch for a tree the verdict does not.
     """
     rubric, grades = rubric_grades
+    fix_record = result.get("fix_record")
+    if fix_record is not None and (refusal := fix_record_refusal(fix_record)):
+        return refusal
     ticket = gated_ticket_for_review_task(task)
+    merge_safe = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -292,17 +298,15 @@ def _record_verdict_and_grades(
     integration_review = result.get("integration_review")
     try:
         with transaction.atomic():
-            if (
-                ticket is not None
-                and str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
-                and isinstance(anti_vacuity, dict)
-            ):
+            if ticket is not None and merge_safe and isinstance(anti_vacuity, dict):
                 ticket.record_anti_vacuity_attestation(
                     target.head_sha,
                     str(anti_vacuity.get("ac_coverage", "")),
                     [str(node) for node in anti_vacuity.get("proven_tests", [])],
                     no_new_tests=anti_vacuity.get("no_new_tests") is True,
                 )
+            if ticket is not None and merge_safe and fix_record is not None and is_fix(ticket):
+                ticket.record_fix_record(cast("FixRecord", fix_record))
             ReviewVerdict.record(
                 pr_id=target.pr_id,
                 slug=target.slug,

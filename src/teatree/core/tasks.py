@@ -20,6 +20,7 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
@@ -300,6 +301,9 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
             ticket.save()
     except CriticGateError as exc:
         _persist_critic_block(ticket_id, exc)
+        return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(None, phase="retro", ticket=Ticket.objects.get(pk=ticket_id), refusal=str(exc))
         return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

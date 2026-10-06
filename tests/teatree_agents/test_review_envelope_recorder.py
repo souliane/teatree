@@ -17,7 +17,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.agents.envelope_refusal import is_recorder_refusal
+from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_recorder_refusal
 from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
 from teatree.core.gates.integration_review_gate import check_integration_review
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
@@ -537,3 +537,53 @@ class TestAPhaseOutsideTheGradedSetOwesNoGrades(TestCase):
             RubricCriterion.Status.PENDING,
             RubricCriterion.Status.PENDING,
         ]
+
+
+_FIX_RECORD = {
+    "root_cause": "the review recorder never wrote the record the DoD gate reads",
+    "evidence": "a fix PR merged without a coding envelope left extra['fix_record'] empty",
+    "regression_test": "tests/teatree_agents/test_review_envelope_recorder.py::TestAMergeSafeReviewRecordsTheFixRecord",
+    "observed_red": "reverted the fix and the test failed",
+    "recurrence_fingerprint": "review_envelope_recorder:no_fix_record_writer",
+}
+
+
+class TestAMergeSafeReviewRecordsTheFixRecord(TestCase):
+    def _fix_ticket(self) -> Ticket:
+        ticket = _author_ticket()
+        Ticket.objects.filter(pk=ticket.pk).update(kind=Ticket.Kind.FIX)
+        return ticket
+
+    def _review(self, *, verdict: str = "merge_safe", record: dict[str, str]) -> tuple[Task, str]:
+        result = _envelope(grades=_full_pass(), verdict=verdict)
+        result["fix_record"] = record
+        task = _reviewing_task_via_dispatch()
+        return task, record_result_envelope(task, result, phase="reviewing").error
+
+    def test_merge_safe_lands_the_record_on_the_gated_ticket_not_the_reviewer_row(self) -> None:
+        ticket = self._fix_ticket()
+
+        task, error = self._review(record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert ticket.extra["fix_record"] == _FIX_RECORD
+        assert "fix_record" not in task.ticket.extra
+
+    def test_a_hold_records_no_fix_record(self) -> None:
+        ticket = self._fix_ticket()
+
+        _task, error = self._review(verdict="hold", record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        assert "fix_record" not in ticket.extra
+
+    def test_a_malformed_record_is_refused_before_any_verdict(self) -> None:
+        self._fix_ticket()
+
+        _task, error = self._review(record={"root_cause": "only one field"})
+
+        assert error.startswith(MALFORMED_FIX_RECORD_PREFIX)
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()

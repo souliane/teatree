@@ -28,6 +28,8 @@ from typing import cast
 
 from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX
 from teatree.agents.result_schema import AgentResultBlob
+from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, fix_record_missing_fields
 
@@ -38,17 +40,26 @@ def record_returned_fix_record(task: Task, result: AgentResultBlob) -> str:
     Kind-agnostic on purpose: the gate decides what to READ (only ``kind=fix``), so a
     record emitted on a feature ticket is recorded rather than dropped — correct if
     the ticket is later re-classified — and a malformed one is refused either way.
+    A verdict-review phase is left to ``review_envelope_recorder``, which writes it on the
+    gated ticket with a merge_safe verdict; its ``task.ticket`` is the reviewer row.
     """
     raw = result.get("fix_record")
-    if raw is None:
+    if raw is None or normalize_phase(task.phase) in ENVELOPE_VERDICT_PHASES:
         return ""
-    missing = fix_record_missing_fields(raw)
-    if missing:
-        return (
-            f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are absent or blank: "
-            f"{', '.join(missing)}. The fix-record DoD gate consumes all of "
-            f"{', '.join(FIX_RECORD_FIELDS)}, so a partial record satisfies nothing — "
-            f"return the whole object or omit the key entirely."
-        )
+    if refusal := fix_record_refusal(raw):
+        return refusal
     task.ticket.record_fix_record(cast("FixRecord", raw))
     return ""
+
+
+def fix_record_refusal(raw: object) -> str:
+    """The refusal for a present but incomplete ``fix_record``, or ``""`` when it is complete."""
+    missing = fix_record_missing_fields(raw)
+    if not missing:
+        return ""
+    return (
+        f"{MALFORMED_FIX_RECORD_PREFIX}these required field(s) are absent or blank: "
+        f"{', '.join(missing)}. The fix-record DoD gate consumes all of "
+        f"{', '.join(FIX_RECORD_FIELDS)}, so a partial record satisfies nothing — "
+        f"return the whole object or omit the key entirely."
+    )

@@ -490,6 +490,23 @@ class TestExecuteRetrospect(TestCase):
         assert ticket.extra.get("retro_scheduled") is True
         assert result.return_value == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}
 
+    def test_a_fix_ticket_with_no_fix_record_returns_the_refusal_and_records_it_once(self) -> None:
+        ticket = self._ticket_in_merged()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED, kind=Ticket.Kind.FIX)
+        waive_rubric(ticket)
+        MergeAuditFactory(clear__ticket=ticket)
+
+        first = execute_retrospect.call(ticket.pk)
+        execute_retrospect.call(ticket.pk)
+
+        assert first["ok"] is False
+        assert "Refusing to deliver" in first["detail"]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.dedupe_marker == f"fsm-wedge:{ticket.pk}:retro:0"
+
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         """At-least-once delivery: redelivered jobs must be no-ops."""

@@ -111,6 +111,10 @@ class TestCheckFixRecordDod(TestCase):
             check_fix_record_dod(_fix_ticket(fix_record={"root_cause": "x"}))
         assert "recurrence_fingerprint" in str(exc.value)
 
+    def test_refusal_names_delivery_where_it_fires(self) -> None:
+        with pytest.raises(FixRecordDodError, match="Refusing to deliver"):
+            check_fix_record_dod(_fix_ticket())
+
 
 class TestOneFieldDefinition(TestCase):
     """#4520: the gate, the recorder, the envelope schema and the brief share ONE tuple."""
