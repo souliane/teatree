@@ -25,13 +25,6 @@ from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 
 
-def _admission_reason() -> str:
-    try:
-        return latest_admission_reason() or ""
-    except Exception:  # noqa: BLE001 — diagnostic only; missing telemetry must not hide the stall
-        return ""
-
-
 @dataclass(slots=True)
 class DispatchGapDetector:
     """Claimable work nobody has claimed or run for a whole stall window."""
@@ -72,7 +65,7 @@ class DispatchGapDetector:
                 payload={
                     "pending_count": stall.pending,
                     "oldest_age_minutes": age_minutes,
-                    "admission_reason": _admission_reason(),
+                    "admission_reason": latest_admission_reason() or "",
                 },
                 auto_fix=self.auto_fix,
             )
