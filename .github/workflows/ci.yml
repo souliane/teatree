@@ -57,7 +57,8 @@
 #   2. Fast static checks    — lint (runs prek INSIDE the prebuilt `-lint`
 #                              Docker image built by `build-image` in group 5
 #                              below — `needs: build-image`, UNCONDITIONAL, so
-#                              lint runs even on pure-docs PRs), blueprint-cross-pr
+#                              lint runs even on pure-docs PRs), blueprint-cross-pr,
+#                              tracked-ignored-files
 #   3. Docs integrity        — doc-update-gate, module-health-gate,
 #                              comment-density-warning, docs-drift
 #   4. Signal & ratchet      — test-shape (advisory),
@@ -266,6 +267,15 @@ jobs:
       - name: §17.1 invariant-numbering cross-PR check
         if: steps.blueprint_diff.outputs.changed == 'true'
         run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref=origin/${{ github.base_ref }}
+
+  # GATE: fails when a tracked file matches a .gitignore rule — a force-add or a
+  # merge gets past .gitignore; an intended file is carved out with a `!` negation.
+  tracked-ignored-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: scripts/hooks/refuse-tracked-ignored-files.sh
 
   # ── 3. Docs integrity ──────────────────────────────────────────────────────
 
