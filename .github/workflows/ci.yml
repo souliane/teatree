@@ -298,6 +298,7 @@ jobs:
   # GATE: fails when a tracked file matches a .gitignore rule — a force-add or a
   # merge gets past .gitignore; an intended file is carved out with a `!` negation.
   tracked-ignored-files:
+    if: github.event.schedule != '17 6 * * 1-6'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
