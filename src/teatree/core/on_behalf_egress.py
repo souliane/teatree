@@ -160,14 +160,20 @@ def _observe_egress_errors(
         raise
 
 
-def observed_channel_post(
-    *, target: str, action: str, channel: str, text: str, post: Callable[[str], RawAPIDict]
-) -> RawAPIDict:
-    """A gated caller's own channel post: send-proxied, then suppressed and reported by a preview like this egress's."""
+def routed_channel_text(*, target: str, action: str, channel: str, text: str) -> str:
+    """The text a gated caller may post to *channel*, send-proxied ahead of its approval gate.
+
+    Outside the gate's transaction on purpose: a refusal raised inside it rolls the ``SendAudit`` row back.
+    """
+    with _observe_egress_errors(target, action, EgressKind.POST, destination=EgressDestination(channel=channel)):
+        return _route_colleague_send(channel=channel, payload=text, action=action, target=target)
+
+
+def observed_channel_post(*, target: str, action: str, channel: str, publish: Callable[[], RawAPIDict]) -> RawAPIDict:
+    """A gated caller's own channel post, suppressed and reported by a preview exactly as this egress's are."""
     destination = EgressDestination(channel=channel)
     with _observe_egress_errors(target, action, EgressKind.POST, destination=destination):
-        routed = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
-        response = run_egress_transport(target, action, EgressKind.POST, lambda: post(routed))
+        response = run_egress_transport(target, action, EgressKind.POST, publish)
     return _observe_egress(target, action, EgressKind.POST, response, destination=destination)
 
 
@@ -434,5 +440,6 @@ __all__ = [
     "OnBehalfSlackEgress",
     "observe_on_behalf_egress",
     "observed_channel_post",
+    "routed_channel_text",
     "suppress_on_behalf_egress",
 ]

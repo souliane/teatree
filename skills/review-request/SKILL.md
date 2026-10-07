@@ -20,7 +20,7 @@ TeaTree keeps the rest locally because PR discovery, chat deduplication, routing
 
 From "PRs exist" to "reviewers are notified." Operates across all user's open PRs, not just the current branch.
 
-The followup loop already sends eligible requests on its own under a posture that lets the owner's voice out: its `review_request_send` scanner runs the same sanctioned `review_request_post` command (§ 7) for every own PR the triage ladder finds owed a review. Its approval is that permitting posture plus a `merge_safe` cold review bound to the current head — or, in place of the review, your "Post the review request" answer to its question about that head — and it validates the PR's title and body first, like step 2 here. This skill is the manual path for everything else — a posture that forbids it, a refusal it surfaced as an owner question, or a batch you want to send now.
+The followup loop already sends eligible requests on its own under a posture that lets the owner's voice out: its `review_request_send` scanner runs the same sanctioned `review_request_post` command (§ 7) for every own PR the triage ladder finds owed a review. Its approval is that permitting posture plus a `merge_safe` cold review bound to the current head — or, in place of the review, your "Post the review request" answer to the question about that head, whether the sender asked it or the triage surveyor did while nothing could be sent — and it validates the PR's title and body first, like step 2 here. This skill is the manual path for everything else — a posture that forbids it, a refusal it surfaced as an owner question, or a batch you want to send now.
 
 ## Dependencies
 

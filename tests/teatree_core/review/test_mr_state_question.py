@@ -261,18 +261,22 @@ class TestOwnerAnswerAtHead(TestCase):
 
         assert owner_answer_at_head(_MR, head_sha=_HEAD) is None
 
-    def test_the_newest_answer_at_the_head_wins(self) -> None:
+    def test_a_head_the_owner_answered_about_is_not_asked_about_again(self) -> None:
         first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
         assert first is not None
         first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
-        second = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
-        assert second is not None
-        second.apply_answer("Post the review request", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
 
-        answer = owner_answer_at_head(_MR, head_sha=_HEAD)
+        again = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
 
-        assert answer is not None
-        assert answer.pk == second.pk
+        assert again is None
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 1
+
+    def test_a_new_head_is_asked_about_after_an_answer_at_the_old_one(self) -> None:
+        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert first is not None
+        first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        assert ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD) is not None
 
 
 class TestOwnerQuestionObserver(TestCase):

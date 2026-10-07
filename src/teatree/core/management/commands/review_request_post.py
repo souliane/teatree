@@ -27,13 +27,16 @@ The post-half of #1084/#1094. One classifier-legible transaction:
     remediation). On that refusal the just-created guard claim is rolled
     back (Risk-c: an orphan claim would make every future legitimate post
     suppress with ``already_claimed`` forever).
-4.  Only then post to the review channel through the #117 send-proxy
-    (allowlist + redaction + ``SendAudit``), and persist the permalink record.
-    A destination off the allowlist refuses ``send_blocked``; a body reporting
-    no landed message (``ok:false``, or no ``ts``) raises inside the publish
-    callback, so the consume and the audit roll back and the command refuses
-    instead of claiming a post that never happened. Every exit that posted
-    nothing, a transport raise included, rolls the dedup claim back.
+4.  Only then route the text through the #117 send-proxy (allowlist +
+    redaction + ``SendAudit``) and post it to the review channel. The route
+    runs ahead of the approval's transaction, so a destination off the
+    allowlist refuses ``send_blocked`` with its audit row kept; a body
+    reporting no landed message (``ok:false``, or no ``ts``) raises inside the
+    publish callback, so the consume and the audit roll back and the command
+    refuses instead of claiming a post that never happened. Every exit that
+    posted nothing, a transport raise or a missing backend included, rolls the
+    dedup claim back, and a landed post finalizes the claim before the
+    permalink read and the on-disk record.
 
 ``action``/``target`` are the canonical strings, derived once via
 ``canonical_mr_url`` so the dedup claim and the #960 approval scope are
@@ -61,7 +64,7 @@ from teatree.core.gates.review_request_guard import (
 from teatree.core.gates.review_request_state_gate import check_reviewed_state
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
-from teatree.core.on_behalf_egress import observed_channel_post
+from teatree.core.on_behalf_egress import observed_channel_post, routed_channel_text
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -309,6 +312,7 @@ class Command(TyperCommand):
         # A noop transport drops the payload and answers ``{}``: no post, so no
         # approval may be burned for it — the same outcome as no backend at all.
         if messaging is None or getattr(type(messaging), "is_noop", False):
+            self._rollback_orphan_claim(canonical)
             self._emit(
                 {"action": "suppress", "reason": "no_messaging_backend", "mr_url": canonical},
                 exit_code=0,
@@ -316,6 +320,8 @@ class Command(TyperCommand):
 
         text = f"{title or _DEFAULT_TITLE} {canonical}"
         try:
+            # Routed ahead of the approval's transaction, so a refused destination keeps its SendAudit row.
+            routed = routed_channel_text(target=canonical, action=_ACTION, channel=target.channel_id, text=text)
             # consume + post + audit atomic: a failed post rolls back the
             # consume and writes no audit; a BLOCK racing in after the peek
             # raises here and posts nothing.
@@ -328,10 +334,7 @@ class Command(TyperCommand):
                         target=canonical,
                         action=_ACTION,
                         channel=target.channel_id,
-                        text=text,
-                        post=lambda routed: messaging.post_message(
-                            channel=target.channel_id, text=routed, thread_ts=""
-                        ),
+                        publish=lambda: messaging.post_message(channel=target.channel_id, text=routed, thread_ts=""),
                     ),
                 ),
             )
@@ -345,21 +348,22 @@ class Command(TyperCommand):
             self._rollback_orphan_claim(canonical)
             raise
         ts = str(resp.get("ts", ""))
-        previewed = egress_suppressed()
-        permalink = "" if previewed else messaging.get_permalink(channel=target.channel_id, ts=ts)
 
         # Finalize the guard's claim (#1508). ``should_post_review_request``
         # took the ``ReviewRequestPost`` get_or_create claim with an empty
         # ``slack_thread_ts``; without stamping the posted ts here the row
         # keeps the unposted-orphan shape ``_claim_or_reclaim`` reclaims after
         # ``_CLAIM_RACE_WINDOW`` — a later re-attempt would post a duplicate
-        # to the review channel (the #1084 incident class).
+        # to the review channel (the #1084 incident class). First after the
+        # post, so nothing that can still raise leaves a landed message unclaimed.
         record_review_request_post(
             mr_url=canonical,
             slack_channel_id=target.channel_id,
             slack_thread_ts=ts,
             overlay=overlay_name,
         )
+        previewed = egress_suppressed()
+        permalink = "" if previewed else messaging.get_permalink(channel=target.channel_id, ts=ts)
 
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
 

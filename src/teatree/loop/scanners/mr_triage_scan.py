@@ -188,7 +188,12 @@ class MrTriageScanner:
             if item.verdict.action in _QUIET:
                 continue
             if item.verdict.action is TriageAction.REQUEST_REVIEW and self.ask_owner_on_missing_review:
-                ask_mr_state(mr_url=item.url, reason=_MISSING_REVIEW_REASON, options=MISSING_REVIEW_OPTIONS)
+                ask_mr_state(
+                    mr_url=item.url,
+                    reason=_MISSING_REVIEW_REASON,
+                    options=MISSING_REVIEW_OPTIONS,
+                    head_sha=head_sha(item.pr),
+                )
             signals.append(self._signal(item.verdict, url=item.url, title=_str_field(item.pr, "title")))
             if len(signals) >= self.max_mrs_per_tick:
                 break

@@ -26,7 +26,12 @@ from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.models import DeferredQuestion
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.review.mr_state_question import ask_mr_state, owner_answer_at_head, retire_mr_state_question
+from teatree.core.review.mr_state_question import (
+    ask_mr_state,
+    owner_answer_at_head,
+    retire_head_bound_question,
+    retire_mr_state_question,
+)
 from teatree.core.review.mr_triage import TriageAction
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.mr_triage_scan import MISSING_REVIEW_OPTIONS, MrTriageScanner, TriagedMr
@@ -45,7 +50,6 @@ _RETRIED_QUIETLY = frozenset(
     {
         "read_failed_failsafe",
         "already_claimed",
-        "thread_gone",
         "already_posted",
         "authorship_unreadable",
         "draft_state_unknown",
@@ -118,19 +122,19 @@ class ReviewRequestSendScanner:
         answer = owner_answer_at_head(item.url, head_sha=sha)
         if blocker := _review_blocker(item, ref, sha, answer):
             return blocker
-        return self._send(item, ref, sha, answered=answer is not None)
+        return self._send(item, ref, sha)
 
-    def _send(self, item: TriagedMr, ref: PrRef, sha: str, *, answered: bool) -> ScanSignal:
+    def _send(self, item: TriagedMr, ref: PrRef, sha: str) -> ScanSignal:
         ticket = resolve_gated_ticket(slug=ref.slug, pr_id=ref.pr_id)
         if ticket is None:
-            return _ask(item, sha, "no_ticket", answered=answered)
+            return _ask(item, sha, "no_ticket")
         title = _str_field(item.pr, "title")
         if self.metadata.validate_pr(title, _str_field(item.pr, "description", "body"), repo=ref.slug)["errors"]:
-            return _ask(item, sha, "pr_metadata_invalid", answered=answered)
+            return _ask(item, sha, "pr_metadata_invalid")
         if moved := self._live_head_mismatch(ref, sha):
             return _deferred(item, moved)
         result = self.poster.post(mr_url=item.url, title=title, ticket_id=str(ticket.pk), head_sha=sha)
-        return _outcome(item, sha, result, answered=answered)
+        return _outcome(item, sha, result)
 
     def _live_head_mismatch(self, ref: PrRef, sha: str) -> str:
         live = self.triage.host.fetch_live_head_sha(slug=ref.slug, pr_id=ref.pr_id)
@@ -145,13 +149,14 @@ def _review_blocker(item: TriagedMr, ref: PrRef, sha: str, answer: DeferredQuest
         return _deferred(item, "owner_declined")
     review = head_review_state(slug=ref.slug, pr_id=ref.pr_id, head_sha=sha)
     if review.held_verdicts:
+        retire_head_bound_question(item.url, reason="a cold review holds this head")
         return _deferred(item, review.hold_reason, detail=review.hold_detail)
     if review.authorizing_verdict is None and answer is None:
-        return _ask(item, sha, "awaiting_cold_review", answered=False)
+        return _ask(item, sha, "awaiting_cold_review")
     return None
 
 
-def _outcome(item: TriagedMr, sha: str, result: RawAPIDict, *, answered: bool) -> ScanSignal:
+def _outcome(item: TriagedMr, sha: str, result: RawAPIDict) -> ScanSignal:
     action = str(result.get("action") or "")
     reason = str(result.get("reason") or "")
     if action == "post":
@@ -159,21 +164,19 @@ def _outcome(item: TriagedMr, sha: str, result: RawAPIDict, *, answered: bool) -
         return _sent(item, str(result.get("permalink") or ""))
     if reason in _RETRIED_QUIETLY:
         return _deferred(item, f"{action}:{reason}")
-    return _ask(item, sha, reason or action or "no_verdict", answered=answered)
+    return _ask(item, sha, reason or action or "no_verdict")
 
 
-def _ask(item: TriagedMr, sha: str, reason: str, *, answered: bool) -> ScanSignal:
-    """Refuse *item*, asking the owner unless they already answered at this head."""
+def _ask(item: TriagedMr, sha: str, reason: str) -> ScanSignal:
+    """Refuse *item* and put it to the owner; a head they already answered about is not asked again."""
     text = _ASK_TEXT.get(reason, f"sending the review request was refused ({reason}).")
-    asked = not answered and (
-        ask_mr_state(
-            mr_url=item.url,
-            reason=f"it is ready for review, but {text}",
-            options=MISSING_REVIEW_OPTIONS,
-            head_sha=sha,
-        )
-        is not None
+    question = ask_mr_state(
+        mr_url=item.url,
+        reason=f"it is ready for review, but {text}",
+        options=MISSING_REVIEW_OPTIONS,
+        head_sha=sha,
     )
+    asked = question is not None
     return ScanSignal(
         kind="review_request.send_refused",
         summary=_summary(item, "refused", f"{reason}; owner {'asked' if asked else 'not asked'}"),
