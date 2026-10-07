@@ -170,7 +170,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]] | Task
 
 
 def _resolve_skill_bundle(task: Task) -> list[str] | TaskAttempt:
-    """Resolve the loaded skill bundle for *task*; empty, and logged with its cause, on any failure.
+    """*task*'s skill bundle; a recorded refusal for a shadowed apm pin; empty and logged on any other failure.
 
     Resolves the overlay and the framework/detection root from the TASK's ticket
     (its overlay + its worktree or repo clone, PR-12) — never the orchestrator's
