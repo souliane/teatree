@@ -20,6 +20,7 @@ from teatree.backends.github.api import (
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
 from teatree.backends.github.pr_create import create_pr as _create_pr
+from teatree.backends.github.pr_notes import GitHubPrNotes
 from teatree.backends.github.pr_reads import PR_URL_RE
 from teatree.core.backend_protocols import (
     ApprovalState,
@@ -27,6 +28,7 @@ from teatree.core.backend_protocols import (
     ForgeMergeResult,
     PrMergeState,
     PrOpenState,
+    PrReviewComment,
     PullRequestSpec,
     ReviewState,
     UploadVerification,
@@ -51,6 +53,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def __init__(self, *, token: str = "") -> None:
         self._token = token
+        self._notes = GitHubPrNotes(token)
 
     def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
         return _create_pr(spec, token=self._token)
@@ -233,37 +236,24 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Repo not found: {repo}"}
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
-        data = _gh_api_post(
-            f"repos/{repo}/issues/{pr_iid}/comments",
-            {"body": body},
-            token=self._token,
-        )
-        result: RawAPIDict = cast("RawAPIDict", data) if isinstance(data, dict) else {}
-        comment_id = result.get("id")
-        if isinstance(comment_id, int):
-            _record_github_note_claim(
-                repo=repo,
-                target_number=pr_iid,
-                comment_id=comment_id,
-                body=body,
-                target_url=str(result.get("html_url") or ""),
-            )
-        return result
+        return self._notes.post_comment(repo=repo, pr_iid=pr_iid, body=body)
 
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
         _ = pr_iid  # GitHub comment IDs are globally unique
-        data = _gh_api_patch(
-            f"repos/{repo}/issues/comments/{comment_id}",
-            {"body": body},
-            token=self._token,
-        )
-        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        return self._notes.update_comment(repo=repo, comment_id=comment_id, body=body)
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        # Paginate: a busy PR has >30 comments (GitHub's default page size),
-        # and a non-paginated GET would hide the ``## Test Plan`` note the
-        # evidence-poster looks up to UPDATE — re-posting a duplicate instead.
-        return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
+        return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
+
+    def submit_pr_review(
+        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
+    ) -> RawAPIDict:
+        return self._notes.submit_review(
+            repo=repo, pr_iid=pr_iid, head_sha=head_sha, summary=summary, comments=comments
+        )
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
         """No STALE-BOT-thread filtering surface on GitHub (#3340).

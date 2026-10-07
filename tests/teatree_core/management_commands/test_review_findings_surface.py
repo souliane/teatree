@@ -17,6 +17,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.backend_protocols import PrReviewComment
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import ConfigSetting, ReviewVerdict
 from teatree.core.review.verdict_findings import marker_for
@@ -39,18 +40,34 @@ _FINDINGS = json.dumps(
 
 
 class _FakeHost:
+    """A colleague-authored PR whose live head is the reviewed one."""
+
     def __init__(self) -> None:
-        self.comments: list[RawAPIDict] = []
         self.posted: list[RawAPIDict] = []
 
-    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        _ = repo, pr_iid
-        return list(self.comments)
+    @staticmethod
+    def get_pr_author(*, pr_url: str) -> str:
+        _ = pr_url
+        return "carol"
 
-    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
-        self.posted.append({"repo": repo, "pr_iid": pr_iid, "body": body})
-        self.comments.append({"body": body})
-        return {"html_url": f"https://forge.test/{repo}/pull/{pr_iid}#note-{len(self.posted)}"}
+    @staticmethod
+    def current_user() -> str:
+        return "owner-login"
+
+    @staticmethod
+    def fetch_live_head_sha(*, slug: str, pr_id: int) -> str:
+        _ = slug, pr_id
+        return _SHA
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        _ = repo, pr_iid
+        return any(marker in str(review["summary"]) for review in self.posted)
+
+    def submit_pr_review(
+        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
+    ) -> RawAPIDict:
+        self.posted.append({"repo": repo, "pr_iid": pr_iid, "summary": summary, "comments": comments})
+        return {"html_url": f"https://forge.test/{repo}/pull/{pr_iid}#review-{len(self.posted)}"}
 
 
 class _FindingsSurfaceBase(TestCase):
@@ -149,10 +166,9 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         result = self._record()
         assert result["findings_published"]
         assert len(self.host.posted) == 1
-        body = str(self.host.posted[0]["body"])
-        assert "unbounded loop" in body
-        assert "a.py:9" in body
-        assert "rename x" in body
+        review = self.host.posted[0]
+        assert [(c.path, c.line) for c in cast("list[PrReviewComment]", review["comments"])] == [("a.py", 9)]
+        assert "rename x" in str(review["summary"])
 
     def test_publish_findings_does_not_post_a_second_copy(self) -> None:
         self._allow_posting()
@@ -173,7 +189,7 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         assert result["published"]
         assert len(self.host.posted) == 1
         verdict = ReviewVerdict.objects.get(slug=_SLUG, pr_id=4476)
-        assert marker_for(verdict) in str(self.host.posted[0]["body"])
+        assert marker_for(verdict) in str(self.host.posted[0]["summary"])
 
     def test_a_withheld_post_is_reported_on_the_record_result(self) -> None:
         result = self._record()
@@ -201,21 +217,17 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
 class TestPublishedFindingsPassTheCommentChecks(_FindingsSurfaceBase):
     """#4968: a published findings comment passes ``review post-comment``'s checks or is withheld."""
 
-    def test_recording_a_merge_safe_verdict_with_several_anchored_findings_withholds_it(self) -> None:
+    def test_recording_a_verdict_with_an_unbacked_claim_withholds_it(self) -> None:
         self._allow_posting()
         findings = json.dumps(
-            [
-                {"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9},
-                {"severity": "nit", "summary": "rename y", "file": "b.py", "line": 2},
-                {"severity": "minor", "summary": "log the retry", "file": "c.py", "line": 30},
-            ]
+            [{"severity": "minor", "summary": "the retry helper is missing", "file": "c.py", "line": 30}]
         )
         with patch("teatree.loop.sweep_on_demand._sweep_scanner_for_overlay", return_value=None):
             result = self._record(verdict="merge_safe", findings_json=findings)
 
         assert result["recorded"]
         assert not result["findings_published"]
-        assert "multi-finding general note" in cast("str", result["findings_publish_note"])
+        assert "unbacked claim" in cast("str", result["findings_publish_note"])
         assert not self.host.posted
 
     def test_publish_findings_reports_a_leak_block_instead_of_raising(self) -> None:

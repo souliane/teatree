@@ -136,7 +136,7 @@ _CLI_REVIEW_FLAT_STEMS = (
 
 # Submodule names inside ``teatree.cli.review`` after the move (the live dotted
 # paths). ``service`` carries the former bare ``review.py`` surface.
-_CLI_REVIEW_SUBMODULES = (*_CLI_REVIEW_FLAT_STEMS, "service")
+_CLI_REVIEW_SUBMODULES = (*(stem for stem in _CLI_REVIEW_FLAT_STEMS if stem != "diff"), "service")
 
 # PR10 top-level grouping: the 5 flat ``teatree.skill_<rest>`` modules moved into
 # the ``teatree.skill_support`` subpackage with the redundant ``skill_`` prefix

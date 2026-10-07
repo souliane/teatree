@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 # GitLab JSON payloads — narrow ``object`` rather than a fictitious schema
 # because the API surface mixes strings (paths, diffs), ints (ids), and
 # nested dicts/lists per endpoint. Mirrors the type-alias pattern in
-# :mod:`teatree.cli.review.diff`.
+# :mod:`teatree.backends.gitlab.inline_position`.
 type JSONObject = dict[str, object]
 type DiscussionList = list[JSONObject]
 

@@ -19,10 +19,9 @@ whose whole job is to DISPLAY findings, the lenient one for a surface that must
 answer a question findings do not bear on.
 """
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
 
+from teatree.core.backend_protocols import PrReviewComment
 from teatree.core.models.review_verdict import Finding, FindingDict, ReviewVerdict
 
 MARKER_PREFIX = "<!-- teatree-review-verdict:"
@@ -109,30 +108,42 @@ def render_findings_text(verdict: ReviewVerdict) -> str:
     return "\n".join([header, *(f"  {_line(row)}" for row in payload)])
 
 
-def render_findings_markdown(verdict: ReviewVerdict) -> str:
-    """*verdict*'s findings as the PR-comment body, carrying the dedup marker and nothing that signs it."""
+@dataclass(frozen=True, slots=True)
+class ReviewParts:
+    """A verdict as one submitted review: the summary body plus one inline comment per anchored finding."""
+
+    summary: str
+    comments: list[PrReviewComment]
+
+
+def render_review_parts(verdict: ReviewVerdict) -> ReviewParts:
+    """*verdict*'s findings split for a submitted inline review, the dedup marker riding the summary.
+
+    A finding with a file AND a line becomes its own inline comment; a file-level or MR-level one has no
+    line to anchor on and stays a bullet in the summary.
+    """
     payload = findings_payload(verdict)
     if not payload:
         msg = f"verdict {verdict.pk} has no findings — there is nothing to publish"
         raise FindingsRenderError(msg)
-    bullets = [f"- **[{row['severity']}]** `{_location(row)}` — {row['summary']}" for row in payload]
-    return "\n".join(
+    comments: list[PrReviewComment] = []
+    floating: list[str] = []
+    for row in payload:
+        if row["file"] and row["line"]:
+            body = f"**[{row['severity']}]** {row['summary']}"
+            comments.append(PrReviewComment(path=row["file"], line=row["line"], body=body))
+        else:
+            floating.append(f"- **[{row['severity']}]** `{_location(row)}` — {row['summary']}")
+    summary = "\n".join(
         [
             f"### Cold review: {verdict.verdict} — {len(payload)} finding(s) @ `{verdict.reviewed_sha[:8]}`",
             "",
-            *bullets,
-            "",
+            *floating,
+            *([""] if floating else []),
             marker_for(verdict),
         ]
     )
-
-
-def comment_carries_marker(comment: object, marker: str) -> bool:
-    """Whether a forge comment payload already carries *marker*."""
-    if not isinstance(comment, Mapping):
-        return False
-    body = cast("Mapping[str, object]", comment).get("body")
-    return marker in str(body or "")
+    return ReviewParts(summary=summary, comments=comments)
 
 
 def _location(row: FindingDict) -> str:

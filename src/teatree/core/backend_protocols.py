@@ -141,6 +141,15 @@ class ApprovalReadState(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class PrReviewComment:
+    """One line-anchored comment of a submitted review."""
+
+    path: str
+    line: int
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
 class PullRequestSpec:
     """Fields needed to open a pull/merge request on a CodeHostBackend."""
 
@@ -392,6 +401,19 @@ class CodeHostBackend(Protocol):
     ) -> RawAPIDict: ...  # pragma: no branch
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:  # pragma: no branch
+        """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
+        ...
+
+    def submit_pr_review(  # pragma: no branch
+        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list["PrReviewComment"]
+    ) -> RawAPIDict:
+        """Submit ONE review: each *comments* entry inline on its line, *summary* as the review body.
+
+        A line the diff cannot anchor raises rather than degrading to a floating note.
+        """
+        ...
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
         """Thread-structured, author-carrying discussion read (#3340).

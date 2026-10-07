@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from teatree.cli.review.diff import fetch_diff_refs
+from teatree.backends.gitlab.inline_position import fetch_diff_refs
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
@@ -120,7 +120,7 @@ def notify_draft_created(*, repo: str, mr: int, mr_url: str, reviewed_head_sha: 
 def resolve_reviewed_head_sha(api: "GitLabAPI", repo: str, mr: int) -> str:
     """Best-effort reviewed HEAD SHA for :func:`notify_draft_created`'s discriminator.
 
-    Reuses :func:`teatree.cli.review.diff.fetch_diff_refs` (a single MR GET)
+    Reuses :func:`teatree.backends.gitlab.inline_position.fetch_diff_refs` (a single MR GET)
     and returns its ``head_sha``. Returns ``""`` on any lookup failure — a
     transport/status error (``httpx.HTTPError``) or a malformed body
     (``ValueError`` from ``response.json()``) — so the caller degrades to the

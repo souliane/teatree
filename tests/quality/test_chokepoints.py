@@ -225,6 +225,7 @@ class TestCheckerBehavior:
 _FORGE_WRITE_BODY_METHODS = frozenset(
     {
         "post_pr_comment",
+        "submit_pr_review",
         "update_pr_comment",
         "post_issue_comment",
         "update_issue_comment",
@@ -254,6 +255,7 @@ _NON_CONTENT_PARAMS = frozenset(
         "repo_slugs",
         "parent_url",
         "comment_id",
+        "marker",
         "slug",
         "pr_id",
         "pr_iid",

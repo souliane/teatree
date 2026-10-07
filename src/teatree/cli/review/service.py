@@ -39,9 +39,9 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.backends.gitlab.inline_position import find_added_line, resolve_inline_position
 from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.audit import gitlab_mr_url
-from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence
 from teatree.cli.review.forge_target import read_token, resolve_base_url
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from teatree.core.modelkit.gate_verdict import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
-# after extraction to :mod:`teatree.cli.review.diff` /
+# after extraction to :mod:`teatree.backends.gitlab.inline_position` /
 # :mod:`teatree.cli.review.on_behalf` for module-health LOC reasons.
 # ``resolve_inline_position`` is re-exported here so the existing
 # ``monkeypatch.setattr(review_mod, "resolve_inline_position", …)`` test

@@ -49,7 +49,7 @@ from teatree.core.modelkit.gate_verdict import guarded_read
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
 
-# Mirrors :data:`teatree.cli.review.diff.ChangeEntry`: a GitLab change-entry
+# Mirrors :data:`teatree.backends.gitlab.inline_position.ChangeEntry`: a GitLab change-entry
 # dict in an MR /changes response. Object-typed values rather than narrow
 # types because the API surface mixes strings (paths, diffs) and bools
 # (renamed/new_file flags).
@@ -104,7 +104,7 @@ def looks_like_blocker(body: str) -> bool:
 def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
     """Return ``{new_line_number: line_text}`` for every ``+``-added line.
 
-    Mirrors :func:`teatree.cli.review.diff.find_added_line` but keeps the
+    Mirrors :func:`teatree.backends.gitlab.inline_position.find_added_line` but keeps the
     line text so we can scan for TODO markers without re-fetching.
     """
     added: dict[int, str] = {}
@@ -128,7 +128,7 @@ def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
 def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: str) -> str:
     """Return the unified diff for ``file`` in the MR, or ``""`` when it cannot be read.
 
-    Independent of :func:`teatree.cli.review.diff.fetch_file_diff` to keep
+    Independent of :func:`teatree.backends.gitlab.inline_position.fetch_file_diff` to keep
     the failure mode fail-open — the gate proceeds to allow the post rather
     than refuse every post whenever the forge is unreachable. The fail-open is
     the caller's deliberate choice; the SILENCE was the bug (#3509), so the read

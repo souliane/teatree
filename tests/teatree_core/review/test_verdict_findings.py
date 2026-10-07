@@ -12,12 +12,11 @@ from django.test import TestCase
 from teatree.core.models import ReviewVerdict
 from teatree.core.review.verdict_findings import (
     FindingsRenderError,
-    comment_carries_marker,
     findings_payload,
     marker_for,
     readable_findings,
-    render_findings_markdown,
     render_findings_text,
+    render_review_parts,
 )
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -96,16 +95,21 @@ class TestRenderers(TestCase):
     def test_text_view_says_so_when_no_findings_are_recorded(self) -> None:
         assert "no findings recorded" in render_findings_text(_verdict([]))
 
-    def test_markdown_body_carries_the_findings_and_the_dedup_marker(self) -> None:
+    def test_an_anchored_finding_is_its_own_inline_comment_and_the_summary_carries_the_marker(self) -> None:
         verdict = _verdict([{"severity": "blocker", "summary": "unbounded loop", "file": "a.py", "line": 9}])
-        body = render_findings_markdown(verdict)
-        assert "**[blocker]**" in body
-        assert "`a.py:9`" in body
-        assert "unbounded loop" in body
-        assert marker_for(verdict) in body
-        assert comment_carries_marker({"body": body}, marker_for(verdict))
+        parts = render_review_parts(verdict)
+        assert [(c.path, c.line, c.body) for c in parts.comments] == [("a.py", 9, "**[blocker]** unbounded loop")]
+        assert marker_for(verdict) in parts.summary
+        assert "unbounded loop" not in parts.summary
 
-    def test_a_merge_safe_body_carries_no_hold_text_reviewer_or_operator_command(self) -> None:
+    def test_an_unanchored_finding_stays_in_the_summary(self) -> None:
+        parts = render_review_parts(
+            _verdict([{"severity": "minor", "summary": "log the retry", "file": "a.py", "line": 0}])
+        )
+        assert not parts.comments
+        assert "log the retry" in parts.summary
+
+    def test_a_merge_safe_review_carries_no_hold_text_reviewer_or_operator_command(self) -> None:
         verdict = _verdict(
             [
                 {"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9},
@@ -113,32 +117,27 @@ class TestRenderers(TestCase):
             ],
             verdict="merge_safe",
         )
-        body = render_findings_markdown(verdict)
-        assert "rename x" in body
-        assert "log the retry" in body
-        assert "merge_safe" in body
-        assert "hold" not in body.lower()
-        assert "cold-reviewer" not in body
-        assert "t3 <overlay>" not in body
+        parts = render_review_parts(verdict)
+        text = "\n".join([parts.summary, *(c.body for c in parts.comments)])
+        assert "rename x" in text
+        assert "log the retry" in text
+        assert "merge_safe" in text
+        assert "hold" not in text.lower()
+        assert "cold-reviewer" not in text
+        assert "t3 <overlay>" not in text
 
-    def test_a_hold_body_names_the_hold(self) -> None:
+    def test_a_hold_summary_names_the_hold(self) -> None:
         verdict = _verdict([{"severity": "blocker", "summary": "unbounded loop", "file": "a.py", "line": 9}])
-        body = render_findings_markdown(verdict)
-        assert "hold" in body
-        assert "unbounded loop" in body
-        assert marker_for(verdict) in body
+        assert "hold" in render_review_parts(verdict).summary
 
-    def test_markdown_body_refuses_an_empty_verdict(self) -> None:
+    def test_review_parts_refuse_an_empty_verdict(self) -> None:
         with pytest.raises(FindingsRenderError):
-            render_findings_markdown(_verdict([]))
+            render_review_parts(_verdict([]))
 
     def test_the_marker_is_verdict_specific(self) -> None:
         first = _verdict([{"severity": "nit", "summary": "a"}])
         second = _verdict([{"severity": "nit", "summary": "b"}], sha="d" * 40)
-        assert not comment_carries_marker({"body": render_findings_markdown(first)}, marker_for(second))
-
-    def test_a_non_dict_comment_carries_no_marker(self) -> None:
-        assert not comment_carries_marker("not a comment", "<!-- teatree-review-verdict: pk=1 sha=x -->")
+        assert marker_for(second) not in render_review_parts(first).summary
 
 
 class TestLenientRead(TestCase):

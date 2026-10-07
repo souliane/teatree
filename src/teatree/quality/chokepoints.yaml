@@ -106,6 +106,7 @@
   match_kind: method
   protected_attrs:
     - post_pr_comment
+    - submit_pr_review
     - update_pr_comment
     - post_issue_comment
     - update_issue_comment

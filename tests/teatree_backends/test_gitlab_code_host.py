@@ -9,7 +9,7 @@ from teatree.backends.gitlab.discussions import (
     _note_author,
     thread_opened_solely_by,
 )
-from teatree.core.backend_protocols import BackendResolutionError, DraftState, PullRequestSpec
+from teatree.core.backend_protocols import BackendResolutionError, DraftState, PrReviewComment, PullRequestSpec
 from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
 
@@ -1877,3 +1877,82 @@ class TestFetchOpenPrUrlForBranch:
 
         assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="") is None
         client.get_json.assert_not_called()
+
+
+def _position(head_sha: str = "h" * 40) -> dict[str, object]:
+    return {"position_type": "text", "head_sha": head_sha, "new_path": "a.py", "new_line": 9}
+
+
+def test_submit_pr_review_posts_inline_discussions_then_the_summary_last() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    host = GitLabCodeHost(client=client)
+    comment = PrReviewComment(path="a.py", line=9, body="**[nit]** rename")
+
+    with patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")):
+        host.submit_pr_review(repo="org/repo", pr_iid=10, head_sha="h" * 40, summary="summary", comments=[comment])
+
+    assert [call.args[0] for call in client.post_json.call_args_list] == [
+        "projects/42/merge_requests/10/discussions",
+        "projects/42/merge_requests/10/notes",
+    ]
+    assert client.post_json.call_args_list[0].args[1] == {"body": "**[nit]** rename", "position": _position()}
+    assert client.post_json.call_args_list[1].args[1] == {"body": "summary"}
+
+
+def test_submit_pr_review_posts_nothing_when_a_line_cannot_anchor() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    host = GitLabCodeHost(client=client)
+    comments = [PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=99, body="y")]
+
+    with (
+        patch(
+            "teatree.backends.gitlab.pr_notes.resolve_inline_position",
+            side_effect=[(_position(), ""), (None, "not an added line")],
+        ),
+        pytest.raises(ValueError, match="not an added line"),
+    ):
+        host.submit_pr_review(repo="org/repo", pr_iid=10, head_sha="h" * 40, summary="s", comments=comments)
+
+    client.post_json.assert_not_called()
+
+
+def test_submit_pr_review_refuses_a_moved_head() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    host = GitLabCodeHost(client=client)
+
+    with (
+        patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position("n" * 40), "")),
+        pytest.raises(ValueError, match="head moved"),
+    ):
+        host.submit_pr_review(
+            repo="org/repo",
+            pr_iid=10,
+            head_sha="h" * 40,
+            summary="s",
+            comments=[PrReviewComment(path="a.py", line=9, body="x")],
+        )
+
+    client.post_json.assert_not_called()
+
+
+def test_find_pr_review_reads_the_marker_from_the_notes() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json_paginated.return_value = [{"body": "hello"}, {"body": "x <!-- m -->"}]
+    host = GitLabCodeHost(client=client)
+
+    assert host.find_pr_review(repo="org/repo", pr_iid=10, marker="<!-- m -->")
+    assert not host.find_pr_review(repo="org/repo", pr_iid=10, marker="<!-- other -->")
+
+
+def test_submit_pr_review_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.submit_pr_review(repo="org/unknown", pr_iid=1, head_sha="h", summary="s", comments=[])
+
+    assert result == {"error": "Could not resolve project: org/unknown"}

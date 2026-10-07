@@ -13,12 +13,14 @@ from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
+from teatree.backends.gitlab.pr_notes import GitLabMrNotes
 from teatree.core.backend_protocols import (
     ApprovalState,
     DraftState,
     ForgeMergeResult,
     PrMergeState,
     PrOpenState,
+    PrReviewComment,
     PullRequestSpec,
     ReviewState,
     UploadVerification,
@@ -79,6 +81,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         base_url: str = "",
     ) -> None:
         self._client = client or get_client(token=token, base_url=base_url)
+        self._notes = GitLabMrNotes(self._client, self._resolve_project)
 
     @property
     def client(self) -> GitLabAPI:
@@ -245,31 +248,22 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _issue_ops.list_repo_open_issues(self._client, self._resolve_project(repo))
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
-        project = self._resolve_project(repo)
-        if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
-
-        payload: RawAPIDict = {"body": body}
-        return self._client.post_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/notes", payload) or {}
+        return self._notes.post_comment(repo=repo, pr_iid=pr_iid, body=body)
 
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
-        project = self._resolve_project(repo)
-        if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
-        return (
-            self._client.put_json(
-                f"projects/{project.project_id}/merge_requests/{pr_iid}/notes/{comment_id}",
-                {"body": body},
-            )
-            or {}
-        )
+        return self._notes.update_comment(repo=repo, pr_iid=pr_iid, comment_id=comment_id, body=body)
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        project = self._resolve_project(repo)
-        if project is None:
-            return []
-        return self._client.get_json_paginated(
-            f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100"
+        return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
+
+    def submit_pr_review(
+        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
+    ) -> RawAPIDict:
+        return self._notes.submit_review(
+            repo=repo, pr_iid=pr_iid, head_sha=head_sha, summary=summary, comments=comments
         )
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
