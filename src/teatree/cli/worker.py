@@ -19,14 +19,13 @@ from typing import TYPE_CHECKING, TypedDict
 
 import typer
 
+from teatree.cli.worker_status import admission_line, agent_admission_report, deploy_drain_report, holder_lines
 from teatree.generation import is_generation_sha
-from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, quiesce_status
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
-    from teatree.loops.loop_staleness import LoopHealth
-    from teatree.utils.singleton import HolderRecord
 
 
 class DrainPayload(TypedDict):
@@ -41,7 +40,8 @@ worker_app = typer.Typer(
     help=(
         "The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence "
         "owner). `status` reports the live holder + how many loops the active preset admits "
-        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet); `ensure` spawns "
+        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet) + how the agent "
+        "admission ceiling is derived; `ensure` spawns "
         "a detached worker iff the flock is free; `drain` quiesces admission without stopping "
         "anything; `stop` / `restart` end the live worker and verify it against the flock."
     ),
@@ -114,40 +114,9 @@ def _timer_counts() -> dict[str, dict[str, int]]:
     }
 
 
-def _admission_line(health: "LoopHealth") -> str:
-    """The fleet's stop condition: does the active preset admit any loop at all?"""
-    verdict = health.admission
-    state = "admits work" if health.fleet_admits else "admits ZERO loops — the fleet is stopped"
-    return f"preset {verdict.mode!r} (source={verdict.source}) {state}"
-
-
-def _holder_lines(record: "HolderRecord | None") -> list[str]:
-    """Where the flock holder is, and a pointer to the gate when it should not be there.
-
-    ``worker: RUNNING`` is equally true of a singleton held from OUTSIDE the deployment
-    (#3976), which is how that starvation stayed invisible: the flock genuinely is held
-    and the loops genuinely do tick, driven by a process this service can never become.
-    """
-    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-        DEPLOYMENT_WORKER_ROLE,
-        current_context,
-    )
-
-    if record is None:
-        return []
-    lines = [f"worker holder: PID {record.pid} in {record.context.describe()}"]
-    mine = current_context()
-    if mine.role and record.context.role != DEPLOYMENT_WORKER_ROLE:
-        lines.append(
-            f"WARN  that holder is not this deployment's {DEPLOYMENT_WORKER_ROLE} service — the deployed "
-            "worker cannot start while it lives. Run `t3 doctor check` (#3976)."
-        )
-    return lines
-
-
 @worker_app.command("status")
 def status_command(*, json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON.")) -> None:
-    """Report the worker: flock holder, admitted loops under the active preset, timers, staleness.
+    """Report the worker: flock holder, admitted loops, timers, staleness, and the agent admission ceiling.
 
     Exits NON-ZERO when the loop fleet is stale.
     """
@@ -180,7 +149,8 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     # is reused in place on the next acquire and describes nobody.
     record = read_holder(default_pid_path(WORKER_SINGLETON)) if running else None
     health = loop_health(timezone.now())
-    drain = quiesce_status()
+    agent_line, agent_json = agent_admission_report()
+    drain_line, drain_json = deploy_drain_report()
 
     if json_output:
         typer.echo(
@@ -191,11 +161,12 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                     "holder": record.context.as_json() if record is not None else None,
                     "flock_held": flock_held,
                     "timers": timers,
-                    "quiescing": drain.as_json() if drain is not None else None,
+                    "quiescing": drain_json,
                     # The admission verdict comes from ``health``: the fail-safe reader the
                     # chain itself gates on, so the JSON cannot report a posture the timers
                     # do not obey.
                     **health.as_json(),
+                    "agent_admission": agent_json,
                 }
             )
         )
@@ -208,11 +179,12 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     else:
         state = "NOT running"
     typer.echo(f"worker: {state}")
-    for line in _holder_lines(record):
+    for line in holder_lines(record):
         typer.echo(line)
-    typer.echo(_admission_line(health))
-    if drain is not None:
-        typer.echo(drain.status_line())
+    typer.echo(admission_line(health))
+    typer.echo(agent_line)
+    if drain_line:
+        typer.echo(drain_line)
     if health.fleet_admits and not running:
         typer.echo("The active preset admits work but no worker is running — run `t3 worker ensure`.")
     ready_total = sum(c["ready"] for c in timers.values())
