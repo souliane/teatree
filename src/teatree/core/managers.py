@@ -528,10 +528,10 @@ class TaskQuerySet(models.QuerySet):
 
         A live CLAIMED lease means a worker / sub-agent is actively driving a unit
         of loop work right now; an expired lease is not in-flight (the worker is
-        gone; the reaper / reclaimer will sweep it). This is the single predicate
-        both ``active_claim_exists`` (the deferred-reinstall + drain readiness check)
-        and ``t3 worker drain``'s still-claimed listing read, so the two can never
-        drift.
+        gone; the reaper / reclaimer will sweep it). ``active_claim_exists`` (the
+        deferred-reinstall readiness check) reads it as is; ``t3 worker drain`` narrows
+        it to the claims a run is driving, since an operator's in-session claim is
+        executed outside the worker and never checkpoints.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
@@ -541,10 +541,9 @@ class TaskQuerySet(models.QuerySet):
     def active_claim_exists(self) -> bool:
         """True iff some task is CLAIMED with a still-live lease.
 
-        The deferred-reinstall drain and ``t3 worker drain`` read this to DEFER an
-        action (re-anchoring the running interpreter / swapping the deploy image)
-        until no unit is in flight — never mutate the code out from under an active
-        agent.
+        The deferred-reinstall drain reads this to DEFER re-anchoring the running
+        interpreter until no unit is in flight — never mutate the code out from under
+        an active agent.
         """
         return self.active_claims().exists()
 

@@ -4,9 +4,11 @@ The first half of drain-then-deploy (rolling / zero-downtime deploy): a deploy
 must never kill an in-flight sub-agent. ``drain_worker`` flips the
 ``worker_quiescing`` config gate ON — after which ``claim_admission_block_reason``
 (the claim path) and ``headless_admission_block_reason`` (the auto-enqueue signal, the
-queue drain and ``execute_task``) admit ZERO new work — then polls the SSOT in-flight
-set (``Task.objects.active_claims``, the live CLAIMED leases) until it reads empty or
-the grace ``timeout`` lapses. It NEVER stops the supervisor and never touches a
+queue drain and ``execute_task``) admit ZERO new work — then polls the live CLAIMED
+leases a run is driving (``owner_driving_since``, or a claim too fresh to have marked
+its drive yet) until none is left or the grace ``timeout`` lapses. An operator's
+in-session claim is executed outside the worker, never checkpoints and survives the
+swap, so it does not hold the drain. It NEVER stops the supervisor and never touches a
 CLAIMED lease itself: each in-flight run reads the same gate at its next heartbeat
 (``drain_block_reason``), interrupts itself and parks PENDING with its session id, so
 the drain ends in about one heartbeat and the fresh worker resumes that conversation.
@@ -30,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import TypedDict
 
+from django.db.models import Q
 from django.utils import timezone
 
 from teatree.generation import short_sha
@@ -38,6 +41,8 @@ QUIESCING_SETTING = "worker_quiescing"
 
 #: Ten heartbeats: a run checkpoints within one beat, or within the open-tool-call deferral cap plus the interrupt.
 DEFAULT_DRAIN_TIMEOUT_SECONDS = 600
+#: How long a claim may sit before its run marks the drive; an operator's in-session claim never marks one.
+_CLAIM_TO_DRIVE_GRACE = timedelta(seconds=60)
 
 
 class DrainOutcome(Enum):
@@ -144,7 +149,9 @@ class GenerationNotDrainableError(RuntimeError):
 def _still_claimed_pks(generation: str) -> list[int]:
     from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    claims = Task.objects.active_claims()
+    claims = Task.objects.active_claims().filter(
+        Q(owner_driving_since__isnull=False) | Q(claimed_at__gte=timezone.now() - _CLAIM_TO_DRIVE_GRACE)
+    )
     if generation:
         claims = claims.filter(claimed_generation=generation)
     return list(claims.order_by("pk").values_list("pk", flat=True))

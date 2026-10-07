@@ -27,6 +27,7 @@ from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.managers_task_claim import drain_block_reason
 from teatree.core.models import ConfigSetting, WorkerGeneration
 from teatree.core.models.task import Task
+from teatree.core.models.task_claim import drive_claim
 from teatree.loop.drain import (
     DrainOutcome,
     DrainPacing,
@@ -307,3 +308,40 @@ class TestQuiesceStatus(django.test.TestCase):
         assert status is not None
         assert status.since is not None
         assert 170 <= (status.age_seconds or 0) <= 200
+
+
+class TestTheDrainWaitsOnlyOnRunsAWorkerDrives(django.test.TestCase):
+    """An operator's in-session claim is not executed by the worker, so it cannot hold the drain."""
+
+    def _claimed(self, *, claimed_by: str, lease_seconds: int, minutes_ago: int) -> Task:
+        task = cast("Task", TaskFactory(status=Task.Status.PENDING))
+        task.claim(claimed_by=claimed_by, claimed_by_session="sess-operator", lease_seconds=lease_seconds)
+        Task.objects.filter(pk=task.pk).update(claimed_at=timezone.now() - timedelta(minutes=minutes_ago))
+        return task
+
+    def _drain(self) -> DrainReport:
+        return drain_worker(timeout=600, pacing=DrainPacing(sleep=lambda _s: None, monotonic=_FakeClock([0.0, 700.0])))
+
+    def test_an_operators_in_session_claim_does_not_hold_the_drain(self) -> None:
+        self._claimed(claimed_by="interactive-decongest", lease_seconds=4 * 3600, minutes_ago=10)
+
+        report = self._drain()
+
+        assert report.outcome is DrainOutcome.DRAINED
+        assert report.still_claimed == []
+
+    def test_a_run_its_worker_drives_still_holds_the_drain(self) -> None:
+        task = self._claimed(claimed_by="task-worker", lease_seconds=900, minutes_ago=10)
+
+        with drive_claim(task):
+            report = self._drain()
+
+        assert report.outcome is DrainOutcome.GRACE_EXCEEDED
+        assert report.still_claimed == [task.pk]
+
+    def test_a_fresh_claim_not_yet_driving_still_holds_the_drain(self) -> None:
+        task = self._claimed(claimed_by="task-worker", lease_seconds=900, minutes_ago=0)
+
+        report = self._drain()
+
+        assert report.still_claimed == [task.pk]
