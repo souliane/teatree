@@ -51,7 +51,7 @@ class TestResolverSoftVsHard:
 class TestPromptHookSurfacesCompanionsSoftly:
     def test_companion_is_surfaced_but_not_a_hard_demand(self, tmp_path: Path) -> None:
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
-        index = [{"skill": "ac-django", "requires": [], "companions": ["ac-python"]}]
+        index = [{"skill": "ac-django", "requires": [], "companions": ["ac-reviewing-codebase"]}]
         result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
@@ -59,5 +59,5 @@ class TestPromptHookSurfacesCompanionsSoftly:
             skill_index=index,
         )
         assert "ac-django" in result.skills  # requires/detection is the hard demand set
-        assert "ac-python" not in result.skills  # a companion is never a hard demand
-        assert "ac-python" in result.companion_suggestions  # surfaced softly instead
+        assert "ac-reviewing-codebase" not in result.skills  # a companion is never a hard demand
+        assert "ac-reviewing-codebase" in result.companion_suggestions  # surfaced softly instead

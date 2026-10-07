@@ -1,9 +1,9 @@
 """Worktree-scoped skill/overlay resolution — the PR-12 dispatch-preflight seam.
 
 A dispatched task runs in its OWN worktree, so ``resolve_skill_bundle`` must
-detect framework + overlay skills from the worktree path, never the
-orchestrator's ambient cwd (the loop's clone). These pin the threading and the
-fall-back.
+detect framework + overlay skills from the worktree path — or the ticket's repo
+clone when no worktree exists yet — never the orchestrator's ambient cwd. These
+pin the threading and the fall-back.
 """
 
 import tempfile
@@ -22,6 +22,8 @@ from teatree.agents.skill_bundle import (
     stage_skills_for_dispatch,
 )
 from teatree.config.settings import UserSettings
+from teatree.core.models import Ticket
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 
@@ -51,26 +53,30 @@ class TestResolveSkillBundleWorktreeScoping(TestCase):
             bundle = resolve_skill_bundle(
                 phase="coding",
                 overlay_skill_metadata={},
-                worktree_path=worktree,
+                detection_root=Path(worktree),
             )
         assert "ac-django" in bundle
 
-    def test_threads_worktree_path_as_detection_cwd(self) -> None:
+    def test_threads_the_detection_root_as_detection_cwd(self) -> None:
         captured: dict[str, Path] = {}
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(SkillLoadingPolicy, "select_for_runtime_phase", _spy_on_cwd(captured)),
         ):
-            resolve_skill_bundle(phase="coding", overlay_skill_metadata={}, worktree_path=tmp)
+            resolve_skill_bundle(phase="coding", overlay_skill_metadata={}, detection_root=Path(tmp))
         assert captured["cwd"] == Path(tmp)
 
-    def test_falls_back_to_ambient_cwd_when_no_worktree(self) -> None:
+    def test_no_root_falls_back_to_the_cwd_and_says_so(self) -> None:
         captured: dict[str, Path] = {}
-        with patch.object(SkillLoadingPolicy, "select_for_runtime_phase", _spy_on_cwd(captured)):
-            resolve_skill_bundle(phase="coding", overlay_skill_metadata={}, worktree_path=None)
+        with (
+            patch.object(SkillLoadingPolicy, "select_for_runtime_phase", _spy_on_cwd(captured)),
+            self.assertLogs(skill_bundle.logger, level="WARNING") as logs,
+        ):
+            resolve_skill_bundle(phase="coding", overlay_skill_metadata={}, detection_root=None)
         assert captured["cwd"] == Path.cwd()
+        assert str(Path.cwd()) in logs.output[0]
 
-    def test_missing_worktree_dir_falls_back_to_ambient_cwd(self) -> None:
+    def test_missing_root_dir_falls_back_to_ambient_cwd(self) -> None:
         # A recorded path that no longer exists on disk must not become the
         # detection root — the loop's cwd is the safe fallback.
         captured: dict[str, Path] = {}
@@ -78,15 +84,37 @@ class TestResolveSkillBundleWorktreeScoping(TestCase):
             resolve_skill_bundle(
                 phase="coding",
                 overlay_skill_metadata={},
-                worktree_path="/nonexistent/worktree/path",
+                detection_root=Path("/nonexistent/worktree/path"),
             )
         assert captured["cwd"] == Path.cwd()
 
-    def test_dispatch_cwd_is_the_single_helper(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            assert skill_bundle._dispatch_cwd(tmp) == Path(tmp)
-        assert skill_bundle._dispatch_cwd(None) == Path.cwd()
-        assert skill_bundle._dispatch_cwd("") == Path.cwd()
+
+class TestNoWorktreeDetectsFromTheRepoClone(TestCase):
+    """The drain process's cwd holds no project file, so a no-worktree dispatch detected nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_cwd_and_django_clone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.ambient = tmp_path / "drain-cwd"
+        self.ambient.mkdir()
+        monkeypatch.chdir(self.ambient)
+        workspace = tmp_path / "clones"
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(workspace))
+        self.clone = workspace / "souliane" / "teatree"
+        (self.clone / ".git").mkdir(parents=True)
+        (self.clone / "pyproject.toml").write_text('[project]\ndependencies = ["django>=6"]\n')
+
+    def test_no_worktree_detects_from_repo_clone_not_cwd(self) -> None:
+        ticket = Ticket.objects.create(repos=["souliane/teatree"])
+        captured: dict[str, Path] = {}
+        with patch.object(SkillLoadingPolicy, "select_for_runtime_phase", _spy_on_cwd(captured)):
+            bundle = resolve_skill_bundle(
+                phase="planning",
+                overlay_skill_metadata={},
+                detection_root=dispatch_detection_root(ticket),
+            )
+        assert captured["cwd"] == self.clone
+        assert captured["cwd"] != Path.cwd()
+        assert {"ac-django", "ac-python"} <= set(bundle)
 
 
 class TestResolveSkillBundleStageSkillThreading(TestCase):

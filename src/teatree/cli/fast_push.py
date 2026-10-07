@@ -6,13 +6,14 @@ from pathlib import Path
 
 import typer
 
+from teatree.core.invocation_cwd import operator_cwd
 from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP, FastPusher, FastPushOutcome
 
 
 def fast_push(
     message: str = typer.Option("", "--message", "-m", help="Commit message (auto-generated when omitted)."),
     remaining: str = typer.Option("", "--remaining", help="Unfinished work, recorded as a REMAINING: PR-body section."),
-    repo: str = typer.Option(".", "--repo", help="Repository to push (defaults to the current directory)."),
+    repo: Path = typer.Option(operator_cwd, "--repo", help="Repository to push (default: where t3 was invoked)."),
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
 ) -> None:
@@ -22,7 +23,7 @@ def fast_push(
     in-process, fail-closed — and skips every other hook/gate. Any leak
     finding refuses the push and prints the offending path/term.
     """
-    outcome = FastPusher(repo=Path(repo).resolve(), message=message, remaining=remaining).run()
+    outcome = FastPusher(repo=(operator_cwd() / repo).resolve(), message=message, remaining=remaining).run()
     if json_output:
         typer.echo(json.dumps(asdict(outcome)))
     else:

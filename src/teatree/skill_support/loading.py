@@ -100,9 +100,13 @@ _SKILL_FILE = "SKILL.md"
 _DETECTED_SKILL_NAMES = FRAMEWORK_SKILL_NAMES
 
 
+#: Named both, so the bundle never leans on ``ac-django``'s ``requires`` resolving against a skill index.
+_DJANGO_SKILLS = ("ac-django", "ac-python")
+
+
 def _framework_skills_for_content(content: str) -> list[str]:
     if _DJANGO_DEPENDENCY_RE.search(content):
-        return ["ac-django"]
+        return list(_DJANGO_SKILLS)
     if _FASTAPI_DEPENDENCY_RE.search(content):
         return ["ac-python", "fastapi"]
     return ["ac-python"]
@@ -110,7 +114,7 @@ def _framework_skills_for_content(content: str) -> list[str]:
 
 def _framework_skills_for_directory(directory: Path) -> list[str] | None:
     if (directory / "manage.py").is_file():
-        return ["ac-django"]
+        return list(_DJANGO_SKILLS)
     for candidate in _PYTHON_FILE_HINTS:
         path = directory / candidate
         if not path.is_file():
