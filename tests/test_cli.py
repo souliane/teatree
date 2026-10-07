@@ -22,12 +22,14 @@ import teatree.config as config_mod
 import teatree.config.cold_reader as cold_reader_mod
 import teatree.core.intake.resolve as resolve_mod
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.skill_cache as skill_cache_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import _ensure_editable_if_contributing, _find_overlay_project, _find_project_root, app
 from teatree.cli import doctor as cli_doctor_mod
 from teatree.cli.agent import _detect_agent_ticket_status
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.overlay_init.generator import OverlayScaffolder, camelize
+from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
 
 runner = CliRunner()
 
@@ -348,6 +350,28 @@ class TestConfigCommands:
             assert data["skill_path"] == "skills/test/SKILL.md"
             assert data["skill_index"] == []
             assert "teatree_version" in data
+
+    def test_write_skill_cache_exits_nonzero_naming_a_shadowed_pin(self, tmp_path, monkeypatch):
+        shadow = tmp_path / "ac-django" / "SKILL.md"
+        monkeypatch.setattr(skill_cache_mod, "DATA_DIR", tmp_path)
+        monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
+        with (
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch("django.setup"),
+            patch.object(skill_cache_mod, "get_overlay", return_value=MagicMock()),
+            patch.object(
+                skill_cache_mod,
+                "build_skill_index",
+                side_effect=SkillShadowsDeclaredPinError("ac-django", "souliane/skills/ac-django#abc", shadow),
+            ),
+        ):
+            result = runner.invoke(app, ["config", "write-skill-cache"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "souliane/skills/ac-django#abc" in result.output
+        assert str(shadow) in result.output
+        assert not (tmp_path / "skill-metadata.json").exists()
 
     def test_write_skill_cache_no_active_overlay(self, tmp_path, monkeypatch):
         """write-skill-cache works when DJANGO_SETTINGS_MODULE is already set."""

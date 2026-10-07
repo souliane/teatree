@@ -168,28 +168,37 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert entry["model"] == "custom-strong-model"
         assert entry["skill_bundle"] == ["code-review"]
 
-    def test_a_shadowed_pin_is_logged_and_the_dispatch_still_goes_out(self) -> None:
+    def test_a_shadowed_pin_refuses_the_claim_as_the_headless_lane_does(self) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://example.com/pr/1",
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "x"},
         )
-        mint_open_pr_review(ticket)
+        task = mint_open_pr_review(ticket)
         stdout = StringIO()
         with tempfile.TemporaryDirectory() as local:
             shadow = Path(local) / "ac-django" / "SKILL.md"
             shadow.parent.mkdir()
             shadow.write_text("---\nname: ac-django\n---\n", encoding="utf-8")
-            with (
-                patch.object(skill_index, "DEFAULT_SKILLS_DIR", Path(local)),
-                self.assertLogs("teatree.core.management.commands.loop_dispatch", level="ERROR") as logs,
-            ):
+            with patch.object(skill_index, "DEFAULT_SKILLS_DIR", Path(local)):
                 call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
+        task.refresh_from_db()
+        error = task.attempts.get().error
+        assert json.loads(stdout.getvalue()) == []
+        assert task.status == Task.Status.FAILED
+        assert "souliane/skills/ac-django#" in error
+        assert str(shadow) in error
+
+    def test_any_other_bundle_failure_still_dispatches_with_an_empty_bundle(self) -> None:
+        self._reviewer_task()
+        stdout = StringIO()
+        with self.assertLogs("teatree.core.management.commands.loop_dispatch", level="ERROR") as logs:
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
         assert json.loads(stdout.getvalue())[0]["skill_bundle"] == []
-        assert "souliane/skills/ac-django#" in logs.output[0]
-        assert str(shadow) in logs.output[0]
+        assert "dispatches with no skill bundle" in logs.output[0]
 
 
 class TestClaimNextAtomicDispatch(_LoopDispatchTest):

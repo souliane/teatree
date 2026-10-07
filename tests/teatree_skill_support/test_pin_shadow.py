@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,15 @@ def test_the_declared_set_names_single_skill_specs_only(tmp_path: Path) -> None:
     )
 
     assert declared_pin_specs(tmp_path / "apm.yml") == {"alpha": "owner/repo/skills/alpha#abc"}
+
+
+def test_an_edited_manifest_is_reparsed_instead_of_served_from_the_memo(tmp_path: Path) -> None:
+    manifest = tmp_path / "apm.yml"
+    manifest.write_text("dependencies:\n  apm:\n  - owner/repo/skills/alpha#abc\n", encoding="utf-8")
+    assert declared_pin_specs(manifest) == {"alpha": "owner/repo/skills/alpha#abc"}
+
+    manifest.write_text("dependencies:\n  apm:\n  - owner/repo/skills/beta#def\n", encoding="utf-8")
+    stat = manifest.stat()
+    os.utime(manifest, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+    assert declared_pin_specs(manifest) == {"beta": "owner/repo/skills/beta#def"}

@@ -105,7 +105,8 @@ def test_select_for_agent_launch_explicit_phase(tmp_path: Path):
     assert result.ask_user is False
 
 
-def test_select_for_agent_launch_explicit_skills(tmp_path: Path):
+def test_select_for_agent_launch_explicit_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(skill_index_mod, "DEFAULT_SKILLS_DIR", Path(__file__).resolve().parents[2] / "skills")
     result = _launch(tmp_path, explicit_skills=["test", "debug"])
     assert result.skills.index("workspace") < result.skills.index("test")
     assert result.skills.index("systematic-debugging") < result.skills.index("debug")

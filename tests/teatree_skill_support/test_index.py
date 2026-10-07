@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,37 @@ def test_direct_requires_reads_only_the_first_level(tmp_path: Path) -> None:
 
     assert direct_requires("alpha", [tmp_path]) == ["beta"]
     assert direct_requires("ghost", [tmp_path]) == []
+
+
+def _latin1_skill(root: Path, name: str) -> Path:
+    path = root / name / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(f"---\nname: {name}\nrequires:\n  - beta\n---\n# caf\xe9\n".encode("latin-1"))
+    return path
+
+
+def test_a_non_utf8_skill_md_is_skipped_and_named_instead_of_failing_the_index(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    _skill(tmp_path, "alpha", requires=["beta"])
+    latin = _latin1_skill(tmp_path, "latin")
+
+    with caplog.at_level(logging.WARNING, logger=index.__name__):
+        entries = build_skill_index([tmp_path])
+
+    assert [entry["skill"] for entry in entries] == ["alpha"]
+    assert str(latin) in caplog.text
+
+
+def test_direct_requires_of_a_non_utf8_skill_md_is_empty_and_named(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    latin = _latin1_skill(tmp_path, "latin")
+
+    with caplog.at_level(logging.WARNING, logger=index.__name__):
+        assert direct_requires("latin", [tmp_path]) == []
+
+    assert str(latin) in caplog.text
 
 
 def test_skill_mtimes_cover_every_root_and_see_a_removal(tmp_path: Path) -> None:

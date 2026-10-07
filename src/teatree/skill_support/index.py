@@ -8,6 +8,7 @@ which root's skill a name means. A caller without an index gets this one, never 
 empty list: an empty index drops every ``requires`` edge without a word (#4769).
 """
 
+import logging
 import operator
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,6 +18,8 @@ from teatree.skill_support.pin_shadow import refuse_shadowed_pin
 from teatree.skill_support.requires_parser import parse_companions, parse_requires
 
 _SKILL_FILE = "SKILL.md"
+
+logger = logging.getLogger(__name__)
 
 
 def _default_skills_dir() -> Path:
@@ -83,16 +86,20 @@ def _skill_names(skills_dirs: Sequence[Path]) -> list[str]:
     return sorted(names)
 
 
+def _read_skill_md(skill_md: Path) -> str | None:
+    try:
+        return skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        logger.warning("Skipping unreadable skill file %s: %s", skill_md, exc)
+        return None
+
+
 def build_skill_index(skills_dirs: Sequence[Path]) -> SkillIndex:
     """One ``{"skill", "requires", "companions"}`` entry per name, read from the winning root."""
     index: SkillIndex = []
     for name in _skill_names(skills_dirs):
         skill_md = resolve_skill_md(name, skills_dirs)
-        if skill_md is None:
-            continue
-        try:
-            text = skill_md.read_text(encoding="utf-8")
-        except OSError:
+        if skill_md is None or (text := _read_skill_md(skill_md)) is None:
             continue
         index.append(
             {"skill": name, "requires": parse_requires(text) or [], "companions": parse_companions(text) or []}
@@ -104,9 +111,9 @@ def build_skill_index(skills_dirs: Sequence[Path]) -> SkillIndex:
 def direct_requires(name: str, skills_dirs: Sequence[Path]) -> list[str]:
     """The ``requires:`` list of *name*'s winning ``SKILL.md``, one level deep."""
     skill_md = resolve_skill_md(name, skills_dirs)
-    if skill_md is None:
+    if skill_md is None or (text := _read_skill_md(skill_md)) is None:
         return []
-    return parse_requires(skill_md.read_text(encoding="utf-8")) or []
+    return parse_requires(text) or []
 
 
 def skill_mtimes(skills_dirs: Sequence[Path]) -> dict[str, int]:

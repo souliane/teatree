@@ -6,8 +6,8 @@ cache to resolve overlay matching and the requires closure without paying
 the cost of Django bootstrap. The index is the one every dispatch uses —
 built over every skill root by :func:`teatree.skill_support.index.build_skill_index`.
 
-Called from `t3 config write-skill-cache` and from the loop tick
-when its scanners notice a SKILL.md mtime change.
+Written only by `t3 config write-skill-cache` (apm's ``post_install``); a stale
+cache makes the reader build the index live.
 """
 
 import json

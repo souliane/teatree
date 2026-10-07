@@ -58,5 +58,17 @@ def stage_skills_or_refusal(
         staged = stage_skills(phase)
         return staged, bundle(staged)
     except (ArchitecturalReviewSkillMissingError, SkillShadowsDeclaredPinError) as exc:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched
+        return _refused(task, exc)
+
+
+def bundle_or_refusal(task: Task, bundle: Callable[[], list[str]]) -> list[str] | TaskAttempt:
+    """*bundle*'s skills, or the recorded refusal a shadowed apm pin earns in every dispatch lane."""
+    try:
+        return bundle()
+    except SkillShadowsDeclaredPinError as exc:
+        return _refused(task, exc)
+
+
+def _refused(task: Task, exc: Exception) -> TaskAttempt:
+    logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+    return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched
