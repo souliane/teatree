@@ -98,7 +98,7 @@ class TestDeployShRunDerivesWorkerCaps:
             'for a in "$@"; do\n'
             '  case "$a" in\n'
             '    info) case "$*" in\n'
-            f'      *NCPU*) printf %s "{daemon_cpus}";;\n'
+            f'      *NCPU*) printf %s "${{STUB_DAEMON_CPUS:-{daemon_cpus}}}";;\n'
             f'      *) printf %s "{daemon_ram_mib * 1024 * 1024}";;\n'
             "    esac; exit 0;;\n"
             f'    up) printf %s "$TEATREE_WORKER_CPUS" > "{record_cpus}"; '
@@ -245,20 +245,22 @@ class TestDeployShRunDerivesWorkerCaps:
         assert record_cpus.exists(), "the deploy stopped instead of degrading to the compose default"
 
     @pytest.mark.parametrize(
-        ("live_nano_cpus", "operator_cpus", "expected"),
+        ("live_nano_cpus", "daemon_cpus", "operator_cpus", "expected"),
         [
-            pytest.param("8000000000", "", "8", id="live-above-derived-is-kept"),
-            pytest.param("4000000000", "", "7", id="live-below-derived-takes-derived"),
-            pytest.param("8000000000", "5", "5", id="an-operator-export-still-wins"),
-            pytest.param("", "", "7", id="no-readable-live-cap-takes-derived"),
+            pytest.param("8000000000", "16", "", "8", id="live-above-derived-is-kept"),
+            pytest.param("4000000000", "16", "", "7", id="live-below-derived-takes-derived"),
+            pytest.param("8000000000", "16", "5", "5", id="an-operator-export-still-wins"),
+            pytest.param("", "16", "", "7", id="no-readable-live-cap-takes-derived"),
+            pytest.param("12000000000", "8", "", "8", id="a-live-cap-above-the-daemon-is-cut-to-it"),
         ],
     )
     def test_a_raised_live_cpu_cap_survives_the_deploy(
-        self, tmp_path: Path, live_nano_cpus: str, operator_cpus: str, expected: str
+        self, tmp_path: Path, live_nano_cpus: str, daemon_cpus: str, operator_cpus: str, expected: str
     ) -> None:
         """An operator's `docker update --cpus` on the live worker is not undone by the next deploy (#5089)."""
         repo, record_cpus, env = self._stage_with_stub_sizer(tmp_path, _SIZER_DERIVING_SEVEN_CPUS)
         env["STUB_LIVE_NANO_CPUS"] = live_nano_cpus
+        env["STUB_DAEMON_CPUS"] = daemon_cpus
         if operator_cpus:
             env["TEATREE_WORKER_CPUS"] = operator_cpus
 

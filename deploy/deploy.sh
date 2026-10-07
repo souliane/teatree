@@ -221,15 +221,19 @@ worker_restart_state() {
     docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}' "$cid" 2>/dev/null
 }
 
-# The live worker container's whole-core CPU cap; fails when there is none or it is unreadable.
+# The live worker container's whole-core CPU cap, cut to the daemon's CPUs (a downsized host
+# would refuse the old cap); fails when there is none or it is unreadable.
 live_worker_cpus() {
-    local ids cid nano
+    local ids cid nano live daemon
     ids="$(compose ps -q teatree-worker 2>/dev/null)" || return 1
     cid="${ids%%$'\n'*}"
     [ -n "$cid" ] || return 1
     nano="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$cid" 2>/dev/null)" || return 1
     case "$nano" in "" | 0 | *[!0-9]*) return 1 ;; esac
-    echo $((nano / 1000000000))
+    live=$((nano / 1000000000))
+    daemon="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+    case "$daemon" in "" | *[!0-9]*) ;; *) [ "$live" -le "$daemon" ] || live="$daemon" ;; esac
+    echo "$live"
 }
 
 # Seconds since the epoch for a Docker RFC 3339 UTC stamp, on GNU and BSD date alike.
@@ -469,7 +473,7 @@ if command -v python3 >/dev/null 2>&1; then
     rm -f "$SIZING_ERR"
 fi
 # A cap raised on the live worker (`docker update --cpus`) outlives the swap: the derived
-# value is the floor, never a cut. The daemon already refused any live cap above its CPUs.
+# value is the floor, never a cut.
 if [ -z "$OPERATOR_WORKER_CPUS" ] && LIVE_WORKER_CPUS="$(live_worker_cpus)" &&
     [ "$LIVE_WORKER_CPUS" -gt "${TEATREE_WORKER_CPUS:-0}" ] 2>/dev/null; then
     TEATREE_WORKER_CPUS="$LIVE_WORKER_CPUS"

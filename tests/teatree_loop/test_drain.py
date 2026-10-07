@@ -226,6 +226,9 @@ class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
     def setUp(self) -> None:
         self.task = cast("Task", TaskFactory(ticket=planned_ticket(), status=Task.Status.PENDING))
         self.task.claim(claimed_by="old-worker", lease_seconds=900)
+        # Claimed long ago, so only the drive marker (not the fresh-claim grace) can hold the drain.
+        Task.objects.filter(pk=self.task.pk).update(claimed_at=timezone.now() - timedelta(minutes=10))
+        self.task.refresh_from_db()
 
     def _run_to_its_checkpoint(self, _seconds: float) -> None:
         # Read here: the run's heartbeat thread cannot see this TestCase's uncommitted gate row.
@@ -245,9 +248,10 @@ class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
 
     def _drain(self) -> DrainReport:
         clock = _FakeClock([0.0, 0.0, 700.0])
-        return drain_worker(
-            timeout=600, pacing=DrainPacing(poll_interval=0, sleep=self._run_to_its_checkpoint, monotonic=clock)
-        )
+        with drive_claim(self.task):
+            return drain_worker(
+                timeout=600, pacing=DrainPacing(poll_interval=0, sleep=self._run_to_its_checkpoint, monotonic=clock)
+            )
 
     def test_the_drain_ends_once_the_run_checkpoints(self) -> None:
         report = self._drain()

@@ -200,7 +200,13 @@ A second stack can be rolled on the same daemon without touching the live one:
 
 ## How the one-click deploy works
 
-`Actions → Deploy teatree → Run workflow` (`.github/workflows/deploy.yml`):
+`Actions → Deploy teatree → Run workflow` (`.github/workflows/deploy.yml`). The same
+workflow runs on every push to `main`, **debounced**: a push first waits 300 s in a
+`debounce` job, and a newer push cancels that wait, so a burst of merges produces one
+deploy instead of one per merge. Each deploy closes admission for its drain and swap,
+which is why the burst is coalesced; the factory keeps admitting work during the wait.
+The `deploy` job itself still runs one at a time and is never cancelled mid-run, and a
+manual run skips the wait.
 
 1. Connects to the box at the fixed host/IP held in the `DEPLOY_SSH_HOST` secret
    (masked out of the logs immediately) — no cloud API resolves it, so any
@@ -360,7 +366,7 @@ A single `up -d --build` recreates every service at once. `teatree-admin`,
 `teatree-worker` and `teatree-slack-listener` each `depends_on` init with
 `service_completed_successfully`, so compose creates all five container objects
 and holds three of them in `Created` until init exits — **67 seconds measured on
-the box**, once per merged PR. In that window the dashboard is gone, the only
+the box**, once per deploy. In that window the dashboard is gone, the only
 control-DB CLI route is gone, and the container logs a live diagnosis was reading
 have been destroyed with the container objects.
 
@@ -439,7 +445,10 @@ and `available_cpu_count` inside the worker derives concurrency from the host, n
 a baked-in 3-core cap. When `python3` is absent or RAM is unreadable — or on a bare
 `docker compose up` — the in-file defaults (`3.0` / `18g`, sized for a ~30GB host)
 apply. The watchdog's `up -d --no-recreate` does not re-size a running worker; the
-next deploy re-asserts the derived caps.
+next deploy re-asserts the derived caps. A CPU cap raised on the live worker
+(`docker update --cpus`) survives that deploy: with no `TEATREE_WORKER_CPUS` exported,
+`deploy.sh` uses the larger of the derived cap and the live one, cut to the daemon's
+CPU count. Export `TEATREE_WORKER_CPUS` to lower it again.
 
 ### The control DB is in a named volume; everything else is a bind mount
 

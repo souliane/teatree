@@ -108,8 +108,12 @@ class _Heartbeat:
         try:
             while True:
                 await asyncio.sleep(self.runtime.heartbeat_interval)
-                if await self._lost_the_lease() or await self._checkpointed() or await self._breached():
+                if await self._lost_the_lease():
                     return
+                # An interrupted run holds its claim until it ends, so only the lease is renewed from here on.
+                if self.breach or await self._checkpointed():
+                    continue
+                await self._breached()
         finally:
             await asyncio.to_thread(close_thread_db_connections)
 
@@ -129,7 +133,8 @@ class _Heartbeat:
         try:
             await asyncio.to_thread(self.runtime.renew_lease, self.task)
         except LeaseLostError as exc:
-            self.lease_lost = True
+            # The flags name what FIRST interrupted the run; a claim lost after that only ends the beat.
+            self.lease_lost = not self.breach
             logger.warning("Task %s lease lost; interrupting duplicate run", self.task.pk)
             return await self._interrupt(str(exc))
         except Exception:

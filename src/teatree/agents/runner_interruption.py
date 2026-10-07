@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.result_schema import AgentResultBlob, check_evidence
@@ -21,6 +22,7 @@ from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt
 from teatree.core.models.phase_landing import phase_landing_evidence
+from teatree.core.models.task_claim import claim_generation
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
@@ -117,12 +119,26 @@ def _record_stuck_outcome(
     if cancelled is not None:
         return _record_noop_over_cancelled_row(cancelled, interruption=stuck_reason, usage=usage)
     if outcome.checkpointed:
-        return record_park(task, reason=f"{LIMIT_PARKED_PREFIX}{stuck_reason}", not_before=timezone.now(), usage=usage)
+        return _record_checkpoint(task, checkpoint=stuck_reason, usage=usage)
     evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason, usage=usage)
     return _record_failure(
         task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}", result=outcome.unfinished_result, usage=usage
+    )
+
+
+def _record_checkpoint(task: Task, *, checkpoint: str, usage: "AttemptUsage | None") -> TaskAttempt:
+    """Park the run to resume it — unless a rival now holds its claim, when the row is no longer its to park."""
+    with transaction.atomic():
+        live = Task.objects.filter(pk=task.pk, status=Task.Status.CLAIMED).first()
+        if live is not None and claim_generation(live) == claim_generation(task):
+            return record_park(
+                task, reason=f"{LIMIT_PARKED_PREFIX}{checkpoint}", not_before=timezone.now(), usage=usage
+            )
+    logger.warning("Task %s checkpointed after its claim moved on; leaving the row alone", task.pk)
+    return _record_interrupted_attempt(
+        task, summary=f"{checkpoint} — the claim had moved on, so the row was left alone", usage=usage
     )
 
 

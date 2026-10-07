@@ -29,6 +29,11 @@ In an image generation the self-update scanner is not built, `reinstall_running_
 - After a build it untags generation images and bases older than the newest three by build time, skipping — by image id, never by name — any image a container (running or stopped) was created from or the promoted tag names. `docker rmi` of one tag of a multi-tag image untags it even while a container runs it, so a name check would take the serving generation's own tag and with it the rollback path. Nothing is ever forced.
 - The Dockerfile's default target is unchanged.
 
+## Deploy cadence
+
+- `.github/workflows/deploy.yml` debounces the push-triggered deploy: a push to `main` waits 300 s in a `debounce` job with its own cancel-in-progress group, so a newer push cancels the older run's wait and a merge burst lands as one deploy. `workflow_dispatch` skips the wait.
+- The `deploy` job serializes on the fixed `deploy` group with `cancel-in-progress: false` and runs only after a debounce that succeeded or was skipped, so a running convergence is never cancelled. The workflow declares no top-level concurrency group, which would queue the debounce behind the deploy.
+
 ## The roll: entry and lock
 
 - `deploy/roll.sh [<rev> [roller args]]` is the entry: it fetches, builds the generation, and runs the roller (`teatree/deploy/roll.py`) from the NEW image as the one-shot `teatree-roller` service, repeating a progress line at least every 30 s.

@@ -22,10 +22,12 @@ import subprocess
 import time
 from pathlib import Path
 from typing import NamedTuple
+from unittest import mock
 
 import pytest
 import yaml
 
+from teatree.cli.doctor.self_heal_quiescing import quiescing_deploy_budget_seconds
 from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -313,6 +315,12 @@ class TestDeployDebounce:
             "RUNNING convergence (an in-flight worker drain) mid-run."
         )
 
+    def test_the_workflow_itself_declares_no_concurrency_group(self) -> None:
+        assert "concurrency" not in _deploy_workflow(), (
+            "a workflow-level group queues whole runs, the debounce job included, behind the deploy "
+            "group again, so a merge burst stops coalescing."
+        )
+
     def test_a_newer_merge_cancels_the_older_runs_debounce(self) -> None:
         debounce = _deploy_workflow()["jobs"]["debounce"]
         assert debounce["concurrency"]["group"] != _deploy_job()["concurrency"]["group"], (
@@ -364,14 +372,16 @@ class TestDeployDebounce:
             "the flock guard must run BEFORE the worker drain, so a second convergence never starts a competing drain."
         )
 
-    def test_job_timeout_exceeds_the_drain_window(self) -> None:
-        # If the GitHub job timeout is below the deploy.sh drain window, GitHub
-        # abandons a still-running remote deploy and releases the concurrency
-        # group early — the overlap that stranded admission.
+    def test_job_timeout_covers_every_bounded_stage_of_the_convergence(self) -> None:
+        # If the GitHub job timeout is below what deploy.sh itself allows, GitHub abandons a
+        # still-running remote deploy and releases the concurrency group early — the overlap
+        # that stranded admission. The gate-ON budget counts the drain once; stage 4 drains again.
+        with mock.patch.dict("os.environ", {}, clear=True):
+            worst_case = quiescing_deploy_budget_seconds() + DEFAULT_DRAIN_TIMEOUT_SECONDS
         timeout_minutes = int(_deploy_job()["timeout-minutes"])
-        assert timeout_minutes * 60 > DEFAULT_DRAIN_TIMEOUT_SECONDS + 600, (
-            "deploy job timeout-minutes must exceed the drain window plus build/up/health, "
-            "or GitHub abandons the in-flight deploy and overlaps runs."
+        assert timeout_minutes * 60 >= worst_case, (
+            "deploy job timeout-minutes must cover both drains, the init wait, the admin swap and the "
+            "resume, or GitHub abandons the in-flight deploy and overlaps runs."
         )
 
     def test_every_restated_drain_default_is_the_one_default(self) -> None:

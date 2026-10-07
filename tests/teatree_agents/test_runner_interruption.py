@@ -18,6 +18,7 @@ import json
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
@@ -206,6 +207,20 @@ class TestADeployCheckpointParksTheRunToResumeIt(TestCase):
         self.task.refresh_from_db()
         assert attempt not in phase_attempts(self.task)
         assert self.task.reclaim_count == self.reclaims
+
+    def test_a_rivals_claim_is_never_cleared_by_the_park(self) -> None:
+        # The lease lapsed and a rival re-claimed the row before this run's checkpoint was recorded.
+        Task.objects.filter(pk=self.task.pk).update(claimed_by="worker-B", claimed_at=timezone.now())
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        row = Task.objects.get(pk=self.task.pk)
+        assert row.status == Task.Status.CLAIMED
+        assert row.claimed_by == "worker-B"
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert attempt.input_tokens == 900, "the interrupted run's spend is still recorded"
+        assert "deploy checkpoint" in str(attempt.result["summary"])
 
     def test_a_completed_row_is_still_a_no_op(self) -> None:
         Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED, claimed_by="")

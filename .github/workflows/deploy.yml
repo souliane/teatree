@@ -49,15 +49,15 @@ jobs:
       group: deploy
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    # Must exceed the worst-case deploy.sh runtime (worker drain up to
-    # TEATREE_DRAIN_TIMEOUT=600s/10min + image build + up + health wait). If the
-    # job times out while the remote deploy.sh is still draining, GitHub releases
-    # the `deploy` concurrency group and starts the next run WHILE the abandoned
-    # remote deploy keeps running — overlapping drains that strand worker_quiescing
-    # ON. Keep this comfortably above the drain window so the job holds the group
-    # until the convergence truly finishes. deploy.sh's host flock is the hard
-    # backstop if the timeouts ever drift out of order again.
-    timeout-minutes: 30
+    # Must cover what deploy.sh itself allows: both drains (2 x
+    # TEATREE_DRAIN_TIMEOUT=600s), the init wait (TEATREE_INIT_WAIT_TIMEOUT=1800s),
+    # the admin swap and the resume (300s each), plus the image build. If the job
+    # times out while the remote deploy.sh is still running, GitHub releases the
+    # `deploy` concurrency group and starts the next run WHILE the abandoned remote
+    # deploy keeps running — overlapping drains that strand worker_quiescing ON.
+    # deploy.sh's host flock is the hard backstop if the timeouts ever drift out of
+    # order again. Pinned against those defaults by tests/test_deploy_rolling_drain.py.
+    timeout-minutes: 75
     steps:
       - name: Validate required secrets
         env:
