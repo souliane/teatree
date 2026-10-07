@@ -35,6 +35,7 @@ pytestmark = pytest.mark.django_db
 
 _PRESSURE = "teatree.loop.scanners.resource_pressure"
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
+_SWEEP = "teatree.loop.mechanical_artifacts"
 _SIGNAL = "resource.artifacts_reclaimable"
 
 
@@ -337,6 +338,18 @@ class UnattendedHousekeepingTests(TestCase):
         assert not env_dir.exists(), plan
         assert "1 released" in plan, plan
 
+    def test_a_dir_left_holding_only_salvage_is_not_counted_released_on_every_pass(self) -> None:
+        env_dir = self._orphan_env_dir()
+        bundle = env_dir / "unshipped-work" / "abc123" / "uncommitted.patch"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text("diff --git a/x b/x\n", encoding="utf-8")
+
+        first = self._sweep()
+        second = self._sweep()
+
+        assert "1 released" in first, first
+        assert "0 released" in second, second
+
     def test_a_failing_drain_still_lets_the_env_dir_reap_run(self) -> None:
         env_dir = self._orphan_env_dir()
 
@@ -347,8 +360,7 @@ class UnattendedHousekeepingTests(TestCase):
         assert "teardown drain failed" in plan, plan
 
     def test_the_env_dir_walk_is_bounded_inside_the_tick(self) -> None:
-        reaper = "teatree.core.cleanup.isolated_roots.reap_orphan_isolated_worktree_roots"
-        with patch(reaper, return_value=[]) as reap:
+        with patch(f"{_SWEEP}.reap_orphan_isolated_worktree_roots", return_value=[]) as reap:
             self._sweep()
 
         deadline = reap.call_args.kwargs["deadline"]

@@ -125,7 +125,9 @@ def _row_referenced_slugs() -> set[str]:
     return referenced
 
 
-def _live_checkout_slugs(workspace: Path, root: Path, *, deadline: float | None) -> LiveCheckoutSlugs:
+def _live_checkout_slugs(
+    workspace: Path, root: Path, *, deadline: float | None, stamp_owners: bool
+) -> LiveCheckoutSlugs:
     """Union the registered-row and on-disk-checkout evidence into ONE keep-set.
 
     Both sources answer the same question — "does a live checkout own this slug?"
@@ -138,7 +140,8 @@ def _live_checkout_slugs(workspace: Path, root: Path, *, deadline: float | None)
     """
     snapshot_at = time.time()
     registry = checkout_registry.live_checkout_paths(workspace, deadline=deadline)
-    owner_stamps.stamp_discovered_owners(registry.paths, root)
+    if stamp_owners:
+        owner_stamps.stamp_discovered_owners(registry.paths, root)
     slugs = _row_referenced_slugs()
     slugs.update(paths.isolated_slug(Path(checkout)) for checkout in registry.paths)
     return LiveCheckoutSlugs(frozenset(slugs), registry.gaps, snapshot_at, registry.scanned_roots)
@@ -199,20 +202,39 @@ def _evidence_gap(env_dir: Path, *, stamp: owner_stamps.OwnerStamp, live: LiveCh
     return stamp.missing_evidence
 
 
+def _holds_only_salvage(env_dir: Path) -> bool:
+    names = {entry.name for entry in env_dir.iterdir()}
+    return SALVAGE_NAME in names and names <= {SALVAGE_NAME, *_STAMP_NAMES}
+
+
 def _keep_reason(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
     """Why *env_dir* must survive this pass, or ``None`` when it is provably reclaimable.
 
-    Ownership proof first, then the pins that hold regardless, then the ways the
-    evidence falls short. The single ``None`` exit is the only path to a deletion.
+    The keep-set first, then the pins that hold regardless, then the ways the evidence
+    falls short. The stamped owner's liveness is read LAST: the checks before it are slow,
+    and a checkout re-provisioned meanwhile owns the dir again. The single ``None`` exit
+    is the only path to a deletion.
     """
     if env_dir.name in live.slugs:
         return "a live checkout owns it"
+    if _holds_only_salvage(env_dir):
+        return f"already released — only its {SALVAGE_NAME}/ salvage remains"
     stamp = owner_stamps.read_owner_stamp(env_dir, live.scanned_roots)
     return (
-        stamp.proof_of_life
-        or _protected_reason(env_dir, keep_unmappable_live=keep_unmappable_live)
+        _protected_reason(env_dir, keep_unmappable_live=keep_unmappable_live)
         or _evidence_gap(env_dir, stamp=stamp, live=live)
+        or stamp.proof_of_life
     )
+
+
+def _verdict(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bool) -> str | None:
+    """:func:`_keep_reason`, except that a dir this pass cannot read is kept and named rather than ending the pass."""
+    if env_dir.is_symlink():
+        return "a symlink, not a dir this root minted — never followed"
+    try:
+        return _keep_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"could not be judged ({exc}) — never reclaimed on evidence it could not read"
 
 
 def reap_orphan_isolated_worktree_roots(
@@ -244,21 +266,19 @@ def reap_orphan_isolated_worktree_roots(
     everything.
 
     A reclaimable dir is released, never blindly removed: its ``unshipped-work/`` salvage
-    and stamps survive, and one dir that cannot be deleted is reported and skipped. A
-    walk *deadline* only shortens the keep-set into a gap, which stamp-proven dirs ignore.
+    and stamps survive (and the dir is then reported kept, not released again), and one dir
+    that cannot be deleted is reported and skipped. A dir this pass cannot read is kept with
+    the cause named; it never ends the pass. A walk *deadline* only shortens the keep-set
+    into a gap, which stamp-proven dirs ignore. A dry run writes nothing, stamps included.
     """
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():
         return []
-    live = _live_checkout_slugs(workspace, root, deadline=deadline)
+    live = _live_checkout_slugs(workspace, root, deadline=deadline, stamp_owners=not dry_run)
     keep_unmappable_live = _has_unmappable_live_worktree()
     outcomes: list[str] = []
     for env_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        reason = (
-            "a symlink, not a dir this root minted — never followed"
-            if env_dir.is_symlink()
-            else _keep_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
-        )
+        reason = _verdict(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
         if reason is not None:
             outcomes.append(f"KEPT '{env_dir.name}': {reason}")
         elif dry_run:

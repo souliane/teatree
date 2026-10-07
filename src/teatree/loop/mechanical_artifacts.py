@@ -27,6 +27,8 @@ from teatree.core.cleanup.artifact_eviction import (
     evict_artifacts,
     plan_artifact_eviction,
 )
+from teatree.core.cleanup.isolated_roots import reap_orphan_isolated_worktree_roots
+from teatree.core.tasks import TeardownDispatch
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_plan import GIB, FreePlan, append_stopped_deletions, persist_plan, sampled
 from teatree.loop.reclaim_yield import pressure_idle_days
@@ -66,8 +68,6 @@ def sweep_artifacts(payload: ActionPayload) -> None:
 
 
 def _drain_teardown_backlog(plan: FreePlan) -> None:
-    from teatree.core.tasks import TeardownDispatch  # noqa: PLC0415 — lazy ORM import
-
     try:
         queued = TeardownDispatch.drain_terminal_backlog()
     except Exception:
@@ -78,10 +78,6 @@ def _drain_teardown_backlog(plan: FreePlan) -> None:
 
 
 def _release_orphan_env_dirs(plan: FreePlan) -> None:
-    from teatree.core.cleanup.isolated_roots import (  # noqa: PLC0415 — lazy ORM import
-        reap_orphan_isolated_worktree_roots,
-    )
-
     deadline = time.monotonic() + ENV_DIR_WALK_BUDGET_SECONDS
     try:
         outcomes = reap_orphan_isolated_worktree_roots(worktree_root(), deadline=deadline)
