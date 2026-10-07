@@ -86,7 +86,7 @@ from teatree.agents.usage_window import maybe_park_for_active_window, park_task_
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.core.worktree.occupancy import (
     WorktreeOccupiedError,
     occupy_ticket_checkout,
@@ -469,7 +469,7 @@ def _preflight(
     skills = resolve_skill_bundle(
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
-        worktree_path=dispatch_worktree_path(task.ticket),
+        detection_root=dispatch_detection_root(task.ticket),
         stage_skills=stage_skills,
     )
     dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)

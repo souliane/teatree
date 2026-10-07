@@ -55,6 +55,9 @@ Load `/t3:health` when the statusline health chip is yellow or red, or the user 
 - A **reclaim-stalled:disk** issue means the freeing pass keeps running below `disk_crit_free_gb` and
   returning nothing — read `t3 loop status`'s persisted plan for the per-lever yield, and reclaim by
   hand if the levers are genuinely exhausted. It resolves itself once free space recovers.
+- A **stack-skills-missing** issue names recent dispatches on a Python/Django repo whose recorded
+  bundle (`TaskAttempt.skills_loaded`) lacks `ac-django` / `ac-python` — check that the host has both
+  SKILL.md bodies and that the ticket's worktree or clone resolves. It clears once the 6 h window holds none.
 - Something the signals cannot see (a stale DB snapshot, a known-broken external dependency) → `health add` it so it is visible on the chip until resolved.
 - An auto-derived issue you have chosen to live with → `health dismiss <id>`.
 
