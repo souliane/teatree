@@ -300,6 +300,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # The ``LimitCause`` markers a limit-killed run records (``LimitMatch.as_reason``),
     # plus the legacy ``usage_limit:`` spelling still on stored rows. API-credit exhaustion
     # is a drained CREDENTIAL, not a usage window — its remedy is billing, not waiting.
+    # ``limit_parked:`` is the ONE scheduling-park marker, so this kind also counts a deploy-drain checkpoint.
     (FailureKind.CREDENTIAL_EXHAUSTED, ("api_credit:",)),
     (
         FailureKind.USAGE_LIMIT_PARKED,

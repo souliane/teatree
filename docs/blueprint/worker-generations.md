@@ -8,6 +8,7 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 - Both claim paths stamp `Task.claimed_generation`. A generation whose own row is draining, retired or failed is refused by `claim_admission_block_reason` with its short sha named.
 - `begin_drain` advances the quiesce fence in the same transaction, so a claim racing the drain rolls back exactly as it does for `worker_quiescing`; a drain that loses a race joins the one in progress.
 - `drain_worker(generation=<sha>)` waits on that generation's stamped claims only and never writes `worker_quiescing`; `t3 worker drain --generation <sha>` drains one generation.
+- A draining, retired or failed own generation is a `drain_block_reason`, like `worker_quiescing`: each of its in-flight runs interrupts itself at its next heartbeat and parks PENDING with its session id, so the drain ends in about one heartbeat and the next generation resumes the conversation. The `--drain-timeout` (default 600 s) only bounds a run that cannot checkpoint.
 
 ## Stranded drains
 
@@ -27,6 +28,11 @@ In an image generation the self-update scanner is not built, `reinstall_running_
 - `TEATREE_IMAGE_REPOSITORY` (default `teatree-factory`) names a registry repository: an image or base already there is pulled instead of built, and `TEATREE_PUSH_IMAGES=1` pushes what a build made. The build is idempotent on that tag and label.
 - After a build it untags generation images and bases older than the newest three by build time, skipping — by image id, never by name — any image a container (running or stopped) was created from or the promoted tag names. `docker rmi` of one tag of a multi-tag image untags it even while a container runs it, so a name check would take the serving generation's own tag and with it the rollback path. Nothing is ever forced.
 - The Dockerfile's default target is unchanged.
+
+## Deploy cadence
+
+- `.github/workflows/deploy.yml` debounces the push-triggered deploy: a push to `main` waits 300 s in a `debounce` job with its own cancel-in-progress group, so a newer push cancels the older run's wait and a merge burst lands as one deploy. `workflow_dispatch` skips the wait.
+- The `deploy` job serializes on the fixed `deploy` group with `cancel-in-progress: false` and runs only after a debounce that succeeded or was skipped, so a running convergence is never cancelled. The workflow declares no top-level concurrency group, which would queue the debounce behind the deploy.
 
 ## The roll: entry and lock
 

@@ -20,7 +20,7 @@ third answer, not the second one: see :func:`claim_is_observable`.
 """
 
 import os
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Sequence
 from pathlib import Path
 
 from teatree.cli.setup.clone import find_main_clone
@@ -113,12 +113,13 @@ def declare_cwd_insensitive_invocation(env: MutableMapping[str, str]) -> None:
     env.setdefault(INVOCATION_CWD_ENV, str(DEFAULT_CONTROL_DB_DIR))
 
 
-def delegate_to_owning_domain() -> None:
+def delegate_to_owning_domain(serve_args: Sequence[str] = ()) -> None:
     """Replace this process with the containerized server when the container owns the DB.
 
     ``execv``, not a subprocess: the client talks to this process over inherited
     stdin/stdout, and replacing the image hands it those exact file descriptors with
-    no relaying layer to buffer or drop a frame. Returns normally — serve here —
+    no relaying layer to buffer or drop a frame. *serve_args* ride along, so the
+    delegated server is the one the client asked for. Returns normally — serve here —
     whenever :func:`owning_domain_wrapper` declines.
     """
     wrapper = owning_domain_wrapper()
@@ -126,4 +127,4 @@ def delegate_to_owning_domain() -> None:
         return
     os.environ[DELEGATED_ENV_VAR] = "1"
     declare_cwd_insensitive_invocation(os.environ)
-    os.execv(str(wrapper), [str(wrapper), "mcp", "serve"])  # noqa: S606 — argv list, no shell; path from the clone
+    os.execv(str(wrapper), [str(wrapper), "mcp", "serve", *serve_args])  # noqa: S606 — argv list, no shell; path from the clone

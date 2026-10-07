@@ -87,9 +87,9 @@ def check_test_durations_coverage() -> bool:
         "whichever PR is in flight."
     )
     typer.echo(
-        "      The weekly scheduled run opens `ci/test-durations-refresh` with fresh durations — "
-        "merge it. If no such PR exists, the refresh job is not running: check it on the latest "
-        "`schedule` run of the CI workflow."
+        "      The Sunday scheduled run opens `ci/test-durations-refresh` with fresh durations — "
+        "merge it. If no such PR exists, check `refresh-durations` on the last Sunday `schedule` "
+        "run of the CI workflow; the Monday-to-Saturday runs skip it by design."
     )
     return True
 
@@ -141,9 +141,9 @@ def check_test_durations_freshness() -> bool:
         "it is splitting with nothing else to say so."
     )
     typer.echo(
-        "      Either `ci/test-durations-refresh` is open and unmerged — merge it — or the scheduled "
-        "run is not producing one: check the latest `schedule` run of the CI workflow, and its "
-        "`refresh-durations` job in particular."
+        "      Either `ci/test-durations-refresh` is open and unmerged — merge it — or the Sunday scheduled "
+        "run is not producing one: check `refresh-durations` on the last Sunday `schedule` run of the CI "
+        "workflow; the Monday-to-Saturday runs skip it by design."
     )
     return False
 

@@ -85,3 +85,4 @@ class TestMapIntegrity:
     def test_teatree_native_capabilities_map_to_no_sdk_tool(self) -> None:
         assert CAPABILITY_TO_SDK_TOOLS["recall_memory"] == frozenset()
         assert CAPABILITY_TO_SDK_TOOLS["record_attempt"] == frozenset()
+        assert CAPABILITY_TO_SDK_TOOLS["mcp_write"] == frozenset()

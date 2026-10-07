@@ -14,6 +14,9 @@ from teatree.quality.durations_coverage import DurationsCoverage
 from teatree.quality.durations_file import DurationsUnreadableError
 from teatree.quality.durations_freshness import MAX_REFRESH_AGE, DurationsFreshness, DurationsHistoryUnreadableError
 from teatree.quality.timeout_headroom import CeilingPressure, HeadroomReport
+from tests._actions_workflow import CI_WEEKLY_CRON
+
+_STALE_POINTER = "latest `schedule` run"
 
 
 def _measured(coverage: DurationsCoverage | None):
@@ -49,6 +52,8 @@ class TestTestDurationsDoctorCheck:
         assert "11.1%" in out
         assert "73 recorded key(s) name a deleted file" in out
         assert "ci/test-durations-refresh" in out
+        assert "Sunday" in out
+        assert _STALE_POINTER not in out
 
     def test_no_checkout_is_silent_never_a_verdict(self, capsys, tmp_path: Path) -> None:
         with _repo_found(tmp_path), _measured(None):
@@ -229,6 +234,11 @@ class TestDurationsFreshnessDoctorCheck:
         assert "FAIL" in out
         assert "ci/test-durations-refresh" in out
         assert f"{(MAX_REFRESH_AGE + dt.timedelta(days=6)).days} days" in out
+        assert "Sunday" in out
+        assert _STALE_POINTER not in out
+
+    def test_the_day_the_advice_names_is_the_day_the_refresh_cron_fires(self) -> None:
+        assert CI_WEEKLY_CRON.split()[-1] == "0", "the doctor says `Sunday`; cron weekday 0 is Sunday"
 
     def test_a_low_coverage_file_being_refreshed_normally_never_pages(self, capsys, tmp_path: Path) -> None:
         """The pair the ticket's acceptance names: shortfall stays a WARN, freshness stays quiet.

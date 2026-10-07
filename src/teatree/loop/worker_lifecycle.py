@@ -36,11 +36,16 @@ from dataclasses import dataclass
 from enum import Enum
 
 from teatree.config.resolution import worker_is_quiescing
-from teatree.loop.drain import DrainPacing, DrainProgress, DrainReport, drain_worker, set_worker_quiescing
+from teatree.loop.drain import (
+    DEFAULT_DRAIN_TIMEOUT_SECONDS,
+    DrainPacing,
+    DrainProgress,
+    DrainReport,
+    drain_worker,
+    set_worker_quiescing,
+)
 from teatree.utils.singleton import WORKER_SINGLETON, default_pid_path, flock_is_held, read_pid
 
-#: The default drain grace, mirroring ``t3 worker drain --timeout``.
-DEFAULT_DRAIN_TIMEOUT_SECONDS = 1800
 #: How long a SIGTERMed worker gets to release the flock. Its supervisor re-reads the
 #: stop event every ~5 s and then joins the executors (~3 s), so a healthy shutdown lands
 #: well inside this window — exceeding it means the exit did NOT happen.
@@ -142,7 +147,7 @@ class WorkerStopper:
     """Drain, signal the flock holder, verify the exit, and never strand the quiesce gate.
 
     ``on_drain_progress`` is the heartbeat sink the drain wait reports through. Without
-    one the stop is SILENT for the whole ``--timeout`` budget (1800s by default) before
+    one the stop is SILENT for the whole ``--timeout`` budget before
     it even reaches the signal, which reads as a wedged command rather than a working
     one — the failure #3983 fixed for ``t3 worker drain`` and that ``stop`` / ``restart``
     inherited by dropping the sink.
@@ -239,7 +244,6 @@ def wait_for_new_holder(
 
 
 __all__ = [
-    "DEFAULT_DRAIN_TIMEOUT_SECONDS",
     "DEFAULT_EXIT_TIMEOUT_SECONDS",
     "DEFAULT_START_TIMEOUT_SECONDS",
     "LifecycleSeams",

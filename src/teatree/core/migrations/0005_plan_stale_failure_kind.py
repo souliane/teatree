@@ -2,9 +2,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    dependencies = [
-        ("core", "0003_delete_drain_slot_reservation_rows"),
-    ]
+    dependencies = [("core", "0004_deferredquestion_resolved_via_agent")]
 
     operations = [
         migrations.AlterField(

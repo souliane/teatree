@@ -22,6 +22,7 @@ from teatree.backends.slack import http as slack_http
 from teatree.backends.types import Service
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_guard import GuardTarget
+from teatree.core.modelkit.phase_tools import mcp_write_tools_for_phase
 from teatree.core.models import ConfigSetting, ReviewEvidence, Ticket
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp.server import build_server
@@ -122,6 +123,14 @@ class TestReviewRequestPostTool(TestCase):
         )
 
         assert result["action"] in {"suppress", "draft"}
+        assert result["reason"] == "no_review_channel_or_token"
+
+    def test_the_requesting_review_server_reaches_the_gated_command(self) -> None:
+        server = build_server(read_only=True, allowed_writes=mcp_write_tools_for_phase("requesting_review"))
+        args = {"mr_url": _MR_URL, "approver": "user-1", **self.gate_args}
+
+        result = _payloads(async_to_sync(server.call_tool)("review_request_post", args))[0]
+
         assert result["reason"] == "no_review_channel_or_token"
 
     def test_refuses_without_a_recorded_on_behalf_approval(self) -> None:
