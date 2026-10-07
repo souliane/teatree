@@ -29,6 +29,7 @@ from teatree.core.admission_governor import (
 )
 from teatree.core.telemetry.admission import record_admission_decision
 from teatree.loop.admit_budget import load_meta, meta_path
+from teatree.request_cache import request_scope
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ def read_yield_signal(now: dt.datetime | None = None) -> YieldSignal:
     )
 
 
+@request_scope()  # the ceiling and the pressure each resolve settings; one resolution per verdict
 def governor_verdict(*, statusline_path: Path, static_ceiling: int | None = None) -> AdmissionDecision | None:
     """The live admission verdict, or ``None`` when the probe is unavailable.
 
