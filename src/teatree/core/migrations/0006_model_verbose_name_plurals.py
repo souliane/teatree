@@ -2,9 +2,7 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-    dependencies = [
-        ("core", "0004_deferredquestion_resolved_via_agent"),
-    ]
+    dependencies = [("core", "0005_plan_stale_failure_kind")]
 
     operations = [
         migrations.AlterModelOptions(

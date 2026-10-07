@@ -12,7 +12,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import SERVICE_CLIENTS, declaring_overlays, resolve_declaring_overlay_client
 
 
 class _Overlay:
@@ -71,3 +71,13 @@ class TestResolveDeclaringOverlayClient:
             pytest.raises(ToolError, match="github code host"),
         ):
             resolve_declaring_overlay_client(Service.GITHUB, lambda name: name, description="github code host")
+
+
+def test_every_service_has_a_client_entry() -> None:
+    assert set(SERVICE_CLIENTS) == set(Service)
+
+
+def test_declarers_are_grouped_per_service_in_overlay_order() -> None:
+    overlays = {"a": _Overlay(Service.SLACK), "b": _Overlay(Service.SLACK, Service.NOTION)}
+    with _overlays(overlays):
+        assert declaring_overlays() == {Service.SLACK: ["a", "b"], Service.NOTION: ["b"]}

@@ -65,7 +65,7 @@ t3 notion doctor <page>                 # token / sharing / LIVE, reported separ
 # t3 notion audit-fetch <dead-page> --reason 'need the AC'   # FORBIDDEN as a way to get the spec back
 ```
 
-**The connector is not exempt.** The interactive claude.ai Notion connector (`notion-search` / `notion-fetch`) renders an archived page with no liveness signal at all and has no gate behind it, so when a page arrives through that path the rule is yours to apply: confirm it with `t3 notion doctor <page>` before treating any of it as requirements.
+**Read Notion only through teatree.** `t3 notion` and the teatree MCP Notion tools carry the archived-page refusal; any other Notion reader renders an archived page with no liveness signal and no gate behind it, so a page that arrived another way is confirmed with `t3 notion doctor <page>` before any of it is treated as requirements.
 
 #### One Ticket At A Time — Never Conflate (Non-Negotiable)
 

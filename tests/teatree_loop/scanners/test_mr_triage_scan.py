@@ -428,6 +428,17 @@ class TestAMissingReviewIsProvedAgainstTheChannel(TestCase):
 
         assert [q.dedupe_marker for q in _open_mr_questions()] == [mr_state_marker(f"{_REPO}/33")]
 
+    def test_a_surveyor_whose_verdict_a_sender_acts_on_asks_nothing(self) -> None:
+        with _channel(), _reads():
+            signals = MrTriageScanner(
+                allowed_url_prefixes=_SCOPE,
+                host=FakeCodeHost(user="alice", my_prs=[_opened(38)]),
+                ask_owner_on_missing_review=False,
+            ).scan()
+
+        assert _actions(signals) == [TriageAction.REQUEST_REVIEW]
+        assert _open_mr_questions() == []
+
     def test_a_held_group_member_asks_the_owner_nothing(self) -> None:
         host = FakeCodeHost(
             user="alice",

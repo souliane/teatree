@@ -30,13 +30,15 @@ import hooks.scripts.hook_router as router
 _FAIL_OPEN_READERS: tuple[tuple[str, str], ...] = (
     ("_skill_loading_gate_enabled", "skill_loading_gate_enabled"),
     ("_plan_edit_gate_enabled", "plan_edit_gate_enabled"),
-    ("_self_dm_gate_enabled", "self_dm_gate_enabled"),
     ("_orchestrator_bash_gate_enabled", "orchestrator_bash_gate_enabled"),
     # #1733: flipped to default-ON (fail-open) once the Agent matcher was wired.
     ("_orchestrator_boundary_agent_gate_enabled", "orchestrator_boundary_agent_gate_enabled"),
 )
 
-_FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = ()
+_FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = (
+    # The master switch that relaxes every over-deny gate: only an explicit ``true`` may turn it on.
+    ("_danger_gate_fail_open_enabled", "danger_gate_fail_open"),
+)
 
 
 @pytest.fixture
@@ -95,6 +97,12 @@ class TestFailClosedReadersBehavior:
     @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
     def test_quoted_true_does_not_enable(self, reader: str, key: str, config_db: Path) -> None:
         _seed_config_db(config_db, {key: "true"})
+        assert getattr(router, reader)() is False
+
+    @pytest.mark.parametrize("value", [1, "yes", ["true"]])
+    @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
+    def test_a_truthy_non_bool_does_not_enable(self, reader: str, key: str, value: object, config_db: Path) -> None:
+        _seed_config_db(config_db, {key: value})
         assert getattr(router, reader)() is False
 
 

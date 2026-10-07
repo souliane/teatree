@@ -60,13 +60,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_t3_master_unheld_while_loops_tick,
     _check_unconsumed_merge_clears,
 )
-from teatree.cli.doctor.checks_mcp import (
-    _check_chrome_devtools_mcp_suggestion,
-    _check_connector_manifest,
-    _check_mcp_connectivity,
-    _check_teatree_mcp_liveness,
-    _check_teatree_mcp_registration,
-)
+from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_liveness, _check_teatree_mcp_registration
 from teatree.cli.doctor.checks_mode_override import _check_mode_override_staleness
 from teatree.cli.doctor.checks_notion import _check_notion_credentials
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
@@ -144,13 +138,11 @@ __all__ = (
     "_check_aged_sweep_skips",
     "_check_agent_session_pins",
     "_check_box_occupancy",
-    "_check_chrome_devtools_mcp_suggestion",
     "_check_claude_settings_drift",
     "_check_cold_hook_settings_readable",
     "_check_compose_output_root_pinned",
     "_check_config_override_tier_healthy",
     "_check_configured_review_skills",
-    "_check_connector_manifest",
     "_check_control_db_agreement",
     "_check_control_db_reachable",
     "_check_dangling_editable_pth",
@@ -173,7 +165,6 @@ __all__ = (
     "_check_loop_presets",
     "_check_loop_schedule_liveness",
     "_check_marker_jam",
-    "_check_mcp_connectivity",
     "_check_mode_override_staleness",
     "_check_notion_credentials",
     "_check_provision_concurrency_from_host",

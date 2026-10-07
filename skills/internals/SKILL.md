@@ -57,9 +57,8 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 
 ### Notion, headless (`t3 notion`)
 
-The claude.ai Notion connector is interactively authenticated, so it does not exist in a
-cron/headless run. `t3 notion` is the replacement: the public Notion API under an internal
-**integration token** (env `NOTION_TOKEN`, else the `pass` entry `notion_token_pass_key` routes on this venue;
+`t3 notion` is the one Notion surface, interactive and headless alike: the public Notion API
+under an internal **integration token** (env `NOTION_TOKEN`, else the `pass` entry `notion_token_pass_key` routes on this venue;
 there is no default entry). Unnamed, a call runs as the overlay that routes Notion (`whoami` prints which); two overlays routing different entries refuse rather than pick. Agents call `t3`, never the API directly. `t3 setup` and `t3 doctor` run the same
 probe: routed entry, token, identity, and every page an in-flight ticket tracks that the bot cannot see.
 
@@ -194,7 +193,7 @@ On the facets (`overlay.provisioning`, `.runtime`, `.e2e`, `.review`, `.config`,
 | `e2e` | `env_extras(...)`, `preflight(...)`, `run_provenance(spec_path)`, `scenarios(spec_path)`, `playwright_args(spec_path)`, `spec_paths(...)` |
 | `review` | `visual_qa_targets(changed_files)`, `can_auto_merge(...)`, `merge_candidate_repo_slugs(...)`, `review_exempt_repo_slugs(...)`, `mandatory_e2e_exempt_repo_slugs(...)` |
 | `config` | `get_gitlab_token()`, `get_github_token()`, `get_slack_token()`, `get_review_channel()`, `secret_pass_key(...)`, … (credentials, URLs, labels) |
-| `connectors` | `preflight(...)`, `mcp_provider_expectations()`, `manifest()`, `mcp_tool_group()` |
+| `connectors` | `preflight()`, `mcp_tool_group()` |
 
 There is no `get_gitlab_url()` anywhere: the URL is a pydantic field on `OverlayConfig`, not a
 method. Reaching for one is the reliable sign a doc predates the facet split.

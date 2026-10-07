@@ -102,10 +102,10 @@ class TestOrchestrationAction:
         assert _is_orchestration_action({"tool_name": "AskUserQuestion", "tool_input": {}}) is True
 
     def test_mcp_send_message_is_orchestration(self) -> None:
-        assert _is_orchestration_action({"tool_name": "mcp__claude_ai_Slack__slack_send_message"}) is True
+        assert _is_orchestration_action({"tool_name": "mcp__slack__slack_send_message"}) is True
 
     def test_mcp_view_read_is_orchestration(self) -> None:
-        assert _is_orchestration_action({"tool_name": "mcp__claude_ai_Slack__slack_read"}) is True
+        assert _is_orchestration_action({"tool_name": "mcp__slack__slack_read"}) is True
 
     def test_bash_is_not_decided_here(self) -> None:
         # Bash is judged by the heavy denylist in the handler, not here.

@@ -33,9 +33,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
-from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import FORGE_CLIENTS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,7 +47,7 @@ _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
 
 def _forge_client(service: Service) -> CodeHostBackend:
-    return resolve_declaring_overlay_client(service, code_host_from_overlay, description=f"{service.value} code host")
+    return FORGE_CLIENTS[service].resolve()
 
 
 async def _run_hygiene_write(work: "Callable[[], dict[str, Any]]") -> dict[str, Any]:

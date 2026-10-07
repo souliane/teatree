@@ -16,6 +16,7 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 
 from typing import TYPE_CHECKING
 
+from teatree.core.models.self_review import SelfReview
 from teatree.core.review import pr_open_state as _pr_open_state
 
 if TYPE_CHECKING:
@@ -42,6 +43,10 @@ def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":
     return _pr_open_state.read_pr_open_state(ticket)
 
 
+def _self_review_holds(ticket: "Ticket") -> bool:
+    return SelfReview.open_hold_for(ticket) is not None
+
+
 def populate_model_registries() -> None:
     """Import every gate (self-registering) and register the resolvers + cost factories."""
     # Importing a gate module runs its module-level ``register_gate(...)`` call.
@@ -60,8 +65,12 @@ def populate_model_registries() -> None:
         review_context_gate,
         rubric_gate,
     )
-    from teatree.core.modelkit.gate_registry import register_resolver  # noqa: PLC0415 — deferred: call-time import
+    from teatree.core.modelkit.gate_registry import (  # noqa: PLC0415 — deferred: call-time import
+        register_gate,
+        register_resolver,
+    )
 
+    register_gate("self_review_hold", _self_review_holds)
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
     register_resolver("pr_open_state", _read_pr_open_state)

@@ -1,19 +1,21 @@
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple, cast
 
+from django.apps import apps
 from django.db import transaction
 
 from teatree.config import Mode, get_effective_settings
 from teatree.core.modelkit.gate_registry import get_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
-from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
+from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, SelfReviewReworkRefusedError
 from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
 if TYPE_CHECKING:
     from teatree.core.managers import TaskQuerySet
+    from teatree.core.models.self_review import SelfReview
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
@@ -25,6 +27,11 @@ PLANNING_HANDOFF_KEY = "planning_handoff"
 
 def _auto_ship_enabled() -> bool:
     return get_effective_settings().mode == Mode.AUTO
+
+
+class SelfReviewRework(NamedTuple):
+    rework: "Task | None"
+    superseded: "list[Task]"
 
 
 class TicketSchedulingModel(TicketFacet):
@@ -44,6 +51,17 @@ class TicketSchedulingModel(TicketFacet):
         if intent.strip():
             reason = f"{reason}\n\nThe work this plan is for:\n{intent.strip()}"
         return self._schedule_phase_task("planning", reason, parent_task, require_author=True)
+
+    def schedule_plan_reaffirm(self: "Ticket", *, refusal: str, parent_task: "Task | None" = None) -> "Task":
+        """The planning pass a plan the currency gate refused is owed: reaffirm it against what moved, or re-plan."""
+        return self.schedule_planning(
+            parent_task=parent_task,
+            intent=(
+                f"The plan is not current: {refusal} Record a per-commit disposition (no conflict / compatible / "
+                "conflict). If none conflicts, re-emit the plan at the new base_sha with that section; if one "
+                "conflicts, re-plan."
+            ),
+        )
 
     def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None, intent: str = "") -> "Task":
         """Walk an early-state author ticket up to WORK_STARTED and schedule its planning task.
@@ -76,12 +94,20 @@ class TicketSchedulingModel(TicketFacet):
                     f"begin_planning requires an early state {sorted(self.EARLY_STATES)!r} (got state={locked.state!r})"
                 )
                 raise InvalidTransitionError(msg)
-            if locked.state == self.State.NOT_STARTED:
-                locked.scope()
-            if locked.state == self.State.SCOPED:
-                locked.start()
+            locked.walk_to_work_started()
             locked.merge_extra(also_set={"state": locked.state})
             return locked.schedule_planning(parent_task=parent_task, intent=intent)
+
+    def walk_to_work_started(self: "Ticket") -> None:
+        """Fire ``scope`` / ``start`` so a NOT_STARTED or SCOPED ticket sits where ``plan()`` can consume it."""
+        if self.state == self.State.NOT_STARTED:
+            self.scope()
+        if self.state == self.State.SCOPED:
+            self.start()
+
+    def admits_implementing(self: "Ticket") -> bool:
+        """Whether :meth:`schedule_implementing` can take work: a plan decision exists, or planning can still begin."""
+        return has_plan_decision(self) or self.state in self.EARLY_STATES
 
     def schedule_implementing(self: "Ticket", phase: str, *, reason: str, parent_task: "Task | None" = None) -> "Task":
         """Mint *phase* on a planned ticket; route an unplanned early one to planning carrying *reason*.
@@ -141,6 +167,34 @@ class TicketSchedulingModel(TicketFacet):
             require_author=True,
             gate="plan_currency",
         )
+
+    def schedule_self_review_rework(self: "Ticket", review_task: "Task", review: "SelfReview") -> "Task":
+        """Mint the coding task that carries a held self-review's findings, parented on that review.
+
+        No ``plan_currency`` gate: a corrective re-entry, like :meth:`schedule_implementing`'s.
+        """
+        return self._schedule_phase_task("coding", review.rework_reason(), review_task, require_author=True)
+
+    def requeue_self_review_rework(self: "Ticket", review: "SelfReview", *, dry_run: bool = False) -> SelfReviewRework:
+        """Supersede the ticket's active tasks and re-queue *review*'s rework, or return the one in flight.
+
+        Refuses to fail a CLAIMED task: an agent is running it, and failing it under that agent strands the run.
+        """
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        with transaction.atomic():
+            in_flight = self.tasks.pending_in_phase("coding").filter(parent_task_id=review.task_pk).first()
+            if in_flight is not None:
+                return SelfReviewRework(in_flight, [])
+            active = list(self.tasks.filter(status__in=task_model.Status.active()).order_by("pk"))
+            if claimed := [task for task in active if task.status == task_model.Status.CLAIMED]:
+                names = ", ".join(f"task {task.pk} ({task.phase})" for task in claimed)
+                msg = f"{names} is claimed by a running agent, and rework-hold would fail it"
+                raise SelfReviewReworkRefusedError(msg, hint="Let it finish, or cancel it first, then retry.")
+            if dry_run:
+                return SelfReviewRework(None, active)
+            self._cancel_pending_tasks()
+            return SelfReviewRework(self.schedule_self_review_rework(self.tasks.get(pk=review.task_pk), review), active)
 
     def _schedule_phase_task(
         self: "Ticket",

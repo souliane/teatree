@@ -9,6 +9,7 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import (
@@ -27,7 +28,7 @@ from teatree.agents.result_schema import AgentResultBlob
 from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_failure_taxonomy import MODEL_FALLBACK_SUBTYPE, TURN_CEILING_SUBTYPE, is_context_exhaustion
 from teatree.agents.runner_usage import context_size
-from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -111,13 +112,20 @@ class StreamCapture:
     pending_skill_loads: dict[str, tuple[str, Path | None]] = field(default_factory=dict)
     model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
     context_tokens: int | None = None
-    open_tool_uses: set[str] = field(default_factory=set)
+    open_tools: dict[str, tuple[str, float]] = field(default_factory=dict)
+    last_event_at: float | None = None
 
     @property
     def tool_in_flight(self) -> bool:
-        return bool(self.open_tool_uses)
+        return bool(self.open_tools)
+
+    @property
+    def open_tool(self) -> tuple[str, float] | None:
+        """The longest-running tool call still awaiting its result: its name and monotonic start."""
+        return next(iter(self.open_tools.values()), None)
 
     def observe(self, message: object) -> None:
+        self.last_event_at = monotonic()
         if self.round_ceiling is not None:
             self.round_ceiling.observe(message)
         if isinstance(message, AssistantMessage):
@@ -142,9 +150,9 @@ class StreamCapture:
 
     def _observe_tool_block(self, block: object) -> None:
         if isinstance(block, ToolUseBlock):
-            self.open_tool_uses.add(block.id)
+            self.open_tools.setdefault(block.id, (block.name, monotonic()))
         if isinstance(block, ToolResultBlock):
-            self.open_tool_uses.discard(block.tool_use_id)
+            self.open_tools.pop(block.tool_use_id, None)
             pending = self.pending_skill_loads.pop(block.tool_use_id, None)
             if pending is not None and not block.is_error:
                 skill, read_path = pending
@@ -162,7 +170,7 @@ class StreamCapture:
                 return
             if isinstance(reference, str) and reference:
                 self.pending_skill_loads[block.id] = (
-                    _bare_skill_name(reference),
+                    bare_skill_name(reference),
                     Path(reference) if block.name in {"Read", "read_file", "Bash"} else None,
                 )
 
@@ -201,7 +209,7 @@ async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture 
 def _complete_skill_read(skill: str, read_path: Path, content: object) -> bool:
     """A successful Read counts only if it returned the full configured skill body."""
     try:
-        expected = _resolve_skill_md(skill, harness_skills_dirs())
+        expected = resolve_skill_md(skill, harness_skills_dirs())
         if expected is None or read_path.resolve() != expected.resolve() or not isinstance(content, str):
             return False
         body = expected.read_text(encoding="utf-8")

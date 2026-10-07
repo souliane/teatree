@@ -109,6 +109,25 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0",),
         note="--json emits each pending question's automated-resolver coverage; empty resolvers = human-only (#4178)",
     ),
+    Capability(
+        "teatree live list",
+        json_output=True,
+        exit_codes=("0", "3", "5"),
+        note="--json emits every live session on this host's workers; passive; 3 refused, 5 no worker answered (#5063)",
+    ),
+    Capability(
+        "teatree live inspect",
+        json_output=True,
+        exit_codes=("0", "3", "5"),
+        note="--json emits one live session's facts; passive, the agent is not contacted; 3 refused, 5 offline",
+    ),
+    Capability(
+        "teatree live steer",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
+        "5 offline",
+    ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree settings_compare",
@@ -218,6 +237,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0", "1"),
         note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
+    ),
+    Capability(
+        "teatree ticket rework-hold",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the held review and its rework task; 1 when the ticket holds no HOLD to rework",
     ),
     Capability(
         "teatree review record",

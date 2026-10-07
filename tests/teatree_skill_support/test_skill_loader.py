@@ -13,62 +13,13 @@ from importlib import import_module
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 # skill_loader lives in scripts/lib/, add scripts/ to path
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 skill_loader_mod = import_module("lib.skill_loader")
-build_requires_index = skill_loader_mod.build_requires_index
 suggest_skills = skill_loader_mod.suggest_skills
-
-SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
-
-
-# ── Build requires index from skills directory ───────────────────────
-
-
-class TestBuildRequiresIndex:
-    def test_builds_from_skills_dir(self):
-        if not SKILLS_DIR.is_dir():
-            pytest.skip("skills directory not found")
-        index = build_requires_index([SKILLS_DIR])
-        by_skill = {e["skill"]: e for e in index}
-        assert "code" in by_skill
-        # ``code`` requires the migrated companion + its declared deps.
-        assert "workspace" in by_skill["code"]["requires"]
-        assert "test-driven-development" in by_skill["code"]["requires"]
-        # Every entry has exactly the three keys.
-        assert all(set(e) == {"skill", "requires", "companions"} for e in index)
-
-    def test_sorted_by_skill_name(self):
-        if not SKILLS_DIR.is_dir():
-            pytest.skip("skills directory not found")
-        index = build_requires_index([SKILLS_DIR])
-        names = [e["skill"] for e in index]
-        assert names == sorted(names)
-
-    def test_empty_dir(self, tmp_path):
-        assert build_requires_index([tmp_path]) == []
-
-    def test_skill_without_requires_gets_empty_list(self, tmp_path):
-        skill_dir = tmp_path / "no-requires"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("---\nname: no-requires\n---\n# No requires")
-        assert build_requires_index([tmp_path]) == [{"skill": "no-requires", "requires": [], "companions": []}]
-
-    def test_dedup_across_search_dirs(self, tmp_path):
-        first = tmp_path / "a"
-        second = tmp_path / "b"
-        for root in (first, second):
-            skill = root / "code"
-            skill.mkdir(parents=True)
-            (skill / "SKILL.md").write_text("---\nname: code\nrequires:\n  - workspace\n---\n")
-        index = build_requires_index([first, second])
-        assert [e["skill"] for e in index] == ["code"]
-
 
 # ── Cache version validation ─────────────────────────────────────────
 
@@ -92,6 +43,18 @@ class TestMetadataCacheInvalidation:
         self._seed_cache(tmp_path, monkeypatch, {"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]})
         with mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="2.0.0"):
             assert skill_loader_mod._read_metadata_cache() == {}
+
+    def test_no_cache_hands_the_policy_none_so_it_builds_the_live_index(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        assert skill_loader_mod._read_skill_index() is None
+
+    def test_a_skill_added_to_any_root_makes_the_cache_stale(self, tmp_path, monkeypatch):
+        installed = Path.home() / ".agents" / "skills" / "late"
+        fingerprint = skill_loader_mod.skill_mtimes(skill_loader_mod.harness_skills_dirs())
+        assert skill_loader_mod._cache_is_stale({"skill_mtimes": fingerprint}) is False
+        installed.mkdir(parents=True)
+        (installed / "SKILL.md").write_text("---\nname: late\n---\n", encoding="utf-8")
+        assert skill_loader_mod._cache_is_stale({"skill_mtimes": fingerprint}) is True
 
     def test_missing_version_in_cache_skips_check(self, tmp_path, monkeypatch):
         self._seed_cache(tmp_path, monkeypatch, {"skill_index": [{"skill": "test"}]})

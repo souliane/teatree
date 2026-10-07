@@ -4,13 +4,14 @@ from django.apps import apps
 from django.db.models import Max
 from django_fsm import can_proceed
 
+from teatree.core.forge_url import is_forge_url
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
@@ -76,6 +77,11 @@ class TicketIntrospectionModel(TicketFacet):
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
 
     @property
+    def has_checkout_source(self: "Ticket") -> bool:
+        """A repo is attached, or a forge issue (not a PR url) exists for ``workspace ticket`` to attach one from."""
+        return bool(self.repos) or (is_forge_url(self.issue_url) and pr_ref_from_url(self.issue_url) is None)
+
+    @property
     def is_settled(self) -> bool:
         """True in a terminal/abandoned state (PR_OPENED/MERGED/DELIVERED/REVIEW_DELIVERED/IGNORED)."""
         return self.state in self._SETTLED_STATES
@@ -94,7 +100,7 @@ class TicketIntrospectionModel(TicketFacet):
         """
         return next((phase for phase, produces in cls._PHASE_PRODUCES_STATE.items() if produces == state), "")
 
-    def has_completed_phase(self, phase: str) -> bool:
+    def has_completed_phase(self: "Ticket", phase: str) -> bool:
         """True when the FSM state has already reached the state *phase* produces.
 
         A FAILED task for such a phase is SUPERSEDED: the ticket's own FSM advanced
@@ -110,7 +116,13 @@ class TicketIntrospectionModel(TicketFacet):
         order = self._WORK_STATE_ORDER
         if produces is None or self.state not in order:
             return False
+        if produces == self.State.CODED and self.owes_self_review_rework():
+            return False
         return order.index(self.state) >= order.index(produces)
+
+    def owes_self_review_rework(self: "Ticket") -> bool:
+        """Whether a held self-review still waits on its rework, so coding is not over at this state."""
+        return can_proceed(self.address_self_review)
 
     def may_expedite(self) -> bool:
         """True iff this ticket may carry a human-authorized PENDING-checks waiver (PR-07).

@@ -10,13 +10,26 @@ sibling ``mark_review_no_action``.
 
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
+from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
+from teatree.core.models import DeferredQuestion, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from tests.factories import planned_ticket, record_test_plan
+from tests.teatree_core._self_review_helpers import (
+    FAILURE_SCENARIO,
+    HELD_FINDINGS,
+    HELD_SHA,
+    author_ticket,
+    completed_self_review,
+    self_review_result,
+)
 from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
 
@@ -238,6 +251,57 @@ class TestApplyPhaseTransitionCodingBeforePlanned(TestCase):
         assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
 
 
+class TestPlanningCompletionOnAnEarlyPlannedTicket(TestCase):
+    """A planning completion with a recorded plan has one resolution: walk scope -> start -> plan."""
+
+    def _completed_planning(self, state: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+        record_test_plan(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.COMPLETED)
+        return ticket, task
+
+    def test_live_and_replayed_completions_advance_to_plan_recorded_and_mint_coding(self) -> None:
+        for state in (Ticket.State.NOT_STARTED, Ticket.State.SCOPED):
+            with self.subTest(state=state, path="live"):
+                ticket, task = self._completed_planning(state)
+
+                assert task._apply_phase_transition() is True
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.PLAN_RECORDED
+                assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=task).count() == 1
+            with self.subTest(state=state, path="replay"):
+                ticket, _task = self._completed_planning(state)
+
+                Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert not DeferredQuestion.objects.exists()
+
+    def test_claimed_complete_advances_a_not_started_planned_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        record_test_plan(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        task.claim(claimed_by="loop")
+
+        task.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
+
+    def test_work_started_without_a_plan_still_refuses(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="planning")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.COMPLETED)
+
+        with pytest.raises(NoPlanArtifactError):
+            task._apply_phase_transition()
+
+
 class TestApplyPhaseTransitionEscalation(TestCase):
     """#10 invariant: an FSM lifecycle transition must never fail silently.
 
@@ -262,6 +326,7 @@ class TestApplyPhaseTransitionEscalation(TestCase):
         pending = DeferredQuestion.pending()
         assert pending.count() == 1, "a genuine FSM wedge must escalate, never silently drop"
         assert "FSM wedge" in pending.first().question
+        assert pending.first().audience == DeferredQuestion.Audience.INTERNAL
 
     def test_wedge_escalation_is_deduped_across_replays(self) -> None:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
@@ -273,6 +338,87 @@ class TestApplyPhaseTransitionEscalation(TestCase):
         coding_task._apply_phase_transition()
 
         assert DeferredQuestion.pending().count() == 1, "an at-least-once replay must not flood the question queue"
+
+    def test_a_dismissed_wedge_is_never_re_raised_by_a_replay(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        coding_task = self._completed_task(ticket, "coding")
+        coding_task._apply_phase_transition()
+        DeferredQuestion.pending().get().mark_stale("operator dismissed")
+
+        Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+        Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+        assert DeferredQuestion.objects.count() == 1
+        assert not DeferredQuestion.pending().exists()
+
+    def test_a_new_completed_task_on_the_same_wedge_records_its_own_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        self._completed_task(ticket, "coding")._apply_phase_transition()
+        DeferredQuestion.pending().get().mark_stale("operator dismissed")
+
+        self._completed_task(ticket, "coding")._apply_phase_transition()
+
+        assert DeferredQuestion.objects.count() == 2
+        assert DeferredQuestion.pending().count() == 1
+
+    def test_a_re_plan_completed_past_plan_recorded_queues_its_coding_task_once(self) -> None:
+        for state in (Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED):
+            with self.subTest(state=state):
+                ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+                record_test_plan(ticket)
+                planning = self._completed_task(ticket, "planning")
+
+                planning._apply_phase_transition()
+                Task.objects.filter(ticket=ticket).replay_orphaned_transitions()
+
+                coding = Task.objects.get(ticket=ticket, phase="coding")
+                assert coding.parent_task_id == planning.pk
+                assert coding.status == Task.Status.PENDING
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_re_plan_whose_coding_mint_is_refused_records_the_refusal(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEW_REQUESTED)
+        planning = self._completed_task(ticket, "planning")
+
+        planning._apply_phase_transition()
+        planning._apply_phase_transition()
+
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        row = DeferredQuestion.pending().get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert "no PlanArtifact" in row.question
+
+    def test_an_old_planning_task_on_merged_work_queues_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.RETRO_RECORDED)
+        record_test_plan(ticket)
+
+        self._completed_task(ticket, "planning")._apply_phase_transition()
+
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_planning_completion_already_followed_by_a_task_queues_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        record_test_plan(ticket)
+        planning = self._completed_task(ticket, "planning")
+        self._completed_task(ticket, "coding").delete()
+        Task.objects.create(ticket=ticket, session=planning.session, phase="coding", status=Task.Status.FAILED)
+
+        planning._apply_phase_transition()
+
+        assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_an_unplanned_early_planning_completion_stays_put_with_one_internal_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.NOT_STARTED)
+        planning = self._completed_task(ticket, "planning")
+
+        assert planning._apply_phase_transition() is False
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.INTERNAL).count() == 1
+        assert not DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.OWNER_QUESTION).exists()
 
     def test_idempotent_replay_past_target_does_not_escalate(self) -> None:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
@@ -481,3 +627,181 @@ class TestPhaseOutputReached(TestCase):
         assert phase_output_reached(self._ticket(Ticket.State.REVIEW_DELIVERED), "shipping") is False
         assert phase_output_reached(self._ticket(Ticket.State.IGNORED), "shipping") is False
         assert phase_output_reached(self._ticket(Ticket.State.DELIVERED), "bughunt") is False
+
+
+def _returned_self_review(ticket: Ticket, verdict: str) -> TaskAttempt:
+    session = Session.objects.create(ticket=ticket, agent_id="review")
+    task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+    task.claim(claimed_by="self-reviewer")
+    with (
+        patch.object(Ticket, "has_shippable_diff", return_value=True),
+        patch("teatree.agents.review_context_recorder.dispatch_worktree_path", return_value="/tmp/worktree"),
+        patch("teatree.agents.review_context_recorder.git.head_sha", return_value=HELD_SHA),
+    ):
+        return record_result_envelope(task, self_review_result(verdict), phase="reviewing")
+
+
+def _coding_tasks(ticket: Ticket) -> list[Task]:
+    return list(Task.objects.filter(ticket=ticket, phase="coding"))
+
+
+def _replay() -> None:
+    with patch.object(Ticket, "has_shippable_diff", return_value=True):
+        Task.objects.replay_orphaned_transitions()
+
+
+class TestASelfReviewHoldKeepsTheTicketTested(TestCase):
+    """An author's self-review HOLD on a TESTED ticket queues its findings as rework, never shipping."""
+
+    def test_the_live_path_keeps_a_hold_in_tested_with_one_rework_carrying_every_finding(self) -> None:
+        ticket = author_ticket()
+
+        attempt = _returned_self_review(ticket, "hold")
+
+        assert attempt.error == ""
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [rework] = _coding_tasks(ticket)
+        assert rework.status == Task.Status.PENDING
+        assert rework.parent_task_id == attempt.task_id
+        for finding in HELD_FINDINGS:
+            assert str(finding["summary"]) in rework.execution_reason
+            assert f"{finding['file']}:{finding['line']}" in rework.execution_reason
+        assert HELD_SHA in rework.execution_reason
+        assert FAILURE_SCENARIO in rework.execution_reason
+        assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
+
+    def test_the_live_path_advances_a_merge_safe_to_self_reviewed_with_shipping(self) -> None:
+        ticket = author_ticket()
+
+        attempt = _returned_self_review(ticket, "merge_safe")
+
+        assert attempt.error == ""
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert Task.objects.filter(ticket=ticket, phase="shipping", status=Task.Status.PENDING).exists()
+        assert not _coding_tasks(ticket)
+
+    def test_replaying_a_held_review_mints_one_rework_and_never_re_mints_it_after_it_fails(self) -> None:
+        ticket = author_ticket()
+        held = completed_self_review(ticket, "hold")
+
+        _replay()
+        _replay()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [rework] = _coding_tasks(ticket)
+        assert rework.parent_task_id == held.pk
+        rework.fail(reason="the coder crashed", by_holder=False)
+
+        _replay()
+
+        assert _coding_tasks(ticket) == [rework]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+
+    def test_completing_the_rework_re_enters_testing(self) -> None:
+        ticket = author_ticket()
+        _returned_self_review(ticket, "hold")
+        [rework] = _coding_tasks(ticket)
+        rework.claim(claimed_by="coder")
+
+        rework.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        [testing] = Task.objects.filter(ticket=ticket, phase="testing", status=Task.Status.PENDING)
+        assert testing.parent_task_id == rework.pk
+
+    def test_a_coding_completion_after_a_merge_safe_self_review_stays_tested(self) -> None:
+        ticket = author_ticket()
+        completed_self_review(ticket, "merge_safe")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        coding = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+        assert coding._apply_phase_transition() is False
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_verdict_spelled_in_capitals_still_holds(self) -> None:
+        ticket = author_ticket()
+
+        _returned_self_review(ticket, " HOLD ")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert len(_coding_tasks(ticket)) == 1
+
+    def test_an_open_pull_request_does_not_exempt_a_pre_ship_hold(self) -> None:
+        ticket = author_ticket()
+        PullRequest.objects.create(
+            ticket=ticket, overlay="test", url="https://github.com/souliane/teatree/pull/7", repo="souliane/teatree"
+        )
+
+        with patch(
+            "teatree.core.review.verdict_head_binding.live_head_at",
+            return_value=LiveHeadRead(sha=HELD_SHA, unreadable=False),
+        ):
+            attempt = _returned_self_review(ticket, "hold")
+
+        assert attempt.error == ""
+        assert ReviewVerdict.objects.get(slug="souliane/teatree", pr_id=7).verdict == "hold"
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert len(_coding_tasks(ticket)) == 1
+
+    def test_an_unrelated_coding_completion_queues_the_rework_instead_of_discharging_the_hold(self) -> None:
+        ticket = author_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        unrelated = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        held = completed_self_review(ticket, "hold")
+        _replay()
+        assert _coding_tasks(ticket) == [unrelated], "the in-flight sibling swallows the first mint"
+        unrelated.claim(claimed_by="coder")
+
+        unrelated.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [rework] = Task.objects.filter(ticket=ticket, phase="coding", parent_task=held)
+        assert str(HELD_FINDINGS[0]["summary"]) in rework.execution_reason
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_hand_fix_completing_after_the_rework_was_cancelled_queues_a_fresh_rework(self) -> None:
+        ticket = author_ticket()
+        held = completed_self_review(ticket, "hold")
+        _replay()
+        [cancelled] = _coding_tasks(ticket)
+        cancelled.fail(reason=f"{CANCELLED_PREFIX}operator stopped it", by_holder=False)
+        hand_fix = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="coding"), phase="coding"
+        )
+        hand_fix.claim(claimed_by="coder")
+
+        hand_fix.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [fresh] = Task.objects.filter(ticket=ticket, phase="coding", parent_task=held, status=Task.Status.PENDING)
+        assert str(HELD_FINDINGS[0]["summary"]) in fresh.execution_reason
+        fresh.fail(reason="the coder crashed", by_holder=False)
+        _replay()
+        _replay()
+        assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=held).count() == 2
+
+    def test_a_shipping_completion_past_a_hold_does_not_ship_and_queues_the_rework(self) -> None:
+        ticket = author_ticket(state=Ticket.State.SELF_REVIEWED)
+        held = completed_self_review(ticket, "hold")
+        session = Session.objects.create(ticket=ticket, agent_id="shipping")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        shipping = Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
+
+        assert shipping._apply_phase_transition() is False
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=held).exists()

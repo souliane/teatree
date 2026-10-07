@@ -1,7 +1,9 @@
 """Live mailbox contract at the runner-to-MCP Unix-socket boundary."""
 
 import asyncio
+import stat
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -13,6 +15,7 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
+from teatree.agents import live_mailbox
 from teatree.agents.live_mailbox import LiveMailboxBroker, bound_task_mailbox, reset_shared_brokers, shared_broker
 from teatree.mcp.agent_mailbox import InboxPage, MailboxClient
 from teatree.mcp.server import build_server
@@ -265,3 +268,45 @@ def test_claude_and_codex_stdio_mcp_children_exchange_live_mail(tmp_path: Path, 
     sent, inbox = asyncio.run(exchange())
     assert sent["to"] == codex.address
     assert inbox["messages"][0]["text"] == "please review"
+
+
+def test_the_published_socket_is_private_and_close_removes_only_it() -> None:
+    live = Path(tempfile.mkdtemp(prefix="t3m-", dir="/tmp")) / "live"
+    neighbour = live / "w-other.sock"
+    with LiveMailboxBroker(runtime_dir=live) as broker:
+        neighbour.touch()
+        published = broker.socket_path
+
+        assert published.parent == live
+        assert stat.S_IMODE(live.stat().st_mode) == 0o700
+        assert stat.S_IMODE(published.stat().st_mode) == 0o600
+        assert published.suffix == ".sock"
+
+    assert not published.exists()
+    assert neighbour.exists()
+    assert live.is_dir()
+
+
+def test_two_brokers_share_one_live_dir_without_colliding() -> None:
+    live = Path(tempfile.mkdtemp(prefix="t3m-", dir="/tmp")) / "live"
+    with LiveMailboxBroker(runtime_dir=live) as first, LiveMailboxBroker(runtime_dir=live) as second:
+        assert first.socket_path != second.socket_path
+        assert {path.name for path in live.glob("*.sock")} == {first.socket_path.name, second.socket_path.name}
+
+
+def test_an_overlong_live_dir_fails_loudly_instead_of_moving_the_socket() -> None:
+    root = Path(tempfile.mkdtemp(prefix="t3m-", dir="/tmp"))
+    broker = LiveMailboxBroker(runtime_dir=root / ("d" * 120))
+
+    with pytest.raises(RuntimeError, match="socket path"):
+        broker.start()
+
+    assert not list(root.rglob("*.sock"))
+    with pytest.raises(RuntimeError, match="has not started"):
+        _ = broker.socket_path
+
+
+def test_the_shared_broker_publishes_under_the_live_dir() -> None:
+    broker = shared_broker()
+
+    assert broker.socket_path.parent == live_mailbox.live_dir()

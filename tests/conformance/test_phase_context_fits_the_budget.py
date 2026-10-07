@@ -16,15 +16,16 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.agents import prompt, skill_injection
+from teatree.agents import prompt
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.prompt import build_system_context
 from teatree.agents.skill_assurance import _explicit_directive_names
-from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.skill_injection import _read_skill_contents_scoped
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task, Ticket
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
@@ -53,9 +54,18 @@ def _dispatch_task(phase: str) -> Task:
     return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
 
 
+#: The pinned ``ac-reviewing-codebase`` the review run embeds is ~35 KiB; the stand-in leaves room for it to grow.
+_REVIEW_COMPANION_STAND_IN_BYTES = 48 * 1024
+
+
 def _rendered_context(task: Task) -> str:
-    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT)
-    return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase))
+    stage = stage_skills_for_dispatch(task.phase)
+    skills = resolve_skill_bundle(
+        phase=task.phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT, stage_skills=stage
+    )
+    return build_system_context(
+        task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase), stage_skills=stage
+    )
 
 
 def _measured_bytes(context: str, skills_dir: Path) -> int:
@@ -69,7 +79,7 @@ class TestEveryPhaseFitsTheBudget(TestCase):
         with (
             tempfile.TemporaryDirectory() as home,
             patch.dict(os.environ, {"HOME": home}),
-            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
         ):
             for phase in sorted(KNOWN_PHASES):
                 context = _rendered_context(_dispatch_task(phase))
@@ -77,6 +87,23 @@ class TestEveryPhaseFitsTheBudget(TestCase):
                 if "…truncated" in context or size > ceiling:
                     over.append(f"{phase}: {size} B (ceiling {ceiling} B, truncated={'…truncated' in context})")
         assert not over, "phase contexts over the append budget:\n" + "\n".join(over)
+
+    def test_the_review_run_fits_with_its_full_generic_companion_embedded(self) -> None:
+        ceiling = MAX_APPEND_BYTES - _HEADROOM_BYTES
+        body = "---\nname: ac-reviewing-codebase\n---\n" + "x" * _REVIEW_COMPANION_STAND_IN_BYTES + "\n"
+        with (
+            tempfile.TemporaryDirectory() as home,
+            patch.dict(os.environ, {"HOME": home}),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+        ):
+            companion = Path(home) / ".agents" / "skills" / "ac-reviewing-codebase" / "SKILL.md"
+            companion.parent.mkdir(parents=True)
+            companion.write_text(body, encoding="utf-8")
+            context = _rendered_context(_dispatch_task("architectural_review"))
+            size = _measured_bytes(context, _SKILLS_DIR)
+        assert f"--- SKILL: ac-reviewing-codebase ---\n{body}" in context
+        assert "…truncated" not in context
+        assert size <= ceiling, f"review run: {size} B (ceiling {ceiling} B)"
 
     def test_the_measure_does_not_depend_on_the_checkout_path(self) -> None:
         task = _dispatch_task("reviewing")
@@ -88,7 +115,7 @@ class TestEveryPhaseFitsTheBudget(TestCase):
                 link.symlink_to(_SKILLS_DIR, target_is_directory=True)
             measured: dict[Path, tuple[int, int]] = {}
             for skills_dir in (short_dir, long_dir):
-                with patch.object(skill_injection, "DEFAULT_SKILLS_DIR", skills_dir):
+                with patch.object(skill_index, "DEFAULT_SKILLS_DIR", skills_dir):
                     context = _rendered_context(task)
                 measured[skills_dir] = (len(context.encode()), _measured_bytes(context, skills_dir))
         assert measured[short_dir][0] != measured[long_dir][0], "the checkout path no longer reaches the context"
@@ -152,7 +179,7 @@ class TestOverlayActiveReviewingDegradesLegibly(TestCase):
         with (
             tempfile.TemporaryDirectory() as home,
             patch.dict(os.environ, {"HOME": home}),
-            patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
         ):
             full = self._render(task, max_bytes=10**7)
             cut = self._render(task, max_bytes=len(full.encode()) - _FORCED_OVERAGE_BYTES)

@@ -173,7 +173,7 @@ class TestRunHeadless(TestCase):
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with (
             _fake_sdk(_success_stream(result)),
-            patch.object(runner_mod, "resolve_skill_bundle", return_value=["t3:code", "t3:rules"]),
+            patch("teatree.agents.runner_skill_staging.resolve_skill_bundle", return_value=["t3:code", "t3:rules"]),
         ):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -434,7 +434,7 @@ class TestRunHeadlessStageSkillResolution(TestCase):
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
         with (
             _fake_sdk(_success_stream(result)),
-            patch("teatree.agents.runner.stage_skills_for_dispatch", return_value=[]) as dispatch_resolve,
+            patch("teatree.agents.runner_skill_staging.stage_skills_for_dispatch", return_value=[]) as dispatch_resolve,
             # The bundle + both prompt builders reach this binding only when they
             # re-resolve; a threaded dispatch must leave it untouched.
             patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as reresolve,

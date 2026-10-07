@@ -187,6 +187,11 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request.authorship_unreadable": "action_needed",
     "review_request.resume_gated": "action_needed",
     "review_request.resume_failed": "in_flight",
+    # The followup sender: a sent request went out under the owner's name and a refusal is put
+    # to them; a deferral (a hold, a declined or moved head, a transient read) retries itself.
+    "review_request.sent": "action_needed",
+    "review_request.send_refused": "action_needed",
+    "review_request.send_deferred": "in_flight",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
     # (see is_pr_sweep_flag): a conflicted open PR (#78), a green
     # solo-overlay PR with no recorded independent cold-review (#68), a PR whose

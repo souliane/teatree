@@ -23,7 +23,12 @@ from django.utils import timezone
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, HEAD_SUPERSEDED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    HEAD_SUPERSEDED_PREFIX,
+    PLAN_STALE_PREFIX,
+    FailureKind,
+)
 from teatree.core.models import (
     AutoReviewDispatch,
     PullRequest,
@@ -49,6 +54,7 @@ from teatree.loop.transient_requeue import (
     requeue_transient_failed,
 )
 from teatree.loop.transient_requeue_disposal import SUPERSEDED_HEAD_STAMP
+from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -1363,6 +1369,94 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
 
+class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
+    _ERROR = f"{PLAN_STALE_PREFIX}Refusing to advance ticket 1 to CODED — its plan is stale on a declared seam."
+
+    def _stale_coding_failure(self, *, state: str = Ticket.State.PLAN_RECORDED) -> Task:
+        task = _failed_task(state=state)
+        _add_failed_attempt(task, error=self._ERROR)
+        return task
+
+    def test_the_row_is_parked_and_one_planning_pass_is_queued_even_with_an_open_pr(self) -> None:
+        for open_pr in (False, True):
+            with self.subTest(open_pr=open_pr):
+                task = self._stale_coding_failure()
+                if open_pr:
+                    PullRequest.objects.create(
+                        ticket=task.ticket, url=f"https://github.com/o/r/pull/{task.pk}", repo="o/r", iid=str(task.pk)
+                    )
+
+                assert requeue_transient_failed() == 0
+                requeue_transient_failed()
+
+                task.refresh_from_db()
+                assert task.status == Task.Status.FAILED
+                assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+                planning = task.ticket.tasks.get(phase="planning")
+                assert planning.parent_task_id == task.pk
+                assert "The plan is not current" in planning.execution_reason
+                assert "stale on a declared seam" in planning.execution_reason
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_spent_coding_budget_halts_internally_instead_of_queueing_another_pass(self) -> None:
+        task = self._stale_coding_failure()
+        for index in range(max_phase_iterations()):
+            _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
+
+        requeue_transient_failed()
+
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_a_ticket_that_already_reached_coded_gets_no_planning_pass(self) -> None:
+        task = self._stale_coding_failure(state=Ticket.State.CODED)
+
+        requeue_transient_failed()
+
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+
+
+class TestAnAuthorsOwnReviewOfAMovedPrIsReArmed(TestCase):
+    def _moved_review(self, *, role: str, issue_url: str, with_pr_row: bool) -> Task:
+        ticket = Ticket.objects.create(role=role, state=Ticket.State.TESTED, issue_url=issue_url)
+        if with_pr_row:
+            PullRequest.objects.create(ticket=ticket, url="https://github.com/o/r/pull/9", repo="o/r", iid="9")
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="review"), phase="reviewing"
+        )
+        task.fail(reason=_REASON, by_holder=True)
+        _add_failed_attempt(task, error=_REASON)
+        return task
+
+    def test_the_tickets_own_review_gets_one_fresh_review_and_the_row_is_parked(self) -> None:
+        task = self._moved_review(
+            role=Ticket.Role.AUTHOR, issue_url="https://github.com/o/r/issues/8", with_pr_row=True
+        )
+
+        with _pr_is_live():
+            requeue_transient_failed()
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        fresh = task.ticket.tasks.get(phase="reviewing", status=Task.Status.PENDING)
+        assert fresh.parent_task_id == task.pk
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_reviewer_tickets_moved_head_is_only_parked_because_the_pr_sweep_re_arms_it(self) -> None:
+        task = self._moved_review(
+            role=Ticket.Role.REVIEWER, issue_url="https://github.com/o/r/pull/9", with_pr_row=False
+        )
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.NOT_STARTED)
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        assert not task.ticket.tasks.filter(status=Task.Status.PENDING).exists()
+
+
 class TestKeptThirdPartyClaimIsNotSwept(TestCase):
     """A third-party fail keeps a live holder's claim; the sweep must leave that row alone (#4872)."""
 
@@ -1493,3 +1587,42 @@ class TestARefusedReviewEnvelopeIsCorrectedOnceInItsOwnSession(TestCase):
 
         task.refresh_from_db()
         assert HALT_STAMP in task.execution_reason
+
+
+class TestAFailedHoldReworkIsALiveFailure(TestCase):
+    """A rework a self-review HOLD still owes is unfinished work, never a superseded dead row."""
+
+    def _failed_rework(self, error: str) -> tuple[Ticket, Task]:
+        ticket = author_ticket()
+        held = completed_self_review(ticket, "hold")
+        with mock.patch.object(Ticket, "has_shippable_diff", return_value=True):
+            Task.objects.replay_orphaned_transitions()
+        rework = Task.objects.get(ticket=ticket, phase="coding", parent_task=held)
+        _add_failed_attempt(rework, error=error)
+        return ticket, rework
+
+    def _both_sweeps(self) -> None:
+        requeue_transient_failed()
+        with mock.patch.object(Ticket, "has_shippable_diff", return_value=True):
+            Task.objects.replay_orphaned_transitions()
+
+    def _assert_still_owed(self, ticket: Ticket, rework: Task) -> None:
+        ticket.refresh_from_db()
+        rework.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert rework.status != Task.Status.COMPLETED
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_crashed_rework_is_not_retired_and_replayed_as_finished(self) -> None:
+        ticket, rework = self._failed_rework("agent crashed: exit code -9")
+
+        self._both_sweeps()
+
+        self._assert_still_owed(ticket, rework)
+
+    def test_a_rework_that_returned_no_envelope_is_not_retired_and_replayed_as_finished(self) -> None:
+        ticket, rework = self._failed_rework(NO_ENVELOPE_ERROR)
+
+        self._both_sweeps()
+
+        self._assert_still_owed(ticket, rework)

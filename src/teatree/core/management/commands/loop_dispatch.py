@@ -11,7 +11,7 @@ from teatree.config import UserSettings, cadence_seconds, get_effective_settings
 from teatree.core.machine_output import emit
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
-from teatree.core.models import Task
+from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.task_handoff import dispatch_reason
 from teatree.core.worktree.clone_paths import dispatch_detection_root
@@ -68,9 +68,12 @@ def _admit_budget_exhausted() -> bool:
     return Task.objects.in_flight_claimed_count(Task.dispatchable_q()) >= budget
 
 
-def _task_to_dict(task: Task) -> dict[str, Any]:
+def _task_to_dict(task: Task) -> dict[str, Any] | TaskAttempt:
+    resolved = _resolve_model_and_bundle(task)
+    if isinstance(resolved, TaskAttempt):
+        return resolved
     ticket = task.ticket
-    model, skill_bundle = _resolve_model_and_bundle(task)
+    model, skill_bundle = resolved
     subagent = _subagent_for(task)
     return {
         "task_id": int(task.pk),
@@ -129,7 +132,7 @@ def _resolve_fanout_directive(task: Task) -> str:
     return resolve_fanout_directive(task.ticket.role, task.phase)
 
 
-def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
+def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]] | TaskAttempt:
     """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
     Moved out of the detached agent run (``run_agent``) so the ``/loop`` slot
@@ -142,7 +145,8 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     Agent tool has no effort param). Overlay/skill discovery
     failures degrade to an empty bundle so a dispatch is never blocked on
     resolution — the model then collapses to the phase tier and the slot falls
-    back to base skills.
+    back to base skills. A shadowed apm pin is the exception: it is refused and
+    recorded exactly as the headless lane refuses it.
 
     The task's session id + pk are threaded into ``resolve_spawn_model`` so a
     situational honesty-critical escalation (teatree#2263) can raise a
@@ -153,6 +157,8 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: keeps command import light
 
     skill_bundle = _resolve_skill_bundle(task)
+    if isinstance(skill_bundle, TaskAttempt):
+        return skill_bundle
     session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
     model = resolve_spawn_model(
         normalize_phase(task.phase),
@@ -163,8 +169,8 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     return model, skill_bundle
 
 
-def _resolve_skill_bundle(task: Task) -> list[str]:
-    """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
+def _resolve_skill_bundle(task: Task) -> list[str] | TaskAttempt:
+    """*task*'s skill bundle; a recorded refusal for a shadowed apm pin; empty and logged on any other failure.
 
     Resolves the overlay and the framework/detection root from the TASK's ticket
     (its overlay + its worktree or repo clone, PR-12) — never the orchestrator's
@@ -172,18 +178,23 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
     ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
     ``teatree.agents`` dependency edge (core is the lower layer).
     """
+    from teatree.agents.runner_skill_staging import bundle_or_refusal  # noqa: PLC0415 — deferred: lazy command import
     from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415 — deferred: keeps command import light
 
     try:
         from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: lazy command import
 
         overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
-        return resolve_skill_bundle(
-            phase=task.phase,
-            overlay_skill_metadata=overlay_skill_metadata,
-            detection_root=dispatch_detection_root(task.ticket),
+        return bundle_or_refusal(
+            task,
+            lambda: resolve_skill_bundle(
+                phase=task.phase,
+                overlay_skill_metadata=overlay_skill_metadata,
+                detection_root=dispatch_detection_root(task.ticket),
+            ),
         )
-    except Exception:  # noqa: BLE001 — a failure degrades to no candidates
+    except Exception:
+        logger.exception("Task %s dispatches with no skill bundle", task.pk)
         return []
 
 
@@ -269,16 +280,18 @@ class Command(TyperCommand):
                 extra_filter=Task.dispatchable_q(),
                 ordering=admission_claim_order(),
             )
-        payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
+        entry = _task_to_dict(task) if task is not None else None
+        payload: list[dict[str, Any]] = [entry] if isinstance(entry, dict) else []
 
-        if not payload:
-            human: str | None = "No pending spawn requests."
-        else:
-            entry = payload[0]
+        if task is not None and isinstance(entry, TaskAttempt):
+            human: str | None = f"Refused task={task.pk} before spawning: {entry.error}"
+        elif isinstance(entry, dict):
             human = (
                 f"Claimed task={entry['task_id']} subagent={entry['subagent']} "
                 f"phase={entry['phase']} url={entry['issue_url']} claim_token={entry['claim_token']}"
             )
+        else:
+            human = "No pending spawn requests."
         emit(
             payload,
             json_output=json_output,

@@ -288,5 +288,14 @@ def test_no_draft_default_matcher_is_not_loosened() -> None:
 
 def test_orchestrator_matcher_is_not_loosened() -> None:
     spec = _spec("orchestrator_embeds_skills_in_subagent_brief")
-    assert _positive_values(spec) == {"(?s)--- SKILL: ", r"t3 \S+ skill-preamble"}
-    assert _negative_values(spec) == {r"(?s)\A(?!.*--- SKILL:).+"}
+    briefs = {
+        "full": "--- SKILL: rules ---\nrules body\n--- SKILL: e2e ---\ne2e body\nRun the e2e suite.",
+        "partial": "--- SKILL: rules ---\nrules body\nRun the e2e suite.",
+        "bare": "Run the e2e suite.",
+    }
+    (anchor,) = {value for value in _positive_values(spec) if "SKILL" in value}
+    (tooth,) = _negative_values(spec)
+
+    assert r"t3 \S+ skill-preamble" in _positive_values(spec)
+    assert {name for name, brief in briefs.items() if re.search(anchor, brief)} == {"full"}
+    assert {name for name, brief in briefs.items() if re.search(tooth, brief)} == {"partial", "bare"}

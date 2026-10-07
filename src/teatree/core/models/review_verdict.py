@@ -116,6 +116,9 @@ class Finding:
             return f"{self.file}:{self.line}"
         return self.file or "(MR-level)"
 
+    def describe(self) -> str:
+        return f"[{self.severity}] {self.location()} — {self.summary}"
+
 
 class Severity(models.TextChoices):
     BLOCKER = "blocker", "Blocker"

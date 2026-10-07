@@ -48,6 +48,7 @@ graph TD
     teatree.skill_support --> teatree.types
     teatree.skill_support --> teatree.utils
     teatree.skill_support --> teatree.project
+    teatree.skill_support --> teatree.provisioning
     teatree.provisioning --> teatree.utils
     teatree.core --> teatree.db
     teatree.core --> teatree.types
@@ -152,6 +153,7 @@ graph TD
     teatree.agents --> teatree.core.managers_task_claim
     teatree.agents --> teatree.core.telemetry
     teatree.agents --> teatree.credential_config
+    teatree.agents --> teatree.paths
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
@@ -227,6 +229,7 @@ graph TD
     teatree.cli --> teatree.quality
     teatree.cli --> teatree.hooks
     teatree.cli --> teatree.mcp
+    teatree.cli --> teatree.browser
     teatree.cli --> teatree.cli.eval
     teatree.cli.eval --> teatree.cli._format_opts
     teatree.cli.eval --> teatree.ci_oauth_switch
@@ -453,6 +456,10 @@ graph TD
     teatree.overlay_sdk --> teatree.visual_qa
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
+    teatree.browser --> teatree.paths
+    teatree.browser --> teatree.utils
+    teatree.browser --> teatree.core.loop_lease_liveness
+    teatree.visual_qa --> teatree.browser
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
     teatree.on_behalf_gate --> teatree.config

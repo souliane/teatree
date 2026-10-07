@@ -226,7 +226,7 @@ depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 [[modules]]
 path = "teatree.skill_support"
 layer = "platform"
-depends_on = ["teatree.types", "teatree.utils", "teatree.project"]
+depends_on = ["teatree.types", "teatree.utils", "teatree.project", "teatree.provisioning"]
 
 [[modules]]
 path = "teatree.provisioning"
@@ -509,6 +509,7 @@ depends_on = [
   # this telemetry leaf has no edge back into agents.
   "teatree.core.telemetry",
   "teatree.credential_config",
+  "teatree.paths",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config"
@@ -643,6 +644,7 @@ depends_on = [
   "teatree.quality",
   "teatree.hooks",
   "teatree.mcp",
+  "teatree.browser",
   "teatree.cli.eval"
 ]
 
@@ -1103,9 +1105,14 @@ layer = "platform"
 depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
+path = "teatree.browser"
+layer = "integration"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.visual_qa"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.utils"]
+depends_on = ["teatree.browser", "teatree.core", "teatree.utils"]
 
 [[modules]]
 path = "teatree.instance_id"

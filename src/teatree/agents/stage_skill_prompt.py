@@ -4,15 +4,18 @@ An overlay's ``stage_skills`` map declares ADDITIONAL skills per phase. A
 no-Skill-tool maker agent (``t3:coder``/``t3:debugger``/``t3:tester``/``t3:e2e``/
 ``t3:shipper``) cannot load a skill by reference, so each configured stage skill
 present in the resolved bundle embeds IN FULL, carrying one precedence line that
-keeps the lifecycle/overlay base authoritative — additive, never replacing.
+keeps the lifecycle/overlay base authoritative — additive, never replacing. A stage
+skill's direct ``requires`` embed with it: a required skill delivered as a pointer is
+one the agent is told it has and never reads.
 """
 
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.models import Task
+from teatree.skill_support.index import direct_requires, harness_skills_dirs
 
 
 def stage_skills_present(task: Task, skills: list[str], *, configured: list[str] | None = None) -> list[str]:
-    """The overlay's configured stage skills for *task*'s phase, present in *skills*.
+    """The configured stage skills for *task*'s phase and their direct ``requires``, present in *skills*.
 
     Only stage skills actually in the resolved bundle are scoped, so an
     unresolvable one is not falsely surfaced as embedded. *configured* threads
@@ -26,10 +29,11 @@ def stage_skills_present(task: Task, skills: list[str], *, configured: list[str]
         )
 
         configured = active_overlay_stage_skills(task.phase)
-    configured_set = set(configured)
-    if not configured_set:
+    if not configured:
         return []
-    return [s for s in skills if _explicit_load_name(s) in configured_set]
+    roots = harness_skills_dirs()
+    staged = {name for stage_skill in configured for name in (stage_skill, *direct_requires(stage_skill, roots))}
+    return [s for s in skills if _explicit_load_name(s) in staged]
 
 
 def stage_precedence_line(stage_skills: list[str]) -> str:

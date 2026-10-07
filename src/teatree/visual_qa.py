@@ -5,9 +5,9 @@ silent-render regressions: page crashes, console errors, raw ``app.*``
 translation keys, blocking asset 404s.
 
 Designed as a fast pre-push gate, not a regression suite.  Hard caps keep
-the gate well under 60 seconds per PR.  When Playwright is unavailable the
-report records that the check did not run, which the gate refuses; only an
-explicit skip bypasses it.
+the gate well under 60 seconds per PR.  When the headless browser cannot
+launch the report records that the check did not run, which the gate refuses;
+only an explicit skip bypasses it.
 
 The gate is a precondition of PR creation: ``pr create`` calls
 ``_run_visual_qa_gate`` before composing the PR, persists the summary on
@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.browser.evidence import BrowserEvent, EvidenceRecorder
 from teatree.core.overlay import OverlayBase
 from teatree.utils import git
 
@@ -32,14 +33,6 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext
 
     from teatree.core.models.types import VisualQASummary
-
-PlaywrightError: type[BaseException] = Exception
-try:
-    from playwright.sync_api import Error as _PlaywrightError
-except ImportError:
-    pass
-else:
-    PlaywrightError = _PlaywrightError
 
 # Default file patterns that warrant a browser sanity check.
 # Overlays can override via ``OverlayBase.review.visual_qa_targets()``.
@@ -192,13 +185,19 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     """Load each target URL and capture errors + a single screenshot.
 
     Returns one ``PageResult`` per target.  Raises
-    ``VisualQAUnavailableError`` when Playwright cannot start.
+    ``VisualQAUnavailableError`` when the headless browser cannot start.
     """
     try:
-        from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: heavy/optional dep at call site
-    except ImportError:
-        msg = "playwright is not installed. Run: uv sync && playwright install chromium"
-        raise VisualQAUnavailableError(msg) from None
+        from playwright.sync_api import (  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
+            Error as PlaywrightError,
+        )
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
+    except ImportError as exc:
+        msg = (
+            f"Playwright is not importable in the environment running `t3` ({exc}). "
+            "Repair it with `t3 doctor check --repair`."
+        )
+        raise VisualQAUnavailableError(msg) from exc
 
     out_dir = Path(screenshot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -217,32 +216,32 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
             context.close()
             browser.close()
     except PlaywrightError as exc:
-        msg = f"playwright failed to launch ({exc.__class__.__name__}): {exc}"
+        msg = (
+            f"the headless browser failed to launch ({exc.__class__.__name__}): {exc}. "
+            "Repair it with `t3 doctor check --repair`."
+        )
         raise VisualQAUnavailableError(msg) from exc
 
     return results
 
 
 def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: Path, index: int) -> PageResult:
-    url = base_url.rstrip("/") + "/" + target.lstrip("/")
-    errors: list[PageError] = []
-    page = context.new_page()
-    page.on("pageerror", lambda exc: errors.append(PageError(url=url, kind="page", message=str(exc))))
-    page.on("console", lambda msg: _record_console(errors, url, msg))
-    page.on("response", lambda resp: _record_http(errors, url, resp))
+    from playwright.sync_api import Error as PlaywrightError  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
 
+    url = base_url.rstrip("/") + "/" + target.lstrip("/")
+    events: list[BrowserEvent] = []
+    page = context.new_page()
+    EvidenceRecorder(events.append).attach(page)
+
+    navigation_error = ""
     try:
         page.goto(url, timeout=PER_PAGE_TIMEOUT_MS, wait_until="networkidle")
     except PlaywrightError as exc:
-        errors.append(PageError(url=url, kind="page", message=f"navigation failed: {exc}"))
+        navigation_error = f"navigation failed: {exc}"
 
     body_text = ""
     with contextlib.suppress(Exception):
         body_text = page.locator("body").inner_text(timeout=2_000)
-    errors.extend(
-        PageError(url=url, kind="translation", message=f"raw key in DOM: {match}")
-        for match in _TRANSLATION_KEY_RE.findall(body_text)
-    )
 
     screenshot_path = ""
     slug = _slug(target, index)
@@ -254,20 +253,27 @@ def _check_one(context: "BrowserContext", base_url: str, target: str, out_dir: P
         screenshot_path = ""
 
     page.close()
+    errors = [error for event in events if (error := _page_error(url, event)) is not None]
+    if navigation_error:
+        errors.append(PageError(url=url, kind="page", message=navigation_error))
+    errors.extend(
+        PageError(url=url, kind="translation", message=f"raw key in DOM: {match}")
+        for match in _TRANSLATION_KEY_RE.findall(body_text)
+    )
     return PageResult(url=url, screenshot_path=screenshot_path, errors=errors)
 
 
-def _record_console(errors: list[PageError], url: str, msg: object) -> None:
-    if getattr(msg, "type", "") != "error":
-        return
-    errors.append(PageError(url=url, kind="console", message=getattr(msg, "text", "")))
-
-
-def _record_http(errors: list[PageError], url: str, resp: object) -> None:
-    status = getattr(resp, "status", 0)
-    if status < _HTTP_ERROR_THRESHOLD or status in _NON_BLOCKING_STATUSES:
-        return
-    errors.append(PageError(url=url, kind="http", message=f"HTTP {status}: {getattr(resp, 'url', '')}"))
+def _page_error(url: str, event: BrowserEvent) -> PageError | None:
+    match event.kind:
+        case "pageerror":
+            return PageError(url=url, kind="page", message=event.text)
+        case "console" if event.level == "error":
+            return PageError(url=url, kind="console", message=event.text)
+        case "response" if (status := event.status or 0) >= _HTTP_ERROR_THRESHOLD and (
+            status not in _NON_BLOCKING_STATUSES
+        ):
+            return PageError(url=url, kind="http", message=f"HTTP {status}: {event.url}")
+    return None
 
 
 def _slug(target: str, index: int) -> str:

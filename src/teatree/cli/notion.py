@@ -1,8 +1,8 @@
 """``t3 notion`` — headless Notion reads and scoped writes.
 
 The `t3` surface agents call instead of touching the Notion API themselves. It
-runs on an internal-integration token from the ``pass`` store, so it works in a
-cron/headless run where the interactive claude.ai connector does not exist.
+runs on an internal-integration token from the ``pass`` store, so it works the same
+in an interactive session and a cron/headless run.
 
 Each failure the setup can produce exits with its own code, so an unattended
 caller can branch without parsing prose — see

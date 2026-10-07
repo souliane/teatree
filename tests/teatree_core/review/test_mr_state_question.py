@@ -20,6 +20,7 @@ backlog of undecidable merge requests cannot arrive as a flood.
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
@@ -28,7 +29,13 @@ from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.core.review import mr_state_question
-from teatree.core.review.mr_state_question import ask_mr_state, mr_state_marker, observe_owner_question_creation
+from teatree.core.review.mr_state_question import (
+    ask_mr_state,
+    head_tag,
+    mr_state_marker,
+    observe_owner_question_creation,
+    owner_answer_at_head,
+)
 from teatree.on_behalf_gate import OnBehalfVerdict
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
@@ -36,6 +43,8 @@ _MR = "https://git.example.com/acme/app/-/merge_requests/41"
 _OTHER_MR = "https://git.example.com/acme/app/-/merge_requests/42"
 _THIRD_MR = "https://git.example.com/acme/app/-/merge_requests/43"
 _REASON = "the forge reports no head pipeline and the branch is behind target."
+_HEAD = "a1b2c3d4e5f6" + "0" * 28
+_NEW_HEAD = "f6e5d4c3b2a1" + "0" * 28
 
 
 def _open_mr_state_questions() -> list[DeferredQuestion]:
@@ -149,6 +158,135 @@ class TestPerTickCap(TestCase):
             first.apply_answer("treat as ready", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
 
             assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
+
+
+class TestAHeadBoundQuestion(TestCase):
+    def test_the_question_names_the_head_it_asks_about(self) -> None:
+        row = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+
+        assert row is not None
+        assert head_tag(_HEAD) in row.question
+        assert head_tag(_HEAD) == f"[head {_HEAD[:12]}]"
+
+    def test_a_question_about_a_new_head_supersedes_the_open_one(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        new = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+
+        assert old is not None
+        assert new is not None
+        old.refresh_from_db()
+        assert old.dismissed_at is not None
+        assert [row.pk for row in _open_mr_state_questions()] == [new.pk]
+        assert head_tag(_NEW_HEAD) in new.question
+
+    def test_a_changed_blocker_at_the_same_head_supersedes_the_open_one(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        new = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+
+        assert old is not None
+        assert new is not None
+        assert new.pk != old.pk
+        assert [row.pk for row in _open_mr_state_questions()] == [new.pk]
+
+    def test_the_same_question_at_the_same_head_is_the_open_row(self) -> None:
+        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        second = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+
+        assert first is not None
+        assert second is not None
+        assert second.pk == first.pk
+
+    def test_a_reason_already_asked_at_this_head_is_not_filed_again(self) -> None:
+        ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        second = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+        third = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+
+        assert second is not None
+        assert third is not None
+        assert third.pk == second.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 2
+
+    def test_a_replacement_keeps_its_slot_when_the_cap_is_full(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        ask_mr_state(mr_url=_OTHER_MR, reason=_REASON)
+        assert old is not None
+
+        with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
+            new = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+
+        assert new is not None
+        assert new.pk != old.pk
+        open_for_this_mr = [row.pk for row in _open_mr_state_questions() if row.dedupe_marker == mr_state_marker(_MR)]
+        assert open_for_this_mr == [new.pk]
+
+    def test_a_replacement_that_fails_leaves_the_old_question_open(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert old is not None
+
+        with patch.object(DeferredQuestion, "record", side_effect=RuntimeError), pytest.raises(RuntimeError):
+            ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+
+        assert [row.pk for row in _open_mr_state_questions()] == [old.pk]
+
+    def test_another_callers_untagged_question_is_never_superseded(self) -> None:
+        untagged = ask_mr_state(mr_url=_MR, reason=_REASON)
+        tagged = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+
+        assert untagged is not None
+        assert tagged is not None
+        assert tagged.pk == untagged.pk
+        assert [row.pk for row in _open_mr_state_questions()] == [untagged.pk]
+
+    def test_an_untagged_ask_leaves_an_open_tagged_row_alone(self) -> None:
+        tagged = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        untagged = ask_mr_state(mr_url=_MR, reason="still undecidable.")
+
+        assert tagged is not None
+        assert untagged is not None
+        assert untagged.pk == tagged.pk
+
+
+class TestOwnerAnswerAtHead(TestCase):
+    def test_the_answer_about_this_head_is_returned(self) -> None:
+        row = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert row is not None
+        row.apply_answer("It is not ready yet", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        answer = owner_answer_at_head(_MR, head_sha=_HEAD)
+
+        assert answer is not None
+        assert answer.answer_text == "It is not ready yet"
+
+    def test_an_answer_about_another_head_is_not_returned(self) -> None:
+        row = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert row is not None
+        row.apply_answer("It is not ready yet", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        assert owner_answer_at_head(_MR, head_sha=_NEW_HEAD) is None
+
+    def test_an_answer_to_an_untagged_question_is_ignored(self) -> None:
+        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+        assert row is not None
+        row.apply_answer("Post the review request", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        assert owner_answer_at_head(_MR, head_sha=_HEAD) is None
+
+    def test_a_head_the_owner_answered_about_is_not_asked_about_again(self) -> None:
+        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert first is not None
+        first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        again = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+
+        assert again is None
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 1
+
+    def test_a_new_head_is_asked_about_after_an_answer_at_the_old_one(self) -> None:
+        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert first is not None
+        first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+
+        assert ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD) is not None
 
 
 class TestOwnerQuestionObserver(TestCase):

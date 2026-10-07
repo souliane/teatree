@@ -7,8 +7,9 @@ one skill-selection path (``scripts/lib/skill_loader.suggest_skills``).
 The result is written to ``<session>.pending``, the same demand set the PreToolUse
 skill-loading gate reads, so the injection and the enforcement cannot disagree.
 
-Crash-proof: every failure degrades to ``""``. SessionStart also carries loop bootstrap and
-the parked hand-off drain, and a skill hint must never be the reason those do not run.
+Crash-proof: every failure degrades to ``""``; a shadowed apm pin is still named. SessionStart also
+carries loop bootstrap and the parked hand-off drain, and a skill hint must never be the reason those
+do not run.
 """
 
 import sys
@@ -38,6 +39,14 @@ def _suggest(loader_input: dict[str, Any]) -> dict[str, Any]:
         return suggest_skills(loader_input)
     finally:
         sys.path.pop(0)
+
+
+def _shadowed_pin_warning(exc: BaseException | None) -> str:
+    """A shadowed apm pin is a misconfiguration the session must see; any other suggester failure stays silent."""
+    pin_shadow = sys.modules.get("teatree.skill_support.pin_shadow")
+    if pin_shadow is None or not isinstance(exc, pin_shadow.SkillShadowsDeclaredPinError):
+        return ""
+    return f"WARNING: {exc}"
 
 
 def session_start_skill_context(session_id: str) -> str:
@@ -72,16 +81,19 @@ def session_start_skill_context(session_id: str) -> str:
 
         _ensure_state_dir()
         loader_input = build_skill_loader_input(session_id)
+        warning = ""
         try:
             result = _suggest(loader_input)
         except Exception:  # noqa: BLE001 — the autoload demand must not depend on the suggester surviving
             result = {}
+            warning = _shadowed_pin_warning(sys.exception())
         result["suggestions"] = [*autoload_skill_demand(loader_input["loaded_skills"]), *result.get("suggestions", [])]
-        return render_skill_suggestion_message(
+        message = render_skill_suggestion_message(
             result,
             pending=_state_file(session_id, "pending"),
             normalize=normalize_skill_name,
         )
+        return "\n".join(part for part in (warning, message) if part)
     except Exception:  # noqa: BLE001 — crash-proof hook: never let a skill hint break SessionStart
         return ""
 

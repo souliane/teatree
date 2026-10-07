@@ -7,7 +7,7 @@ as long as it takes, with the session blocked behind it.
 
 This is not hypothetical. ``bootstrap-cli.sh`` was registered on SessionStart
 with no timeout and called ``t3 doctor check`` synchronously. ``t3`` is
-containerized and ``doctor check`` live-probes every enabled MCP connector, so
+containerized and ``doctor check`` sweeps every check, so
 on a real session that made SessionStart take **13 minutes** before the user
 could type a first prompt -- and the call sent its output to /dev/null, so the
 whole cost bought a result nobody saw. It was the only one of 18 registrations

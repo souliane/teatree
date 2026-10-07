@@ -18,23 +18,12 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from teatree.skill_support.deps import SkillIndex, companion_suggestions, resolve_requires
+from teatree.skill_support.index import build_skill_index, harness_skills_dirs, resolve_skill_md
 from teatree.types import SkillMetadata
 from teatree.utils import git
 
 logger = logging.getLogger(__name__)
 
-
-def _default_skills_dir() -> Path:
-    from teatree import find_project_root  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    root = find_project_root()
-    if root:
-        return root / "skills"
-    # Fallback for non-source installs: skills/ next to src/
-    return Path(__file__).resolve().parents[3] / "skills"
-
-
-DEFAULT_SKILLS_DIR = _default_skills_dir()
 
 _STATUS_TO_SKILL: dict[str, str] = {
     "not_started": "ticket",
@@ -93,12 +82,6 @@ _INTERNALS_MARKER = Path("src") / "teatree" / "__init__.py"
 
 _SKILL_FILE = "SKILL.md"
 
-#: Skills the policy DETECTS rather than reads from the index. Absence from the
-#: index is normal ONLY for these — they ship outside this repo, so a missing
-#: entry is not drift. ``internals`` is deliberately EXCLUDED: it ships a
-#: SKILL.md here, so its absence from the index IS drift and must keep warning.
-_DETECTED_SKILL_NAMES = FRAMEWORK_SKILL_NAMES
-
 
 #: Named both, so the bundle never leans on ``ac-django``'s ``requires`` resolving against a skill index.
 _DJANGO_SKILLS = ("ac-django", "ac-python")
@@ -146,20 +129,21 @@ class SkillLoadingPolicy:
     @staticmethod
     def _resolve_requires_chain(
         skills: list[str],
-        skill_index: SkillIndex,
+        skill_index: SkillIndex | None,
     ) -> list[str]:
-        """Resolve the transitive ``requires`` chain, warning on deps with no SKILL.md.
+        """Resolve the transitive ``requires`` chain, warning on members no root holds a SKILL.md for.
 
-        A required skill absent from *skill_index* has no SKILL.md in this repo
-        (an external methodology skill like ``test-driven-development``, or a
-        framework skill). It passes through so the ``Skill`` tool still loads
-        it; the warning surfaces the missing definition without dropping it.
+        *skill_index* ``None`` means the live index over every skill root. The
+        warning reads the filesystem, not the index, so it names exactly the
+        members whose body cannot reach the agent; they still pass through.
         """
-        resolved = resolve_requires(skills, skill_index)
-        known = {str(e.get("skill", "")) for e in skill_index if e.get("skill")}
+        roots = harness_skills_dirs()
+        resolved = resolve_requires(skills, _index_or_live(skill_index))
         for skill in resolved:
-            if _skill_identity(skill) not in known and skill not in _DETECTED_SKILL_NAMES:
-                logger.warning("Required skill %r has no SKILL.md — continuing", skill)
+            if not _resolves_on_disk(skill, roots):
+                logger.warning(
+                    "Required skill %r resolves to no SKILL.md in %s — continuing", skill, [str(r) for r in roots]
+                )
         return resolved
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -207,7 +191,7 @@ class SkillLoadingPolicy:
         elif lifecycle_skill:
             ordered.append(lifecycle_skill)
 
-        resolved = self._resolve_requires_chain(ordered, skill_index or [])
+        resolved = self._resolve_requires_chain(ordered, skill_index)
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -234,10 +218,9 @@ class SkillLoadingPolicy:
             overlay_active=False,
             companion_skills=companion_skills,
         )
-        resolved = _dedupe(self._resolve_requires_chain(hard, skill_index or []))
-        companions = tuple(
-            skill for skill in companion_suggestions(resolved, skill_index or []) if skill not in loaded_skills
-        )
+        index = _index_or_live(skill_index)
+        resolved = _dedupe(self._resolve_requires_chain(hard, index))
+        companions = tuple(skill for skill in companion_suggestions(resolved, index) if skill not in loaded_skills)
         return SkillSelectionResult(
             skills=[skill for skill in resolved if skill not in loaded_skills],
             companion_suggestions=companions,
@@ -295,7 +278,7 @@ class SkillLoadingPolicy:
         # stage skill repeats one already in the bundle.
         if stage_skills:
             ordered.extend(s for s in stage_skills if isinstance(s, str) and s)
-        resolved = self._resolve_requires_chain(ordered, skill_index or [])
+        resolved = self._resolve_requires_chain(ordered, skill_index)
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -404,6 +387,16 @@ def _overlay_skill_reference(raw: str) -> str:
         problem,
     )
     return ""
+
+
+def _index_or_live(skill_index: SkillIndex | None) -> SkillIndex:
+    return build_skill_index(harness_skills_dirs()) if skill_index is None else skill_index
+
+
+def _resolves_on_disk(skill: str, roots: list[Path]) -> bool:
+    if skill.endswith(f"/{_SKILL_FILE}") and Path(skill).is_absolute() and Path(skill).is_file():
+        return True
+    return resolve_skill_md(skill, roots) is not None
 
 
 def _skill_identity(skill: str) -> str:

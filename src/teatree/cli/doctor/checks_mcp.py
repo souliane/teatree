@@ -1,4 +1,4 @@
-"""``_check_*`` probes for MCP / connector wiring invoked by `t3 doctor check`.
+"""``_check_*`` probes for teatree's own MCP server and the services it serves, invoked by `t3 doctor check`.
 
 Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
@@ -6,108 +6,50 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 
 import shutil
 import sys
-from pathlib import Path
+from collections.abc import Callable
 
 import typer
 
 from teatree.utils.uv_constraints import uv_tool_install_hint
 
-_CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
 
+def _check_declared_services_configured() -> bool:
+    """Per declaring overlay: FAIL a service no declarer holds credentials for, WARN a declarer served by another.
 
-def _check_chrome_devtools_mcp_suggestion(*, home: Path | None = None, cwd: Path | None = None) -> bool:
-    """INFO-suggest the OPTIONAL chrome-devtools MCP e2e aid when it is absent (#3271).
-
-    chrome-devtools MCP gives an interactive DOM/console/network view that makes
-    authoring and debugging Playwright e2e specs far more tractable. It is a
-    pure developer-experience recommendation — teatree's runtime requires zero
-    MCP — so this is an ``INFO`` suggestion, never a ``WARN``/``FAIL``, and its
-    absence gates nothing (always returns ``True``). Silent when it is already
-    configured. Crash-proof: any read error degrades to a silent pass.
+    Builds each declarer's client with the builders the teatree MCP service tools use. Those
+    tools serve a service from its first configured declarer, so a declarer without
+    credentials of its own still gets served — with another overlay's account.
     """
-    try:
-        from teatree.core.mcp_connectivity import read_enabled_mcp_servers  # noqa: PLC0415 — deferred: light import
-
-        names = {server.name for server in read_enabled_mcp_servers(home=home, cwd=cwd)}
-    except Exception:  # noqa: BLE001 — an optional suggestion must never crash or gate the doctor run
-        return True
-    if _CHROME_DEVTOOLS_MCP_NAME in names:
-        return True
-    from teatree.core.evidence.browser_diagnosis import (  # noqa: PLC0415 — deferred: light import
-        chrome_devtools_add_command,
+    from teatree.mcp.service_resolver import (  # noqa: PLC0415 — deferred: lazy CLI import
+        SERVICE_CLIENTS,
+        declaring_overlays,
     )
 
-    typer.echo(
-        "INFO  chrome-devtools MCP is an OPTIONAL aid for authoring/debugging Playwright "
-        "e2e specs (live DOM, console, network, screenshots). Enable it with "
-        f"`{chrome_devtools_add_command()}` (needs a "
-        "Chrome executable). It is never required — its absence gates nothing."
-    )
-    return True
+    ok = True
+    for service, overlays in declaring_overlays().items():
+        client = SERVICE_CLIENTS[service]
+        missing = {name: reason for name in overlays if (reason := _missing_client(client.build, name))}
+        if len(missing) == len(overlays):
+            reasons = "; ".join(f"{name}: {reason}" for name, reason in missing.items())
+            typer.echo(
+                f"FAIL  {service.value} is declared by {', '.join(overlays)} but none has a configured "
+                f"{client.description} ({reasons}). Configure teatree's own credentials for it — the teatree MCP "
+                "and the `t3` CLI serve it from those."
+            )
+            ok = False
+        elif missing:
+            typer.echo(
+                f"WARN  {service.value} is served to {', '.join(missing)} from another declaring overlay's "
+                f"{client.description}, so with that overlay's account; configure its own if that is wrong."
+            )
+    return ok
 
 
-def _check_mcp_connectivity() -> bool:
-    """Verify every enabled MCP server is connected + matches its provider (#2282).
-
-    Enumerates the enabled configured MCP servers (``~/.claude.json`` minus the
-    per-project disabled set), live-probes each one's connection via
-    ``claude mcp list``, and validates each resolves to its overlay-declared
-    provider. An enabled-but-disconnected server, or a provider mismatch, is a
-    hard FAIL naming the server + a reconnect hint. A probe that cannot run
-    (``claude`` absent) degrades to a WARN. Crash-proof: any error degrades to a
-    WARN so a doctor run never aborts on this check.
-    """
+def _missing_client(build: Callable[[str], object], overlay: str) -> str:
     try:
-        from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415 — deferred: lazy CLI import
-
-        outcome = check_mcp_connectivity()
-    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
-        typer.echo(f"WARN  MCP connectivity check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    if outcome.degraded:
-        for finding in outcome.findings:
-            typer.echo(f"WARN  {finding}")
-        return True
-    if outcome.ok:
-        return True
-    for finding in outcome.findings:
-        typer.echo(f"FAIL  {finding}")
-    return False
-
-
-def _check_connector_manifest() -> bool:
-    """Verify every overlay-declared claude.ai connector is connected (PR-19).
-
-    Reads each registered overlay's connector manifest and live-probes each
-    declared connector. A REQUIRED connector that is down is a hard FAIL with
-    mode-correct guidance — first-install (add it in claude.ai Settings →
-    Connectors) vs post-account-switch (reconnect it) — followed by the
-    ``RECONNECT`` lines. An OPTIONAL down connector is a WARN. A probe that
-    cannot run degrades to a WARN. Crash-proof: any error degrades to a WARN so a
-    doctor run never aborts on this check.
-    """
-    try:
-        from teatree.core.connector_manifest import (  # noqa: PLC0415 — deferred post-bootstrap: walks overlays + probes MCP
-            check_connector_manifest,
-        )
-
-        outcome = check_connector_manifest()
-    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
-        typer.echo(f"WARN  Connector-manifest check crashed: {exc.__class__.__name__}: {exc}")
-        return True
-    if outcome.degraded:
-        for finding in outcome.probe_findings:
-            typer.echo(f"WARN  {finding}")
-        return True
-    for finding in outcome.optional_findings:
-        typer.echo(f"WARN  {finding}")
-    if outcome.ok:
-        return True
-    for finding in outcome.required_findings:
-        typer.echo(f"FAIL  {finding}")
-    for line in outcome.reconnect_lines():
-        typer.echo(f"      {line}")
-    return False
+        return "" if build(overlay) is not None else "no credentials"
+    except Exception as exc:  # noqa: BLE001 — one overlay's broken builder must not abort the doctor run
+        return f"{exc.__class__.__name__}: {exc}"
 
 
 def _check_teatree_mcp_registration() -> bool:
@@ -117,8 +59,8 @@ def _check_teatree_mcp_registration() -> bool:
     the ``teatree`` stdio server pointing at ``t3 mcp serve`` (the file the
     repo ships at its root — Claude Code starts plugin-bundled MCP servers
     automatically once the plugin is enabled, so nothing more is required to
-    make the tools reachable). When ``claude`` is on PATH, also live-probes
-    visibility via ``claude mcp list``.
+    make the tools reachable). Whether the server actually runs is
+    :func:`_check_teatree_mcp_liveness`'s verdict.
 
     A WARN, never a hard FAIL: the resolved clone (the same main-clone
     resolution the plugin registration uses) can legitimately lag a merged
@@ -128,7 +70,6 @@ def _check_teatree_mcp_registration() -> bool:
     """
     from teatree.cli.doctor.plugin_repair import _resolve_main_clone  # noqa: PLC0415 — avoids a doctor-package cycle
     from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        TEATREE_MCP_SERVER_NAME,
         verify_teatree_mcp_registration,
     )
 
@@ -143,32 +84,6 @@ def _check_teatree_mcp_registration() -> bool:
     outcome = verify_teatree_mcp_registration(repo)
     if not outcome.ok:
         typer.echo(f"WARN  {outcome.message}")
-        return True
-
-    try:
-        from teatree.core.mcp_connectivity import probe_mcp_servers  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-        statuses = probe_mcp_servers()
-    except Exception:  # noqa: BLE001 — live probe is best-effort; claude may be absent
-        return True
-    # #3255: the same shipped ``.mcp.json`` surfaces under two CC scopes on a
-    # dogfooding box — ``plugin:t3:teatree`` (plugin scope, the live one) and a
-    # separate ``teatree`` (project scope, often Pending approval). Treat any
-    # ``:teatree``-suffixed or bare ``teatree`` entry as the same server; WARN
-    # only when NONE of them is connected (a genuine disconnection), never when
-    # the plugin-scoped one is up beside a pending project entry.
-    teatree_statuses = [
-        status
-        for status in statuses
-        if status.name == TEATREE_MCP_SERVER_NAME or status.name.endswith(f":{TEATREE_MCP_SERVER_NAME}")
-    ]
-    if teatree_statuses and not any(status.connected for status in teatree_statuses):
-        typer.echo(
-            f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
-            "connected in `claude mcp list` — it may not have started for this session yet. "
-            "The authoritative verdict is the exercising check below, which spawns the "
-            "server and says WHY.",
-        )
     return True
 
 

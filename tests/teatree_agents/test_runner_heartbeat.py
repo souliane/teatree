@@ -21,6 +21,8 @@ from django.test import TestCase
 
 import teatree.agents.runner as runner_mod
 from teatree.agents import runner_heartbeat
+from teatree.agents.live_control import ControlOutcome, ControlReceipt, RejectCode
+from teatree.agents.live_registry import shared_registry
 from teatree.agents.runner_heartbeat import (
     CHECKPOINT_MAX_DEFER_BEATS,
     HeartbeatRuntime,
@@ -35,6 +37,7 @@ from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarne
 
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+_TASK_PK = 7
 
 
 def _drain_from_beat(first: int, calls: list[str]) -> Callable[[], str]:
@@ -67,6 +70,7 @@ def _drive(
     drain_reason: Callable[[], str],
     renew_lease: Callable[[Task], None] = _no_lease_renewal,
     max_runtime_seconds: float = 5,
+    task: Task | None = None,
 ) -> HarnessOutcome:
     runtime = HeartbeatRuntime(
         watchdog=LoopWatchdog(max_runtime_seconds=max_runtime_seconds, max_turns=0, max_cost_usd=0.0),
@@ -77,7 +81,7 @@ def _drive(
     )
     return asyncio.run(
         drive_with_heartbeat(
-            Task(phase="coding"), "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime
+            task or Task(phase="coding"), "p", ClaudeAgentOptions(), OneSessionHarness(session), runtime=runtime
         )
     )
 
@@ -196,6 +200,66 @@ def test_a_lease_lost_after_the_checkpoint_request_stops_the_beat_and_stays_a_ch
     assert outcome.checkpointed is True
     assert outcome.lease_lost is False, "the flags name what first interrupted the run"
     assert outcome.stuck_reason == f"deploy checkpoint: {_DRAIN}"
+
+
+class _OperatorSteerableSession(InterruptibleSession):
+    """Takes operator input, and lets one land from another thread the moment the run is told to stop."""
+
+    def __init__(self) -> None:
+        super().__init__([], session_id=_SESSION)
+        self.steered: list[str] = []
+        self.receipts: list[ControlReceipt] = []
+
+    async def steer(self, text: str, *, input_id: str, wait: float) -> None:
+        del text, wait
+        self.steered.append(input_id)
+
+    def operator_steer(self, command_id: str) -> None:
+        steer = shared_registry().steer(_TASK_PK, "stop and report", command_id=command_id, wait=0.05)
+        self.receipts.append(asyncio.run(steer))
+
+    async def interrupt(self) -> None:
+        await asyncio.to_thread(self.operator_steer, "after-interrupt")
+        await super().interrupt()
+
+
+@pytest.mark.parametrize(
+    ("drain_reason", "renew_lease"),
+    [
+        pytest.param(_drain_from_beat(1, []), _no_lease_renewal, id="deploy-checkpoint"),
+        pytest.param(_drain_from_beat(10**9, []), _lease_lost_on_beat(1), id="lost-lease"),
+    ],
+)
+def test_a_steer_that_lands_as_the_run_is_told_to_stop_is_refused_not_delivered(
+    drain_reason: Callable[[], str], renew_lease: Callable[[Task], None]
+) -> None:
+    session = _OperatorSteerableSession()
+
+    _drive(session, drain_reason=drain_reason, renew_lease=renew_lease, task=Task(pk=_TASK_PK, phase="coding"))
+
+    assert session.interrupts == 1
+    assert [(r.outcome, r.code) for r in session.receipts] == [(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)]
+    assert session.steered == []
+
+
+def test_a_steer_taken_before_a_drain_checkpoint_stays_delivered_and_the_run_is_interrupted_once() -> None:
+    session = _OperatorSteerableSession()
+
+    def steer_on_the_first_beat(_task: Task) -> None:
+        if not session.receipts:
+            session.operator_steer("before-drain")
+
+    outcome = _drive(
+        session,
+        drain_reason=_drain_from_beat(3, []),
+        renew_lease=steer_on_the_first_beat,
+        task=Task(pk=_TASK_PK, phase="coding"),
+    )
+
+    assert session.receipts[0].outcome is ControlOutcome.ACCEPTED_CURRENT_TURN
+    assert session.steered == ["before-drain"]
+    assert session.interrupts == 1
+    assert outcome.checkpointed is True
 
 
 def test_the_runner_wires_the_gate_read_off_the_event_loop_into_every_run() -> None:

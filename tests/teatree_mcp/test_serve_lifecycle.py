@@ -53,7 +53,7 @@ class TestIsServeCommand:
         [
             "grep t3 mcp serve",
             "vim notes/t3 mcp serve.md",
-            "t3 mcp reconnect",
+            "t3 mcp serves",
             "t3 loop serve",
             "/usr/bin/python -m http.server",
             "",
@@ -320,7 +320,7 @@ _LOOKALIKE_COMMANDS = [
     "docker compose exec teatree-worker rg t3 mcp serve /src",
     "docker compose exec teatree-worker sh -c echo t3 mcp serve",
     "docker compose exec teatree-worker xargs t3 mcp serve",
-    "docker compose exec teatree-worker t3 mcp reconnect",
+    "docker compose exec teatree-worker t3 mcp serves",
     "docker ps",
 ]
 

@@ -262,6 +262,7 @@ stateDiagram-v2
     coded --> review_delivered : mark_reviewed_externally
     coded --> ignored : ignore
     tested --> work_started : rework
+    tested --> coded : address_self_review
     tested --> self_reviewed : reconcile_reviewed
     tested --> self_reviewed : review
     tested --> merged : reconcile_merged
@@ -269,6 +270,7 @@ stateDiagram-v2
     tested --> review_delivered : mark_reviewed_externally
     tested --> ignored : ignore
     self_reviewed --> work_started : rework
+    self_reviewed --> coded : address_self_review
     self_reviewed --> self_reviewed : reconcile_reviewed
     self_reviewed --> pr_opened : ship
     self_reviewed --> merged : reconcile_merged
@@ -428,7 +430,8 @@ t3 ui                           # browse and run the whole command tree in a ter
 t3 admin                        # run the Django admin for the teatree project under a local gunicorn server (WSGI, not runserver)
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) + gate-preserving writes as an MCP server over stdio
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
-t3 notion whoami|doctor         # headless Notion access via an integration token (no interactive connector, so a scheduled run reaches a page at all): verify the token / triage one page (token valid, page shared, page still LIVE)
+t3 browser open|act|inspect|close  # drive one headless Playwright browser held open per worktree: each step prints the page's console messages, page errors, failed requests and HTTP errors; `inspect` also saves the accessibility snapshot, HTML and a screenshot (`--json` on every step)
+t3 notion whoami|doctor         # Notion access via an integration token, the same in a session and a scheduled run: verify the token / triage one page (token valid, page shared, page still LIVE)
 t3 notion fetch <page>          # read a page as Markdown (or raw blocks), optionally with its open comments; refuses an ARCHIVED page with its own exit code and names the successor, because a dead page renders exactly like a current one
 t3 notion audit-fetch <page>    # read a DEAD page for a postmortem — deliberately its own command so it is not reachable by habit
 t3 notion comments|append|query # every open discussion anchored anywhere UNDER a page (a comment's parent is the BLOCK, so the page anchor alone sees only page-level threads) — exits 18 rather than returning a set it could not prove whole; append at the end of a page; query a database/data source as JSON
@@ -459,6 +462,27 @@ peer with an idempotency key. `agent_mailbox_inbox` and `agent_mailbox_wait` rea
 messages in order. Delivery is live-only: there is no database queue, parked-task
 delivery, cross-worker delivery, or automatic idle-session wake-up. The MCP tools
 are absent outside TeaTree-managed tasks.
+
+#### Live control
+
+An operator reaches a running factory task from any process outside the worker: a
+`docker exec` shell, `deploy/t3`, or an attended `/t3:interactive` session. Agents
+cannot use these verbs.
+
+```bash
+t3 teatree live list                          # every live session on this host's workers (passive)
+t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
+t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+```
+
+`steer` prints a receipt and exits 0 when the session accepted the input into its
+current turn, 3 when it refused it (`turn_ended`, `not_accepted_in_time`,
+`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`), 4 when the
+answer was lost (`unknown_delivery`), and 5 when no worker on this host runs the
+task. Acceptance is not obedience: the model decides what to do with the input.
+Resending the same `--command-id` with the same text returns the first receipt
+instead of delivering twice. Sessions run by `claude_sdk` are steerable; other
+harnesses list as `steerable: false`. Nothing survives a worker restart.
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.

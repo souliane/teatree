@@ -20,6 +20,7 @@ from teatree.agents import skill_injection as skill_injection_mod
 from teatree.agents.runner import run_agent
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind
 from teatree.core.models import Session, Task, Ticket
+from teatree.skill_support import index as skill_index
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 _SLUG = "souliane/teatree"
@@ -76,6 +77,7 @@ class _ReviewDispatchProbe(TestCase):
                 patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
                 patch.object(skill_injection_mod, "harness_skills_dirs", return_value=skill_dirs),
                 patch.object(skill_assurance_mod, "harness_skills_dirs", return_value=skill_dirs),
+                patch.object(skill_index, "install_roots", return_value=skill_dirs),
             ):
                 run_agent(task, phase=phase, overlay_skill_metadata={})
         task.refresh_from_db()

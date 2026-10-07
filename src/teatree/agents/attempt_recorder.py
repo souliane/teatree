@@ -19,6 +19,7 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
@@ -39,7 +40,8 @@ from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, TaskAttempt
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
+from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
 
 if TYPE_CHECKING:
     from teatree.agents.pydantic_ai_turn import ToolCallEntry
@@ -207,14 +209,19 @@ def record_result_envelope(
 
     record_reactive_envelopes(task, result, phase=phase)
 
-    attempt = TaskAttempt.objects.create(
-        task=task,
-        ended_at=timezone.now(),
-        exit_code=0,
-        result=with_transport_records(result, usage),
-        **usage_fields(usage),
-    )
-    task.complete(result_artifact_path="")
+    try:
+        with transaction.atomic():
+            attempt = TaskAttempt.objects.create(
+                task=task,
+                ended_at=timezone.now(),
+                exit_code=0,
+                result=with_transport_records(result, usage),
+                **usage_fields(usage),
+            )
+            task.complete(result_artifact_path="")
+    except NoCurrentPlanError as exc:
+        task.refresh_from_db()
+        return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
     return attempt
 
 

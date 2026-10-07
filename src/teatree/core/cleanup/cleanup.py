@@ -9,6 +9,7 @@ The data-loss guards and the worktree-teardown orchestration live here.
 """
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ from teatree.core.worktree.branch_verdict import branch_is_landed, branch_landed
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree.worktree_location import resolve_worktree_path
+from teatree.paths import PathHelpers
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -604,6 +606,8 @@ def cleanup_worktree(
     run_overlay_cleanup_steps(overlay, worktree, step_errors)
 
     step_errors.extend(_remove_git_worktree(repo_main, wt_path, target))
+    # A live `t3 browser` keeper exits once its session directory is gone.
+    shutil.rmtree(PathHelpers.browser_session_dir(Path(wt_path)), ignore_errors=True)
 
     _drop_worktree_db(overlay, worktree, step_errors)
     _remove_overlay_pass_entry(overlay, worktree, step_errors)

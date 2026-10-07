@@ -450,7 +450,12 @@ def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScan
     )
 
 
-def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher) -> MrTriageScanner | None:
+def _mr_triage_scanner_for(
+    backend: OverlayBackends,
+    *,
+    ci_enricher: CiEnricher,
+    ask_owner_on_missing_review: bool = True,
+) -> MrTriageScanner | None:
     """Build the MR-triage surveyor for an overlay with a code host.
 
     ``None`` when the overlay has no code host (no MRs to read). The nag-patience
@@ -473,6 +478,7 @@ def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher)
         allowed_url_prefixes=_allowed_url_prefixes_for_host(backend, code_host),
         repo_owner=overlay.review.repo_owner_for_slug if overlay is not None else default_repo_owner,
         ci_enricher=ci_enricher,
+        ask_owner_on_missing_review=ask_owner_on_missing_review,
     )
 
 

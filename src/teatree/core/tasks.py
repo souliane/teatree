@@ -19,6 +19,7 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
@@ -275,6 +276,9 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
     except CriticGateError as exc:
         _persist_critic_block(ticket_id, exc)
         return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(None, phase="retro", ticket=Ticket.objects.get(pk=ticket_id), refusal=str(exc))
+        return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
@@ -472,7 +476,9 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
 
     A failure on a ticket with no repos yet, or one the runner marks retryable (a remote
     could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
-    and asks the owner only once that budget is spent.
+    and asks the owner only once that budget is spent. A ticket with no repo and no forge
+    issue to attach one from (a repair ticket, a synthetic key, a PR url) has nothing to check
+    out and is skipped.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
@@ -484,11 +490,12 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.WORK_STARTED:
+        if ticket.state != Ticket.State.WORK_STARTED or not ticket.has_checkout_source:
             logger.info(
-                "execute_provision skipped for ticket %s: state=%s (not WORK_STARTED)",
+                "execute_provision skipped for ticket %s: state=%s, has_checkout_source=%s",
                 ticket_id,
                 ticket.state,
+                ticket.has_checkout_source,
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 

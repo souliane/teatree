@@ -55,8 +55,8 @@ case "$args" in
     *" lifecycle record-e2e-run "*) echo "recorded e2e run (attestation stored)" ;;
     *" e2e write-test-plan "*) echo "test plan written to the e2e repo" ;;
     *" skill-preamble "*)
-        printf -- '--- SKILL: t3:rules ---\\nCross-cutting agent rules body.\\n'
-        printf -- '--- SKILL: t3:e2e ---\\nEnd-to-end testing skill body.\\n' ;;
+        printf -- '--- SKILL: rules ---\\nCross-cutting agent rules body.\\n'
+        printf -- '--- SKILL: e2e ---\\nEnd-to-end testing skill body.\\n' ;;
     *" review record "*) echo "recorded verdict (bound to the reviewed head sha)" ;;
     *" review post-comment "*) echo "posted review comment (as the user)" ;;
     *" review-request check "*) echo "MR is review-requestable" ;;

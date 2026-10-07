@@ -92,10 +92,11 @@ class CompactionGuard:
 
 @dataclass(frozen=True, slots=True)
 class GuardedHarness:
-    """A harness whose opened sessions the compaction guard can interrupt."""
+    """A dispatched harness, under its registered name, whose opened sessions the compaction guard can interrupt."""
 
     harness: "Harness"
     guard: CompactionGuard
+    name: str
 
     @property
     def capabilities(self) -> "HarnessCapabilities":

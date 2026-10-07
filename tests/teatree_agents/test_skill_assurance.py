@@ -15,6 +15,7 @@ from teatree.agents.skill_assurance import (
     recover_truncated_inline_skills,
 )
 from teatree.agents.skill_injection import _read_skill_contents_scoped
+from teatree.skill_support import index as skill_index
 
 
 def _skill(root: Path, name: str) -> None:
@@ -216,10 +217,12 @@ def test_other_skill_mention_does_not_replace_required_load_directive(tmp_path: 
         )
 
 
-def test_coding_prompt_delivers_architecture_code_and_stack_loads(tmp_path: Path) -> None:
+def test_coding_prompt_delivers_architecture_code_and_stack_loads() -> None:
     names = ["architecture-design", "code", "ac-django", "demo-overlay"]
+    install_root = Path.home() / ".agents" / "skills"
+    install_root.mkdir(parents=True)
     for name in names:
-        _skill(tmp_path, name)
+        _skill(install_root, name)
     rendered = "\n".join(_coding_phase_directive(["ac-django", "t3:demo-overlay", "code"]))
 
     assurance = assess_skill_dispatch(
@@ -227,7 +230,7 @@ def test_coding_prompt_delivers_architecture_code_and_stack_loads(tmp_path: Path
         required_inline=set(),
         required_explicit=set(names),
         rendered_context=rendered,
-        skills_dirs=[tmp_path],
+        skills_dirs=[install_root],
     )
 
     assert assurance["explicit_load"] == names
@@ -274,7 +277,10 @@ def test_a_stack_skill_embedded_as_a_stage_skill_is_not_also_a_directive() -> No
     assert explicit == {"ac-python"}
 
 
-def test_a_stack_directive_missing_from_the_rendered_context_is_an_injection_gap(tmp_path: Path) -> None:
+def test_a_stack_directive_missing_from_the_rendered_context_is_an_injection_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_index, "install_roots", lambda: [tmp_path])
     skills = ["rules", "architecture-design", "ac-django", "ac-python"]
     for name in skills:
         _skill(tmp_path, name)

@@ -10,7 +10,6 @@ environment dict.
 import os
 import shlex
 import shutil
-import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -307,18 +306,6 @@ def _ensure_node_modules(playwright_root: Path) -> None:
     run_checked(install_cmd, cwd=playwright_root)
 
 
-def _playwright_browsers_dir() -> Path:
-    """Where Playwright keeps its downloaded browsers."""
-    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if override:
-        return Path(override)
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches" / "ms-playwright"
-    if sys.platform == "win32":
-        return Path.home() / "AppData" / "Local" / "ms-playwright"
-    return Path.home() / ".cache" / "ms-playwright"
-
-
 def _ensure_playwright_browsers(playwright_root: Path) -> None:
     """Install the browser THIS clone pins, checked independently of node deps.
 
@@ -330,12 +317,11 @@ def _ensure_playwright_browsers(playwright_root: Path) -> None:
 
     Driven from the clone rather than baked into the image on purpose: the browser
     build is pinned by the clone's own ``@playwright/test``, so an image-level
-    browser silently drifts the next time either side moves.
+    browser silently drifts the next time either side moves. It always runs: the
+    image's own headless shell shares the browsers directory, so only Playwright
+    knows whether the pinned build is there, and it is a no-op once it is.
     """
     if not (playwright_root / "node_modules" / "@playwright" / "test").is_dir():
-        return
-    browsers = _playwright_browsers_dir()
-    if browsers.is_dir() and any(browsers.glob("chromium*")):
         return
     run_checked(["npx", "playwright", "install", "chromium"], cwd=playwright_root)
 
