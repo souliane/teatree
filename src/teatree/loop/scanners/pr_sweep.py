@@ -16,7 +16,7 @@ Decision ladder per open PR:
 4. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
     → skip (collaborative-overlay default) OR the solo-overlay
     carve-out (#1309 — see ``solo_overlay`` on :class:`PrSweepScanner`):
-    merge via the SHA-bound ``merge_pr_squash_bound`` (#1985) ONLY when a
+    merge via the SHA-bound ``merge_pr_bound`` (#1985) ONLY when a
     recorded independent cold-review (``merge_safe`` ``ReviewVerdict`` at the
     head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
     #68). A CLEAR that EXISTS but cannot authorise the live head is named
@@ -33,7 +33,7 @@ Decision ladder per open PR:
 7. all required checks green → merge through the keystone
 
 Step 6's ``--fallback-uv-audit`` switch documents the scanner's standing
-authorisation to escalate to the SHA-bound ``merge_pr_squash_bound`` when the
+authorisation to escalate to the SHA-bound ``merge_pr_bound`` when the
 keystone transition refuses on the same fallback path (a pre-existing-on-``main``
 failing audit job is a deterministic gate, not an ad-hoc judgement —
 exactly the case §17.4.3 step 7 reserves for the scanner).
@@ -127,7 +127,7 @@ class PrSweepScanner:
     the head, the scanner runs the same precondition checks (draft,
     changes-requested, CI verdict) and — only if every gate is green —
     falls back to the SHA-bound merge via
-    :meth:`PrApiClient.merge_pr_squash_bound`. The CLEAR contract is left
+    :meth:`PrApiClient.merge_pr_bound`. The CLEAR contract is left
     untouched for every overlay that did NOT explicitly opt in; this is
     the conservative side of the two options on the table because it
     keeps the cold-reviewer attestation as the default and only relaxes
@@ -336,7 +336,7 @@ class PrSweepScanner:
         the scanner refuses to merge and emits a flag-level signal so the
         only-identity-on-the-repo maker can never self-merge. Once both the
         CI gate and the cold-review gate pass, calls
-        :meth:`PrApiClient.merge_pr_squash_bound` — the bound merge runs the
+        :meth:`PrApiClient.merge_pr_bound` — the bound merge runs the
         §17.4.3 SHA-bind AND (since #18) the not-draft + FAILED-live-CI
         re-checks inside ``execute_bound_merge`` itself, so a force-push OR a
         green→red / open→draft flip in the TOCTOU window between this snapshot
@@ -369,7 +369,7 @@ class PrSweepScanner:
         ):
             return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
         authorizing = review.authorizing_verdict
-        result = self.api.merge_pr_squash_bound(
+        result = self.api.merge_pr_bound(
             slug=pr.slug,
             pr_id=pr.number,
             expected_head_oid=pr.head_sha,
@@ -527,7 +527,7 @@ class PrSweepScanner:
         # CLEAR falls through to ping-and-hold instead.
         fallback_refusal = ""
         if fallback and not clear.is_substrate():
-            result = self.api.merge_pr_squash_bound(
+            result = self.api.merge_pr_bound(
                 slug=pr.slug,
                 pr_id=pr.number,
                 expected_head_oid=pr.head_sha,
@@ -574,7 +574,7 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
     # #3244: a FORK / cross-repo PR always holds for a human, even from a trusted
     # author; unreported provenance fails closed to the identity+visibility author
     # check. This rung fires AHEAD of the CLEAR lookup and the solo-overlay
-    # ``merge_pr_squash_bound`` fallback (which would otherwise auto-merge OUTSIDE
+    # ``merge_pr_bound`` fallback (which would otherwise auto-merge OUTSIDE
     # the keystone provenance gate). The keystone refuses this same merge too.
     if untrusted_merge_provenance(pr):
         return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"

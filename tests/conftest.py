@@ -606,6 +606,28 @@ def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iter
 
 
 @pytest.fixture(autouse=True)
+def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Pass the merge-message gate's public-repo leak scan unless a test opts in.
+
+    A test install configures no banned-terms list, so the scan refuses every public
+    target and every merge test would refuse on it. The gate's AI-signature scan stays
+    live. Tests that drive the leak scan carry ``@pytest.mark.real_merge_privacy_scan``.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    from teatree.core.gates.privacy_gate import PrivacyGateResult  # noqa: PLC0415 — deferred: pulls Django in
+
+    if "real_merge_privacy_scan" in request.keywords:
+        yield
+        return
+    with patch(
+        "teatree.core.gates.merge_message_gate.scan_outbound_text",
+        side_effect=lambda *, target_repo, **_: PrivacyGateResult(target_repo=target_repo, is_public=False),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _process_freshness_memo_isolated() -> Iterator[None]:
     """Drop the #4387 process-freshness memo around every test.
 

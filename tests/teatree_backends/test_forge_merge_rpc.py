@@ -9,13 +9,15 @@ speaks httpx, bounded by ``GitLabHTTPClient._timeout``.
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from teatree.backends import forge_merge_rpc as rpc
 from teatree.backends.forge_merge_rpc import _FORGE_MERGE_TIMEOUT_SECONDS, GhMergeRpc, _gh_conflict_state, gh_runner
-from teatree.core.backend_protocols import HEAD_SHA_UNREADABLE, MergeConflictState
+from teatree.core.backend_protocols import HEAD_SHA_UNREADABLE, ForgeMergeResult, MergeConflictState, PrMessage
+from tests._forge_stub import merge_request_payload
 
 
 def _completed() -> subprocess.CompletedProcess[str]:
@@ -127,3 +129,74 @@ class TestFetchLiveHeadSha:
         # The forge DID answer, just degradedly — not the same as an unreadable read,
         # and every caller already fails closed on a falsy sha.
         assert self._rpc((0, "", "")).fetch_live_head_sha(slug="o/r", pr_id=1) == ""
+
+
+class TestFetchPrMessage:
+    @staticmethod
+    def _read(result: tuple[int, str, str]) -> PrMessage | None:
+        return GhMergeRpc(lambda _argv: result).fetch_pr_message(slug="o/r", pr_id=1)
+
+    def test_title_and_body(self) -> None:
+        answer = json.dumps({"title": "Tidy the widget", "body": "Tidies it."})
+        assert self._read((0, answer, "")) == PrMessage(title="Tidy the widget", body="Tidies it.")
+
+    def test_a_null_body_is_empty(self) -> None:
+        answer = json.dumps({"title": "Tidy the widget", "body": None})
+        assert self._read((0, answer, "")) == PrMessage(title="Tidy the widget", body="")
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            (1, "", "HTTP 503"),
+            (0, "", ""),
+            (0, "{not json", ""),
+            (0, "[]", ""),
+            (0, json.dumps({"body": "untitled"}), ""),
+            (0, json.dumps({"title": "  ", "body": ""}), ""),
+            (0, json.dumps({"title": "t", "body": ["not", "text"]}), ""),
+        ],
+    )
+    def test_unreadable_without_a_title_and_a_text_body(self, result: tuple[int, str, str]) -> None:
+        assert self._read(result) is None
+
+
+class TestMergePrSquashBound:
+    @staticmethod
+    def _merge(message: PrMessage) -> tuple[list[str], dict[str, object] | None, ForgeMergeResult]:
+        seen: list[tuple[list[str], dict[str, object] | None]] = []
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            seen.append((argv, merge_request_payload(argv)))
+            return (0, json.dumps({"sha": "landed"}), "")
+
+        result = GhMergeRpc(run).merge_pr_squash_bound(slug="o/r", pr_id=7, expected_head_oid="a" * 40, message=message)
+        ((argv, payload),) = seen
+        return argv, payload, result
+
+    def test_the_request_body_publishes_exactly_the_given_message(self) -> None:
+        argv, payload, result = self._merge(PrMessage(title="Tidy the widget", body="@notes.md\n\nkey=value"))
+
+        assert result.merged_sha == "landed"
+        assert argv[:4] == ["api", "--method", "PUT", "repos/o/r/pulls/7/merge"]
+        assert payload == {
+            "merge_method": "squash",
+            "sha": "a" * 40,
+            "commit_title": "Tidy the widget (#7)",
+            "commit_message": "@notes.md\n\nkey=value",
+        }
+
+    def test_an_empty_body_still_sends_a_message_so_github_never_renders_its_template(self) -> None:
+        _, payload, _ = self._merge(PrMessage(title="Tidy the widget", body=""))
+        assert payload is not None
+        assert payload["commit_message"] == "Tidy the widget"
+
+    def test_a_body_past_the_argv_size_cap_travels_in_the_request_body(self) -> None:
+        body = "x" * 200_000
+        argv, payload, _ = self._merge(PrMessage(title="Tidy the widget", body=body))
+        assert payload is not None
+        assert payload["commit_message"] == body
+        assert max(len(word) for word in argv) < 4096
+
+    def test_the_request_body_file_is_removed_after_the_call(self) -> None:
+        argv, _, _ = self._merge(PrMessage(title="Tidy the widget", body="Tidies it."))
+        assert not Path(argv[argv.index("--input") + 1]).exists()

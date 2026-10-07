@@ -21,6 +21,7 @@ schema. The squash name must therefore never be a pre-squash migration name.
 """
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from django.core.management import call_command
@@ -50,6 +51,15 @@ def test_core_is_one_initial_migration_under_a_new_name() -> None:
     initials = [name for name in core_migration_names() if disk["core", name].initial]
     assert initials == [core_initial_migration()]
     assert not set(core_migration_names()) & set(_PRE_SQUASH_ROWS)
+
+
+def test_agents_md_prescribes_a_new_name_and_no_automatic_rollback_for_the_next_squash() -> None:
+    agents = (Path(__file__).resolve().parents[2] / "AGENTS.md").read_text(encoding="utf-8")
+    _, found, rest = agents.partition("\n### Squashing the core migrations")
+    assert found, "AGENTS.md has no 'Squashing the core migrations' section"
+    section = " ".join(rest.split("\n## ", 1)[0].split("\n### ", 1)[0].split())
+    for clause in ("NEW name", "`0001_initial`", "no automatic rollback", "pre-squash backup", "`_PRE_SQUASH_ROWS`"):
+        assert clause in section, f"the squash section no longer says {clause!r}"
 
 
 @pytest.mark.timeout(480)
