@@ -33,8 +33,8 @@ from teatree.quality.durations_file import DURATIONS_PATH
 from teatree.utils.git_run import run_with_status
 from teatree.utils.git_worktree_query import is_git_checkout
 
-# The refresh is attempted once a week and lands only once its PR merges, so one missed
-# attempt plus a week of merge latency is ordinary. Three Sundays with nothing landed is
+# The refresh is attempted every Sunday and counts only when its PR merges, so one missed
+# attempt plus a week of merge latency is ordinary. Three Sundays with nothing merged is
 # not: the scheduled job has stopped producing or its PR sits unmerged, and both page.
 MAX_REFRESH_AGE = dt.timedelta(days=21)
 
