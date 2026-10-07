@@ -2406,19 +2406,16 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
     if not skills:
         return []
 
-    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added: list[str] = []
-    for extra in (str(scripts_dir), str(src_dir)):
-        if extra not in sys.path:
-            sys.path.insert(0, extra)
-            added.append(extra)
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+        added.append(str(src_dir))
     try:
-        from lib.skill_loader import build_requires_index  # noqa: PLC0415 — deferred: cold-hook import
-
         from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415 — deferred: cold-hook import
+        from teatree.skill_support.index import build_skill_index  # noqa: PLC0415 — deferred: cold-hook import
 
-        index = build_requires_index(_skill_search_dirs())
+        index = build_skill_index(_skill_search_dirs())
         return resolve_requires(skills, index)
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return list(skills)

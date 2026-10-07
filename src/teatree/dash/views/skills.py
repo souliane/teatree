@@ -47,8 +47,8 @@ from teatree.provisioning.skills_cli import (
 )
 from teatree.skill_support.agent_declarations import default_agents_dir
 from teatree.skill_support.demands import SkillDemand
+from teatree.skill_support.index import DEFAULT_SKILLS_DIR
 from teatree.skill_support.inventory import SkillInventory
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 
 if TYPE_CHECKING:
     from django.http import HttpRequest, HttpResponse

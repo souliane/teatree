@@ -8,12 +8,14 @@ skill bodies, and fails loud when a requested skill cannot be resolved.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder, _overlay_skills_dir, _split_skill_args
+from teatree.skill_support import index as skill_index
 
 
 def _write_skill(skills_dir: Path, name: str, body: str) -> None:
@@ -83,6 +85,18 @@ class TestSkillPreambleFailsLoud:
     def test_no_skills_given_exits_nonzero(self, app: typer.Typer) -> None:
         result = CliRunner().invoke(app, ["skill-preamble"])
         assert result.exit_code == 1
+
+    def test_a_shadowed_pin_exits_nonzero_naming_both_sides(self, app: typer.Typer, tmp_path: Path) -> None:
+        local = tmp_path / "repo-skills"
+        _write_skill(local, "ac-django", "---\nname: ac-django\n---\n")
+
+        with patch.object(skill_index, "DEFAULT_SKILLS_DIR", local):
+            result = CliRunner().invoke(app, ["skill-preamble", "--skills", "ac-django"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "souliane/skills/ac-django#" in result.output
+        assert str(local / "ac-django" / "SKILL.md") in result.output
 
 
 class TestSplitSkillArgs:

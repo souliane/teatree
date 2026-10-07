@@ -21,9 +21,9 @@ from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.agents.lane_b.tool_names import lane_b_tool_name
 from teatree.agents.skill_files import SkillFileIndex
-from teatree.agents.skill_injection import harness_skills_dirs
 from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.skill_support.index import harness_skills_dirs
 
 
 @dataclass(frozen=True)

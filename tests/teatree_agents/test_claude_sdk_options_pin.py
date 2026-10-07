@@ -154,7 +154,7 @@ class TestClaudeSdkDispatchIsPinned(TestCase):
 
     def _dispatch(self) -> tuple[str, dict[str, object]]:
         with (
-            patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", self._skills_dir),
+            patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", self._skills_dir),
             patch("teatree.agents.skill_injection.harness_skills_dirs", return_value=[self._skills_dir]),
         ):
             system_context = build_system_context(

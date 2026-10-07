@@ -227,6 +227,13 @@ EXEMPT: dict[str, str] = {
         "resetting it would clear nothing"
     ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
+    "teatree.skill_support.pin_shadow:_running_code_manifest": (
+        "@cache of the apm.yml beside the running code; derived from __file__, so process-stable"
+    ),
+    "teatree.skill_support.pin_shadow:_parsed": (
+        "manifest-path-keyed memo re-validated against the file's mtime_ns on every read, so an "
+        "edited or per-test manifest is always re-parsed"
+    ),
     "teatree.config.setting_taxonomy:taxonomy": (
         "a view over import-populated registries (feature flags, gate evidence, cold + "
         "registry key sets); nothing mutates them at runtime, so the memo cannot hold another test's state"

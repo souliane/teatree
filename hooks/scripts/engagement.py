@@ -134,7 +134,7 @@ def _is_teatree_skill(name: str) -> bool:
 def _bare_skill_segment(name: str) -> str:
     """The skill index's key form: the bare segment after a namespace prefix.
 
-    ``build_requires_index`` keys every entry (and its ``requires:`` members) by
+    ``build_skill_index`` keys every entry (and its ``requires:`` members) by
     the bare skill-directory name, so a qualified Skill-tool token like
     ``t3:dogfooding`` must be mapped DOWN to ``dogfooding`` to match an index
     entry and resolve its ``requires:`` closure.

@@ -26,12 +26,12 @@ from teatree.agents.model_tiering import (
 )
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.agents.session_lineage import honesty_subject, resume_session_id
-from teatree.agents.skill_injection import _resolve_skill_md, harness_skills_dirs
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
+from teatree.skill_support.index import harness_skills_dirs, resolve_skill_md
 
 if TYPE_CHECKING:
     from teatree.agents.harness import Harness
@@ -162,7 +162,7 @@ def _build_options(
         # directories, never a broad home or all-skills directory.
         directories = harness_skills_dirs()
         add_dirs.extend(
-            str(path.parent) for skill in skills if (path := _resolve_skill_md(skill, directories)) is not None
+            str(path.parent) for skill in skills if (path := resolve_skill_md(skill, directories)) is not None
         )
         add_dirs = list(dict.fromkeys(add_dirs))
     subject = honesty_subject(task)

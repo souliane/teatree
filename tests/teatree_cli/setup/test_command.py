@@ -226,6 +226,22 @@ class TestStrictAgentSkillsSetup:
 
         assert setup_command._assess_dispatched_skills(("required-skill",), [], receipt=tmp_path / "setup-outcome")
 
+    def test_a_local_copy_shadowing_a_declared_pin_warns_naming_both_sides(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        local = tmp_path / "skills"
+        (local / "ac-django").mkdir(parents=True)
+        (local / "ac-django" / "SKILL.md").write_text("# local copy\n", encoding="utf-8")
+        receipt = tmp_path / "setup-outcome"
+
+        assert not setup_command._assess_dispatched_skills(("ac-django",), [], receipt=receipt, search_dirs=[local])
+
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "souliane/skills/ac-django#" in out
+        assert str(local / "ac-django" / "SKILL.md") in out
+        assert "missing=ac-django" in receipt.read_text(encoding="utf-8")
+
     def test_path_qualified_runtime_skill_is_accepted(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"
         (skills / "rules").mkdir(parents=True)
