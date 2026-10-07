@@ -13,8 +13,10 @@ this module without a cycle.
 """
 
 import json
+from pathlib import Path
 from typing import Final
 
+from teatree.hooks._inline_body_resolution import resolve_attached_value, resolve_inline_body_value
 from teatree.hooks._parser_primitives import BODY_FIELD_NAMES, FAIL_CLOSED_SENTINEL, attached_value
 
 # The argv walkers' catalogue plus Slack's ``text``, which has no CLI-flag form.
@@ -59,24 +61,24 @@ def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
         payloads.append(FAIL_CLOSED_SENTINEL)
 
 
-def _record_curl_value(value: str, payloads: list[str]) -> None:
+def _record_curl_value(value: str, resolved: str, payloads: list[str]) -> None:
     """Route a single curl data value to the payload list.
 
     ``@file`` references fail closed (we cannot read arbitrary files);
-    everything else gets the standard JSON-aware scan.
+    everything else gets the standard JSON-aware scan of its ``resolved`` body.
     """
     if value.startswith("@"):
         payloads.append(FAIL_CLOSED_SENTINEL)
     else:
-        _scan_curl_payload(value, payloads)
+        _scan_curl_payload(resolved, payloads)
 
 
-def _curl_long_flag_attached(word: str) -> str | None:
-    """Return the value of ``--data=VALUE`` / ``--json=VALUE`` if attached."""
+def _curl_long_flag_attached(word: str) -> tuple[str, str] | None:
+    """Return ``(prefix, value)`` of ``--data=VALUE`` / ``--json=VALUE`` if attached."""
     for flag in _CURL_DATA_LONG_FLAGS:
         attached = attached_value(word, flag + "=")
         if attached is not None:
-            return attached
+            return flag + "=", attached
     return None
 
 
@@ -91,7 +93,7 @@ def _curl_short_d_attached(word: str) -> str | None:
     return attached_value(word, "-d")
 
 
-def _record_curl_form(field: str, payloads: list[str]) -> None:
+def _record_curl_form(field: str, raw: str, payloads: list[str], base: Path | None) -> None:
     """Route a single curl ``-F``/``--form`` ``name=value`` field to the payload list.
 
     The published body fragment is the part AFTER the first ``=``. A value that
@@ -99,13 +101,17 @@ def _record_curl_form(field: str, payloads: list[str]) -> None:
     file) is unresolvable at PreToolUse scan time, so it fails closed. A field
     with no ``=`` is malformed and contributes nothing (#F7.7).
     """
-    _name, sep, value = field.partition("=")
+    name, sep, value = field.partition("=")
     if not sep:
         return
     if value.startswith(("@", "<")):
         payloads.append(FAIL_CLOSED_SENTINEL)
+        return
+    name_at = raw.find(f"{name}=")
+    if name_at < 0:
+        payloads.append(resolve_inline_body_value(value, base))
     else:
-        payloads.append(value)
+        payloads.append(resolve_inline_body_value(value, base, raw, name_at + len(name) + 1))
 
 
 def _curl_form_attached(word: str) -> str | None:
@@ -118,8 +124,13 @@ def _curl_form_attached(word: str) -> str | None:
     return None
 
 
-def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
+def _walk_curl_args(
+    words: list[str], payloads: list[str], *, raws: list[str] | None = None, base: Path | None = None
+) -> None:
     """Extract curl ``-d``/``--data*``/``--json`` and ``-F``/``--form`` payloads.
+
+    Each value resolves like an inline body (``$(cat <path>)``, a whole ``$VAR``,
+    a live substitution failing closed) against its source span in ``raws``.
 
     Supports:
     - ``-d value`` (next token)
@@ -131,33 +142,28 @@ def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
         fields → the value is a body fragment; ``name=@file`` / ``name=<file``
         fails closed (#F7.7).
     """
+    spans = raws or words
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
-        if word == "-d" and i + 1 < n:
-            _record_curl_value(words[i + 1], payloads)
-            i += 2
-            continue
-        if word in _CURL_DATA_LONG_FLAGS and i + 1 < n:
-            _record_curl_value(words[i + 1], payloads)
+        if (word == "-d" or word in _CURL_DATA_LONG_FLAGS) and i + 1 < n:
+            value = words[i + 1]
+            _record_curl_value(value, resolve_inline_body_value(value, base, spans[i + 1]), payloads)
             i += 2
             continue
         if word in _CURL_FORM_FLAGS and i + 1 < n:
-            _record_curl_form(words[i + 1], payloads)
+            _record_curl_form(words[i + 1], spans[i + 1], payloads, base)
             i += 2
             continue
         attached_short = _curl_short_d_attached(word)
-        if attached_short is not None:
-            _record_curl_value(attached_short, payloads)
-            i += 1
-            continue
-        attached_long = _curl_long_flag_attached(word)
-        if attached_long is not None:
-            _record_curl_value(attached_long, payloads)
+        attached = ("-d", attached_short) if attached_short is not None else _curl_long_flag_attached(word)
+        if attached is not None:
+            prefix, value = attached
+            _record_curl_value(value, resolve_attached_value(value, base, spans[i], prefix), payloads)
             i += 1
             continue
         attached_form = _curl_form_attached(word)
         if attached_form is not None:
-            _record_curl_form(attached_form, payloads)
+            _record_curl_form(attached_form, spans[i], payloads, base)
         i += 1

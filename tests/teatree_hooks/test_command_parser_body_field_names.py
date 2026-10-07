@@ -199,8 +199,8 @@ class TestRawFieldTreatsAtAsLiteralText:
         assert not is_fail_closed_sentinel(payload)
 
 
-class TestNonBodyFieldsStayOutOfTheLeakPayload:
-    """Structured values carry no prose; scanning them only widens the fail-closed surface.
+class TestNonBodyFieldsAreScannedWithoutFailingClosed:
+    """A write publishes every field value, but a structured one never widens the fail-closed surface.
 
     ``name`` is endpoint-sensitive: a release name is public prose, while most API
     uses are identifiers — a repo, branch, webhook, or CI variable. The release
@@ -219,8 +219,12 @@ class TestNonBodyFieldsStayOutOfTheLeakPayload:
             "visibility=private",
         ],
     )
-    def test_structured_field_contributes_no_body(self, assignment: str) -> None:
-        assert extract_bash_payload(_api_put(f"-f {assignment}")) == ""
+    def test_structured_field_value_is_scanned(self, assignment: str) -> None:
+        assert extract_bash_payload(_api_put(f"-f {assignment}")) == assignment.partition("=")[2]
+
+    @pytest.mark.parametrize("value", ['"$T3_ABSENT_FIELD_VAR"', f'"$(cat {LEAK}.md)"', "@-"])
+    def test_unresolvable_structured_field_never_fails_closed(self, value: str) -> None:
+        assert extract_bash_payload(_api_put(f"-F assignee_id={value}"), fail_closed_body_file=True) == ""
 
     def test_structured_field_still_reaches_the_secret_scan(self) -> None:
         assert "glpat-DEADBEEF" in extract_secret_scan_text(_api_put("-f assignee_id=glpat-DEADBEEF"))
