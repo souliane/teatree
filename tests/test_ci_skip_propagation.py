@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -33,6 +34,7 @@ from tests._actions_workflow import CI_WEEKLY_CRON, github_context, job_results,
 _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _BASH = shutil.which("bash") or "/bin/bash"
 _PULL_REQUEST = github_context("pull_request", ref="refs/pull/42/merge")
+_WEEKLY = github_context("schedule", schedule=CI_WEEKLY_CRON)
 
 _SKIP_OVERRIDES = ("always()", "!cancelled()")
 
@@ -117,15 +119,46 @@ class TestSupersededPullRequestWavesStop:
             )
 
 
+def _chain(head: dict[str, Any], *, tail_if: str | None = None) -> dict[str, Any]:
+    tail = {"needs": "middle"} | ({} if tail_if is None else {"if": tail_if})
+    return {"jobs": {"head": head, "middle": {"needs": "head", "if": "always()"}, "tail": tail}}
+
+
+class TestTheEvaluatorPropagatesAnUpstreamSkip:
+    """`job_results` reads status over every ancestor, as the runner does — not over direct needs."""
+
+    def test_a_plain_dependent_of_a_skip_overrider_inherits_the_skip(self) -> None:
+        results = job_results(_chain({"if": "false"}), _PULL_REQUEST)
+        assert results == {"head": "skipped", "middle": "success", "tail": "skipped"}
+
+    def test_a_dependent_naming_not_cancelled_escapes_it(self) -> None:
+        results = job_results(_chain({"if": "false"}, tail_if="!cancelled()"), _PULL_REQUEST)
+        assert results["tail"] == "success"
+
+    def test_a_failure_two_levels_up_reaches_a_dependent_gated_on_failure(self) -> None:
+        results = job_results(_chain({}, tail_if="failure()"), _PULL_REQUEST, failing=frozenset({"head"}))
+        assert results == {"head": "failure", "middle": "success", "tail": "success"}
+
+
 class TestRefreshDurationsStaysReachable:
     """The specific job whose silent skip left the shard split blind."""
 
-    def test_it_runs_on_the_weekly_run_whatever_the_shards_did(self) -> None:
+    @pytest.mark.parametrize("failing", [frozenset(), frozenset({"test-shard"})], ids=["green", "red-shards"])
+    def test_it_runs_on_the_weekly_run_whatever_the_shards_did(self, failing: frozenset[str]) -> None:
         # #4603: gating on a green lane was a second way to never run — the durations that
         # unbalance the split are what red the leg that then vetoed the refresh.
-        weekly = github_context("schedule", schedule=CI_WEEKLY_CRON)
-        results = job_results(load(), weekly, failing=frozenset({"test-shard"}))
+        results = job_results(load(), _WEEKLY, failing=failing)
         assert results["refresh-durations"] != "skipped"
+
+    def test_without_its_always_the_skipped_preflight_reaches_it(self) -> None:
+        workflow = load()
+        refresh = workflow["jobs"]["refresh-durations"]
+        refresh["if"] = str(refresh["if"]).replace("always() && ", "", 1)
+        assert "always()" not in refresh["if"]
+
+        results = job_results(workflow, _WEEKLY)
+        assert results["test-shard"] == "success"
+        assert results["refresh-durations"] == "skipped"
 
 
 class TestARequiredCheckIsNeverSkippedByAFailedImageBuild:

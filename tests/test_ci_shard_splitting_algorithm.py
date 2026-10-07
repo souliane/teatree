@@ -20,6 +20,7 @@ fresh by the scheduled ``refresh-durations`` job on representative CI hardware),
 consume that data are code and belong under a regression guard.
 """
 
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,14 +31,18 @@ from tests._actions_workflow import CI_WEEKLY_CRON, github_context, render
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_LOCAL_TWIN = _REPO_ROOT / "dev" / "ci-shard.sh"
+
+
+def _shard_runs() -> list[str]:
+    jobs = cast("dict[str, Any]", yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"])
+    return [str(s.get("run", "")) for s in jobs["test-shard"].get("steps", []) if isinstance(s, dict)]
 
 
 def _shard_run() -> str:
-    jobs = cast("dict[str, Any]", yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"])
-    steps = [s for s in jobs["test-shard"].get("steps", []) if isinstance(s, dict)]
-    pytest_steps = [s for s in steps if "pytest" in str(s.get("run", ""))]
-    assert pytest_steps, "test-shard must have a step that runs pytest."
-    return str(pytest_steps[0]["run"])
+    pytest_runs = [run for run in _shard_runs() if "pytest" in run]
+    assert pytest_runs, "test-shard must have a step that runs pytest."
+    return pytest_runs[0]
 
 
 class TestShardSplittingIsLeastDuration:
@@ -87,3 +92,34 @@ class TestScheduledRunRecordsDurations:
             "Duration recording belongs to the weekly cron and an explicit refresh dispatch; recording "
             "on every PR/push would pay the store write on the critical path (#3160)."
         )
+
+
+class TestTheShardLaneBlocksTheImpactPlugin:
+    """tach's pytest plugin analyses every collected item once `main` resolves, and discards it without `--tach`."""
+
+    def test_the_ci_shard_blocks_it(self) -> None:
+        assert "-p no:tach" in _shard_run(), (
+            "A push to main checks out `main`, which arms tach's plugin without `--tach`: it then "
+            "spends minutes per shard on an impact analysis whose answer the lane never reads."
+        )
+
+    def test_the_local_twin_blocks_it(self) -> None:
+        twin = _LOCAL_TWIN.read_text(encoding="utf-8")
+        assert "-p no:tach" in twin[twin.index("exec uv run") :], (
+            "dev/ci-shard.sh reproduces the CI shard's flags; a local checkout always has `main`."
+        )
+
+    def test_the_blocked_name_is_the_name_tach_registers(self) -> None:
+        registered = {ep.name for ep in entry_points(group="pytest11") if ep.value == "tach.pytest_plugin"}
+        assert registered == {"tach"}, (
+            "pytest ignores `-p no:<name>` for a name nothing registers, so a renamed entry point "
+            "would bring the plugin back with every assertion above still green."
+        )
+
+
+class TestAShardRecordsItsRunnerHardware:
+    def test_it_prints_the_core_count_before_the_tests_start(self) -> None:
+        runs = _shard_runs()
+        hardware = [index for index, run in enumerate(runs) if "$(nproc)" in run]
+        assert hardware, "Runners come in hardware classes ~1.7x apart; a shard timing is unreadable without its class."
+        assert hardware[0] < runs.index(_shard_run())
