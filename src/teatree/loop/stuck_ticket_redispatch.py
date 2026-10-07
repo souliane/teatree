@@ -287,7 +287,7 @@ def _last_activity(ticket: Ticket) -> datetime | None:
     last_attempt = ticket.tasks.aggregate(ts=Max("attempts__started_at"))["ts"]  # Django reverse FK
     if last_attempt is not None:
         return last_attempt
-    return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    return ticket.transitions.aggregate(ts=Max("created_at"))["ts"]
 
 
 def _redispatch(candidate: _Candidate) -> int:
