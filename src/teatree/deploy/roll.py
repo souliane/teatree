@@ -24,7 +24,7 @@ from django.db.migrations.recorder import MigrationRecorder
 from teatree.core.models import WorkerGeneration
 from teatree.core.process_freshness import FreshnessVerdict, read_process_freshness
 from teatree.generation import generation_image, is_generation_sha, short_sha
-from teatree.loop.drain import DrainPacing, drain_worker, set_worker_quiescing
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, DrainPacing, drain_worker, set_worker_quiescing
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class RollReport:
 
 @dataclass(frozen=True, slots=True)
 class RollTiming:
-    drain_timeout: int = 1800
+    drain_timeout: int = DEFAULT_DRAIN_TIMEOUT_SECONDS
     verify_timeout: float = 300.0
     #: How long a service must keep one container start before it counts as up — a crash loop never does.
     stable_seconds: float = 30.0

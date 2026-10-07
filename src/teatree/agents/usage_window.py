@@ -187,7 +187,7 @@ def park_task_on_limit(
         lane or "ambient",
         not_before.isoformat(),
     )
-    return _record_park(
+    return record_park(
         task, reason=f"{LIMIT_PARKED_PREFIX}{match.as_reason()}", not_before=not_before, usage=signal.usage
     )
 
@@ -277,12 +277,12 @@ def _rotate_or_none(
 def _requeue_for_rotation(task: Task, *, moment: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
     """Return *task* to the queue immediately (PENDING) so the next dispatch rotates accounts.
 
-    Records the same ``limit_parked:`` audit attempt shape :func:`_record_park` uses (excluded
+    Records the same ``limit_parked:`` audit attempt shape :func:`record_park` uses (excluded
     from the repair budget — a rotation is a scheduling event, not a work iteration), then
     parks with ``not_before`` at *moment* so the task is claimable on the next tick.
     """
     reason = f"{LIMIT_PARKED_PREFIX}rotating to a healthy subscription account (an account hit its window)"
-    return _record_park(task, reason=reason, not_before=moment, usage=usage)
+    return record_park(task, reason=reason, not_before=moment, usage=usage)
 
 
 def park_task_on_all_exhausted(
@@ -329,7 +329,7 @@ def park_task_on_all_exhausted(
         not_before.isoformat(),
     )
     reason = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
-    return _record_park(task, reason=reason, not_before=not_before, usage=usage)
+    return record_park(task, reason=reason, not_before=not_before, usage=usage)
 
 
 def _auto_engage_token_outage(reset: datetime) -> None:
@@ -388,10 +388,10 @@ def maybe_park_for_active_window(task: Task, *, lane: str, now: datetime | None 
     if window is None or window.resets_at is None or window.should_clear(moment):
         return None
     reason = f"{LIMIT_PARKED_PREFIX}admission: {window.cause} window on lane {lane or 'ambient'!r} active"
-    return _record_park(task, reason=reason, not_before=window.resets_at)
+    return record_park(task, reason=reason, not_before=window.resets_at)
 
 
-def _record_park(task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
+def record_park(task: Task, *, reason: str, not_before: datetime, usage: "AttemptUsage | None" = None) -> TaskAttempt:
     """Record the parked ``TaskAttempt`` and return the task to the queue (never fail it).
 
     The park sibling of ``headless._record_failure``: it creates the audit attempt with the

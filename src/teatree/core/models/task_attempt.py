@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 #: Room a resume needs beyond the conversation: teatree's dispatch prompts measure 39k-78k tokens (#4817).
 RESUME_HEADROOM_TOKENS = 80_000
 
+#: The columns an attempt's billed spend lives in — the cost ledger no park bookkeeping may fold or prune away.
+_BILLED_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+
 
 class TaskAttemptQuerySet(models.QuerySet):
     def create(self, **kwargs: object) -> "TaskAttempt":
@@ -36,8 +39,12 @@ class TaskAttemptQuerySet(models.QuerySet):
         ``ended_at`` instead — one row saying "still parked, N polls later".
 
         A changed reason, an intervening real attempt, and any non-park attempt all insert
-        normally, so the audit trail still shows every genuine transition.
+        normally, so the audit trail still shows every genuine transition. So does a park that
+        BILLED spend: it is a run that ended in a park (a deploy checkpoint, a reactive limit),
+        and folding it would drop its tokens and its session id from the ledger.
         """
+        if any(kwargs.get(column) is not None for column in _BILLED_COLUMNS):
+            return super().create(**kwargs)
         coalesced = self._coalesce_repeated_park(
             task=kwargs.get("task"),
             error=kwargs.get("error"),
@@ -80,7 +87,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         """Park-audit rows safe to delete — the lane :meth:`prunable` structurally cannot reach.
 
         :meth:`prunable`'s terminal-owned double guard is the right protection for a
-        REAL attempt and the wrong question for a park: ``usage_window._record_park``
+        REAL attempt and the wrong question for a park: ``usage_window.record_park``
         returns the task to the queue PENDING, so a park row's owning task is by
         construction NON-terminal and no park row is ever a candidate there. That is
         why a park-bloated table reports "would prune 0" — the sanctioned remedy is a
@@ -89,7 +96,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         This lane asks the park's own three questions instead.
 
         **Is it a park?** ``error`` carries :data:`LIMIT_PARKED_PREFIX` — the ONE
-        canonical marker, written by the single ``_record_park`` chokepoint and
+        canonical marker, written by the single ``record_park`` chokepoint and
         already the definition the coalescer, the iteration stamp and the park-spin
         detector share. An exact prefix, not a shape heuristic: a ``stuck_loop:``
         lease-loss breach is a genuine watchdog failure record, and is deliberately
@@ -108,11 +115,7 @@ class TaskAttemptQuerySet(models.QuerySet):
         """
         return self.filter(
             error__startswith=LIMIT_PARKED_PREFIX,
-            input_tokens__isnull=True,
-            output_tokens__isnull=True,
-            cache_read_tokens__isnull=True,
-            cache_write_tokens__isnull=True,
-            cost_usd__isnull=True,
+            **{f"{column}__isnull": True for column in _BILLED_COLUMNS},
         ).filter(
             models.Q(ended_at__lt=cutoff) | models.Q(ended_at__isnull=True, started_at__lt=cutoff),
         )
