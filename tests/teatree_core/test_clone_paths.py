@@ -24,6 +24,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import effective_default_target, reset_single_branch_cache
 from teatree.core.worktree.clone_paths import (
     clone_path_from_checkout,
+    dispatch_detection_root,
     find_clone_path,
     git_common_clone_dir,
     repair_stale_clone_path,
@@ -350,3 +351,54 @@ class TestAFullNamespacePathResolvesTheFlatClone:
         namespaced = _init_clone(workspace / "some-group" / "widgets")
 
         assert find_clone_path(workspace, "some-group/some-subgroup/widgets") == namespaced
+
+
+class TestDispatchDetectionRoot(TestCase):
+    """Planning is queued beside provisioning, so a ticket with no worktree is the normal dispatch."""
+
+    @pytest.fixture(autouse=True)
+    def _clone_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.workspace = tmp_path / "clones"
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.workspace))
+        self.clone = self.workspace / "souliane" / "teatree"
+        (self.clone / ".git").mkdir(parents=True)
+
+    def test_a_ticket_with_no_worktree_resolves_its_repo_clone(self) -> None:
+        ticket = Ticket.objects.create(repos=["souliane/teatree"])
+
+        assert dispatch_detection_root(ticket) == self.clone
+
+    def test_an_existing_worktree_wins_over_the_clone(self) -> None:
+        ticket = Ticket.objects.create(repos=["souliane/teatree"])
+        checkout = self.tmp_path / "wt"
+        checkout.mkdir()
+        Worktree.objects.create(
+            overlay="t3-teatree", ticket=ticket, repo_path="souliane/teatree", extra={"worktree_path": str(checkout)}
+        )
+
+        assert dispatch_detection_root(ticket) == checkout
+
+    def test_a_pr_ticket_with_no_repos_resolves_the_clone_its_url_names(self) -> None:
+        widgets = self.workspace / "acme" / "widgets"
+        (widgets / ".git").mkdir(parents=True)
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://github.com/acme/widgets/pull/5073")
+
+        assert dispatch_detection_root(ticket) == widgets
+
+    def test_a_ticket_naming_no_repo_resolves_its_overlay_repo_clone(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="architectural-review://teatree/2026-10-06")
+
+        assert dispatch_detection_root(ticket) == self.clone
+
+    def test_a_named_repo_with_no_clone_is_none_not_another_repo(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", repos=["acme/absent"])
+
+        assert dispatch_detection_root(ticket) is None
+
+    def test_a_ticket_naming_no_repo_and_no_overlay_is_none_and_says_why(self) -> None:
+        ticket = Ticket.objects.create(issue_url="slack://dm/1")
+
+        with self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as logs:
+            assert dispatch_detection_root(ticket) is None
+        assert "names no repo" in logs.output[0]
