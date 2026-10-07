@@ -18,6 +18,7 @@ from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
         "admission_pressure_shed_at",
+        "admission_write_concurrency_per_core",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
