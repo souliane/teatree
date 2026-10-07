@@ -41,6 +41,7 @@ import teatree.agents.skill_assurance as skill_assurance_mod
 import teatree.agents.skill_injection as skill_injection_mod
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.runner import TaskUsage
+from teatree.skill_support import index as skill_index
 
 
 def result_message(**overrides: Any) -> ResultMessage:
@@ -203,7 +204,9 @@ def fake_sdk(
     # remain fail-closed if the explicit stack skill is missing from the host.
     fixture_skills = Path(__file__).parents[1] / "fixtures" / "agent_skills"
     skill_dirs = [*skill_injection_mod.harness_skills_dirs(), fixture_skills]
+    install_roots = [fixture_skills, *skill_index.install_roots()]
     with (
+        patch.object(skill_index, "install_roots", return_value=install_roots),
         patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
         patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
