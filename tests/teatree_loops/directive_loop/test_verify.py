@@ -41,7 +41,7 @@ def _verifying(**sketch_over: object) -> Directive:
     directive.record_interpretation(sketch_from_envelope(valid_envelope(**sketch_over)), constraint_statement="c")
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    DeferredQuestion.consume(question.pk, answer="approve")
+    question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
     directive.refresh_from_db()
     directive.admit()
     directive.skip_to_configuring(baseline_snapshot=_snapshot())

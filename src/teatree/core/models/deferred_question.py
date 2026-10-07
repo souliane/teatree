@@ -73,6 +73,10 @@ class DeferredQuestion(models.Model):
         LOCAL = "local", "Local CLI"
         STALE = "stale", "Stale"
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
+        AGENT = "agent", "Agent surface"
+
+    #: The channels only the owner (or the owner's own graduated policy) answers on.
+    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.LOCAL, ResolvedVia.POLICY})
 
     class Audience(models.TextChoices):
         OWNER_QUESTION = "owner_question", "Owner question"
@@ -156,6 +160,10 @@ class DeferredQuestion(models.Model):
     @property
     def is_pending(self) -> bool:
         return self.answered_at is None and self.dismissed_at is None
+
+    @property
+    def answered_on_owner_channel(self) -> bool:
+        return self.answered_at is not None and self.resolved_via in self.OWNER_CHANNELS
 
     @property
     def stable_notify_ref(self) -> str:

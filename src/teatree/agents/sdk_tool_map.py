@@ -35,6 +35,8 @@ CAPABILITY_TO_SDK_TOOLS: Final[dict[str, frozenset[str]]] = {
     "dispatch_subtask": frozenset({"Agent", "Task"}),
     "recall_memory": frozenset(),
     "record_attempt": frozenset(),
+    # Enforced by the server it launches (``t3 mcp serve --read-only``), not by a deny rule.
+    "mcp_write": frozenset(),
 }
 
 

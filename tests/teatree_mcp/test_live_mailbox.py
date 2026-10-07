@@ -144,6 +144,15 @@ def test_runner_binding_exposes_only_its_own_mcp_identity(broker: LiveMailboxBro
         invoke(MailboxClient(identity.socket_path, identity.token), "peers")
 
 
+def test_runner_binding_keeps_the_launch_flags(broker: LiveMailboxBroker) -> None:
+    launch = ["mcp", "serve", "--read-only", "--allow-write", "review_request_post"]
+    options = ClaudeAgentOptions(mcp_servers={"teatree": {"type": "stdio", "command": "t3", "args": launch}})
+    with bound_task_mailbox(options, room="ticket-1", harness="claude", label="reviewer", broker=broker) as identity:
+        assert identity is not None
+        assert isinstance(options.mcp_servers, dict)
+        assert cast("McpStdioServerConfig", options.mcp_servers["teatree"])["args"] == launch
+
+
 def test_a_broker_that_cannot_register_leaves_the_dispatch_unbound(caplog: pytest.LogCaptureFixture) -> None:
     """The mailbox is a convenience of the run; a broken broker must not fail every dispatch."""
 
