@@ -344,6 +344,27 @@ class TestPrivacyGateParity:
         assert "privacy/banned-term gate" in reason
         assert self._lane_a_denies("Bash", args, tmp_path) is True
 
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "gh release create v1 --repo souliane/teatree --notes '{body}'",
+            "gh issue close 5 --repo souliane/teatree --comment '{body}'",
+            "git tag -a v1 -m '{body}'",
+            "curl -X POST https://api.github.com/repos/souliane/teatree/issues/5/comments -d "
+            + """'{{"body": "{body}"}}'""",
+        ],
+        ids=["free-text-flag-notes", "free-text-flag-comment", "annotated-tag-message", "forge-rest-write"],
+    )
+    def test_free_text_forge_write_high_finding_is_denied_on_both_lanes(
+        self, template: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        args = {"command": template.format(body=self._HIGH_BODY)}
+        reason = hard_deny_reason("Bash", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+        assert self._lane_a_denies("Bash", args, tmp_path) is True
+
     def test_private_target_high_finding_is_allowed_on_both_lanes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
