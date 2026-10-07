@@ -1106,6 +1106,38 @@ class TestReviewRequestPostSlackApiFailure(_DataDirMixin, TestCase):
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
         assert OnBehalfApproval.objects.filter(consumed_at__isnull=True).count() == 1
 
+    def test_no_messaging_backend_leaves_no_claim(self) -> None:
+        code, payload = self._post_via(None)
+
+        assert (code, payload["reason"]) == (0, "no_messaging_backend")
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_a_permalink_read_that_raises_leaves_the_landed_post_finalized(self) -> None:
+        backend = _FakeBackend()
+
+        with (
+            patch.object(backend, "get_permalink", side_effect=RuntimeError("permalink read failed")),
+            pytest.raises(RuntimeError, match="permalink read failed"),
+        ):
+            self._post_via(backend)
+
+        assert len(backend.posts) == 1
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).slack_thread_ts == "1.23"
+
+    def test_a_blocked_channel_is_audited_even_though_the_approval_rolls_back(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [])
+        backend = _FakeBackend()
+
+        code, payload = self._post_via(backend)
+
+        assert (code, payload["reason"]) == (2, "send_blocked")
+        assert backend.posts == []
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=True).count() == 1
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+        assert list(SendAudit.objects.values_list("destination", "allowlist_verdict")) == [
+            ("C_REVIEW", SendAudit.Verdict.DENIED.value)
+        ]
+
     def test_a_registered_noop_backend_suppresses_before_the_gate(self) -> None:
         """A noop transport drops the post silently, so it must not read as a failure."""
         from teatree.backends.messaging_noop import NoopMessagingBackend  # noqa: PLC0415 — deferred: backends import

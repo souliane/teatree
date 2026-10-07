@@ -80,14 +80,18 @@ def _mr(iid: int = 7, *, sha: str = _HEAD, title: str = "") -> RawAPIDict:
 @dataclass
 class _Forge(FakeCodeHost):
     author: str = ""
+    author_error: Exception | None = None
+    draft: DraftState = DraftState.NOT_DRAFT
     live_head: str | None = None
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         _ = (slug, pr_id)
-        return DraftState.NOT_DRAFT
+        return self.draft
 
     def get_pr_author(self, *, pr_url: str) -> str:
         _ = pr_url
+        if self.author_error is not None:
+            raise self.author_error
         return self.author or self.user
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
@@ -191,6 +195,14 @@ def _followup_pass(forge: _Forge, slack: _Slack) -> list[ScanSignal]:
     return senders[0].scan()
 
 
+def _ship_triage_pass(forge: _Forge, slack: _Slack) -> list[ScanSignal]:
+    """One SHIP pass of the triage surveyor the domain selected."""
+    backend = _backend(forge, slack)
+    jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
+    (triage,) = [job.scanner for job in jobs if job.scanner.name == "mr_triage"]
+    return triage.scan()
+
+
 def _kinds(signals: list[ScanSignal]) -> list[str]:
     return [signal.kind for signal in signals]
 
@@ -280,6 +292,30 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
         assert self.slack.posts == []
         assert not ReviewRequestPost.objects.filter(mr_url=_URL).exists()
         assert _verdicts(signals) == [("review_request.send_deferred", "hold_at_head")]
+
+    def test_a_hold_landing_retires_the_question_about_the_missing_review(self) -> None:
+        ticket = _ready_ticket(verdict_at=_OLD_HEAD)
+
+        with _world(self.slack, self.forge):
+            _followup_pass(self.forge, self.slack)
+            asked_before_the_hold = _mr_state_questions()
+            ReviewVerdict.record(
+                pr_id=7, slug=_SLUG, reviewed_sha=_HEAD, verdict="hold", reviewer_identity="cold", ticket=ticket
+            )
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert asked_before_the_hold == [mr_state_marker(_URL)]
+        assert _verdicts(signals) == [("review_request.send_deferred", "hold_at_head")]
+        assert _mr_state_questions() == []
+
+    def test_a_hold_leaves_another_callers_question_open(self) -> None:
+        ask_mr_state(mr_url=_URL, reason="its work group is not ready.")
+        _ready_ticket(verdict="hold")
+
+        with _world(self.slack, self.forge):
+            _followup_pass(self.forge, self.slack)
+
+        assert _mr_state_questions() == [mr_state_marker(_URL)]
 
     def test_a_hold_beside_a_later_pass_from_another_reviewer_is_not_sent(self) -> None:
         ticket = _ready_ticket(verdict="hold")
@@ -399,13 +435,35 @@ class TestAnOutcomeTheSenderCannotRetryReachesTheOwner(_SenderCase):
         assert _mr_state_questions() == []
 
     def test_an_unreadable_channel_is_retried_quietly(self) -> None:
+        self._assert_a_guard_suppression_is_quiet("read_failed_failsafe")
+
+    def test_a_request_the_guard_finds_already_posted_is_retried_quietly(self) -> None:
+        self._assert_a_guard_suppression_is_quiet("already_posted")
+
+    def _assert_a_guard_suppression_is_quiet(self, reason: str) -> None:
         _ready_ticket()
-        poster = _AnsweringPoster({"action": "suppress", "reason": "read_failed_failsafe"})
+        poster = _AnsweringPoster({"action": "suppress", "reason": reason})
 
         with _world(self.slack, self.forge):
             signals = self._scanner(poster).scan()
 
-        assert _verdicts(signals) == [("review_request.send_deferred", "suppress:read_failed_failsafe")]
+        assert _verdicts(signals) == [("review_request.send_deferred", f"suppress:{reason}")]
+        assert _mr_state_questions() == []
+
+    def test_an_unreadable_author_is_retried_quietly(self) -> None:
+        self.forge.author_error = RuntimeError("forge unreachable")
+
+        signals = self._one_pass()
+
+        assert _verdicts(signals) == [("review_request.send_deferred", "refused:authorship_unreadable")]
+        assert _mr_state_questions() == []
+
+    def test_an_unreadable_draft_state_is_retried_quietly(self) -> None:
+        self.forge.draft = DraftState.UNKNOWN
+
+        signals = self._one_pass()
+
+        assert _verdicts(signals) == [("review_request.send_deferred", "refused:draft_state_unknown")]
         assert _mr_state_questions() == []
 
 
@@ -497,11 +555,22 @@ class TestTheLiveHeadIsReadBeforeSending(_SenderCase):
 
 
 class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
-    def _ask_at_head(self) -> Ticket:
-        ticket = _ready_ticket(verdict_at=_OLD_HEAD)
+    def _ask_at_head(self, *, attested: bool = True) -> Ticket:
+        ticket = _ready_ticket(verdict_at=_OLD_HEAD, attested=attested)
         with _world(self.slack, self.forge):
             _followup_pass(self.forge, self.slack)
         return ticket
+
+    def test_a_refusal_after_the_owner_said_post_asks_nothing_more_at_that_head(self) -> None:
+        self._ask_at_head(attested=False)
+        _answer(_POST)
+
+        with _world(self.slack, self.forge):
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert _verdicts(signals) == [("review_request.send_refused", "anti_vacuity_not_attested")]
+        assert signals[0].payload["asked"] is False
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_URL)).count() == 1
 
     def test_a_decline_holds_the_send_even_after_the_review_lands(self) -> None:
         ticket = self._ask_at_head()
@@ -580,14 +649,58 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
         assert signals[0].payload["asked"] is True
 
 
+class TestAnAnswerToTheSurveyorIsHonouredOnceThePosturePermits(_SenderCase):
+    """SHIP asked while nothing could be sent; the sender that takes over reads that answer."""
+
+    def _surveyor_asks_and_the_owner_answers(self, answer: str) -> None:
+        seed_forbidding_posture()
+        with _world(self.slack, self.forge):
+            _ship_triage_pass(self.forge, self.slack)
+        _answer(answer)
+        seed_permitting_posture()
+
+    def _assert_a_decline_holds_the_send(self, answer: str) -> None:
+        _ready_ticket()
+        self._surveyor_asks_and_the_owner_answers(answer)
+
+        with _world(self.slack, self.forge):
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert self.slack.posts == []
+        assert _verdicts(signals) == [("review_request.send_deferred", "owner_declined")]
+
+    def test_asking_in_person_holds_the_send(self) -> None:
+        self._assert_a_decline_holds_the_send(_IN_PERSON)
+
+    def test_not_ready_yet_holds_the_send(self) -> None:
+        self._assert_a_decline_holds_the_send(_NOT_READY)
+
+    def test_post_sends_without_asking_a_second_time(self) -> None:
+        _ready_ticket(verdict_at=_OLD_HEAD)
+        self._surveyor_asks_and_the_owner_answers(_POST)
+
+        with _world(self.slack, self.forge):
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert _kinds(signals) == ["review_request.sent"]
+        assert len(self.slack.posts) == 1
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_URL)).count() == 1
+
+    def test_the_surveyor_asks_nothing_more_at_an_answered_head(self) -> None:
+        seed_forbidding_posture()
+        with _world(self.slack, self.forge):
+            _ship_triage_pass(self.forge, self.slack)
+            _answer(_IN_PERSON)
+            _ship_triage_pass(self.forge, self.slack)
+
+        assert _mr_state_questions() == []
+
+
 class TestTheOwnerQuestionLivesWhereTheSenderIsAbsent(_SenderCase):
     """The triage surveyor still asks when no sender can act on its verdict."""
 
     def _ship_triage_scan(self) -> list[ScanSignal]:
-        backend = _backend(self.forge, self.slack)
-        jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
-        (triage,) = [job.scanner for job in jobs if job.scanner.name == "mr_triage"]
-        return triage.scan()
+        return _ship_triage_pass(self.forge, self.slack)
 
     def test_a_permitting_posture_with_followup_running_leaves_the_ask_to_the_sender(self) -> None:
         _admit_followup(runs=True)

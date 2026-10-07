@@ -195,6 +195,29 @@ class TestAHeadBoundQuestion(TestCase):
         assert second is not None
         assert second.pk == first.pk
 
+    def test_a_reason_already_asked_at_this_head_is_not_filed_again(self) -> None:
+        ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        second = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+        third = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+
+        assert second is not None
+        assert third is not None
+        assert third.pk == second.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 2
+
+    def test_a_replacement_keeps_its_slot_when_the_cap_is_full(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        ask_mr_state(mr_url=_OTHER_MR, reason=_REASON)
+        assert old is not None
+
+        with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
+            new = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+
+        assert new is not None
+        assert new.pk != old.pk
+        open_for_this_mr = [row.pk for row in _open_mr_state_questions() if row.dedupe_marker == mr_state_marker(_MR)]
+        assert open_for_this_mr == [new.pk]
+
     def test_another_callers_untagged_question_is_never_superseded(self) -> None:
         untagged = ask_mr_state(mr_url=_MR, reason=_REASON)
         tagged = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
