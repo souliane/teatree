@@ -32,11 +32,14 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.core import agent_admission as gate_mod
 from teatree.core import task_dispatch as task_dispatch_mod
-from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.admission_governor import MachineSignal, QuotaSignal, decide_admission
 from teatree.core.agent_admission import (
     AgentAdmission,
+    HeadlessAdmissionStatus,
     agent_admission_denied_reason,
     agent_admission_verdict,
+    headless_admission_status,
+    headless_lane_widths,
     review_lane_width,
 )
 from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
@@ -293,6 +296,154 @@ class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
         verdict = self._verdict(weekly=1.0)
         assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
         assert verdict.denied_for(PhaseCost.CHEAP) is not None
+
+
+class TestTheWriteFactorNeverOutrunsTheLoadShed(TestCase):
+    """A wider per-core factor buys seats on an idle box, never on a loaded one."""
+
+    _SHED_LOAD = 38.0  # 0.95 of the 40 watermark on 8 cores: past the 0.9 shed point, short of HALT
+
+    def test_the_shed_band_refuses_expensive_work_whatever_the_factor(self) -> None:
+        for factor in (0.25, 0.5, 2.0):
+            with self.subTest(factor=factor):
+                ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._SHED_LOAD)),
+                    patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
+                ):
+                    verdict = agent_admission_verdict()
+                assert "shed band" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+                assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+
+_CEILING_PARTS = (
+    "ceiling",
+    "cores",
+    "per_core",
+    "machine_ceiling",
+    "weekly_pace",
+    "expensive_lane",
+    "cheap_lane",
+    "expensive_occupied",
+    "cheap_occupied",
+)
+
+
+class TestHeadlessAdmissionStatus(TestCase):
+    """The parts ``t3 worker status`` shows are the ones the headless verdict is decided on."""
+
+    def _claimed(self, phase: str) -> None:
+        ticket = Ticket.objects.create()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            status=Task.Status.CLAIMED,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+        )
+
+    def _status(self, quota: QuotaSignal) -> HeadlessAdmissionStatus:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return headless_admission_status()
+
+    def test_the_ceiling_parts_and_lane_occupancy_are_reported(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        self._claimed("coding")
+        self._claimed("coding")
+        self._claimed("reviewing")
+        paced = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.625,
+            short_utilization=0.1,
+            seconds_to_weekly_reset=_WEEK * 0.5,
+        )
+
+        status = self._status(paced)
+
+        parts = status.as_json()
+        assert {key: parts[key] for key in _CEILING_PARTS} == {
+            "ceiling": 6,
+            "cores": 8,
+            "per_core": 1.0,
+            "machine_ceiling": 8,
+            "weekly_pace": 0.75,
+            "expensive_lane": 6,
+            "cheap_lane": 2,
+            "expensive_occupied": 2,
+            "cheap_occupied": 1,
+        }
+        assert parts["band"] == str(status.pressure.band)
+        assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
+        assert "lanes 6 expensive + 2 cheap (review lane outside the ceiling)" in status.line()
+        assert "occupied 2 expensive + 1 cheap" in status.line()
+
+    def test_the_status_resolves_to_exactly_the_verdict(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        for claimed in (0, 7, 8, 9):  # under the ceiling, its last seat, at it, then an inherited overfull fleet
+            with self.subTest(claimed=claimed):
+                Task.objects.all().delete()
+                for _ in range(claimed):
+                    self._claimed("coding")
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+                ):
+                    status = headless_admission_status()
+                    verdict = agent_admission_verdict()
+                    widths = headless_lane_widths()
+
+                assert status.verdict() == verdict
+                assert status.widths == widths
+                assert (
+                    status.as_json()["ceiling"]
+                    == decide_admission(quota=_healthy_quota(), machine=_machine()).ceiling
+                    == 8
+                )
+                assert status.as_json()["expensive_denied"] == verdict.expensive_denied
+                assert status.as_json()["cheap_denied"] == verdict.cheap_denied
+
+    def test_a_claim_admission_block_is_what_the_status_reports(self) -> None:
+        quiescing = "this worker is quiescing for a rolling deploy"
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value=quiescing):
+            status = self._status(_healthy_quota())
+
+        assert status.as_json()["expensive_denied"] == status.as_json()["cheap_denied"] == quiescing
+        assert f"expensive denied: {quiescing}; cheap denied: {quiescing}" in status.line()
+
+    def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
+        unread = QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        )
+
+        status = self._status(unread)
+
+        assert status.as_json()["weekly_pace"] is None
+        assert status.widths.ceiling.value == 4
+        assert "weekly pace unread" in status.line()
+
+    def test_a_braking_band_names_its_cause(self) -> None:
+        status = self._status(_exhausted_quota())
+
+        assert status.pressure.band == "halt"
+        assert status.pressure.reason
+        assert status.pressure.reason in status.line()
+
+    def test_the_status_read_books_no_seat_and_records_no_span(self) -> None:
+        self._claimed("coding")
+        with patch.object(gate_mod, "record_admission_decision") as emit_span:
+            self._status(_healthy_quota())
+
+        emit_span.assert_not_called()
+        assert not Task.objects.filter(admitted_at__isnull=False).exists()
 
 
 class TestDrainConsultsTheGovernor(TestCase):
@@ -706,6 +857,19 @@ class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
         assert "expensive lane occupancy 4 at/over the expensive ceiling 4" in (
             verdict.denied_for(PhaseCost.EXPENSIVE) or ""
         )
+
+    def test_a_raised_factor_widens_the_coding_lane_and_leaves_the_review_lane_its_width(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 2.0)
+
+        full = self._verdict(expensive=16)
+
+        assert "expensive lane occupancy 16 at/over the expensive ceiling 16" in (
+            full.denied_for(PhaseCost.EXPENSIVE) or ""
+        )
+        assert full.expensive_lane.ceiling == 16
+        assert full.denied_for(PhaseCost.CHEAP) is None
+        assert full.cheap_lane.ceiling == 2
+        assert self._verdict(expensive=15).denied_for(PhaseCost.EXPENSIVE) is None
 
 
 class TestReviewingIsNeverQueuedBehindCoding(TestCase):

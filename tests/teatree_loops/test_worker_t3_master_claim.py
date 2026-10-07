@@ -77,7 +77,8 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         spawn=lambda _executor: _FakeHandle(),
         sleep=lambda _s: None,
         poll_seconds=poll_seconds,
-        executor_queues=("loops",),
+        loops_executors=1,
+        read_agent_queues=lambda: (),
         **(noop | overrides),
     )
     holder.append(LoopWorker(seams))
@@ -135,7 +136,7 @@ class TestClaimSeamWiring:
         worker.run()  # must not raise
 
     def test_defaults_wire_the_real_lease_seams(self) -> None:
-        seams = WorkerSeams(executor_queues=())
+        seams = WorkerSeams()
 
         assert seams.claim_master is worker_mod._claim_t3_master
         assert seams.release_master is worker_mod._release_t3_master

@@ -1,12 +1,12 @@
 """The long-lived ``t3 worker`` — the singleton executor pool for the timer chains (#1796).
 
 One process runs programmatic ``django_tasks_db`` :class:`Worker` executor threads —
-a host-scaled ``loops`` pool (floored at 2, :func:`loops_executor_count`) and a
-host-scaled ``default`` pool (floored at 2, :func:`default_queue_executor_count`) and
-one ``cheap`` executor per review-lane seat (:func:`~teatree.core.agent_admission.review_lane_width`) —
-so a heavy headless ``default`` job can never starve a reactive loop timer, two slow
-loop ticks can never stall every OTHER loop's timer, and a deep backlog of independent
-headless work still drains in parallel on a bigger box instead of one-or-two-at-a-time.
+a host-scaled ``loops`` pool (floored at 2, :func:`loops_executor_count`), and ``default``
+(coding) and ``cheap`` (review/draining) pools sized every poll to the headless lane
+widths, one executor per seat the admission verdict can hand out
+(:func:`agent_executor_queues`) — so a heavy headless ``default`` job can never starve a
+reactive loop timer, two slow loop ticks can never stall every OTHER loop's timer, and
+every admitted seat has a thread to run on.
 A supervisor thread re-reads the fleet admission verdict every ~5 s AND
 polls each executor thread's :meth:`is_alive`, respawning any that a swallowed error
 (a ``DBTaskResult`` ``OperationalError`` inside ``db_worker``) silently killed — so a
@@ -37,7 +37,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from teatree.core.admission_pressure import MACHINE_BRAKE_CAUSES
-from teatree.core.agent_admission import review_lane_width
 from teatree.loop.queue_drain import expire_stale_headless_jobs
 from teatree.loops.deadlined_tick import kill_live_tick_process_groups
 from teatree.loops.enable_verdict import FleetAdmission, read_fleet_admission
@@ -50,6 +49,7 @@ if TYPE_CHECKING:
     from django_tasks_db.management.commands.db_worker import Worker
 
     from teatree.core.admission_governor import AdmissionDecision
+    from teatree.core.agent_admission import LaneWidths
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,7 @@ logger = logging.getLogger(__name__)
 #: old minimum (2 reactive-timer threads) while a bigger box scales up — two slow loop
 #: ticks pinning both floor threads no longer stalls every OTHER loop's timer.
 LOOPS_EXECUTOR_FLOOR = 2
-#: The prior hardcoded ``default``-queue width; now the FLOOR so a small box keeps
-#: the old minimum while a bigger box scales up.
+#: The ``default`` pool's floor when the lane widths are unreadable and it falls back to host size.
 DEFAULT_QUEUE_FLOOR = 2
 
 
@@ -75,25 +74,11 @@ def loops_executor_count() -> int:
     return max(LOOPS_EXECUTOR_FLOOR, default_provision_concurrency())
 
 
-def default_queue_executor_count() -> int:
-    """Host-scaled width of the ``default`` coding executor pool, floored at 2.
-
-    A deep backlog of independent coding jobs drained through a fixed 2 threads
-    one-or-two-at-a-time regardless of host size. Scaling with the shared
-    PR-01 resource ceiling (:func:`default_provision_concurrency` — half the logical
-    cores) lets an idle multi-core box run more phase work in parallel; the floor
-    preserves the prior minimum on a 1-2 core box.
-    """
-    return max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency())
-
-
-def build_executor_queues() -> tuple[str, ...]:
-    """Control and coding pools plus one review runner per review-lane seat, so admitted reviews never queue."""
-    return (
-        ("loops",) * loops_executor_count()
-        + ("default",) * default_queue_executor_count()
-        + ("cheap",) * review_lane_width()
-    )
+def agent_executor_queues(widths: "LaneWidths | None") -> tuple[str, ...]:
+    """One executor per seat the verdict can admit, so no admitted seat lapses waiting for a thread."""
+    if widths is None:
+        return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",)
+    return ("default",) * widths.expensive + ("cheap",) * widths.cheap
 
 
 def _read_pool_pressure() -> "AdmissionDecision | None":
@@ -104,22 +89,16 @@ def _read_pool_pressure() -> "AdmissionDecision | None":
     return governor_verdict(statusline_path=default_path())
 
 
-def _bounded_executor_queues(queues: tuple[str, ...], ceiling: int) -> tuple[str, ...]:
-    """Clamp the coding executors to *ceiling*; the ``loops`` control plane and the review runners keep their width.
+def _read_agent_queues() -> tuple[str, ...]:
+    """The agent pool for the live lane widths; an unreadable width keeps the host-sized pool."""
+    from teatree.core.agent_admission import headless_lane_widths  # noqa: PLC0415 — ORM import needs the app registry
 
-    The ceiling bounds the coding lane only: a loop timer is no agent, and the review lane
-    is admitted outside the ceiling, so clamping either starved work admission had already
-    let in.
-    """
-    bounded: list[str] = []
-    coding = 0
-    for queue in queues:
-        if queue == "default":
-            if coding >= ceiling:
-                continue
-            coding += 1
-        bounded.append(queue)
-    return tuple(bounded)
+    try:
+        widths = headless_lane_widths()
+    except Exception:
+        logger.exception("headless lane widths unreadable — sizing the agent pool from the host")
+        widths = None
+    return agent_executor_queues(widths)
 
 
 #: The supervisor re-reads the fleet verdict on this cadence — a preset that stops
@@ -328,7 +307,8 @@ class WorkerSeams:
     master_refresh_seconds: float = T3_MASTER_REFRESH_SECONDS
     max_respawns: int = MAX_EXECUTOR_RESPAWNS
     max_unreadable_polls: int = MAX_UNREADABLE_POLLS
-    executor_queues: tuple[str, ...] = field(default_factory=build_executor_queues)
+    read_agent_queues: Callable[[], tuple[str, ...]] = _read_agent_queues
+    loops_executors: int = field(default_factory=loops_executor_count)
 
 
 @dataclass
@@ -420,23 +400,19 @@ class LoopWorker:
         if admission is FleetAdmission.ADMITS:
             pressure = self._seams.read_pressure()
             self._log_brake_transition(pressure)
+            loops = ("loops",) * self._seams.loops_executors
+            agents = self._seams.read_agent_queues()
             if pressure is not None and not pressure.admit:
                 # Timer/reconciliation tasks are the control plane: retiring every
                 # executor would also disable the monitor that diagnoses the brake.
                 # Cheap agents are exempt from MACHINE pressure only, never a
                 # spent token budget or collapsed yield. Unknown causes fail
                 # closed for agent execution while control diagnosis continues.
-                braked = _bounded_executor_queues(self._seams.executor_queues, 0)
-                if pressure.cause not in MACHINE_BRAKE_CAUSES:
-                    braked = tuple(queue for queue in braked if queue == "loops")
-                self._resize_pool(braked)
-                return
-            desired = self._seams.executor_queues
-            if pressure is not None:
-                desired = _bounded_executor_queues(desired, pressure.ceiling)
-            if not self._slots:
+                exempt = pressure.cause in MACHINE_BRAKE_CAUSES
+                agents = tuple(queue for queue in agents if exempt and queue == "cheap")
+            elif not self._slots:
                 logger.info("the active preset admits work again — restarting the executor pool")
-            self._resize_pool(desired)
+            self._resize_pool(loops + agents)
             return
         if self._slots:
             logger.warning(

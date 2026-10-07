@@ -22,6 +22,9 @@ conformance suite reads ``key = value`` lines out of the rendered TOML by that s
 SETTING_HELP: dict[str, str] = {
     "active_loop_schedule": "name of the weekly schedule deciding when the autonomous loops may run",
     "admission_pressure_shed_at": "pressure at which expensive agents are refused while review and ship keep draining",
+    "admission_write_concurrency_per_core": (
+        "agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane"
+    ),
     "metered_token_ceiling": "the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset",
     "metered_spend_window_hours": "the window the metered token ceiling is measured over",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
@@ -67,7 +70,7 @@ SETTING_HELP: dict[str, str] = {
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
     "cheap_phase_admission_ceiling": (
         "review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling,"
-        " and the review executor count (min 1; the executor count applies at worker restart)"
+        " one review executor each (min 1)"
     ),
     "clean_ignore": "branch globs the cleanup reapers never touch",
     "colleague_repo_url_pattern": "regex matching repo URLs owned by colleagues rather than the operator",
