@@ -124,7 +124,7 @@ def drive_activation_only_to_verifying() -> Directive:
     record_returned_directive_interpretation(task, EXEMPLAR_ENVELOPE)  # → INTERPRETED
     tick()  # → ratify_asked
     directive.refresh_from_db()
-    DeferredQuestion.consume(directive.ratify_question.pk, answer="approve")
+    directive.ratify_question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
     tick()  # RATIFY_PENDING → admitted
     tick()  # ADMITTED → configuring
     tick()  # CONFIGURING → verifying

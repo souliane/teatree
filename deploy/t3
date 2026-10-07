@@ -699,6 +699,10 @@ FORWARD_ENV_NAMES=(
     # tests/test_deploy_t3_session_identity_forwarding.py.
     CLAUDE_CODE_SESSION_ID
     T3_LOOP_SESSION_ID
+    # The harness signature, so an agent calling this wrapper is still read as an agent
+    # inside. Mirrors `teatree.core.session_identity.AGENT_SDK_ENV_VARS`, pinned by the same test.
+    CLAUDE_AGENT_SDK_VERSION
+    CLAUDE_CODE_ENTRYPOINT
 )
 if [ -n "${TEATREE_FORWARD_ENV:-}" ]; then
     IFS=',' read -r -a EXTRA_ENV_NAMES <<<"$TEATREE_FORWARD_ENV"

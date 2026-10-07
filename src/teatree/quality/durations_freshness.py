@@ -33,10 +33,10 @@ from teatree.quality.durations_file import DURATIONS_PATH
 from teatree.utils.git_run import run_with_status
 from teatree.utils.git_worktree_query import is_git_checkout
 
-# The refresh runs weekly behind a drift gate and lands only once a human merges its
-# PR, so days of quiet are ordinary. A fortnight is not: by then either the scheduled
-# job has stopped producing or its PR is sitting unmerged, and both are worth a page.
-MAX_REFRESH_AGE = dt.timedelta(days=14)
+# The refresh is attempted every Sunday and counts only when its PR merges, so one missed
+# attempt plus a week of merge latency is ordinary. Three Sundays with nothing merged is
+# not: the scheduled job has stopped producing or its PR sits unmerged, and both page.
+MAX_REFRESH_AGE = dt.timedelta(days=21)
 
 # Unit separator: not a legal character in a git ref, a commit hash, or `%cI`'s
 # strict-ISO-8601 output, so a single `git log` format string can carry both fields

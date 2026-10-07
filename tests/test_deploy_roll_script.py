@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 BASH = shutil.which("bash") or ""
 GIT = shutil.which("git") or ""
@@ -306,7 +308,7 @@ def test_a_drain_grace_with_a_leading_zero_is_read_in_base_ten(tmp_path: Path) -
     assert result.returncode == 0, result.stderr
     record = next(line for line in (tmp_path / "roll.env").read_text().splitlines() if line.startswith("record="))
     _pid, heartbeat, deadline = record.removeprefix("record=").split()
-    assert 9 + 3600 <= int(deadline) - int(heartbeat) < 1800 + 3600
+    assert 9 + 3600 <= int(deadline) - int(heartbeat) < DEFAULT_DRAIN_TIMEOUT_SECONDS + 3600
 
 
 def test_a_drain_grace_that_is_not_whole_seconds_is_refused(tmp_path: Path) -> None:

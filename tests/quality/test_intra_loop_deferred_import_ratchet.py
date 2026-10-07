@@ -328,6 +328,8 @@ class TestLoopStatuslineLoopsNode:
             # #3968: the loop-runner predicate, so the worker owning `t3-master` is
             # never painted as a hijack. Another eager DOWN edge to a declared leaf.
             "teatree.loop.session_identity",
+            # #5089: the stored drain-gate read behind the `deploy drain` chip, a domain leaf.
+            "teatree.loop.drain",
         }
         # The severed back-edges: `statusline_loops` NEVER depends on the
         # orchestration-top cadence homes nor the parent node.

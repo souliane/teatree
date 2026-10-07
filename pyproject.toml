@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.161",
+  "claude-agent-sdk==0.2.163",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -173,7 +173,7 @@ dev = [
   # locally and in CI — CI runs this same locked prek via `uv run prek run
   # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
   # the lockfile.
-  "prek==0.5.3",
+  "prek==0.5.4",
   "pytest>=9.0.2",
   "pytest-cov>=7",
   "pytest-django>=4.11.1",
@@ -232,7 +232,7 @@ shuffle = [
 ]
 # Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
 # (`--splits N --group K`, duration-balanced via a committed `.test_durations`)
-# so the required `test (3.13)` lane runs 4 shards in parallel behind an
+# so the required `test (3.13)` lane runs 12 shards in parallel behind an
 # unchanged combiner context. DELIBERATELY out of the default `dev` group: a
 # plain `uv run pytest` and the local `dev/test-cov.sh` parity lane run the whole
 # suite in one process; the plugin is installed only by the CI `test-shard` lane
@@ -756,7 +756,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
 # replaced with the project's own `mcp>=2,<3` for the two to resolve together.
-# 0.2.161 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# 0.2.163 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
 # The wide bound is safe rather than merely resolvable because the SDK reaches
