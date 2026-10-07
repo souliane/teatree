@@ -137,7 +137,7 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
         return
     if phase_output_reached(ticket, phase):
         if (
-            phase == "planning"
+            normalize_phase(phase) == "planning"
             and ticket.state not in Ticket.merged_states()
             and not ticket.tasks.filter(pk__gt=task.pk).exists()
         ):
