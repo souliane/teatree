@@ -193,7 +193,7 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 
 ### Connector hooks (`overlay.connectors`, `OverlayConnectors`)
 
-The third-party services an overlay needs are declared as data, in `OverlayConfig.required_third_party_services`: the teatree MCP serves each through teatree's own credentials, and `t3 doctor check` FAILs one with no configured client. An overlay depends on no MCP server but teatree's.
+The third-party services an overlay needs are declared as data, in `OverlayConfig.required_third_party_services`: the teatree MCP serves each through teatree's own credentials, and `t3 doctor check` checks each declaring overlay: it FAILs a service no declarer has a configured client for, and WARNs a declarer that is served with another overlay's client. An overlay depends on no MCP server but teatree's.
 
 | Method | Default | Purpose |
 |--------|---------|---------|

@@ -4,7 +4,7 @@ Every per-service tool group (forge / slack / notion / sentry / sharepoint) need
 same thing: the first registered overlay that both declares the group's
 :class:`~teatree.backends.types.Service` in ``required_third_party_services`` AND has a
 configured client for it. :data:`SERVICE_CLIENTS` names, per service, the
-``backend_factory`` builder that answers it — ``None`` when the overlay declares the
+``backend_factory`` builder that answers it per overlay — ``None`` when the overlay declares the
 service but has no credentials — and what a missing client is called. The tool groups
 and ``t3 doctor``'s declared-services check resolve through the same entries, so they
 agree on what "configured" means.
@@ -17,6 +17,7 @@ rebuild. Each service keeps a thin named ``_client`` / ``_forge_client`` wrapper
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -81,6 +82,7 @@ SHAREPOINT = ServiceClient(
     "SharePoint document library (TEATREE_SHAREPOINT_* environment)",
 )
 FORGE_CLIENTS = {GITHUB.service: GITHUB, GITLAB.service: GITLAB}
-SERVICE_CLIENTS: dict[Service, Callable[[], object]] = {
-    client.service: client.resolve for client in (GITHUB, GITLAB, SLACK, NOTION, SENTRY, SHAREPOINT)
+# `Any`: each value is a ServiceClient of a different client type, and the dataclass is invariant in it.
+SERVICE_CLIENTS: dict[Service, ServiceClient[Any]] = {
+    client.service: client for client in (GITHUB, GITLAB, SLACK, NOTION, SENTRY, SHAREPOINT)
 }

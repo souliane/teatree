@@ -6,6 +6,7 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 
 import shutil
 import sys
+from collections.abc import Callable
 
 import typer
 
@@ -13,13 +14,12 @@ from teatree.utils.uv_constraints import uv_tool_install_hint
 
 
 def _check_declared_services_configured() -> bool:
-    """FAIL for each third-party service an overlay declares that teatree holds no credentials for.
+    """Per declaring overlay: FAIL a service no declarer holds credentials for, WARN a declarer served by another.
 
-    Resolves each declared service through the same client builders the teatree MCP
-    service tools use, so a PASS here means those tools can serve it.
+    Builds each declarer's client with the builders the teatree MCP service tools use. Those
+    tools serve a service from its first configured declarer, so a declarer without
+    credentials of its own still gets served — with another overlay's account.
     """
-    from mcp.server.mcpserver.exceptions import ToolError  # noqa: PLC0415 — deferred: keeps CLI startup light
-
     from teatree.mcp.service_resolver import (  # noqa: PLC0415 — deferred: lazy CLI import
         SERVICE_CLIENTS,
         declaring_overlays,
@@ -27,15 +27,29 @@ def _check_declared_services_configured() -> bool:
 
     ok = True
     for service, overlays in declaring_overlays().items():
-        try:
-            SERVICE_CLIENTS[service]()
-        except ToolError as exc:
+        client = SERVICE_CLIENTS[service]
+        missing = {name: reason for name in overlays if (reason := _missing_client(client.build, name))}
+        if len(missing) == len(overlays):
+            reasons = "; ".join(f"{name}: {reason}" for name, reason in missing.items())
             typer.echo(
-                f"FAIL  {service.value} is declared by {', '.join(overlays)} but has no configured client: {exc}. "
-                "Configure teatree's own credentials for it — the teatree MCP and the `t3` CLI serve it from those."
+                f"FAIL  {service.value} is declared by {', '.join(overlays)} but none has a configured "
+                f"{client.description} ({reasons}). Configure teatree's own credentials for it — the teatree MCP "
+                "and the `t3` CLI serve it from those."
             )
             ok = False
+        elif missing:
+            typer.echo(
+                f"WARN  {service.value} is served to {', '.join(missing)} from another declaring overlay's "
+                f"{client.description}, so with that overlay's account; configure its own if that is wrong."
+            )
     return ok
+
+
+def _missing_client(build: Callable[[str], object], overlay: str) -> str:
+    try:
+        return "" if build(overlay) is not None else "no credentials"
+    except Exception as exc:  # noqa: BLE001 — one overlay's broken builder must not abort the doctor run
+        return f"{exc.__class__.__name__}: {exc}"
 
 
 def _check_teatree_mcp_registration() -> bool:

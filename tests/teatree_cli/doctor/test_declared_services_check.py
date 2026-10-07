@@ -19,7 +19,7 @@ def _declared(overlays: dict[str, _Overlay], *, client: object | None):
     slack = ServiceClient(Service.SLACK, lambda _name: client, "Slack messaging backend")
     return (
         patch("teatree.mcp.service_resolver.get_all_overlays", return_value=overlays),
-        patch.dict(SERVICE_CLIENTS, {Service.SLACK: slack.resolve}),
+        patch.dict(SERVICE_CLIENTS, {Service.SLACK: slack}),
     )
 
 
@@ -49,3 +49,37 @@ def test_no_declared_service_is_a_silent_pass(capsys: pytest.CaptureFixture[str]
         assert _check_declared_services_configured() is True
 
     assert capsys.readouterr().out == ""
+
+
+def _per_overlay(overlays: dict[str, _Overlay], build):
+    slack = ServiceClient(Service.SLACK, build, "Slack messaging backend")
+    return (
+        patch("teatree.mcp.service_resolver.get_all_overlays", return_value=overlays),
+        patch.dict(SERVICE_CLIENTS, {Service.SLACK: slack}),
+    )
+
+
+def test_a_declarer_without_its_own_client_is_warned_when_another_serves_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    overlays = {"acme": _Overlay(Service.SLACK), "widget": _Overlay(Service.SLACK)}
+    overlays_patch, clients_patch = _per_overlay(overlays, lambda name: object() if name == "acme" else None)
+    with overlays_patch, clients_patch:
+        assert _check_declared_services_configured() is True
+
+    out = capsys.readouterr().out
+    assert out.startswith("WARN  slack is served to widget from another declaring overlay's Slack messaging backend")
+
+
+def test_a_client_builder_that_raises_is_a_fail_not_a_crash(capsys: pytest.CaptureFixture[str]) -> None:
+    def _broken(_name: str) -> object:
+        message = "pass store locked"
+        raise RuntimeError(message)
+
+    overlays_patch, clients_patch = _per_overlay({"acme": _Overlay(Service.SLACK)}, _broken)
+    with overlays_patch, clients_patch:
+        assert _check_declared_services_configured() is False
+
+    out = capsys.readouterr().out
+    assert out.startswith("FAIL  slack is declared by acme")
+    assert "RuntimeError: pass store locked" in out
