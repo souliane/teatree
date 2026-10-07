@@ -5761,9 +5761,11 @@ Usage: t3 mcp serve [OPTIONS]
  :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --read-only          Register only the read tools (what a headless phase     │
-│                      without write access launches).                         │
-│ --help               Show this message and exit.                             │
+│ --read-only                Register only the read tools (what a headless     │
+│                            phase without write access launches).             │
+│ --allow-write        TEXT  A write tool a --read-only server still registers │
+│                            (repeatable).                                     │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

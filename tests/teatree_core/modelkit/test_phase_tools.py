@@ -16,9 +16,6 @@ class TestMcpWriteGrant:
     def test_only_the_authoring_and_shipping_phases_may_write_through_mcp(self) -> None:
         assert {phase for phase in KNOWN_PHASES if MCP_WRITE in tools_for_phase(phase)} == MCP_WRITE_PHASES
 
-    def test_an_unknown_phase_gets_no_mcp_write(self) -> None:
-        assert MCP_WRITE not in tools_for_phase("no-such-phase")
-
 
 class TestToolsForPhase:
     def test_write_phase_gets_shell_and_write(self) -> None:

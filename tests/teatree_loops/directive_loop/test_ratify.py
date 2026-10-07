@@ -262,7 +262,8 @@ class TestUndecidableAnswerDefers(TestCase):
 
 
 def _answer_over_mcp(question: DeferredQuestion, text: str) -> None:
-    async_to_sync(build_server().call_tool)("question_answer", {"question_id": question.pk, "text": text})
+    with harness_signature({}):
+        async_to_sync(build_server().call_tool)("question_answer", {"question_id": question.pk, "text": text})
 
 
 def _answer_from_a_headless_agent(question: DeferredQuestion, text: str) -> None:

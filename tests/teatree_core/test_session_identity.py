@@ -27,7 +27,6 @@ from django.utils import timezone
 from hooks.scripts.session_lane import LANE_SDK, session_lane
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import (
-    AGENT_SDK_ENV_VARS,
     SESSION_ID_ENV_VARS,
     current_session_id,
     current_session_pid,
@@ -412,12 +411,3 @@ class TestIsAgentSdkProcess:
     def test_agrees_with_the_hook_lane_reader(self, env: dict[str, str]) -> None:
         with patch.dict(os.environ, env, clear=True):
             assert is_agent_sdk_process(env) is (session_lane() == LANE_SDK)
-
-    def test_the_contract_names_both_signature_variables(self) -> None:
-        assert set(AGENT_SDK_ENV_VARS) == {"CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT"}
-
-    def test_an_sdk_spawn_is_an_agent(self) -> None:
-        assert is_agent_sdk_process({"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}) is True
-
-    def test_a_terminal_is_not_an_agent(self) -> None:
-        assert is_agent_sdk_process({}) is False

@@ -140,7 +140,6 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
         "answering",
         "directive_interpreting",
         "critic_reviewing",
-        "requesting_review",
         "reviewing",
         "codex_reviewing",
         "codex_adversarial_reviewing",
@@ -171,13 +170,17 @@ class TestTeatreeMcpLeastPrivilege(TestCase):
                 options = self._options_for(phase)
                 assert list(options.mcp_servers["teatree"]["args"]) == ["mcp", "serve", "--read-only"]
 
+    def test_requesting_review_launches_the_read_only_server_plus_its_post_tool(self) -> None:
+        args = list(self._options_for("requesting_review").mcp_servers["teatree"]["args"])
+        assert args == ["mcp", "serve", "--read-only", "--allow-write", "review_request_post"]
+
     def test_a_granted_phase_launches_the_full_server(self) -> None:
         for phase in self.GRANTED_PHASES:
             with self.subTest(phase=phase):
                 assert list(self._options_for(phase).mcp_servers["teatree"]["args"]) == ["mcp", "serve"]
 
     def test_every_headless_spawn_loads_only_the_injected_server(self) -> None:
-        for phase in (*self.READ_ONLY_PHASES, *self.GRANTED_PHASES):
+        for phase in (*self.READ_ONLY_PHASES, "requesting_review", *self.GRANTED_PHASES):
             with self.subTest(phase=phase):
                 assert self._options_for(phase).strict_mcp_config is True
 

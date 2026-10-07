@@ -143,10 +143,15 @@ class TestMcpHonoursEmptyPhaseAllowance:
         return sentinel
 
     def test_the_mounted_server_matches_the_phase_grant(self) -> None:
-        for phase, read_only in (("reviewing", True), ("planning", True), ("shipping", False), ("coding", False)):
+        for phase, serve_flags in (
+            ("reviewing", ["--read-only"]),
+            ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),
+            ("shipping", []),
+            ("coding", []),
+        ):
             with patch.object(toolsets_module, "build_mcp_toolsets", return_value=[]) as built:
                 build_lane_b_toolsets(LaneBToolConfig(phase=phase))
-            built.assert_called_once_with(read_only=read_only)
+            built.assert_called_once_with(serve_flags=serve_flags)
 
     def test_none_phase_gets_no_mcp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # short_describe maps to the empty (NON-None) allowance — it may call NOTHING,

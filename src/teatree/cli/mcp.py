@@ -4,8 +4,9 @@ A stdio MCP server an agent adds to its ``mcp.json`` to query teatree's internal
 model (tickets, worktrees, PRs, the loop task queue, inbound events) as typed
 tool calls instead of shelling out to ``t3 ... list`` and parsing text, and to
 write through the same gated seams the CLI uses. ``--read-only`` serves the read
-tools alone. Django is bootstrapped here (the ORM-touching server import is
-deferred until after ``ensure_django``, the same shape as ``t3 cost``).
+tools plus any write tool an ``--allow-write`` names. Django is bootstrapped here
+(the ORM-touching server import is deferred until after ``ensure_django``, the
+same shape as ``t3 cost``).
 """
 
 from collections.abc import Callable
@@ -14,7 +15,7 @@ from typing import Annotated
 import typer
 
 from teatree.cli.mcp_owning_domain import delegate_to_owning_domain
-from teatree.core.mcp_registration import READ_ONLY_ARG
+from teatree.core.mcp_registration import ALLOW_WRITE_ARG, READ_ONLY_ARG, read_only_serve_flags
 from teatree.mcp.serve_lifecycle import reap_orphaned_servers, start_parent_death_watch
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -58,6 +59,10 @@ def serve(
             READ_ONLY_ARG, help="Register only the read tools (what a headless phase without write access launches)."
         ),
     ] = False,
+    allow_write: Annotated[
+        list[str] | None,
+        typer.Option(ALLOW_WRITE_ARG, help="A write tool a --read-only server still registers (repeatable)."),
+    ] = None,
 ) -> None:
     """Run the structured-search MCP server over stdio (blocks until stdin closes).
 
@@ -72,7 +77,8 @@ def serve(
     :mod:`teatree.mcp.serve_lifecycle`.
     """
     reap_orphaned_servers()
-    delegate_to_owning_domain([READ_ONLY_ARG] if read_only else [])
+    allowed_writes = frozenset(allow_write or ())
+    delegate_to_owning_domain(read_only_serve_flags(allowed_writes) if read_only else [])
     start_parent_death_watch()
     ensure_django()
 
@@ -80,7 +86,7 @@ def serve(
     from teatree.mcp.server import build_server  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     register_notion_seam()
-    build_server(read_only=read_only).run("stdio")
+    build_server(read_only=read_only, allowed_writes=allowed_writes).run("stdio")
 
 
 @mcp_app.command()

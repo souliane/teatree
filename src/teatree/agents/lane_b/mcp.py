@@ -3,7 +3,7 @@
 Lane B mounts teatree's MCP server (:mod:`teatree.mcp.server`) as a pydantic_ai
 ``MCPToolset`` so the agent queries tickets/worktrees/PRs/tasks the same way Lane A
 does. A phase without the ``mcp_write`` capability launches it ``--read-only``, so
-its write tools are never registered.
+only the write tools that phase is granted by name are registered.
 
 The pydantic_ai MCP client needs the optional ``fastmcp`` extra
 (``pydantic-ai-slim[mcp]``); when it is unavailable :func:`build_mcp_toolsets`
@@ -18,12 +18,11 @@ way; only the MCP toolset is withheld.
 """
 
 import logging
+from collections.abc import Sequence
 from importlib import import_module
 from importlib.util import find_spec
 
 from pydantic_ai.toolsets.abstract import AbstractToolset
-
-from teatree.core.mcp_registration import READ_ONLY_ARG
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +54,7 @@ def mcp_client_available() -> bool:
 
 
 def build_mcp_toolsets(
-    *, read_only: bool, command: tuple[str, ...] = TEATREE_MCP_STDIO_COMMAND
+    *, serve_flags: Sequence[str], command: tuple[str, ...] = TEATREE_MCP_STDIO_COMMAND
 ) -> list[AbstractToolset[None]]:
     """Return the MCP toolsets for Lane B, or ``[]`` when the client is unavailable.
 
@@ -75,5 +74,5 @@ def build_mcp_toolsets(
     # Guarded by `mcp_client_available()`, which proved this exact import succeeds.
     from pydantic_ai.mcp import MCPServerStdio  # noqa: PLC0415 # ty: ignore[unresolved-import]
 
-    server = MCPServerStdio(command[0], args=[*command[1:], *([READ_ONLY_ARG] if read_only else [])])
+    server = MCPServerStdio(command[0], args=[*command[1:], *serve_flags])
     return [server]

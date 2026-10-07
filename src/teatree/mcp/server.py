@@ -21,6 +21,8 @@ tools carry ``read_only_hint``; the write tools name their gated seam in
 phase without the ``mcp_write`` capability launches) registers only the tools
 annotated ``read_only_hint`` — every core, service, mailbox and overlay tool passes
 the one registration choke point, and a tool with no annotation counts as a write.
+*allowed_writes* (``--allow-write``) names the write tools such a server still
+registers: the one a phase's own deliverable goes through.
 
 The live agent mailbox is a separate, room-scoped communication surface, present
 only when the runner binds this MCP child to a running TeaTree task.
@@ -80,13 +82,15 @@ class _NoShadowServer(MCPServer):
     Refusing at build time is loud, deterministic, and names both claimants.
 
     Every tool reaches the surface through :meth:`add_tool`, so it is also where a
-    *read_only* server withholds each tool not annotated ``read_only_hint``.
+    *read_only* server withholds each tool that is neither annotated
+    ``read_only_hint`` nor named in *allowed_writes*.
     """
 
-    def __init__(self, name: str, *, instructions: str, read_only: bool) -> None:
+    def __init__(self, name: str, *, instructions: str, read_only: bool, allowed_writes: frozenset[str]) -> None:
         super().__init__(name, instructions=instructions)
         self.registered_names: set[str] = set()
         self.read_only = read_only
+        self.allowed_writes = allowed_writes
 
     @override
     def add_tool(
@@ -100,11 +104,12 @@ class _NoShadowServer(MCPServer):
         meta: dict[str, Any] | None = None,
         structured_output: bool | None = None,
     ) -> None:
-        if self.read_only and not (annotations and annotations.read_only_hint):
-            return
         # A callable carrying no ``__name__`` (a partial, a callable object) has no name
         # to collide on here; mcp's own name derivation refuses it a line later.
         tool_name = name or getattr(fn, "__name__", "")
+        is_read = bool(annotations and annotations.read_only_hint)
+        if self.read_only and not is_read and tool_name not in self.allowed_writes:
+            return
         if tool_name:
             if tool_name in self.registered_names:
                 msg = (
@@ -210,10 +215,16 @@ def _write_tool_names(overlay_groups: list[tuple[str, McpToolGroup]]) -> frozens
     return frozenset(write_tools.TOOL_SEAMS).union(agent_mailbox.TOOL_SEAMS, overlay_writes)
 
 
-def _read_only_instructions(instructions: str, *, withheld: frozenset[str]) -> str:
-    withheld_lines = tuple(f"- {name}(" for name in withheld)
-    kept = (line for line in instructions.split("\n") if not line.startswith(withheld_lines))
-    return "\n".join(kept) + _READ_ONLY_NOTICE
+def _read_only_instructions(instructions: str, *, withheld: frozenset[str], allowed_writes: frozenset[str]) -> str:
+    withheld_lines = tuple(f"- {name}(" for name in withheld - allowed_writes)
+    sections: list[str] = []
+    for section in instructions.split("\n\n"):
+        lines = section.split("\n")
+        kept = [line for line in lines if not line.startswith(withheld_lines)]
+        # A section that lost every tool line would leave its header advertising nothing.
+        if len(kept) == len(lines) or any(line.startswith("- ") for line in kept):
+            sections.append("\n".join(kept))
+    return "\n\n".join(sections) + _READ_ONLY_NOTICE.format(writes=", ".join(sorted(allowed_writes)) or "none")
 
 
 def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
@@ -241,8 +252,8 @@ _PREAMBLE = (
 )
 
 _READ_ONLY_NOTICE = (
-    "\n\nThis server is read-only for this dispatch: no write tool is registered. "
-    "Return what you would have written in your result envelope."
+    "\n\nThis server is read-only for this dispatch. Write tools registered: {writes}. "
+    "Return anything you could not write here in your result envelope."
 )
 
 
@@ -544,13 +555,14 @@ _FACTORY_SCORE_TOOL = _ReadTool(
 )
 
 
-def build_server(*, read_only: bool = False) -> MCPServer:
+def build_server(*, read_only: bool = False, allowed_writes: frozenset[str] = frozenset()) -> MCPServer:
     """Assemble a fresh stdio MCP server with the read + gate-preserving write tools.
 
     Returns a new instance on every call (no import-time global) so tests can
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
-    *read_only* withholds every write tool and drops its line from the instructions.
+    *read_only* withholds every write tool not named in *allowed_writes* and drops
+    its line from the instructions.
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
@@ -580,8 +592,10 @@ def build_server(*, read_only: bool = False) -> MCPServer:
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
     )
     if read_only:
-        instructions = _read_only_instructions(instructions, withheld=_write_tool_names(overlay_groups))
-    server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only)
+        instructions = _read_only_instructions(
+            instructions, withheld=_write_tool_names(overlay_groups), allowed_writes=allowed_writes
+        )
+    server = _NoShadowServer("teatree", instructions=instructions, read_only=read_only, allowed_writes=allowed_writes)
     for tool in read_tools:
         server.add_tool(tool.handler, name=tool.name, annotations=_READ_ONLY)
     for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):

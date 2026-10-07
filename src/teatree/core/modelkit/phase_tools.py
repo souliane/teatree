@@ -25,6 +25,11 @@ from teatree.core.modelkit.phases import normalize_phase
 #: Grants the teatree MCP server's write tools; a phase without it gets ``t3 mcp serve --read-only``.
 MCP_WRITE: Final = "mcp_write"
 
+#: The one write tool a phase without :data:`MCP_WRITE` still reaches: its own deliverable.
+_MCP_WRITE_TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
+    "requesting_review": frozenset({"review_request_post"}),
+}
+
 #: Every capability tool name Lane B can expose. A phase's allowance is a subset;
 #: the complement (universe minus allowance) is the disallow list Lane A injects.
 ALL_TOOLS: Final[frozenset[str]] = frozenset(
@@ -70,7 +75,7 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 #: --detach`` cold checkout) is how they post findings — a shell-less codex member
 #: reads the diff but never delivers, stalling and leaking an "I have no
 #: Bash/git/gh" question to the owner. ``requesting_review`` is deliberately NOT a
-#: member: it records no verdict and stays plain read-only.
+#: member: it records no verdict and stays shell-less.
 VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
     {"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"}
 )
@@ -100,7 +105,8 @@ ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 #: never mutates source), so they stay least-privilege while being ABLE to produce a
 #: merge_safe/hold verdict (F4). The teatree MCP server's read tools reach every
 #: phase that mounts it; its write tools need :data:`MCP_WRITE`, which only the
-#: authoring phases and ``shipping`` hold. An unknown phase falls back to read-only
+#: authoring phases and ``shipping`` hold — ``requesting_review`` reaches the one
+#: tool that posts its request instead. An unknown phase falls back to read-only
 #: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently inherits shell/write until it is
 #: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
 #: explicit entry here (the ``test_registry_parity`` totality lane), so the
@@ -193,3 +199,8 @@ def tools_for_phase(phase: str) -> frozenset[str]:
 def disallowed_tools_for_phase(phase: str) -> frozenset[str]:
     """Return the complement — the tools *phase* may NOT call (Lane A injects this)."""
     return ALL_TOOLS - tools_for_phase(phase)
+
+
+def mcp_write_tools_for_phase(phase: str) -> frozenset[str]:
+    """The teatree MCP write tools a phase without :data:`MCP_WRITE` still reaches — none for most."""
+    return _MCP_WRITE_TOOLS_BY_PHASE.get(normalize_phase(phase), frozenset())

@@ -29,7 +29,6 @@ from teatree.agents.session_lineage import honesty_subject, resume_session_id
 from teatree.agents.skill_injection import _resolve_skill_md, harness_skills_dirs
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 from teatree.config import get_effective_settings
-from teatree.core.modelkit.phase_tools import MCP_WRITE, tools_for_phase
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
@@ -247,7 +246,7 @@ def _build_options(
     if overrides.compaction_guard is not None:
         with_compaction_off(options, overrides.compaction_guard)
     if overrides.mcp:
-        _wire_teatree_mcp_server(options, read_only=MCP_WRITE not in tools_for_phase(phase))
+        _wire_teatree_mcp_server(options, phase=phase)
     return options
 
 
@@ -289,7 +288,7 @@ def resolve_envelope_stop_refusals() -> int:
     return get_effective_settings().envelope_stop_gate_refusals
 
 
-def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, read_only: bool) -> None:
+def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, phase: str) -> None:
     """Inject teatree's own local-stdio MCP server so lifecycle sub-agents reach it (#3242).
 
     Claude Code does not forward a local-stdio server (``t3 mcp serve``) to a
@@ -299,13 +298,13 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, read_only: bool) ->
     to shelling out to the ``t3`` CLI. The headless dispatch owns its options, so it
     wires the server explicitly here. The launch command mirrors ``.mcp.json``
     (:mod:`teatree.core.mcp_registration` is the single source of truth), plus
-    ``--read-only`` for a phase without the ``mcp_write`` capability.
+    the flags *phase* launches it with (``--read-only`` without ``mcp_write``).
     """
     from teatree.core.mcp_registration import (  # noqa: PLC0415 — deferred: keeps the option-build import light
         EXPECTED_ARGS,
         EXPECTED_COMMAND,
-        READ_ONLY_ARG,
         TEATREE_MCP_SERVER_NAME,
+        serve_flags_for_phase,
     )
 
     existing = options.mcp_servers if isinstance(options.mcp_servers, dict) else {}
@@ -314,7 +313,7 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, read_only: bool) ->
         TEATREE_MCP_SERVER_NAME: {
             "type": "stdio",
             "command": EXPECTED_COMMAND,
-            "args": [*EXPECTED_ARGS, *([READ_ONLY_ARG] if read_only else [])],
+            "args": [*EXPECTED_ARGS, *serve_flags_for_phase(phase)],
         },
     }
 

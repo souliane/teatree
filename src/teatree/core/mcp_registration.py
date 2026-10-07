@@ -20,8 +20,11 @@ means.
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+
+from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
 
 MCP_JSON_FILENAME = ".mcp.json"
 TEATREE_MCP_SERVER_NAME = "teatree"
@@ -29,6 +32,8 @@ EXPECTED_COMMAND = "t3"
 EXPECTED_ARGS = ("mcp", "serve")
 #: Appended for a dispatch whose phase may not write through the server.
 READ_ONLY_ARG = "--read-only"
+#: Names one write tool a read-only server still registers.
+ALLOW_WRITE_ARG = "--allow-write"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +42,18 @@ class McpRegistrationOutcome:
 
     ok: bool
     message: str
+
+
+def read_only_serve_flags(allowed_writes: Iterable[str]) -> list[str]:
+    """The ``mcp serve`` flags of a read-only launch that still registers *allowed_writes*."""
+    return [READ_ONLY_ARG, *(arg for tool in sorted(allowed_writes) for arg in (ALLOW_WRITE_ARG, tool))]
+
+
+def serve_flags_for_phase(phase: str) -> list[str]:
+    """The ``mcp serve`` flags a dispatch in *phase* launches: none with ``mcp_write``, else read-only."""
+    if MCP_WRITE in tools_for_phase(phase):
+        return []
+    return read_only_serve_flags(mcp_write_tools_for_phase(phase))
 
 
 def mcp_json_path(repo: Path) -> Path:
@@ -107,6 +124,7 @@ def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
 
 
 __all__ = [
+    "ALLOW_WRITE_ARG",
     "EXPECTED_ARGS",
     "EXPECTED_COMMAND",
     "MCP_JSON_FILENAME",
@@ -115,5 +133,7 @@ __all__ = [
     "McpRegistrationOutcome",
     "mcp_json_path",
     "read_declared_mcp_servers",
+    "read_only_serve_flags",
+    "serve_flags_for_phase",
     "verify_teatree_mcp_registration",
 ]
