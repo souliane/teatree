@@ -1106,7 +1106,7 @@ depends_on = ["teatree.types", "teatree.utils"]
 [[modules]]
 path = "teatree.browser"
 layer = "integration"
-depends_on = ["teatree.paths", "teatree.utils"]
+depends_on = ["teatree.core", "teatree.paths", "teatree.utils"]
 
 [[modules]]
 path = "teatree.visual_qa"

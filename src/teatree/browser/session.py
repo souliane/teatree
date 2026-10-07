@@ -28,16 +28,10 @@ import httpx
 
 from teatree.browser.evidence import BrowserEvent, EventLog
 from teatree.browser.state import KEEPER_LOCK, SessionFiles
+from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.paths import PathHelpers
 from teatree.utils.run import spawn_session_leader
-from teatree.utils.singleton import (
-    HolderVerdict,
-    current_context,
-    flock_is_held,
-    holder_verdict,
-    pid_alive,
-    read_holder,
-)
+from teatree.utils.singleton import flock_is_held, pid_alive, read_holder
 from teatree.utils.work_tree import WorkTreeError, resolve
 
 if TYPE_CHECKING:
@@ -273,7 +267,7 @@ class BrowserSession:
         if not self._keeper_running():
             return None
         holder = read_holder(self.files.pid)
-        if holder is None or holder_verdict(holder, current_context()) is not HolderVerdict.SAME_CONTEXT:
+        if holder is None or not namespace_is_proven(holder.context.pid_namespace):
             return None
         return holder.pid
 
