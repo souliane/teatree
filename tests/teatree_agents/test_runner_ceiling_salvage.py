@@ -226,6 +226,8 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
 
         with TemporaryDirectory() as directory:
             for name in (
+                "ac-django",
+                "ac-python",
                 "code-review",
                 "interactive",
                 "internals",

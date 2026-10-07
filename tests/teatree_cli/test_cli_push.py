@@ -5,12 +5,14 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
 from teatree.cli.push import push
 from teatree.core.forge_push import PushOutcome
 from teatree.core.forge_push_verdict import PUSH_EXIT_CODES, CredentialSource, PushFailure
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()
@@ -122,3 +124,60 @@ class TestPushCommand:
             "branch": "b",
             "force_with_lease": True,
         }
+
+
+def _clone_on_feature(root: Path) -> Path:
+    remote = make_git_repo(root / "origin.git", bare=True)
+    clone = make_git_repo(root / "clone", default_branch="feature")
+    run_git(clone, "remote", "add", "origin", str(remote))
+    return clone
+
+
+def _remote_feature(clone: Path) -> str:
+    return run_git(clone, "ls-remote", "origin", "refs/heads/feature").split("\t")[0]
+
+
+class TestPushActsWhereTheOperatorStood:
+    """Under ``deploy/t3`` the process cwd is the image WORKDIR; the operator's checkout arrives declared."""
+
+    def test_a_push_from_the_container_workdir_reaches_the_declared_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _clone_on_feature(tmp_path)
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(clone))
+
+        result = runner.invoke(_app, [])
+
+        assert result.exit_code == 0, result.output
+        assert _remote_feature(clone) == run_git(clone, "rev-parse", "HEAD")
+
+    def test_a_checkout_the_process_stands_in_beats_an_inherited_declaration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stood_in = _clone_on_feature(tmp_path / "a")
+        inherited = _clone_on_feature(tmp_path / "b")
+        monkeypatch.chdir(stood_in)
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(inherited))
+
+        result = runner.invoke(_app, [])
+
+        assert result.exit_code == 0, result.output
+        assert _remote_feature(stood_in) == run_git(stood_in, "rev-parse", "HEAD")
+        assert not _remote_feature(inherited)
+
+    def test_a_relative_repo_resolves_from_where_the_operator_stood(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _clone_on_feature(tmp_path / "checkouts")
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(tmp_path / "checkouts"))
+
+        result = runner.invoke(_app, ["--repo", "clone"])
+
+        assert result.exit_code == 0, result.output
+        assert _remote_feature(clone) == run_git(clone, "rev-parse", "HEAD")

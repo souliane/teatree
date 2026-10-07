@@ -31,6 +31,7 @@ classifiers there, so an interspersed persistent flag cannot break detection
 (#1672). This module owns body / title / secret-surface EXTRACTION.
 """
 
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from typing import Final
 
@@ -45,12 +46,20 @@ from teatree.hooks._body_file_resolution import (
     walk_body_file_flags,
 )
 from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
+from teatree.hooks._forge_write_detection import (
+    command_has_forge_free_text_publish,
+    graphql_document_is_read,
+    segment_is_forge_cli_write,
+    segment_reads_stdin_content,
+    walk_forge_free_text,
+)
 from teatree.hooks._inline_body_resolution import resolve_inline_body_value
 from teatree.hooks._publish_detection import (
     command_has_interpreter_forge_transport,
     command_has_opaque_forge_transport,
     command_has_token_aware_publish_surface,
     extract_title_fragments,
+    segment_is_api_write,
     segment_is_substring_publish,
     segment_word_lists,
 )
@@ -126,6 +135,8 @@ def is_publish_command(command: str) -> bool:
         API (``requests``/``httpx``/``urllib``/a raw ``http.client`` call),
         the SAME write-method + forge-target shape as ``gh``/``glab api``,
         just authored in Python instead of CLI flags (#2943 gap).
+    - any non-read ``gh``/``glab`` verb carrying free text, or a forge-bound
+        ``curl`` write (:func:`_forge_write_detection.command_has_forge_free_text_publish`).
     - a forge call hidden inside a command-string INTERPRETER argument
         (:func:`_publish_detection.command_has_interpreter_forge_transport`) --
         ``sh -c "gh pr create --body X"``, ``eval "gh ..."``, ``ssh host gh ...``.
@@ -139,11 +150,12 @@ def is_publish_command(command: str) -> bool:
     for words in segment_word_lists(command):
         if segment_is_substring_publish(words) or _segment_is_t3_publish(words):
             return True
-    if command_has_token_aware_publish_surface(command):
-        return True
-    if command_has_python_rest_publish_surface(command):
-        return True
-    return command_has_interpreter_forge_transport(command)
+    return (
+        command_has_token_aware_publish_surface(command)
+        or command_has_python_rest_publish_surface(command)
+        or command_has_forge_free_text_publish(command)
+        or command_has_interpreter_forge_transport(command)
+    )
 
 
 # Per-command argument-walker dispatch tables --------------------------
@@ -154,18 +166,8 @@ def is_publish_command(command: str) -> bool:
 # than under a forge leader.
 _BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(f"--{name}" for name in _primitives.BODY_LONG_OPTION_FIELDS)
 
-# Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
-_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
-
-# ``glab`` spells the MR/issue description short flag ``-d`` on ``create`` and
-# ``update``; ``gh`` uses ``-d`` for the boolean ``--draft``, so this short flag
-# is scoped to the ``glab`` leader only — extracting the next token as a body
-# for ``gh -d`` would misread its boolean draft switch.
-_GLAB_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-d"})
-
-# Long options for ``gh api`` / ``glab api`` field assignments.
-_API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
-_API_FIELD_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-f", "-F"})
+# ``gh api`` / ``glab api`` field-assignment flags.
+_API_FIELD_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field", "-f", "-F"})
 
 
 def _walk_python_script(words: list[str], payloads: list[str]) -> None:
@@ -211,7 +213,11 @@ def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], bas
     description short flag it uses on ``mr``/``issue`` ``create``/``update``,
     which ``gh`` uses for the boolean ``--draft`` and so is glab-only.
     """
-    short_flags = _BODY_SHORT_FLAGS | _GLAB_BODY_SHORT_FLAGS if leader == "glab" else _BODY_SHORT_FLAGS
+    short_flags = (
+        _primitives.BODY_SHORT_FLAGS | _primitives.GLAB_BODY_SHORT_FLAGS
+        if leader == "glab"
+        else _primitives.BODY_SHORT_FLAGS
+    )
     i = 0
     n = len(words)
     while i < n:
@@ -257,46 +263,49 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
     payloads.extend(_json_body_fields(content))
 
 
-def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
-    """Extract ``-f``/``-F``/``--field``/``--raw-field`` body-field assignments.
+def _api_field_assignments(words: list[str], raws: list[str]) -> Iterator[tuple[str, str, bool]]:
+    """Yield each api field's ``name=value`` token, its source span, and whether ``@`` reads a file.
 
-    Both the spaced (``-f body=x``) and attached (``--field=body=x``,
-    ``-fbody=x``) spellings are read, via
-    :func:`_parser_primitives.attached_api_field` — detection classified the
-    attached form a publish while extraction yielded nothing, so every
-    body-based leak gate scanned an empty string.
-
-    Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
-    and ``--input <missing>`` (fail closed). Field names outside
-    :data:`_primitives.BODY_FIELD_NAMES` are ignored. ``raws`` (parallel to ``words``)
-    carries each token's verbatim source span so a single-quoted INERT
-    ``$(...)`` in a body field is scanned rather than fail-closed.
+    The attached spellings (``--field=body=x``, ``-fbody=x``) go through the same
+    :func:`_parser_primitives.attached_api_field` grammar detection uses.
     """
-    field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
-    prose_name = _api_route_has_prose_name(words)
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
-        if word in field_flags and i + 1 < n:
-            assignment = words[i + 1]
-            if prose_name or not assignment.startswith("name="):
-                _handle_field_assignment(
-                    assignment, payloads, base, raws[i + 1], reads_file=_field_flag_reads_file(word)
-                )
+        if word in _API_FIELD_FLAGS and i + 1 < n:
+            yield words[i + 1], raws[i + 1], _field_flag_reads_file(word)
             i += 2
             continue
-        if word == "--input" and i + 1 < n:
+        attached = _primitives.attached_api_field(word)
+        if attached is not None:
+            yield attached, raws[i], _field_flag_reads_file(word)
+        i += 1
+
+
+def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
+    """Extract every ``gh``/``glab`` field value and ``--input`` body.
+
+    A body-named field (``name`` only on a release route) is STRICT and fails closed
+    when unreadable. Every other field value is published by the write too, so it is
+    scanned LENIENTLY: an unresolvable plumbing ``$VAR`` never newly fails closed.
+    A read (a GET, a graphql query document) publishes nothing, so its fields stay unscanned.
+    """
+    strict_names = _primitives.BODY_FIELD_NAMES - (set() if _api_route_has_prose_name(words) else {"name"})
+    lenient = (segment_is_api_write(words) or segment_is_forge_cli_write(words)) and not graphql_document_is_read(words)
+    for assignment, raw, reads_file in _api_field_assignments(words, raws):
+        if assignment.partition("=")[0] in strict_names:
+            _handle_field_assignment(assignment, payloads, base, raw, reads_file=reads_file)
+        elif lenient:
+            resolved: list[str] = []
+            _handle_field_assignment(assignment, resolved, base, raw, reads_file=reads_file)
+            payloads.extend(part for part in resolved if not _primitives.is_fail_closed_sentinel(part))
+    for i, word in enumerate(words):
+        if word == "--input" and i + 1 < len(words):
             _handle_api_input(words[i + 1], payloads)
-            i += 2
-            continue
         attached = _primitives.attached_value(word, "--input=")
         if attached is not None:
             _handle_api_input(attached, payloads)
-        attached_field = _primitives.attached_api_field(word)
-        if attached_field is not None and (prose_name or not attached_field.startswith("name=")):
-            _handle_field_assignment(attached_field, payloads, base, raws[i], reads_file=_field_flag_reads_file(word))
-        i += 1
 
 
 def _api_route_has_prose_name(words: list[str]) -> bool:
@@ -332,11 +341,6 @@ def _handle_field_assignment(
 ) -> None:
     """Parse a ``-F <name>=value`` style argument and append the resolved value.
 
-    The name must be one of :data:`_primitives.BODY_FIELD_NAMES` — GitLab's own field for an
-    issue/MR body is ``description``, so keying on ``body`` alone extracted an
-    EMPTY payload from ``-f description=<leak>`` and every body-based leak gate
-    scanned nothing while detection still called the command a publish.
-
     A ``@<path>`` value on a typed flag (``reads_file``) is read through
     :func:`_handle_api_input`, so the file the forge would upload is scanned and
     an unreadable one — or a ``@-`` stdin body — fails closed. Everything else
@@ -360,8 +364,6 @@ def _handle_field_assignment(
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
-    if name not in _primitives.BODY_FIELD_NAMES:
-        return
     if reads_file and value.startswith("@"):
         _handle_api_input(value[1:], payloads)
         return
@@ -421,11 +423,12 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     if append_t3_review_note_payload(words, raws, payloads, ctx):
         return
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
-    # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, raws, payloads, ctx.base)
+        if segment_is_forge_cli_write(words):
+            walk_forge_free_text(words, raws, payloads, ctx, first)
     if first == "curl":
-        _walk_curl_args(words, payloads)
+        _walk_curl_args(words, payloads, raws=raws, base=ctx.base)
     # Gated on the ACTUAL classification (write verb + forge URL), not merely
     # the python leader: ``extract_bash_payload`` also backs
     # ``extract_secret_scan_text``, which runs on EVERY Bash command
@@ -485,7 +488,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
         heredoc_files=heredoc_files_map(command, tokens),
         fail_closed_body_file=fail_closed_body_file,
         base=commit_body_file_base(command, cwd) or command_body_file_base(command, cwd) or cwd,
-        stdin_piped_body=piped_stdin_writer_body(tokens),
+        stdin_piped_body=piped_stdin_writer_body(tokens, reads_stdin_content=segment_reads_stdin_content),
         has_unredirected_heredoc=bool(unredirected_heredocs),
     )
     for segment in split_commands(tokens):
@@ -527,21 +530,7 @@ def _api_field_values(words: list[str]) -> list[str]:
     spelling (``--field=title=…``, ``-ftitle=…``) is read through the same
     :func:`_parser_primitives.attached_api_field` grammar as the walkers above.
     """
-    field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
-    values: list[str] = []
-    i = 0
-    n = len(words)
-    while i < n:
-        word = words[i]
-        if word in field_flags and i + 1 < n:
-            values.append(words[i + 1].partition("=")[2] or words[i + 1])
-            i += 2
-            continue
-        attached = _primitives.attached_api_field(word)
-        if attached is not None:
-            values.append(attached.partition("=")[2] or attached)
-        i += 1
-    return values
+    return [assignment.partition("=")[2] or assignment for assignment, _, _ in _api_field_assignments(words, words)]
 
 
 def extract_secret_scan_text(command: str) -> str:
