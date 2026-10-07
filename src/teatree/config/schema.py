@@ -163,6 +163,7 @@ class TeatreeSettingsSchema(BaseSettings):
         return (init_settings, _TeatreeTableTomlSource(settings_cls))
 
     admission_pressure_shed_at: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    admission_write_concurrency_per_core: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY_BOX]
     metered_token_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     metered_spend_window_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
