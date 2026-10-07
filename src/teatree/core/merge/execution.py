@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.backend_protocols import DraftState
+from teatree.core.backend_protocols import DraftState, PrMessage
 from teatree.core.merge.authorization import (
     MergePrecheck,
     PresentedApprovals,
@@ -331,16 +331,17 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, six gates run — the single chokepoint BOTH merge paths cross
+    retry loop, seven gates run — the single chokepoint BOTH merge paths cross
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
-    via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
+    via ``merge_pr_bound`` with NO preconditions run): ``assert_review_verdict_gate``
     (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
     (north-star PR-4 — every ticket needs a clean
     recorded merge-quality verdict at the shipped head), ``assert_ticket_scoped_gates``
     (the anti-vacuity attestation + rubric done-gate, resolved by PR identity so the
-    no-CLEAR paths are graded instead of merging past them silently), and the #18 not-draft +
-    FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
-    chokepoint so a green→red / open→draft flip in the TOCTOU window between a
+    no-CLEAR paths are graded instead of merging past them silently), the #18 not-draft +
+    FAILED-live-CI floor, and the published-message scan (``merge_message_gate``), whose
+    scanned title/body every attempt then sends as the commit message. The floor re-reads
+    the forge's LIVE state at the merge chokepoint so a green→red / open→draft flip in the TOCTOU window between a
     caller's snapshot and this PUT is refused here — the solo lane had NO such
     re-check despite the sweep docstring claiming one. A FAILED required check is
     a verdict expedite can NEVER waive, so it is refused unconditionally (no
@@ -354,7 +355,7 @@ def execute_bound_merge(
     """
     query = CodeHostQuery.for_ref(ref)
     slug, pr_id = ref.slug, ref.pr_id
-    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_squash_bound`` →
+    # #3244 defence-in-depth: the solo-overlay bypass (``merge_pr_bound`` →
     # here) reaches this shared chokepoint with NO keystone preconditions run, so
     # the provenance gate must fire HERE too — otherwise a fork PR could auto-merge
     # via the bypass path even though the keystone (below) refuses it.
@@ -368,7 +369,10 @@ def execute_bound_merge(
     # The gate import is function-scoped on purpose: a module-level core.merge ->
     # core.gates edge is a tach cycle (core.gates already imports core.merge.errors),
     # so it stays deferred like the sibling merge-precondition gates.
-    from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
+    from teatree.core.gates import (  # noqa: PLC0415 avoids a core.merge/core.gates cycle
+        merge_message_gate,
+        merge_quality_gate,
+    )
 
     merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     # The two ticket-scoped gates, by PR identity rather than through a CLEAR — so the
@@ -376,6 +380,7 @@ def execute_bound_merge(
     assert_ticket_scoped_gates(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_not_draft(query)
     assert_ci_not_failed(query)
+    message = merge_message_gate.scanned_merge_message(ref, query.pr_message())
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
             landed = _already_merged_at(query=query, expected_head_oid=expected_head_oid)
@@ -384,7 +389,8 @@ def execute_bound_merge(
             time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
         try:
             return _record_pr_landed(
-                ref, _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid, squash=squash)
+                ref,
+                _attempt_bound_merge(query=query, expected_head_oid=expected_head_oid, message=message, squash=squash),
             )
         except MergeTransientError as exc:
             if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
@@ -407,7 +413,7 @@ def _record_pr_landed(ref: PrRef, merged_sha: str) -> str:
     THE "a PR landed" recorder, deliberately at the one chokepoint every merge route
     already crosses. Recording it only in the keystone post hook left the sweep's two
     no-CLEAR routes — the solo-overlay bypass and the uv-audit raw fallback, both of
-    which reach the forge through :meth:`PrApiClient.merge_pr_squash_bound` → here —
+    which reach the forge through :meth:`PrApiClient.merge_pr_bound` → here —
     writing nothing, so a PR the sweep demonstrably merged kept a row reading ``open``
     and every consumer asking "has this ticket's PR landed?" answered ``False``. Placing
     it here means a future third route cannot silently reintroduce that.
@@ -446,7 +452,7 @@ def _already_merged_at(*, query: CodeHostQuery, expected_head_oid: str) -> str:
     return merge_state.merge_commit_oid or expected_head_oid
 
 
-def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str, squash: bool) -> str:
+def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str, message: PrMessage, squash: bool) -> str:
     """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response.
 
     The backend's :meth:`CodeHostBackend.merge_pr_squash_bound` runs the
@@ -460,6 +466,7 @@ def _attempt_bound_merge(*, query: CodeHostQuery, expected_head_oid: str, squash
         slug=slug,
         pr_id=pr_id,
         expected_head_oid=expected_head_oid,
+        message=message,
         squash=squash,
     )
     if result.returncode != 0:

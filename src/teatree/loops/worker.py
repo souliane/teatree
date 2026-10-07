@@ -78,7 +78,7 @@ def agent_executor_queues(widths: "LaneWidths | None") -> tuple[str, ...]:
     """One executor per seat the verdict can admit, so no admitted seat lapses waiting for a thread."""
     if widths is None:
         return ("default",) * max(DEFAULT_QUEUE_FLOOR, default_provision_concurrency()) + ("cheap",)
-    return ("default",) * widths.expensive + ("cheap",) * widths.cheap_seats
+    return ("default",) * widths.expensive + ("cheap",) * widths.cheap
 
 
 def _read_pool_pressure() -> "AdmissionDecision | None":

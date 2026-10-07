@@ -106,7 +106,7 @@ class RecordingArm:
         del slug, check_name
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         del expected_head_oid
         self.merged.append((slug, pr_id))
         return BoundMergeResult(merged=True, merged_sha=_MERGED)
@@ -201,7 +201,7 @@ class TestForgeRouting(TestCase):
         github, gitlab = RecordingArm(), RecordingArm()
         client = ForgePrApiClient(github=github, gitlab=gitlab)
         with _declared_scopes():
-            client.merge_pr_squash_bound(slug=_GITLAB_SLUG, pr_id=_MR_IID, expected_head_oid=_HEAD)
+            client.merge_pr_bound(slug=_GITLAB_SLUG, pr_id=_MR_IID, expected_head_oid=_HEAD)
         assert gitlab.merged == [(_GITLAB_SLUG, _MR_IID)]
         assert github.merged == []
 

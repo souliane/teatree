@@ -24,6 +24,7 @@ from teatree.core.managers_admission import (
     _cheap_phase_q,
     _lane_occupancy_q,
     _lane_under_ceiling,
+    _unseated_q,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
@@ -423,8 +424,8 @@ class TaskQuerySet(models.QuerySet):
     def claimed_agent_count(self) -> int:
         """Live HEADLESS agents in flight — CLAIMED, unexpired-lease, HEADLESS target.
 
-        The single divisor for the per-agent test-worker budget AND the
-        governor's ceiling comparison (#3644/F9). Counts EVERY live headless
+        The single divisor for the per-agent test-worker budget (#3644/F9).
+        Counts EVERY live headless
         agent — a registered-phase task AND a free-form one (``architectural_review``
         etc.). ``dispatchable_q()`` selects only ``(role, phase)`` pairs with a
         registered sub-agent, so counting through it UNDERcounted the free-form
@@ -462,12 +463,12 @@ class TaskQuerySet(models.QuerySet):
         return self.filter(_lane_occupancy_q(timezone.now(), cheap=True)).count()
 
     def expensive_lane_occupancy(self) -> int:
-        """How much of the box the EXPENSIVE class holds — the reservation's divisor (#4374).
+        """How much of the box the EXPENSIVE class holds — what the coding ceiling is measured against.
 
         Deliberately not :meth:`claimed_agent_count`, which counts every live agent whatever
-        its class: measured against that number the reservation inverts into the opposite
-        starvation, refusing coding work because reviews are running — the reviews that
-        exist to retire it. Same seat-aware shape as its cheap twin, for the same reason:
+        its class: measured against that number the coding ceiling would refuse coding work
+        because reviews are running — the reviews that exist to retire it. Same seat-aware
+        shape as its cheap twin, for the same reason:
         a burst of ``post_save`` admissions is still PENDING, so a count of CLAIMED rows
         alone cannot see the seats it just handed out.
         """
@@ -490,9 +491,7 @@ class TaskQuerySet(models.QuerySet):
             admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
         ).count()
 
-    def record_admission(
-        self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None, total_ceiling: int | None = None
-    ) -> bool:
+    def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
         """Take *task_pk*'s seat in its cost class's lane — ``True`` when this call got it.
 
         The bound is arbitrated INSIDE this write, not between the caller's probe and it
@@ -500,14 +499,11 @@ class TaskQuerySet(models.QuerySet):
         chokepoint in one window each saw room and each admitted, bounding the lane at
         ceiling plus however many raced. Re-checking occupancy in the ``WHERE`` makes the
         loser match no row and be refused instead. *cheap* picks which lane's occupancy is
-        re-counted, so the expensive lane's reserved-slot bound is held by the same
-        mechanism rather than by a probe two racers can both pass (#4374).
-        ``total_ceiling`` checks both classes, including pending seats, in the same write.
+        re-counted, so the coding ceiling is held by the same mechanism as the review lane's.
 
         A row still holding a live seat is refused too: it is already in the runner's
         hand, so a second booking is a duplicate dispatch. ``lane_ceiling`` of ``None``
-        lifts that class's width; ``total_ceiling`` still applies unless the governor
-        kill-switch or failed probe deliberately leaves both bounds absent.
+        lifts that class's width — only the kill-switch or a failed probe leaves it absent.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
@@ -515,13 +511,22 @@ class TaskQuerySet(models.QuerySet):
         the dispatch it is recording.
         """
         now = timezone.now()
-        unseated = models.Q(admitted_at__isnull=True) | models.Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
-        seat = self.filter(unseated, pk=task_pk)
+        seat = self.filter(_unseated_q(now), pk=task_pk)
         if lane_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
-        if total_ceiling is not None:
-            seat = seat.filter(_lane_under_ceiling(now, total_ceiling, cheap=None))
         return bool(seat.update(admitted_at=now))
+
+    def waiting_for_admission(self) -> models.QuerySet:
+        """PENDING rows due now and holding no seat — what both headless chokepoints may admit or fail.
+
+        ``_claimable_now_q`` keeps a usage-window-parked row out until its window re-arms.
+        """
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        now = timezone.now()
+        return self.filter(_claimable_now_q(now), _unseated_q(now), status=task_model.Status.PENDING).select_related(
+            "ticket"
+        )
 
     def active_claims(self) -> models.QuerySet:
         """Tasks CLAIMED with a still-live lease — the in-flight set (SSOT).

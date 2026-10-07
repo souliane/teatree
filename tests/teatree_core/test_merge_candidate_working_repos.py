@@ -36,7 +36,7 @@ from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr, pr_slug_resolution
 from teatree.core.models import MergeClear
 from teatree.core.overlay import OverlayBase, OverlayReview
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -157,7 +157,7 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str):
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
     return _gh
 
@@ -256,7 +256,7 @@ class TestWorkingRepoCandidateEnumeration(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_all_wrong),

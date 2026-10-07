@@ -1,4 +1,4 @@
-"""Tests for the forge adapters' ``merge_pr_squash_bound`` — the real except-block, not a port fake."""
+"""Tests for the forge adapters' ``merge_pr_bound`` — the real except-block, not a port fake."""
 
 import pytest
 
@@ -24,11 +24,11 @@ def _merge(*, ref: PrRef, expected_head_oid: str) -> str:
 
 
 def _gh_merge() -> BoundMergeResult:
-    return GhPrApiClient().merge_pr_squash_bound(slug=SLUG, pr_id=4861, expected_head_oid=HEAD)
+    return GhPrApiClient().merge_pr_bound(slug=SLUG, pr_id=4861, expected_head_oid=HEAD)
 
 
 def _glab_merge() -> BoundMergeResult:
-    return GlabPrApiClient().merge_pr_squash_bound(slug=SLUG, pr_id=4861, expected_head_oid=HEAD)
+    return GlabPrApiClient().merge_pr_bound(slug=SLUG, pr_id=4861, expected_head_oid=HEAD)
 
 
 class TestGhBoundMerge:

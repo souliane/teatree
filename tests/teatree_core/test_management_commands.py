@@ -1432,14 +1432,15 @@ class TestTasksCompleteCommand(TestCase):
 class TestTasksListCommand(TestCase):
     """Tests for the tasks list subcommand."""
 
-    def test_json_exposes_admission_rank_and_parentage(self) -> None:
+    def test_json_exposes_admission_score_and_parentage(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        review = Task.objects.create(ticket=ticket, session=session, phase="reviewing", parent_task=task)
         result = cast("list[dict[str, object]]", call_command("tasks", "list", json_output=True))
-        row = next(item for item in result if item["task_id"] == task.pk)
-        assert row["admission_rank"] == 1
-        assert row["parent_task_id"] is None
+        rows = {item["task_id"]: item for item in result}
+        assert cast("int", rows[task.pk]["admission_score"]) < cast("int", rows[review.pk]["admission_score"])
+        assert rows[task.pk]["parent_task_id"] is None
 
     def test_list_all_tasks(self) -> None:
         ticket = Ticket.objects.create(overlay="test")

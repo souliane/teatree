@@ -111,7 +111,7 @@ class GlabPrApiClient:
         del slug, check_name
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge on the GitLab transport (#1985's §17.4.3 bind).
 
         A refused precondition carries ``str(exc)`` in ``BoundMergeResult.refusal``
@@ -220,8 +220,8 @@ class ForgePrApiClient:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return self._arm(slug).main_check_failed(slug=slug, check_name=check_name)
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
-        return self._arm(slug).merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+        return self._arm(slug).merge_pr_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         return self._arm(slug).update_pr_branch(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)

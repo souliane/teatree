@@ -1,4 +1,4 @@
-"""Every dispatchable phase's real system context fits the append budget untruncated.
+"""Every dispatchable phase's real system context fits the append budget untruncated, or degrades legibly.
 
 Truncation is the degrade path, never the normal one: a truncated context loses
 whole rule sections the agent never learns it lost. Measured with the real
@@ -16,11 +16,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.agents import prompt
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.prompt import build_system_context
 from teatree.agents.skill_assurance import _explicit_directive_names
 from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.skill_injection import _read_skill_contents_scoped
+from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
 from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task, Ticket
 from teatree.skill_support import index as skill_index
@@ -37,6 +39,14 @@ _HEADROOM_BYTES = 4096
 _CANONICAL_SKILLS_DIR = "/opt/teatree/skills"
 
 _HEADING_RE = re.compile(r"^#{2,3} .+$", re.MULTILINE)
+_COMPANION_RE = re.compile(r"^- (?P<name>\S+): not embedded", re.MULTILINE)
+_MARKER_RE = re.compile(r"\[…truncated (?P<dropped>\d+) bytes[^\]]*\]")
+
+#: Inside the 1,174-3,496 B the overlay-active reviewing render measured over the budget.
+_FORCED_OVERAGE_BYTES = 3000
+
+#: An overage a few KB wide must cost a few KB, not a whole 60 KB section.
+_MAX_ELIDED_BYTES = 8192
 
 
 def _dispatch_task(phase: str) -> Task:
@@ -139,3 +149,47 @@ class TestStackDirectivesSurviveAnOverrun(TestCase):
         out = enforce_budget(block, [(block, "the skill body")], max_bytes=max_bytes)
 
         assert {"ac-django", "ac-python"} <= _explicit_directive_names(out)
+
+
+class TestOverlayActiveReviewingDegradesLegibly(TestCase):
+    """The reviewing render with the teatree overlay active stays usable when it runs over.
+
+    Rendered with the overlay's real skill metadata, so the companion skills a
+    live reviewer gets are in the bundle; the budget is forced just under the
+    untruncated size, the margin a live render actually ran over.
+    """
+
+    def _render(self, task: Task, *, max_bytes: int) -> str:
+        overlay = TeatreeOverlay()
+        with (
+            patch("teatree.core.overlay_loader.get_overlay", return_value=overlay),
+            patch.object(prompt, "MAX_APPEND_BYTES", max_bytes),
+        ):
+            skills = resolve_skill_bundle(
+                phase=task.phase,
+                overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
+                detection_root=_REPO_ROOT,
+            )
+            return build_system_context(
+                task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase)
+            )
+
+    def test_an_overrun_keeps_the_companion_list_the_skill_tool_and_the_review_workflows(self) -> None:
+        task = _dispatch_task("reviewing")
+        with (
+            tempfile.TemporaryDirectory() as home,
+            patch.dict(os.environ, {"HOME": home}),
+            patch.object(skill_index, "DEFAULT_SKILLS_DIR", _SKILLS_DIR),
+        ):
+            full = self._render(task, max_bytes=10**7)
+            cut = self._render(task, max_bytes=len(full.encode()) - _FORCED_OVERAGE_BYTES)
+
+        companions = _COMPANION_RE.findall(full)
+        marker = _MARKER_RE.search(cut)
+        assert companions, "the overlay-active reviewing bundle no longer lists a companion skill"
+        assert marker, "the forced overage did not truncate the context"
+        assert not [name for name in companions if f"- {name}: not embedded" not in cut], marker[0]
+        assert "Skill tool" in marker[0], marker[0]
+        assert "no Skill tool" not in marker[0], marker[0]
+        assert "\n## Workflows\n" in cut, marker[0]
+        assert int(marker["dropped"]) < _MAX_ELIDED_BYTES, marker[0]

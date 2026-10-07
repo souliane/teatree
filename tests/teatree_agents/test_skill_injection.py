@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents.context_budget import enforce_budget
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
@@ -200,6 +201,50 @@ def test_reach_line_leads_the_skill_block_before_the_first_embed(tmp_path: Path)
     ):
         reach = result.index(f"are at `{tmp_path}/<skill>/…`; open one with the Read tool.")
         assert reach < result.index("--- SKILL: rules ---")
+
+
+def _review_bundle(tmp_path: Path, *, body_sections: int = 1) -> str:
+    for name in ("rules", "review", "slack-formatting", "internals"):
+        (tmp_path / name).mkdir()
+        body = "\n".join(f"## {name} {i}\n{'b' * 1000}" for i in range(body_sections))
+        (tmp_path / name / "SKILL.md").write_text(f"# {name}\n{body}", encoding="utf-8")
+    return _read_skill_contents_scoped(
+        ["rules", "review", "slack-formatting", "internals"],
+        primary_skills={"review"},
+        explicit_load_skills={"slack-formatting"},
+        skills_dir=tmp_path,
+    )
+
+
+def test_companion_list_leads_the_embedded_bodies(tmp_path: Path) -> None:
+    result = _review_bundle(tmp_path)
+
+    first_body = result.index("--- SKILL:")
+    assert result.index("--- REVIEW COMPANION SKILLS") < first_body
+    assert result.index("--- COMPANION SKILLS") < first_body
+
+
+def test_a_budget_cut_of_the_bodies_keeps_every_companion_line(tmp_path: Path) -> None:
+    block = _review_bundle(tmp_path, body_sections=10)
+    out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) // 2)
+
+    assert "…truncated" in out
+    assert "Load /slack-formatting via the Skill tool BEFORE reviewing." in out
+    assert f"- internals: not embedded — Read `{tmp_path / 'internals' / 'SKILL.md'}` when it applies" in out
+
+
+def test_required_stack_loads_lead_both_companion_lists(installed: Path) -> None:
+    names = ["rules", "review", "slack-formatting", "internals", "ac-django"]
+    for name in names:
+        _write_skill(installed, name, f"# {name}")
+
+    result = _read_skill_contents_scoped(
+        names, primary_skills={"review"}, explicit_load_skills={"slack-formatting"}, skills_dir=installed
+    )
+
+    headers = ("--- STACK SKILLS", "--- REVIEW COMPANION SKILLS", "--- COMPANION SKILLS", "--- SKILL:")
+    positions = [result.index(header) for header in headers]
+    assert positions == sorted(positions), dict(zip(headers, positions, strict=True))
 
 
 def test_read_scoped_all_primary(tmp_path: Path) -> None:
