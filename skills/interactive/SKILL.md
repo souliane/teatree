@@ -262,7 +262,7 @@ When a running factory task needs something only this session has — a page or 
 
 To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
 
-Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `t3 <overlay> questions answer` or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
+Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
 ## Claude-only hook automation
 
