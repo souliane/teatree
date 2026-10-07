@@ -305,9 +305,10 @@ class TestHeadlessLaneWiresGovernor:
     #: or the ``…_verdict`` a queue walker holds across N rows so the classification
     #: costs one probe rather than N (#4098). Both resolve the same pure decision.
     _HEADLESS_CONSUMERS = ("agent_admission_denied_reason", "agent_admission_verdict")
-    #: The three headless chokepoints that must gate on the governor: the post_save
-    #: auto-enqueue, the drain safety net, and issue intake (#3644 / F9).
-    _HEADLESS_CHOKEPOINTS = ("core/signals.py", "core/tasks.py", "loop/scanners/issue_intake.py")
+    #: The headless chokepoints that must gate on the governor: the one admission walk the
+    #: post_save receiver and the drain safety net both run, and issue intake (#3644 / F9, #5051).
+    _HEADLESS_CHOKEPOINTS = ("core/task_dispatch.py", "loop/scanners/issue_intake.py")
+    _WALK_CALLERS = ("core/signals.py", "core/tasks.py")
 
     def test_agent_admission_module_consults_the_pure_governor_decision(self) -> None:
         assert module_references(self._HEADLESS_ADMISSION_MODULE, frozenset({"decide_admission"})), (
@@ -332,12 +333,15 @@ class TestHeadlessLaneWiresGovernor:
             "(the governor stops gating that lane): " + str(ungated)
         )
 
-    def test_the_drain_resolves_one_probe_per_row_rather_than_re_probing(self) -> None:
-        # #4098: nothing changes between iterations of the drain loop, so a per-row
-        # re-ask would return the same verdict N times at N times the cost. The drain
-        # must hold the VERDICT, never call the single-shot wrapper inside its loop.
-        assert module_calls("core/tasks.py", "agent_admission_verdict")
-        assert not module_calls("core/tasks.py", "agent_admission_denied_reason")
+    def test_the_receiver_and_the_drain_admit_through_the_one_walk(self) -> None:
+        assert [rel for rel in self._WALK_CALLERS if not module_calls(rel, "admit_waiting_tasks")] == []
+
+    def test_the_walk_resolves_one_probe_per_row_rather_than_re_probing(self) -> None:
+        # #4098: nothing changes between iterations of the walk, so a per-row re-ask
+        # would return the same verdict N times at N times the cost. The walk must hold
+        # the VERDICT, never call the single-shot wrapper inside its loop.
+        assert module_calls("core/task_dispatch.py", "agent_admission_verdict")
+        assert not module_calls("core/task_dispatch.py", "agent_admission_denied_reason")
 
     def test_the_interactive_lane_also_still_gates_on_the_governor(self) -> None:
         # The contract is "BOTH lanes", so the interactive verdict must stay wired too —

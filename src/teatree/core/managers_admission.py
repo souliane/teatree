@@ -31,27 +31,32 @@ def _cheap_phase_q() -> Q:
     return Q(phase__in=cheap_phase_spellings())
 
 
-def _lane_occupancy_q(now: datetime, *, cheap: bool | None) -> Q:
+def _unseated_q(now: datetime) -> Q:
+    """A row holding no live seat: never admitted, or its seat lapsed with the window."""
+    return Q(admitted_at__isnull=True) | Q(admitted_at__lte=now - ADMITTED_INFLIGHT_WINDOW)
+
+
+def _lane_occupancy_q(now: datetime, *, cheap: bool) -> Q:
     """The rows holding a seat in one cost class's lane at *now*.
 
     One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. ``cheap=None`` counts both classes. The two lanes PARTITION the queue —
+    bound at all. The two lanes PARTITION the queue —
     the expensive one is the exact complement of the cheap one — so an unregistered
     phase lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    membership = Q() if cheap is None else _cheap_phase_q() if cheap else ~_cheap_phase_q()
+    membership = _cheap_phase_q() if cheap else ~_cheap_phase_q()
     return membership & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
 
 
-def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool | None) -> LessThan:
+def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan:
     """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and

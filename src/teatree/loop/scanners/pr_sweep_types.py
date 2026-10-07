@@ -168,7 +168,7 @@ class MergeAttempt:
 
 @dataclass(frozen=True, slots=True)
 class BoundMergeResult:
-    """The outcome of :meth:`PrApiClient.merge_pr_squash_bound` (#4856).
+    """The outcome of :meth:`PrApiClient.merge_pr_bound` (#4856).
 
     Replaces the former ``(ok, sha)`` tuple, whose failure slot carried nothing —
     both forge adapters caught ``MergePreconditionError`` and discarded ``str(exc)``,

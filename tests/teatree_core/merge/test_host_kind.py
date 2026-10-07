@@ -78,7 +78,7 @@ class _GitLabApiStub:
         self.calls.append(endpoint)
         if "/pipelines" in endpoint:
             return [{"id": 1, "status": "success", "sha": _SHA}]
-        return {"iid": _MR_IID, "sha": _SHA, "draft": False, "state": "opened"}
+        return {"iid": _MR_IID, "sha": _SHA, "draft": False, "state": "opened", "title": "Tidy the widget"}
 
     def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
         self.calls.append(endpoint)

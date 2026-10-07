@@ -275,7 +275,7 @@ class GhPrApiClient:
         conclusion = str(match.get("conclusion") or "").strip().lower()
         return conclusion not in {"success", "neutral", "skipped", ""}
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge (#1985) — delegates to the keystone primitive.
 
         Replaces the former unbound ``gh pr merge --squash``: ``execute_bound_merge``
@@ -297,7 +297,7 @@ class GhPrApiClient:
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         """Merge the base into the PR branch, bound to *expected_head_oid* (#4063).
 
-        The SHA-bound sibling of :meth:`merge_pr_squash_bound`: GitHub refuses the
+        The SHA-bound sibling of :meth:`merge_pr_bound`: GitHub refuses the
         update (422) when the live head is no longer *expected_head_oid*, so a
         force-push in the TOCTOU window between the sweep's snapshot and this call
         can never merge into a head the sweep did not judge. Returns ``False`` on

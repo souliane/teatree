@@ -17,7 +17,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest
 from teatree.core.models.reviewer_identity import is_non_reviewer_role
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
@@ -49,7 +49,7 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
-    return (0, changed_files_stdout(joined), "")
+    return (0, merge_path_stdout(joined), "")
 
 
 class TestIsNonReviewerRoleUnit(TestCase):

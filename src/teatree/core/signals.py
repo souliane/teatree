@@ -4,7 +4,6 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
-from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.merge.refusal_settlement import connect_merge_refusal_settlement
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
@@ -278,52 +277,35 @@ def _auto_enqueue_task(
     instance: Task,
     **_kwargs: object,
 ) -> None:
-    """Auto-enqueue a PENDING task for execution when created or re-opened.
+    """Run the admission walk when a row starts waiting or reaches a terminal state and frees its seat.
 
-    A task whose ticket names a non-empty unknown overlay is never enqueued
+    A task whose ticket names a non-empty unknown overlay triggers no walk
     (souliane/teatree#1959): dispatching it would crash ``execute_task``
     — the drain safety-net fails such rows permanently instead. A blank overlay
     is the ambient single-overlay default and stays dispatchable.
 
-    A usage-window-parked task (PENDING with a future ``not_before``, Directive #3) is
-    never enqueued either. ``Task.park`` leaves the task PENDING, so this receiver fired
-    on the park's own save and re-armed the dispatch the park had just refused — the
-    self-feeding edge behind the measured 47,172 park rows on a single task in eight
-    hours. The drain and the claim CAS honour the same gate; the lane now stays quiesced
-    until ``usage_window_recovery`` releases the task at the window's re-arm instant.
+    A usage-window-parked task (PENDING with a future ``not_before``, Directive #3) triggers
+    none either. ``Task.park`` leaves the task PENDING, so this receiver fired on the park's
+    own save and re-armed the dispatch the park had just refused — the self-feeding edge
+    behind the measured 47,172 park rows on a single task in eight hours.
 
-    A frozen factory (``headless_admission_block_reason``) leaves the task PENDING too;
-    ``drain_queue_body`` re-admits it once the block lifts.
+    A failed walk never fails the save: the five-minute queue drain runs the same walk again.
     """
-    if instance.status != Task.Status.PENDING:
+    if instance.status == Task.Status.PENDING:
+        if instance.is_window_parked():
+            logger.debug("Task %s is window-parked until %s — not re-enqueuing", instance.pk, instance.not_before)
+            return
+        if not instance.ticket.has_dispatchable_overlay():
+            logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
+            return
+    elif instance.status not in Task.Status.terminal():
         return
-    if instance.is_window_parked():
-        logger.debug("Task %s is window-parked until %s — not re-enqueuing", instance.pk, instance.not_before)
-        return
-    if not instance.ticket.has_dispatchable_overlay():
-        logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
-        return
-    if blocked := headless_admission_block_reason():
-        logger.info("Deferring auto-enqueue of task %s: %s", instance.pk, blocked)
-        return
-    from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
-
-    admission = agent_admission_verdict()
-    # The governor brakes the dispatch lane at its admission chokepoint (F9), per the
-    # row's phase COST CLASS (#4098) — the same classification AND the same lane bound
-    # the drain applies, so the two chokepoints cannot diverge on which work a braked box
-    # still admits, nor on how much of it. The seat is taken before the dispatch, so a
-    # racing chokepoint cannot enqueue against a bound this one already spent (#4125).
-    # The task stays PENDING; the (also-gated) drain re-admits it once the governor clears.
-    if not admission.admit(int(instance.pk), instance.phase, at="auto-enqueue"):
-        return
-    from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.task_dispatch import admit_waiting_tasks  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
-        enqueue_execution(int(instance.pk), instance.phase)
-        logger.info("Auto-enqueued task %s (phase=%s)", instance.pk, instance.phase)
+        admit_waiting_tasks(at="auto-enqueue")
     except Exception:
-        logger.exception("Failed to auto-enqueue task %s", instance.pk)
+        logger.exception("Admission walk after saving task %s failed; the queue drain retries it", instance.pk)
 
 
 def _close_session_on_terminal_task(
