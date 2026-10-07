@@ -70,11 +70,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
 │                 holder + how many loops the active preset admits + whether   │
-│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
-│                 `ensure` spawns a detached worker iff the flock is free;     │
-│                 `drain` quiesces admission without stopping anything; `stop` │
-│                 / `restart` end the live worker and verify it against the    │
-│                 flock.                                                       │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet) +   │
+│                 how the agent admission ceiling is derived; `ensure` spawns  │
+│                 a detached worker iff the flock is free; `drain` quiesces    │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
@@ -5339,18 +5339,18 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 
  The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence
  owner). `status` reports the live holder + how many loops the active preset
- admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet);
- `ensure` spawns a detached worker iff the flock is free; `drain` quiesces
- admission without stopping anything; `stop` / `restart` end the live worker
- and verify it against the flock.
+ admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet) +
+ how the agent admission ceiling is derived; `ensure` spawns a detached worker
+ iff the flock is free; `drain` quiesces admission without stopping anything;
+ `stop` / `restart` end the live worker and verify it against the flock.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
-│ status   Report the worker: flock holder, admitted loops under the active    │
-│          preset, timers, staleness.                                          │
+│ status   Report the worker: flock holder, admitted loops, timers, staleness, │
+│          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
 │ drain    Quiesce the worker and wait for in-flight tasks to finish           │
 │          (drain-then-deploy).                                                │
@@ -5378,8 +5378,8 @@ Usage: t3 worker run [OPTIONS]
 ```
 Usage: t3 worker status [OPTIONS]
 
- Report the worker: flock holder, admitted loops under the active preset,
- timers, staleness.
+ Report the worker: flock holder, admitted loops, timers, staleness, and the
+ agent admission ceiling.
 
  Exits NON-ZERO when the loop fleet is stale.
 

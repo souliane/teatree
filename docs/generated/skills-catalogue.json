@@ -58,7 +58,7 @@
     },
     {
       "name": "interactive",
-      "summary": "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, and interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`"
+      "summary": "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`"
     },
     {
       "name": "internals",
