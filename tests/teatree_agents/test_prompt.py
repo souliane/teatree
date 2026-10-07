@@ -435,7 +435,7 @@ class TestBuildSystemContext(TestCase):
     def test_with_lifecycle_skill_scopes_loading(self) -> None:
         """When lifecycle_skill is set, only that skill + rules get full content."""
         tmp_dir = Path(tempfile.mkdtemp())
-        for name in ("rules", "test", "ac-django"):
+        for name in ("rules", "test", "ac-django", "workspace"):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
@@ -447,13 +447,15 @@ class TestBuildSystemContext(TestCase):
         with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
-                skills=["ac-django", "rules", "test"],
+                skills=["ac-django", "workspace", "rules", "test"],
                 lifecycle_skill="test",
             )
 
         assert "# test instructions" in ctx
         assert "# rules instructions" in ctx
         assert "# ac-django instructions" not in ctx
+        assert "REQUIRED: Load /ac-django via the Skill tool before you start" in ctx
+        assert "# workspace instructions" not in ctx
         assert "COMPANION SKILLS" in ctx
 
     def test_empty_skill_content(self) -> None:
@@ -869,6 +871,22 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
         assert "- ac-django: not embedded" not in ctx
         assert "- t3:demo-overlay: not embedded" not in ctx
         assert "/ac-django" in ctx
+
+    def test_the_directive_is_the_only_place_a_stack_skill_is_listed(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design"):
+            (tmp_dir / name).mkdir()
+            (tmp_dir / name / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                self._coding_task(),
+                skills=["ac-django", "ac-python", "code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+
+        assert "--- STACK SKILLS" not in ctx
+        for name in ("ac-django", "ac-python"):
+            assert [line for line in ctx.splitlines() if f"/{name}" in line] == [f"  - /{name}"]
 
 
 class TestCacheablePrefixStability(TestCase):

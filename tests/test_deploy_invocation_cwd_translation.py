@@ -34,11 +34,18 @@ CONTAINER_AUTO_ISOLATED_ROOT = "/home/teatree/.local/share/teatree-worktrees"
 
 UNSET = "<unset>"
 
+# Reports the value only when it is FORWARDED with `--env`, as docker would deliver it.
 DOCKER_STUB = f"""#!/usr/bin/env bash
 for arg in "$@"; do
     [ "$arg" = ps ] && exit 0
 done
-printf 'TEATREE_INVOCATION_CWD=%s\\n' "${{TEATREE_INVOCATION_CWD-{UNSET}}}"
+delivered='{UNSET}'
+previous=''
+for arg in "$@"; do
+    [ "$previous" = --env ] && [ "$arg" = TEATREE_INVOCATION_CWD ] && delivered="${{TEATREE_INVOCATION_CWD-{UNSET}}}"
+    previous="$arg"
+done
+printf 'TEATREE_INVOCATION_CWD=%s\\n' "$delivered"
 """
 
 

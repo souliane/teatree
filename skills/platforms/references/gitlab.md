@@ -312,7 +312,7 @@ glab mr note <MR_NUMBER> -R <REPO_PATH> -m 'Comment body here.
 A second line works directly inside the quotes.'
 ```
 
-For a body too complex to embed safely as a literal argument (single quotes/backticks, markdown images), use the Python + REST API recipe below instead of `glab mr note` — it never invokes `gh`/`glab` at all, so this concern doesn't apply to it. Note it also means the banned-terms/quote-scanner gates don't scan it (they only recognise `gh`/`glab`/`git`/`curl`-led segments as a publish) — compose that body carefully.
+For a body too complex to embed safely as a literal argument (single quotes/backticks, markdown images), use the Python + REST API recipe below instead of `glab mr note` — it never invokes `gh`/`glab` at all, so this concern doesn't apply to it. The banned-terms and quote-scanner gates still scan it: a python REST write to a forge URL is a publish, like a `gh`/`glab` or forge-bound `curl` write.
 
 ### Post or Update Note with Images — Always Use Python
 

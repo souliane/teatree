@@ -6,6 +6,7 @@ it runs the deterministic gates, calls ``ticket.ship()`` to enter PR_OPENED, and
 returns the PR URL once the worker completes.
 """
 
+import os
 import re
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -259,7 +260,8 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
     false SYNCED classification (#2937). The omitted-``--repo`` default is
     checked too: under the containerized ``t3`` the process cwd is the image
     WORKDIR, and "not on a feature branch" there is a verdict about a branch
-    nobody read. Returns ``(branch_name, None)`` on success, or
+    nobody read. A detached HEAD's push names its branch only in the
+    ``PRE_COMMIT_REMOTE_BRANCH`` prek sets for the pre-push hook. Returns ``(branch_name, None)`` on success, or
     ``("", <result>)`` — the early :class:`EnsurePrResult` the caller returns
     as-is — when validation stops the command before classification.
     """
@@ -273,6 +275,9 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
             ),
         )
     branch_name = branch or git.current_branch(repo=repo_path)
+    pushed_ref = os.environ.get("PRE_COMMIT_REMOTE_BRANCH", "")
+    if branch_name in {"", "HEAD"} and pushed_ref.startswith("refs/heads/"):
+        branch_name = pushed_ref.removeprefix("refs/heads/")
     if not branch_name or branch_name in {"HEAD", "main", "master"}:
         return "", EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
     return branch_name, None

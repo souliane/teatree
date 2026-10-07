@@ -10,7 +10,7 @@ from pathlib import Path
 
 from teatree.hooks._body_file_resolution import (
     BodyFileContext,
-    _append_file_payload,
+    append_file_payload,
     heredoc_files_map,
     unredirected_heredoc_bodies,
 )
@@ -44,7 +44,7 @@ class TestStaleFileVsHeredocSuperset:
         command = f"cat > {stale} <<EOF\nnew body acmecorp\nEOF\n"
         ctx = BodyFileContext(heredoc_files=heredoc_files_map(command, tokenize(command)), fail_closed_body_file=True)
         payloads: list[str] = []
-        _append_file_payload(str(stale), payloads, ctx, fail_closed=True, leader="gh")
+        append_file_payload(str(stale), payloads, ctx, fail_closed=True, leader="gh")
         joined = "\n".join(payloads)
         assert "acmecorp" in joined  # the real in-command body is scanned
         assert "old clean content" in joined  # the stale file is scanned too (superset)
@@ -53,7 +53,7 @@ class TestStaleFileVsHeredocSuperset:
         missing = tmp_path / "absent" / "body.md"
         ctx = BodyFileContext(heredoc_files={}, fail_closed_body_file=True)
         payloads: list[str] = []
-        _append_file_payload(str(missing), payloads, ctx, fail_closed=True, leader="gh")
+        append_file_payload(str(missing), payloads, ctx, fail_closed=True, leader="gh")
         assert payloads == [FAIL_CLOSED_SENTINEL]
 
 
