@@ -179,7 +179,7 @@ _QUARANTINED_PHASES = ("short_describe",)
 def _rendered_context(phase: str) -> str:
     ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{abs(hash(phase)) % 100_000}")
     task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
-    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata(), worktree_path=_REPO_ROOT)
+    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT)
     return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase))
 
 

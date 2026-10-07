@@ -11,7 +11,7 @@ from teatree.agents.skill_bundle import (
     stage_skills_for_dispatch,
 )
 from teatree.core.models import Task, TaskAttempt
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
 from teatree.types import SkillMetadata
 
@@ -24,11 +24,10 @@ def staged_skills_or_refusal(
     """The dispatch's ``(stage skills, bundle)``, or the recorded refusal that stops it before the harness."""
 
     def bundle(stage_skills: list[str]) -> list[str]:
-        worktree_path = dispatch_worktree_path(task.ticket)
         return resolve_skill_bundle(
             phase=phase,
             overlay_skill_metadata=overlay_skill_metadata,
-            worktree_path=worktree_path,
+            detection_root=dispatch_detection_root(task.ticket),
             stage_skills=stage_skills,
         )
 

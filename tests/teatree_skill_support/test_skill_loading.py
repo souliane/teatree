@@ -552,12 +552,12 @@ def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkey
 
 def test_detect_manage_py(tmp_path: Path):
     (tmp_path / "manage.py").touch()
-    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django", "ac-python"]
 
 
 def test_detect_django_in_pyproject(tmp_path: Path):
     (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["django>=4.2"]')
-    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django", "ac-python"]
 
 
 def test_detect_python_in_pyproject(tmp_path: Path):
@@ -577,7 +577,7 @@ def test_detect_fastapi_in_requirements_txt(tmp_path: Path):
 
 def test_detect_django_wins_over_fastapi_in_pyproject(tmp_path: Path):
     (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["django>=4.2", "fastapi>=0.115"]')
-    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django", "ac-python"]
 
 
 def test_detect_python_from_setup_py(tmp_path: Path):
@@ -604,7 +604,7 @@ def test_detect_walks_parents(tmp_path: Path):
     subdir = tmp_path / "a" / "b" / "c"
     subdir.mkdir(parents=True)
     (tmp_path / "manage.py").touch()
-    assert SkillLoadingPolicy.detect_framework_skills(subdir) == ["ac-django"]
+    assert SkillLoadingPolicy.detect_framework_skills(subdir) == ["ac-django", "ac-python"]
 
 
 # ── detect_internals_skill ──────────────────────────────────────────

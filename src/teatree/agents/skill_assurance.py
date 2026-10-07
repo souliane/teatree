@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.agents.skill_injection import required_load_line
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 _EVIDENCE = re.compile(r"^[A-Za-z0-9_./:# -]{4,160}$")
@@ -100,7 +101,7 @@ def recover_truncated_inline_skills(
             continue
         inline.discard(name)
         explicit.add(bare)
-        lines.append(f"REQUIRED: Load /{bare} via the Skill tool before work; if unavailable, read {path} in full.")
+        lines.append(required_load_line(bare, path))
     return inline, explicit, "\n".join(lines)
 
 

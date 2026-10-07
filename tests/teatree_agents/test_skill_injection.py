@@ -13,6 +13,14 @@ from teatree.agents.skill_injection import (
 from teatree.skill_support import index as skill_index
 from teatree.skill_support.index import resolve_skill_md
 
+
+@pytest.fixture
+def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # A declared apm pin name (ac-django, ac-python) may only resolve from an install root.
+    monkeypatch.setattr(skill_index, "install_roots", lambda: [tmp_path])
+    return tmp_path
+
+
 # --- _read_skill_contents ---
 
 
@@ -101,16 +109,16 @@ def test_is_primary_matches_absolute_path() -> None:
 # --- _read_skill_contents_scoped ---
 
 
-def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
-    for name in ("rules", "test", "acme-conventions", "workspace"):
-        d = tmp_path / name
+def test_read_scoped_embeds_primary_and_summarizes_companions(installed: Path) -> None:
+    for name in ("rules", "test", "ac-django", "acme-conventions", "workspace"):
+        d = installed / name
         d.mkdir()
         (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
 
     result = _read_skill_contents_scoped(
-        ["acme-conventions", "workspace", "rules", "test"],
+        ["ac-django", "acme-conventions", "workspace", "rules", "test"],
         primary_skills={"test"},
-        skills_dir=tmp_path,
+        skills_dir=installed,
     )
     # Primary skills get full content
     assert "--- SKILL: test ---" in result
@@ -118,11 +126,14 @@ def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) ->
     # rules is always fully loaded
     assert "--- SKILL: rules ---" in result
     assert "# rules full content" in result
-    # Companion skills get summary only
+    # Companion skills get summary only; a stack skill is a required load instead
     assert "COMPANION SKILLS" in result
     assert "- acme-conventions:" in result
+    assert "- ac-django:" not in result
+    assert "REQUIRED: Load /ac-django via the Skill tool before you start" in result
     assert "- workspace:" in result
     assert "# acme-conventions full content" not in result
+    assert "# ac-django full content" not in result
     assert "# workspace full content" not in result
 
 
@@ -135,6 +146,47 @@ def test_companion_line_names_the_absolute_skill_md_to_read(tmp_path: Path) -> N
 
     assert f"- workspace: not embedded — Read `{tmp_path / 'workspace' / 'SKILL.md'}` when it applies" in result
     assert "- ghost: not embedded — no SKILL.md resolves for it on this host" in result
+
+
+def test_stack_skills_lead_the_block_as_required_loads_never_companion_lines(installed: Path) -> None:
+    for name in ("rules", "review", "workspace", "ac-django", "ac-python"):
+        _write_skill(installed, name, f"# {name} body\n## A section\ntext")
+
+    result = _read_skill_contents_scoped(
+        ["rules", "review", "workspace", "ac-django", "ac-python"], primary_skills={"review"}, skills_dir=installed
+    )
+
+    for name in ("ac-django", "ac-python"):
+        directive = (
+            f"REQUIRED: Load /{name} via the Skill tool before you start; "
+            f"if this lane has no Skill tool, Read `{installed / name / 'SKILL.md'}` in full."
+        )
+        assert directive in result
+        assert result.index(directive) < result.index("--- SKILL:")
+        assert f"# {name} body" not in result
+    assert not [line for line in result.splitlines() if "/ac-" in line and "when it applies" in line]
+    assert f"- workspace: not embedded — Read `{installed / 'workspace' / 'SKILL.md'}` when it applies" in result
+
+
+def test_the_all_inline_render_loads_stack_skills_instead_of_embedding_them(installed: Path) -> None:
+    for name in ("rules", "ac-django", "ac-python"):
+        _write_skill(installed, name, f"# {name} body")
+
+    result = _read_skill_contents(["rules", "ac-django", "ac-python"], skills_dir=installed)
+
+    assert "# rules body" in result
+    for name in ("ac-django", "ac-python"):
+        assert f"REQUIRED: Load /{name} via the Skill tool before you start" in result
+        assert f"# {name} body" not in result
+
+
+def test_an_unresolvable_stack_skill_is_still_a_required_load_that_names_the_gap(tmp_path: Path) -> None:
+    result = _read_skill_contents(["ac-python"], skills_dir=tmp_path)
+
+    assert (
+        "REQUIRED: Load /ac-python via the Skill tool before you start; no SKILL.md resolves for it on this host."
+        in result
+    )
 
 
 def test_reach_line_leads_the_skill_block_before_the_first_embed(tmp_path: Path) -> None:

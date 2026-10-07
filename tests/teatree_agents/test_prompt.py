@@ -441,7 +441,7 @@ class TestBuildSystemContext(TestCase):
     def test_with_lifecycle_skill_scopes_loading(self) -> None:
         """When lifecycle_skill is set, only that skill + rules get full content."""
         tmp_dir = Path(tempfile.mkdtemp())
-        for name in ("rules", "test", "acme-conventions"):
+        for name in ("rules", "test", "workspace"):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
@@ -453,13 +453,15 @@ class TestBuildSystemContext(TestCase):
         with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
-                skills=["acme-conventions", "rules", "test"],
+                skills=["ac-django", "workspace", "rules", "test"],
                 lifecycle_skill="test",
             )
 
         assert "# test instructions" in ctx
         assert "# rules instructions" in ctx
-        assert "# acme-conventions instructions" not in ctx
+        assert "--- SKILL: ac-django ---" not in ctx
+        assert "REQUIRED: Load /ac-django via the Skill tool before you start" in ctx
+        assert "# workspace instructions" not in ctx
         assert "COMPANION SKILLS" in ctx
 
     def test_empty_skill_content(self) -> None:
@@ -876,6 +878,22 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
         assert "- t3:demo-overlay: not embedded" not in ctx
         assert "/ac-django" in ctx
 
+    def test_the_directive_is_the_only_place_a_stack_skill_is_listed(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design"):
+            (tmp_dir / name).mkdir()
+            (tmp_dir / name / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                self._coding_task(),
+                skills=["ac-django", "ac-python", "code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+
+        assert "--- STACK SKILLS" not in ctx
+        for name in ("ac-django", "ac-python"):
+            assert [line for line in ctx.splitlines() if f"/{name}" in line] == [f"  - /{name}"]
+
 
 class TestCacheablePrefixStability(TestCase):
     """The stable framing leads the append; per-task content trails it.
@@ -1012,7 +1030,7 @@ class TestTheReviewRunEmbedsItsRequiredCompanion(TestCase):
         ):
             stage = stage_skills_for_dispatch(task.phase)
             skills = resolve_skill_bundle(
-                phase=task.phase, overlay_skill_metadata={}, worktree_path=worktree, stage_skills=stage
+                phase=task.phase, overlay_skill_metadata={}, detection_root=Path(worktree), stage_skills=stage
             )
             context = build_system_context(task, skills=skills, lifecycle_skill="", stage_skills=stage)
             inline, explicit = required_skill_delivery(

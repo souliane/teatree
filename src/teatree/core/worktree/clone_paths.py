@@ -9,7 +9,13 @@ resolve a clone.
 import logging
 from pathlib import Path
 
-from teatree.core.models import Worktree
+from django.core.exceptions import ImproperlyConfigured
+
+from teatree.config import clone_root
+from teatree.core.models import Ticket, Worktree
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.worktree.dev_repo import issue_url_slug
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 
@@ -53,6 +59,35 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
             matches[0],
         )
     return matches[0]
+
+
+def dispatch_detection_root(ticket: Ticket) -> Path | None:
+    """Where a dispatch for *ticket* detects its stack skills: its worktree, else its repo's clone.
+
+    Planning is queued alongside provisioning, so a ticket with no worktree yet is the normal
+    case. A ticket naming a repo with no clone here answers ``None``, never another repo's clone.
+    """
+    if worktree := dispatch_worktree_path(ticket):
+        return Path(worktree)
+    workspace = clone_root()
+    for name in _named_repos(ticket):
+        if (clone := find_clone_path(workspace, name)) is not None:
+            return clone
+    return None
+
+
+def _named_repos(ticket: Ticket) -> list[str]:
+    """*ticket*'s own repos, else its issue URL's repo, else (naming none) its overlay's repos."""
+    if repos := [repo for repo in ticket.repos or [] if isinstance(repo, str) and repo]:
+        return repos
+    if slug := issue_url_slug(ticket.issue_url):
+        return [slug]
+    try:
+        overlay = get_overlay_for_ticket(ticket)
+    except ImproperlyConfigured:
+        logger.warning("Ticket %s names no repo and overlay %r resolves none", ticket.pk, ticket.overlay, exc_info=True)
+        return []
+    return list(overlay.get_workspace_repos())
 
 
 def unambiguous_clone_path(workspace: Path, repo_name: str) -> Path | None:

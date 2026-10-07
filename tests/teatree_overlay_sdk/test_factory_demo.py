@@ -9,6 +9,7 @@ import ast
 import contextlib
 from collections.abc import AsyncIterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -38,6 +39,8 @@ class _DemoFactoryHarness:
 
 class TestOverlaySdkDrivesFullCycle(TestCase):
     def test_demo_overlay_dispatch_attempt_cost_via_overlay_sdk_only(self) -> None:
+        # A repo-less ticket detects stack skills from the cwd; keep the suite's own checkout out of it.
+        self.enterContext(contextlib.chdir(self.enterContext(TemporaryDirectory())))
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)

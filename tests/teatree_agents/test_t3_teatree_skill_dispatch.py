@@ -33,7 +33,7 @@ class TestT3TeatreeSkillDispatch(TestCase):
         return resolve_skill_bundle(
             phase=phase,
             overlay_skill_metadata=TeatreeOverlay().metadata.get_skill_metadata(),
-            worktree_path=worktree,
+            detection_root=worktree,
             stage_skills=[],
         )
 

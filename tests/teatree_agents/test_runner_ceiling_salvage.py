@@ -28,6 +28,7 @@ from teatree.core.modelkit.task_failure_taxonomy import RecoveryStrategy, classi
 from teatree.core.models import ConfigSetting, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_handoff import schedule_resume
 from teatree.loop.transient_requeue import requeue_transient_failed
+from teatree.skill_support import index as skill_index
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text, assistant_tool_use, result_message
 
@@ -226,6 +227,8 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
 
         with TemporaryDirectory() as directory:
             for name in (
+                "ac-django",
+                "ac-python",
                 "code-review",
                 "interactive",
                 "internals",
@@ -242,6 +245,7 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
             with (
                 patch.object(skill_injection_mod, "harness_skills_dirs", return_value=skill_dirs),
                 patch.object(skill_assurance_mod, "harness_skills_dirs", return_value=skill_dirs),
+                patch.object(skill_index, "install_roots", return_value=skill_dirs),
             ):
                 self._dispatch(task, [assistant_tool_use(), _max_turns()])
 
