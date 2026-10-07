@@ -55,6 +55,8 @@ class _ReviewDispatchProbe(TestCase):
         with TemporaryDirectory() as directory:
             # Keep this gate test independent of the host's installed skills.
             for skill_name in (
+                "ac-django",
+                "ac-python",
                 "code-review",
                 "interactive",
                 "internals",

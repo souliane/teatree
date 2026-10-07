@@ -325,6 +325,28 @@ class TestEnsurePr(TestCase):
         assert "is not a git checkout" in str(result["error"])
         assert "--repo" in str(result["error"])
 
+    def _classified_branch(self, head: str) -> str:
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value=head),
+            patch.object(pr_command, "classify_branch") as classify,
+        ):
+            classify.side_effect = lambda repo, branch: BranchReport(
+                repo=repo, branch=branch, status=BranchStatus.SYNCED, ahead_count=0
+            )
+            call_command("pr", "ensure-pr")
+        return classify.call_args.args[1]
+
+    def test_a_detached_push_classifies_the_branch_the_hook_names(self) -> None:
+        self._monkeypatch.setenv("PRE_COMMIT_REMOTE_BRANCH", "refs/heads/feat")
+
+        assert self._classified_branch("HEAD") == "feat"
+
+    def test_an_attached_push_classifies_the_checked_out_branch(self) -> None:
+        self._monkeypatch.setenv("PRE_COMMIT_REMOTE_BRANCH", "refs/heads/other")
+
+        assert self._classified_branch("feat") == "feat"
+
     def test_classify_branch_git_failure_surfaces_as_structured_error(self) -> None:
         """#2937.
 
