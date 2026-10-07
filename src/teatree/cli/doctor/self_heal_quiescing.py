@@ -23,19 +23,18 @@ onto a mismatched control DB — the two schema directions are separate terms of
 ``claim_admission_block_reason`` composition and are untouched.
 """
 
-import datetime as dt
 import os
 from itertools import starmap
 
 import typer
 
 from teatree.cli.doctor.deploy_liveness import DeployLiveness, probe_deploy_liveness
-from teatree.loop.drain import QUIESCING_SETTING
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS, QuiesceStatus, quiesce_status
 
 #: The stage that SETS the gate. Every later one needs ``deploy.sh`` still alive, so once
 #: liveness proves it is not, this is the only stage that could have been legitimately in
 #: flight — which is what makes its own timeout the floor for a proven-dead repair.
-_DRAIN_STAGE: tuple[str, int] = ("TEATREE_DRAIN_TIMEOUT", 1800)
+_DRAIN_STAGE: tuple[str, int] = ("TEATREE_DRAIN_TIMEOUT", DEFAULT_DRAIN_TIMEOUT_SECONDS)
 #: Every BOUNDED stage ``deploy/deploy.sh`` runs between the drain that sets the gate
 #: and the ``resume_admission`` that clears it, as ``(env var, deploy.sh default)``. The
 #: staged convergence (#4214) runs them SERIALLY inside one gate-ON window: the stage-4
@@ -53,12 +52,6 @@ _DEPLOY_STAGE_BUDGETS: tuple[tuple[str, int], ...] = (
 #: image pull they trigger. Bounded on purpose: the sum has to stay finite, or a genuinely
 #: stranded gate never reddens.
 _UNTIMED_STAGE_SLACK_SECONDS = 600
-
-
-def _now() -> dt.datetime:
-    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
-
-    return timezone.now()
 
 
 def _stage_budget(name: str, default: int) -> int:
@@ -80,22 +73,6 @@ def quiescing_repair_floor_seconds() -> int:
     window a deliberate operator pause gets before the doctor undoes it.
     """
     return _stage_budget(*_DRAIN_STAGE) + _UNTIMED_STAGE_SLACK_SECONDS
-
-
-def _gate_age_seconds() -> float | None:
-    """Seconds since the newest ON ``worker_quiescing`` row was written, or ``None``.
-
-    ``None`` means no DB row carries the gate — it resolves ON from env or file, which
-    no deploy could have written, so nothing can date it.
-    """
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
-    written = [
-        row.updated_at
-        for row in ConfigSetting.objects.filter(key=QUIESCING_SETTING)
-        if row.value is True  # a JSONField holds any shape; only a literal ON dates the gate
-    ]
-    return (_now() - max(written)).total_seconds() if written else None
 
 
 def _is_stranded(age: float | None, liveness: DeployLiveness) -> bool:
@@ -147,16 +124,30 @@ def _why_not_cleared(liveness: DeployLiveness) -> str:
     )
 
 
+def _warn_on_runs_that_did_not_checkpoint(status: QuiesceStatus) -> None:
+    """A run still CLAIMED past the drain stage missed its heartbeat checkpoint; the deploy will contain it."""
+    drain_stage = _stage_budget(*_DRAIN_STAGE)
+    age = status.age_seconds or 0.0
+    if not status.in_flight or age < drain_stage:
+        return
+    pks = ", ".join(str(pk) for pk in status.in_flight)
+    typer.echo(
+        f"WARN  worker_quiescing has stood {age / 60:.0f} min, past the {drain_stage}s drain "
+        f"stage, and task(s) {pks} are still CLAIMED — they did not checkpoint at their heartbeat, so the deploy "
+        "contains them and they re-queue when their lease lapses."
+    )
+
+
 def check_stranded_quiescing_gate() -> bool:
     """AUTO-REPAIR (not just FAIL) a ``worker_quiescing`` gate no deploy explains (#3983, #4359)."""
     try:
-        from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 — deferred: heavy config import
-
-        if not worker_is_quiescing():
+        status = quiesce_status()
+        if status is None:
             return True
-        age = _gate_age_seconds()
+        age = status.age_seconds
         liveness = probe_deploy_liveness()
         if not _is_stranded(age, liveness):
+            _warn_on_runs_that_did_not_checkpoint(status)
             return True
         blocked = _clear_the_gate() if _repair_authorised(liveness) else _why_not_cleared(liveness)
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run

@@ -4,9 +4,10 @@
 Pins the two halves of the rolling deploy across the deploy artifacts so a future
 edit cannot silently drop them.
 
-Piece A (debounce): ``deploy.yml`` serializes on a fixed ``deploy`` group and NEVER
-cancels a running convergence (``cancel-in-progress: false``); ``deploy.sh``
-fast-forwards the checkout to latest main.
+Piece A (debounce): ``deploy.yml``'s deploy job serializes on a fixed ``deploy`` group
+and NEVER cancels a running convergence (``cancel-in-progress: false``); a push first
+waits in a ``debounce`` job a newer push cancels, so a merge burst costs one deploy;
+``deploy.sh`` fast-forwards the checkout to latest main.
 
 Piece B (drain): ``deploy.sh`` drains the running worker before the image swap;
 ``entrypoint.sh`` clears ``worker_quiescing`` on the fresh worker so admission
@@ -21,13 +22,18 @@ import subprocess
 import time
 from pathlib import Path
 from typing import NamedTuple
+from unittest import mock
 
 import pytest
 import yaml
 
+from teatree.cli.doctor.self_heal_quiescing import quiescing_deploy_budget_seconds
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
+
 _ROOT = Path(__file__).resolve().parents[1]
 _DEPLOY_YML = _ROOT / ".github" / "workflows" / "deploy.yml"
 _DEPLOY_SH = _ROOT / "deploy" / "deploy.sh"
+_ROLL_SH = _ROOT / "deploy" / "roll.sh"
 _FF_CHECKOUT_SH = _ROOT / "deploy" / "fast-forward-checkout.sh"
 _ENTRYPOINT_SH = _ROOT / "deploy" / "entrypoint.sh"
 _COMPOSE_YML = _ROOT / "deploy" / "docker-compose.yml"
@@ -291,19 +297,50 @@ def _deploy_workflow() -> dict:
     return yaml.safe_load(_DEPLOY_YML.read_text(encoding="utf-8"))
 
 
+def _deploy_job() -> dict:
+    return _deploy_workflow()["jobs"]["deploy"]
+
+
 class TestDeployDebounce:
     def test_concurrency_group_is_the_fixed_deploy_group(self) -> None:
-        assert str(_deploy_workflow()["concurrency"]["group"]) == "deploy", (
-            "deploy.yml must serialize on ONE fixed 'deploy' group so a merge train "
+        assert str(_deploy_job()["concurrency"]["group"]) == "deploy", (
+            "the deploy job must serialize on ONE fixed 'deploy' group so a merge train "
             "coalesces onto the single box instead of racing convergences."
         )
 
     def test_never_cancels_a_running_convergence(self) -> None:
-        cancel = _deploy_workflow()["concurrency"]["cancel-in-progress"]
+        cancel = _deploy_job()["concurrency"]["cancel-in-progress"]
         assert cancel is False, (
             "cancel-in-progress must be false — a superseding merge must never cancel a "
             "RUNNING convergence (an in-flight worker drain) mid-run."
         )
+
+    def test_the_workflow_itself_declares_no_concurrency_group(self) -> None:
+        assert "concurrency" not in _deploy_workflow(), (
+            "a workflow-level group queues whole runs, the debounce job included, behind the deploy "
+            "group again, so a merge burst stops coalescing."
+        )
+
+    def test_a_newer_merge_cancels_the_older_runs_debounce(self) -> None:
+        debounce = _deploy_workflow()["jobs"]["debounce"]
+        assert debounce["concurrency"]["group"] != _deploy_job()["concurrency"]["group"], (
+            "the debounce needs its own group: cancelling in the deploy group would cut a running convergence"
+        )
+        assert debounce["concurrency"]["cancel-in-progress"] is True
+
+    def test_the_debounce_waits_only_on_a_push(self) -> None:
+        debounce = _deploy_workflow()["jobs"]["debounce"]
+        assert debounce["if"] == "github.event_name == 'push'", "a manual dispatch deploys at once"
+        assert any(re.fullmatch(r"sleep \d+", str(step.get("run", "")).strip()) for step in debounce["steps"])
+
+    def test_the_deploy_runs_only_after_a_debounce_that_was_not_cancelled(self) -> None:
+        job = _deploy_job()
+        assert job["needs"] == "debounce"
+        guard = str(job["if"])
+        assert "!cancelled()" in guard
+        assert "needs.debounce.result" in guard
+        assert '"success"' in guard
+        assert '"skipped"' in guard, "a skipped debounce (workflow_dispatch) must still deploy"
 
     def test_deploy_script_fast_forwards_to_latest_main(self) -> None:
         # The fetch/pull pair now lives in deploy/fast-forward-checkout.sh, which
@@ -335,15 +372,27 @@ class TestDeployDebounce:
             "the flock guard must run BEFORE the worker drain, so a second convergence never starts a competing drain."
         )
 
-    def test_job_timeout_exceeds_the_drain_window(self) -> None:
-        # If the GitHub job timeout is below the deploy.sh drain window, GitHub
-        # abandons a still-running remote deploy and releases the concurrency
-        # group early — the overlap that stranded admission. 1800s == 30 min.
-        timeout_minutes = int(_deploy_workflow()["jobs"]["deploy"]["timeout-minutes"])
-        assert timeout_minutes > 30, (
-            "deploy job timeout-minutes must exceed the 30-min (1800s) drain window plus "
-            "build/up/health, or GitHub abandons the in-flight deploy and overlaps runs."
+    def test_job_timeout_covers_every_bounded_stage_of_the_convergence(self) -> None:
+        # If the GitHub job timeout is below what deploy.sh itself allows, GitHub abandons a
+        # still-running remote deploy and releases the concurrency group early — the overlap
+        # that stranded admission. The gate-ON budget counts the drain once; stage 4 drains again.
+        with mock.patch.dict("os.environ", {}, clear=True):
+            worst_case = quiescing_deploy_budget_seconds() + DEFAULT_DRAIN_TIMEOUT_SECONDS
+        timeout_minutes = int(_deploy_job()["timeout-minutes"])
+        assert timeout_minutes * 60 >= worst_case, (
+            "deploy job timeout-minutes must cover both drains, the init wait, the admin swap and the "
+            "resume, or GitHub abandons the in-flight deploy and overlaps runs."
         )
+
+    def test_every_restated_drain_default_is_the_one_default(self) -> None:
+        deploy_sh = _DEPLOY_SH.read_text(encoding="utf-8")
+        restated = [int(value) for value in re.findall(r"TEATREE_DRAIN_TIMEOUT:-(\d+)", deploy_sh)]
+        roll = re.search(r"^DRAIN_TIMEOUT=(\d+)$", _ROLL_SH.read_text(encoding="utf-8"), re.MULTILINE)
+        assert roll is not None, "roll.sh's drain default moved — re-anchor this pin"
+        restated.append(int(roll.group(1)))
+
+        assert len(restated) == 4
+        assert set(restated) == {DEFAULT_DRAIN_TIMEOUT_SECONDS}
 
 
 class TestDeployDrain:

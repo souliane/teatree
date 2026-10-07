@@ -45,7 +45,7 @@ IMAGE="${TEATREE_IMAGE_REPOSITORY:-teatree-factory}:$TO"
 
 # The grace the roller receives (its own default unless --drain-timeout is passed), which the
 # record's deadline and the lock's reclaim age must outlast.
-DRAIN_TIMEOUT=1800
+DRAIN_TIMEOUT=600
 previous=""
 for arg in "$@"; do
     [ "$previous" != --drain-timeout ] || DRAIN_TIMEOUT="$arg"
