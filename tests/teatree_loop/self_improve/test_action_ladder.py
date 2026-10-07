@@ -12,8 +12,10 @@ from django.utils import timezone
 
 from teatree.core import notify as notify_module
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
-from teatree.core.models import BotPing, SelfImproveFiring, Ticket
+from teatree.core.models import BotPing, DeferredQuestion, SelfImproveFiring, Task, Ticket
 from teatree.core.notify_types import DELIVERED, NotifyReason, blocked
+from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
+from teatree.core.tasks import execute_provision
 from teatree.loop.self_improve import (
     SLACK_RATE_CAP_SECONDS,
     ActionRung,
@@ -31,6 +33,7 @@ from teatree.loop.self_improve.detectors import (
     StaleStatuslineEntryDetector,
     TelemetryActionGapDetector,
 )
+from tests.factories import record_test_plan
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -186,6 +189,61 @@ class ActionLadderBehaviourTests(TestCase):
         assert again.firing.ticket_id == ticket.pk
         assert Ticket.objects.count() == 1
         assert ticket.tasks.count() == 1
+
+    def test_ticket_rung_walks_the_repair_ticket_to_work_started_so_planning_can_complete(self) -> None:
+        result = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::disk", requested_rung=ActionRung.TICKET)
+        )
+
+        assert result is not None
+        ticket = Ticket.objects.get(pk=result.firing.ticket_id)
+        assert ticket.state == Ticket.State.WORK_STARTED
+        planning = ticket.tasks.get(phase="planning", status=Task.Status.PENDING)
+        assert "pressure_incident" in planning.execution_reason
+
+        record_test_plan(ticket)
+        Task.objects.filter(pk=planning.pk).update(status=Task.Status.COMPLETED)
+        planning.refresh_from_db()
+        planning._apply_phase_transition()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_repair_ticket_never_asks_the_owner_about_provisioning_even_with_the_retries_spent(self) -> None:
+        result = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::swap", requested_rung=ActionRung.TICKET)
+        )
+        assert result is not None
+        ticket = Ticket.objects.get(pk=result.firing.ticket_id)
+
+        execute_provision.call(ticket.pk, len(NO_REPOS_RETRY_DELAYS))
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_existing_not_started_repair_ticket_without_tasks_is_walked_to_work_started(self) -> None:
+        firing = record_firing(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::io"), action=ActionRung.TICKET
+        )
+        linked = Ticket.objects.create(overlay="t3-teatree", kind=Ticket.Kind.FIX, extra={"source": "self_improve"})
+        SelfImproveFiring.objects.filter(pk=firing.pk).update(ticket=linked)
+
+        run_action_ladder(
+            _report(
+                detector="pressure_incident",
+                dedup_key="pressure_incident::io",
+                state_hash_value="h2",
+                requested_rung=ActionRung.TICKET,
+            )
+        )
+
+        linked.refresh_from_db()
+        assert linked.state == Ticket.State.WORK_STARTED
+        assert linked.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
 
     def test_severe_pressure_can_open_internal_ticket_on_first_detection(self) -> None:
         result = run_action_ladder(

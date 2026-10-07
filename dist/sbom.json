@@ -587,7 +587,7 @@
     },
     {
       "bom-ref": "requirements-L128",
-      "description": "requirements line 128: mcp==2.2.0",
+      "description": "requirements line 128: mcp==2.3.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -596,13 +596,13 @@
         }
       ],
       "name": "mcp",
-      "purl": "pkg:pypi/mcp@2.2.0",
+      "purl": "pkg:pypi/mcp@2.3.0",
       "type": "library",
-      "version": "2.2.0"
+      "version": "2.3.0"
     },
     {
       "bom-ref": "requirements-L132",
-      "description": "requirements line 132: mcp-types==2.2.0",
+      "description": "requirements line 132: mcp-types==2.3.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -611,9 +611,9 @@
         }
       ],
       "name": "mcp-types",
-      "purl": "pkg:pypi/mcp-types@2.2.0",
+      "purl": "pkg:pypi/mcp-types@2.3.0",
       "type": "library",
-      "version": "2.2.0"
+      "version": "2.3.0"
     },
     {
       "bom-ref": "requirements-L134",

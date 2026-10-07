@@ -11,6 +11,7 @@ import pytest
 
 from teatree.quality.durations_freshness import (
     MAX_REFRESH_AGE,
+    DurationsFreshness,
     DurationsHistoryUnreadableError,
     _shallow_boundary_commits,
     measure_durations_freshness,
@@ -48,6 +49,19 @@ def _repo_with_durations(tmp_path: Path, commit_at: CommitAt, when: dt.datetime)
     run_git(repo, "add", "dev/.test_durations")
     commit_at(repo, "refresh durations", when)
     return repo
+
+
+def _aged(days: int) -> DurationsFreshness:
+    return DurationsFreshness(last_refreshed_at=_NOW - dt.timedelta(days=days), age=dt.timedelta(days=days))
+
+
+class TestTheThresholdFollowsTheWeeklyCadence:
+    def test_one_missed_weekly_attempt_does_not_page(self) -> None:
+        """A skipped Sunday, then the next refresh merged two days after it opened."""
+        assert not _aged(16).is_stale
+
+    def test_three_missed_weekly_attempts_page(self) -> None:
+        assert _aged(21).is_stale
 
 
 class TestMeasureDurationsFreshness:

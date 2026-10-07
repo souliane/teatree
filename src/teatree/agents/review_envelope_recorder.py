@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 from django.db import transaction
 
 from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
+from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
 from teatree.core.gates.integration_review_gate import distinct_repos
@@ -36,7 +37,12 @@ from teatree.core.models import (
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
 from teatree.core.models.review_evidence import ReviewEvidenceError
-from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
+from teatree.core.models.review_target import (
+    ReviewTarget,
+    review_target_for_task,
+    unattachable_verdict_refusal,
+    verdict_at,
+)
 from teatree.core.models.reviewer_identity import (
     assigned_reviewer_identity,
     is_independent_reviewer_identity,
@@ -49,7 +55,7 @@ from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
-    from teatree.core.models.types import RubricGrade
+    from teatree.core.models.types import FixRecord, RubricGrade
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
 #: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
@@ -119,34 +125,17 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     the verdict and the grades land in ONE transaction — see :func:`_record_verdict_and_grades`
     for why that ordering is load-bearing.
 
-    A non-reviewing phase, or a result without a ``review_verdict``, is a no-op. So is a
-    task answerable for NO pull request — an author-role reviewing task keyed by an issue
-    URL is a pre-PR self-review: its verdict stays on the task attempt, where the FSM
-    disposition (``SelfReview``) reads it and a HOLD keeps the ticket in TESTED. A task that
-    IS answerable for one and cannot persist there fails loudly instead (#4308).
+    A non-reviewing phase, or a result without a ``review_verdict``, is a no-op. So is an
+    author's pre-PR self-review, whose verdict stays on the task attempt. Any other verdict
+    that reaches no pull request, or cannot persist on the one it reaches, fails loudly (#4308).
     """
     resolved_phase = normalize_phase(phase or task.phase)
     envelope = _returned_review_verdict(result, phase=resolved_phase)
-    target = review_target_for_task(task) if envelope is not None else None
-    if envelope is None or target is None:
+    if envelope is None:
         return ""
-    if not target.head_sha:
-        return (
-            f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be persisted: this review is answerable for "
-            f"{target.slug}#{target.pr_id} but no pull request head is recorded for it, so the "
-            f"verdict would bind to no tree and no merge guard could ever read it"
-        )
-
-    binding = resolve_verdict_head(
-        asserted=str(envelope.get("reviewed_sha") or "").strip(),
-        dispatch_head=target.head_sha,
-        pr=PrRef(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind),
-    )
-    if binding.error:
-        if binding.superseded:
-            _supersede_moved_head(target)
-        return binding.error
-    target = dataclasses.replace(target, head_sha=binding.head)
+    target, refusal = _bound_review_target(task, envelope)
+    if target is None:
+        return refusal
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
@@ -165,6 +154,29 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
         or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
         or _settle_recorded_verdict(task, target, rubric=rubric)
     )
+
+
+def _bound_review_target(task: Task, envelope: ReviewVerdictEnvelope) -> tuple[ReviewTarget | None, str]:
+    """The PR + head *task*'s verdict binds to, or ``None`` with the refusal (``""`` for a pre-PR self-review)."""
+    target = review_target_for_task(task)
+    if target is None:
+        return None, unattachable_verdict_refusal(task)
+    if not target.head_sha and not target.bind_live_head:
+        return None, (
+            f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be persisted: this review is answerable for "
+            f"{target.slug}#{target.pr_id} but no pull request head is recorded for it, so the "
+            f"verdict would bind to no tree and no merge guard could ever read it"
+        )
+    binding = resolve_verdict_head(
+        asserted=str(envelope.get("reviewed_sha") or "").strip(),
+        dispatch_head=target.head_sha,
+        pr=PrRef(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind),
+    )
+    if binding.error:
+        if binding.superseded:
+            _supersede_moved_head(target)
+        return None, binding.error
+    return dataclasses.replace(target, head_sha=binding.head), ""
 
 
 def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEnvelope") -> str:
@@ -280,7 +292,11 @@ def _record_verdict_and_grades(
     vouch for a tree the verdict does not.
     """
     rubric, grades = rubric_grades
+    fix_record = result.get("fix_record")
+    if fix_record is not None and (refusal := fix_record_refusal(fix_record)):
+        return refusal
     ticket = gated_ticket_for_review_task(task)
+    merge_safe = str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -292,17 +308,15 @@ def _record_verdict_and_grades(
     integration_review = result.get("integration_review")
     try:
         with transaction.atomic():
-            if (
-                ticket is not None
-                and str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
-                and isinstance(anti_vacuity, dict)
-            ):
+            if ticket is not None and merge_safe and isinstance(anti_vacuity, dict):
                 ticket.record_anti_vacuity_attestation(
                     target.head_sha,
                     str(anti_vacuity.get("ac_coverage", "")),
                     [str(node) for node in anti_vacuity.get("proven_tests", [])],
                     no_new_tests=anti_vacuity.get("no_new_tests") is True,
                 )
+            if ticket is not None and merge_safe and fix_record is not None:
+                ticket.record_fix_record(cast("FixRecord", fix_record))
             ReviewVerdict.record(
                 pr_id=target.pr_id,
                 slug=target.slug,
@@ -380,7 +394,7 @@ def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget) -> None:
     ``extra["reviewed_sha"]`` still named the pinned one, so the resolver re-read a tree the
     row is not on and the system could not find its own verdict.
     """
-    if target.head_sha == target.claim_head_sha:
+    if target.head_sha == target.claim_head_sha or target.bind_live_head:
         return
     if target.armed_by is AutoReviewDispatch:
         AutoReviewDispatch.mark_recorded_at(

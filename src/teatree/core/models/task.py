@@ -15,7 +15,7 @@ from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, pha
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
-from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
@@ -429,7 +429,12 @@ class Task(models.Model):
             if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
-            elif phase == "planning" and ticket.state == Ticket.State.WORK_STARTED:
+            elif (
+                phase == "planning"
+                and ticket.state in Ticket.EARLY_STATES
+                and (ticket.state == Ticket.State.WORK_STARTED or has_plan_decision(ticket))
+            ):
+                ticket.walk_to_work_started()
                 ticket.plan(parent_task=self)
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:

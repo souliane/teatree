@@ -285,7 +285,7 @@ async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp"
     """
 
     def _answer() -> dict[str, Any]:
-        run_command("questions", "answer", question_id, text, resolver_id=resolver)
+        run_command("questions", "answer", question_id, text, resolver_id=resolver, agent_surface=True)
         return {"ok": True, "question_id": question_id}
 
     return await sync_to_async(_answer, thread_sensitive=True)()

@@ -11,10 +11,11 @@ from teatree.agents.phase_blocks import (
     phase_specific_lines,
 )
 from teatree.agents.review_envelope_recorder import _RUBRIC_GRADED_PHASES
+from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import CANONICAL_PHASES
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
-from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, LandscapeArtifact, PullRequest, Session, Task, Ticket
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
 
@@ -136,6 +137,39 @@ class TestFixRecordDirective(TestCase):
 
     def test_a_non_fixing_phase_carries_no_directive(self) -> None:
         assert "THIS IS A FIX TICKET" not in self._brief("reviewing", Ticket.Kind.FIX)
+
+    def _review_brief_for_pr_owned_by(self, kind: Ticket.Kind) -> str:
+        url = "https://github.com/o/r/pull/41"
+        owner = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEW_REQUESTED, kind=kind)
+        PullRequest.objects.create(ticket=owner, url=url, repo="o/r", iid="41")
+        dispatch = AutoReviewDispatch.enqueue(slug="o/r", pr_id=41, head_sha="c" * 40, pr_url=url)
+        assert dispatch is not None
+        return "\n".join(phase_specific_lines(dispatch.task, []))
+
+    def test_the_review_of_a_fix_pr_asks_for_the_record_with_merge_safe_and_no_red_repro(self) -> None:
+        brief = self._review_brief_for_pr_owned_by(Ticket.Kind.FIX)
+
+        assert '"fix_record"' in brief
+        assert "only with merge_safe" in brief
+        assert "repro record-red" not in brief
+
+    def test_an_issue_anchored_review_is_told_the_live_head_it_is_checked_against(self) -> None:
+        live = "d" * 40
+        owner = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED, issue_url="https://github.com/o/r/issues/40"
+        )
+        PullRequest.objects.create(ticket=owner, url="https://github.com/o/r/pull/41", repo="o/r", iid="41")
+        task = Task.objects.create(
+            ticket=owner, session=Session.objects.create(ticket=owner, agent_id="review"), phase="reviewing"
+        )
+
+        with patch("teatree.agents.phase_blocks.live_head_at", return_value=LiveHeadRead(sha=live, unreadable=False)):
+            brief = "\n".join(phase_specific_lines(task, []))
+
+        assert f"GREEN-PROOF BINDING: the head under review is {live}." in brief
+
+    def test_the_review_of_a_feature_pr_carries_no_fix_record(self) -> None:
+        assert "fix_record" not in self._review_brief_for_pr_owned_by(Ticket.Kind.FEATURE)
 
 
 class TestTestingPhaseBranchCurrency(TestCase):

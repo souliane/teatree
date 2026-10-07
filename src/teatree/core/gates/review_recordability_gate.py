@@ -59,7 +59,7 @@ def unrecordable_review_mint_refusal(ticket: "Ticket") -> str | None:
 
 
 def _refusal_for(target: ReviewTarget | None) -> str | None:
-    if target is None or target.head_sha:
+    if target is None or target.head_sha or target.bind_live_head:
         return None
     return (
         f"{REVIEW_UNRECORDABLE_PREFIX}refusing to dispatch the reviewer for {target.slug}#{target.pr_id} — "

@@ -286,12 +286,17 @@ class Directive(models.Model):
 
         RAISES unless :attr:`ratify_question` is a consumed (answered) row: no code
         path can admit a directive without a human's recorded decision, exactly as
-        ``OuterLoopExperiment.admit`` gates the experiment.
+        ``OuterLoopExperiment.admit`` gates the experiment. The answer must also have
+        arrived on an owner channel (Slack, the local CLI, or the owner's graduated
+        policy) — an agent surface answering in the owner's place decides nothing.
         """
         self._require_state(self.State.RATIFY_PENDING)
         question = self.ratify_question
         if question is None or question.answered_at is None:
             msg = "cannot admit without a consumed (answered) ratify DeferredQuestion"
+            raise DirectiveError(msg)
+        if not question.answered_on_owner_channel:
+            msg = f"cannot admit on an answer no owner channel gave (resolved_via={question.resolved_via!r})"
             raise DirectiveError(msg)
         self.state = self.State.ADMITTED
         self.save(update_fields=["state"])

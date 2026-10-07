@@ -8,23 +8,34 @@ wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 """
 
 import logging
+import re
 from typing import TYPE_CHECKING
+
+from django.db.models import Max
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_decision import has_plan_decision
 from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket import Ticket
-from teatree.core.repair_loop import max_phase_iterations
+from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
 
 _CAP_QUESTION_FINDINGS_BUDGET = 8_000
+#: The dedupe marker one wedge records under: ``source`` is the completed task's pk, or ``r`` + the
+#: refusal's fingerprint for a sessionless refusal (``execute_retrospect``), one row per distinct refusal.
+PHASE_WEDGE_MARKER = "fsm-wedge:{ticket}:{phase}:{source}"
+#: Also matches the pre-#5030 ``tool_use_id`` key, which had no source part.
+PHASE_WEDGE_MARKER_RE = re.compile(
+    r"^fsm-wedge:(?P<ticket>\d+):(?P<phase>[a-z0-9_]+)(?::(?P<source>\d+|r[0-9a-f]{12}))?$"
+)
 
 #: The lifecycle-FSM target state each phase's completion should reach. A
 #: completed phase task whose ticket sits BEHIND its target with no matching
@@ -230,41 +241,83 @@ def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Tic
     phase's target state: at-or-past target is an idempotent replay; behind
     target is a wedge. A free-form (non-lifecycle) phase has no target and
     is expected to no-op. A terminal/abandoned ticket is never a wedge.
+
+    One at-or-past case is not a replay: a pre-merge planning task (a re-plan) that nothing
+    followed owes its plan a coding task, so it queues one or records why it could not.
     """
-    # A terminal ticket is never a wedge. REVIEW_DELIVERED/IGNORED are off the
-    # author ladder, where :func:`phase_output_reached` answers False, so the
-    # is_settled short-circuit is what keeps them out of the escalation.
-    if _PHASE_TARGET_STATE.get(phase) is None or ticket.is_settled:
+    # REVIEW_DELIVERED/IGNORED are off the author ladder, where phase_output_reached answers False.
+    if _PHASE_TARGET_STATE.get(phase) is None or ticket.state in Ticket.marker_release_states():
         return
     if phase_output_reached(ticket, phase):
-        return  # idempotent replay — the ticket already advanced past this phase's target
+        if (
+            normalize_phase(phase) == "planning"
+            and ticket.state not in Ticket.merged_states()
+            and not ticket.tasks.filter(pk__gt=task.pk).exists()
+        ):
+            _queue_planned_work_or_refuse(task, ticket)
+        return
     record_stuck_transition_question(task, phase=phase, ticket=ticket)
 
 
-def record_stuck_transition_question(task: "Task", *, phase: str, ticket: Ticket) -> None:
-    """Record a durable, deduped ``DeferredQuestion`` for an FSM wedge (§17.1 inv 9).
+def _queue_planned_work_or_refuse(task: "Task", ticket: Ticket) -> None:
+    try:
+        ticket.schedule_planned_work(parent_task=task)
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(task, phase="planning", ticket=ticket, refusal=f"its plan has no task: {exc}")
 
-    Reuses the away-mode escalation queue (statusline / ``t3 teatree
-    questions list`` / Slack DM drain) rather than a new surface — the same
-    channel ``task_repair._escalate_stall`` uses. Deduped per (ticket,
-    phase) on ``tool_use_id`` so an at-least-once replay of the same wedge
-    does not flood the queue.
+
+def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket: Ticket, refusal: str = "") -> None:
+    """Record an FSM wedge once per completed task, INTERNAL, on the box's own health queue (§17.1 inv 9).
+
+    Sticky across every row carrying the marker, answered or dismissed, so the replay sweep
+    re-running the same latest task can never re-raise it; a new completed task is a new
+    wedge and gets its own row. ``lifecycle_incident`` reads these rows as ``phase_wedge``.
     """
     from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM/app-registry
 
-    dedup_key = f"fsm-wedge:{ticket.pk}:{phase}"
-    already = DeferredQuestion.objects.filter(
-        tool_use_id=dedup_key,
-        answered_at__isnull=True,
-        dismissed_at__isnull=True,
-    ).exists()
-    if already:
+    source = task.pk if task else f"r{(terminal_reason_fingerprint(refusal) or '0' * 12)[:12]}"
+    marker = PHASE_WEDGE_MARKER.format(ticket=ticket.pk, phase=phase, source=source)
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"
-    question = (
-        f"FSM wedge on {where}: the {phase!r} phase completed (task {task.pk}) but no "
-        f"lifecycle transition matched from state {ticket.state!r}, so the ticket cannot "
-        f"advance and is stuck before {phase!r}. How should it proceed — rework the "
-        f"earlier phases, or ignore?"
+    by_task = f" (task {task.pk})" if task else ""
+    cause = refusal or f"no lifecycle transition matched from state {ticket.state!r}"
+    DeferredQuestion.record(
+        f"FSM wedge on {where}: the {phase!r} phase completed{by_task} but the ticket cannot advance: {cause}",
+        task_session=task.session if task else None,
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
     )
-    DeferredQuestion.record(question, task_session=task.session, tool_use_id=dedup_key)
+
+
+def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
+    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+
+    Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
+    wedged one, so a refusal recorded on a ticket already past the phase stays pending
+    until something acts on it.
+    """
+    wedges = {
+        question.pk: match
+        for question in questions
+        if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker or question.tool_use_id))
+    }
+    tickets = Ticket.objects.annotate(newest_task=Max("tasks__pk")).in_bulk(
+        {int(match["ticket"]) for match in wedges.values()}
+    )
+    healed: dict[int, str] = {}
+    for question_pk, match in wedges.items():
+        ticket = tickets.get(int(match["ticket"]))
+        if ticket is None:
+            continue
+        if ticket.state in Ticket.marker_release_states():
+            healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
+        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > _wedged_task_pk(match):
+            healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
+    return healed
+
+
+def _wedged_task_pk(match: "re.Match[str]") -> int:
+    """The completed task a wedge row was recorded for; 0 (any task is newer) for a refusal or a legacy row."""
+    source = match["source"] or ""
+    return int(source) if source.isdigit() else 0

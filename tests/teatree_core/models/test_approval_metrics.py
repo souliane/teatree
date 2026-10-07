@@ -49,6 +49,13 @@ class TestQuestionMetrics:
         assert metrics.resolved == 1
         assert metrics.declines == 0
 
+    def test_an_agent_answer_is_not_a_human_touchpoint(self) -> None:
+        question = DeferredQuestion.record("q?", options_hash="directive_ratify:9:0")
+        question.apply_answer("no", resolved_via=DeferredQuestion.ResolvedVia.AGENT)
+        metrics = compute_metrics(DIRECTIVE_ADMIT)
+        assert metrics.interventions == 1
+        assert (metrics.resolved, metrics.declines) == (0, 0)
+
     def test_a_question_of_another_class_is_not_counted(self) -> None:
         _answered("directive_ratify:5:0", "no")
         assert compute_metrics(OUTER_LOOP_KEEP).interventions == 0

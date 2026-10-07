@@ -81,8 +81,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
-│ mcp             Read-only MCP server exposing teatree's structured search    │
-│                 (stdio).                                                     │
+│ mcp             MCP server exposing teatree's structured search and          │
+│                 gate-preserving writes (stdio).                              │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
