@@ -45,6 +45,17 @@ class TicketSchedulingModel(TicketFacet):
             reason = f"{reason}\n\nThe work this plan is for:\n{intent.strip()}"
         return self._schedule_phase_task("planning", reason, parent_task, require_author=True)
 
+    def schedule_plan_reaffirm(self: "Ticket", *, refusal: str, parent_task: "Task | None" = None) -> "Task":
+        """The planning pass a plan the currency gate refused is owed: reaffirm it against what moved, or re-plan."""
+        return self.schedule_planning(
+            parent_task=parent_task,
+            intent=(
+                f"The plan is not current: {refusal} Record a per-commit disposition (no conflict / compatible / "
+                "conflict). If none conflicts, re-emit the plan at the new base_sha with that section; if one "
+                "conflicts, re-plan."
+            ),
+        )
+
     def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None, intent: str = "") -> "Task":
         """Walk an early-state author ticket up to WORK_STARTED and schedule its planning task.
 

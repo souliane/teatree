@@ -349,13 +349,7 @@ def _schedule_planned_work_or_reaffirm(ticket: Ticket) -> Task:
     except NoCurrentPlanError as exc:
         if halt := _budget_halt_reason(ticket, phase="planning"):
             raise InvalidTransitionError(halt) from exc
-        return ticket.schedule_planning(
-            intent=(
-                f"The plan is not current: {exc} Record a per-commit disposition (no conflict / compatible / "
-                "conflict). If none conflicts, re-emit the plan at the new base_sha with that section; if one "
-                "conflicts, re-plan."
-            )
-        )
+        return ticket.schedule_plan_reaffirm(refusal=str(exc))
 
 
 def _budget_halt_reason(ticket: Ticket, *, phase: str) -> str | None:
