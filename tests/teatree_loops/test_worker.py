@@ -1,9 +1,9 @@
 """teatree.loops.worker — the singleton executor pool + supervisor (#1796).
 
 Pure supervision/lifecycle logic with injected collaborators — no real threads, DB,
-or clock. Verifies startup reconciliation, the executor split (2 ``loops`` + a
-host-scaled ``default`` pool floored at 2), that a preset admitting zero loops quiesces
-the pool while the PROCESS stays alive, and that a stop signal tears the pool down.
+or clock. Verifies startup reconciliation, the executor split (a host-scaled ``loops``
+pool + agent pools sized to the headless lane widths), that a preset admitting zero loops
+quiesces the pool while the PROCESS stays alive, and that a stop signal tears the pool down.
 """
 
 import contextlib
@@ -12,9 +12,10 @@ import datetime as dt
 import inspect
 import os
 import sqlite3
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest import mock
 
 import pytest
 import yaml
@@ -26,7 +27,17 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.agents import live_mailbox
 from teatree.agents.live_client import LiveClient
-from teatree.core.admission_governor import AdmissionDecision
+from teatree.core import agent_admission
+from teatree.core.admission_governor import (
+    AdmissionCeiling,
+    AdmissionDecision,
+    QuotaSignal,
+    decide_admission,
+    read_machine_signal,
+)
+from teatree.core.agent_admission import LaneWidths, agent_admission_verdict
+from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loops import deadlined_tick
 from teatree.loops import worker as worker_mod
@@ -38,9 +49,7 @@ from teatree.loops.worker import (
     LoopWorkerExecutorCrashError,
     LoopWorkerExecutorStopError,
     WorkerSeams,
-    _bounded_executor_queues,
-    build_executor_queues,
-    default_queue_executor_count,
+    agent_executor_queues,
     loops_executor_count,
 )
 from teatree.utils.run import spawn_session_leader
@@ -127,10 +136,10 @@ def _make_worker(*, script, sleep, **seam_overrides):
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
         start_live_ingress=seam_overrides.get("start_live_ingress") or (lambda: None),
-        executor_queues=seam_overrides.get("executor_queues") or build_executor_queues(),
+        read_agent_queues=seam_overrides.get("read_agent_queues") or (lambda: _AGENTS),
     )
-    if "executor_queues" in seam_overrides:
-        seams = dataclasses.replace(seams, executor_queues=seam_overrides["executor_queues"])
+    if "loops_executors" in seam_overrides:
+        seams = dataclasses.replace(seams, loops_executors=seam_overrides["loops_executors"])
     holder.append(LoopWorker(seams))
     return holder[0], built, handles
 
@@ -175,7 +184,7 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     # blind-fires the instant the worker starts (the load-jam class).
     assert order[:3] == ["reconcile", "seed", "expire"]
     assert order[3] == "spawn"
-    assert order.count("spawn") == len(build_executor_queues())
+    assert order.count("spawn") == loops_executor_count() + len(_AGENTS)
 
 
 def test_the_live_socket_is_published_before_anything_else_starts() -> None:
@@ -198,74 +207,76 @@ def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
 
 
 def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
-    with patch.object(live_mailbox, "shared_broker", side_effect=OSError("read-only volume")):
+    with mock.patch.object(live_mailbox, "shared_broker", side_effect=OSError("read-only volume")):
         worker_mod._start_live_ingress()
 
     assert "Live ingress could not start" in caplog.text
 
 
-def test_both_pools_scale_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 4 loops + 4 default executors on a host whose shared PR-01 ceiling is 4 (an 8-core
-    # box). Scaling the loops pool too means two slow ticks no longer stall every OTHER loop.
+def test_the_loops_pool_scales_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two slow ticks no longer stall every OTHER loop on a bigger box.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
     assert loops_executor_count() == 4
-    assert default_queue_executor_count() == 4
-    queues = build_executor_queues()
-    assert queues.count("loops") == 4
-    assert queues.count("default") == 4
 
 
-def test_both_pools_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A 1-2 core box floors both pools at the prior hardcoded minimum, never below.
+def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
     assert loops_executor_count() == LOOPS_EXECUTOR_FLOOR == 2
-    assert default_queue_executor_count() == DEFAULT_QUEUE_FLOOR == 2
 
 
-_THREE_LOOPS = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
+def _widths(expensive: int, cheap: int) -> LaneWidths:
+    """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), cheap=cheap)
 
 
-def test_pressure_ceiling_clamps_the_agent_lanes_but_keeps_all_three_queues() -> None:
-    decision = AdmissionDecision(admit=True, reason="healthy", ceiling=2, braked=False)
+@pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
+def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
+    assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * cheap
+
+
+def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 1)
+    assert agent_executor_queues(None) == ("default",) * DEFAULT_QUEUE_FLOOR + ("cheap",)
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
+    assert agent_executor_queues(None) == ("default",) * 4 + ("cheap",)
+
+
+def test_a_lane_width_read_failure_keeps_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_admission, "headless_lane_widths", mock.Mock(side_effect=RuntimeError("db down")))
+    assert worker_mod._read_agent_queues() == agent_executor_queues(None)
+
+
+def test_the_lane_widths_never_size_the_loops_control_plane() -> None:
+    """Loop timers are not agents: a 3-agent ceiling kept 1 loops executor where main ran 3."""
+    one_seat = agent_executor_queues(_widths(1, 1))
     worker, built, _handles = _make_worker(
-        script=[True],
-        sleep=lambda _s: None,
-        read_pressure=lambda: decision,
-        executor_queues=_THREE_LOOPS,
+        script=[True], sleep=lambda _s: None, loops_executors=3, read_agent_queues=lambda: one_seat
     )
     worker.run()
     assert [executor.queue for executor in built] == ["loops", "loops", "loops", "default", "cheap"]
 
 
-@pytest.mark.parametrize("ceiling", [2, 3, 4])
-def test_pressure_ceiling_reserves_remaining_agent_lanes_for_coding(ceiling: int) -> None:
-    queues = ("loops",) * 4 + ("default",) * 4 + ("cheap",)
-    assert _bounded_executor_queues(queues, ceiling) == (
-        *("loops",) * 4,
-        *("default",) * (ceiling - 1),
-        "cheap",
-    )
-
-
-def test_the_ceiling_never_clamps_the_loops_control_plane() -> None:
-    """Loop timers are not agents: a 3-agent ceiling kept 1 loops executor where main ran 3."""
-    bounded = _bounded_executor_queues(_THREE_LOOPS, 3)
-    assert bounded.count("loops") == 3
-    assert len(bounded) - bounded.count("loops") == 3
-
-
-def test_a_one_agent_ceiling_keeps_dedicated_loops_executors() -> None:
-    """One shared executor let a single coding task block every loop timer for hours."""
-    assert _bounded_executor_queues(_THREE_LOOPS, 1) == ("loops", "loops", "loops", "default,cheap")
-
-
 def test_a_brake_keeps_the_whole_loops_pool() -> None:
     denied = AdmissionDecision(admit=False, reason="host pressure", ceiling=1, braked=True, cause="load")
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_THREE_LOOPS
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, loops_executors=3
     )
     worker.run()
     assert [executor.queue for executor in built] == ["loops", "loops", "loops", "cheap"]
+
+
+def test_a_machine_brake_keeps_one_executor_per_cheap_seat() -> None:
+    denied = AdmissionDecision(admit=False, reason="host pressure", ceiling=8, braked=True, cause="load")
+    lanes = agent_executor_queues(_widths(7, 2))
+    worker, built, _handles = _make_worker(
+        script=[True],
+        sleep=lambda _s: None,
+        read_pressure=lambda: denied,
+        loops_executors=1,
+        read_agent_queues=lambda: lanes,
+    )
+    worker.run()
+    assert [executor.queue for executor in built] == ["loops", "cheap", "cheap"]
 
 
 def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
@@ -277,8 +288,14 @@ def test_four_core_ceiling_starts_a_review_while_coding_is_active() -> None:
         return _FakeHandle()
 
     decision = AdmissionDecision(admit=True, reason="four-core host", ceiling=2, braked=False)
+    four_core = agent_executor_queues(_widths(1, 1))
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: decision, spawn=spawn, executor_queues=_POOL
+        script=[True],
+        sleep=lambda _s: None,
+        read_pressure=lambda: decision,
+        spawn=spawn,
+        loops_executors=3,
+        read_agent_queues=lambda: four_core,
     )
     worker.run()
 
@@ -299,7 +316,8 @@ def test_braked_governor_keeps_control_loop_then_resumes_default_queue() -> None
         script=[True, True, True],
         sleep=lambda _s: snapshots.append(len(built)),
         read_pressure=lambda: next(verdicts),
-        executor_queues=("loops",) * 2 + ("default",) * 2 + ("cheap",),
+        loops_executors=2,
+        read_agent_queues=lambda: ("default", "cheap"),
     )
     worker.run()
     assert snapshots[:3] == [4, 4, 5]
@@ -323,7 +341,7 @@ def test_sustained_pressure_runs_control_and_cheap_review_but_not_coding() -> No
         sleep=lambda _s: None,
         read_pressure=lambda: denied,
         spawn=spawn,
-        executor_queues=_POOL,
+        loops_executors=3,
     )
     worker.run()
 
@@ -337,13 +355,14 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
         admit=False, reason="weekly quota exhausted", ceiling=2, braked=True, cause="weekly-quota"
     )
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_POOL
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, loops_executors=3
     )
     worker.run()
     assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
 
 
-_POOL = ("loops",) * 3 + ("default",) * 3 + ("cheap",)
+#: Three coding seats and one review seat.
+_AGENTS = ("default",) * 3 + ("cheap",)
 
 
 @pytest.mark.parametrize("cause", ["swap", "weekly-quota"])
@@ -351,21 +370,21 @@ def test_a_brake_keeps_the_whole_control_plane_so_one_slow_tick_cannot_starve_th
     # Braked to ONE loops executor, a 300 s resource_pressure tick held every other timer (#98).
     denied = AdmissionDecision(admit=False, reason="braked", ceiling=1, braked=True, cause=cause)
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_POOL
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, loops_executors=3
     )
     worker.run()
 
     assert [executor.queue for executor in built].count("loops") == 3
 
 
-def test_spawns_host_scaled_loops_and_default_executors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spawns_host_scaled_loops_and_lane_sized_agent_executors(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch BEFORE _make_worker so the WorkerSeams default_factory reads the host size.
-    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 3)
+    monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 5)
     worker, built, _ = _make_worker(script=[True], sleep=lambda _s: None)
     worker.run()
     queues = [executor.queue for executor in built]
-    assert queues.count("loops") == 3
-    assert queues.count("default") == 3
+    assert queues.count("loops") == 5
+    assert queues.count("default") == _AGENTS.count("default")
 
 
 def test_a_preset_admitting_nothing_stops_and_joins_all_executors() -> None:
@@ -425,7 +444,7 @@ def test_quiescing_keeps_the_process_alive_and_re_admission_restarts_the_pool() 
     # admitting poll spawns a fresh pool unaided.
     worker, built, handles = _make_worker(script=[True, False, True], sleep=lambda _s: None)
     worker.run()
-    per_pool = len(build_executor_queues())
+    per_pool = loops_executor_count() + len(_AGENTS)
     assert len(built) == 2 * per_pool  # the original pool, quiesced, then a fresh one
     assert all(handle.joined for handle in handles[:per_pool])
 
@@ -445,26 +464,11 @@ def test_stop_signal_tears_the_pool_down() -> None:
 def test_critical_kernel_memory_pressure_retires_the_cheap_lane_but_keeps_control() -> None:
     denied = AdmissionDecision(admit=False, reason="kernel critical", ceiling=1, braked=True, cause="memory-pressure")
     worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, executor_queues=_POOL
+        script=[True], sleep=lambda _s: None, read_pressure=lambda: denied, loops_executors=3
     )
     worker.run()
 
     assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
-
-
-@pytest.mark.parametrize("ceiling", [1, 2, 3])
-def test_a_pressure_ceiling_bounds_agent_lanes_and_never_the_control_plane(ceiling: int) -> None:
-    decision = AdmissionDecision(admit=True, reason="tight", ceiling=ceiling, braked=False)
-    worker, built, _handles = _make_worker(
-        script=[True], sleep=lambda _s: None, read_pressure=lambda: decision, executor_queues=_POOL
-    )
-    worker.run()
-    queues = [executor.queue for executor in built]
-
-    assert queues.count("loops") == 3
-    assert [queue for queue in queues if queue != "loops"] == [
-        queue for queue in _bounded_executor_queues(_POOL, ceiling) if queue != "loops"
-    ]
 
 
 def test_an_executor_that_survives_the_join_and_the_tick_kill_exits_non_zero() -> None:
@@ -487,7 +491,8 @@ def test_an_executor_that_survives_the_join_and_the_tick_kill_exits_non_zero() -
         kill_ticks=lambda: None,
         sleep=lambda _s: holder[0].request_stop(),
         poll_seconds=0.0,
-        executor_queues=("loops",),
+        loops_executors=1,
+        read_agent_queues=lambda: (),
         reclaim_leases=lambda: None,
         reap_leases=lambda: None,
         claim_master=lambda: None,
@@ -514,7 +519,8 @@ def _liveness_seams(*, script, holder, spawn, make_executor, **overrides) -> Wor
         kill_ticks=lambda: None,
         sleep=lambda _s: None,
         poll_seconds=0.0,
-        executor_queues=("loops",),
+        loops_executors=1,
+        read_agent_queues=lambda: (),
         **overrides,
     )
 
@@ -660,6 +666,113 @@ class TestExecutorThreadConnectionHygiene(TestCase):
         assert raw_connections, "the executor never opened a connection"
         with pytest.raises(sqlite3.ProgrammingError):
             raw_connections[0].execute("SELECT 1")
+
+
+_PACED_QUOTA = QuotaSignal(
+    fresh=True,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.1,
+    short_utilization=0.1,
+    seconds_to_weekly_reset=7 * 24 * 3600 * 0.5,
+)
+
+
+class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
+    """A seat with no executor waits in the queue until its window lapses and the drain books it again."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        quota = mock.patch.object(agent_admission, "read_quota_signal", return_value=_PACED_QUOTA)
+        quota.start()
+        self.addCleanup(quota.stop)
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+
+    def _admit(self, phase: str, rows: int = 20) -> list[Task]:
+        verdict = agent_admission_verdict()
+        pending = [
+            Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING, phase=phase)
+            for _ in range(rows)
+        ]
+        return [row for row in pending if verdict.admit(row.pk, phase, at="test")]
+
+    def _executors(self) -> Counter[str]:
+        built: list[_FakeExecutor] = []
+        holder: list[LoopWorker] = []
+
+        def make_executor(queue: str, worker_id: str) -> _FakeExecutor:
+            built.append(_FakeExecutor(queue, worker_id))
+            return built[-1]
+
+        seams = WorkerSeams(
+            read_admission=_scripted_reader([True], holder),
+            read_pressure=lambda: decide_admission(quota=_PACED_QUOTA, machine=read_machine_signal()),
+            reconcile=lambda: None,
+            seed_chains=lambda: None,
+            expire=lambda: None,
+            make_executor=make_executor,
+            spawn=lambda _executor: _FakeHandle(),
+            kill_ticks=lambda: None,
+            reclaim_leases=lambda: None,
+            reap_leases=lambda: None,
+            claim_master=lambda: None,
+            release_master=lambda: None,
+            publish_health=lambda _admission, *, active: None,
+            sleep=lambda _s: None,
+            poll_seconds=0.0,
+        )
+        holder.append(LoopWorker(seams))
+        holder[0].run()
+        return Counter(executor.queue for executor in built)
+
+    def test_every_admitted_coding_seat_gets_a_default_executor(self) -> None:
+        for factor in (0.25, 0.5, 1.0, 2.0):
+            with self.subTest(factor=factor):
+                ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
+                Task.objects.all().delete()
+                seated = self._admit("coding")
+
+                assert self._executors()["default"] == len(seated)
+
+    def test_every_admitted_review_seat_gets_a_cheap_executor(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        seated = self._admit("reviewing")
+
+        assert self._executors()["cheap"] == len(seated) == 2
+
+    def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        seated = self._admit("reviewing")
+
+        assert self._executors()["cheap"] == len(seated) == 3
+
+    def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
+        coding = self._admit("coding")
+        reviews = self._admit("reviewing")
+        executors = self._executors()
+
+        assert (executors["default"], executors["cheap"]) == (len(coding), len(reviews)) == (4, 2)
+
+    def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        seated = self._admit("coding")
+        running = [row.pk for row in seated[: self._executors()["default"]]]
+        Task.objects.filter(pk__in=running).update(
+            status=Task.Status.CLAIMED, lease_expires_at=timezone.now() + dt.timedelta(hours=1)
+        )
+        Task.objects.filter(pk__in=[row.pk for row in seated]).update(
+            admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2
+        )
+
+        verdict = agent_admission_verdict()
+        rebooked = [row.pk for row in seated if verdict.admit(row.pk, "coding", at="after the window")]
+
+        assert rebooked == []
 
 
 def test_worker_prose_names_the_shipped_restart_policy() -> None:

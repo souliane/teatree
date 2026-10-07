@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.agents.skill_files import reach_line
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 
@@ -84,12 +84,32 @@ def _with_reach_line(sections: list[str], dirs: Sequence[Path]) -> str:
     return "\n\n".join((reach_line(dirs[0]), *sections)) if sections else ""
 
 
+def required_load_line(name: str, skill_md: Path | None) -> str:
+    """One mandatory Skill-tool load, in the grammar ``skill_assurance`` recognises as delivered."""
+    load = f"REQUIRED: Load /{name} via the Skill tool before you start"
+    if skill_md is None:
+        return f"{load}; no SKILL.md resolves for it on this host."
+    return f"{load}; if this lane has no Skill tool, Read `{skill_md}` in full."
+
+
+def _is_stack_skill(name: str) -> bool:
+    return _explicit_load_name(name) in FRAMEWORK_SKILL_NAMES
+
+
+def _stack_load_block(names: Sequence[str], dirs: Sequence[Path]) -> list[str]:
+    """The stack skills as required loads — never embedded, never a skippable companion line."""
+    if not names:
+        return []
+    lines = (required_load_line(_explicit_load_name(name), _resolve_skill_md(name, dirs)) for name in names)
+    return ["--- STACK SKILLS (REQUIRED — load before you start) ---\n" + "\n".join(lines)]
+
+
 def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
-    """Read and concatenate SKILL.md content for each resolved skill."""
+    """Embed each resolved skill's SKILL.md; the stack skills lead as required loads instead."""
     dirs = _resolve_dirs(skills_dir)
-    sections: list[str] = []
+    sections = _stack_load_block([name for name in skills if _is_stack_skill(name)], dirs)
     for name in skills:
-        skill_md = _resolve_skill_md(name, dirs)
+        skill_md = None if _is_stack_skill(name) else _resolve_skill_md(name, dirs)
         if skill_md is not None:
             sections.append(_skill_section(_bare_skill_name(name), skill_md.read_text(encoding="utf-8")))
     return _with_reach_line(sections, dirs)
@@ -132,9 +152,12 @@ def _read_skill_contents_scoped(
     BEFORE reviewing" instruction instead of the companion line. Skills in *suppress_names* are
     omitted entirely — the caller force-loads them elsewhere (e.g. the coding
     directive's stack-load block, #1368), so listing them in the ignorable
-    summary would contradict that. Everything else gets a companion line naming
-    the absolute ``SKILL.md`` path to ``Read`` when it applies — or saying no body
-    resolves on this host, rather than advertising one that is not there.
+    summary would contradict that. A stack skill (``ac-django`` / ``ac-python`` /
+    ``fastapi``) leads the block as a required load. Everything else gets a
+    companion line naming the absolute ``SKILL.md`` path to ``Read`` when it
+    applies — or saying no body resolves on this host, rather than advertising
+    one that is not there. Both companion lists follow the stack loads and lead
+    the embedded bodies, so a budget cut sheds bodies first.
     """
     dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
@@ -142,6 +165,7 @@ def _read_skill_contents_scoped(
     sections: list[str] = []
     companion_names: list[str] = []
     explicit_names: list[str] = []
+    stack_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
             skill_md = _resolve_skill_md(name, dirs)
@@ -151,19 +175,22 @@ def _read_skill_contents_scoped(
             explicit_names.append(name)
         elif name in suppress or _explicit_load_name(name) in suppress:
             continue
+        elif _is_stack_skill(name):
+            stack_names.append(name)
         else:
             companion_names.append(name)
+    companion_list: list[str] = []
     if explicit_names:
         block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
         block += "\n".join(
             f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
         )
-        sections.append(block)
+        companion_list.append(block)
     if companion_names:
         summary = "--- COMPANION SKILLS (not embedded, to save context) ---\n"
         summary += "\n".join(_companion_line(name, dirs) for name in companion_names)
-        sections.append(summary)
-    return _with_reach_line(sections, dirs)
+        companion_list.append(summary)
+    return _with_reach_line([*_stack_load_block(stack_names, dirs), *companion_list, *sections], dirs)
 
 
 _SUBAGENT_PREAMBLE_HEADER = (

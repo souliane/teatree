@@ -522,8 +522,9 @@ t3 worker status            # --json for a machine-readable payload
 # it took the flock — a startup crash prints the child's own stderr):
 t3 worker ensure            # refuses (with the reason) when one already runs
 
-# Quiesce admission WITHOUT stopping anything (the deploy verb — leaves the box
-# admitting no work until a fresh container boot, or `t3 worker restart`, clears the gate):
+# Quiesce admission without stopping the worker (the deploy verb). Each in-flight worker run
+# checkpoints at its next heartbeat: it parks with its session id and resumes once the gate
+# clears. The box admits no work until a fresh container boot, or `t3 worker restart`, clears it:
 t3 worker drain
 # Drain ONE image generation instead: it stops claiming, the next generation keeps working:
 t3 worker drain --generation <sha>
@@ -742,7 +743,7 @@ graph LR
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `health` | Read and act on the global operational-health chip — the green/yellow/red factory-health verdict and its known-issues registry |
-| `interactive` | Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, and interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`. |
+| `interactive` | Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`. |
 | `internals` | How teatree is BUILT and how to change it safely — architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring — that is `/t3:interactive` — and no dogfooding procedure — that is `/t3:dogfooding`. |
 | `mode` | The operating mode — one of five named presets (present / afk / maintenance / token-outage / off) deciding which loops run |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |

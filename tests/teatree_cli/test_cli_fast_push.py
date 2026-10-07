@@ -1,11 +1,14 @@
 """Tests for the top-level ``t3 fast-push`` CLI command (delegates to the engine)."""
 
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
 from teatree.cli.fast_push import fast_push
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.push.fast_push import (
     EMPTY_DELTA_PR_SKIP,
     LEAK_GATES,
@@ -13,6 +16,7 @@ from teatree.core.push.fast_push import (
     FastPushOutcome,
     LeakFinding,
 )
+from tests._git_repo import make_git_repo
 
 runner = CliRunner()
 
@@ -94,3 +98,21 @@ class TestFastPushCommand:
 
         assert result.exit_code == 1
         assert "PR REFUSED (the push landed): git@gitlab.com:org/group/factory.git would be authored" in result.output
+
+
+class TestFastPushActsWhereTheOperatorStood:
+    def test_the_default_repo_is_the_declared_checkout_not_the_container_workdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        checkout = make_git_repo(tmp_path / "checkout")
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        monkeypatch.setenv(INVOCATION_CWD_ENV, str(checkout))
+
+        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+            pusher.return_value.run.return_value = _success()
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == 0, result.output
+        assert pusher.call_args.kwargs["repo"] == checkout.resolve()

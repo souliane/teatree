@@ -206,5 +206,5 @@ class TestScannerCoversEveryPublishedString:
         uncaught = [banned for banned in published_banned_strings() if _run(banned).returncode == 0]
         assert not uncaught, (
             f"/t3:rules publishes {uncaught} as banned trailers but the scanner passes them. "
-            f"Add a pattern to scripts/ai_signature_scan.py, or drop the string from the rule."
+            f"Add a pattern to src/teatree/hooks/ai_signature_scan.py, or drop the string from the rule."
         )

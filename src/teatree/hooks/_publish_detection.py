@@ -20,9 +20,9 @@ close that:
 
 - ``gh --hostname H api ...`` / ``gh -X POST api ...`` -- a persistent flag
     before the ``api`` sub-command (:func:`segment_is_api_call`);
-- ``git -C <dir> commit -m ...`` / ``git --git-dir=x commit --message ...`` --
-    a value-taking global flag before the ``commit`` verb
-    (:func:`_segment_is_git_commit_publish`); and
+- ``git -C <dir> commit -m ...`` / ``git --git-dir=x tag -a v --message ...`` --
+    a value-taking global flag before the ``commit``/``tag`` verb
+    (:func:`_segment_is_git_message_publish`); and
 - ``sh -c "gh ... --body X"`` / ``eval`` / ``ssh host gh`` / ``xargs gh`` -- a
     forge call HIDDEN inside an interpreter argument the body walkers cannot
     descend into (:func:`command_has_opaque_forge_transport`), which the gates
@@ -37,6 +37,7 @@ from itertools import starmap
 from typing import Final
 
 from teatree.hooks._parser_primitives import (
+    GIT_MESSAGE_VERBS,
     attached_api_field,
     canonical_forge_leader,
     canonical_leader,
@@ -114,7 +115,6 @@ _LEADER_PUBLISH_SUBSTRINGS: Final[tuple[tuple[str, str], ...]] = (
     ("git", "git commit --message"),
     ("git", "git commit -F"),
     ("git", "git commit --file"),
-    ("git", "git tag --message"),
     ("curl", "chat.postMessage"),
 )
 
@@ -305,16 +305,16 @@ def segment_is_api_read(words: list[str]) -> bool:
     return segment_is_api_call(words) and _api_effective_method(words) in _API_READ_METHODS
 
 
-def _segment_is_git_commit_publish(words: list[str]) -> bool:
-    """Return True iff ``words`` is a ``git [global-flags] commit`` with a body flag.
+def _segment_is_git_message_publish(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``git [global-flags] commit|tag`` with a message flag.
 
     A leading ``cd``/``pushd`` navigation prefix and the value-taking ``git``
     global flags (``-C <dir>``, ``--git-dir``, ``--work-tree``, plus ``=`` forms)
     are skipped so ``git -C <dir> commit -m ...`` and
     ``git --git-dir=x commit --message ...`` reach the ``commit`` verb -- the
     contiguous ``git commit -m`` substring broke on the interspersed flag. A
-    commit publishes (to public history) only when it carries an inline message /
-    file flag; a flagless ``git commit`` is interactive and out of scope here.
+    commit or annotated tag publishes its message only when it carries an inline
+    message / file flag; a flagless one is interactive and out of scope here.
 
     The leader is canonicalised (transparent wrapper stripped, basename taken) so
     ``xargs git commit -m ...`` / ``/usr/bin/git commit -m ...`` reach the same
@@ -333,7 +333,7 @@ def _segment_is_git_commit_publish(words: list[str]) -> bool:
             i += 1
             continue
         break
-    if i >= len(rest) or rest[i] != "commit":
+    if i >= len(rest) or rest[i] not in GIT_MESSAGE_VERBS:
         return False
     return any(_token_is_commit_body_flag(tok) for tok in rest[i + 1 :])
 
@@ -367,7 +367,7 @@ def segment_is_substring_publish(words: list[str]) -> bool:
 
 
 def command_has_token_aware_publish_surface(command: str) -> bool:
-    """Return True iff any segment is a token-aware ``api`` WRITE / ``git commit`` publish.
+    """Return True iff any segment is a token-aware ``api`` WRITE / ``git commit|tag`` publish.
 
     The position-aware complement of the contiguous-substring catalogue, used by
     :func:`_command_parser.is_publish_command` to catch the interspersed-flag
@@ -377,7 +377,7 @@ def command_has_token_aware_publish_surface(command: str) -> bool:
     and must not be force-classified as one (#1530).
     """
     return any(
-        segment_is_api_write(words) or _segment_is_git_commit_publish(words) for words in segment_word_lists(command)
+        segment_is_api_write(words) or _segment_is_git_message_publish(words) for words in segment_word_lists(command)
     )
 
 

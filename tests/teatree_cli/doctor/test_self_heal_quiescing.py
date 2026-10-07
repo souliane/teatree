@@ -21,8 +21,9 @@ from django.utils import timezone
 from teatree.cli.doctor import self_heal, self_heal_quiescing
 from teatree.cli.doctor.deploy_liveness import DeployLiveness
 from teatree.config.resolution import worker_is_quiescing
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, Task
 from teatree.loop.drain import QUIESCING_SETTING, set_worker_quiescing
+from tests.factories import TaskFactory
 
 
 def _echoes(check: Callable[[], bool]) -> tuple[bool, str]:
@@ -281,3 +282,48 @@ class StrandedQuiescingCheckTest(django.test.TestCase):
 
         for name, default in self_heal_quiescing._DEPLOY_STAGE_BUDGETS:
             assert f"{name}:-{default}" in deploy_sh, f"{name} default drifted from deploy.sh"
+
+
+_DRAIN_STAGE_SECONDS = 600
+
+
+@contextmanager
+def _drain_stage_of(seconds: int) -> Iterator[None]:
+    with mock.patch.dict("os.environ", {"TEATREE_DRAIN_TIMEOUT": str(seconds)}):
+        yield
+
+
+class FailedCheckpointWarningTest(django.test.TestCase):
+    """A run still CLAIMED after the drain stage did not checkpoint at its heartbeat (#5089)."""
+
+    def setUp(self) -> None:
+        set_worker_quiescing(value=True)
+        self.task = TaskFactory()
+        self.task.claim(claimed_by="worker-A", lease_seconds=900)
+
+    def _check_aged(self, seconds: float) -> tuple[bool, str]:
+        _age_the_gate(seconds)
+        with _drain_stage_of(_DRAIN_STAGE_SECONDS), _liveness(DeployLiveness.LIVE):
+            return _echoes(self_heal_quiescing.check_stranded_quiescing_gate)
+
+    def test_a_run_claimed_past_the_drain_stage_warns_by_pk(self) -> None:
+        ok, out = self._check_aged(_DRAIN_STAGE_SECONDS + 60)
+
+        assert ok is True, "a live deploy containing a stuck run is a warning, never a FAIL"
+        assert out.startswith("WARN")
+        assert str(self.task.pk) in out
+        assert worker_is_quiescing() is True, "the warning repairs nothing"
+
+    def test_a_run_inside_the_drain_stage_is_still_checkpointing(self) -> None:
+        ok, out = self._check_aged(60)
+
+        assert ok is True
+        assert out == ""
+
+    def test_no_run_in_flight_past_the_drain_stage_is_the_init_wait(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.PENDING, claimed_by="")
+
+        ok, out = self._check_aged(_DRAIN_STAGE_SECONDS + 60)
+
+        assert ok is True
+        assert out == ""

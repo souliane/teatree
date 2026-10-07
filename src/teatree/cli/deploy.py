@@ -6,6 +6,7 @@ import typer
 from django.core.management import call_command
 
 from teatree.cli.doctor.deploy_liveness import beating_deploy_record_pid
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 from teatree.utils.django_bootstrap import ensure_django
 
 deploy_app = typer.Typer(
@@ -24,7 +25,9 @@ def _deploy_group() -> None:
 def roll_command(
     *,
     to: str = typer.Option(..., "--to", help="The 40-hex commit sha whose teatree-factory image to roll to."),
-    drain_timeout: int = typer.Option(1800, "--drain-timeout", help="Grace seconds for the old generation's claims."),
+    drain_timeout: int = typer.Option(
+        DEFAULT_DRAIN_TIMEOUT_SECONDS, "--drain-timeout", help="Grace seconds for the old generation's claims."
+    ),
     verify_timeout: float = typer.Option(300.0, "--verify-timeout", help="Seconds the new generation has to verify."),
     stable_seconds: float = typer.Option(
         30.0, "--stable-seconds", help="Seconds each required service must keep one container start to verify."

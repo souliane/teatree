@@ -209,6 +209,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #4508 Pressure at which the EXPENSIVE agent class is shed while the cheap drain
     # keeps running; 1.0 collapses SHED into HALT (the rollback lever). Per-overlay overridable.
     "admission_pressure_shed_at": _parse_strict_float,
+    # Headless agents admitted per core before weekly pacing; clamped on read. Box-global.
+    "admission_write_concurrency_per_core": _parse_strict_float,
     # #4816 Whether the TOKEN brakes apply at all; false leaves load + memory only, so
     # standing down an irrelevant quota signal never disarms the box. Per-overlay overridable.
     # #4816 The metered lane's spend ceiling in TOKENS over the window below; 0 =
@@ -216,16 +218,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "metered_token_ceiling": _parse_strict_int,
     # #4816 The window the metered token ceiling is measured over. Per-overlay overridable.
     "metered_spend_window_hours": _parse_strict_int,
-    # #4098 Bound on the CHEAP-phase admission lane — how many read-only/work-retiring
-    # phase agents stay admissible while the governor brakes the expensive class. 0
-    # disables the exemption (cheap is braked like expensive). Per-overlay overridable.
+    # #4098 #5051 Review lane width: reviewing/critic/shipping agents admitted outside the
+    # coding ceiling, one review executor each (min 1). Per-overlay overridable.
     "cheap_phase_admission_ceiling": _parse_strict_int,
-    # #4374 Slots in the governor's ceiling only the DRAINING class may occupy, so
-    # expensive work cannot fill the whole factory and leave zero reviews running.
-    # Clamped to at most ceiling-2, so the expensive class always keeps two slots — a
-    # 4-core box's ceiling is 2, where ceiling-1 would leave it a single one (#4407).
-    # 0 restores first-come allocation. Per-overlay overridable.
-    "drain_slot_reservation": _parse_strict_int,
     # #4163 RAM one pytest-xdist worker is sized at when the governor derives the
     # per-agent worker cap — the measured p90 worker RSS. A non-positive value drops
     # the memory term and leaves the cores-derived bound. Per-overlay overridable.
@@ -272,6 +267,7 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 #: every cold-hook read); ``schema.derive_box_global_settings`` keeps this copy honest.
 BOX_GLOBAL_SETTINGS: frozenset[str] = frozenset(
     {
+        "admission_write_concurrency_per_core",
         "gitlab_events_subscription",
         "harness_skill_exclusions",
         "loop_cadence_seconds",

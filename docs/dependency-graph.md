@@ -149,6 +149,7 @@ graph TD
     teatree.agents --> teatree.core.admission
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
+    teatree.agents --> teatree.core.managers_task_claim
     teatree.agents --> teatree.core.telemetry
     teatree.agents --> teatree.credential_config
     teatree.agents --> teatree.paths
@@ -317,8 +318,10 @@ graph TD
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
     teatree.loop.statusline_loop_chunks --> teatree.loop.statusline_palette
+    teatree.loop.drain --> teatree.core.models
     teatree.loop.statusline_loops --> teatree.config
     teatree.loop.statusline_loops --> teatree.core
+    teatree.loop.statusline_loops --> teatree.loop.drain
     teatree.loop.statusline_loops --> teatree.loop.loop_cadences
     teatree.loop.statusline_loops --> teatree.loop.loop_scoping
     teatree.loop.statusline_loops --> teatree.loop.session_identity

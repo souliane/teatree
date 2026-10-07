@@ -55,6 +55,8 @@ class HarnessOutcome:
     #: typed flag, not a phrase match on the reason: the reason now names the actual
     #: reclaimer, so any discriminator built on its wording would drift with it.
     lease_lost: bool = False
+    #: Whether ``stuck_reason`` is a deploy drain's checkpoint, so the run parks to resume rather than fails.
+    checkpointed: bool = False
     #: ``ToolUseBlock``s the run emitted. Both backends yield tool use in this same
     #: vocabulary, so the count is lane-agnostic evidence that the agent ACTED —
     #: what :mod:`teatree.agents.action_verification` gates an acting phase on. A
@@ -112,6 +114,10 @@ class StreamCapture:
     context_tokens: int | None = None
     open_tools: dict[str, tuple[str, float]] = field(default_factory=dict)
     last_event_at: float | None = None
+
+    @property
+    def tool_in_flight(self) -> bool:
+        return bool(self.open_tools)
 
     @property
     def open_tool(self) -> tuple[str, float] | None:

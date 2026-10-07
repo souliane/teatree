@@ -77,7 +77,8 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         spawn=lambda _executor: _FakeHandle(),
         sleep=lambda _s: None,
         poll_seconds=poll_seconds,
-        executor_queues=("loops",),
+        loops_executors=1,
+        read_agent_queues=lambda: (),
         **(noop | overrides),
     )
     holder.append(LoopWorker(seams))

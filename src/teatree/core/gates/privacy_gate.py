@@ -67,6 +67,7 @@ _DEFAULT_QUOTE_PATTERNS: tuple[tuple[str, str], ...] = (
         r"\b(verbatim|user said|User mandate \(verbatim)\b",
     ),
 )
+BUILTIN_QUOTE_PATTERN_NAMES = frozenset(name for name, _ in _DEFAULT_QUOTE_PATTERNS)
 
 
 def scan_for_publication(

@@ -14,6 +14,7 @@ from teatree.core.models import LIMIT_PARKED_PREFIX, Session, Task, TaskAttempt,
 
 _ADMISSION = f"{LIMIT_PARKED_PREFIX}admission: all_accounts_exhausted window on lane 'subscription' active"
 _ALL_SPENT = f"{LIMIT_PARKED_PREFIX}all configured subscription accounts exhausted — auto-resume at reset"
+_CHECKPOINT = f"{LIMIT_PARKED_PREFIX}deploy checkpoint: this worker is quiescing for a rolling deploy"
 
 
 class ParkCoalescingTest(TestCase):
@@ -97,3 +98,26 @@ class ParkCoalescingTest(TestCase):
 
         first.refresh_from_db()
         assert first.iteration == 0
+
+    def test_a_park_that_billed_tokens_is_never_folded_into_an_earlier_one(self) -> None:
+        """Two deploy checkpoints of one task share a reason but are two runs, each with its own spend (#5089)."""
+        first = self._billed_park(self.task, _CHECKPOINT, input_tokens=900)
+        second = self._billed_park(self.task, _CHECKPOINT, input_tokens=400)
+
+        assert second.pk != first.pk
+        assert sorted(self.task.attempts.values_list("input_tokens", flat=True)) == [400, 900]
+
+    def test_a_park_that_billed_only_a_cost_is_never_folded_either(self) -> None:
+        self._billed_park(self.task, _CHECKPOINT, cost_usd=0.12)
+        self._billed_park(self.task, _CHECKPOINT, cost_usd=0.07)
+
+        assert self.task.attempts.count() == 2
+
+    def test_an_unbilled_repeat_still_folds(self) -> None:
+        self._park(self.task, _CHECKPOINT)
+        self._park(self.task, _CHECKPOINT)
+
+        assert self.task.attempts.count() == 1
+
+    def _billed_park(self, task: Task, reason: str, **spend: object) -> TaskAttempt:
+        return TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error=reason, **spend)

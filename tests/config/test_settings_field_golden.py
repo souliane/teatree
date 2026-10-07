@@ -18,6 +18,7 @@ from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
         "admission_pressure_shed_at",
+        "admission_write_concurrency_per_core",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
@@ -53,7 +54,6 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "disk_warn_free_gb",
         "dogfood_smoke_overlay",
         "dogfood_smoke_skill",
-        "drain_slot_reservation",
         "dream_memory_promote",
         "dream_umbrella_url",
         "envelope_stop_gate_refusals",

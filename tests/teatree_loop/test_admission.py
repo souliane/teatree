@@ -8,14 +8,18 @@ that wedges the factory when it cannot read its own signals is worse than none.
 import datetime as dt
 import json
 import logging
+import tempfile
 from pathlib import Path
 
 import pytest
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.config import get_effective_settings
 from teatree.core.admission_governor import AdmissionDecision, read_machine_signal, read_quota_signal
-from teatree.core.models import Task
+from teatree.core.models import ConfigSetting, Task
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.loop import admission
 from teatree.utils import ram_scope
@@ -103,6 +107,21 @@ class TestRefusalIsVisible:
         path = tmp_path / "statusline.txt"
         admission.governor_verdict(statusline_path=path)
         assert admission.read_braked(statusline_path=path) is True
+
+
+class TestOneVerdictResolvesTheSettingsOnce(TestCase):
+    """The worker supervisor polls this every 5 s, so each extra resolution is paid every poll."""
+
+    def test_the_ceiling_and_the_pressure_share_one_resolution(self) -> None:
+        table = ConfigSetting._meta.db_table
+        statusline = Path(self.enterContext(tempfile.TemporaryDirectory())) / "statusline.txt"
+        with CaptureQueriesContext(connection) as resolution:
+            get_effective_settings()
+        one = sum(table in query["sql"] for query in resolution.captured_queries)
+        with CaptureQueriesContext(connection) as verdict:
+            admission.governor_verdict(statusline_path=statusline)
+        assert one > 0
+        assert sum(table in query["sql"] for query in verdict.captured_queries) == one
 
 
 class YieldSignalTestCase(TestCase):

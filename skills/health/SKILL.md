@@ -55,6 +55,9 @@ Load `/t3:health` when the statusline health chip is yellow or red, or the user 
 - A **reclaim-stalled:disk** issue means the freeing pass keeps running below `disk_crit_free_gb` and
   returning nothing — read `t3 loop status`'s persisted plan for the per-lever yield, and reclaim by
   hand if the levers are genuinely exhausted. It resolves itself once free space recovers.
+- A **stack-skills-missing** issue names recent dispatches on a Python/Django repo whose recorded
+  bundle (`TaskAttempt.skills_loaded`) lacks `ac-django` / `ac-python` — check that the host has both
+  SKILL.md bodies and that the ticket's worktree or clone resolves. It clears once the 6 h window holds none.
 - Something the signals cannot see (a stale DB snapshot, a known-broken external dependency) → `health add` it so it is visible on the chip until resolved.
 - An auto-derived issue you have chosen to live with → `health dismiss <id>`.
 
@@ -141,7 +144,7 @@ PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the wh
 - **Resume a loop `X`:** `t3 loop resume X --emergency` — clears its hold; the reconciler heads its timer chain when the other admission layers allow it.
 - **Disable a loop `X`:** `t3 loop disable X --emergency` — sets its hold to DISABLED; the reconciler prunes its queued timers.
 - **Confirm the worker is running:** `t3 worker status` (the live flock holder + what the active preset admits + per-loop timer counts). If the preset admits work but no worker runs, `t3 worker ensure` spawns a detached one. A preset admitting ZERO loops stops the loops entirely and is the ONLY stop — it quiesces the worker's executors and leaves the process alive, so the next schedule boundary still lands. `/dash/loops/` shows that verdict read-only; the posture itself is switched there or with `t3 loop preset use <name> --reason "<why>"`.
-- **Stop or recycle the worker:** `t3 worker stop` drains, SIGTERMs the flock holder, and verifies the flock was released (non-zero, with the pid, when it did not exit); `t3 worker restart` does that and then proves a NEW worker holds the flock. `t3 worker drain` on its own quiesces admission and stops nothing — the box then admits ZERO work until `worker_quiescing` goes back to `false` — prefer the `mcp__teatree__config_setting_set` MCP tool, falling back to `t3 <overlay> config_setting set worker_quiescing false` when the MCP server isn't connected — or `t3 worker restart` clears the gate.
+- **Stop or recycle the worker:** `t3 worker stop` drains, SIGTERMs the flock holder, and verifies the flock was released (non-zero, with the pid, when it did not exit); `t3 worker restart` does that and then proves a NEW worker holds the flock. `t3 worker drain` on its own quiesces admission and leaves the worker running, but every in-flight worker run checkpoints at its next heartbeat (it parks with its session id and resumes once the gate clears; `stop` / `restart` with a drain and a manual `worker_quiescing=true` do the same) — the box then admits ZERO work until `worker_quiescing` goes back to `false` — prefer the `mcp__teatree__config_setting_set` MCP tool, falling back to `t3 <overlay> config_setting set worker_quiescing false` when the MCP server isn't connected — or `t3 worker restart` clears the gate.
 
 ### Presets & weekly schedules (mode switching, #3159)
 

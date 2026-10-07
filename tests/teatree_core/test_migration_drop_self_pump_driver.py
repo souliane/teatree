@@ -12,6 +12,14 @@ _DROP = ("core", "0002_drop_self_pump_driver")
 
 @pytest.mark.timeout(480)
 class TestDropSelfPumpDriver(TransactionTestCase):
+    def setUp(self) -> None:
+        self.addCleanup(self._migrate_to_graph_leaves)
+
+    @staticmethod
+    def _migrate_to_graph_leaves() -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
     def test_a_stored_self_pump_driver_is_blanked_and_others_are_kept(self) -> None:
         squash = ("core", core_initial_migration())
         executor = MigrationExecutor(connection)

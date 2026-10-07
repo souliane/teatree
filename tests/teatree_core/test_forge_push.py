@@ -287,6 +287,7 @@ class TestPushBranch:
 
         assert not outcome.ok
         assert "detached HEAD" in outcome.detail
+        assert "--branch HEAD:<branch>" in outcome.detail
         assert not run_git(clone_with_origin, "ls-remote", "--heads", "origin")
 
     def test_refuses_an_unknown_remote_without_touching_the_known_one(self, clone_with_origin: Path) -> None:
@@ -987,6 +988,134 @@ class TestABranchThatDoesNotExistIsNeverTheGatesFault:
         assert recorder.commands == []
 
 
+@pytest.fixture
+def detached_ahead(clone_with_origin: Path) -> Path:
+    """HEAD detached one commit past `feature`, that commit on no branch at all."""
+    run_git(clone_with_origin, "checkout", "-q", "--detach", "HEAD")
+    (clone_with_origin / "detached.txt").write_text("detached\n")
+    run_git(clone_with_origin, "add", "detached.txt")
+    run_git(clone_with_origin, "commit", "-q", "-m", "detached work")
+    return clone_with_origin
+
+
+class TestADetachedHeadIsPublishedOnlyUnderANamedBranch:
+    """`--branch HEAD:<branch>` names the destination; nothing infers it, and nothing strands HEAD."""
+
+    def test_a_directory_that_is_not_a_checkout_is_named_as_such(self, tmp_path: Path) -> None:
+        workdir = tmp_path / "workdir"
+        workdir.mkdir()
+
+        outcome = push_branch(repo=workdir)
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert f"'{workdir}' is not a git checkout" in outcome.detail
+        assert "detached" not in outcome.detail
+
+    @pytest.mark.parametrize(
+        ("spelling", "destination"),
+        [("HEAD:feature", "feature"), ("HEAD:topic", "topic"), ("HEAD:refs/heads/topic", "topic")],
+    )
+    def test_head_colon_a_branch_lands_the_detached_tip(
+        self, detached_ahead: Path, spelling: str, destination: str
+    ) -> None:
+        run_git(detached_ahead, "push", "-q", "origin", "refs/heads/feature")
+        branches_before = run_git(detached_ahead, "for-each-ref", "refs/heads")
+        head = run_git(detached_ahead, "rev-parse", "HEAD")
+
+        outcome = push_branch(repo=detached_ahead, branch=spelling)
+
+        assert outcome.ok, outcome.detail
+        assert outcome.branch == destination
+        assert outcome.pushed_sha == head
+        assert run_git(detached_ahead, "ls-remote", "origin", f"refs/heads/{destination}").split()[0] == head
+        assert run_git(detached_ahead, "symbolic-ref", "-q", "HEAD", check=False) == ""
+        assert run_git(detached_ahead, "for-each-ref", "refs/heads") == branches_before
+
+    def test_a_branch_push_that_would_strand_detached_commits_is_refused(self, detached_ahead: Path) -> None:
+        outcome = push_branch(repo=detached_ahead, branch="feature")
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert "--branch HEAD:feature" in outcome.detail
+        assert not run_git(detached_ahead, "ls-remote", "--heads", "origin")
+
+    def test_a_detached_head_git_cannot_read_fails_closed(self, clone_with_origin: Path) -> None:
+        (clone_with_origin / ".git" / "HEAD").write_text(f"{'1' * 40}\n")
+
+        outcome = push_branch(repo=clone_with_origin, branch="feature")
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert "could not be read" in outcome.detail
+        assert not run_git(clone_with_origin, "ls-remote", "--heads", "origin")
+
+    def test_a_worktree_detached_at_the_merge_base_still_pushes_its_branch(
+        self, clone_with_origin: Path, tmp_path: Path
+    ) -> None:
+        worktree = tmp_path / "worktree"
+        run_git(clone_with_origin, "worktree", "add", "-q", "--detach", str(worktree), "main")
+
+        outcome = push_branch(repo=worktree, branch="feature")
+
+        assert outcome.ok, outcome.detail
+        assert outcome.pushed_sha == run_git(clone_with_origin, "rev-parse", "refs/heads/feature")
+
+    def test_an_attached_checkout_pushes_a_branch_it_has_not_checked_out(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "branch", "-f", "salvage", "main")
+
+        outcome = push_branch(repo=clone_with_origin, branch="salvage")
+
+        assert outcome.ok, outcome.detail
+        assert outcome.pushed_sha == run_git(clone_with_origin, "rev-parse", "refs/heads/main")
+
+    @pytest.mark.parametrize(("at", "suggested"), [("feature", True), ("main", False)])
+    def test_a_detached_head_names_the_branch_sitting_on_it(
+        self, clone_with_origin: Path, at: str, *, suggested: bool
+    ) -> None:
+        run_git(clone_with_origin, "checkout", "-q", "--detach", at)
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert ("t3 push --branch feature" in outcome.detail) is suggested
+        assert "--branch main" not in outcome.detail
+
+    def test_a_rebase_in_progress_is_never_published(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "checkout", "-q", "-b", "other", "main")
+        (clone_with_origin / "file.txt").write_text("other\n")
+        run_git(clone_with_origin, "add", "file.txt")
+        run_git(clone_with_origin, "commit", "-q", "-m", "other")
+        run_git(clone_with_origin, "checkout", "-q", "feature")
+        run_git(clone_with_origin, "rebase", "other", check=False)
+
+        outcome = push_branch(repo=clone_with_origin, branch="HEAD:feature")
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert "rebase" in outcome.detail
+        assert not run_git(clone_with_origin, "ls-remote", "--heads", "origin")
+
+    @pytest.mark.parametrize("spelling", [":feature", "+HEAD:feature", "other:feature", "HEAD:", "HEAD:HEAD"])
+    def test_a_delete_force_or_rename_refspec_is_refused_before_any_push(
+        self, clone_with_origin: Path, spelling: str
+    ) -> None:
+        recorder = _RecordingRun()
+
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
+            outcome = push_branch(repo=clone_with_origin, branch=spelling)
+
+        assert outcome.failure is PushFailure.CONFIG
+        assert "HEAD:<branch>" in outcome.detail
+        assert recorder.commands == []
+
+    def test_a_lease_on_head_without_a_tracking_ref_never_overwrites(self, detached_ahead: Path) -> None:
+        run_git(detached_ahead, "push", "-q", "origin", "refs/heads/feature")
+        run_git(detached_ahead, "update-ref", "-d", "refs/remotes/origin/feature")
+        remote_before = run_git(detached_ahead, "ls-remote", "origin", "refs/heads/feature")
+
+        outcome = push_branch(repo=detached_ahead, branch="HEAD:feature", force_with_lease=True)
+
+        assert not outcome.ok
+        assert run_git(detached_ahead, "ls-remote", "origin", "refs/heads/feature") == remote_before
+
+
 class TestATagSharingABranchsNameCannotBeResolvedForIt:
     """One ref form throughout, so no lookup can answer the tag where the branch was meant.
 
@@ -1021,14 +1150,16 @@ class TestATagSharingABranchsNameCannotBeResolvedForIt:
         assert outcome.failure is PushFailure.NONE
         assert outcome.pushed_sha == run_git(shadowed, "rev-parse", "refs/heads/feature")
 
-    def test_the_tags_sha_is_never_what_lands(self, shadowed: Path) -> None:
+    @pytest.mark.parametrize("spelling", ["", "HEAD:feature"])
+    def test_the_tags_sha_is_never_what_lands(self, shadowed: Path, spelling: str) -> None:
         """The tag is the earlier commit, so reading it would push — or verify — the wrong sha."""
-        outcome = push_branch(repo=shadowed)
+        outcome = push_branch(repo=shadowed, branch=spelling)
 
         assert outcome.ok, outcome.detail
         assert outcome.pushed_sha != run_git(shadowed, "rev-parse", "refs/tags/feature")
 
-    def test_no_git_call_names_the_branch_in_its_bare_form(self, shadowed: Path) -> None:
+    @pytest.mark.parametrize("spelling", ["feature", "HEAD:feature"])
+    def test_no_git_call_names_the_branch_in_its_bare_form(self, shadowed: Path, spelling: str) -> None:
         """The grep-proof half: a bare name left anywhere is a lookup a tag can answer."""
         push_spy = _SpyingRun(forge_push.run_bounded_group)
         git_spy = _SpyingRun(git_run.run_allowed_to_fail)
@@ -1037,7 +1168,7 @@ class TestATagSharingABranchsNameCannotBeResolvedForIt:
             patch.object(forge_push, "run_bounded_group", push_spy),
             patch.object(git_run, "run_allowed_to_fail", git_spy),
         ):
-            outcome = push_branch(repo=shadowed, branch="feature")
+            outcome = push_branch(repo=shadowed, branch=spelling)
 
         assert outcome.ok, outcome.detail
         assert [cmd for spy in (push_spy, git_spy) for cmd in spy.commands if "feature" in cmd] == []

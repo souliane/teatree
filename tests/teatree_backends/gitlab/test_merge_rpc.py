@@ -21,6 +21,7 @@ from teatree.core.backend_protocols import (
     HEAD_SHA_UNREADABLE,
     BackendResolutionError,
     MergeConflictState,
+    PrMessage,
     changed_paths_unavailable,
     rollup_query_failed,
 )
@@ -31,6 +32,7 @@ _SLUG = "acme/widget"
 _ENCODED = "acme%2Fwidget"
 _IID = 6264
 _SHA = "a" * 40
+_MESSAGE = PrMessage(title="Tidy the widget", body="Tidies the widget.")
 
 
 class _FakeClient:
@@ -229,6 +231,27 @@ class TestFetchPrSameRepo:
         assert _rpc(raises=failure).fetch_pr_same_repo(slug=_SLUG, pr_id=_IID) is None
 
 
+class TestFetchPrMessage:
+    def test_title_and_description(self) -> None:
+        mr = {"title": "Tidy the widget", "description": "Tidies it."}
+        assert _rpc(get=mr).fetch_pr_message(slug=_SLUG, pr_id=_IID) == PrMessage("Tidy the widget", "Tidies it.")
+
+    def test_a_null_description_is_an_empty_body(self) -> None:
+        mr = {"title": "Tidy the widget", "description": None}
+        assert _rpc(get=mr).fetch_pr_message(slug=_SLUG, pr_id=_IID) == PrMessage("Tidy the widget", "")
+
+    @pytest.mark.parametrize(
+        "mr",
+        [{"description": "x"}, {"title": " ", "description": "x"}, {"title": "t", "description": 7}, ["not", "an mr"]],
+    )
+    def test_unreadable_without_a_title_and_a_text_body(self, mr: object) -> None:
+        assert _rpc(get=mr).fetch_pr_message(slug=_SLUG, pr_id=_IID) is None
+
+    @pytest.mark.parametrize("failure", _READ_FAILURES)
+    def test_unreadable_on_any_forge_failure(self, failure: Exception) -> None:
+        assert _rpc(raises=failure).fetch_pr_message(slug=_SLUG, pr_id=_IID) is None
+
+
 class TestFetchRequiredChecks:
     def test_reads_the_mr_pipelines_endpoint(self) -> None:
         client = _FakeClient(get=[{"id": 1, "status": "success"}])
@@ -289,25 +312,38 @@ def _classify(result: object) -> None:
 class TestMergePrSquashBound:
     def test_success_binds_the_sha_and_squashes_non_idempotently(self) -> None:
         client = _FakeClient(put=_response(200, json.dumps({"merge_commit_sha": "landed"})))
-        result = GitLabApiMergeRpc(client).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA)
+        result = GitLabApiMergeRpc(client).merge_pr_squash_bound(
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
+        )
         assert (result.returncode, result.merged_sha) == (0, "landed")
         endpoint, payload, idempotent = client.put_calls[0]
         assert endpoint == f"projects/{_ENCODED}/merge_requests/{_IID}/merge"
-        assert payload == {"sha": _SHA, "squash": True}
+        assert payload == {
+            "sha": _SHA,
+            "squash": True,
+            "squash_commit_message": "Tidy the widget",
+            "merge_commit_message": "Tidy the widget\n\nTidies the widget.",
+        }
         # A blind transport replay of a merge that already LANDED would 405 and brick
         # the keystone; core reconciles then retries, so the transport must not.
         assert idempotent is False
 
     def test_no_squash_asks_for_a_merge_commit(self) -> None:
         client = _FakeClient(get={"merge_method": "merge"}, put=_response(200, json.dumps({"merge_commit_sha": "l"})))
-        GitLabApiMergeRpc(client).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, squash=False)
-        assert client.put_calls[0][1] == {"sha": _SHA, "squash": False}
+        GitLabApiMergeRpc(client).merge_pr_squash_bound(
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE, squash=False
+        )
+        assert client.put_calls[0][1] == {
+            "sha": _SHA,
+            "squash": False,
+            "merge_commit_message": "Tidy the widget\n\nTidies the widget.",
+        }
 
     @pytest.mark.parametrize("project", [{"merge_method": "ff"}, {}, None])
     def test_no_squash_refuses_a_project_that_would_not_land_a_merge_commit(self, project: object) -> None:
         client = _FakeClient(get=project, put=_response(200, json.dumps({"merge_commit_sha": "l"})))
         result = GitLabApiMergeRpc(client).merge_pr_squash_bound(
-            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, squash=False
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE, squash=False
         )
         assert result.returncode == 1
         assert "merge commit" in result.stderr
@@ -315,20 +351,20 @@ class TestMergePrSquashBound:
 
     def test_sha_is_the_fallback_merged_oid(self) -> None:
         result = _rpc(put=_response(200, json.dumps({"sha": "landed"}))).merge_pr_squash_bound(
-            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
         )
         assert result.merged_sha == "landed"
 
     def test_unparseable_success_body_leaves_the_merged_sha_empty(self) -> None:
         result = _rpc(put=_response(200, "{not json")).merge_pr_squash_bound(
-            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
         )
         assert (result.returncode, result.merged_sha) == (0, "")
 
     def test_sha_mismatch_409_classifies_head_moved(self) -> None:
         result = _rpc(
             put=_response(409, json.dumps({"message": "SHA does not match HEAD of source branch"}))
-        ).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA)
+        ).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE)
         assert result.returncode != 0
         with pytest.raises(MergeHeadMovedError, match="head moved off"):
             _classify(result)
@@ -336,14 +372,16 @@ class TestMergePrSquashBound:
     @pytest.mark.parametrize("status", [405, 422])
     def test_policy_refusal_is_never_retried(self, status: int) -> None:
         result = _rpc(put=_response(status, json.dumps({"message": "Method Not Allowed"}))).merge_pr_squash_bound(
-            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
         )
         with pytest.raises(MergePreconditionError):
             _classify(result)
 
     @pytest.mark.parametrize("status", [502, 503, 504])
     def test_gateway_failures_classify_transient(self, status: int) -> None:
-        result = _rpc(put=_response(status, "")).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA)
+        result = _rpc(put=_response(status, "")).merge_pr_squash_bound(
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
+        )
         with pytest.raises(MergeTransientError):
             _classify(result)
 
@@ -359,7 +397,9 @@ class TestMergePrSquashBound:
     def test_every_transport_failure_classifies_transient(self, failure: Exception) -> None:
         # The forge issued NO verdict, so the merge is retryable — core re-probes
         # `_already_merged_at` before each retry, which is what makes this safe.
-        result = _rpc(raises=failure).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA)
+        result = _rpc(raises=failure).merge_pr_squash_bound(
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
+        )
         assert result.returncode != 0
         with pytest.raises(MergeTransientError):
             _classify(result)
@@ -368,7 +408,7 @@ class TestMergePrSquashBound:
         # A credential outage is not momentary — retrying it three times only
         # delays the loud failure the operator has to fix.
         result = _rpc(raises=BackendResolutionError("no token")).merge_pr_squash_bound(
-            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, message=_MESSAGE
         )
         with pytest.raises(MergePreconditionError):
             _classify(result)

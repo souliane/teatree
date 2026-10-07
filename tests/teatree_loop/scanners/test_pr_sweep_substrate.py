@@ -128,7 +128,7 @@ class _FakeApi:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         return BoundMergeResult(merged=True, merged_sha=MERGED_SHA)
 
@@ -253,7 +253,7 @@ class TestSweepHonoursStandingSubstrateAuthorization:
 
     def test_self_signoff_optin_merges_substrate_through_the_sweep(self) -> None:
         # RED before the fix: the sweep held unconditionally, so a substrate PR
-        # with a valid cold-review verdict never reached ``merge_pr_squash_bound``.
+        # with a valid cold-review verdict never reached ``merge_pr_bound``.
         _record_cold_review()
         with _teatree_owns_slug(), _self_signoff_config():
             assert _sweep_merges() is True

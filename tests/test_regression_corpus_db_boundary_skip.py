@@ -21,7 +21,7 @@ from django.db import connection
 from teatree.db.boundary import DbBoundaryError
 from teatree.eval import regression_corpus_schema
 from teatree.eval.regression_corpus import run_regression_corpus
-from teatree.eval.regression_corpus_models import RegressionCheck
+from teatree.eval.regression_corpus_models import RegressionCheck, RegressionReport
 
 _CONTAINER_ONLY_DIR = "/nonexistent/container-only/control-db"
 
@@ -92,8 +92,8 @@ class TestNothingElseGotSofter:
         assert run_regression_corpus((_raising(SiblingError("nope")),)).ok is False
 
 
-class TestUnreachableControlDbSkipsBeforeThePreflight:
-    """The pre-flight opens the DB itself, so the topology read must precede it."""
+class TestTheCorpusNeverOpensTheAmbientDb:
+    """The DB-backed checks run on a fresh DB, so a DB this host may not write is never opened."""
 
     def _db_check(self) -> RegressionCheck:
         return RegressionCheck(
@@ -104,31 +104,30 @@ class TestUnreachableControlDbSkipsBeforeThePreflight:
             needs_db=True,
         )
 
-    def test_a_container_only_control_dir_skips_rather_than_erroring(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The host case: the canonical dir is a container-only mount that does not
-        # exist here. Before this, the pre-flight died on a raw OperationalError
-        # traceback before a single check had been classified.
-        _host_pointed_at_the_container_only_db(monkeypatch)
-        report = run_regression_corpus((self._db_check(),))
-        assert report.ok is True
-        assert report.failures == ()
-        (result,) = [r for r in report.results if r.check.failure_class == "probe"]
-        assert result.skipped is True
-        assert "container-only mount by design" in result.detail
+    def _run_recording_the_migrated_db(self) -> tuple[RegressionReport, list[str]]:
+        migrated: list[str] = []
 
-    def test_the_preflight_never_opens_the_database(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Proof the guard runs FIRST. The pre-flight is REPORTED as skipped (#4005) so a
-        # reader can tell it was meant to run, but nothing tried to open the database.
-        _host_pointed_at_the_container_only_db(monkeypatch)
-        with patch.object(regression_corpus_schema, "migrate_self_db") as migrate:
+        def migrate() -> list[str]:
+            migrated.append(str(connection.settings_dict["NAME"]))
+            return []
+
+        with patch.object(regression_corpus_schema, "migrate_self_db", side_effect=migrate):
             report = run_regression_corpus((self._db_check(),))
-        migrate.assert_not_called()
-        (preflight,) = [r for r in report.results if r.check is regression_corpus_schema.SCHEMA_PREFLIGHT]
-        assert preflight.skipped is True
+        return report, migrated
+
+    def test_a_host_aimed_at_the_container_only_db_runs_its_checks_on_a_fresh_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _host_pointed_at_the_container_only_db(monkeypatch)
+        report, migrated = self._run_recording_the_migrated_db()
+        (result,) = [r for r in report.results if r.check.failure_class == "probe"]
+        assert result.skipped is False
+        assert report.validated is True
+        assert len(migrated) == 1
+        assert not migrated[0].startswith(_CONTAINER_ONLY_DIR)
+        assert connection.settings_dict["NAME"] == f"{_CONTAINER_ONLY_DIR}/db.sqlite3"
 
     def test_a_non_db_check_still_runs_normally(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The skip is scoped to DB-backed checks. The git/FSM checks that need no
-        # database must keep running on the host — that is most of this lane.
         _host_pointed_at_the_container_only_db(monkeypatch)
         report = run_regression_corpus((_failing(),))
         assert report.ok is False
