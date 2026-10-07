@@ -132,6 +132,23 @@ class TestDebugZoneLandsOnTheOwningTicket(TestCase):
         assert dispatch_row.task.ticket.role == Ticket.Role.REVIEWER
         assert gated_ticket_for_review_task(dispatch_row.task) == owner
 
+    def test_an_owner_that_cannot_take_the_fix_leaves_it_to_a_url_keyed_ticket_without_an_error(self) -> None:
+        unplanned = Ticket.objects.create(
+            issue_url="https://github.com/o/r/issues/70", overlay="acme", state=Ticket.State.PR_OPENED
+        )
+        PullRequest.objects.create(ticket=unplanned, url=self._PR, repo="o/r", iid="77")
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {self._PR}",
+            payload={"pr_url": self._PR, "head_sha": "a" * 40, "overlay": "acme"},
+        )
+        errors: dict[str, str] = {}
+
+        created = persist_agent_actions(_agent_actions(signal), errors=errors)
+
+        assert errors == {}
+        assert [(task.ticket.issue_url, task.phase) for task in created] == [(self._PR, "planning")]
+
     def test_an_unowned_pr_keeps_its_url_keyed_ticket(self) -> None:
         created = self._red()
 

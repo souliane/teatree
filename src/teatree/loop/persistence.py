@@ -208,11 +208,12 @@ def _get_or_create_ticket(
     defect-escape signal actually see the corrective work they are meant to.
 
     An author dispatch keyed on a PR the ledger already attributes lands on that owning
-    ticket, never on a second, URL-keyed one.
+    ticket, never on a second, URL-keyed one, as long as the owner can take implementing
+    work; an unplanned owner past the planning rung would refuse every tick.
     """
     if role == Ticket.Role.AUTHOR and (pr := pr_ref_from_url(url)) is not None:
         owner = PullRequest.objects.owning_ticket(slug=pr.slug, pr_id=pr.pr_id, pr_url=url)
-        if owner is not None:
+        if owner is not None and owner.admits_implementing():
             return owner, False
     ticket, created = Ticket.objects.get_or_create(
         issue_url=url,

@@ -98,6 +98,10 @@ class TicketSchedulingModel(TicketFacet):
         if self.state == self.State.SCOPED:
             self.start()
 
+    def admits_implementing(self: "Ticket") -> bool:
+        """Whether :meth:`schedule_implementing` can take work: a plan decision exists, or planning can still begin."""
+        return has_plan_decision(self) or self.state in self.EARLY_STATES
+
     def schedule_implementing(self: "Ticket", phase: str, *, reason: str, parent_task: "Task | None" = None) -> "Task":
         """Mint *phase* on a planned ticket; route an unplanned early one to planning carrying *reason*.
 
