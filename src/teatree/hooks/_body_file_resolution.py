@@ -24,16 +24,17 @@ forced (#F7.9).
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, attached_value, read_file_arg
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, GIT_MESSAGE_VERBS, attached_value, read_file_arg
 from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
-_BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset({"--body-file", "--description-file", "--file"})
+BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset({"--body-file", "--description-file", "--notes-file", "--file"})
 
 # The terminator is EXACT-LINE anchored: ``\n<delim>`` followed only by optional
 # trailing spaces/tabs then end-of-line or end-of-string. The old ``\n<delim>\b``
@@ -238,13 +239,15 @@ def _segment_reads_body_from_stdin(words: list[str]) -> bool:
         return False
     leader = PurePosixPath(words[0]).name
     if leader == "git":
-        return "commit" in words and _reads_dash_stdin(words, frozenset({"-F", "--file"}))
+        return not GIT_MESSAGE_VERBS.isdisjoint(words) and _reads_dash_stdin(words, frozenset({"-F", "--file"}))
     if leader in {"gh", "glab"}:
         return _reads_dash_stdin(words, frozenset({"-F", "--file", "--body-file"}))
     return False
 
 
-def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
+def piped_stdin_writer_body(
+    tokens: list[Token], *, reads_stdin_content: Callable[[list[str]], bool] = lambda _words: False
+) -> str | None:
     """Return the body a ``printf``/``echo`` writer pipes into a stdin body reader.
 
     For ``printf '%s' 'msg' | git commit -F -`` (or ``… | gh pr create
@@ -255,11 +258,14 @@ def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
     segment reading its body from stdin, else ``None``. The operands are joined
     verbatim and scanned as a conservative SUPERSET (a banned term / user quote
     in the real body is a substring of the join), never re-executed.
+
+    ``reads_stdin_content`` lets the caller name the forge verbs whose published
+    CONTENT (not a body flag) comes from stdin, which this layer cannot import.
     """
     segments = _segments_with_leading_separator(tokens)
     for idx in range(1, len(segments)):
         separator, words = segments[idx]
-        if separator != "|" or not _segment_reads_body_from_stdin(words):
+        if separator != "|" or not (_segment_reads_body_from_stdin(words) or reads_stdin_content(words)):
             continue
         _, prev_words = segments[idx - 1]
         if prev_words and PurePosixPath(prev_words[0]).name in _REDIRECT_WRITER_COMMANDS:
@@ -413,22 +419,22 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, 
     n = len(words)
     while i < n:
         word = words[i]
-        if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed, leader=leader)
+        if word in BODY_FILE_FLAG_NAMES and i + 1 < n:
+            append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed, leader=leader)
             i += 2
             continue
         attached: str | None = None
-        for flag in _BODY_FILE_FLAG_NAMES:
+        for flag in BODY_FILE_FLAG_NAMES:
             attached = attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, ctx, fail_closed=fail_closed, leader=leader)
+                append_file_payload(attached, payloads, ctx, fail_closed=fail_closed, leader=leader)
                 break
         if attached is not None:
             i += 1
             continue
         short = _short_f_body_file(leader, words, i, fail_closed=fail_closed)
         if short is not None:
-            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed, leader=leader)
+            append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed, leader=leader)
             i += short.consumed
             continue
         i += 1
@@ -467,7 +473,7 @@ def _append_stdin_body(payloads: list[str], ctx: BodyFileContext, *, fail_closed
         payloads.append(FAIL_CLOSED_SENTINEL)
 
 
-def _append_file_payload(
+def append_file_payload(
     path: str, payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool, leader: str = ""
 ) -> None:
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
