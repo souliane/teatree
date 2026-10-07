@@ -8,6 +8,7 @@ from teatree.core.issue_hygiene import DescriptionRemoval, remove_description_se
 from teatree.core.issue_writes.section_removal import DescriptionRemovalConflictError
 from teatree.core.models import ConsolidatedMemory, Rubric, Task, Ticket, TicketSweepRun
 from teatree.core.models.dream_gap_ledger import pending_entries
+from teatree.core.self_forge_identities import NOT_SELF_AUTHORED_REASON
 from teatree.hooks import _repo_visibility
 from teatree.loops.dream.gap_attach import DISPOSITION_CRITERION, GapAttachError, attach_dream_gaps
 from tests.factories import record_test_plan
@@ -219,7 +220,7 @@ class TestAttachRefusesWithoutProof(TestCase):
         umbrella.refresh_from_db()
         assert outcome.refusal == (
             f"the fold into {HOST_URL} did not land: refusing to modify {HOST_URL}: "
-            "authored by a.colleague — not authored by the owner or the factory bot"
+            f"authored by a.colleague — {NOT_SELF_AUTHORED_REASON}"
         )
         assert [e["gap_key"] for e in pending_entries(umbrella)] == ["g1"]
         forge.update_issue.assert_not_called()

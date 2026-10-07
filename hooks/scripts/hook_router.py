@@ -1235,8 +1235,8 @@ def _ai_sig_scan_argv() -> list[str] | None:
 
 
 # A genuine finding is recognisable by the scanner's well-formed summary
-# header ``AI-signature scan: N banned trailer(s)`` (``scripts/
-# ai_signature_scan.py`` ``_summary``). The scanner exits 1 on a finding AND
+# header ``AI-signature scan: N banned trailer(s)`` (``teatree.hooks.
+# ai_signature_scan.summary``). The scanner exits 1 on a finding AND
 # nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
 # exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
 # two apart — keying on the summary line does, mirroring the sibling

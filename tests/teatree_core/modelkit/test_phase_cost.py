@@ -14,6 +14,9 @@ from teatree.core.modelkit.phases import CHEAP_PHASES, KNOWN_PHASES, PhaseCost, 
 #: cannot quietly move one of them across.
 _MUST_STAY_EXPENSIVE = ("coding", "testing", "debugging", "e2e", "planning", "retro", "bughunt")
 
+#: Background assessors and responders: they gate no merge, so they stay off the review lane.
+_BACKGROUND_PHASES = ("triage_assessing", "answering", "directive_interpreting", "scanning_news", "short_describe")
+
 
 class TestPhaseCost:
     def test_reviewing_is_cheap(self) -> None:
@@ -38,6 +41,9 @@ class TestPhaseCost:
     def test_every_write_heavy_phase_stays_expensive(self) -> None:
         leaked = [phase for phase in _MUST_STAY_EXPENSIVE if phase_cost(phase) is PhaseCost.CHEAP]
         assert not leaked, f"write-heavy phase(s) moved into the cheap exemption lane: {leaked}"
+
+    def test_background_phases_do_not_ride_the_review_lane(self) -> None:
+        assert [phase for phase in _BACKGROUND_PHASES if phase_cost(phase) is PhaseCost.CHEAP] == []
 
     def test_every_cheap_phase_is_a_real_registered_phase(self) -> None:
         # A typo in the cheap set would be a silently dead entry — the phase would

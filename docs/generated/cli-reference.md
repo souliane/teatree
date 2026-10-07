@@ -5352,7 +5352,7 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 │ status   Report the worker: flock holder, admitted loops, timers, staleness, │
 │          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
-│ drain    Quiesce the worker and wait for in-flight tasks to finish           │
+│ drain    Quiesce the worker and wait for in-flight tasks to checkpoint       │
 │          (drain-then-deploy).                                                │
 │ stop     Stop the running singleton worker gracefully and VERIFY that it     │
 │          exited.                                                             │
@@ -5422,18 +5422,25 @@ Usage: t3 worker ensure [OPTIONS]
 ```
 Usage: t3 worker drain [OPTIONS]
 
- Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+ Quiesce the worker and wait for in-flight tasks to checkpoint
+ (drain-then-deploy).
 
  Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
- then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
- the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
- when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
- CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
- stuck
- task re-queues via its lease lapse. The wait heartbeats to stderr while it
- runs, so
- the deploy's SSH session never idles out mid-drain and takes the deploy with
- it.
+ and
+ every in-flight run interrupts itself at its next heartbeat and parks PENDING
+ with its
+ session id, to resume on the fresh worker. Waits up to ``--timeout`` seconds
+ for every
+ live CLAIMED lease to clear — the supervisor is never stopped and no in-flight
+ sub-agent is killed. Exits 0 when the worker is drained; exits
+ ``_GRACE_EXCEEDED_EXIT``
+ (naming the still-CLAIMED task pks) when the grace lapses, so a deploy can
+ proceed
+ knowing a run that could not checkpoint re-queues via its lease lapse. The
+ wait
+ heartbeats to stderr while it runs, so the deploy's SSH session never idles
+ out
+ mid-drain and takes the deploy with it.
 
  THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container
  boot
@@ -5442,8 +5449,8 @@ Usage: t3 worker drain [OPTIONS]
  self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only
  once the
  gate has stood for longer than a real deploy could still explain (currently
- ~40
- minutes with liveness proving the convergence dead, ~80 minutes on age alone)
+ ~20
+ minutes with liveness proving the convergence dead, ~60 minutes on age alone)
  — a
  drain held deliberately past that window is auto-cleared, not respected.
  Before
@@ -5465,8 +5472,8 @@ Usage: t3 worker drain [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
-│                                 finish.                                      │
-│                                 [default: 1800]                              │
+│                                 checkpoint.                                  │
+│                                 [default: 600]                               │
 │ --poll-interval        FLOAT    Seconds between in-flight checks.            │
 │                                 [default: 5.0]                               │
 │ --generation           TEXT     Drain only this image generation (a 40-hex   │
@@ -5507,7 +5514,7 @@ Usage: t3 worker stop [OPTIONS]
 │                                          [default: drain]                    │
 │ --timeout                       INTEGER  Grace seconds for the drain         │
 │                                          (ignored with --no-drain).          │
-│                                          [default: 1800]                     │
+│                                          [default: 600]                      │
 │ --exit-timeout                  FLOAT    Seconds to wait for the flock to be │
 │                                          released.                           │
 │                                          [default: 60.0]                     │
@@ -5542,7 +5549,7 @@ Usage: t3 worker restart [OPTIONS]
 │                                           [default: drain]                   │
 │ --timeout                        INTEGER  Grace seconds for the drain        │
 │                                           (ignored with --no-drain).         │
-│                                           [default: 1800]                    │
+│                                           [default: 600]                     │
 │ --exit-timeout                   FLOAT    Seconds to wait for the flock to   │
 │                                           be released.                       │
 │                                           [default: 60.0]                    │
@@ -5590,7 +5597,7 @@ Usage: t3 deploy roll [OPTIONS]
 │                                       [required]                             │
 │    --drain-timeout           INTEGER  Grace seconds for the old generation's │
 │                                       claims.                                │
-│                                       [default: 1800]                        │
+│                                       [default: 600]                         │
 │    --verify-timeout          FLOAT    Seconds the new generation has to      │
 │                                       verify.                                │
 │                                       [default: 300.0]                       │
@@ -12744,7 +12751,7 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 
  Resolves the code host per-URL across all registered overlays, so it
  works for any tracker an overlay is configured for. Only tickets the
- owner or the factory bot filed may be changed.
+ owner, the factory bot, or our own repos' CI workflows filed may be changed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
@@ -12956,8 +12963,9 @@ Usage: t3 teatree ticket expedite [OPTIONS] TICKET_ID
  Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
 
  A flagged ticket may push before CI completes; the merge keystone is NEVER
- relaxed — merge stays gated on local review + test evidence. Surfaces on
- ``ticket show`` and as a ⚡ statusline chip.
+ relaxed — merge stays gated on local review + test evidence. Its tasks also
+ rank first at admission (after reviews). Surfaces on ``ticket show`` and as
+ a ⚡ statusline chip.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

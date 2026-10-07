@@ -3,7 +3,7 @@
 The "No AI Signature on Posts Made on the User's Behalf" rule is enforced by
 the ``handle_block_ai_signature`` PreToolUse gate in
 ``hooks/scripts/hook_router.py``. The matching (the position-anchored trailer
-detection) lives in ``scripts/ai_signature_scan.py``; this module owns the
+detection) lives in :mod:`teatree.hooks.ai_signature_scan`; this module owns the
 other half — deciding whether a Bash command is a forge-post surface and
 pulling the body out of it.
 

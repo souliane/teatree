@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/hook_router.py + teatree.hooks.ai_signature_scan.
 r"""End-to-end golden corpus for the AI-signature forge-post-body gate (#11).
 
 Sub-agents running raw ``gh``/``glab`` forge-post commands kept injecting an
@@ -43,6 +44,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _HANDLERS, _extract_ai_sig_payload, handle_block_ai_signature
+from teatree.hooks.ai_signature_scan import scan_text
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ai_signature_scan.py"
 
@@ -195,8 +197,6 @@ class TestAntiVacuity:
 
     def test_real_matcher_blocks_every_deny_body(self):
         # Baseline: the REAL matcher finds a trailer in each must-DENY body.
-        from scripts.ai_signature_scan import scan_text  # noqa: PLC0415
-
         for trailer in (_EMOJI_FOOTER, _COAUTHOR_CLAUDE):
             body = f"real summary\n\nmore detail\n\n{trailer}"
             assert scan_text(body), f"real matcher must flag the {trailer!r} trailer"
@@ -212,8 +212,6 @@ class TestAntiVacuity:
         # Baseline: the REAL matcher finds NOTHING in each must-ALLOW body —
         # including the prose body that mentions Claude / AI / generated /
         # co-author and the real human co-author trailer.
-        from scripts.ai_signature_scan import scan_text  # noqa: PLC0415
-
         for body in (_CLEAN_BODY, _PROSE_MENTIONS_BODY, _HUMAN_COAUTHOR_BODY):
             assert scan_text(body) == [], f"real matcher must NOT flag the legitimate body: {body!r}"
 

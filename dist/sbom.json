@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.161",
+      "description": "requirements line 38: claude-agent-sdk==0.2.163",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.161",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.163",
       "type": "library",
-      "version": "0.2.161"
+      "version": "0.2.163"
     },
     {
       "bom-ref": "requirements-L40",
@@ -1715,7 +1715,7 @@
           ],
           "name": "cyclonedx-py",
           "type": "application",
-          "version": "7.4.0"
+          "version": "7.5.0"
         },
         {
           "description": "Python library for CycloneDX",
