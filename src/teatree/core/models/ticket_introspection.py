@@ -4,6 +4,7 @@ from django.apps import apps
 from django.db.models import Max
 from django_fsm import can_proceed
 
+from teatree.core.forge_url import is_forge_url
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
@@ -74,6 +75,11 @@ class TicketIntrospectionModel(TicketFacet):
         if newest is None:
             return False
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
+
+    @property
+    def has_checkout_source(self: "Ticket") -> bool:
+        """A repo is attached, or a forge issue exists for ``workspace ticket`` to attach one from."""
+        return bool(self.repos) or is_forge_url(self.issue_url)
 
     @property
     def is_settled(self) -> bool:

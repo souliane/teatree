@@ -14,6 +14,8 @@ from teatree.core import notify as notify_module
 from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
 from teatree.core.models import BotPing, DeferredQuestion, SelfImproveFiring, Task, Ticket
 from teatree.core.notify_types import DELIVERED, NotifyReason, blocked
+from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
+from teatree.core.tasks import execute_provision
 from teatree.loop.self_improve import (
     SLACK_RATE_CAP_SECONDS,
     ActionRung,
@@ -207,6 +209,20 @@ class ActionLadderBehaviourTests(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLAN_RECORDED
         assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).count() == 1
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_repair_ticket_never_asks_the_owner_about_provisioning_even_with_the_retries_spent(self) -> None:
+        result = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::swap", requested_rung=ActionRung.TICKET)
+        )
+        assert result is not None
+        ticket = Ticket.objects.get(pk=result.firing.ticket_id)
+
+        execute_provision.call(ticket.pk, len(NO_REPOS_RETRY_DELAYS))
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
         assert not DeferredQuestion.objects.exists()
 
     def test_existing_not_started_repair_ticket_without_tasks_is_walked_to_work_started(self) -> None:

@@ -502,7 +502,8 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
 
     A failure on a ticket with no repos yet, or one the runner marks retryable (a remote
     could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
-    and asks the owner only once that budget is spent.
+    and asks the owner only once that budget is spent. A ticket with no repo and no forge
+    issue to attach one from (an internal repair ticket) has nothing to check out and is skipped.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
@@ -514,11 +515,12 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.WORK_STARTED:
+        if ticket.state != Ticket.State.WORK_STARTED or not ticket.has_checkout_source:
             logger.info(
-                "execute_provision skipped for ticket %s: state=%s (not WORK_STARTED)",
+                "execute_provision skipped for ticket %s: state=%s, has_checkout_source=%s",
                 ticket_id,
                 ticket.state,
+                ticket.has_checkout_source,
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 

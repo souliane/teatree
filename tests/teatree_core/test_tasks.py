@@ -1065,6 +1065,23 @@ class TestExecuteProvisionRetriesARepoLessTicket(TestCase):
         assert self._questions() == []
 
 
+class TestExecuteProvisionSkipsATicketWithNothingToCheckOut(TestCase):
+    def test_no_repo_and_no_forge_issue_is_skipped_without_a_retry_or_a_question(self) -> None:
+        queue = execute_provision.get_backend()
+        queue.clear()
+        for issue_url in ("", "redcard://signal/7"):
+            with self.subTest(issue_url=issue_url):
+                ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.WORK_STARTED)
+
+                with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+                    result = execute_provision.call(ticket.pk, 0)
+
+                provisioner.assert_not_called()
+                assert result == {"ticket_id": ticket.pk, "skipped": True, "state": Ticket.State.WORK_STARTED}
+        assert queue.results == []
+        assert not DeferredQuestion.objects.exists()
+
+
 class TestExecuteProvisionRetriesARemoteReadRefusal(TestCase):
     """A provision refused because origin could not be read retries before asking (#4967)."""
 
