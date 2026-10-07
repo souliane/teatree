@@ -501,7 +501,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # so nothing but the saved patch records that the work ever existed. Nothing reaps
     # either, so without a surface nobody looks. The last three are the same shape one
     # level out — a committed artifact rather than a row: a `dev/.test_durations` the
-    # daily refresh stopped updating still splits the shard matrix, just blindly; its
+    # weekly refresh stopped updating still splits the shard matrix, just blindly; its
     # recordings are also what say whether a test is living off the sharded lane's
     # raised ceiling; and its age is the only one of the three that can say the refresh
     # has stopped rather than merely fallen behind (#4130). All surface here rather than

@@ -208,6 +208,16 @@ def _needs(job: Mapping[str, Any]) -> list[str]:
     return [declared] if isinstance(declared, str) else list(declared)
 
 
+def _ancestors(jobs: Mapping[str, Any], name: str) -> set[str]:
+    seen: set[str] = set()
+    pending = _needs(jobs[name])
+    while pending:
+        if (need := pending.pop()) not in seen:
+            seen.add(need)
+            pending.extend(_needs(jobs[need]))
+    return seen
+
+
 def _need_context(result: str, declared: Mapping[str, str]) -> dict[str, Any]:
     return {"result": result, "outputs": {} if result == "skipped" else dict(declared)}
 
@@ -231,9 +241,11 @@ def job_results(
         for name in ready:
             needed = _needs(jobs[name])
             needs = {need: _need_context(results[need], (outputs or {}).get(need, {})) for need in needed}
+            # The runner reads status over the whole dependency chain: a skip two levels up still skips.
+            upstream = [results[ancestor] for ancestor in _ancestors(jobs, name)]
             status = {
-                "success": all(results[need] == "success" for need in needed),
-                "failure": any(results[need] == "failure" for need in needed),
+                "success": all(result == "success" for result in upstream),
+                "failure": any(result == "failure" for result in upstream),
                 "cancelled": False,
                 "always": True,
             }
