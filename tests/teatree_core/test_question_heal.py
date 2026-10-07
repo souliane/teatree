@@ -119,3 +119,22 @@ class TestPhaseWedgeHealed(TestCase):
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_REQUESTED)
 
         assert withdraw_healed([row]) == [row]
+
+
+class TestALegacyWedgeRowDrainsToo(TestCase):
+    """Rows written before #5030 keyed the wedge on ``tool_use_id`` with no task part."""
+
+    def _legacy_row(self, ticket: Ticket) -> DeferredQuestion:
+        return DeferredQuestion.record(
+            f"FSM wedge on ticket {ticket.pk}", tool_use_id=f"fsm-wedge:{ticket.pk}:planning"
+        )
+
+    def test_a_legacy_row_drains_once_its_ticket_moved_past_the_phase_and_a_wedged_one_stays(self) -> None:
+        healed = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        Task.objects.create(ticket=healed, session=Session.objects.create(ticket=healed), phase="coding")
+        wedged = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        healed_row, wedged_row = self._legacy_row(healed), self._legacy_row(wedged)
+
+        assert withdraw_healed([healed_row, wedged_row]) == [wedged_row]
+        healed_row.refresh_from_db()
+        assert not healed_row.is_pending

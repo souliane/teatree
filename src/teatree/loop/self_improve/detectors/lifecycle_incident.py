@@ -319,21 +319,23 @@ class LifecycleIncidentDetector:
         Deterministic like a stalled task, so a wedge goes straight to the ticket rung; a repair
         ticket's own wedge stays on the statusline, never opening a repair ticket for a repair ticket.
         """
-        wedged_ticket_ids = {
-            int(match["ticket"]): match["phase"]
+        wedges = {
+            (int(match["ticket"]), match["phase"])
             for marker in DeferredQuestion.pending()
             .filter(dedupe_marker__startswith="fsm-wedge:")
             .values_list("dedupe_marker", flat=True)
             if (match := PHASE_WEDGE_MARKER_RE.match(marker))
         }
-        tickets = Ticket.objects.filter(pk__in=wedged_ticket_ids)
+        tickets = Ticket.objects.filter(pk__in={ticket_id for ticket_id, _phase in wedges})
         if self.overlay_name:
             tickets = tickets.filter(overlay=self.overlay_name)
+        sources = dict(tickets.values_list("pk", "extra__source"))
         by_phase: dict[str, list[int]] = defaultdict(list)
         repair_by_phase: dict[str, list[int]] = defaultdict(list)
-        for ticket_id, source in tickets.values_list("pk", "extra__source"):
-            groups = repair_by_phase if source == "self_improve" else by_phase
-            groups[wedged_ticket_ids[ticket_id]].append(ticket_id)
+        for ticket_id, phase in sorted(wedges):
+            if ticket_id in sources:
+                groups = repair_by_phase if sources[ticket_id] == "self_improve" else by_phase
+                groups[phase].append(ticket_id)
         reports = [
             self._report(
                 kind="phase_wedge",

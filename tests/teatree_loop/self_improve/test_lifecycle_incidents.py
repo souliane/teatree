@@ -550,6 +550,18 @@ class PhaseWedgeIncidentTests(TestCase):
         assert reports["repair_phase_wedge"].payload["ids"] == [repair.pk]
         assert reports["repair_phase_wedge"].requested_rung == ActionRung.STATUSLINE
 
+    def test_each_phase_a_ticket_is_wedged_in_is_reported_including_a_phase_with_a_digit(self) -> None:
+        ticket = self._wedged(phase="retro")
+        record_stuck_transition_question(None, phase="e2e", ticket=ticket, refusal="no e2e evidence")
+
+        causes = sorted(
+            report.payload["cause"]
+            for report in LifecycleIncidentDetector(overlay_name="t3-teatree").detect()
+            if report.payload["kind"] == "phase_wedge"
+        )
+
+        assert causes == ["e2e", "retro"]
+
     def test_another_overlays_wedge_and_a_dismissed_wedge_are_not_counted(self) -> None:
         self._wedged(overlay="other")
         dismissed = self._wedged()

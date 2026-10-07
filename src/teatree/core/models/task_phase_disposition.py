@@ -16,6 +16,7 @@ from django.db.models import Max
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket import Ticket
+from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,9 +26,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The dedupe marker one wedge records under; ``task`` is 0 for a sessionless refusal (``execute_retrospect``).
-PHASE_WEDGE_MARKER = "fsm-wedge:{ticket}:{phase}:{task}"
-PHASE_WEDGE_MARKER_RE = re.compile(r"^fsm-wedge:(?P<ticket>\d+):(?P<phase>[a-z_]+):(?P<task>\d+)$")
+#: The dedupe marker one wedge records under: ``source`` is the completed task's pk, or ``r`` + the
+#: refusal's fingerprint for a sessionless refusal (``execute_retrospect``), one row per distinct refusal.
+PHASE_WEDGE_MARKER = "fsm-wedge:{ticket}:{phase}:{source}"
+#: Also matches the pre-#5030 ``tool_use_id`` key, which had no source part.
+PHASE_WEDGE_MARKER_RE = re.compile(
+    r"^fsm-wedge:(?P<ticket>\d+):(?P<phase>[a-z0-9_]+)(?::(?P<source>\d+|r[0-9a-f]{12}))?$"
+)
 
 #: The lifecycle-FSM target state each phase's completion should reach. A
 #: completed phase task whose ticket sits BEHIND its target with no matching
@@ -162,7 +167,8 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
     """
     from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM/app-registry
 
-    marker = PHASE_WEDGE_MARKER.format(ticket=ticket.pk, phase=phase, task=task.pk if task else 0)
+    source = task.pk if task else f"r{(terminal_reason_fingerprint(refusal) or '0' * 12)[:12]}"
+    marker = PHASE_WEDGE_MARKER.format(ticket=ticket.pk, phase=phase, source=source)
     if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"
@@ -184,7 +190,9 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
     until something acts on it.
     """
     wedges = {
-        question.pk: match for question in questions if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker))
+        question.pk: match
+        for question in questions
+        if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker or question.tool_use_id))
     }
     tickets = Ticket.objects.annotate(newest_task=Max("tasks__pk")).in_bulk(
         {int(match["ticket"]) for match in wedges.values()}
@@ -196,6 +204,12 @@ def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, st
             continue
         if ticket.state in Ticket.marker_release_states():
             healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
-        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > int(match["task"]):
+        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > _wedged_task_pk(match):
             healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
     return healed
+
+
+def _wedged_task_pk(match: "re.Match[str]") -> int:
+    """The completed task a wedge row was recorded for; 0 (any task is newer) for a refusal or a legacy row."""
+    source = match["source"] or ""
+    return int(source) if source.isdigit() else 0

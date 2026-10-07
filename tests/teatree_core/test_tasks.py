@@ -23,6 +23,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.runners import RetroPhaseMarker
@@ -505,7 +506,19 @@ class TestExecuteRetrospect(TestCase):
         assert ticket.state == Ticket.State.RETRO_RECORDED
         row = DeferredQuestion.objects.get()
         assert row.audience == DeferredQuestion.Audience.INTERNAL
-        assert row.dedupe_marker == f"fsm-wedge:{ticket.pk}:retro:0"
+        assert row.dedupe_marker.startswith(f"fsm-wedge:{ticket.pk}:retro:")
+
+    def test_a_later_refusal_for_another_reason_records_its_own_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED, kind=Ticket.Kind.FIX)
+
+        for refusal in ("Refusing to deliver: fields missing", "Refusing to deliver: fields missing", "critic refused"):
+            record_stuck_transition_question(None, phase="retro", ticket=ticket, refusal=refusal)
+
+        prefix = f"FSM wedge on ticket {ticket.pk}: the 'retro' phase completed but the ticket cannot advance: "
+        assert sorted(DeferredQuestion.objects.values_list("question", flat=True)) == [
+            f"{prefix}Refusing to deliver: fields missing",
+            f"{prefix}critic refused",
+        ]
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
