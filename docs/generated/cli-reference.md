@@ -5794,8 +5794,10 @@ Usage: t3 browser open [OPTIONS] URL
 │ *    url      TEXT  [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Print the step as one JSON object.                           │
-│ --help          Show this message and exit.                                  │
+│ --timeout        FLOAT  Seconds to wait for the page's load event.           │
+│                         [default: 30.0]                                      │
+│ --json                  Print the step as one JSON object.                   │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

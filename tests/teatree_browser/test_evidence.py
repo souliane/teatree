@@ -64,3 +64,39 @@ def test_inspection_reads_from_the_last_navigation(tmp_path: Path) -> None:
 
 def test_an_absent_log_is_empty(tmp_path: Path) -> None:
     assert EventLog(tmp_path / "missing.jsonl").read() == []
+
+
+def test_inspection_keeps_the_loaded_documents_own_response(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "events.jsonl")
+    for event in (
+        BrowserEvent("response", url="http://h/old", status=200),
+        BrowserEvent("navigation", url="http://h/old"),
+        BrowserEvent("response", url="http://h/gone", status=500),
+        BrowserEvent("navigation", url="http://h/gone"),
+        BrowserEvent("console", text="after", level="error"),
+    ):
+        log.append(event)
+
+    assert [(event.kind, event.status, event.text) for event in log.since_last_navigation()] == [
+        ("response", 500, ""),
+        ("console", None, "after"),
+    ]
+
+
+def test_a_line_the_keeper_is_still_writing_is_left_for_the_next_read(tmp_path: Path) -> None:
+    log = EventLog(tmp_path / "events.jsonl")
+    log.append(BrowserEvent("console", text="whole", level="log"))
+    with log.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "console", "text": "to')
+
+    assert [event.text for event in log.read()] == ["whole"]
+
+
+def test_a_corrupt_line_in_the_middle_is_not_skipped(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"kind": "cons\n' + BrowserEvent("console", text="later", seq=2).to_json() + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="Unterminated string"):
+        EventLog(path).read()

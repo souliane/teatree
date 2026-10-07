@@ -4,6 +4,10 @@ The browser lives in a detached keeper process (:mod:`teatree.browser.keeper`) e
 DevTools endpoint; a step connects over CDP, acts, waits for the page to go quiet, and
 reads back what the keeper recorded — so console output and failed requests caused by an
 earlier step are still there for ``inspect``.
+
+Whether a keeper is alive is read from the kernel lock it holds on ``keeper.pid``, never
+from the pid recorded there: a recorded pid outlives its process and can come to name an
+unrelated one, so it is only ever signalled while that lock is held.
 """
 
 import contextlib
@@ -23,9 +27,17 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.browser.evidence import BrowserEvent, EventLog
-from teatree.browser.state import SessionFiles
-from teatree.paths import data_dir_root, isolated_slug
+from teatree.browser.state import KEEPER_LOCK, SessionFiles
+from teatree.paths import PathHelpers
 from teatree.utils.run import spawn_session_leader
+from teatree.utils.singleton import (
+    HolderVerdict,
+    current_context,
+    flock_is_held,
+    holder_verdict,
+    pid_alive,
+    read_holder,
+)
 from teatree.utils.work_tree import WorkTreeError, resolve
 
 if TYPE_CHECKING:
@@ -33,6 +45,8 @@ if TYPE_CHECKING:
 
 KEEPER_START_TIMEOUT_S = 20.0
 KEEPER_STOP_TIMEOUT_S = 10.0
+KEEPER_KILL_WAIT_S = 2.0
+NAVIGATION_TIMEOUT_S = 30.0
 SETTLE_QUIET_S = 0.5
 SETTLE_MAX_S = 5.0
 ACTION_TIMEOUT_MS = 10_000
@@ -55,7 +69,9 @@ class NoBrowserSessionError(BrowserError):
 
 
 class StepFailedError(BrowserError):
-    pass
+    def __init__(self, message: str, events: list[BrowserEvent] | None = None) -> None:
+        super().__init__(message)
+        self.events = events or []
 
 
 class Verb(StrEnum):
@@ -104,7 +120,7 @@ class BrowserSession:
 
     @classmethod
     def for_checkout(cls, checkout: Path) -> "BrowserSession":
-        return cls(SessionFiles(data_dir_root() / "browser-sessions" / isolated_slug(checkout)))
+        return cls(SessionFiles(PathHelpers.browser_session_dir(checkout)))
 
     @classmethod
     def for_directory(cls, directory: Path) -> "BrowserSession":
@@ -116,8 +132,7 @@ class BrowserSession:
 
     def cdp_url(self) -> str | None:
         """The live session's DevTools endpoint, or ``None`` when no keeper answers on it."""
-        pid = self._keeper_pid()
-        if pid is None or not _pid_alive(pid):
+        if not self._keeper_running():
             return None
         try:
             cdp_url = str(json.loads(self.files.endpoint.read_text(encoding="utf-8"))["cdp_url"])
@@ -126,8 +141,8 @@ class BrowserSession:
             return None
         return cdp_url
 
-    def open(self, url: str) -> StepReport:
-        return self._step(self._ensure_keeper(), lambda page: _goto(page, url))
+    def open(self, url: str, *, timeout_s: float = NAVIGATION_TIMEOUT_S) -> StepReport:
+        return self._step(self._ensure_keeper(), lambda page: _goto(page, url, timeout_s))
 
     def act(self, verb: Verb, arguments: list[str]) -> StepReport:
         expected = _ARGUMENTS[verb]
@@ -139,9 +154,9 @@ class BrowserSession:
 
     def inspect(self) -> Inspection:
         cdp_url = self._require_session()
-        self.files.artifacts.mkdir(exist_ok=True)
         snapshot, html, screenshot = (self.files.artifacts / name for name in ("aria.yaml", "page.html", "page.png"))
         with self._attach(cdp_url) as page:
+            self.files.artifacts.mkdir(exist_ok=True)
             aria = page.locator("body").aria_snapshot()
             snapshot.write_text(aria, encoding="utf-8")
             html.write_text(page.content(), encoding="utf-8")
@@ -167,10 +182,13 @@ class BrowserSession:
     def _step(self, cdp_url: str, action: Callable[["Page"], object]) -> StepReport:
         log = EventLog(self.files.events)
         before = log.last_seq()
-        with self._attach(cdp_url) as page:
-            result = action(page)
-            _settle(log)
-            return StepReport(url=page.url, title=page.title(), events=log.read(after=before), result=result)
+        try:
+            with self._attach(cdp_url) as page:
+                result = action(page)
+                _settle(log)
+                return StepReport(url=page.url, title=page.title(), events=log.read(after=before), result=result)
+        except StepFailedError as exc:
+            raise StepFailedError(str(exc), log.read(after=before)) from exc
 
     @contextlib.contextmanager
     def _attach(self, cdp_url: str) -> Iterator["Page"]:
@@ -179,9 +197,9 @@ class BrowserSession:
             sync_playwright,
         )
 
-        self.files.last_used.touch()
         try:
-            with sync_playwright() as playwright:
+            with _owner_only(), sync_playwright() as playwright:
+                self.files.last_used.touch()
                 context = playwright.chromium.connect_over_cdp(cdp_url).contexts[0]
                 page = context.pages[0] if context.pages else context.new_page()
                 page.set_default_timeout(ACTION_TIMEOUT_MS)
@@ -197,28 +215,31 @@ class BrowserSession:
         return cdp_url
 
     def _ensure_keeper(self) -> str:
-        self.files.root.mkdir(parents=True, exist_ok=True)
-        with self.files.lock.open("w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            return self.cdp_url() or self._start_keeper()
+        with _owner_only():
+            self.files.root.mkdir(parents=True, exist_ok=True)
+            self.files.root.chmod(0o700)
+            with self.files.lock.open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                return self.cdp_url() or self._start_keeper()
 
     def _start_keeper(self) -> str:
         self._stop_keeper(grace_s=0)
-        for stale in (self.files.endpoint, self.files.error, self.files.stop, self.files.pid):
+        for stale in (self.files.endpoint, self.files.error, self.files.stop):
             stale.unlink(missing_ok=True)
         shutil.rmtree(self.files.profile, ignore_errors=True)
         with self.files.log.open("ab") as log:
             launcher = [sys.executable, "-m", "teatree.browser.keeper", str(self.files.root)]
-            spawn_session_leader(launcher, stdout=log, stderr=log).wait()
+            exit_code = spawn_session_leader(launcher, stdout=log, stderr=log).wait()
+        if exit_code != 0:
+            msg = f"the browser keeper could not start (exit {exit_code}); see {self.files.log}"
+            raise BrowserUnavailableError(msg)
         deadline = time.monotonic() + KEEPER_START_TIMEOUT_S
         while time.monotonic() < deadline:
-            if (cdp_url := self.cdp_url()) is not None:
+            # The keeper publishes its endpoint only once it holds its lock, so probing waits for the file.
+            if self.files.endpoint.is_file() and (cdp_url := self.cdp_url()) is not None:
                 return cdp_url
             if self.files.error.is_file():
                 msg = f"the headless browser did not launch: {self.files.error.read_text(encoding='utf-8')}\n{REMEDY}"
-                raise BrowserUnavailableError(msg)
-            if (pid := self._keeper_pid()) is not None and not _pid_alive(pid):
-                msg = f"the browser keeper exited before publishing its endpoint; see {self.files.log}"
                 raise BrowserUnavailableError(msg)
             time.sleep(0.1)
         self._stop_keeper(grace_s=0)
@@ -226,24 +247,66 @@ class BrowserSession:
         raise BrowserUnavailableError(msg)
 
     def _stop_keeper(self, *, grace_s: float) -> None:
-        pid = self._keeper_pid()
-        if pid is None or _wait_gone(pid, grace_s):
-            return
+        """Wait for the keeper to release its lock; past *grace_s*, signal the lock's own recorded holder."""
+        keeper = self._local_keeper_pid()
+        if not self._wait_released(grace_s):
+            self._terminate(self._local_keeper_pid())
+        if keeper is not None:
+            _wait_exited(keeper, KEEPER_KILL_WAIT_S)
+
+    def _terminate(self, keeper: int | None) -> None:
+        if keeper is None:
+            msg = (
+                f"a browser keeper still holds {self.files.pid}, but its pid cannot be resolved from this "
+                "runtime (it runs in another container or host) — close the session from where it was opened"
+            )
+            raise BrowserUnavailableError(msg)
         for signum in (signal.SIGTERM, signal.SIGKILL):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pid, signum)
-            if _wait_gone(pid, 2.0):
+            if self._keeper_running():
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(keeper, signum)
+            if self._wait_released(KEEPER_KILL_WAIT_S):
                 return
 
-    def _keeper_pid(self) -> int | None:
-        try:
-            return int(self.files.pid.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+    def _local_keeper_pid(self) -> int | None:
+        """The pid recorded by the keeper holding the lock, when this runtime shares its pid namespace."""
+        if not self._keeper_running():
             return None
+        holder = read_holder(self.files.pid)
+        if holder is None or holder_verdict(holder, current_context()) is not HolderVerdict.SAME_CONTEXT:
+            return None
+        return holder.pid
+
+    def _keeper_running(self) -> bool:
+        return self.files.pid.is_file() and flock_is_held(KEEPER_LOCK, pid_path=self.files.pid)
+
+    def _wait_released(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while self._keeper_running():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
 
 
-def _goto(page: "Page", url: str) -> None:
-    page.goto(url, wait_until="load")
+def _wait_exited(pid: int, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+@contextlib.contextmanager
+def _owner_only() -> Iterator[None]:
+    """Create every file and directory inside the block readable by its owner alone."""
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def _goto(page: "Page", url: str, timeout_s: float) -> None:
+    page.goto(url, wait_until="load", timeout=timeout_s * 1000)
 
 
 def _perform(page: "Page", verb: Verb, arguments: list[str]) -> object:
@@ -276,22 +339,3 @@ def _settle(log: EventLog) -> None:
             last, quiet_since = seq, time.monotonic()
         elif time.monotonic() - quiet_since >= SETTLE_QUIET_S:
             return
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _wait_gone(pid: int, timeout_s: float) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while _pid_alive(pid):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-    return True

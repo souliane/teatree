@@ -67,3 +67,11 @@ def test_names_no_mcp_server_but_teatrees() -> None:
 
     assert [match for text in _E2E_DOCS for match in foreign.findall(text)] == []
     assert not _any_doc_contains("claude mcp add")
+
+
+def test_the_owner_tools_listen_on_loopback_behind_a_port_forward() -> None:
+    binds = [match for text in _E2E_DOCS for match in re.findall(r"--(?:ui-)?host\s+(\S+)", text)]
+
+    assert binds, "the owner-facing UI mode / trace viewer recipes are missing"
+    assert set(binds) == {"127.0.0.1"}, binds
+    assert _any_doc_contains("ssh -N -L <port>:127.0.0.1:<port>")

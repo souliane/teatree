@@ -199,21 +199,6 @@ def _run_worker_gates() -> bool:
     return running and holder and skills and memory and ceiling and restart_loop
 
 
-def _run_host_capacity_gates(*, repair: bool) -> bool:
-    """What this host must be able to do, each a HARD FAIL, each run so every finding shows.
-
-    Root-filesystem headroom (#3852) is percent-shaped, so a box on a trajectory to full is
-    named long before the absolute-GB scanner thresholds fire. Agent-spawn headroom (#4301)
-    checks argv+envp against ARG_MAX, whose exhaustion kills a dispatch at execve. The
-    headless browser must launch, or `t3 browser` and the visual-QA gate cannot run;
-    ``repair`` installs it.
-    """
-    disk = _check_root_disk_headroom()
-    spawn = _check_agent_spawn_headroom()
-    browser = _check_browser_ready(repair=repair)
-    return disk and spawn and browser
-
-
 def _run_schema_freshness_gates() -> bool:
     """The self-DB schema guard plus its process-side mirror; their AND for ``ok``.
 
@@ -608,7 +593,14 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # :func:`_run_worker_gates` — each is evaluated independently so every finding shows.
     ok = _run_worker_gates() and ok
 
-    ok = _run_host_capacity_gates(repair=repair) and ok
+    # Root-filesystem headroom (#3852): role-independent and percent-shaped, so a
+    # box on a trajectory to full is named long before the absolute-GB scanner
+    # thresholds fire. CRITICAL hard-FAILs — a full disk stops every other subsystem.
+    ok = _check_root_disk_headroom() and ok
+
+    # Agent-spawn headroom (#4301): argv+envp against ARG_MAX, the budget whose
+    # exhaustion kills a dispatch at execve with no partial degradation.
+    ok = _check_agent_spawn_headroom() and ok
 
     # Optional-tooling advisories (ttyd / containerized-t3 wiring) — all
     # surfacing-only, never gating the exit code.
@@ -696,7 +688,8 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _check_claude_session_posture() and ok
 
-    ok = _run_mcp_checks(repair=repair) and ok
+    # The browser gate follows the MCP checks: their skew repair is what restores a missing Playwright.
+    ok = all((_run_mcp_checks(repair=repair), _check_browser_ready(repair=repair))) and ok
 
     _run_advisory_finalisers(repair=repair)
 

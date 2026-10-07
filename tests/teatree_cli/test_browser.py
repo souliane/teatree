@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from teatree.browser.evidence import BrowserEvent
+from teatree.browser.session import BrowserSession, StepFailedError, StepReport
 from teatree.cli.browser import browser_app
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from tests._git_repo import make_git_repo
@@ -70,3 +72,38 @@ def test_close_reports_as_json_too() -> None:
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == {"closed": False}
+
+
+def test_a_failed_step_still_prints_what_the_page_did(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = [BrowserEvent("console", text="diag-before-timeout", level="error", seq=1)]
+
+    def _timed_out(_session: BrowserSession, _url: str, *, timeout_s: float) -> StepReport:
+        message = f"Timeout {timeout_s * 1000:.0f}ms exceeded"
+        raise StepFailedError(message, recorded)
+
+    monkeypatch.setattr(BrowserSession, "open", _timed_out)
+
+    plain = runner.invoke(browser_app, ["open", "http://127.0.0.1:9/", "--timeout", "3"])
+    as_json = runner.invoke(browser_app, ["open", "http://127.0.0.1:9/", "--timeout", "3", "--json"])
+
+    assert plain.exit_code == as_json.exit_code == 1
+    assert "CONSOLE error diag-before-timeout" in plain.stdout
+    assert "ERROR Timeout 3000ms exceeded" in plain.stderr
+    payload = json.loads(as_json.stdout)
+    assert payload["error"] == "Timeout 3000ms exceeded"
+    assert [event["text"] for event in payload["events"]] == ["diag-before-timeout"]
+
+
+def test_open_waits_thirty_seconds_for_the_load_event_unless_told_otherwise(monkeypatch: pytest.MonkeyPatch) -> None:
+    waits: list[float] = []
+
+    def _open(_session: BrowserSession, _url: str, *, timeout_s: float) -> StepReport:
+        waits.append(timeout_s)
+        return StepReport(url="about:blank", title="", events=[])
+
+    monkeypatch.setattr(BrowserSession, "open", _open)
+
+    runner.invoke(browser_app, ["open", "about:blank"])
+    runner.invoke(browser_app, ["open", "about:blank", "--timeout", "90"])
+
+    assert waits == [30.0, 90.0]

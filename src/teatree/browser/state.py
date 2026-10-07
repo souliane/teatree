@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+#: The flock a session's keeper holds on ``keeper.pid`` for as long as it lives.
+KEEPER_LOCK = "browser-keeper"
+
 
 @dataclass(frozen=True, slots=True)
 class SessionFiles:

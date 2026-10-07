@@ -2,38 +2,54 @@
 
 Started detached by :class:`teatree.browser.session.BrowserSession`, it launches Chromium
 with a DevTools endpoint every later step re-attaches to, records what the pages do to
-the session's event log, and exits on ``close``, SIGTERM, or an idle session.
+the session's event log, and exits on ``close``, SIGTERM, or an idle session. For as long
+as it lives it holds the session's kernel lock, which is how a step tells a live keeper
+from a pid left behind. Removing the session directory stops it too, which is all a
+worktree teardown has to do.
 """
 
 import contextlib
 import json
 import os
+import shutil
 import signal
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
+from typing import NamedTuple
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from teatree.browser.evidence import EventLog, EvidenceRecorder
-from teatree.browser.state import SessionFiles
+from teatree.browser.state import KEEPER_LOCK, SessionFiles
+from teatree.utils.singleton import AlreadyRunningError, singleton
 
 IDLE_TIMEOUT_S = 30 * 60
 DEVTOOLS_PORT_WAIT_S = 10.0
 LAUNCH_PROBE_TIMEOUT_MS = 15_000
 _PUMP_MS = 100
+# A step's lock probe holds the lock for an instant; retrying outlasts it without masking a real second keeper.
+_LOCK_ATTEMPTS = 20
+_LOCK_RETRY_S = 0.05
 
 
-def launch_probe() -> str | None:
-    """Launch and close one headless browser; the launch error when it cannot, else ``None``."""
+class LaunchFailure(NamedTuple):
+    reason: str
+    #: The launch ran out of time rather than failing: a saturated host looks the same as a hung browser.
+    timed_out: bool
+
+
+def launch_probe() -> LaunchFailure | None:
+    """Launch and close one headless browser; why it could not, else ``None``."""
     try:
         with sync_playwright() as playwright:
             playwright.chromium.launch(headless=True, timeout=LAUNCH_PROBE_TIMEOUT_MS).close()
     except PlaywrightError as exc:
-        return str(exc)
+        return LaunchFailure(str(exc), timed_out=isinstance(exc, PlaywrightTimeoutError))
     return None
 
 
@@ -45,7 +61,15 @@ class Keeper:
 
     def run(self) -> int:
         signal.signal(signal.SIGTERM, self._on_sigterm)
-        self.files.pid.write_text(str(os.getpid()), encoding="utf-8")
+        for _attempt in range(_LOCK_ATTEMPTS):
+            try:
+                with singleton(KEEPER_LOCK, pid_path=self.files.pid):
+                    return self._launch_and_serve()
+            except AlreadyRunningError:
+                time.sleep(_LOCK_RETRY_S)
+        return 0
+
+    def _launch_and_serve(self) -> int:
         self.files.last_used.touch()
         try:
             with sync_playwright() as playwright:
@@ -53,11 +77,15 @@ class Keeper:
                     str(self.files.profile), headless=True, args=["--remote-debugging-port=0"]
                 )
                 self._serve(context)
-        except PlaywrightError as exc:
-            self.files.error.write_text(str(exc), encoding="utf-8")
+        except (PlaywrightError, OSError) as exc:
+            with contextlib.suppress(OSError):
+                self.files.error.write_text(str(exc), encoding="utf-8")
             return 1
         finally:
             self.files.endpoint.unlink(missing_ok=True)
+            if not self.files.pid.exists():
+                # Chromium re-creates its profile path on the way down, after the directory was removed.
+                shutil.rmtree(self.files.root, ignore_errors=True)
         return 0
 
     def _serve(self, context: BrowserContext) -> None:
@@ -87,7 +115,7 @@ class Keeper:
     def _publish_endpoint(self, cdp_url: str) -> None:
         staging = self.files.endpoint.with_suffix(".staging")
         staging.write_text(
-            json.dumps({"pid": os.getpid(), "cdp_url": cdp_url, "started_at": datetime.now(UTC).isoformat()}),
+            json.dumps({"cdp_url": cdp_url, "started_at": datetime.now(UTC).isoformat()}),
             encoding="utf-8",
         )
         staging.replace(self.files.endpoint)
@@ -119,6 +147,7 @@ def main(state_dir: Path) -> int:
     if os.fork():
         return 0
     os.setsid()
+    os.umask(0o077)
     return Keeper(SessionFiles(state_dir)).run()
 
 

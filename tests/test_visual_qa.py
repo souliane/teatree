@@ -1,5 +1,6 @@
 """Unit tests for the pre-push browser sanity gate."""
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -116,6 +117,17 @@ class TestEvaluate:
         assert report.targets == ["/"]
         assert report.has_errors
         assert f"did not run: {message}" in visual_qa.format_report(report)
+
+
+class TestRunCheckWithoutPlaywright:
+    def test_a_missing_playwright_is_the_handled_did_not_run(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+
+        report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=None, base_url="http://127.0.0.1:9")
+
+        assert report.not_run_reason.startswith("Playwright is not importable in the environment running `t3`")
+        assert "t3 doctor check --repair" in report.not_run_reason
+        assert report.has_errors
 
 
 class TestChangedFilesReadsTheResolvedBase:

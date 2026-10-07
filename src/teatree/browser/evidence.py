@@ -103,20 +103,34 @@ class EventLog:
 
     def read(self, *, after: int = 0) -> list[BrowserEvent]:
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            lines = [line for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()]
         except FileNotFoundError:
             return []
-        events = (BrowserEvent.from_json(line) for line in lines if line.strip())
-        return [event for event in events if event.seq > after]
+        return [event for event in self._parsed(lines) if event.seq > after]
 
     def last_seq(self) -> int:
         events = self.read()
         return events[-1].seq if events else 0
 
     def since_last_navigation(self) -> list[BrowserEvent]:
+        """Events of the page now loaded, led by its own document response (logged before the navigation)."""
         events = self.read()
         starts = [index for index, event in enumerate(events) if event.kind == "navigation"]
-        return events[starts[-1] + 1 :] if starts else events
+        if not starts:
+            return events
+        loaded, previous = events[starts[-1]].url, starts[-2] if len(starts) > 1 else -1
+        document = [
+            event for event in events[previous + 1 : starts[-1]] if event.kind == "response" and event.url == loaded
+        ]
+        return [*document[-1:], *events[starts[-1] + 1 :]]
+
+    @staticmethod
+    def _parsed(lines: list[str]) -> list[BrowserEvent]:
+        """Every complete line: the keeper may be mid-append, so an unparsable LAST line waits for the next read."""
+        try:
+            return [BrowserEvent.from_json(line) for line in lines]
+        except ValueError:
+            return [BrowserEvent.from_json(line) for line in lines[:-1]]
 
     def _compact(self) -> None:
         kept = self.read()[-self._keep :]

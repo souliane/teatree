@@ -14,7 +14,14 @@ from typing import Annotated
 import typer
 
 from teatree.browser.evidence import BrowserEvent
-from teatree.browser.session import BrowserError, BrowserSession, StepReport, Verb
+from teatree.browser.session import (
+    NAVIGATION_TIMEOUT_S,
+    BrowserError,
+    BrowserSession,
+    StepFailedError,
+    StepReport,
+    Verb,
+)
 from teatree.core.invocation_cwd import invocation_cwd
 
 SNAPSHOT_PREVIEW_LINES = 200
@@ -29,9 +36,16 @@ JsonFlag = Annotated[bool, typer.Option("--json", help="Print the step as one JS
 
 
 @browser_app.command(name="open")
-def open_page(url: str, *, as_json: JsonFlag = False) -> None:
+def open_page(
+    url: str,
+    *,
+    timeout: Annotated[
+        float, typer.Option("--timeout", help="Seconds to wait for the page's load event.")
+    ] = NAVIGATION_TIMEOUT_S,
+    as_json: JsonFlag = False,
+) -> None:
     """Load URL in this worktree's headless browser, launching the browser on first use."""
-    _emit_step(_run(lambda session: session.open(url)), as_json=as_json)
+    _emit_step(_run(lambda session: session.open(url, timeout_s=timeout), as_json=as_json), as_json=as_json)
 
 
 @browser_app.command()
@@ -44,13 +58,13 @@ def act(
     as_json: JsonFlag = False,
 ) -> None:
     """Perform one interaction on the open page: click, fill, type, press, upload, wait, or eval."""
-    _emit_step(_run(lambda session: session.act(verb, arguments or [])), as_json=as_json)
+    _emit_step(_run(lambda session: session.act(verb, arguments or []), as_json=as_json), as_json=as_json)
 
 
 @browser_app.command()
 def inspect(*, as_json: JsonFlag = False) -> None:
     """Save the page's accessibility snapshot, HTML and screenshot; print what it did since it loaded."""
-    inspection = _run(lambda session: session.inspect())
+    inspection = _run(lambda session: session.inspect(), as_json=as_json)
     if as_json:
         payload = {
             "url": inspection.url,
@@ -76,17 +90,22 @@ def inspect(*, as_json: JsonFlag = False) -> None:
 @browser_app.command()
 def close(*, as_json: JsonFlag = False) -> None:
     """End this worktree's browser session."""
-    closed = _run(lambda session: session.close())
+    closed = _run(lambda session: session.close(), as_json=as_json)
     if as_json:
         typer.echo(json.dumps({"closed": closed}))
         return
     typer.echo("Closed the browser session." if closed else "No open browser session.")
 
 
-def _run[T](step: Callable[[BrowserSession], T]) -> T:
+def _run[T](step: Callable[[BrowserSession], T], *, as_json: bool) -> T:
     try:
         return step(BrowserSession.for_directory(invocation_cwd()))
     except BrowserError as exc:
+        events = exc.events if isinstance(exc, StepFailedError) else []
+        if as_json:
+            typer.echo(json.dumps({"error": str(exc), "events": [dataclasses.asdict(event) for event in events]}))
+        else:
+            _echo_events(events)
         typer.echo(f"ERROR {exc}", err=True)
         raise typer.Exit(code=1) from exc
 

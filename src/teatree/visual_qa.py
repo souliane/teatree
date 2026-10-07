@@ -187,8 +187,17 @@ def run_check(targets: list[str], base_url: str, screenshot_dir: str = DEFAULT_S
     Returns one ``PageResult`` per target.  Raises
     ``VisualQAUnavailableError`` when the headless browser cannot start.
     """
-    from playwright.sync_api import Error as PlaywrightError  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
-    from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
+    try:
+        from playwright.sync_api import (  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
+            Error as PlaywrightError,
+        )
+        from playwright.sync_api import sync_playwright  # noqa: PLC0415 — deferred: ~0.5 s on every overlay load
+    except ImportError as exc:
+        msg = (
+            f"Playwright is not importable in the environment running `t3` ({exc}). "
+            "Repair it with `t3 doctor check --repair`."
+        )
+        raise VisualQAUnavailableError(msg) from exc
 
     out_dir = Path(screenshot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
