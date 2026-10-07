@@ -14,9 +14,12 @@ requested skill. Pinned here:
 # the established eval-suite convention.
 
 import dataclasses
+import json
+import subprocess
 from pathlib import Path
 
 from teatree.eval.backends import TranscriptRunner
+from teatree.eval.cli_stub_fixture import provision_cli_stubs
 from teatree.eval.discovery import find_spec
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import EvalSpec
@@ -83,3 +86,30 @@ def test_the_negative_matcher_alone_rejects_the_partial_brief(tmp_path: Path) ->
     assert _passes(anchor_only, "partial_fail", tmp_path) is False
     assert _passes(tooth_only, "partial_fail", tmp_path) is False
     assert _passes(dataclasses.replace(spec, matchers=()), "partial_fail", tmp_path) is True
+
+
+def _eval_stub_preamble() -> str:
+    with provision_cli_stubs(["t3"]) as bindir:
+        return subprocess.run(
+            [str(bindir / "t3"), "teatree", "skill-preamble", "--skills", "t3:rules,t3:e2e"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+
+def test_a_brief_carrying_the_eval_stubs_own_preamble_grades_green(tmp_path: Path) -> None:
+    preamble = _eval_stub_preamble()
+    events = []
+    for line in (_FIXTURES / f"{_SCENARIO}_pass.stream.jsonl").read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") == "tool_use" and block["name"] == "Agent":
+                block["input"]["prompt"] = f"{preamble}\nRun the remote e2e suite for ticket #123."
+            elif block.get("type") == "tool_result" and block["tool_use_id"] == "toolu_01":
+                block["content"] = preamble
+        events.append(json.dumps(event))
+    spec = _spec()
+    (tmp_path / f"{spec.name}.jsonl").write_text("\n".join(events) + "\n", encoding="utf-8")
+
+    assert evaluate(spec, TranscriptRunner(transcript_dir=tmp_path).run(spec)).passed
