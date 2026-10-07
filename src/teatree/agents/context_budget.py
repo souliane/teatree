@@ -8,11 +8,12 @@ context/cost decision, not a spawn one. :func:`enforce_budget` truncates the lar
 budgetable blocks first and leaves a pointer marker so the agent knows context was
 elided rather than silently dropped.
 
-Every production phase context fits the budget, so truncation is the degrade
-path, not the normal one. When it does happen it drops whole ``## `` sections off
-the tail and names them, rather than keeping a byte prefix: a byte cut lands
-mid-sentence at an arbitrary offset and leaves the agent unable to tell which rule
-it lost.
+Truncation is the degrade path, not the normal one. When it does happen it drops
+whole ``## `` / ``### `` sections off the tail and names them, rather than keeping a
+byte prefix: a byte cut lands mid-sentence at an arbitrary offset and leaves the
+agent unable to tell which rule it lost. Cutting at ``### `` too keeps a small
+overage from costing a whole large ``## `` section, and a heading inside a code
+fence is example text, never a cut point.
 
 The bound is a postcondition, not an accounting result. Truncation is by exact
 substring replace, so a block the assembled context never embedded reclaims zero
@@ -38,7 +39,8 @@ MAX_APPEND_BYTES = 96 * 1024
 MAX_NAMED_DROPPED_SECTIONS = 20
 
 _SKILL_HEADER_RE = re.compile(r"^--- SKILL: (?P<name>.+?) ---$")
-_SECTION_HEADING_RE = re.compile(r"^## +(?P<title>.+?)\s*$")
+_SECTION_HEADING_RE = re.compile(r"^(?P<level>#{2,3}) +(?P<title>.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*```")
 
 #: Cited by the backstop cut, which happens after every budgetable block has
 #: already been truncated — no single block is to blame, so it names the append.
@@ -47,7 +49,7 @@ _OVERRUN_POINTER = "the tail of this system context — no budgetable block coul
 
 @dataclass(frozen=True)
 class _Section:
-    """One ``## ``-delimited span of a block, labelled for the elision marker."""
+    """One ``## ``/``### ``-delimited span of a block, labelled for the elision marker."""
 
     label: str
     text: str
@@ -65,34 +67,43 @@ def _section_marker(dropped_bytes: int, labels: Sequence[str], where: str) -> st
 
 
 def _split_sections(block: str) -> tuple[list[str], list[_Section]]:
-    """Split *block* into its pre-heading preamble and its ``## `` sections.
+    """Split *block* into its pre-heading preamble and its ``## `` / ``### `` sections.
 
     The preamble (0 or 1 entries, absent when the block opens on a heading) is not
     droppable, so a skill's ``--- SKILL: <name> ---`` header survives even when
     every one of its sections goes. Sections carry a ``<skill> § <heading>`` label
-    when those headers are present, so a marker naming a dropped section also says
-    which skill lost it. Rejoining the preamble and every section with a newline
-    reproduces *block* byte for byte.
+    when those headers are present — ``<skill> § <h2> > <h3>`` for a subsection —
+    so a marker naming a dropped section also says which skill lost it. Headings
+    inside a code fence are not cut points. Rejoining the preamble and every
+    section with a newline reproduces *block* byte for byte.
     """
     labels: list[str] = [""]
     bodies: list[list[str]] = [[]]
-    skill = ""
+    skill = h2 = ""
+    in_fence = False
     for line in block.split("\n"):
         if header := _SKILL_HEADER_RE.match(line):
-            skill = header["name"]
-        if heading := _SECTION_HEADING_RE.match(line):
-            title = heading["title"]
-            labels.append(f"{skill} § {title}" if skill else title)
-            bodies.append([line])
-        else:
+            skill, h2, in_fence = header["name"], "", False
+        elif _FENCE_RE.match(line):
+            in_fence = not in_fence
+        heading = None if in_fence else _SECTION_HEADING_RE.match(line)
+        if heading is None:
             bodies[-1].append(line)
+            continue
+        title = heading["title"]
+        if heading["level"] == "##":
+            h2 = title
+        elif h2:
+            title = f"{h2} > {title}"
+        labels.append(f"{skill} § {title}" if skill else title)
+        bodies.append([line])
     preamble = ["\n".join(bodies[0])] if bodies[0] else []
     sections = [_Section(label, "\n".join(body)) for label, body in zip(labels[1:], bodies[1:], strict=True)]
     return preamble, sections
 
 
 def _truncate_sections(block: str, keep_bytes: int, *, where: str) -> str | None:
-    """Drop whole ``## `` sections off the tail of *block* to fit *keep_bytes*.
+    """Drop whole ``## `` / ``### `` sections off the tail of *block* to fit *keep_bytes*.
 
     ``None`` when the block carries no droppable section, or when even keeping
     none of them overruns — the caller falls back to the byte prefix so the
@@ -122,7 +133,7 @@ def _truncate_sections(block: str, keep_bytes: int, *, where: str) -> str | None
 def _truncate_bytes(block: str, keep_bytes: int, *, where: str) -> str:
     """Return *block* cut to a byte prefix of at most *keep_bytes* plus a pointer marker.
 
-    The fallback for a block with no ``## `` section to drop (a JSON survey, a
+    The fallback for a block with no section heading to drop (a JSON survey, a
     prose summary) or whose preamble alone overruns. The marker's byte count is
     sized against the worst case (the whole block dropped) so a shorter actual
     drop only shrinks the marker — the result never exceeds *keep_bytes*. The kept

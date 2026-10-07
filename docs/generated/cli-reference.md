@@ -12702,7 +12702,7 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 
  Resolves the code host per-URL across all registered overlays, so it
  works for any tracker an overlay is configured for. Only tickets the
- owner or the factory bot filed may be changed.
+ owner, the factory bot, or our own repos' CI workflows filed may be changed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
@@ -12914,8 +12914,9 @@ Usage: t3 teatree ticket expedite [OPTIONS] TICKET_ID
  Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
 
  A flagged ticket may push before CI completes; the merge keystone is NEVER
- relaxed — merge stays gated on local review + test evidence. Surfaces on
- ``ticket show`` and as a ⚡ statusline chip.
+ relaxed — merge stays gated on local review + test evidence. Its tasks also
+ rank first at admission (after reviews). Surfaces on ``ticket show`` and as
+ a ⚡ statusline chip.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

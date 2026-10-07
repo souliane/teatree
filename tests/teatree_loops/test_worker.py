@@ -196,18 +196,13 @@ def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.Mo
 
 
 def _widths(expensive: int, cheap: int) -> LaneWidths:
-    """*expensive* coding seats beside one drain-reserved seat, and *cheap* review seats."""
-    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive + 1, per_core=1.0, pace=None), reserved=1, cheap=cheap)
+    """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), cheap=cheap)
 
 
 @pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
 def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
     assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * cheap
-
-
-def test_a_cheap_class_folded_into_the_shared_lane_may_hold_every_seat() -> None:
-    folded = LaneWidths(ceiling=AdmissionCeiling(cores=4, per_core=1.0, pace=None), reserved=0, cheap=0)
-    assert agent_executor_queues(folded) == ("default",) * 4 + ("cheap",) * 4
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,7 +332,7 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
     assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
 
 
-#: Three coding seats beside one drain-reserved seat, and one review seat.
+#: Three coding seats and one review seat.
 _AGENTS = ("default",) * 3 + ("cheap",)
 
 
@@ -720,6 +715,19 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
         seated = self._admit("reviewing")
 
         assert self._executors()["cheap"] == len(seated) == 2
+
+    def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        seated = self._admit("reviewing")
+
+        assert self._executors()["cheap"] == len(seated) == 3
+
+    def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
+        coding = self._admit("coding")
+        reviews = self._admit("reviewing")
+        executors = self._executors()
+
+        assert (executors["default"], executors["cheap"]) == (len(coding), len(reviews)) == (4, 2)
 
     def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)

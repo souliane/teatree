@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0002_drop_self_pump_driver"),
+        ("core", "0003_delete_drain_slot_reservation_rows"),
     ]
 
     operations = [
