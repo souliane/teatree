@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from teatree.core.overlay import OverlayConfig
-from teatree.skill_support.loading import SkillLoadingPolicy
+from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES, SkillLoadingPolicy
 
 # Synthetic overlay metadata — no real overlay or private-skill names. The
 # overlay's own skill is ``t3:synth``; its remote matches ``*synth-product*``.
@@ -201,22 +201,21 @@ class TestFileDomainMapsToLanguageSkill:
         assert "ac-django" not in result.skills
 
     @pytest.mark.parametrize(
-        ("dependency", "expected_present", "expected_absent"),
+        ("dependency", "expected_framework"),
         [
-            ('dependencies = ["django>=4.2"]', "ac-django", "ac-python"),
-            ('name = "synthpkg"', "ac-python", "ac-django"),
+            ('dependencies = ["django>=4.2"]', {"ac-django", "ac-python"}),
+            ('name = "synthpkg"', {"ac-python"}),
         ],
     )
     def test_flipping_marker_flips_framework_skill(
         self,
         tmp_path: Path,
         dependency: str,
-        expected_present: str,
-        expected_absent: str,
+        expected_framework: set[str],
     ) -> None:
         # ANTI-VACUITY TOOTH: the single flipped input is the pyproject content
-        # (a Django dependency vs. plain Python). Flipping it flips the resolved
-        # framework skill ac-django <-> ac-python, proving the assertion's
+        # (a Django dependency vs. plain Python). Flipping it flips ac-django in
+        # or out of the resolved framework set, proving the assertion's
         # discriminating part is the domain marker, not a constant.
         (tmp_path / "pyproject.toml").write_text(f"[project]\n{dependency}\n", encoding="utf-8")
         result = SkillLoadingPolicy().select_for_session_start(
@@ -224,5 +223,4 @@ class TestFileDomainMapsToLanguageSkill:
             overlay_skill_metadata={},
             loaded_skills=set(),
         )
-        assert expected_present in result.skills
-        assert expected_absent not in result.skills
+        assert set(result.skills) & FRAMEWORK_SKILL_NAMES == expected_framework
