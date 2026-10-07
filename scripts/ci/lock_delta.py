@@ -9,8 +9,9 @@ migration authorised by a lockfile nobody reads line by line.
 So the workflow asks this script two questions the raw diff cannot answer: what
 actually moved, and may it self-merge. The verdict is patch-only and fail-closed
 — a minor, a major, or a version string this script cannot parse all refuse
-auto-merge and route the PR to a human. Unreadable input is louder still: the
-job reds rather than opening a PR whose provenance is unknown.
+auto-merge and route the PR to the factory's careful review (cold review of the
+diff and tests), then merge. A bump is never refused. Unreadable input is louder
+still: the job reds rather than opening a PR whose provenance is unknown.
 
 Boundaries this classifier does NOT draw: a ``0.0.z`` move reads as PATCH
 because the convention leaves no axis below the patch one, and an added or
@@ -133,7 +134,8 @@ def _verdict(delta: LockDelta) -> str:
     return (
         f"**Verdict: review required — auto-merge is NOT enabled.** {len(delta.blockers)} package(s) "
         f"cross a feature/major boundary, or resolve to a version this workflow cannot classify: "
-        f"{named}. A boundary crossing is a migration, not a refresh — it does not land unattended (#4437)."
+        f"{named}. A boundary crossing is a migration, not a refresh — the factory cold-reviews "
+        "the diff and tests, then merges it; it is never refused (#4437)."
     )
 
 

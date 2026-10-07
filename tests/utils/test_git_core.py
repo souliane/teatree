@@ -142,15 +142,12 @@ def test_git_worktree_and_branch_ops(monkeypatch: pytest.MonkeyPatch) -> None:
             return CompletedProcess(args, 0, "", "")
         if "branch" in args:
             return CompletedProcess(args, 1, "", "")
-        if "pull" in args:
-            return CompletedProcess(args, 0, "", "")
         return CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
 
     assert git.worktree_remove("/tmp/r", "/tmp/wt") is True
     assert git.branch_delete("/tmp/r", "old-branch") is False
-    assert git.pull_ff_only("/tmp/r") is True
 
 
 def test_fetch_without_ref(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,8 +324,8 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
     def last_worktree_add() -> list[str]:
         return [call for call in calls if "worktree" in call and "add" in call][-1]
 
-    assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", create_branch=True) is True
-    assert "-b" in last_worktree_add()
+    assert git.worktree_add("/tmp/r", "/tmp/wt", "feat-1", start_point="origin/main") is True
+    assert last_worktree_add()[-4:] == ["-b", "feat-1", "/tmp/wt", "origin/main"]
 
     assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
     assert "-b" not in last_worktree_add()

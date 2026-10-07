@@ -13,6 +13,7 @@ from typing import Final
 
 from teatree.hooks import _commit_carve_out, _commit_repo_dir, _private_repo_entries, _repo_visibility
 from teatree.hooks._command_parser import is_publish_command
+from teatree.hooks._forge_write_detection import curl_forge_targets
 from teatree.hooks._gh_glab_hiding import command_segments_with_raw, raw_has_live_substitution
 from teatree.hooks._publish_detection import segment_is_api_read, segment_is_api_write
 from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
@@ -38,35 +39,41 @@ _SKIP_INERT = "skip-inert"  # skip-eligible, not a publish (nav/local/api-read)
 _FORGE_CLI_TOKEN_RE: Final = re.compile(r"(?<![\w./-])(?:gh|glab)(?![\w.-])")
 
 
-def _python_rest_segment_verdict(words: list[str], command: str, *, config_path: Path | None) -> str | None:
-    """Verdict for a python REST-publish segment, or ``None`` when the segment is not one.
+def _rest_url_targets(words: list[str], command: str) -> set[tuple[str, str] | None]:
+    if words and is_python_leader(words[0]):
+        return set(find_python_forge_rest_urls(command))
+    return set(curl_forge_targets(words))
 
-    :func:`publish_destination._destination_from_python_script` resolves the target out
+
+def _rest_url_segment_verdict(words: list[str], command: str, *, config_path: Path | None) -> str | None:
+    """Verdict for a python or ``curl`` REST segment, or ``None`` when it names no forge project.
+
+    :func:`publish_destination._destination_from_rest_url` resolves the target out
     of a URL literal in the segment's WORDS, which a heredoc body never reaches — bash
     tokenises ``python3 - <<'PY'`` to three words and keeps the script text outside them.
     So the shape the owner's own tooling posts with resolved no destination at all and
     fell through to the fail-closed scan, blocking a post that can only ever reach a
     project the config already declares internal.
 
-    Resolution reads the WHOLE command rather than the segment: a heredoc body cannot be
-    attributed to its segment, and a superset of targets can only make the all-targets
-    rule below stricter.
+    A python script's resolution reads the WHOLE command rather than the segment: a
+    heredoc body cannot be attributed to its segment, and a superset of targets can only
+    make the all-targets rule below stricter. A ``curl`` reads its own words, and a URL
+    it names that is no forge project keeps the scan.
 
     Skip-eligible only when EVERY resolved target is provably non-public — the first-match
     resolution the words-based resolver uses would let a script posting to a private AND a
     public project skip on the private one. A forge CLI in the script text is a destination
     no URL scan can read, so it keeps the scan too.
     """
-    if not words or not is_python_leader(words[0]):
-        return None
-    targets = {(forge, slug) for forge, slug in find_python_forge_rest_urls(command)}
+    targets = _rest_url_targets(words, command)
     if not targets:
         return None
-    if _FORGE_CLI_TOKEN_RE.search(command):
+    resolved = {target for target in targets if target is not None}
+    if len(resolved) < len(targets) or (is_python_leader(words[0]) and _FORGE_CLI_TOKEN_RE.search(command)):
         return _SCAN
     verdicts = {
         _visibility_segment_verdict(Destination(slug=slug, via="api", forge=forge), config_path=config_path)
-        for forge, slug in targets
+        for forge, slug in resolved
     }
     return _SKIP_PUBLISH if verdicts == {_SKIP_PUBLISH} else _SCAN
 
@@ -224,9 +231,9 @@ def _construct_bearing_segment_verdict(
     if segment_is_api_write(words):
         return _api_write_segment_verdict(words, config_path=config_path)
     rest = strip_cd_prefix(words)
-    python_verdict = _python_rest_segment_verdict(rest, command, config_path=config_path)
-    if python_verdict is not None:
-        return python_verdict
+    rest_verdict = _rest_url_segment_verdict(rest, command, config_path=config_path)
+    if rest_verdict is not None:
+        return rest_verdict
     dest = _destination_from_words(rest, cwd)
     if dest is not None:
         if "$" in dest.slug:
@@ -268,9 +275,9 @@ def _segment_visibility_verdict(
 def _plain_segment_verdict(words: list[str], cwd: Path | None, *, command: str, config_path: Path | None) -> str:
     """Verdict for a segment carrying no substitution/transport construct and no ``api`` verb."""
     rest = strip_cd_prefix(words)
-    python_verdict = _python_rest_segment_verdict(rest, command, config_path=config_path)
-    if python_verdict is not None:
-        return python_verdict
+    rest_verdict = _rest_url_segment_verdict(rest, command, config_path=config_path)
+    if rest_verdict is not None:
+        return rest_verdict
     dest = _destination_from_words(rest, cwd)
     if dest is not None:
         return _visibility_segment_verdict(dest, config_path=config_path)

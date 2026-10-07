@@ -14,7 +14,7 @@ from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_
 from teatree.core.models import Task
 from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.task_handoff import dispatch_reason
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.dispatch_gates import spawn_display_name
@@ -166,9 +166,9 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
 def _resolve_skill_bundle(task: Task) -> list[str]:
     """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
 
-    Resolves the overlay and the framework/detection cwd from the TASK's ticket
-    (its overlay + its worktree, PR-12) — never the orchestrator's ambient cwd,
-    which is the loop's clone rather than the ticket's checkout. Imports
+    Resolves the overlay and the framework/detection root from the TASK's ticket
+    (its overlay + its worktree or repo clone, PR-12) — never the orchestrator's
+    ambient cwd, which is the loop's clone rather than the ticket's checkout. Imports
     ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
     ``teatree.agents`` dependency edge (core is the lower layer).
     """
@@ -181,7 +181,7 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
         return resolve_skill_bundle(
             phase=task.phase,
             overlay_skill_metadata=overlay_skill_metadata,
-            worktree_path=dispatch_worktree_path(task.ticket),
+            detection_root=dispatch_detection_root(task.ticket),
         )
     except Exception:  # noqa: BLE001 — a failure degrades to no candidates
         return []

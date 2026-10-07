@@ -635,7 +635,8 @@ class TestRunBackend(TestCase):
             """Simulate git worktree add by creating the directory."""
             result = MagicMock(returncode=0, stdout="", stderr="")
             if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
-                wt_path = Path(cmd[-1])
+                add_args = cmd[cmd.index("add") + 1 :]
+                wt_path = Path(add_args[2] if add_args[0] == "-b" else add_args[0])
                 wt_path.mkdir(parents=True, exist_ok=True)
                 (wt_path / ".git").write_text("gitdir: /fake/worktree")
             return result
@@ -652,6 +653,7 @@ class TestRunBackend(TestCase):
             patch.object(workspace_mod, "_worktree_root", return_value=workspace),
             patch("teatree.core.runners.provision.clone_root", return_value=workspace),
             patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"),
         ):
             ticket_id = cast(
                 "int",

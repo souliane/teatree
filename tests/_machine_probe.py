@@ -5,8 +5,8 @@ count, and every admission verdict is derived from all three — so an unpinned 
 lets the runner decide, and the failure surfaces in scanner and dispatch tests that
 never mention machine capacity. Memory brakes at/under ``RAM_BRAKE_FLOOR_GB``; load
 HALTs at/over ``BRAKE_LOAD_PER_CORE * cores``; the core count IS the WRITE ceiling
-(``floor(cores * WRITE_CONCURRENCY_PER_CORE)``), so a 2-vCPU runner admits exactly one
-concurrent dispatch and "two ticks claim two tasks" fails on a property of the runner.
+(``floor(cores * admission_write_concurrency_per_core)``), so at the shipped factor a 2-vCPU runner
+admits one concurrent dispatch and "two ticks claim two tasks" fails on a property of the runner.
 
 Each value is an exact sentinel rather than merely a healthy one, so a guard asserting
 it goes red on an unpinned probe in EVERY environment, not only on a starved box.
