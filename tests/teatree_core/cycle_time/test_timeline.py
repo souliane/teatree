@@ -44,6 +44,8 @@ def record_task(ticket: Ticket, *, phase: str, queued: float, admitted: float | 
         ticket=ticket,
         session=Session.objects.create(ticket=ticket, overlay="t3-teatree"),
         phase=phase,
+        # Claimed, so a later row's admission walk cannot re-seat it and re-stamp ``admitted_at``.
+        status=Task.Status.CLAIMED,
     )
     Task.objects.filter(pk=task.pk).update(
         created_at=at(queued),

@@ -156,7 +156,8 @@ def _read_skill_contents_scoped(
     ``fastapi``) leads the block as a required load. Everything else gets a
     companion line naming the absolute ``SKILL.md`` path to ``Read`` when it
     applies — or saying no body resolves on this host, rather than advertising
-    one that is not there.
+    one that is not there. Both companion lists follow the stack loads and lead
+    the embedded bodies, so a budget cut sheds bodies first.
     """
     dirs = _resolve_dirs(skills_dir)
     explicit = explicit_load_skills or set()
@@ -178,18 +179,18 @@ def _read_skill_contents_scoped(
             stack_names.append(name)
         else:
             companion_names.append(name)
-    sections[:0] = _stack_load_block(stack_names, dirs)
+    companion_list: list[str] = []
     if explicit_names:
         block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
         block += "\n".join(
             f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
         )
-        sections.append(block)
+        companion_list.append(block)
     if companion_names:
         summary = "--- COMPANION SKILLS (not embedded, to save context) ---\n"
         summary += "\n".join(_companion_line(name, dirs) for name in companion_names)
-        sections.append(summary)
-    return _with_reach_line(sections, dirs)
+        companion_list.append(summary)
+    return _with_reach_line([*_stack_load_block(stack_names, dirs), *companion_list, *sections], dirs)
 
 
 _SUBAGENT_PREAMBLE_HEADER = (

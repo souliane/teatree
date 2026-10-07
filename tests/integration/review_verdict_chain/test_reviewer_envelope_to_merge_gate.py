@@ -96,7 +96,7 @@ class _FakePrApi:
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
         return [self.pr] if slug == _SLUG else []
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
         return BoundMergeResult(merged=True, merged_sha=expected_head_oid)
 
@@ -337,7 +337,7 @@ class TestTheReviewersGradesAreWhatClearTheDoneGate:
         assert task.status == Task.Status.COMPLETED
         assert ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).is_merge_safe()
         # The gate the whole chain exists to satisfy. It is asserted DIRECTLY: this
-        # file's `_FakePrApi.merge_pr_squash_bound` stands in for the backend call that
+        # file's `_FakePrApi.merge_pr_bound` stands in for the backend call that
         # reaches `execute_bound_merge`, so the sweep below never crosses the merge
         # chokepoint and cannot see the rubric gate at all. The sweep line pins only
         # that a graded envelope still drives the pre-existing verdict -> merge chain.

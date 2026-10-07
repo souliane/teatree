@@ -27,6 +27,7 @@ from teatree.hooks.foreign_mr_cli import declared_self_identities
 
 _GITLAB_ISSUE = "https://gitlab.com/acme/widgets/-/issues/7"
 _GITHUB_ISSUE = "https://github.com/acme/widgets/issues/7"
+_WORKFLOW_BOT = "github-actions[bot]"
 
 
 class _FakeHost:
@@ -176,6 +177,27 @@ class TestRequireSelfAuthoredIssue(TestCase):
         host = _FakeHost(_github_payload("declared-bot"))
         with self._identities("declared-bot"):
             assert require_self_authored_issue(host=host, issue_url=_GITHUB_ISSUE)
+
+    def test_a_workflow_bot_issue_on_a_repo_we_own_is_allowed(self) -> None:
+        host = _FakeHost(_github_payload(_WORKFLOW_BOT))
+        with self._identities("acme"):
+            assert require_self_authored_issue(host=host, issue_url=_GITHUB_ISSUE)
+
+    def test_a_workflow_bot_issue_on_someone_elses_repo_is_refused(self) -> None:
+        host = _FakeHost(_github_payload(_WORKFLOW_BOT))
+        with self._identities("alice.example"), pytest.raises(ExternalIssueRefusedError) as caught:
+            require_self_authored_issue(host=host, issue_url=_GITHUB_ISSUE)
+        assert caught.value.author == _WORKFLOW_BOT
+
+    def test_an_unparsable_issue_url_refuses_a_workflow_bot_issue_rather_than_raising(self) -> None:
+        host = _FakeHost(_github_payload(_WORKFLOW_BOT))
+        with self._identities("acme"), pytest.raises(ExternalIssueRefusedError):
+            require_self_authored_issue(host=host, issue_url="https://[acme/widgets/issues/7")
+
+    def test_a_colleague_issue_on_a_repo_we_own_is_still_refused(self) -> None:
+        host = _FakeHost(_github_payload("someone.else"))
+        with self._identities("acme"), pytest.raises(ExternalIssueRefusedError):
+            require_self_authored_issue(host=host, issue_url=_GITHUB_ISSUE)
 
     def test_colleague_authored_issue_is_refused(self) -> None:
         host = _FakeHost(_gitlab_payload("someone.else"))

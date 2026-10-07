@@ -88,11 +88,11 @@ class TestWorkerStatus(django.test.TestCase):
             as_json = runner.invoke(worker_app, ["status", "--json"])
         assert text.exit_code == 0
         assert "agent admission: ceiling 8 = 8 cores x 1 per core (8) x weekly pace unread" in text.stdout
-        assert "lanes 7 expensive + 2 cheap (1 reserved for the drain)" in text.stdout
+        assert "lanes 8 expensive + 2 cheap (review lane outside the ceiling)" in text.stdout
         assert "occupied 0 expensive + 0 cheap" in text.stdout
         admission = json.loads(as_json.stdout)["agent_admission"]
         assert (admission["ceiling"], admission["cores"], admission["per_core"]) == (8, 8, 1.0)
-        assert (admission["expensive_lane"], admission["cheap_lane"]) == (7, 2)
+        assert (admission["expensive_lane"], admission["cheap_lane"]) == (8, 2)
 
     def test_an_unreadable_admission_still_reports_the_worker(self) -> None:
         # deploy.sh certifies a deploy by grepping `"running": true` out of `--json`.

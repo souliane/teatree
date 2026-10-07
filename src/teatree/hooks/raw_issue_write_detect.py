@@ -4,7 +4,7 @@
 facade, and the whole point of #162 is that an issue note answers a question no
 transport can: WHERE does this text belong? A requirement goes in the description
 where a lane reads it; only ``status`` and ``evidence`` stay comments. The facade
-also refuses a ticket the owner or factory bot did not file, and scrubs every
+also refuses a ticket the owner, the factory bot, or our own repos' CI did not file, and scrubs every
 outbound through the public-repo leak gate.
 
 ``gh issue comment`` typed into Bash reaches the same forge endpoint and answers
