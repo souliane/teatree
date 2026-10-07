@@ -212,10 +212,31 @@ def _outcome(*, result: ResultMessage | None = None, stuck_reason: str | None = 
         pytest.param(_outcome(result=result_message(subtype="error_max_turns", is_error=True)), id="turn-ceiling"),
         pytest.param(_outcome(result=result_message(is_error=True, result="Prompt is too long")), id="context-full"),
         pytest.param(_outcome(compaction_stopped=True), id="compaction-blocked"),
+        pytest.param(_outcome(stuck_reason="deploy checkpoint: quiescing", checkpointed=True), id="deploy-checkpoint"),
     ],
 )
 def test_a_ceiling_a_full_window_or_a_blocked_compaction_cuts_a_run_short(outcome: HarnessOutcome) -> None:
     assert outcome.cut_short
+
+
+class TestToolInFlight:
+    def test_a_tool_call_is_in_flight_until_its_result_arrives(self) -> None:
+        capture = StreamCapture()
+        assert capture.tool_in_flight is False
+
+        capture.observe(assistant_tool_use("Bash", tool_id="t1"))
+        assert capture.tool_in_flight is True
+
+        capture.observe(AssistantMessage(content=[ToolResultBlock(tool_use_id="t1", content="ok")], model=""))
+        assert capture.tool_in_flight is False
+
+    def test_a_result_for_another_call_leaves_the_open_one_in_flight(self) -> None:
+        capture = StreamCapture()
+        capture.observe(assistant_tool_use("Bash", tool_id="t1"))
+
+        capture.observe(AssistantMessage(content=[ToolResultBlock(tool_use_id="t2", content="ok")], model=""))
+
+        assert capture.tool_in_flight is True
 
 
 @pytest.mark.parametrize(

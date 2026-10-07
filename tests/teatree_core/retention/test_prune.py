@@ -53,7 +53,7 @@ def _park(
     ticket_state: str = Ticket.State.WORK_STARTED,
     **telemetry: object,
 ) -> TaskAttempt:
-    """A park-audit row in the shape ``usage_window._record_park`` writes.
+    """A park-audit row in the shape ``usage_window.record_park`` writes.
 
     Defaults mirror the production shape the prune must reach: the owning task is
     back PENDING (a park RETURNS the task to the queue) on a live ticket, which is
@@ -216,7 +216,7 @@ class ParkPrunableGuardTestCase(TestCase):
     """Each guard goes RED if dropped — the prunable set would then hold the protected row."""
 
     def test_never_prunes_a_row_without_the_park_marker(self) -> None:
-        # The identity key is the ONE canonical marker `usage_window._record_park`
+        # The identity key is the ONE canonical marker `usage_window.record_park`
         # writes. A genuine crash of the same age is diagnostic signal, not junk —
         # `stuck_loop:` (the lease-loss breach) is precisely such a row.
         _attempt(error="stuck_loop: lease lost for task 375: re-claimed by another worker", started_at=_PARK_AGE)

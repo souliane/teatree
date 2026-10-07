@@ -110,6 +110,13 @@ def _fleet_admission_refusal() -> str:
     return _FLEET_ADMISSION.refusal()
 
 
+def drain_block_reason() -> str:
+    """The refusals that mean THIS worker is going away, so an in-flight run checkpoints rather than finishes."""
+    if worker_is_quiescing():
+        return "this worker is quiescing for a rolling deploy"
+    return generation_admission_refusal()
+
+
 def claim_admission_block_reason() -> str:
     """Why NO task may be claimed right now, or ``""`` to admit — the ONE admission composition.
 
@@ -118,14 +125,12 @@ def claim_admission_block_reason() -> str:
     admission direction can never be added to one site and forgotten at the other — which is
     exactly how #4387's skew went unguarded.
     """
-    if worker_is_quiescing():
-        return "this worker is quiescing for a rolling deploy"
+    if drain_reason := drain_block_reason():
+        return drain_reason
     if schema_behind_code():
         return "the control DB is behind this code"
     if code_behind_schema():
         return "this process is behind the applied schema"
-    if generation_refusal := generation_admission_refusal():
-        return generation_refusal
     return _fleet_admission_refusal()
 
 
