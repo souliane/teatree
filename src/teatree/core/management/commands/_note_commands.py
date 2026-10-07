@@ -4,7 +4,7 @@ A lane reads an issue's DESCRIPTION and never its comments, so a requirement
 posted as a comment is silently never executed. This command therefore takes an
 explicit ``--purpose`` and routes through
 :func:`teatree.core.issue_hygiene.record_issue_note`, which decides body-vs-comment
-and refuses a ticket the owner or the factory bot did not file.
+and refuses a ticket the owner, the factory bot, or our own repos' CI workflows did not file.
 
 It lives here as a :class:`NoteCommands` mixin the ``ticket``
 :class:`~django_typer.management.TyperCommand` inherits, so the verb mounts
@@ -51,7 +51,7 @@ class NoteCommands(TyperCommand):
 
         Resolves the code host per-URL across all registered overlays, so it
         works for any tracker an overlay is configured for. Only tickets the
-        owner or the factory bot filed may be changed.
+        owner, the factory bot, or our own repos' CI workflows filed may be changed.
         """
         self.print_result = False
         from pathlib import Path  # noqa: PLC0415 — deferred: loaded only when this command runs

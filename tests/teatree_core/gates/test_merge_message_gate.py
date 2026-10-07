@@ -118,6 +118,38 @@ class TestPublicTargetLeakScan(TestCase):
             _bound_merge(stub)
         assert stub.merge_requests() == []
 
+    def test_an_overlay_block_pattern_bound_for_a_public_repo_is_refused(self) -> None:
+        stub = _MessageStub(body="Ships widget-codename-7 to everyone.")
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [r"widget-codename-\d+"])),
+            pytest.raises(MergePreconditionError, match="block:"),
+        ):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
+    def test_unresolvable_overlay_rules_refuse_a_public_merge(self) -> None:
+        stub = _MessageStub()
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=None),
+            pytest.raises(MergePreconditionError, match="overlay-rules-unresolvable"),
+        ):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
+
+@pytest.mark.real_merge_privacy_scan
+class TestUnreadablePrivateTermListFailsClosed(TestCase):
+    def test_a_public_merge_is_refused_when_no_private_term_list_resolves(self) -> None:
+        stub = _MessageStub()
+        with (
+            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
+            pytest.raises(MergePreconditionError, match="banned-terms-unresolvable"),
+        ):
+            _bound_merge(stub)
+        assert stub.merge_requests() == []
+
 
 class TestKeystonePublishesOnlyTheScannedMessage(TestCase):
     def test_a_footer_body_is_refused_before_any_merge_request(self) -> None:
