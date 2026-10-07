@@ -24,7 +24,15 @@ from pathlib import Path
 from typing import Self, TypedDict
 from urllib.parse import urlsplit
 
-from teatree.core.forge_push_refs import BranchRef, local_tip
+from teatree.core.forge_push_refs import (
+    BranchRef,
+    feature_branches_at_head,
+    head_is_detached,
+    is_checkout,
+    local_tip,
+    operation_in_progress,
+    stranded_head,
+)
 from teatree.core.forge_push_verdict import PUSH_EXIT_CODES as _PUSH_EXIT_CODES
 from teatree.core.forge_push_verdict import CredentialSource as _CredentialSource
 from teatree.core.forge_push_verdict import ForgeCredential as _ForgeCredential
@@ -273,7 +281,7 @@ class ObservedRemoteRef:
 
 
 def _push_argv(repo: str, remote: str, branch: BranchRef, *, force_with_lease: bool) -> list[str]:
-    argv = ["git", "-C", repo, "push", "--set-upstream", remote, branch.qualified]
+    argv = ["git", "-C", repo, "push", "--set-upstream", remote, branch.refspec]
     if force_with_lease:
         argv.insert(4, "--force-with-lease")
     return argv
@@ -337,20 +345,64 @@ def _push_timeout_outcome(exc: TimeoutExpired, attempt: _PushAttempt) -> PushOut
     )
 
 
-def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> _PushVerdict:
-    """The repo-config reason this push must not even be attempted; ``NONE`` when there is none."""
-    if not branch.name:
+def _detached_head_detail(repo: str) -> str:
+    detail = "refusing to push a detached HEAD — pass --branch HEAD:<branch> to publish HEAD as <branch>"
+    on_head = feature_branches_at_head(repo)
+    return f"{detail}, or `t3 push --branch {on_head[0]}`" if len(on_head) == 1 else detail
+
+
+def _stranding_detail(repo: str, branch: BranchRef) -> str:
+    """Why pushing *branch* from a detached HEAD would leave HEAD's own commits behind; ``""`` if it would not."""
+    if branch.from_head or not head_is_detached(repo):
+        return ""
+    stranded = stranded_head(repo)
+    if stranded is None:
+        held = "could not be read for a commit no branch holds"
+    elif stranded:
+        held = f"carries commit {stranded} that no branch holds"
+    else:
+        return ""
+    return (
+        f"HEAD (detached) {held}; pushing '{branch.name}' would not deliver it — publish HEAD with "
+        f"`t3 push --branch HEAD:{branch.name}`, or keep it with `git branch <name> HEAD`"
+    )
+
+
+def _ref_verdict(*, repo: str, branch: BranchRef) -> _PushVerdict:
+    """The local-ref reason this push must not even be attempted; ``NONE`` when there is none."""
+    if not is_checkout(repo):
         return _PushVerdict(
             _PushFailure.CONFIG,
-            "refusing to push a detached HEAD — check out a branch first, or pass --branch",
+            f"'{repo}' is not a git checkout — run t3 push from inside one, or pass --repo <path>",
         )
-    if not local_tip(repo=repo, ref=branch.qualified):
+    if branch.unsupported:
+        return _PushVerdict(
+            _PushFailure.CONFIG,
+            f"refspec '{branch.unsupported}' is not supported — HEAD:<branch> is the only refspec form t3 push takes",
+        )
+    if not branch.name:
+        return _PushVerdict(_PushFailure.CONFIG, _detached_head_detail(repo))
+    operation = operation_in_progress(repo) if branch.from_head else ""
+    if operation:
+        return _PushVerdict(
+            _PushFailure.CONFIG, f"{operation} is in progress, so HEAD is mid-way — finish or abort it first"
+        )
+    if not local_tip(repo=repo, ref=branch.source):
         return _PushVerdict(
             _PushFailure.CONFIG,
             f"no branch '{branch.name}' in {repo} — check the spelling, or drop --branch to push the "
             "checked-out one. git resolves the refspec before it runs any hook, so this never "
             "reached the pre-push gate",
         )
+    stranding = _stranding_detail(repo, branch)
+    return _PushVerdict(_PushFailure.CONFIG, stranding) if stranding else _PushVerdict(_PushFailure.NONE, "")
+
+
+def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> _PushVerdict:
+    """The repo-config reason this push must not even be attempted; ``NONE`` when there is none."""
+    ref = _ref_verdict(repo=repo, branch=branch)
+    if ref.failure:
+        return ref
     urls = RemoteUrls.read(repo=repo, remote=remote)
     if not urls.fetch:
         return _PushVerdict(_PushFailure.CONFIG, f"no remote named '{remote}' in {repo} — add it, or pass --remote")
@@ -451,7 +503,7 @@ def push_branch(
     env = git_env_non_interactive() | _credential_env(forge, credential.token)
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
-    tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.qualified)
+    tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.source)
     push_started_at = float(int(time.time()))
     oom_kills_before = cgroup_v2_oom_kills()
     attempt = _PushAttempt(
