@@ -84,6 +84,7 @@ class PublishFindingsResult(TypedDict, total=False):
     verdict_id: int
     published: bool
     skipped_existing: bool
+    self_review: bool
     comment_url: str
     blocked_reason: str
     note: str
@@ -246,6 +247,8 @@ def _publish_line(recorded: ReviewVerdict, outcome: PublishOutcome) -> str:
         return f"  posted findings to {recorded.slug}#{recorded.pr_id}: {outcome.comment_url}"
     if outcome.skipped_existing:
         return f"  findings already posted on {recorded.slug}#{recorded.pr_id} — not duplicated"
+    if outcome.self_review:
+        return f"  self-review on {recorded.slug}#{recorded.pr_id}: findings are fix work, nothing posted"
     if outcome.blocked_reason:
         return f"  findings NOT posted (gate): {outcome.blocked_reason}"
     return f"  {outcome.note}"
@@ -415,6 +418,7 @@ def publish_findings_result(
         "verdict_id": int(recorded.pk),
         "published": outcome.published,
         "skipped_existing": outcome.skipped_existing,
+        "self_review": outcome.self_review,
         "comment_url": outcome.comment_url,
         "blocked_reason": outcome.blocked_reason,
         "note": outcome.note,

@@ -11,7 +11,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
     PrOpenState,
-    PrReviewComment,
+    PrReview,
     PullRequestSpec,
     ReviewState,
     UploadVerification,
@@ -114,10 +114,8 @@ class _FakeCodeHost:
         _ = (repo, pr_iid, marker)
         return False
 
-    def submit_pr_review(
-        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
-    ) -> dict[str, object]:
-        _ = (repo, pr_iid, head_sha, summary, comments)
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> dict[str, object]:
+        _ = (repo, pr_iid, review)
         return {}
 
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> dict[str, object]:

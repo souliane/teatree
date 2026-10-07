@@ -4,23 +4,25 @@ Routing is by who authored the PR. A self-authored PR gets nothing — no commen
 findings are fix work for the factory, never a post. A PR whose author cannot be read is
 withheld the same way. A colleague PR gets ONE submitted inline review: each anchored finding
 on its own line, the rest in the summary. Every body first passes the same comment checks as
-``review post-comment`` (:mod:`teatree.core.review.comment_checks`), then the two gates every
-colleague-visible forge body must pass — :func:`~teatree.core.send_proxy.route_forge_write`
-(public-repo leak scan + send-proxy audit/allowlist) and the on-behalf pre-gate.
+``review post-comment`` (:mod:`teatree.core.review.comment_checks`) — one failure withholds the
+whole review — then the two gates every colleague-visible forge body must pass:
+:func:`~teatree.core.send_proxy.route_forge_write` (public-repo leak scan + send-proxy
+audit/allowlist) and the on-behalf pre-gate.
 
-A colleague review a check or gate withholds returns the reason AND DMs the owner the findings,
-so the block can never also hide the content. An unresolvable backend raises.
+An on-behalf block DMs the owner the findings, so the block can never also hide the content.
+An unresolvable backend, a forge refusal, a partial post, and a review that does not read back
+all raise :class:`FindingsPublishError`.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from teatree.core.backend_protocols import PrReviewComment
+from teatree.core.backend_protocols import PartialReviewPublishError, PrReview
 from teatree.core.checking import build_pr_url
 from teatree.core.models.review_verdict import ReviewVerdict
-from teatree.core.review.comment_checks import findings_comment_refusal
+from teatree.core.review.comment_checks import review_refusal
 from teatree.core.review.review_candidate import is_self_authored
-from teatree.core.review.verdict_findings import findings_payload, marker_for, render_findings_text, render_review_parts
+from teatree.core.review.verdict_findings import findings_payload, marker_for, render_findings_text, review_for
 from teatree.core.self_forge_identities import self_identity_set
 
 if TYPE_CHECKING:
@@ -47,6 +49,7 @@ class PublishOutcome:
     published: bool = False
     comment_url: str = ""
     skipped_existing: bool = False
+    self_review: bool = False
     blocked_reason: str = ""
     note: str = ""
 
@@ -70,21 +73,14 @@ def publish_verdict_findings(
     if stop is not None:
         return stop
 
-    parts = render_review_parts(verdict)
-    refusal = _first_refusal([parts.summary, *(item.body for item in parts.comments)])
+    review = review_for(verdict)
+    refusal = review_refusal(review)
     if refusal:
-        _dm_withheld_findings(verdict, target, why=refusal, key_suffix=":comment-check")
         return PublishOutcome(blocked_reason=f"comment check — {refusal}")
-    summary = _scrubbed_body(verdict, parts.summary, host_kind=host_kind, target=target)
-    comments = [
-        PrReviewComment(
-            path=item.path,
-            line=item.line,
-            body=_scrubbed_body(verdict, item.body, host_kind=host_kind, target=target),
-        )
-        for item in parts.comments
-    ]
-    return _submit_gated(host, verdict, summary=summary, comments=comments, target=target)
+    outcome = _submit_gated(host, verdict, review=_scrubbed(review, verdict, host_kind=host_kind, target=target))
+    if outcome.published:
+        _confirm_landed(host, verdict, target=target)
+    return outcome
 
 
 def _stop_before_posting(
@@ -92,10 +88,12 @@ def _stop_before_posting(
 ) -> PublishOutcome | None:
     own = _is_own_pr(host, verdict, host_kind=host_kind)
     if own is True:
-        return PublishOutcome(note=f"self-authored PR {target} — findings are fix work, nothing posted")
+        return PublishOutcome(
+            self_review=True, note=f"self-authored PR {target} — findings are fix work, nothing posted"
+        )
     if own is None:
         return PublishOutcome(blocked_reason=f"the author of {target} could not be read — findings withheld")
-    if _already_published(host, verdict, marker_for(verdict)):
+    if _already_published(host, verdict):
         return PublishOutcome(skipped_existing=True, note=f"findings already posted on {target}")
     live_head = host.fetch_live_head_sha(slug=verdict.slug, pr_id=int(verdict.pr_id))
     if live_head != verdict.reviewed_sha:
@@ -103,14 +101,6 @@ def _stop_before_posting(
             blocked_reason=f"head moved: reviewed {verdict.reviewed_sha[:8]}, live {live_head[:8] or 'unreadable'}"
         )
     return None
-
-
-def _first_refusal(bodies: list[str]) -> str:
-    for body in bodies:
-        refusal = findings_comment_refusal(body, is_own_pr=lambda: False)
-        if refusal:
-            return refusal
-    return ""
 
 
 def _resolve_backend(verdict: ReviewVerdict) -> "CodeHostBackend":
@@ -126,17 +116,27 @@ def _resolve_backend(verdict: ReviewVerdict) -> "CodeHostBackend":
     return host
 
 
-def _already_published(host: "CodeHostBackend", verdict: ReviewVerdict, marker: str) -> bool:
+def _already_published(host: "CodeHostBackend", verdict: ReviewVerdict) -> bool:
     """Whether the PR already carries this verdict's review.
 
     A read failure is NOT treated as "no review yet": posting a duplicate on an
     unreadable list is the worse outcome, so it fails loud.
     """
     try:
-        return host.find_pr_review(repo=verdict.slug, pr_iid=int(verdict.pr_id), marker=marker)
+        return host.find_pr_review(repo=verdict.slug, pr_iid=int(verdict.pr_id), marker=marker_for(verdict))
     except Exception as exc:
         msg = f"could not read existing reviews on {verdict.slug}#{verdict.pr_id} — refusing to risk a duplicate post"
         raise FindingsPublishError(msg) from exc
+
+
+def _confirm_landed(host: "CodeHostBackend", verdict: ReviewVerdict, *, target: str) -> None:
+    unconfirmed = f"the review submitted to {target} does not read back — check the PR before a retry"
+    try:
+        landed = host.find_pr_review(repo=verdict.slug, pr_iid=int(verdict.pr_id), marker=marker_for(verdict))
+    except Exception as exc:
+        raise FindingsPublishError(unconfirmed) from exc
+    if not landed:
+        raise FindingsPublishError(unconfirmed)
 
 
 def _is_own_pr(host: "CodeHostBackend", verdict: ReviewVerdict, *, host_kind: str) -> bool | None:
@@ -146,39 +146,49 @@ def _is_own_pr(host: "CodeHostBackend", verdict: ReviewVerdict, *, host_kind: st
     return is_self_authored(url, host, self_identity_set(url, host=host))
 
 
-def _scrubbed_body(verdict: ReviewVerdict, body: str, *, host_kind: str, target: str) -> str:
+def _scrubbed(review: PrReview, verdict: ReviewVerdict, *, host_kind: str, target: str) -> PrReview:
     from teatree.core.send_proxy import route_forge_write  # noqa: PLC0415 — deferred: keeps the import light
 
-    return route_forge_write(forge=host_kind, repo=verdict.slug, text=body, action=ACTION, target=target)
+    def scrub(text: str) -> str:
+        return route_forge_write(forge=host_kind, repo=verdict.slug, text=text, action=ACTION, target=target)
+
+    return replace(
+        review,
+        body=scrub(review.body),
+        comments=tuple(replace(item, body=scrub(item.body)) for item in review.comments),
+    )
 
 
-def _submit_gated(
-    host: "CodeHostBackend",
-    verdict: ReviewVerdict,
-    *,
-    summary: str,
-    comments: list[PrReviewComment],
-    target: str,
-) -> PublishOutcome:
+def _submit_gated(host: "CodeHostBackend", verdict: ReviewVerdict, *, review: PrReview) -> PublishOutcome:
     from teatree.core.on_behalf_gate_recorded import (  # noqa: PLC0415 — deferred: keeps the import light
+        OnBehalfPartialPublishError,
         OnBehalfPostBlockedError,
         require_on_behalf_approval,
     )
 
+    target = f"{verdict.slug}#{verdict.pr_id}"
+
     def _publish() -> "RawAPIDict":
-        return host.submit_pr_review(
-            repo=verdict.slug,
-            pr_iid=int(verdict.pr_id),
-            head_sha=verdict.reviewed_sha,
-            summary=summary,
-            comments=comments,
-        )
+        try:
+            posted = host.submit_pr_review(repo=verdict.slug, pr_iid=int(verdict.pr_id), review=review)
+        except PartialReviewPublishError as exc:
+            raise OnBehalfPartialPublishError((f"the findings review on {target} partly posted: {exc}", 1)) from exc
+        except Exception as exc:
+            msg = f"the forge refused the findings review on {target}: {exc}"
+            raise FindingsPublishError(msg) from exc
+        if posted.get("error"):
+            msg = f"the forge refused the findings review on {target}: {posted['error']}"
+            raise FindingsPublishError(msg)
+        return posted
 
     try:
         posted = require_on_behalf_approval(target=target, action=ACTION, publish=_publish)
     except OnBehalfPostBlockedError as exc:
-        _dm_withheld_findings(verdict, target, why="on-behalf gate", key_suffix="")
+        _dm_withheld_findings(verdict, target)
         return PublishOutcome(blocked_reason=str(exc))
+    except OnBehalfPartialPublishError as exc:
+        msg = f"{exc} — a retry re-posts what landed, since the marker rides the last post"
+        raise FindingsPublishError(msg) from exc
     return PublishOutcome(published=True, comment_url=_comment_url(posted, target))
 
 
@@ -187,8 +197,8 @@ def _comment_url(posted: "RawAPIDict", target: str) -> str:
     return str(url) if url else target
 
 
-def _dm_withheld_findings(verdict: ReviewVerdict, target: str, *, why: str, key_suffix: str) -> None:
-    """DM the owner the findings a check or gate withheld — the block must not also hide them.
+def _dm_withheld_findings(verdict: ReviewVerdict, target: str) -> None:
+    """DM the owner the findings the on-behalf gate withheld — the block must not also hide them.
 
     Best-effort: a messaging outage must not turn a gate block into a crash that
     loses the block reason the caller is about to report.
@@ -198,9 +208,9 @@ def _dm_withheld_findings(verdict: ReviewVerdict, target: str, *, why: str, key_
 
     try:
         notify_user(
-            f"Findings for {target} were NOT posted ({why}).\n{render_findings_text(verdict)}",
+            f"Findings for {target} were NOT posted (on-behalf gate).\n{render_findings_text(verdict)}",
             kind=NotifyKind.INFO,
-            idempotency_key=f"review-findings-blocked:{verdict.pk}{key_suffix}",
+            idempotency_key=f"review-findings-blocked:{verdict.pk}",
             audience=NotifyAudience.OWNER_DELIVERY,
         )
     except Exception:  # noqa: BLE001 — the DM is the fallback channel, never the failure mode

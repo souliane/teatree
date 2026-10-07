@@ -11,7 +11,7 @@ silently dropped every non-dict one.
 :func:`findings_payload` is the strict read that closes both gaps: it refuses an
 unrenderable payload rather than dropping it, so a count is always backed by
 content that renders. The two renderers sit on top of it — one for the CLI, one
-for the PR comment the author actually reads.
+for the review a colleague reads on their PR.
 
 :func:`readable_findings` is its lenient sibling for the read-only ``review
 status`` gate (#4575). The two are a pair: the strict read is for the surfaces
@@ -21,15 +21,15 @@ answer a question findings do not bear on.
 
 from dataclasses import dataclass
 
-from teatree.core.backend_protocols import PrReviewComment
-from teatree.core.models.review_verdict import Finding, FindingDict, ReviewVerdict
+from teatree.core.backend_protocols import PrReview, PrReviewComment
+from teatree.core.models.review_verdict import Finding, FindingDict, ReviewVerdict, Severity
 
 MARKER_PREFIX = "<!-- teatree-review-verdict:"
-"""Prefix of the hidden marker every published findings comment carries.
+"""Prefix of the hidden marker every published findings review carries.
 
-Dedup reads it back: a re-publish looks for the verdict's own marker among the
-PR's comments and skips when one already matches, so recording the same verdict
-twice never posts a second copy.
+Dedup reads it back: a re-publish looks for the verdict's own marker on the PR
+and skips when one already matches, so recording the same verdict twice never
+posts a second copy.
 """
 
 
@@ -38,7 +38,7 @@ class FindingsRenderError(ValueError):
 
 
 def marker_for(verdict: ReviewVerdict) -> str:
-    """The dedup marker identifying *verdict*'s published findings comment."""
+    """The dedup marker identifying *verdict*'s published findings review."""
     return f"{MARKER_PREFIX} pk={verdict.pk} sha={verdict.reviewed_sha} -->"
 
 
@@ -108,42 +108,35 @@ def render_findings_text(verdict: ReviewVerdict) -> str:
     return "\n".join([header, *(f"  {_line(row)}" for row in payload)])
 
 
-@dataclass(frozen=True, slots=True)
-class ReviewParts:
-    """A verdict as one submitted review: the summary body plus one inline comment per anchored finding."""
+def review_for(verdict: ReviewVerdict) -> PrReview:
+    """*verdict*'s findings as one colleague review: each file-and-line finding inline, the rest as body bullets.
 
-    summary: str
-    comments: list[PrReviewComment]
-
-
-def render_review_parts(verdict: ReviewVerdict) -> ReviewParts:
-    """*verdict*'s findings split for a submitted inline review, the dedup marker riding the summary.
-
-    A finding with a file AND a line becomes its own inline comment; a file-level or MR-level one has no
-    line to anchor on and stays a bullet in the summary.
+    The text is the findings only: no severity label but ``Nit:``, no verdict word, reviewer or operator command.
     """
     payload = findings_payload(verdict)
     if not payload:
         msg = f"verdict {verdict.pk} has no findings — there is nothing to publish"
         raise FindingsRenderError(msg)
-    comments: list[PrReviewComment] = []
-    floating: list[str] = []
-    for row in payload:
-        if row["file"] and row["line"]:
-            body = f"**[{row['severity']}]** {row['summary']}"
-            comments.append(PrReviewComment(path=row["file"], line=row["line"], body=body))
-        else:
-            floating.append(f"- **[{row['severity']}]** `{_location(row)}` — {row['summary']}")
-    summary = "\n".join(
-        [
-            f"### Cold review: {verdict.verdict} — {len(payload)} finding(s) @ `{verdict.reviewed_sha[:8]}`",
-            "",
-            *floating,
-            *([""] if floating else []),
-            marker_for(verdict),
-        ]
+    return PrReview(
+        commit_sha=verdict.reviewed_sha,
+        body="\n".join(_bullet(row) for row in payload if not _anchored(row)),
+        comments=tuple(
+            PrReviewComment(path=row["file"], line=row["line"], body=_said(row)) for row in payload if _anchored(row)
+        ),
+        marker=marker_for(verdict),
     )
-    return ReviewParts(summary=summary, comments=comments)
+
+
+def _anchored(row: FindingDict) -> bool:
+    return bool(row["file"] and row["line"])
+
+
+def _said(row: FindingDict) -> str:
+    return f"Nit: {row['summary']}" if row["severity"] == Severity.NIT else row["summary"]
+
+
+def _bullet(row: FindingDict) -> str:
+    return f"- `{row['file']}`: {_said(row)}" if row["file"] else f"- {_said(row)}"
 
 
 def _location(row: FindingDict) -> str:

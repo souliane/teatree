@@ -150,6 +150,25 @@ class PrReviewComment:
 
 
 @dataclass(frozen=True, slots=True)
+class PrReview:
+    """One review to submit at *commit_sha*; the forge client places *marker* on the last body it posts."""
+
+    commit_sha: str
+    body: str
+    comments: tuple[PrReviewComment, ...]
+    marker: str
+
+
+class PartialReviewPublishError(RuntimeError):
+    """A review post that failed after *landed* of its *total* posts were already visible on the forge."""
+
+    def __init__(self, *, landed: int, total: int) -> None:
+        super().__init__(f"{landed} of {total} review posts landed before the forge refused the next one")
+        self.landed = landed
+        self.total = total
+
+
+@dataclass(frozen=True, slots=True)
 class PullRequestSpec:
     """Fields needed to open a pull/merge request on a CodeHostBackend."""
 
@@ -417,12 +436,11 @@ class CodeHostBackend(Protocol):
         """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
         ...
 
-    def submit_pr_review(  # pragma: no branch
-        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list["PrReviewComment"]
-    ) -> RawAPIDict:
-        """Submit ONE review: each *comments* entry inline on its line, *summary* as the review body.
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:  # pragma: no branch
+        """Publish *review* as submitted, never a pending draft; ``{"error": ...}`` for a refusal the forge names.
 
-        A line the diff cannot anchor raises rather than degrading to a floating note.
+        An unanchorable line raises before anything posts; a failure after a post landed raises
+        :class:`PartialReviewPublishError`.
         """
         ...
 

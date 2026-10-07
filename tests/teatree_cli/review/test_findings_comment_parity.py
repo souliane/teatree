@@ -13,7 +13,7 @@ from teatree.cli.review.bloat_gate import check_review_bloat
 from teatree.cli.review.evidence_gate import check_finding_evidence
 from teatree.cli.review.general_inline_gate import check_general_inline_findings
 from teatree.cli.review.shape_gate import check_review_shape
-from teatree.core.review.comment_checks import findings_comment_refusal
+from teatree.core.review.comment_checks import comment_refusal
 
 
 class _ColleagueApi:
@@ -56,5 +56,5 @@ _BODIES = (
 
 @pytest.mark.parametrize("body", _BODIES)
 def test_the_core_composition_refuses_where_the_cli_chain_refuses(body: str) -> None:
-    core = findings_comment_refusal(body, is_own_pr=lambda: False)
+    core = comment_refusal(body, general=True)
     assert (core.split(":", 1)[0] if core else "") == _cli_first_refusing_check(body)

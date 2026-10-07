@@ -21,7 +21,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
     PrOpenState,
-    PrReviewComment,
+    PrReview,
     PullRequestSpec,
     ReviewState,
     UploadVerification,
@@ -260,12 +260,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
 
-    def submit_pr_review(
-        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
-    ) -> RawAPIDict:
-        return self._notes.submit_review(
-            repo=repo, pr_iid=pr_iid, head_sha=head_sha, summary=summary, comments=comments
-        )
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
+        return self._notes.submit_review(repo=repo, pr_iid=pr_iid, review=review)
 
     def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return thread-structured, author-carrying discussion threads for an MR (#3340).

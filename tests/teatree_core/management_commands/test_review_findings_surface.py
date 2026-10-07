@@ -17,7 +17,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.backend_protocols import PrReviewComment
+from teatree.core.backend_protocols import PrReview
 from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import ConfigSetting, ReviewVerdict
 from teatree.core.review.verdict_findings import marker_for
@@ -40,15 +40,15 @@ _FINDINGS = json.dumps(
 
 
 class _FakeHost:
-    """A colleague-authored PR whose live head is the reviewed one."""
+    """A PR whose live head is the reviewed one, authored by a colleague unless told otherwise."""
 
-    def __init__(self) -> None:
-        self.posted: list[RawAPIDict] = []
+    def __init__(self, *, author: str = "carol") -> None:
+        self.posted: list[PrReview] = []
+        self.author = author
 
-    @staticmethod
-    def get_pr_author(*, pr_url: str) -> str:
+    def get_pr_author(self, *, pr_url: str) -> str:
         _ = pr_url
-        return "carol"
+        return self.author
 
     @staticmethod
     def current_user() -> str:
@@ -61,12 +61,10 @@ class _FakeHost:
 
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         _ = repo, pr_iid
-        return any(marker in str(review["summary"]) for review in self.posted)
+        return any(review.marker == marker for review in self.posted)
 
-    def submit_pr_review(
-        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
-    ) -> RawAPIDict:
-        self.posted.append({"repo": repo, "pr_iid": pr_iid, "summary": summary, "comments": comments})
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
+        self.posted.append(review)
         return {"html_url": f"https://forge.test/{repo}/pull/{pr_iid}#review-{len(self.posted)}"}
 
 
@@ -167,8 +165,16 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         assert result["findings_published"]
         assert len(self.host.posted) == 1
         review = self.host.posted[0]
-        assert [(c.path, c.line) for c in cast("list[PrReviewComment]", review["comments"])] == [("a.py", 9)]
-        assert "rename x" in str(review["summary"])
+        assert [(c.path, c.line) for c in review.comments] == [("a.py", 9)]
+        assert "rename x" in review.body
+
+    def test_recording_on_an_own_pr_posts_nothing_and_says_self_review(self) -> None:
+        self._allow_posting()
+        self.host = _FakeHost(author="owner-login")
+        result = self._record()
+        assert not result["findings_published"]
+        assert "self-review" in cast("str", result["findings_publish_note"])
+        assert not self.host.posted
 
     def test_publish_findings_does_not_post_a_second_copy(self) -> None:
         self._allow_posting()
@@ -189,7 +195,7 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         assert result["published"]
         assert len(self.host.posted) == 1
         verdict = ReviewVerdict.objects.get(slug=_SLUG, pr_id=4476)
-        assert marker_for(verdict) in str(self.host.posted[0]["summary"])
+        assert self.host.posted[0].marker == marker_for(verdict)
 
     def test_a_withheld_post_is_reported_on_the_record_result(self) -> None:
         result = self._record()

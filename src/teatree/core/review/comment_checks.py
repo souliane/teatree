@@ -1,13 +1,14 @@
 """Forge-neutral review-comment checks, shared by ``review post-comment`` and the findings publish.
 
 The predicates are the policy. The ``teatree.cli.review`` gates wrap them with their per-call
-escapes and steering text; :func:`findings_comment_refusal` composes them, in the same order, for
-a published verdict comment, which is a general note with no escapes.
+escapes and steering text; :func:`comment_refusal` composes them, in the same order, for a
+published colleague review, which has no escapes.
 """
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
+
+from teatree.core.backend_protocols import PrReview
 
 COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
 COLLEAGUE_PROSE_CAP_WORDS = 200
@@ -154,23 +155,33 @@ def looks_like_evidence_claim(body: str) -> bool:
     return bool(evidence_claim_phrase(body))
 
 
-def findings_comment_refusal(body: str, *, is_own_pr: Callable[[], bool | None]) -> str:
-    """The first check *body* fails as an escape-free general PR note, or ``""``.
+def comment_refusal(body: str, *, general: bool) -> str:
+    """The first check *body* fails as an escape-free colleague comment, or ``""``.
 
-    *is_own_pr* is read only for an over-cap body; ``None`` (unreadable) counts as a colleague PR.
+    The multi-finding check reads a *general* note only: an inline comment already sits on its line.
     """
     breach = prose_cap_breach(body)
     if breach is not None:
-        own = is_own_pr()
-        if own is not True:
-            whose = "the PR author could not be read, so it counts as a colleague PR" if own is None else "colleague PR"
-            return f"colleague prose cap: the {breach.breach} body exceeds the {breach.cap} ({whose})"
+        return f"colleague prose cap: the {breach.breach} body exceeds the {breach.cap}"
     if references_project_chatter(body):
         return "comment bloat: it carries project chatter (an @handle, a Slack ts, or a tracker id with coordination)"
     count = inline_findings_count(body)
-    if count >= MIN_DISTINCT_FINDINGS:
+    if general and count >= MIN_DISTINCT_FINDINGS:
         return f"multi-finding general note: {count} file:line findings in one note need one inline comment each"
     phrase = evidence_claim_phrase(body)
     if phrase:
         return f"unbacked claim: {phrase!r} asserts something is missing or wrong without FindingEvidence receipts"
+    return ""
+
+
+def review_refusal(review: PrReview) -> str:
+    """The first check any body of *review* fails, prefixed with which body, or ``""``."""
+    bodies = [
+        ("the summary", review.body, True),
+        *((f"the comment on {item.path}:{item.line}", item.body, False) for item in review.comments),
+    ]
+    for where, body, general in bodies:
+        refusal = comment_refusal(body, general=general)
+        if refusal:
+            return f"{where} — {refusal}"
     return ""

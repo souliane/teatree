@@ -4,7 +4,7 @@ from typing import cast
 
 from teatree.backends.github.api import _gh_api_get_paginated, _gh_api_patch, _gh_api_post
 from teatree.backends.github.claims import record_github_note_claim
-from teatree.core.backend_protocols import PrReviewComment
+from teatree.core.backend_protocols import PrReview
 from teatree.types import RawAPIDict
 
 
@@ -38,15 +38,13 @@ class GitHubPrNotes:
         reviews = _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/reviews?per_page=100", token=self._token)
         return any(marker in str(review.get("body") or "") for review in reviews)
 
-    def submit_review(
-        self, *, repo: str, pr_iid: int, head_sha: str, summary: str, comments: list[PrReviewComment]
-    ) -> RawAPIDict:
+    def submit_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
         payload: RawAPIDict = {
-            "commit_id": head_sha,
-            "body": summary,
+            "commit_id": review.commit_sha,
+            "body": "\n\n".join(part for part in (review.body, review.marker) if part),
             "event": "COMMENT",
             "comments": [
-                {"path": item.path, "line": item.line, "side": "RIGHT", "body": item.body} for item in comments
+                {"path": item.path, "line": item.line, "side": "RIGHT", "body": item.body} for item in review.comments
             ],
         }
         data = _gh_api_post(f"repos/{repo}/pulls/{pr_iid}/reviews", payload, token=self._token)

@@ -9,7 +9,14 @@ from teatree.backends.gitlab.discussions import (
     _note_author,
     thread_opened_solely_by,
 )
-from teatree.core.backend_protocols import BackendResolutionError, DraftState, PrReviewComment, PullRequestSpec
+from teatree.core.backend_protocols import (
+    BackendResolutionError,
+    DraftState,
+    PartialReviewPublishError,
+    PrReview,
+    PrReviewComment,
+    PullRequestSpec,
+)
 from teatree.core.self_forge_identities import NOT_SELF_AUTHORED_REASON, ExternalIssueRefusedError
 
 
@@ -1883,28 +1890,46 @@ def _position(head_sha: str = "h" * 40) -> dict[str, object]:
     return {"position_type": "text", "head_sha": head_sha, "new_path": "a.py", "new_line": 9}
 
 
-def test_submit_pr_review_posts_inline_discussions_then_the_summary_last() -> None:
+def _review(body: str, *comments: PrReviewComment) -> PrReview:
+    return PrReview(commit_sha="h" * 40, body=body, comments=comments, marker="<!-- m -->")
+
+
+def _gitlab_host() -> tuple[GitLabCodeHost, MagicMock]:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    host = GitLabCodeHost(client=client)
-    comment = PrReviewComment(path="a.py", line=9, body="**[nit]** rename")
+    return GitLabCodeHost(client=client), client
+
+
+def test_submit_pr_review_posts_inline_discussions_then_the_summary_last_with_the_marker() -> None:
+    host, client = _gitlab_host()
+    review = _review("- log the retry", PrReviewComment(path="a.py", line=9, body="Nit: rename"))
 
     with patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")):
-        host.submit_pr_review(repo="org/repo", pr_iid=10, head_sha="h" * 40, summary="summary", comments=[comment])
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
 
-    assert [call.args[0] for call in client.post_json.call_args_list] == [
-        "projects/42/merge_requests/10/discussions",
-        "projects/42/merge_requests/10/notes",
+    assert [call.args for call in client.post_json.call_args_list] == [
+        ("projects/42/merge_requests/10/discussions", {"body": "Nit: rename", "position": _position()}),
+        ("projects/42/merge_requests/10/notes", {"body": "- log the retry\n\n<!-- m -->"}),
     ]
-    assert client.post_json.call_args_list[0].args[1] == {"body": "**[nit]** rename", "position": _position()}
-    assert client.post_json.call_args_list[1].args[1] == {"body": "summary"}
+
+
+def test_with_no_summary_the_marker_rides_the_last_inline_comment() -> None:
+    host, client = _gitlab_host()
+    review = _review("", PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=9, body="y"))
+
+    with patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")):
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
+
+    bodies = [call.args[1]["body"] for call in client.post_json.call_args_list]
+    assert bodies == ["x", "y\n\n<!-- m -->"]
+    assert all(call.args[0].endswith("/discussions") for call in client.post_json.call_args_list)
 
 
 def test_submit_pr_review_posts_nothing_when_a_line_cannot_anchor() -> None:
-    client = MagicMock(spec=GitLabAPI)
-    client.resolve_project.return_value = _project()
-    host = GitLabCodeHost(client=client)
-    comments = [PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=99, body="y")]
+    host, client = _gitlab_host()
+    review = _review(
+        "s", PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=99, body="y")
+    )
 
     with (
         patch(
@@ -1913,28 +1938,47 @@ def test_submit_pr_review_posts_nothing_when_a_line_cannot_anchor() -> None:
         ),
         pytest.raises(ValueError, match="not an added line"),
     ):
-        host.submit_pr_review(repo="org/repo", pr_iid=10, head_sha="h" * 40, summary="s", comments=comments)
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
 
     client.post_json.assert_not_called()
 
 
 def test_submit_pr_review_refuses_a_moved_head() -> None:
-    client = MagicMock(spec=GitLabAPI)
-    client.resolve_project.return_value = _project()
-    host = GitLabCodeHost(client=client)
+    host, client = _gitlab_host()
 
     with (
         patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position("n" * 40), "")),
         pytest.raises(ValueError, match="head moved"),
     ):
-        host.submit_pr_review(
-            repo="org/repo",
-            pr_iid=10,
-            head_sha="h" * 40,
-            summary="s",
-            comments=[PrReviewComment(path="a.py", line=9, body="x")],
-        )
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s", PrReviewComment("a.py", 9, "x")))
 
+    client.post_json.assert_not_called()
+
+
+def test_a_failure_after_a_post_landed_is_a_partial_publish() -> None:
+    host, client = _gitlab_host()
+    client.post_json.side_effect = [{"id": 1}, RuntimeError("502")]
+
+    with (
+        patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")),
+        pytest.raises(PartialReviewPublishError) as exc,
+    ):
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s", PrReviewComment("a.py", 9, "x")))
+
+    assert (exc.value.landed, exc.value.total) == (1, 2)
+
+
+def test_a_failure_before_anything_landed_is_the_forge_error_itself() -> None:
+    host, client = _gitlab_host()
+    client.post_json.side_effect = RuntimeError("502")
+
+    with pytest.raises(RuntimeError, match="502"):
+        host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s"))
+
+
+def test_an_empty_review_posts_nothing() -> None:
+    host, client = _gitlab_host()
+    assert "nothing to post" in str(host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review(""))["error"])
     client.post_json.assert_not_called()
 
 
@@ -1953,6 +1997,6 @@ def test_submit_pr_review_returns_error_when_project_not_resolved() -> None:
     client.resolve_project.return_value = None
     host = GitLabCodeHost(client=client)
 
-    result = host.submit_pr_review(repo="org/unknown", pr_iid=1, head_sha="h", summary="s", comments=[])
+    result = host.submit_pr_review(repo="org/unknown", pr_iid=1, review=_review("s"))
 
     assert result == {"error": "Could not resolve project: org/unknown"}
