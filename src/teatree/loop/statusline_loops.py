@@ -1,12 +1,12 @@
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
-from django.db import DatabaseError
 from django.utils import timezone
 
-from teatree.loop.drain import quiesce_status
+from teatree.loop.drain import stored_quiesce_status
 from teatree.loop.loop_cadences import (
     drain_cadence_seconds,
     loop_owner_ttl_seconds,
@@ -28,6 +28,8 @@ from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 if TYPE_CHECKING:
     from teatree.core.managers import OwnershipStatus
     from teatree.core.models.loop_lease import LoopLease
+
+logger = logging.getLogger(__name__)
 
 
 def _configured_overlay_names() -> list[str]:
@@ -562,8 +564,9 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
 def _deploy_drain_chunk(*, colorize: bool = False) -> str:
     """``deploy drain 4m, 2 in flight`` while the worker is quiesced, else ``""``; fails open to ``""``."""
     try:
-        drain = quiesce_status()
-    except DatabaseError:
+        drain = stored_quiesce_status()
+    except Exception:
+        logger.debug("deploy drain unreadable; the chip is dropped", exc_info=True)
         return ""
     if drain is None:
         return ""

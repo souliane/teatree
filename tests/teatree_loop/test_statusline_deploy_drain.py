@@ -4,12 +4,11 @@ import datetime as dt
 from unittest.mock import patch
 
 import django.test
-from django.db import OperationalError
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting
 from teatree.loop.drain import QUIESCING_SETTING, set_worker_quiescing
-from teatree.loop.statusline_loops import live_loops_anchor
+from teatree.loop.statusline_loops import config_tier_chip, live_loops_anchor
 from tests.factories import TaskFactory
 
 
@@ -29,10 +28,16 @@ class TestTheDeployDrainChip(django.test.TestCase):
 
         assert not any("deploy drain" in line for line in live_loops_anchor())
 
-    def test_an_unreadable_drain_drops_only_the_chip(self) -> None:
-        set_worker_quiescing(value=True)
 
-        with patch("teatree.loop.statusline_loops.quiesce_status", side_effect=OperationalError("database is locked")):
-            lines = live_loops_anchor()
+def test_an_unreachable_db_drops_only_the_chip_and_never_marks_the_config_tier() -> None:
+    # No DB access here, so the chip's ORM read genuinely fails, as on a box whose control DB is unreachable.
+    lease = [("loop-tick", dt.datetime.now(dt.UTC) - dt.timedelta(seconds=60))]
+    with (
+        patch("teatree.loop.statusline_loops._live_loop_leases", return_value=lease),
+        patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+    ):
+        (line,) = live_loops_anchor()
 
-        assert not any("deploy drain" in line for line in lines)
+    assert "tick 11m" in line
+    assert "deploy drain" not in line
+    assert config_tier_chip() == [], "the chip's failed read must not report the whole config tier unreadable"

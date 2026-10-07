@@ -137,7 +137,16 @@ def quiesce_status() -> QuiesceStatus | None:
 
     if not worker_is_quiescing():
         return None
+    return _status_since(_quiescing_gate_set_at())
+
+
+def stored_quiesce_status() -> QuiesceStatus | None:
+    """The drain the stored gate row records: a render-time read that never resolves, nor marks, the config tier."""
     since = _quiescing_gate_set_at()
+    return _status_since(since) if since is not None else None
+
+
+def _status_since(since: datetime | None) -> QuiesceStatus:
     age = (timezone.now() - since).total_seconds() if since is not None else None
     return QuiesceStatus(since=since, age_seconds=age, in_flight=_still_claimed_pks(""))
 
@@ -238,4 +247,5 @@ __all__ = [
     "drain_worker",
     "quiesce_status",
     "set_worker_quiescing",
+    "stored_quiesce_status",
 ]
