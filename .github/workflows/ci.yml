@@ -755,6 +755,10 @@ jobs:
           key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py') }}
       - name: Ensure the template cache dir exists (fresh on a cache miss)
         run: mkdir -p .cache/django-test-template
+      # Hosted runners come in hardware classes; a shard's timing is only comparable within one.
+      - name: Record the runner's hardware
+        run: |
+          echo "nproc=$(nproc) mem_mib=$(free -m | awk '/^Mem:/{print $2}') cpu=$(lscpu | sed -n 's/^Model name: *//p')"
       # Shard N/12: pytest-split slices collection by `dev/.test_durations`;
       # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
       # measure exactly what the old monolithic lane did, but `--cov-report=`
@@ -803,6 +807,10 @@ jobs:
       # republishes month-old timings as freshly measured — green at every step. #4483
       # reported that coupling backwards as the live cause; it was not (the real one was
       # the dotfile drop, #4584). `tests/test_ci_shard_durations_path_contract.py` pins it.
+      #
+      # `-p no:tach`: tach's pytest plugin arms itself whenever `main` resolves — a push or
+      # cron checkout, never a pull request's detached merge ref — and then runs its impact
+      # analysis on every collected item with no `--tach` to act on the answer.
       - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
         run: >
           docker run --rm
@@ -812,6 +820,7 @@ jobs:
           -e TEATREE_TEST_DB_TEMPLATE_DIR=/app/.cache/django-test-template
           ${{ needs.build-image.outputs.image }}
           uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
+          -p no:tach
           -o cache_dir=/tmp/.pytest_cache
           -o timeout=180
           --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
@@ -1225,9 +1234,10 @@ jobs:
     #
     # It must never mask a real failure: it runs ONLY when the heavy lane was
     # path-skipped (run_heavy_python == 'false') AND only on pull_request
-    # events. On push-to-main, on the schedule, and on any non-pure-docs PR
+    # events. On push-to-main, on the weekly cron, and on any non-pure-docs PR
     # the `test` combiner runs and owns the `test (3.13)` context; this
     # shim is skipped (its `if` is false), so the two can never both report.
+    # The slim daily cron runs neither.
     #
     # The `name: test` + matrix `python-version: ["3.13"]` makes the produced
     # check context the exact string `test (3.13)` the branch protection
