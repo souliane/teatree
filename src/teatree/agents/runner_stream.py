@@ -54,6 +54,8 @@ class HarnessOutcome:
     #: typed flag, not a phrase match on the reason: the reason now names the actual
     #: reclaimer, so any discriminator built on its wording would drift with it.
     lease_lost: bool = False
+    #: Whether ``stuck_reason`` is a deploy drain's checkpoint, so the run parks to resume rather than fails.
+    checkpointed: bool = False
     #: ``ToolUseBlock``s the run emitted. Both backends yield tool use in this same
     #: vocabulary, so the count is lane-agnostic evidence that the agent ACTED —
     #: what :mod:`teatree.agents.action_verification` gates an acting phase on. A
@@ -109,6 +111,11 @@ class StreamCapture:
     pending_skill_loads: dict[str, tuple[str, Path | None]] = field(default_factory=dict)
     model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
     context_tokens: int | None = None
+    open_tool_uses: set[str] = field(default_factory=set)
+
+    @property
+    def tool_in_flight(self) -> bool:
+        return bool(self.open_tool_uses)
 
     def observe(self, message: object) -> None:
         if self.round_ceiling is not None:
@@ -134,7 +141,10 @@ class StreamCapture:
             self.model_fallbacks.append(message.data)
 
     def _observe_tool_block(self, block: object) -> None:
+        if isinstance(block, ToolUseBlock):
+            self.open_tool_uses.add(block.id)
         if isinstance(block, ToolResultBlock):
+            self.open_tool_uses.discard(block.tool_use_id)
             pending = self.pending_skill_loads.pop(block.tool_use_id, None)
             if pending is not None and not block.is_error:
                 skill, read_path = pending

@@ -18,6 +18,7 @@ threaded DB read under ``TestCase``'s wrapping SQLite transaction is a harness
 artifact that deadlocks the connection — not production behaviour.
 """
 
+import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Iterator
@@ -141,8 +142,6 @@ class FakeHarnessSession:
         type(self).last_prompt = prompt
 
     async def receive_response(self) -> AsyncIterator[Any]:
-        import asyncio  # noqa: PLC0415
-
         for message in self._messages:
             # Model the real SDK: once ``interrupt()`` lands the server stops
             # streaming, so the consumer never sees the remaining messages. The
@@ -177,6 +176,48 @@ class FakeHarness:
     async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
         self.opened_options = options
         yield FakeHarnessSession(self._messages, delay=self._delay)
+
+
+class InterruptibleSession:
+    """A session that streams *opening*, keeps working until interrupted, then ends as the SDK does."""
+
+    def __init__(self, opening: list[Any], *, session_id: str) -> None:
+        self._opening = opening
+        self._session_id = session_id
+        self._interrupted = asyncio.Event()
+        self.interrupts = 0
+
+    async def query(self, prompt: str) -> None:
+        pass
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        for message in self._opening:
+            yield message
+        await self._interrupted.wait()
+        yield result_message(
+            session_id=self._session_id,
+            subtype="error_during_execution",
+            is_error=True,
+            num_turns=12,
+            usage={"input_tokens": 900, "output_tokens": 300},
+        )
+
+    async def interrupt(self) -> None:
+        self.interrupts += 1
+        self._interrupted.set()
+
+
+class OneSessionHarness:
+    """A ``Harness`` double that opens the one *session* it was handed."""
+
+    capabilities = HarnessCapabilities()
+
+    def __init__(self, session: InterruptibleSession) -> None:
+        self.session = session
+
+    @contextlib.asynccontextmanager
+    async def open(self, _options: Any) -> AsyncIterator[InterruptibleSession]:
+        yield self.session
 
 
 @contextlib.contextmanager

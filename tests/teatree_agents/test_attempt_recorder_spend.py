@@ -138,12 +138,12 @@ class TestPreTurnFailureStaysNull(SpendRecordingCase):
 
         from django.utils import timezone  # noqa: PLC0415 — local to the one case that parks
 
-        from teatree.agents.usage_window import _record_park  # noqa: PLC0415 — the park recorder under test
+        from teatree.agents.usage_window import record_park  # noqa: PLC0415 — the park recorder under test
 
         task = self.make_task()
         task.claim(claimed_by="headless-worker")
 
-        attempt = _record_park(task, reason="limit_parked: window", not_before=timezone.now() + timedelta(hours=1))
+        attempt = record_park(task, reason="limit_parked: window", not_before=timezone.now() + timedelta(hours=1))
 
         assert attempt.input_tokens is None
         assert attempt.output_tokens is None

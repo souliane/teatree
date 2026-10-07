@@ -501,8 +501,9 @@ t3 worker status            # --json for a machine-readable payload
 # it took the flock — a startup crash prints the child's own stderr):
 t3 worker ensure            # refuses (with the reason) when one already runs
 
-# Quiesce admission WITHOUT stopping anything (the deploy verb — leaves the box
-# admitting no work until a fresh container boot, or `t3 worker restart`, clears the gate):
+# Quiesce admission without stopping the worker (the deploy verb). Each in-flight worker run
+# checkpoints at its next heartbeat: it parks with its session id and resumes once the gate
+# clears. The box admits no work until a fresh container boot, or `t3 worker restart`, clears it:
 t3 worker drain
 # Drain ONE image generation instead: it stops claiming, the next generation keeps working:
 t3 worker drain --generation <sha>

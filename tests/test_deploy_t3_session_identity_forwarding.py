@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.session_identity import SESSION_ID_ENV_VARS
+from teatree.core.session_identity import AGENT_SDK_ENV_VARS, SESSION_ID_ENV_VARS
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
 
@@ -64,3 +64,9 @@ def test_an_unset_session_id_forwards_nothing(name: str) -> None:
 def test_the_id_crosses_as_a_bare_name_never_an_argv_value() -> None:
     """A session id in an argv is world-readable, and it identifies the operator's session."""
     assert not any("=" in arg for arg in _forwarded_env_args(CLAUDE_CODE_SESSION_ID="sess-abc"))
+
+
+@pytest.mark.parametrize("name", AGENT_SDK_ENV_VARS)
+def test_the_harness_signature_crosses_the_boundary(name: str) -> None:
+    """Without it an agent calling the host wrapper answers a question as if it were the owner."""
+    assert _forwarded_env_args(**{name: "sdk-py"}) == ["--env", name]

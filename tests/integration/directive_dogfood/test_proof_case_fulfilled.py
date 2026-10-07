@@ -65,7 +65,7 @@ class TestProofCaseFulfilled(TestCase):
             assert shown in question.question
         with pytest.raises(DirectiveError):
             directive.admit()  # an unconsumed ratify question cannot admit
-        DeferredQuestion.consume(question.pk, answer="approve")
+        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         assert tick().action == "admitted"
 
         # Stage 5 — activation_only skips IMPLEMENTING; the admission baseline is snapshotted for real.

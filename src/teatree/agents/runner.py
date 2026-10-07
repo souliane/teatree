@@ -45,7 +45,12 @@ from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
-from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat, renew_lease_closing_connection
+from teatree.agents.runner_heartbeat import (
+    HeartbeatRuntime,
+    drain_reason_closing_connection,
+    drive_with_heartbeat,
+    renew_lease_closing_connection,
+)
 from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_occupancy_deferred
 from teatree.agents.runner_outcomes import UNROUTED as _UNROUTED  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_outcomes import Transport as _Transport
@@ -570,5 +575,6 @@ async def _drive_with_heartbeat(
             heartbeat_interval=_HEARTBEAT_INTERVAL,
             sample_usage=_sample_usage_closing_connection,
             renew_lease=_renew_lease_closing_connection,
+            drain_reason=drain_reason_closing_connection,
         ),
     )
