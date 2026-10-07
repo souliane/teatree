@@ -87,4 +87,16 @@ def invocation_cwd() -> Path:
     return declared_invocation_cwd() or Path.cwd()
 
 
-__all__ = ["INVOCATION_CWD_ENV", "declared_invocation_cwd", "invocation_cwd"]
+def operator_cwd() -> Path:
+    """The process cwd when it sits inside a checkout, else :func:`invocation_cwd`.
+
+    An agent spawned from a ``deploy/t3`` session inherits that session's declaration
+    with the rest of its env, so the checkout the agent actually ``cd``'d into must win.
+    """
+    cwd = Path.cwd()
+    if any((directory / ".git").exists() for directory in (cwd, *cwd.parents)):
+        return cwd
+    return invocation_cwd()
+
+
+__all__ = ["INVOCATION_CWD_ENV", "declared_invocation_cwd", "invocation_cwd", "operator_cwd"]
