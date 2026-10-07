@@ -48,7 +48,7 @@ class _Api:
         _ = (slug, check_name)
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
         return BoundMergeResult(merged=True, merged_sha=MERGED_SHA)
 

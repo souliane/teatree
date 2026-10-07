@@ -249,7 +249,7 @@ class FakePrApiClient:
     prs_by_slug: dict[str, list[PrSummary]] = field(default_factory=dict)
     main_uv_audit_red: bool = False
     fallback_succeeds: bool = True
-    #: The ``str(exc)`` a refused ``merge_pr_squash_bound`` carries (#4856) —
+    #: The ``str(exc)`` a refused ``merge_pr_bound`` carries (#4856) —
     #: empty reproduces the pre-fix "no text at all" shape.
     refusal_text: str = ""
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
@@ -269,7 +269,7 @@ class FakePrApiClient:
         self.main_check_calls.append((slug, check_name))
         return self.main_uv_audit_red
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
+    def merge_pr_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         if self.fallback_succeeds:
             return BoundMergeResult(merged=True, merged_sha=MAIN_SHA)
@@ -414,7 +414,7 @@ class TestUntrustedAuthorPublicRepo:
         assert signals[0].payload["reason"] == "untrusted_author_public_repo"
 
     def test_solo_overlay_fallback_bypass_is_closed_for_untrusted_author(self) -> None:
-        # The solo-overlay no-CLEAR fallback merges via ``merge_pr_squash_bound``
+        # The solo-overlay no-CLEAR fallback merges via ``merge_pr_bound``
         # OUTSIDE the keystone author gate. The #1773 rung fires first, so an
         # untrusted public author can never reach that fallback even with a
         # recorded independent cold review.
@@ -2023,7 +2023,7 @@ class TestErrorIsolation:
             def main_check_failed(self, *, slug: str, check_name: str) -> bool:  # pragma: no cover
                 return False
 
-            def merge_pr_squash_bound(  # pragma: no cover
+            def merge_pr_bound(  # pragma: no cover
                 self, *, slug: str, pr_id: int, expected_head_oid: str
             ) -> BoundMergeResult:
                 return BoundMergeResult(merged=False)
@@ -2244,7 +2244,7 @@ class TestSubstrateHoldPing:
         # Finding 1 (fail-open): a SUBSTRATE CLEAR whose only red check is uv-audit
         # (and main is also uv-audit-red) lands on the keystone fallback path. When
         # the keystone refuses (substrate hold), the legacy code raw-merged via
-        # ``merge_pr_squash_bound`` BEFORE the substrate-ping check — silently
+        # ``merge_pr_bound`` BEFORE the substrate-ping check — silently
         # bypassing the hold. The fix gates the raw-merge on the CLEAR not being
         # substrate, so a substrate PR HOLDS + pings instead.
         clear = _issue_substrate_clear()
@@ -2344,7 +2344,7 @@ class TestSoloOverlaySubstrateHold:
     """Finding 2 (fail-open): the solo-overlay no-CLEAR bypass must hold substrate.
 
     The bypass raw-merges a green+clean+cold-reviewed own PR via
-    ``merge_pr_squash_bound`` when no CLEAR exists — with ZERO substrate gating.
+    ``merge_pr_bound`` when no CLEAR exists — with ZERO substrate gating.
     A substrate PR on a solo overlay (cold-review, no CLEAR) would therefore
     auto-merge with no hold and no ping, bypassing the keystone substrate
     guarantee. The fix classifies the PR's changed paths before the direct
