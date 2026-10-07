@@ -108,7 +108,7 @@ def test_detect_framework_python_from_pyproject(tmp_path: Path) -> None:
 
 def test_detect_framework_django_from_pyproject(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('dependencies = ["django>=5"]\n')
-    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django", "ac-python"]
 
 
 @skip_if_root
