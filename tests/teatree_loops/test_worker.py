@@ -25,6 +25,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.agents import live_mailbox
+from teatree.agents.live_client import LiveClient
 from teatree.core import agent_admission
 from teatree.core.admission_governor import (
     AdmissionCeiling,
@@ -133,6 +135,7 @@ def _make_worker(*, script, sleep, **seam_overrides):
         reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
+        start_live_ingress=seam_overrides.get("start_live_ingress") or (lambda: None),
         read_agent_queues=seam_overrides.get("read_agent_queues") or (lambda: _AGENTS),
     )
     if "loops_executors" in seam_overrides:
@@ -182,6 +185,32 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     assert order[:3] == ["reconcile", "seed", "expire"]
     assert order[3] == "spawn"
     assert order.count("spawn") == loops_executor_count() + len(_AGENTS)
+
+
+def test_the_live_socket_is_published_before_anything_else_starts() -> None:
+    order: list[str] = []
+    worker, _built, _ = _make_worker(
+        script=[True],
+        sleep=lambda _s: None,
+        start_live_ingress=lambda: order.append("live"),
+        reconcile=lambda: order.append("reconcile"),
+    )
+    worker.run()
+    assert order[:2] == ["live", "reconcile"]
+
+
+def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
+    worker_mod._start_live_ingress()
+
+    assert LiveClient().sessions() == []
+    assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
+
+
+def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
+    with mock.patch.object(live_mailbox, "shared_broker", side_effect=OSError("read-only volume")):
+        worker_mod._start_live_ingress()
+
+    assert "Live ingress could not start" in caplog.text
 
 
 def test_the_loops_pool_scales_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:

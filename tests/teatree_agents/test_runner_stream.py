@@ -238,6 +238,21 @@ class TestToolInFlight:
 
         assert capture.tool_in_flight is True
 
+    def test_the_drain_and_the_operator_read_one_tracker_of_the_open_calls(self) -> None:
+        capture = StreamCapture()
+        steps = [
+            (assistant_tool_use("Bash", tool_id="t1"), "Bash"),
+            (assistant_tool_use("Read", tool_id="t2"), "Bash"),
+            (AssistantMessage(content=[ToolResultBlock(tool_use_id="t1", content="ok")], model=""), "Read"),
+            (AssistantMessage(content=[ToolResultBlock(tool_use_id="t9", content="ok")], model=""), "Read"),
+            (AssistantMessage(content=[ToolResultBlock(tool_use_id="t2", content="ok")], model=""), None),
+        ]
+
+        for message, awaited in steps:
+            capture.observe(message)
+            assert (capture.open_tool[0] if capture.open_tool else None) == awaited
+            assert capture.tool_in_flight is (awaited is not None)
+
 
 @pytest.mark.parametrize(
     "outcome",

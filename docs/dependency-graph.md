@@ -152,6 +152,7 @@ graph TD
     teatree.agents --> teatree.core.managers_task_claim
     teatree.agents --> teatree.core.telemetry
     teatree.agents --> teatree.credential_config
+    teatree.agents --> teatree.paths
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config

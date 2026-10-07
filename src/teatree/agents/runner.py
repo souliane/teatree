@@ -359,7 +359,7 @@ def _run_agent(
                     task,
                     prepared.prompt,
                     prepared.options,
-                    GuardedHarness(harness=harness, guard=prepared.compaction_guard),
+                    GuardedHarness(harness=harness, guard=prepared.compaction_guard, name=preflight.dispatch.name),
                     watchdog=watchdog,
                 )
             )

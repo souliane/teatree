@@ -460,6 +460,27 @@ messages in order. Delivery is live-only: there is no database queue, parked-tas
 delivery, cross-worker delivery, or automatic idle-session wake-up. The MCP tools
 are absent outside TeaTree-managed tasks.
 
+#### Live control
+
+An operator reaches a running factory task from any process outside the worker: a
+`docker exec` shell, `deploy/t3`, or an attended `/t3:interactive` session. Agents
+cannot use these verbs.
+
+```bash
+t3 teatree live list                          # every live session on this host's workers (passive)
+t3 teatree live inspect 1234                  # state, phase, open tool, progress; the agent is not contacted
+t3 teatree live steer 1234 --text "Use the spec in docs/x.md"   # enters the running turn (active)
+```
+
+`steer` prints a receipt and exits 0 when the session accepted the input into its
+current turn, 3 when it refused it (`turn_ended`, `not_accepted_in_time`,
+`backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`), 4 when the
+answer was lost (`unknown_delivery`), and 5 when no worker on this host runs the
+task. Acceptance is not obedience: the model decides what to do with the input.
+Resending the same `--command-id` with the same text returns the first receipt
+instead of delivering twice. Sessions run by `claude_sdk` are steerable; other
+harnesses list as `steerable: false`. Nothing survives a worker restart.
+
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.
 

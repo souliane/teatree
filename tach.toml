@@ -509,6 +509,7 @@ depends_on = [
   # this telemetry leaf has no edge back into agents.
   "teatree.core.telemetry",
   "teatree.credential_config",
+  "teatree.paths",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config"
