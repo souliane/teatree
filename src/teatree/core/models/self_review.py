@@ -78,8 +78,12 @@ class SelfReview:
         return review if review is not None and review.is_hold else None
 
     @classmethod
-    def held_heads(cls, ticket: Ticket) -> set[str]:
-        return {review.head_key for review in cls._current_cycle(ticket) if review.is_hold}
+    def held_reviews(cls, ticket: Ticket) -> set[int]:
+        """The reviewing tasks whose newest verdict in this delivery cycle is a HOLD: one per rework lap."""
+        newest: dict[int, SelfReview] = {}
+        for review in cls._current_cycle(ticket):
+            newest.setdefault(review.task_pk, review)
+        return {task_pk for task_pk, review in newest.items() if review.is_hold}
 
     @classmethod
     def held_for_rework(cls, ticket: Ticket) -> "SelfReview":
@@ -121,10 +125,6 @@ class SelfReview:
     @property
     def is_hold(self) -> bool:
         return self.verdict == ReviewVerdict.Verdict.HOLD
-
-    @property
-    def head_key(self) -> str:
-        return self.reviewed_sha or f"task:{self.task_pk}"
 
     def rework_reason(self) -> str:
         header = (

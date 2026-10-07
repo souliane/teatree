@@ -86,15 +86,21 @@ def _requeue(ticket_id: int, *, dry_run: bool) -> ReworkHoldResult:
 def _refuse_a_branch_backing_an_open_pr(ticket: Ticket) -> None:
     """The forge half of the open-PR refusal: a PR the push hook opened has no row until something records it."""
     for worktree in ticket.worktrees.all():
-        if not worktree.worktree_path or not Path(worktree.worktree_path).is_dir():
-            continue
-        url = find_open_pr_for_branch(worktree.worktree_path, worktree.branch).url_or_none_on_unknown()
+        checkout = worktree.worktree_path
+        url = (
+            find_open_pr_for_branch(checkout, worktree.branch).url_or_none_on_unknown()
+            if checkout and Path(checkout).is_dir()
+            else None
+        )
         if url is None:
             msg = f"could not ask the forge whether branch {worktree.branch!r} backs an open pull request"
-            raise SelfReviewReworkRefusedError(msg, hint="Retry once the forge answers.")
+            raise SelfReviewReworkRefusedError(msg, hint=_FORGE_UNKNOWN_HINT)
         if url:
             msg = f"ticket {ticket.pk} has an open pull request ({url})"
             raise SelfReviewReworkRefusedError(msg, hint=OPEN_PR_HINT)
+
+
+_FORGE_UNKNOWN_HINT = "Retry once the forge answers and the branch's checkout is on disk."
 
 
 def _human(result: ReworkHoldResult) -> str:

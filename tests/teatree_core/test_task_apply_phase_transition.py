@@ -14,6 +14,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.core.modelkit.review_state import ReviewState
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
@@ -626,6 +627,28 @@ class TestASelfReviewHoldKeepsTheTicketTested(TestCase):
         [rework] = Task.objects.filter(ticket=ticket, phase="coding", parent_task=held)
         assert str(HELD_FINDINGS[0]["summary"]) in rework.execution_reason
         assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_hand_fix_completing_after_the_rework_was_cancelled_queues_a_fresh_rework(self) -> None:
+        ticket = author_ticket()
+        held = completed_self_review(ticket, "hold")
+        _replay()
+        [cancelled] = _coding_tasks(ticket)
+        cancelled.fail(reason=f"{CANCELLED_PREFIX}operator stopped it", by_holder=False)
+        hand_fix = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="coding"), phase="coding"
+        )
+        hand_fix.claim(claimed_by="coder")
+
+        hand_fix.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [fresh] = Task.objects.filter(ticket=ticket, phase="coding", parent_task=held, status=Task.Status.PENDING)
+        assert str(HELD_FINDINGS[0]["summary"]) in fresh.execution_reason
+        fresh.fail(reason="the coder crashed", by_holder=False)
+        _replay()
+        _replay()
+        assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=held).count() == 2
 
     def test_a_shipping_completion_past_a_hold_does_not_ship_and_queues_the_rework(self) -> None:
         ticket = author_ticket(state=Ticket.State.SELF_REVIEWED)

@@ -118,15 +118,22 @@ class TestTheDeliveryCycle(TestCase):
         assert review.task_pk == held.pk
 
 
-class TestHeldHeads(TestCase):
-    def test_one_review_per_head_however_many_attempts_or_re_reviews(self) -> None:
+class TestHeldReviews(TestCase):
+    def test_one_per_reviewing_task_however_many_attempts_re_reviews_of_a_head_each_count(self) -> None:
         ticket = author_ticket()
-        completed_self_review(ticket, "hold", reviewed_sha=head(1), attempts=5)
-        completed_self_review(ticket, "hold", reviewed_sha=head(1))
-        completed_self_review(ticket, "hold", reviewed_sha=head(2))
+        many_attempts = completed_self_review(ticket, "hold", reviewed_sha=head(1), attempts=5)
+        re_review = completed_self_review(ticket, "hold", reviewed_sha=head(1))
+        moved = completed_self_review(ticket, "hold", reviewed_sha=head(2))
         completed_self_review(ticket, "merge_safe", reviewed_sha=head(3))
 
-        assert SelfReview.held_heads(ticket) == {head(1), head(2)}
+        assert SelfReview.held_reviews(ticket) == {many_attempts.pk, re_review.pk, moved.pk}
+
+    def test_a_task_counts_by_its_newest_verdict(self) -> None:
+        ticket = author_ticket()
+        cleared = completed_self_review(ticket, "hold")
+        _attempt(cleared, self_review_result("merge_safe"))
+
+        assert SelfReview.held_reviews(ticket) == set()
 
 
 class TestReworkReason(TestCase):

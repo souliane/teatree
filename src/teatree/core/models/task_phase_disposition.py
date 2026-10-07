@@ -109,7 +109,7 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
         ticket.code_direct(parent_task=task)
     elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
         if task.parent_task_id != held.task_pk:  # ty: ignore[unresolved-attribute]
-            queue_self_review_rework(ticket, held)
+            queue_self_review_rework(ticket, held, after=task)
             return False
         ticket.address_self_review(parent_task=task)
     else:
@@ -146,7 +146,7 @@ def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
         escalate_unmatched_phase_transition(task, phase="shipping", ticket=ticket)
         return False
     if (held := SelfReview.open_hold_for(ticket)) is not None:
-        queue_self_review_rework(ticket, held)
+        queue_self_review_rework(ticket, held, after=task)
         return False
     task.session.check_gate_across_ticket("shipping")
     ticket.ship()
@@ -154,18 +154,25 @@ def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
     return True
 
 
-def queue_self_review_rework(ticket: Ticket, review: SelfReview) -> None:
-    """Queue *review*'s rework once, keyed on its parent link, or at the cap record why none is queued."""
-    if ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding")).exists():
+def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task | None" = None) -> None:
+    """Queue *review*'s rework once per triggering completion, or at the cap record why none is queued.
+
+    Keyed on the parent link, and after another coding or shipping completion on reworks newer than it:
+    a replay never re-mints, yet a rework failed or cancelled before that completion is replaced once.
+    """
+    reworks = ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding"))
+    if after is not None:
+        reworks = reworks.filter(pk__gt=after.pk)
+    if reworks.exists():
         return
-    other_heads = SelfReview.held_heads(ticket) - {review.head_key}
-    if len(other_heads) >= max_phase_iterations():
-        _record_hold_cap(ticket, review, held_heads=len(other_heads) + 1)
+    earlier_laps = SelfReview.held_reviews(ticket) - {review.task_pk}
+    if len(earlier_laps) >= max_phase_iterations():
+        _record_hold_cap(ticket, review, laps=len(earlier_laps) + 1)
         return
     ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
 
 
-def _record_hold_cap(ticket: Ticket, review: SelfReview, *, held_heads: int) -> None:
+def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
     """One INTERNAL row per ticket, sticky across answered and dismissed rows: the factory never pages on it."""
     marker = f"self-review-hold-cap:{ticket.pk}"
     if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
@@ -173,9 +180,10 @@ def _record_hold_cap(ticket: Ticket, review: SelfReview, *, held_heads: int) -> 
     where = ticket.issue_url or f"ticket {ticket.pk}"
     findings = "\n".join(review.rendered_findings(budget=_CAP_QUESTION_FINDINGS_BUDGET))
     DeferredQuestion.record(
-        f"[self-review-hold {where}] The self-review held {held_heads} heads of this ticket, so no rework is "
-        f"queued for the HOLD at {review.reviewed_sha or 'an unrecorded head'} (reviewing task {review.task_pk}). "
-        f"`t3 <overlay> ticket rework-hold {ticket.pk}` queues it by hand. Its findings:\n{findings}",
+        f"[self-review-hold {where}] The self-review held this ticket {laps} times in this delivery cycle, "
+        f"so no rework is queued for the HOLD at {review.reviewed_sha or 'an unrecorded head'} "
+        f"(reviewing task {review.task_pk}). `t3 <overlay> ticket rework-hold {ticket.pk}` queues it by hand. "
+        f"Its findings:\n{findings}",
         dedupe_marker=marker,
         audience=DeferredQuestion.Audience.INTERNAL,
     )

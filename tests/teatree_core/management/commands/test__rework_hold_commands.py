@@ -137,6 +137,15 @@ class TestReworkHoldRefuses(TestCase):
             ):
                 self._assert_refused_and_untouched(ticket, "could not ask the forge")
 
+    def test_a_ticket_branch_whose_checkout_is_gone(self) -> None:
+        ticket, _held, _shipping = _parked_past_a_hold()
+        Worktree.objects.create(
+            ticket=ticket, repo_path="teatree", branch="5076-x", extra={"worktree_path": "/nonexistent/5076-x"}
+        )
+        with patch("teatree.core.management.commands._rework_hold_commands.find_open_pr_for_branch") as probe:
+            self._assert_refused_and_untouched(ticket, "could not ask the forge")
+        probe.assert_not_called()
+
     def test_a_claimed_task_it_would_fail(self) -> None:
         ticket, _held, shipping = _parked_past_a_hold()
         shipping.claim(claimed_by="shipper")
