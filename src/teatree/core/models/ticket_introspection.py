@@ -11,7 +11,7 @@ from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
@@ -78,8 +78,8 @@ class TicketIntrospectionModel(TicketFacet):
 
     @property
     def has_checkout_source(self: "Ticket") -> bool:
-        """A repo is attached, or a forge issue exists for ``workspace ticket`` to attach one from."""
-        return bool(self.repos) or is_forge_url(self.issue_url)
+        """A repo is attached, or a forge issue (not a PR url) exists for ``workspace ticket`` to attach one from."""
+        return bool(self.repos) or (is_forge_url(self.issue_url) and pr_ref_from_url(self.issue_url) is None)
 
     @property
     def is_settled(self) -> bool:

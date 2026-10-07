@@ -19,10 +19,12 @@ from django.test import TestCase
 
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models import DeferredQuestion, PullRequest, Task, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
+from teatree.core.tasks import execute_provision
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
@@ -153,6 +155,13 @@ class TestDebugZoneLandsOnTheOwningTicket(TestCase):
         created = self._red()
 
         assert [task.ticket.issue_url for task in created] == [self._PR]
+
+    def test_the_url_keyed_ticket_never_asks_the_owner_about_provisioning(self) -> None:
+        (planning,) = self._red()
+
+        execute_provision.call(planning.ticket_id, len(NO_REPOS_RETRY_DELAYS))
+
+        assert not DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.OWNER_QUESTION).exists()
 
     def test_a_terminal_owner_is_not_debugged_and_no_phantom_is_minted(self) -> None:
         self._owner(state=Ticket.State.MERGED)

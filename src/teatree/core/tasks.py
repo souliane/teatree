@@ -503,7 +503,8 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     A failure on a ticket with no repos yet, or one the runner marks retryable (a remote
     could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
     and asks the owner only once that budget is spent. A ticket with no repo and no forge
-    issue to attach one from (an internal repair ticket) has nothing to check out and is skipped.
+    issue to attach one from (a repair ticket, a synthetic key, a PR url) has nothing to check
+    out and is skipped.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
