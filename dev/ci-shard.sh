@@ -38,6 +38,7 @@ LEAK_MODE="${LEAK_SENTINEL:-warn}"
 
 echo "=== CI shard ${GROUP}/${SPLITS} (least_duration split, leak-sentinel=${LEAK_MODE}) ==="
 exec uv run --group shard pytest --no-header -q -n auto \
+    -p no:tach \
     --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0 \
     --splits "${SPLITS}" --group "${GROUP}" \
     --durations-path dev/.test_durations \
