@@ -19,6 +19,7 @@ from django.test import TestCase
 from teatree.agents import prompt, skill_injection
 from teatree.agents.context_budget import MAX_APPEND_BYTES, enforce_budget
 from teatree.agents.prompt import build_system_context
+from teatree.agents.skill_assurance import _explicit_directive_names
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.agents.skill_injection import _read_skill_contents_scoped
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay
@@ -53,7 +54,7 @@ def _dispatch_task(phase: str) -> Task:
 
 
 def _rendered_context(task: Task) -> str:
-    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=SkillMetadata(), worktree_path=_REPO_ROOT)
+    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT)
     return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase))
 
 
@@ -110,6 +111,19 @@ class TestRulesCoreSurvivesAnOverrun(TestCase):
         assert "open one with the Read tool" in out, "the skill-file reach line was cut"
 
 
+class TestStackDirectivesSurviveAnOverrun(TestCase):
+    def test_an_over_budget_bundle_keeps_both_stack_directives(self) -> None:
+        block = _read_skill_contents_scoped(
+            ["rules", "review", "ac-django", "ac-python"], primary_skills={"rules", "review"}, skills_dir=_SKILLS_DIR
+        )
+        max_bytes = MAX_APPEND_BYTES // 2
+        assert len(block.encode()) > max_bytes, "the bundle no longer overruns — the cut is not exercised"
+
+        out = enforce_budget(block, [(block, "the skill body")], max_bytes=max_bytes)
+
+        assert {"ac-django", "ac-python"} <= _explicit_directive_names(out)
+
+
 class TestOverlayActiveReviewingDegradesLegibly(TestCase):
     """The reviewing render with the teatree overlay active stays usable when it runs over.
 
@@ -127,7 +141,7 @@ class TestOverlayActiveReviewingDegradesLegibly(TestCase):
             skills = resolve_skill_bundle(
                 phase=task.phase,
                 overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
-                worktree_path=_REPO_ROOT,
+                detection_root=_REPO_ROOT,
             )
             return build_system_context(
                 task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(task.phase)

@@ -1,7 +1,7 @@
-"""Remote-sync operations: fetch, rebase, merge, pull.
+"""Remote-sync operations: fetch, remote reads, rebase, merge.
 
-The sync partition of :mod:`teatree.utils.git`. Every function moves the local
-ref relative to a remote (or merges/rebases onto a target), all via the
+The sync partition of :mod:`teatree.utils.git`. Every function reads or moves
+refs relative to a remote (or merges/rebases onto a target), all via the
 :mod:`teatree.utils.git_run` runners.
 
 Pushing is deliberately absent: :func:`teatree.core.forge_push.push_branch` is
@@ -12,11 +12,51 @@ did neither, and was reached for precisely because it looked like the primitive.
 """
 
 import subprocess
+from collections.abc import Iterable
 
-from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.git_run import check, git_env_non_interactive, run, run_strict, run_with_status
+from teatree.utils.run import redact_secrets, run_allowed_to_fail
 
 FETCH_PRUNE_TIMEOUT_SECONDS = 120.0
+
+
+class RemoteReadError(Exception):
+    """A remote read that failed — never an absent ref. The message is git's own error, redacted."""
+
+
+def _run_remote(repo: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return run_with_status(repo=repo, args=args, env=git_env_non_interactive(), timeout=FETCH_PRUNE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        msg = f"git {args[0]} timed out after {FETCH_PRUNE_TIMEOUT_SECONDS:.0f}s"
+        raise RemoteReadError(msg) from exc
+
+
+def _read_remote(repo: str, args: list[str]) -> str:
+    result = _run_remote(repo, args)
+    if result.returncode != 0:
+        raise RemoteReadError(redact_secrets(result.stderr.strip()) or f"git {args[0]} exited {result.returncode}")
+    return result.stdout
+
+
+def remote_heads(repo: str, branches: Iterable[str], remote: str = "origin") -> set[str]:
+    """Which of *branches* *remote* holds, read live; raises :class:`RemoteReadError` when it cannot answer.
+
+    ``ls-remote`` matches a pattern against any trailing path, so only an exact
+    ``refs/heads/<name>`` counts — ``nest/refs/heads/feat`` is not ``feat``.
+    """
+    wanted = set(branches)
+    output = _read_remote(repo, ["ls-remote", remote, *(f"refs/heads/{name}" for name in sorted(wanted))])
+    listed = {line.split("\t", 1)[1] for line in output.splitlines() if "\t" in line}
+    return {name for name in wanted if f"refs/heads/{name}" in listed}
+
+
+def fetch_branch(repo: str, branch: str, remote: str = "origin") -> None:
+    """Refresh ``refs/remotes/<remote>/<branch>`` from *remote*, even in a single-branch clone."""
+    args = ["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"]
+    # A concurrent fetch of the same ref (the CLI racing the worker) fails one side with "cannot lock ref".
+    if _run_remote(repo, args).returncode != 0:
+        _read_remote(repo, args)
 
 
 def fetch(repo: str = ".", remote: str = "origin", ref: str = "") -> None:
@@ -86,7 +126,3 @@ def merge_abort(repo: str = ".") -> None:
     branch-currency gate's conflict-cleanup path.
     """
     check(repo=repo, args=["merge", "--abort"])
-
-
-def pull_ff_only(repo: str = ".") -> bool:
-    return check(repo=repo, args=["pull", "--ff-only"])

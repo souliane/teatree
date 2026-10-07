@@ -5,7 +5,7 @@ for the critic: when ``mark_delivered`` fires and no fresh
 :class:`~teatree.core.models.critic_verdict.CriticVerdict` covers the delivered
 head, the gate calls :meth:`enqueue` to record a row keyed on
 ``(ticket, transition, head_sha)`` and create the claimable headless
-``Task(phase="critic_reviewing")`` the loop self-pump dispatches. The critic reads the
+``Task(phase="critic_reviewing")`` the worker dispatches. The critic reads the
 delivered artifacts and RETURNS a ``critic_verdict`` envelope; ``attempt_recorder``
 records the ``CriticVerdict`` server-side (maker≠checker — a different actor writes
 it), and the gate mirrors its FAIL items into ``CriticFinding``.

@@ -1,9 +1,12 @@
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
+from tests._actions_workflow import CI_WEEKLY_CRON, github_context, job_results, load, ran
 from tests._git_repo import make_git_repo, run_git
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -88,10 +91,21 @@ def test_every_commit_runs_the_guard() -> None:
     assert any(hook.get("entry") == _HOOK_ENTRY and "commit" in hook.get("stages", []) for hook in hooks)
 
 
-def test_every_pr_and_push_to_main_runs_the_guard_in_ci() -> None:
-    workflow = yaml.safe_load((_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-    job = workflow["jobs"]["tracked-ignored-files"]
+def test_the_ci_job_runs_the_guard_with_a_timeout() -> None:
+    job = load()["jobs"]["tracked-ignored-files"]
 
-    assert "if" not in job
     assert job["timeout-minutes"] > 0
     assert any(step.get("run") == _HOOK_ENTRY for step in job["steps"])
+
+
+@pytest.mark.parametrize(
+    "github",
+    [
+        github_context("pull_request", ref="refs/pull/42/merge"),
+        github_context("push"),
+        github_context("schedule", schedule=CI_WEEKLY_CRON),
+    ],
+    ids=["pull-request", "push-to-main", "weekly-cron"],
+)
+def test_every_pr_push_to_main_and_weekly_run_runs_the_guard_in_ci(github: dict[str, Any]) -> None:
+    assert "tracked-ignored-files" in ran(job_results(load(), github))

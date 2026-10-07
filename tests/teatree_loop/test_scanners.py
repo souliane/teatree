@@ -401,14 +401,14 @@ class TestReviewerPrsScanner(TestCase):
         Ticket(role=reviewer) + Task(phase=reviewing, status=PENDING). Before
         the slot processes the task, the MR is merged externally. On tick #2
         the API (state=opened) no longer returns the MR. Pre-fix, the PENDING
-        task lingers forever and ``pending-spawn`` keeps surfacing it,
-        dispatching a reviewer sub-agent every tick for nothing.
+        task lingers forever, dispatching a reviewer sub-agent every tick
+        for nothing.
 
         Post-fix (#1074): absence from the scan is no longer sufficient —
         the scanner emits ``reviewer_pr.task_orphaned`` only after
         ``get_pr_open_state`` confirms the PR is genuinely MERGED/CLOSED.
-        A mechanical handler then completes the task so ``pending-spawn``
-        stops returning it.
+        A mechanical handler then completes the task so it is never
+        dispatched.
         """
         from teatree.core.models import Session, Task  # noqa: PLC0415
 

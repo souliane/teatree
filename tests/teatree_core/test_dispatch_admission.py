@@ -14,13 +14,16 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from teatree.config import get_effective_settings
 from teatree.core import dispatch_admission as gate_mod
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, AdmissionDecision, MachineSignal, QuotaSignal
 from teatree.core.dispatch_admission import dispatch_admission_denied_reason, release_interactive_dispatch
-from teatree.core.models import SEAT_WINDOW, InteractiveDispatch, Session, Task, Ticket
+from teatree.core.models import SEAT_WINDOW, ConfigSetting, InteractiveDispatch, Session, Task, Ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -70,6 +73,16 @@ class TestDispatchAdmissionDeniedReason(TestCase):
         with _signals(), patch.object(gate_mod, "decide_admission", wraps=gate_mod.decide_admission) as decide:
             dispatch_admission_denied_reason()
         decide.assert_called_once()
+
+    def test_one_dispatch_decision_resolves_the_settings_once(self) -> None:
+        table = ConfigSetting._meta.db_table
+        with CaptureQueriesContext(connection) as resolution:
+            get_effective_settings()
+        one = sum(table in query["sql"] for query in resolution.captured_queries)
+        with _signals(), CaptureQueriesContext(connection) as dispatch:
+            dispatch_admission_denied_reason(apply_ceiling=False)
+        assert one > 0
+        assert sum(table in query["sql"] for query in dispatch.captured_queries) == one
 
     def test_load_over_the_watermark_denies_naming_the_brake(self) -> None:
         # Acceptance #1: over the load brake watermark ⇒ denied, message names the brake.

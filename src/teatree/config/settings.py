@@ -31,6 +31,10 @@ from teatree.config.settings_loop_owned import (
 )
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SpeakConfig
 
+WRITE_CONCURRENCY_PER_CORE: Final = 0.5
+WRITE_CONCURRENCY_PER_CORE_MIN: Final = 0.25
+WRITE_CONCURRENCY_PER_CORE_MAX: Final = 2.0
+
 
 @dataclass
 class OverlayEntry:
@@ -689,6 +693,8 @@ class _ProvisioningSettings:
     # the rollback lever, restoring pre-#4508 admission byte-for-byte. Clamped into
     # [DEGRADE_AT, HALT_AT] on read so a typo cannot wedge the lane. Per-overlay overridable.
     admission_pressure_shed_at: float = 0.9
+    # Box-global: the reader sizes this box's cores, so a per-overlay row cannot be honoured.
+    admission_write_concurrency_per_core: float = WRITE_CONCURRENCY_PER_CORE
     # #4816 Whether the TOKEN brakes (the subscription quota family and the metered
     # one) apply at all. False drops both and leaves load + memory, so an operator
     # standing down a quota signal their lane does not answer to keeps the brakes that

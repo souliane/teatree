@@ -63,25 +63,18 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 worker alive; on a headless box start it once from a login   │
 │                 profile). The active preset is the stop condition — one that │
 │                 admits zero loops stops them entirely (there is no fallback  │
-│                 plane). Each per-loop tick atomically claims the next        │
-│                 pending unit (`t3 loop claim-next`), spawns one fresh        │
-│                 bounded sub-agent for it, and records the outcome when that  │
-│                 sub-agent returns (`tasks record-attempt --claim-token`) —   │
-│                 the claim is the spawn boundary, not the finish, and an      │
-│                 unrecorded unit is reclaimed and re-offered rather than ever │
-│                 completing; a dying worker leaves its Task reclaimable and   │
-│                 the next tick re-dispatches it. Check the worker with `t3    │
-│                 worker status`; ensure one is running with `t3 worker        │
-│                 ensure`.                                                     │
+│                 plane). The worker also drains the task queue, claiming each │
+│                 pending task headlessly. Check the worker with `t3 worker    │
+│                 status`; ensure one is running with `t3 worker ensure`.      │
 │ goal            Standing verified-green goals (PR-25).                       │
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
 │                 holder + how many loops the active preset admits + whether   │
-│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
-│                 `ensure` spawns a detached worker iff the flock is free;     │
-│                 `drain` quiesces admission without stopping anything; `stop` │
-│                 / `restart` end the live worker and verify it against the    │
-│                 flock.                                                       │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet) +   │
+│                 how the agent admission ceiling is derived; `ensure` spawns  │
+│                 a detached worker iff the flock is free; `drain` quiesces    │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
@@ -276,6 +269,11 @@ Usage: t3 push [OPTIONS]
  disabled, so a missing credential fails immediately instead of hanging.
  The pre-push hooks still run.
 
+ `--repo` defaults to the checkout t3 was invoked from, and a relative
+ one resolves from there. `--branch HEAD:<branch>` pushes a detached
+ HEAD to <branch> without creating a local branch; no other refspec
+ form is accepted.
+
  Success means the remote was read back with `git ls-remote` and holds the
  branch at the local tip. Each way that fails exits with its own code, so a
  caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
@@ -283,12 +281,13 @@ Usage: t3 push [OPTIONS]
  remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repo                    TEXT  Repository to push (defaults to the current  │
-│                                 directory).                                  │
-│                                 [default: .]                                 │
+│ --repo                    PATH  Repository to push (default: where t3 was    │
+│                                 invoked).                                    │
+│                                 [default: (dynamic)]                         │
 │ --remote                  TEXT  Remote to push to. [default: origin]         │
-│ --branch                  TEXT  Branch to push (defaults to the checked-out  │
-│                                 branch).                                     │
+│ --branch                  TEXT  Branch to push (default: the checked-out     │
+│                                 one). On a detached HEAD, HEAD:<branch>      │
+│                                 publishes HEAD as it.                        │
 │ --force-with-lease              Overwrite the remote branch only if it is    │
 │                                 where we last saw it.                        │
 │ --json                          Emit the outcome as JSON.                    │
@@ -311,9 +310,9 @@ Usage: t3 fast-push [OPTIONS]
 │ --message    -m      TEXT  Commit message (auto-generated when omitted).     │
 │ --remaining          TEXT  Unfinished work, recorded as a REMAINING: PR-body │
 │                            section.                                          │
-│ --repo               TEXT  Repository to push (defaults to the current       │
-│                            directory).                                       │
-│                            [default: .]                                      │
+│ --repo               PATH  Repository to push (default: where t3 was         │
+│                            invoked).                                         │
+│                            [default: (dynamic)]                              │
 │ --json                     Emit the outcome as JSON.                         │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1810,10 +1809,7 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 
  ``--strict`` additionally demands a VALIDATED green (#4005), matching the
  suite's
- own ``t3 eval --strict``. The default stays lenient because the pre-push hook
- runs
- on the host, where the container-owned control DB is unreachable by design and
- blocking every push there is the false red the skip exists to end.
+ own ``t3 eval --strict``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
@@ -4328,14 +4324,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  and the DB loops run with no Claude session open (the SessionStart supervisor
  keeps one worker alive; on a headless box start it once from a login profile).
  The active preset is the stop condition — one that admits zero loops stops
- them entirely (there is no fallback plane). Each per-loop tick atomically
- claims the next pending unit (`t3 loop claim-next`), spawns one fresh bounded
- sub-agent for it, and records the outcome when that sub-agent returns (`tasks
- record-attempt --claim-token`) — the claim is the spawn boundary, not the
- finish, and an unrecorded unit is reclaimed and re-offered rather than ever
- completing; a dying worker leaves its Task reclaimable and the next tick
- re-dispatches it. Check the worker with `t3 worker status`; ensure one is
- running with `t3 worker ensure`.
+ them entirely (there is no fallback plane). The worker also drains the task
+ queue, claiming each pending task headlessly. Check the worker with `t3 worker
+ status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -4344,9 +4335,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ tick             Run one user-manual full-scan tick by hand: scan every      │
 │                  overlay, dispatch, render.                                  │
 │ status           Show the loop's last-rendered statusline.                   │
-│ pending-spawn    List pending Tasks for the Stop hook's read-only probe.     │
-│ start            Spawn a Claude Code session; the t3-master registers each   │
-│                  enabled loop's ``/loop``.                                   │
+│ start            Start a Claude Code session; the ``t3 worker`` runs the     │
+│                  loops.                                                      │
 │ stop             Print how to stop the durable, worker-driven loops.         │
 │ claim            Claim the session-scoped t3-master slot for this Claude     │
 │                  session (#1073).                                            │
@@ -4434,53 +4424,20 @@ Usage: t3 loop status [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 loop pending-spawn`
-
-```
-Usage: t3 loop pending-spawn [OPTIONS]
-
- List pending Tasks for the Stop hook's read-only probe.
-
- Reads the dispatch DB (``Task`` rows in PENDING status) and prints
- each with its ``subagent`` hint. This is a pure read with NO claim:
- The Stop-hook self-pump uses this non-mutating probe to decide whether
- to offer work. The ``/loop`` slot claims with ``claim-next``.
-
- ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
- reports work ONLY when a unit ``claim-next`` could actually claim,
- so the Stop-hook self-pump stops re-offering a PENDING unit that a
- full in-flight admit budget will always refuse.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json                    Emit pending list as JSON.                         │
-│ --claimable-only          Report work ONLY when a claim could land (honour   │
-│                           the admit budget).                                 │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 loop start`
 
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session; the t3-master registers each enabled loop's
- ``/loop``.
+ Start a Claude Code session; the ``t3 worker`` runs the loops.
 
- Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
- model/effort pins). Under #2650 the live set of native Claude ``/loop``s
- mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
- ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
- registers them automatically, so there is no single fat slot to pass on the
- command line. When ``claude`` is unavailable or the caller is already inside a
- Claude Code session, prints the per-loop registration guidance instead.
-
- Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
- With no session open the loop is paused until the next session start.
+ Looks for ``claude`` on ``PATH`` and execs it with the interactive session
+ model/effort pins. When ``claude`` is unavailable or the caller is already
+ inside a Claude Code session, prints the loop guidance instead.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only          Print the per-loop registration guidance instead of    │
-│                       spawning a Claude Code session.                        │
+│ --print-only          Print the loop guidance instead of starting a Claude   │
+│                       Code session.                                          │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4516,9 +4473,9 @@ Usage: t3 loop claim [OPTIONS]
 │                          hand-off (#1073).                                   │
 │ --slot             TEXT  t3-master slot name (default: t3-master).           │
 │                          [default: t3-master]                                │
-│ --driver           TEXT  Explicit tick driver                                │
-│                          (self_pump/loop_runner/external); overrides         │
-│                          detection. Use 'external' for a foreign scheduler.  │
+│ --driver           TEXT  Explicit tick driver (loop_runner/external);        │
+│                          overrides detection. Use 'external' for a foreign   │
+│                          scheduler.                                          │
 │ --json                   Emit JSON.                                          │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -5382,18 +5339,18 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 
  The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence
  owner). `status` reports the live holder + how many loops the active preset
- admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet);
- `ensure` spawns a detached worker iff the flock is free; `drain` quiesces
- admission without stopping anything; `stop` / `restart` end the live worker
- and verify it against the flock.
+ admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet) +
+ how the agent admission ceiling is derived; `ensure` spawns a detached worker
+ iff the flock is free; `drain` quiesces admission without stopping anything;
+ `stop` / `restart` end the live worker and verify it against the flock.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
-│ status   Report the worker: flock holder, admitted loops under the active    │
-│          preset, timers, staleness.                                          │
+│ status   Report the worker: flock holder, admitted loops, timers, staleness, │
+│          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
 │ drain    Quiesce the worker and wait for in-flight tasks to finish           │
 │          (drain-then-deploy).                                                │
@@ -5421,8 +5378,8 @@ Usage: t3 worker run [OPTIONS]
 ```
 Usage: t3 worker status [OPTIONS]
 
- Report the worker: flock holder, admitted loops under the active preset,
- timers, staleness.
+ Report the worker: flock holder, admitted loops, timers, staleness, and the
+ agent admission ceiling.
 
  Exits NON-ZERO when the loop fleet is stale.
 

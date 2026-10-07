@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import json
+import logging
 import os
 import sys
 import textwrap
@@ -20,7 +21,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from teatree.agents import codex_app_server_options, harness, harness_registry
+from teatree.agents import codex_app_server, codex_app_server_options, harness, harness_registry
 from teatree.agents.codex_app_server import (
     CODEX_APP_SERVER_CAPABILITIES,
     CodexAppServerError,
@@ -52,6 +53,7 @@ import os
 import sys
 
 scenario = os.environ.get("FAKE_CODEX_SCENARIO", "success")
+pad = "x" * int(os.environ.get("FAKE_CODEX_PAD", "0"))
 log_path = os.environ["FAKE_CODEX_LOG"]
 with open(log_path + ".env", "w", encoding="utf-8") as env_log:
     json.dump({"CODEX_HOME": os.environ.get("CODEX_HOME"), "HOME": os.environ.get("HOME")}, env_log)
@@ -130,13 +132,12 @@ for raw in sys.stdin:
     ):
         continue
     if method in {"thread/start", "thread/resume"}:
-        emit({
-            "id": request_id,
-            "result": {
-                "thread": {"id": "0197e1d4-1f5f-7b00-8000-000000000001", "turns": []},
-                "model": "gpt-5.6-sol",
-            },
-        })
+        result = {"thread": {"id": "0197e1d4-1f5f-7b00-8000-000000000001", "turns": []}, "model": "gpt-5.6-sol"}
+        if scenario == "large_thread_start":
+            sys.stderr.write("fake-codex stderr sentinel\n")
+            sys.stderr.flush()
+            result["pad"] = pad
+        emit({"id": request_id, "result": result})
         continue
     if method == "turn/start":
         turn_count += 1
@@ -197,7 +198,11 @@ for raw in sys.stdin:
             "method": "item/completed",
             "params": common | {
                 "completedAtMs": 1,
-                "item": {"id": "msg-1", "type": "agentMessage", "text": "goodbye"},
+                "item": {
+                    "id": "msg-1",
+                    "type": "agentMessage",
+                    "text": pad if scenario == "large_agent_message" else "goodbye",
+                },
             },
         })
         if scenario in {"collab_success", "turn_error_quota_after_collab"}:
@@ -353,6 +358,7 @@ def _options(
     scenario: str = "success",
     resume: str | None = None,
     model: str | None = "gpt-5.6-sol",
+    pad: int = 0,
 ) -> tuple[CodexAppServerOptions, str | None]:
     sdk = ClaudeAgentOptions(
         model=model,
@@ -374,6 +380,7 @@ def _options(
         env={
             "FAKE_CODEX_LOG": str(log),
             "FAKE_CODEX_SCENARIO": scenario,
+            "FAKE_CODEX_PAD": str(pad),
             "FAKE_CODEX_COMMAND": codex_wrapped("git -C /work push origin feature"),
         },
         resume=resume,
@@ -829,7 +836,7 @@ def test_start_query_and_stream_translate_the_exact_protocol(
         "config": {
             "mcp_servers": {"teatree": {"command": "t3", "args": ["mcp", "serve"], "env": {"T3_DATA_DIR": "/data"}}},
             "web_search": "disabled",
-            "features": {"multi_agent": False},
+            "features": {"apps": False, "multi_agent": False},
         },
     }
     assert requests[4]["params"] == {
@@ -891,7 +898,7 @@ def test_resume_reapplies_current_thread_options(fake_codex: tuple[tuple[str, ..
         "config": {
             "mcp_servers": {"teatree": {"command": "t3", "args": ["mcp", "serve"], "env": {"T3_DATA_DIR": "/data"}}},
             "web_search": "disabled",
-            "features": {"multi_agent": False},
+            "features": {"apps": False, "multi_agent": False},
         },
     }
 
@@ -1131,6 +1138,77 @@ def test_stderr_is_drained_while_requests_are_in_flight(
 
     asyncio.run(run())
     assert session._stream_failure is None
+
+
+@pytest.mark.parametrize("pad", [60_000, 200_000])
+def test_a_protocol_line_past_the_asyncio_default_limit_is_read(
+    fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path, pad: int
+) -> None:
+    command, log = fake_codex
+    options, resume = _options(log, scenario="large_thread_start", pad=pad)
+    session = _session(options, resume=resume, code_home=tmp_path / "home", command=command)
+
+    async def run() -> None:
+        await session.start()
+        await session.close()
+
+    asyncio.run(run())
+
+    assert session.thread_id == _THREAD_ID
+
+
+def test_a_protocol_line_past_the_read_limit_is_named_and_logged_with_the_stderr_tail(
+    fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    command, log = fake_codex
+    options, resume = _options(log, scenario="large_thread_start", pad=300_000)
+    session = _session(options, resume=resume, code_home=tmp_path / "home", command=command)
+    limit = 256 * 1024
+
+    with (
+        patch.object(codex_app_server, "PROTOCOL_LINE_LIMIT", limit),
+        caplog.at_level(logging.WARNING, logger="teatree.agents.codex_app_server"),
+        pytest.raises(CodexAppServerError) as raised,
+    ):
+        asyncio.run(session.start())
+
+    message = str(raised.value)
+    assert f"{limit}-byte" in message
+    assert "stopped before completing" not in message
+    assert "fake-codex stderr sentinel" not in message
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "teatree.agents.codex_app_server" and record.levelno == logging.WARNING
+    ]
+    assert any(f"{limit}-byte" in text and "fake-codex stderr sentinel" in text for text in warnings)
+
+
+def test_an_agent_message_past_the_asyncio_default_limit_is_translated_whole(
+    fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path
+) -> None:
+    command, log = fake_codex
+    options, resume = _options(log, scenario="large_agent_message", pad=200_000)
+    session = _session(options, resume=resume, code_home=tmp_path / "home", command=command)
+
+    async def run() -> list[object]:
+        await session.start()
+        try:
+            await session.query("do the work")
+            return [message async for message in session.receive_response()]
+        finally:
+            await session.close()
+
+    messages = asyncio.run(run())
+
+    text = [
+        block.text
+        for message in messages
+        if isinstance(message, AssistantMessage)
+        for block in message.content
+        if isinstance(block, TextBlock)
+    ]
+    assert [len(chunk) for chunk in text] == [200_000]
 
 
 def test_cancelled_startup_always_reaps_the_child(fake_codex: tuple[tuple[str, ...], Path], tmp_path: Path) -> None:

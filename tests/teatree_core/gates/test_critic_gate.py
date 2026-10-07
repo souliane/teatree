@@ -57,6 +57,19 @@ def _critic_envelope() -> dict:
     }
 
 
+def _merge_critic_envelope() -> dict:
+    return {
+        "summary": "merge critic done",
+        "critic_verdict": {
+            "grader_identity": "critic-agent-7",
+            "items": [
+                {"slug": "test_value", "status": "pass", "citation": "tests/x.py:1 asserts the fix"},
+                {"slug": "cleanliness", "status": "pass", "citation": "src/x.py:1 typed, no bloat"},
+            ],
+        },
+    }
+
+
 def _merge_audit(ticket: Ticket) -> None:
     clear = MergeClear.objects.create(
         ticket=ticket,
@@ -226,6 +239,14 @@ class TestReturnedVerdictRecording(TestCase):
         assert "refused" in error
         assert not CriticVerdict.objects.filter(ticket=ticket).exists()
 
+    def test_a_delivery_verdict_still_re_runs_the_delivery_rubric(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        assert record_returned_critic_verdict(dispatch.task, _critic_envelope()) == ""
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
     def test_non_critic_task_is_a_noop(self) -> None:
         ticket = _clean_delivered_ticket()
         session = Session.objects.create(ticket=ticket, agent_id="x")
@@ -338,6 +359,37 @@ class TestProductionRecordingPath(TestCase):
             record_result_envelope(task, _critic_envelope())
         assert not CriticVerdict.objects.filter(ticket=ticket).exists()
         assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+
+class TestMergeVerdictBeforeTheMerge(TestCase):
+    """A merge critic's verdict returning before the merge must not judge the delivery rubric (#5075)."""
+
+    def _merge_verdict_returned_before_the_merge(self) -> Ticket:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        ticket.state = Ticket.State.REVIEW_REQUESTED
+        ticket.save(update_fields=["state"])
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(dispatch.task, _merge_critic_envelope())
+        return ticket
+
+    def test_records_the_merge_verdict_and_no_delivery_finding(self) -> None:
+        ticket = self._merge_verdict_returned_before_the_merge()
+        assert CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, transition="mark_delivered").exists()
+
+    def test_the_ticket_delivers_once_the_merge_lands(self) -> None:
+        ticket = self._merge_verdict_returned_before_the_merge()
+        _merge_audit(ticket)
+        ticket.state = Ticket.State.RETRO_RECORDED
+        ticket.save(update_fields=["state"])
+        result = core_tasks.execute_retrospect.func(ticket.pk)
+        ticket.refresh_from_db()
+        assert result["ok"] is True
+        assert ticket.state == Ticket.State.DELIVERED
+        assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
 
 
 class TestTransitionScoping(TestCase):
