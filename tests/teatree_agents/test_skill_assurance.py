@@ -250,3 +250,54 @@ def test_skill_application_is_an_allowed_envelope_key_and_dispatch_receipt_is_ou
 
     assert result["skill_assurance"] == assurance
     assert "skill_application" not in result
+
+
+def test_every_phase_requires_the_stack_skills_as_explicit_loads() -> None:
+    for phase, lifecycle in (("planning", "architecture-design"), ("debugging", "debug"), ("architectural_review", "")):
+        bundle = ["rules", "workspace", "ac-django", "ac-python", *([lifecycle] if lifecycle else [])]
+        inline, explicit = required_skill_delivery(phase, bundle, lifecycle_skill=lifecycle, stage_skills=[])
+
+        assert {"ac-django", "ac-python"} <= explicit, phase
+        assert not {"ac-django", "ac-python"} & inline, phase
+        assert "workspace" not in explicit, phase
+
+
+def test_a_stack_skill_embedded_as_a_stage_skill_is_not_also_a_directive() -> None:
+    inline, explicit = required_skill_delivery(
+        "planning",
+        ["rules", "architecture-design", "ac-django", "ac-python"],
+        lifecycle_skill="architecture-design",
+        stage_skills=["ac-django"],
+    )
+
+    assert "ac-django" in inline
+    assert explicit == {"ac-python"}
+
+
+def test_a_stack_directive_missing_from_the_rendered_context_is_an_injection_gap(tmp_path: Path) -> None:
+    skills = ["rules", "architecture-design", "ac-django", "ac-python"]
+    for name in skills:
+        _skill(tmp_path, name)
+    inline, explicit = required_skill_delivery(
+        "planning", skills, lifecycle_skill="architecture-design", stage_skills=[]
+    )
+    rendered = _read_skill_contents_scoped(skills, primary_skills={"architecture-design"}, skills_dir=tmp_path)
+
+    delivered = assess_skill_dispatch(
+        skills=skills,
+        required_inline=inline,
+        required_explicit=explicit,
+        rendered_context=rendered,
+        skills_dirs=[tmp_path],
+    )
+    assert sorted(delivered["explicit_load"]) == ["ac-django", "ac-python"]
+
+    stripped = "\n".join(line for line in rendered.splitlines() if "/ac-python " not in line)
+    with pytest.raises(SkillDispatchError, match="injection_gap"):
+        assess_skill_dispatch(
+            skills=skills,
+            required_inline=inline,
+            required_explicit=explicit,
+            rendered_context=stripped,
+            skills_dirs=[tmp_path],
+        )
