@@ -4,10 +4,12 @@ Ratification seam inherited from the retired experiment loop: :func:`ask_ratific
 records ONE :class:`DeferredQuestion` rendering the FULL sketch — so the human ratifies
 the DESIGN DIRECTION (setting, chokepoint, activation, the named rejected alternative),
 not vague intent — and moves the directive to ``RATIFY_PENDING``; :func:`try_admit` is
-the sole path that calls :meth:`Directive.admit`, and only after a human's recorded
-answer approves it. A denial rejects; an amendment re-interprets (a later PR). There
-is no auto-admit code path, so a directive cannot become ``ADMITTED`` without a
-consumed question — the structural human-in-the-loop of self-modification.
+the sole path that calls :meth:`Directive.admit`, and only after the owner's answer,
+recorded on an owner channel, approves it. An answer from an agent surface — the MCP
+tool, or a headless agent's CLI call — is re-asked of the owner. A denial rejects; an
+amendment re-interprets (a later PR). There is no auto-admit code path, so a directive
+cannot become ``ADMITTED`` without a consumed question — the structural
+human-in-the-loop of self-modification.
 
 #116 wires the taint FLOOR (:func:`approval_policy`) as the admit-gate's enforcement
 point and renders an ambient (``INCOMING_EVENT``) directive PAYLOAD-VISIBLE: the human
@@ -123,13 +125,17 @@ def try_admit(directive: Directive) -> str:
     """Resolve a ``RATIFY_PENDING`` directive from its answered question.
 
     Returns ``"admitted"`` (approved), ``"rejected"`` (denied), ``"reasked"`` (the
-    answer decided nothing, so a fresh question replaces it and the directive holds),
-    or ``"pending"`` (no answer yet). The single :meth:`Directive.admit` call site — a
-    denial rejects with the human's words.
+    answer decided nothing — undecidable, or not given on an owner channel — so a
+    fresh question replaces it and the directive holds), or ``"pending"`` (no answer
+    yet). The single :meth:`Directive.admit` call site — a denial rejects with the
+    human's words.
     """
     question = directive.ratify_question
     if question is None or question.answered_at is None:
         return "pending"
+    if not question.answered_on_owner_channel:
+        directive.reask_ratification(_reask_question(directive, question, reason=_NOT_FROM_THE_OWNER))
+        return "reasked"
     verdict = classify_ratification_answer(question.answer_text)
     if verdict is RatificationVerdict.APPROVAL:
         directive.admit()
@@ -137,18 +143,25 @@ def try_admit(directive: Directive) -> str:
     if verdict is RatificationVerdict.DENIAL:
         directive.reject(f"ratification denied: {question.answer_text.strip()!r}")
         return "rejected"
-    directive.reask_ratification(_undecidable_answer_question(directive, question))
+    directive.reask_ratification(_reask_question(directive, question, reason=_UNDECIDABLE))
     return "reasked"
 
 
-def _undecidable_answer_question(directive: Directive, answered: DeferredQuestion) -> DeferredQuestion:
-    """Re-ask the ratify question, quoting back the answer that decided nothing."""
+_UNDECIDABLE = "the recorded answer read as neither an approval nor a denial"
+_NOT_FROM_THE_OWNER = (
+    "the recorded answer came from an agent surface, and only the owner ratifies: reply to this DM, "
+    "or run `t3 teatree questions answer` from your own terminal or interactive session"
+)
+
+
+def _reask_question(directive: Directive, answered: DeferredQuestion, *, reason: str) -> DeferredQuestion:
+    """Re-ask the ratify question, quoting back the answer that decided nothing and why."""
     sketch = directive.sketch
     mechanism = render_sketch(sketch) if sketch is not None else "(no sketch)"
     return DeferredQuestion.record(
-        f"Directive #{directive.pk} is STILL awaiting ratification — the recorded answer read "
-        f"as neither an approval nor a denial, so nothing was decided and the directive was "
-        f"held.\n\nPrevious answer: {answered.answer_text.strip()[:_EXCERPT_LEN]!r}\n\n"
+        f"Directive #{directive.pk} is STILL awaiting ratification — {reason}, so nothing was "
+        f"decided and the directive was held.\n\nPrevious answer: "
+        f"{answered.answer_text.strip()[:_EXCERPT_LEN]!r}\n\n"
         f"Directive: {directive.constraint_statement or directive.raw_text}\n"
         f"Proposed mechanism: {mechanism}\n\n"
         f"Answer 'approve' to admit, or 'reject' to deny.",

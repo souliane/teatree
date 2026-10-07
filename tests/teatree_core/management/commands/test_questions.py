@@ -7,12 +7,14 @@ resolvers can decide it, and how many can be decided by none.
 
 import io
 import json
+from collections.abc import Mapping
 
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._harness_env import HEADLESS_AGENT_ENV, harness_signature
 
 
 class TestQuestionsReachability(TestCase):
@@ -99,3 +101,27 @@ class TestQuestionsListShowsTheAnswer(TestCase):
         call_command("questions", "list", "--json", stdout=out)
 
         assert {entry["id"]: entry for entry in json.loads(out.getvalue())}[row.pk]["answer"] == ""
+
+
+class TestQuestionsAnswerStampsTheChannel(TestCase):
+    """An answer records whether a human's terminal or an agent surface gave it."""
+
+    def _answered_via(self, *, env: Mapping[str, str], **options: object) -> str:
+        row = DeferredQuestion.record("Ratify?")
+        with harness_signature(env):
+            call_command("questions", "answer", row.pk, "approve", **options)
+        row.refresh_from_db()
+        return row.resolved_via
+
+    def test_an_answer_from_a_terminal_is_local(self) -> None:
+        assert self._answered_via(env={}) == DeferredQuestion.ResolvedVia.LOCAL
+
+    def test_an_answer_from_an_interactive_session_is_local(self) -> None:
+        env = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
+        assert self._answered_via(env=env) == DeferredQuestion.ResolvedVia.LOCAL
+
+    def test_an_answer_from_a_headless_agent_is_agent(self) -> None:
+        assert self._answered_via(env=HEADLESS_AGENT_ENV) == DeferredQuestion.ResolvedVia.AGENT
+
+    def test_an_answer_from_the_agent_surface_is_agent_whatever_the_env(self) -> None:
+        assert self._answered_via(env={}, agent_surface=True) == DeferredQuestion.ResolvedVia.AGENT

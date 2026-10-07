@@ -15,6 +15,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
 from teatree.cli.mcp import serve
+from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.mcp import services_notion
 from teatree.mcp.server import build_server
 
@@ -34,7 +35,7 @@ class TestServeCommand:
                 patch("teatree.cli.mcp.ensure_django"),
                 patch(
                     "teatree.mcp.server.build_server",
-                    side_effect=lambda: factories.append(services_notion._factory_registry.factory),
+                    side_effect=lambda **_: factories.append(services_notion._factory_registry.factory),
                 ),
             ):
                 runner.invoke(_app, [])
@@ -53,8 +54,33 @@ class TestServeCommand:
 
         assert result.exit_code == 0
         ensure_mock.assert_called_once_with()
-        build_mock.assert_called_once_with()
+        build_mock.assert_called_once_with(read_only=False, allowed_writes=frozenset())
         build_mock.return_value.run.assert_called_once_with("stdio")
+
+    def test_the_read_only_flag_reaches_the_server_and_the_delegation(self) -> None:
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.cli.mcp.delegate_to_owning_domain") as delegate_mock,
+            patch("teatree.mcp.server.build_server") as build_mock,
+        ):
+            result = runner.invoke(_app, ["--read-only"])
+
+        assert result.exit_code == 0
+        delegate_mock.assert_called_once_with(["--read-only"])
+        build_mock.assert_called_once_with(read_only=True, allowed_writes=frozenset())
+
+    def test_a_phase_launch_reaches_the_server_and_the_delegation_whole(self) -> None:
+        launch = serve_flags_for_phase("requesting_review")
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.cli.mcp.delegate_to_owning_domain") as delegate_mock,
+            patch("teatree.mcp.server.build_server") as build_mock,
+        ):
+            result = runner.invoke(_app, launch)
+
+        assert result.exit_code == 0
+        delegate_mock.assert_called_once_with(launch)
+        build_mock.assert_called_once_with(read_only=True, allowed_writes=frozenset({"review_request_post"}))
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

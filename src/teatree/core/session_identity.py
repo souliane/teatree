@@ -59,6 +59,7 @@ fails open (any OSError/JSON error → ``""``).
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.utils.hook_registry import loop_registry_dir
@@ -272,6 +273,16 @@ def is_loop_runner_session(session_id: str) -> bool:
     return session_id == LOOP_RUNNER_SESSION_ID
 
 
+#: Mirrors ``hooks/scripts/session_lane.py``, which src cannot import; a parity test binds the two.
+AGENT_SDK_ENV_VARS: tuple[str, ...] = ("CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT")
+
+
+def is_agent_sdk_process(env: Mapping[str, str] = os.environ) -> bool:
+    """Whether *env* carries an Agent-SDK embedding's signature — a headless agent, never a human's terminal."""
+    sdk_version, entrypoint = (env.get(name, "").strip() for name in AGENT_SDK_ENV_VARS)
+    return bool(sdk_version) or entrypoint.lower().startswith("sdk")
+
+
 def is_unattended_unauthorized_write(*, authorized_by: str) -> bool:
     """Is this write the unattended runner's own, with nobody having authorized it?
 
@@ -285,12 +296,14 @@ def is_unattended_unauthorized_write(*, authorized_by: str) -> bool:
 
 
 __all__ = [
+    "AGENT_SDK_ENV_VARS",
     "LOOP_RUNNER_SESSION_ID",
     "RUNNER_PID_ENV",
     "RUNNER_SESSION_ENV",
     "SESSION_ID_ENV_VARS",
     "current_session_id",
     "current_session_pid",
+    "is_agent_sdk_process",
     "is_loop_runner_session",
     "is_unattended_unauthorized_write",
     "loop_principal",
