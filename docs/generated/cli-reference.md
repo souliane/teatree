@@ -271,6 +271,11 @@ Usage: t3 push [OPTIONS]
  disabled, so a missing credential fails immediately instead of hanging.
  The pre-push hooks still run.
 
+ `--repo` defaults to the checkout t3 was invoked from, and a relative
+ one resolves from there. `--branch HEAD:<branch>` pushes a detached
+ HEAD to <branch> without creating a local branch; no other refspec
+ form is accepted.
+
  Success means the remote was read back with `git ls-remote` and holds the
  branch at the local tip. Each way that fails exits with its own code, so a
  caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
@@ -278,12 +283,13 @@ Usage: t3 push [OPTIONS]
  remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repo                    TEXT  Repository to push (defaults to the current  │
-│                                 directory).                                  │
-│                                 [default: .]                                 │
+│ --repo                    PATH  Repository to push (default: where t3 was    │
+│                                 invoked).                                    │
+│                                 [default: (dynamic)]                         │
 │ --remote                  TEXT  Remote to push to. [default: origin]         │
-│ --branch                  TEXT  Branch to push (defaults to the checked-out  │
-│                                 branch).                                     │
+│ --branch                  TEXT  Branch to push (default: the checked-out     │
+│                                 one). On a detached HEAD, HEAD:<branch>      │
+│                                 publishes HEAD as it.                        │
 │ --force-with-lease              Overwrite the remote branch only if it is    │
 │                                 where we last saw it.                        │
 │ --json                          Emit the outcome as JSON.                    │
@@ -306,9 +312,9 @@ Usage: t3 fast-push [OPTIONS]
 │ --message    -m      TEXT  Commit message (auto-generated when omitted).     │
 │ --remaining          TEXT  Unfinished work, recorded as a REMAINING: PR-body │
 │                            section.                                          │
-│ --repo               TEXT  Repository to push (defaults to the current       │
-│                            directory).                                       │
-│                            [default: .]                                      │
+│ --repo               PATH  Repository to push (default: where t3 was         │
+│                            invoked).                                         │
+│                            [default: (dynamic)]                              │
 │ --json                     Emit the outcome as JSON.                         │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
