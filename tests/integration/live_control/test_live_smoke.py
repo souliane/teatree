@@ -67,6 +67,7 @@ class LiveSmokeTests(TestCase):
             heartbeat_interval=60,
             sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
             renew_lease=lambda _task: None,
+            drain_reason=lambda: "",
         )
         seen: dict[str, Any] = {}
 
