@@ -63,7 +63,7 @@ class TestAnAbsentOwningCloneProducesNoGap(TestCase):
             observable=venue_can_observe(absent_owner, (self.venue,)),
         )
 
-        assert stamp.proof_of_life is None
+        assert "not proof it is gone" in str(stamp.proof_of_life)
         assert stamp.missing_evidence is not None
         assert "cannot see" in stamp.missing_evidence
 
@@ -117,6 +117,15 @@ class TestReadOwnerStamp(TestCase):
         assert stamp.owner == owner
         assert "live checkout" in str(stamp.proof_of_life)
         assert stamp.missing_evidence is None
+
+    def test_an_owner_this_process_cannot_search_for_is_never_called_gone(self) -> None:
+        parent = self.venue / "unsearchable"
+        (parent / "checkout").mkdir(parents=True)
+        parent.chmod(0o200)
+        self.addCleanup(parent.chmod, 0o700)
+        stamp = owner_stamps.OwnerStamp(parent / "checkout", observable=True, recorded_location="x", location_here="x")
+
+        assert "not proof it is gone" in str(stamp.proof_of_life)
 
     def test_a_visibly_absent_owner_leaves_no_proof_and_no_gap(self) -> None:
         # The one shape a deletion may rest on: the venue read the neighbourhood and

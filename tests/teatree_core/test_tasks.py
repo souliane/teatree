@@ -1,3 +1,4 @@
+import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -684,6 +685,46 @@ class TestExecuteTeardownTerminalPurge(TestCase):
         assert result.return_value["ok"] is True, result.return_value["detail"]
         assert not self.wt_path.exists(), "clean pushed worktree of an IGNORED ticket was not purged"
         assert not Worktree.objects.filter(branch=self.branch).exists()
+
+    def _push_work(self, message: str) -> None:
+        self._commit_in_worktree(message)
+        _run_git("push", "-q", "origin", self.branch, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_drain_teardown_keeps_the_worktree_of_a_ticket_with_a_live_session(self) -> None:
+        ticket = self._ignored_ticket_with_worktree()
+        long_ago = "2020-01-01T00:00:00+00:00"
+        with patch.dict(os.environ, {"GIT_COMMITTER_DATE": long_ago, "GIT_AUTHOR_DATE": long_ago}):
+            self._push_work("pushed long ago")
+        session = Session.objects.create(overlay="test", ticket=ticket)
+
+        with self._patched_clone_root():
+            kept = execute_teardown.enqueue(ticket.pk, fsm_terminal=False)
+            session.ended_at = timezone.now()
+            session.save(update_fields=["ended_at"])
+            wiped = execute_teardown.enqueue(ticket.pk, fsm_terminal=False)
+
+        assert kept.return_value["ok"] is False
+        assert "live session" in kept.return_value["detail"]
+        assert wiped.return_value["ok"] is True, "control: without the session the same worktree is purged"
+        assert not self.wt_path.exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_drain_teardown_keeps_a_worktree_whose_head_commit_is_fresh(self) -> None:
+        ticket = self._ignored_ticket_with_worktree()
+        self._push_work("pushed just now")
+
+        with self._patched_clone_root():
+            kept = execute_teardown.enqueue(ticket.pk, fsm_terminal=False)
+            kept_on_disk = self.wt_path.exists()
+            wiped = execute_teardown.enqueue(ticket.pk)
+
+        assert kept.return_value["ok"] is False
+        assert "HEAD commit within" in kept.return_value["detail"]
+        assert kept_on_disk
+        assert wiped.return_value["ok"] is True, "control: the FSM-immediate teardown still purges it"
+        assert not self.wt_path.exists()
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_keeps_unpushed_unique_commits_on_terminal_purge(self) -> None:

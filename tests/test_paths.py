@@ -649,3 +649,26 @@ class TestCoreRepoRoot:
         (tmp_path / "pyproject.toml").touch()
 
         assert paths.PathHelpers.core_repo_root(root=tmp_path) == tmp_path
+
+
+class TestAStampThatIsNotTextIsAnUnreadableStamp:
+    """An undecodable stamp reads as ``None``, never as an error that ends a reaper pass or settings import."""
+
+    def test_the_owner_reads_as_none(self, tmp_path: Path) -> None:
+        (tmp_path / paths.OWNER_STAMP_NAME).write_bytes(b"\xff\xfe not utf-8")
+
+        assert paths.IsolatedEnvDir(tmp_path).owner is None
+
+    def test_the_owner_location_reads_as_none(self, tmp_path: Path) -> None:
+        (tmp_path / paths.OWNER_LOCATION_NAME).write_bytes(b"\xff\xfe not utf-8")
+
+        assert paths.IsolatedEnvDir(tmp_path).owner_location is None
+
+    def test_stamping_a_dir_that_holds_one_does_not_raise(self, tmp_path: Path) -> None:
+        (tmp_path / paths.OWNER_STAMP_NAME).write_bytes(b"\xff\xfe not utf-8")
+
+        paths.IsolatedEnvDir(tmp_path).stamp_owner(tmp_path / "checkout")
+
+        assert paths.IsolatedEnvDir(tmp_path).owner is None, (
+            "the unreadable stamp is left for an operator, not overwritten"
+        )

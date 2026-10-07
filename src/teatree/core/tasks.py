@@ -322,7 +322,7 @@ def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
 
 
 @task()
-def execute_teardown(ticket_id: int) -> TransitionResult:
+def execute_teardown(ticket_id: int, *, fsm_terminal: bool = True) -> TransitionResult:
     """Tear down worktrees for a terminal-state ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -362,7 +362,7 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-    result = WorktreeTeardown(ticket).run()
+    result = WorktreeTeardown(ticket, fsm_terminal=fsm_terminal).run()
     if not result.ok:
         logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
@@ -435,7 +435,7 @@ class TeardownDispatch:
         )
 
     @staticmethod
-    def enqueue_once(ticket_id: int, *, executor: "DjangoTask | None" = None) -> bool:
+    def enqueue_once(ticket_id: int, *, executor: "DjangoTask | None" = None, fsm_terminal: bool = True) -> bool:
         """Queue :func:`execute_teardown` for *ticket_id* unless one is already outstanding.
 
         Returns whether this call minted a job.
@@ -443,7 +443,8 @@ class TeardownDispatch:
         *executor* lets a caller that defers the enqueue past its own frame — the FSM's
         ``transaction.on_commit`` receiver — bind ``execute_teardown`` while it is still
         in scope and hand the task in, exactly as that receiver's sibling transition
-        workers do. Omitting it resolves the module attribute now.
+        workers do. Omitting it resolves the module attribute now. ``fsm_terminal=False`` is the
+        drain's: the queued job then keeps the busy-ticket and recent-commit liveness checks.
 
         Deliberately NOT deduplicated against a finished or stranded job (see
         :meth:`outstanding_for`), and suppression logs at INFO rather than DEBUG:
@@ -453,17 +454,15 @@ class TeardownDispatch:
         if TeardownDispatch.outstanding_for(ticket_id):
             logger.info("teardown already outstanding for ticket %s — not queuing another", ticket_id)
             return False
-        (executor if executor is not None else execute_teardown).enqueue(int(ticket_id))
+        kwargs = {} if fsm_terminal else {"fsm_terminal": False}
+        (executor if executor is not None else execute_teardown).enqueue(int(ticket_id), **kwargs)
         return True
 
     @staticmethod
     def _recently_finished() -> set[int]:
         since = timezone.now() - TeardownDispatch.RETRY_COOLDOWN
-        finished = [TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED]
-        rows = DBTaskResult.objects.filter(
-            task_path=TeardownDispatch.TASK_PATH, status__in=finished, finished_at__gte=since
-        )
-        return {int(args[0]) for args in rows.values_list("args_kwargs__args", flat=True)}
+        rows = DBTaskResult.objects.finished().filter(task_path=TeardownDispatch.TASK_PATH, finished_at__gte=since)
+        return {int(pk) for pk in rows.values_list("args_kwargs__args__0", flat=True) if pk is not None}
 
     @staticmethod
     def drain_terminal_backlog() -> list[int]:
@@ -493,7 +492,7 @@ class TeardownDispatch:
         for ticket_id in ticket_ids:
             if len(queued) == TeardownDispatch.DRAIN_BATCH_LIMIT:
                 break
-            if ticket_id not in cooling and TeardownDispatch.enqueue_once(int(ticket_id)):
+            if ticket_id not in cooling and TeardownDispatch.enqueue_once(int(ticket_id), fsm_terminal=False):
                 queued.append(int(ticket_id))
         return queued
 

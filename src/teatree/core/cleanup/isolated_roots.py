@@ -233,7 +233,7 @@ def _verdict(env_dir: Path, *, live: LiveCheckoutSlugs, keep_unmappable_live: bo
         return "a symlink, not a dir this root minted — never followed"
     try:
         return _keep_reason(env_dir, live=live, keep_unmappable_live=keep_unmappable_live)
-    except (OSError, UnicodeDecodeError) as exc:
+    except OSError as exc:
         return f"could not be judged ({exc}) — never reclaimed on evidence it could not read"
 
 

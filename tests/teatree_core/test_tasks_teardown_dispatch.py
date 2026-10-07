@@ -256,6 +256,38 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
 
         assert TeardownDispatch.drain_terminal_backlog() == [ticket.pk]
 
+    @staticmethod
+    def _job_kwargs(ticket: Ticket) -> dict[str, object]:
+        job = DBTaskResult.objects.get(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk])
+        return job.args_kwargs["kwargs"]
+
+    def test_the_drain_queues_teardowns_that_keep_the_full_liveness_protection(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+
+        TeardownDispatch.drain_terminal_backlog()
+
+        assert self._job_kwargs(ticket) == {"fsm_terminal": False}
+
+    def test_the_fsm_receivers_teardown_keeps_the_merge_carve_out(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+
+        TeardownDispatch.enqueue_once(ticket.pk)
+
+        assert self._job_kwargs(ticket) == {}
+
+    def test_a_finished_row_that_names_no_ticket_does_not_stop_the_drain(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+        DBTaskResult.objects.create(
+            task_path=TeardownDispatch.TASK_PATH,
+            status=TaskResultStatus.SUCCESSFUL,
+            finished_at=timezone.now(),
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            run_after=timezone.now(),
+        )
+
+        assert TeardownDispatch.drain_terminal_backlog() == [ticket.pk]
+
     def test_a_sibling_ticket_is_never_deduped_away(self) -> None:
         mine = self._terminal_ticket_with_worktree()
         theirs = self._terminal_ticket_with_worktree()

@@ -40,7 +40,7 @@ from pathlib import Path
 
 from teatree import paths
 from teatree.core.cleanup import checkout_registry
-from teatree.core.worktree.venue import venue_can_observe
+from teatree.core.worktree.venue import VenueObservation, observe, venue_can_observe
 from teatree.mount_identity import physical_location
 
 
@@ -55,10 +55,16 @@ class OwnerStamp:
 
     @property
     def proof_of_life(self) -> str | None:
-        """The evidence that the stamped owner is alive, or ``None`` when there is none."""
-        if self.owner is not None and self.owner.is_dir():
-            return f"its owner stamp names a live checkout ({self.owner})"
-        return None
+        """Why the stamped owner is not provably gone, or ``None`` when it is."""
+        if self.owner is None:
+            return None
+        match observe(self.owner):
+            case VenueObservation.PRESENT:
+                return f"its owner stamp names a live checkout ({self.owner})"
+            case VenueObservation.UNOBSERVABLE:
+                return f"its owner stamp names {self.owner}, which this venue can no longer see — not proof it is gone"
+            case VenueObservation.ABSENT:
+                return None
 
     @property
     def missing_evidence(self) -> str | None:

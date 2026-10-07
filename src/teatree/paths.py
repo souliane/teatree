@@ -252,7 +252,7 @@ class IsolatedEnvDir:
         """
         try:
             raw = (self.path / OWNER_STAMP_NAME).read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         return Path(raw) if raw else None
 
@@ -261,7 +261,7 @@ class IsolatedEnvDir:
         """Where the owner physically lived when stamped, or ``None`` for a stamp predating the record."""
         try:
             raw = (self.path / OWNER_LOCATION_NAME).read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         return raw or None
 
@@ -295,7 +295,7 @@ class IsolatedEnvDir:
             # Never overwritten: a second venue's reading of the same spelling may name another directory.
             if self.owner_location is None and (where := physical_location(repo_root)):
                 location.write_text(f"{where}\n", encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return
 
 

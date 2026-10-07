@@ -563,7 +563,7 @@ class TestEachDirIsJudgedOnItsOwn(TestCase):
         paths.IsolatedEnvDir(env_dir).stamp_owner(owner)
         return env_dir
 
-    def _assert_kept_by_name_between_two_released_dirs(self, unjudgeable: Path, before: Path, after: Path) -> None:
+    def _assert_kept_between_two_released_dirs(self, unjudgeable: Path, before: Path, after: Path, *, why: str) -> None:
         result = self._reap()
 
         assert unjudgeable.exists(), "DATA LOSS: a dir the pass could not judge was reaped"
@@ -572,7 +572,7 @@ class TestEachDirIsJudgedOnItsOwn(TestCase):
         assert any("Removed" in line and before.name in line for line in result), (
             "the audit of the earlier release is gone"
         )
-        assert any("KEPT" in line and unjudgeable.name in line and "could not be judged" in line for line in result)
+        assert any("KEPT" in line and unjudgeable.name in line and why in line for line in result), result
 
     def test_an_owner_behind_a_dir_this_process_cannot_search_is_kept_and_the_pass_goes_on(self) -> None:
         sealed = self.workspace / "sealed"
@@ -583,15 +583,24 @@ class TestEachDirIsJudgedOnItsOwn(TestCase):
         sealed.chmod(0o200)
         self.addCleanup(sealed.chmod, 0o700)
 
-        self._assert_kept_by_name_between_two_released_dirs(unjudgeable, before, after)
+        self._assert_kept_between_two_released_dirs(unjudgeable, before, after, why="cannot prove this dir is orphan")
 
-    def test_a_stamp_that_is_not_text_is_kept_and_the_pass_goes_on(self) -> None:
+    def test_a_dir_this_process_cannot_list_is_kept_and_the_pass_goes_on(self) -> None:
         before = self._stamped_env_dir("1-before", self.workspace / "vanished-a")
-        unjudgeable = self._stamped_env_dir("2-garbled", self.workspace / "vanished-c")
-        (unjudgeable / paths.OWNER_STAMP_NAME).write_bytes(b"\xff\xfe not utf-8")
+        unjudgeable = self._stamped_env_dir("2-unlistable", self.workspace / "vanished-c")
+        after = self._stamped_env_dir("3-after", self.workspace / "vanished-b")
+        unjudgeable.chmod(0o300)
+        self.addCleanup(unjudgeable.chmod, 0o700)
+
+        self._assert_kept_between_two_released_dirs(unjudgeable, before, after, why="could not be judged")
+
+    def test_a_stamp_that_is_not_text_keeps_its_dir_and_the_pass_goes_on(self) -> None:
+        before = self._stamped_env_dir("1-before", self.workspace / "vanished-a")
+        garbled = self._stamped_env_dir("2-garbled", self.workspace / "vanished-c")
+        (garbled / paths.OWNER_STAMP_NAME).write_bytes(b"\xff\xfe not utf-8")
         after = self._stamped_env_dir("3-after", self.workspace / "vanished-b")
 
-        self._assert_kept_by_name_between_two_released_dirs(unjudgeable, before, after)
+        self._assert_kept_between_two_released_dirs(garbled, before, after, why="unstamped")
 
     def test_a_checkout_back_at_its_path_while_the_dir_is_judged_keeps_its_env_dir(self) -> None:
         owner = self.workspace / "re-provisioned"
@@ -606,6 +615,28 @@ class TestEachDirIsJudgedOnItsOwn(TestCase):
 
         assert (env_dir / "db.sqlite3").exists(), "DATA LOSS: a re-provisioned checkout lost its freshly seeded DB"
         assert any("KEPT" in line and env_dir.name in line and "live checkout" in line for line in result), result
+
+
+class TestAnUnreadableStampInALiveCheckoutsEnvDir(TestCase):
+    """The discovered-owner backfill runs before the per-dir verdicts and must survive a garbled stamp too (#4923)."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(paths, "auto_isolated_worktrees_dir", return_value=self.root))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
+        self.clone = make_git_repo(self.workspace / "org" / "repo")
+
+    def test_the_pass_goes_on_and_releases_the_eligible_orphan(self) -> None:
+        live = _make_env_dir(self.root, paths.isolated_slug(self.clone))
+        (live / paths.OWNER_STAMP_NAME).write_bytes(b"\xff\xfe not utf-8")
+        orphan = _make_orphan_env_dir(self.root, self.workspace / "vanished")
+
+        result = reaper.reap_orphan_isolated_worktree_roots(self.workspace)
+
+        assert live.exists(), "DATA LOSS: a live checkout's env dir was reaped"
+        assert not orphan.exists(), result
+        assert any("KEPT" in line and live.name in line for line in result)
 
 
 class TestGuardedRelease(TestCase):
