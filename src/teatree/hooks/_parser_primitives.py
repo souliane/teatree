@@ -187,6 +187,14 @@ BODY_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 # correct once a multi-word field exists.
 BODY_LONG_OPTION_FIELDS: Final[frozenset[str]] = frozenset({"body", "description", "message", "title"})
 
+# Short body flags the every-segment walker reads. ``gh`` spells ``-d`` as the boolean
+# ``--draft``, so the description short flag is ``glab``-only.
+BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
+GLAB_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-d"})
+
+# ``git`` verbs whose ``-m``/``-F`` message is published with the object it creates.
+GIT_MESSAGE_VERBS: Final[frozenset[str]] = frozenset({"commit", "tag"})
+
 # Attached spellings of the ``gh``/``glab api`` field flags. pflag accepts
 # ``--field=body=x`` / ``-fbody=x`` exactly as it accepts the spaced form, so the
 # publish-DETECTION method resolver and the body/secret EXTRACTORS all read them

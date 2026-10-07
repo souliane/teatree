@@ -148,14 +148,14 @@ def _t3_review_body_file_payload(words: list[str], payloads: list[str], ctx: "Bo
     """Append the body referenced by a ``t3 review`` post's ``--body-file <path>`` (#32).
 
     Resolves ONLY the ``--body-file`` flag — never the ``--file`` diff anchor —
-    through the shared :func:`_body_file_resolution._append_file_payload`, so a
+    through the shared :func:`_body_file_resolution.append_file_payload`, so a
     relative path resolves against the command's ``cd`` dir, an in-command
     heredoc/redirect body is paired, and an unreadable file fails closed (a
     public MR post whose body the gate cannot read must hard-block). Both the
     space-separated (``--body-file <path>``) and equals (``--body-file=<path>``)
     spellings are handled.
     """
-    from teatree.hooks._body_file_resolution import _append_file_payload  # noqa: PLC0415 — deferred: call-time import
+    from teatree.hooks._body_file_resolution import append_file_payload  # noqa: PLC0415 — deferred: call-time import
     from teatree.hooks._parser_primitives import attached_value  # noqa: PLC0415 — deferred: call-time import
 
     i = 0
@@ -163,12 +163,12 @@ def _t3_review_body_file_payload(words: list[str], payloads: list[str], ctx: "Bo
     while i < n:
         word = words[i]
         if word == _T3_REVIEW_BODY_FILE_FLAG and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=True)
+            append_file_payload(words[i + 1], payloads, ctx, fail_closed=True)
             i += 2
             continue
         attached = attached_value(word, _T3_REVIEW_BODY_FILE_FLAG + "=")
         if attached is not None:
-            _append_file_payload(attached, payloads, ctx, fail_closed=True)
+            append_file_payload(attached, payloads, ctx, fail_closed=True)
         i += 1
 
 
