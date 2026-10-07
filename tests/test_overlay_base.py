@@ -102,10 +102,9 @@ def test_get_e2e_preflight_returns_empty_list_by_default():
     assert overlay.e2e.preflight(customer=None, base_url=None) == []
 
 
-def test_get_mcp_provider_expectations_default_is_empty():
-    """The #2282 hook defaults to ``{}`` — overlay values live in the overlay repo (#251)."""
+def test_connector_preflight_default_is_empty():
     overlay = _MinimalOverlay()
-    assert overlay.connectors.mcp_provider_expectations() == {}
+    assert overlay.connectors.preflight() == []
 
 
 def test_get_e2e_scenarios_default_is_empty_tuple():

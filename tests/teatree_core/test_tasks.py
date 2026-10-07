@@ -24,6 +24,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.runners import RetroPhaseMarker
@@ -490,6 +491,35 @@ class TestExecuteRetrospect(TestCase):
         assert ticket.state == Ticket.State.DELIVERED
         assert ticket.extra.get("retro_scheduled") is True
         assert result.return_value == {"ticket_id": ticket.pk, "ok": True, "detail": "retro-scheduled"}
+
+    def test_a_fix_ticket_with_no_fix_record_returns_the_refusal_and_records_it_once(self) -> None:
+        ticket = self._ticket_in_merged()
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED, kind=Ticket.Kind.FIX)
+        waive_rubric(ticket)
+        MergeAuditFactory(clear__ticket=ticket)
+
+        first = execute_retrospect.call(ticket.pk)
+        execute_retrospect.call(ticket.pk)
+
+        assert first["ok"] is False
+        assert "Refusing to deliver" in first["detail"]
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.dedupe_marker.startswith(f"fsm-wedge:{ticket.pk}:retro:")
+
+    def test_a_later_refusal_for_another_reason_records_its_own_row(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED, kind=Ticket.Kind.FIX)
+
+        for refusal in ("Refusing to deliver: fields missing", "Refusing to deliver: fields missing", "critic refused"):
+            record_stuck_transition_question(None, phase="retro", ticket=ticket, refusal=refusal)
+
+        prefix = f"FSM wedge on ticket {ticket.pk}: the 'retro' phase completed but the ticket cannot advance: "
+        assert sorted(DeferredQuestion.objects.values_list("question", flat=True)) == [
+            f"{prefix}Refusing to deliver: fields missing",
+            f"{prefix}critic refused",
+        ]
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
@@ -1087,6 +1117,31 @@ class TestExecuteProvisionRetriesARepoLessTicket(TestCase):
         assert result == {"ticket_id": self.ticket.pk, "skipped": True, "state": Ticket.State.PLAN_RECORDED}
         assert self.queue.results == []
         assert self._questions() == []
+
+
+class TestExecuteProvisionSkipsATicketWithNothingToCheckOut(TestCase):
+    """No repo, and no forge issue to attach one from: a repair ticket, a synthetic key, a PR url."""
+
+    def test_it_is_skipped_with_the_retries_spent_and_nothing_reaches_the_owner(self) -> None:
+        queue = execute_provision.get_backend()
+        queue.clear()
+        for issue_url in (
+            "",
+            "redcard://signal/7",
+            "https://github.com/souliane/teatree/pull/5129",
+            "https://gitlab.com/group/project/-/merge_requests/12",
+        ):
+            with self.subTest(issue_url=issue_url):
+                ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.WORK_STARTED)
+
+                with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+                    result = execute_provision.call(ticket.pk, len(NO_REPOS_RETRY_DELAYS))
+
+                provisioner.assert_not_called()
+                assert result == {"ticket_id": ticket.pk, "skipped": True, "state": Ticket.State.WORK_STARTED}
+        assert queue.results == []
+        assert not DeferredQuestion.objects.exists()
+        assert drain_unmirrored_deferred_questions(user_id="U_ME") == (0, 0)
 
 
 class TestExecuteProvisionRetriesARemoteReadRefusal(TestCase):

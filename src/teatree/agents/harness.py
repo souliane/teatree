@@ -30,6 +30,7 @@ lives in the sibling module, never inside the harness classes themselves.
 
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
@@ -39,12 +40,14 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
 from teatree.agents.claude_cli_spawn import assert_spawnable, prepared_spawn, spawn_error
+from teatree.agents.claude_sdk_session import ClaudeSdkSession, LiveInputQueue
 from teatree.agents.codex_app_server import codex_app_server_spec
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
+from teatree.agents.live_control import RejectCode
 from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
@@ -151,7 +154,9 @@ class ClaudeSdkHarness:
         Only the CONNECT is wrapped: an exception from the driver's own body must never be
         re-labelled "the agent could not start" when the agent plainly did.
         """
-        with prepared_spawn(options) as spawn_options:
+        inputs = LiveInputQueue()
+        with prepared_spawn(options) as prepared:
+            spawn_options = replace(prepared, hooks=inputs.hooks_merged_into(prepared.hooks))
             payload = assert_spawnable(spawn_options)
             stack = AsyncExitStack()
             try:
@@ -161,8 +166,9 @@ class ClaudeSdkHarness:
                     raise named from exc
                 raise
             try:
-                yield client
+                yield ClaudeSdkSession(client, inputs)
             finally:
+                inputs.end(RejectCode.SESSION_CLOSED)
                 await stack.aclose()
 
     def restore_unconsumed_resume_thread(self) -> None:

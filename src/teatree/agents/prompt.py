@@ -38,10 +38,9 @@ _MAX_PARENT_SUMMARY_LEN = 2000
 # A quarter of the system-context budget keeps the work prompt small beside the skill append.
 _MAX_TICKET_CONTEXT_BYTES = MAX_APPEND_BYTES // 4
 
-# The skills pointer names the on-disk body and NOT the Skill tool: this lane is
-# denied that tool, so pointing at it would name an impossible recovery.
 _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
-_SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — open it with the Read tool; this lane has no Skill tool"
+# Worded like skill_assurance's recovery directive: a harness without the Skill tool reads the file.
+_SKILLS_POINTER = "the full skill — load it with the Skill tool (a harness without one: Read skills/<skill>/SKILL.md)"
 _PARENT_POINTER = "the parent task's recorded result"
 _HANDOFF_POINTER = "Complete predecessor result (source of truth): "
 
@@ -201,10 +200,10 @@ def required_skill_delivery(
     stack skill is a forced directive in every phase unless it is embedded in full.
     """
     stack = {name for name in skills if _is_stack_skill(name)}
-    if not lifecycle_skill:
+    if not lifecycle_skill and not stage_skills:
         # build_system_context takes its all-inline path without a lifecycle
-        # skill, including reactive phases with no _PHASE_TO_SKILL mapping.
-        return (set(skills) | set(stage_skills)) - stack, stack
+        # or stage skill, including reactive phases with no _PHASE_TO_SKILL mapping.
+        return set(skills) - stack, stack
     full = ({lifecycle_skill} if lifecycle_skill else set()) | set(stage_skills)
     full |= {name for name in skills if _explicit_load_name(name) in _ALWAYS_FULL_SKILLS}
     explicit: set[str] = set()
@@ -239,9 +238,9 @@ def build_system_context(
 ) -> str:
     """Build the system context for headless (SDK) execution.
 
-    When *lifecycle_skill* is provided, only the lifecycle skill and rules
-    are embedded in full; companion skills get a one-line summary to save
-    tokens. On the reviewing phase the active overlay's primary review skill
+    When *lifecycle_skill* or a stage skill is present, only those, the stage
+    skills' direct ``requires`` and rules are embedded in full; companion skills
+    get a one-line summary to save tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
     overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a reviewer reviews WITH the overlay's conventions.
@@ -265,10 +264,10 @@ def build_system_context(
 
     skill_content = ""
     if skills:
-        if lifecycle_skill:
+        if lifecycle_skill or stage_present:
             # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
             # by reference, so they are primary alongside the lifecycle skill.
-            primary_skills = {lifecycle_skill, *stage_present}
+            primary_skills = {lifecycle_skill, *stage_present} - {""}
             explicit_load_skills: set[str] | None = None
             suppress_names: set[str] | None = None
             phase = normalize_phase(task.phase)

@@ -130,8 +130,7 @@ class TestARepairOnlyRunsWhenAsked:
     def test_the_flag_reaches_the_check_from_the_mcp_group(self) -> None:
         """The threading itself — nothing else carries ``repair`` to the only mutating gate."""
         with (
-            patch("teatree.cli.doctor.run_checks._check_mcp_connectivity", return_value=True),
-            patch("teatree.cli.doctor.run_checks._check_connector_manifest", return_value=True),
+            patch("teatree.cli.doctor.run_checks._check_declared_services_configured", return_value=True),
             patch("teatree.cli.doctor.run_checks._check_teatree_mcp_registration", return_value=True),
             patch("teatree.cli.doctor.run_checks._check_teatree_mcp_liveness", return_value=True) as liveness,
         ):

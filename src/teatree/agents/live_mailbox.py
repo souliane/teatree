@@ -1,4 +1,4 @@
-"""Process-local, task-owned live mailbox served over a private Unix socket."""
+"""Process-local, task-owned live mailbox and operator ingress, served over the worker's published Unix socket."""
 
 import asyncio
 import atexit
@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import secrets
-import tempfile
 import threading
 import uuid
 from collections import deque
@@ -19,12 +18,16 @@ from typing import TYPE_CHECKING, NoReturn, Self, TypedDict, cast
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.live_control import MAX_INPUT_BYTES
+from teatree.agents.live_ingress import IngressRefusedError, OperatorIngress
+from teatree.paths import control_db_dir
+
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpServerConfig, McpStdioServerConfig
 
 logger = logging.getLogger(__name__)
 
-_MAX_BODY_BYTES = 16_384
+_MAX_BODY_BYTES = MAX_INPUT_BYTES
 _MAX_WAIT_SECONDS = 20
 _MAX_INBOX_MESSAGES = 1_000
 _MAX_REQUEST_BYTES = 128_000  # JSON escaping can expand a valid 16-KiB body sixfold
@@ -79,12 +82,27 @@ class _Participant:
     dropped_before: int = 0
 
 
+def live_dir() -> Path:
+    """Where every worker on this host publishes its socket: the control-DB volume all services mount."""
+    return control_db_dir(os.environ) / "live"
+
+
+def _publish_path(directory: Path) -> Path:
+    path = directory / f"w-{secrets.token_hex(4)}.sock"
+    if len(os.fsencode(str(path))) > _MAX_SOCKET_PATH_BYTES:
+        msg = f"Live socket path {path} exceeds {_MAX_SOCKET_PATH_BYTES} bytes"
+        raise RuntimeError(msg)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.chmod(0o700)
+    return _publish_path(directory) if path.exists() else path
+
+
 class LiveMailboxBroker:
     """Own only sessions currently running in this worker process."""
 
-    def __init__(self, *, runtime_dir: Path | None = None) -> None:
+    def __init__(self, *, runtime_dir: Path | None = None, ingress: OperatorIngress | None = None) -> None:
         self._runtime_dir = runtime_dir
-        self._directory: Path | None = None
+        self._ingress = ingress or OperatorIngress()
         self._socket_path: Path | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop: asyncio.Event | None = None
@@ -115,13 +133,7 @@ class LiveMailboxBroker:
             return
         self._ready.clear()
         self._startup_error = None
-        directory = Path(tempfile.mkdtemp(prefix="t3-mailbox-", dir=self._runtime_dir))
-        if len(os.fsencode(str(directory / "live.sock"))) > _MAX_SOCKET_PATH_BYTES:
-            directory.rmdir()
-            directory = Path(tempfile.mkdtemp(prefix="t3-mailbox-", dir="/tmp"))
-        directory.chmod(0o700)
-        self._directory = directory
-        self._socket_path = directory / "live.sock"
+        self._socket_path = _publish_path(self._runtime_dir or live_dir())
         self._thread = threading.Thread(target=self._run, name="t3-live-mailbox", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=5):
@@ -130,6 +142,7 @@ class LiveMailboxBroker:
         if self._startup_error is not None:
             self._thread.join(timeout=5)
             self._thread = None
+            self._socket_path = None
             msg = "Live mailbox broker failed to start"
             raise RuntimeError(msg) from self._startup_error
 
@@ -177,8 +190,6 @@ class LiveMailboxBroker:
         finally:
             if self._socket_path is not None:
                 self._socket_path.unlink(missing_ok=True)
-            if self._directory is not None:
-                self._directory.rmdir()
 
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -197,8 +208,14 @@ class LiveMailboxBroker:
             request = json.loads(raw)
             if not isinstance(request, dict):
                 _reject("Invalid mailbox request")
-            result = await self._dispatch(request)
+            method = request.get("method")
+            if isinstance(method, str) and method.startswith("live."):
+                result = await self._ingress.serve(method, request, writer.get_extra_info("socket"))
+            else:
+                result = await self._dispatch(request)
             response = {"result": result}
+        except IngressRefusedError as exc:
+            response = {"error": str(exc), "code": exc.code.value}
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             response = {"error": str(exc)}
         except Exception:  # noqa: BLE001 - never expose broker internals to an MCP child

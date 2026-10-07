@@ -74,7 +74,7 @@ def _admitted(**sketch_over: object) -> Directive:
     directive.record_interpretation(sketch_from_envelope(valid_envelope(**sketch_over)), constraint_statement="c")
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    DeferredQuestion.consume(question.pk, answer="approve")
+    question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
     directive.refresh_from_db()
     directive.admit()
     return directive
@@ -119,7 +119,7 @@ class TestIntakeBranches(TestCase):
         directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
         question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
         directive.attach_ratification(question)
-        DeferredQuestion.consume(question.pk, answer="approve")
+        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         result = run_tick(settings=_open_settings(), seams=_seams())
         assert result.action == "admitted"
 
@@ -300,7 +300,7 @@ class TestDirectiveSpawnedTicketsDoNotCollide(TestCase):
         # INTERPRETED → ratify_asked: records the human-approval question.
         assert _tick().action == "ratify_asked"
         directive.refresh_from_db()
-        DeferredQuestion.consume(directive.ratify_question_id, answer="approve")
+        directive.ratify_question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         # RATIFY_PENDING → admitted.
         assert _tick().action == "admitted"
         # ADMITTED → implementing: creates the impl ticket under the SAME #3009 umbrella.
@@ -433,7 +433,7 @@ class TestRatifyBackpressure(TestCase):
         pending = Directive.objects.filter(state=Directive.State.RATIFY_PENDING).order_by("pk")
         question = pending.first().ratify_question
         assert question is not None
-        DeferredQuestion.consume(question.pk, answer="approve")
+        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         run_tick(settings=_open_settings(), seams=_seams())
         # The answered one admitted, freeing exactly one slot for a fresh ask.
         assert Directive.objects.filter(state=Directive.State.RATIFY_PENDING).count() == MAX_OPEN_RATIFY_QUESTIONS

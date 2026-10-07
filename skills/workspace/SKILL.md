@@ -493,7 +493,7 @@ t3 <overlay> worktree status        # FSM state, branch, allocated host ports �
 # 3. Cross-store drift across every worktree in the ticket (optionally --fix)
 t3 <overlay> workspace doctor
 
-# 4. Global install health — clone path, .pth, tools, MCP connectors
+# 4. Global install health — clone path, .pth, tools, the teatree MCP, the headless browser
 t3 doctor check
 
 # 5. Installation report — versions, registered overlays, config resolution

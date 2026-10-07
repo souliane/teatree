@@ -35,7 +35,7 @@ After the report, if there are pending deferred questions, walk the user through
 1. List them: prefer the `mcp__teatree__question_list` MCP tool — it returns the pending backlog as structured JSON; fall back to `t3 teatree questions list` when the MCP server isn't connected.
 2. If the list is empty, say so in one line (`No pending questions.`) and stop — do not invent a walk-through.
 3. For each pending question, in order, raise it with the `AskUserQuestion` tool (one question per call), using the stored question text and option labels. **Do NOT batch** — one decision per call, wait for the answer, then move to the next.
-4. Record each answer immediately: prefer the `mcp__teatree__question_answer` MCP tool — one call per question; fall back to `t3 teatree questions answer <id> "<the user's answer text>"` when the MCP server isn't connected. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
+4. Record each answer immediately: prefer the `mcp__teatree__question_answer` MCP tool — one call per question; fall back to `t3 teatree questions answer <id> "<the user's answer text>"` when the MCP server isn't connected. A directive ratification (`Ratify directive #N …`, or its re-ask) is always recorded with that CLI command: an MCP answer is recorded as agent-given, and an agent-given answer never ratifies. If the user wants to skip one, `t3 teatree questions dismiss <id> --reason "<why>"`.
 5. After the last one, confirm in one line how many were answered/dismissed.
 
 A Slack-given answer is read on demand: `questions list --all`.

@@ -10,7 +10,7 @@ from django.test import TestCase
 
 from teatree.core.gates.review_recordability_gate import unrecordable_review_mint_refusal, unrecordable_review_refusal
 from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX, FailureKind, classify_failure
-from teatree.core.models import AutoReviewDispatch, Session, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket
 
 _SLUG = "souliane/teatree"
 _PR_ID = 225
@@ -115,6 +115,12 @@ class TestThePhaseScopeIsNotOverWide(TestCase):
 class TestATaskAnswerableForNoPullRequestKeepsItsCompletion(TestCase):
     def test_an_author_reviewing_task_keyed_by_an_issue_url_is_not_refused(self) -> None:
         ticket = Ticket.objects.create(issue_url=_ISSUE_URL, overlay="teatree", role=Ticket.Role.AUTHOR)
+
+        assert unrecordable_review_refusal(_task_for(ticket), phase="reviewing") is None
+
+    def test_an_issue_anchored_review_of_the_tickets_own_pr_is_dispatched(self) -> None:
+        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, overlay="teatree", role=Ticket.Role.AUTHOR)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="souliane/teatree", iid=_PR_URL.rsplit("/", 1)[-1])
 
         assert unrecordable_review_refusal(_task_for(ticket), phase="reviewing") is None
 

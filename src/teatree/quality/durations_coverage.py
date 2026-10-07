@@ -23,9 +23,9 @@ from pathlib import Path
 from teatree.quality.durations_file import DURATIONS_PATH, read_durations
 
 # A refreshed file records every test that ran, so healthy coverage is ~100%; a
-# day of churn between daily refreshes moves it by a handful of files out of
-# thousands. The floor is set well below that so ordinary churn never fires it
-# and only a refresh pipeline that has stopped producing does.
+# week of churn between weekly refreshes costs a few points (measured: 149 new test
+# files in five days, of ~2,950). The floor is set well below that so ordinary churn
+# never fires it and only a refresh pipeline that has stopped producing does.
 MIN_FILE_COVERAGE = 0.80
 
 _TESTS_DIR = "tests"

@@ -4,15 +4,23 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents import skill_injection
+from teatree.agents.context_budget import enforce_budget
 from teatree.agents.skill_injection import (
     _is_primary,
     _read_skill_contents,
     _read_skill_contents_scoped,
-    _resolve_skill_md,
     build_subagent_skill_preamble,
-    harness_skills_dirs,
 )
+from teatree.skill_support import index as skill_index
+from teatree.skill_support.index import resolve_skill_md
+
+
+@pytest.fixture
+def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # A declared apm pin name (ac-django, ac-python) may only resolve from an install root.
+    monkeypatch.setattr(skill_index, "install_roots", lambda: [tmp_path])
+    return tmp_path
+
 
 # --- _read_skill_contents ---
 
@@ -44,7 +52,7 @@ def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
 
 
 # --- embed path agrees with the warn/resolve path (#3206) ---
-# The unresolvable-warning check resolves via ``_resolve_skill_md`` (bare-name
+# The unresolvable-warning check resolves via ``resolve_skill_md`` (bare-name
 # strip); the embed must resolve the same reference forms, or a namespaced /
 # path-form stage skill warns as "resolvable" yet is silently dropped from the
 # embed (or vice versa). Every case below asserts warn-resolution and embed agree.
@@ -53,7 +61,7 @@ def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
 def test_read_skill_contents_embeds_namespaced_name_like_the_resolver(tmp_path: Path) -> None:
     _write_skill(tmp_path, "backend-dev", "# backend-dev body")
 
-    assert _resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
+    assert resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
     result = _read_skill_contents(["t3:backend-dev"], skills_dir=tmp_path)
     assert "--- SKILL: backend-dev ---" in result
     assert "# backend-dev body" in result
@@ -62,7 +70,7 @@ def test_read_skill_contents_embeds_namespaced_name_like_the_resolver(tmp_path: 
 def test_read_skill_contents_embeds_path_form_name_like_the_resolver(tmp_path: Path) -> None:
     _write_skill(tmp_path, "rules", "# rules body")
 
-    assert _resolve_skill_md("skills/rules/SKILL.md", [tmp_path]) is not None
+    assert resolve_skill_md("skills/rules/SKILL.md", [tmp_path]) is not None
     result = _read_skill_contents(["skills/rules/SKILL.md"], skills_dir=tmp_path)
     assert "--- SKILL: rules ---" in result
     assert "# rules body" in result
@@ -71,7 +79,7 @@ def test_read_skill_contents_embeds_path_form_name_like_the_resolver(tmp_path: P
 def test_read_scoped_embeds_namespaced_primary_like_the_resolver(tmp_path: Path) -> None:
     _write_skill(tmp_path, "backend-dev", "# backend-dev body")
 
-    assert _resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
+    assert resolve_skill_md("t3:backend-dev", [tmp_path]) is not None
     result = _read_skill_contents_scoped(
         ["t3:backend-dev"],
         primary_skills={"t3:backend-dev"},
@@ -102,16 +110,16 @@ def test_is_primary_matches_absolute_path() -> None:
 # --- _read_skill_contents_scoped ---
 
 
-def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
-    for name in ("rules", "test", "ac-django", "workspace"):
-        d = tmp_path / name
+def test_read_scoped_embeds_primary_and_summarizes_companions(installed: Path) -> None:
+    for name in ("rules", "test", "ac-django", "acme-conventions", "workspace"):
+        d = installed / name
         d.mkdir()
         (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
 
     result = _read_skill_contents_scoped(
-        ["ac-django", "workspace", "rules", "test"],
+        ["ac-django", "acme-conventions", "workspace", "rules", "test"],
         primary_skills={"test"},
-        skills_dir=tmp_path,
+        skills_dir=installed,
     )
     # Primary skills get full content
     assert "--- SKILL: test ---" in result
@@ -121,9 +129,11 @@ def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) ->
     assert "# rules full content" in result
     # Companion skills get summary only; a stack skill is a required load instead
     assert "COMPANION SKILLS" in result
+    assert "- acme-conventions:" in result
     assert "- ac-django:" not in result
     assert "REQUIRED: Load /ac-django via the Skill tool before you start" in result
     assert "- workspace:" in result
+    assert "# acme-conventions full content" not in result
     assert "# ac-django full content" not in result
     assert "# workspace full content" not in result
 
@@ -139,31 +149,31 @@ def test_companion_line_names_the_absolute_skill_md_to_read(tmp_path: Path) -> N
     assert "- ghost: not embedded — no SKILL.md resolves for it on this host" in result
 
 
-def test_stack_skills_lead_the_block_as_required_loads_never_companion_lines(tmp_path: Path) -> None:
+def test_stack_skills_lead_the_block_as_required_loads_never_companion_lines(installed: Path) -> None:
     for name in ("rules", "review", "workspace", "ac-django", "ac-python"):
-        _write_skill(tmp_path, name, f"# {name} body\n## A section\ntext")
+        _write_skill(installed, name, f"# {name} body\n## A section\ntext")
 
     result = _read_skill_contents_scoped(
-        ["rules", "review", "workspace", "ac-django", "ac-python"], primary_skills={"review"}, skills_dir=tmp_path
+        ["rules", "review", "workspace", "ac-django", "ac-python"], primary_skills={"review"}, skills_dir=installed
     )
 
     for name in ("ac-django", "ac-python"):
         directive = (
             f"REQUIRED: Load /{name} via the Skill tool before you start; "
-            f"if this lane has no Skill tool, Read `{tmp_path / name / 'SKILL.md'}` in full."
+            f"if this lane has no Skill tool, Read `{installed / name / 'SKILL.md'}` in full."
         )
         assert directive in result
         assert result.index(directive) < result.index("--- SKILL:")
         assert f"# {name} body" not in result
     assert not [line for line in result.splitlines() if "/ac-" in line and "when it applies" in line]
-    assert f"- workspace: not embedded — Read `{tmp_path / 'workspace' / 'SKILL.md'}` when it applies" in result
+    assert f"- workspace: not embedded — Read `{installed / 'workspace' / 'SKILL.md'}` when it applies" in result
 
 
-def test_the_all_inline_render_loads_stack_skills_instead_of_embedding_them(tmp_path: Path) -> None:
+def test_the_all_inline_render_loads_stack_skills_instead_of_embedding_them(installed: Path) -> None:
     for name in ("rules", "ac-django", "ac-python"):
-        _write_skill(tmp_path, name, f"# {name} body")
+        _write_skill(installed, name, f"# {name} body")
 
-    result = _read_skill_contents(["rules", "ac-django", "ac-python"], skills_dir=tmp_path)
+    result = _read_skill_contents(["rules", "ac-django", "ac-python"], skills_dir=installed)
 
     assert "# rules body" in result
     for name in ("ac-django", "ac-python"):
@@ -191,6 +201,50 @@ def test_reach_line_leads_the_skill_block_before_the_first_embed(tmp_path: Path)
     ):
         reach = result.index(f"are at `{tmp_path}/<skill>/…`; open one with the Read tool.")
         assert reach < result.index("--- SKILL: rules ---")
+
+
+def _review_bundle(tmp_path: Path, *, body_sections: int = 1) -> str:
+    for name in ("rules", "review", "slack-formatting", "internals"):
+        (tmp_path / name).mkdir()
+        body = "\n".join(f"## {name} {i}\n{'b' * 1000}" for i in range(body_sections))
+        (tmp_path / name / "SKILL.md").write_text(f"# {name}\n{body}", encoding="utf-8")
+    return _read_skill_contents_scoped(
+        ["rules", "review", "slack-formatting", "internals"],
+        primary_skills={"review"},
+        explicit_load_skills={"slack-formatting"},
+        skills_dir=tmp_path,
+    )
+
+
+def test_companion_list_leads_the_embedded_bodies(tmp_path: Path) -> None:
+    result = _review_bundle(tmp_path)
+
+    first_body = result.index("--- SKILL:")
+    assert result.index("--- REVIEW COMPANION SKILLS") < first_body
+    assert result.index("--- COMPANION SKILLS") < first_body
+
+
+def test_a_budget_cut_of_the_bodies_keeps_every_companion_line(tmp_path: Path) -> None:
+    block = _review_bundle(tmp_path, body_sections=10)
+    out = enforce_budget(block, [(block, "the skill body")], max_bytes=len(block.encode()) // 2)
+
+    assert "…truncated" in out
+    assert "Load /slack-formatting via the Skill tool BEFORE reviewing." in out
+    assert f"- internals: not embedded — Read `{tmp_path / 'internals' / 'SKILL.md'}` when it applies" in out
+
+
+def test_required_stack_loads_lead_both_companion_lists(installed: Path) -> None:
+    names = ["rules", "review", "slack-formatting", "internals", "ac-django"]
+    for name in names:
+        _write_skill(installed, name, f"# {name}")
+
+    result = _read_skill_contents_scoped(
+        names, primary_skills={"review"}, explicit_load_skills={"slack-formatting"}, skills_dir=installed
+    )
+
+    headers = ("--- STACK SKILLS", "--- REVIEW COMPANION SKILLS", "--- COMPANION SKILLS", "--- SKILL:")
+    positions = [result.index(header) for header in headers]
+    assert positions == sorted(positions), dict(zip(headers, positions, strict=True))
 
 
 def test_read_scoped_all_primary(tmp_path: Path) -> None:
@@ -313,38 +367,12 @@ def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) 
     assert preamble.resolved == ["rules"]
 
 
-# --- harness_skills_dirs ---
-
-
-def test_harness_skills_dirs_orders_local_shared_claude_and_codex(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    local = tmp_path / "local"
-    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", local)
-    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
-
-    assert harness_skills_dirs() == [
-        local,
-        tmp_path / ".agents" / "skills",
-        tmp_path / ".claude" / "skills",
-        tmp_path / ".codex" / "skills",
-    ]
-
-
-def test_harness_skills_dirs_dedupes_identical_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    shared = tmp_path / ".agents" / "skills"
-    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", shared)
-    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
-
-    assert harness_skills_dirs().count(shared) == 1
-
-
 def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
     # With no explicit skills_dir, the reader searches the harness dirs; a skill
     # seeded only in the patched DEFAULT dir must still resolve.
     seeded = tmp_path / "seeded"
     _write_skill(seeded, "harness-skill", "# harness body")
-    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", seeded)
     result = _read_skill_contents(["harness-skill"])
     assert "# harness body" in result
 
@@ -352,7 +380,7 @@ def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypa
 def test_read_scoped_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
     seeded = tmp_path / "seeded"
     _write_skill(seeded, "scoped-skill", "# scoped body")
-    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", seeded)
     result = _read_skill_contents_scoped(["scoped-skill"], primary_skills={"scoped-skill"})
     assert "# scoped body" in result
 
@@ -361,7 +389,7 @@ def test_read_skill_contents_falls_back_to_codex_dir(tmp_path: Path, monkeypatch
     local = tmp_path / "local"
     codex = tmp_path / ".codex" / "skills"
     _write_skill(codex, "codex-only", "# codex body")
-    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", local)
-    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", local)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     assert "# codex body" in _read_skill_contents(["codex-only"])

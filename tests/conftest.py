@@ -14,9 +14,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hooks.scripts import hook_budget
+from teatree.agents import live_mailbox
 from teatree.agents.codex_app_server_options import container_is_the_sandbox
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
 from teatree.agents.live_mailbox import reset_shared_brokers
+from teatree.agents.live_registry import reset_shared_registries
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
@@ -231,12 +233,21 @@ def _reset_host_pressure_warning_memo() -> Iterator[None]:
     reset_missing_warning_memo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _private_live_dir() -> Iterator[None]:
+    """Keep every test's broker socket out of the host's real control-DB volume."""
+    with patch.object(live_mailbox, "live_dir", return_value=Path(tempfile.mkdtemp(prefix="t3-live-", dir="/tmp"))):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_live_harness_registries() -> Iterator[None]:
     reset_shared_brokers()
+    reset_shared_registries()
     reset_shared_codex_app_servers()
     yield
     reset_shared_brokers()
+    reset_shared_registries()
     reset_shared_codex_app_servers()
 
 
@@ -603,6 +614,28 @@ def _schema_readiness_current_by_default(request: pytest.FixtureRequest) -> Iter
         with patch("teatree.core.schema_readiness.pending_migrations", return_value=[]):
             yield
     invalidate_schema_readiness()
+
+
+@pytest.fixture(autouse=True)
+def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Pass the merge-message gate's public-repo leak scan unless a test opts in.
+
+    A test install configures no banned-terms list, so the scan refuses every public
+    target and every merge test would refuse on it. The gate's AI-signature scan stays
+    live. Tests that drive the leak scan carry ``@pytest.mark.real_merge_privacy_scan``.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    from teatree.core.gates.privacy_gate import PrivacyGateResult  # noqa: PLC0415 — deferred: pulls Django in
+
+    if "real_merge_privacy_scan" in request.keywords:
+        yield
+        return
+    with patch(
+        "teatree.core.gates.merge_message_gate.scan_outbound_text",
+        side_effect=lambda *, target_repo, **_: PrivacyGateResult(target_repo=target_repo, is_public=False),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

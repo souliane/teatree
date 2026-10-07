@@ -25,6 +25,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
+from teatree.agents import live_mailbox
+from teatree.agents.live_client import LiveClient
 from teatree.core import agent_admission
 from teatree.core.admission_governor import (
     AdmissionCeiling,
@@ -133,6 +135,7 @@ def _make_worker(*, script, sleep, **seam_overrides):
         reap_leases=seam_overrides.get("reap_leases") or (lambda: None),
         claim_master=seam_overrides.get("claim_master") or (lambda: None),
         release_master=seam_overrides.get("release_master") or (lambda: None),
+        start_live_ingress=seam_overrides.get("start_live_ingress") or (lambda: None),
         read_agent_queues=seam_overrides.get("read_agent_queues") or (lambda: _AGENTS),
     )
     if "loops_executors" in seam_overrides:
@@ -184,6 +187,32 @@ def test_reconciles_seeds_and_expires_before_starting_executors() -> None:
     assert order.count("spawn") == loops_executor_count() + len(_AGENTS)
 
 
+def test_the_live_socket_is_published_before_anything_else_starts() -> None:
+    order: list[str] = []
+    worker, _built, _ = _make_worker(
+        script=[True],
+        sleep=lambda _s: None,
+        start_live_ingress=lambda: order.append("live"),
+        reconcile=lambda: order.append("reconcile"),
+    )
+    worker.run()
+    assert order[:2] == ["live", "reconcile"]
+
+
+def test_a_worker_running_nothing_answers_live_list_with_no_sessions() -> None:
+    worker_mod._start_live_ingress()
+
+    assert LiveClient().sessions() == []
+    assert WorkerSeams().start_live_ingress is worker_mod._start_live_ingress
+
+
+def test_a_live_ingress_that_cannot_start_never_stops_the_worker(caplog: pytest.LogCaptureFixture) -> None:
+    with mock.patch.object(live_mailbox, "shared_broker", side_effect=OSError("read-only volume")):
+        worker_mod._start_live_ingress()
+
+    assert "Live ingress could not start" in caplog.text
+
+
 def test_the_loops_pool_scales_with_host_cores(monkeypatch: pytest.MonkeyPatch) -> None:
     # Two slow ticks no longer stall every OTHER loop on a bigger box.
     monkeypatch.setattr(worker_mod, "default_provision_concurrency", lambda: 4)
@@ -196,18 +225,13 @@ def test_the_loops_pool_is_floored_at_two_on_a_small_host(monkeypatch: pytest.Mo
 
 
 def _widths(expensive: int, cheap: int) -> LaneWidths:
-    """*expensive* coding seats beside one drain-reserved seat, and *cheap* review seats."""
-    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive + 1, per_core=1.0, pace=None), reserved=1, cheap=cheap)
+    """*expensive* coding seats filling the ceiling, and *cheap* review seats beside it."""
+    return LaneWidths(ceiling=AdmissionCeiling(cores=expensive, per_core=1.0, pace=None), cheap=cheap)
 
 
 @pytest.mark.parametrize(("expensive", "cheap"), [(1, 1), (3, 2), (15, 2)])
 def test_each_lane_seat_gets_one_executor_on_its_queue(expensive: int, cheap: int) -> None:
     assert agent_executor_queues(_widths(expensive, cheap)) == ("default",) * expensive + ("cheap",) * cheap
-
-
-def test_a_cheap_class_folded_into_the_shared_lane_may_hold_every_seat() -> None:
-    folded = LaneWidths(ceiling=AdmissionCeiling(cores=4, per_core=1.0, pace=None), reserved=0, cheap=0)
-    assert agent_executor_queues(folded) == ("default",) * 4 + ("cheap",) * 4
 
 
 def test_unread_lane_widths_keep_the_host_sized_pool(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -337,7 +361,7 @@ def test_token_brake_keeps_control_but_does_not_execute_cheap_agents() -> None:
     assert [executor.queue for executor in built] == ["loops", "loops", "loops"]
 
 
-#: Three coding seats beside one drain-reserved seat, and one review seat.
+#: Three coding seats and one review seat.
 _AGENTS = ("default",) * 3 + ("cheap",)
 
 
@@ -720,6 +744,19 @@ class TestEverySeatTheVerdictAdmitsHasAnExecutor(TestCase):
         seated = self._admit("reviewing")
 
         assert self._executors()["cheap"] == len(seated) == 2
+
+    def test_a_wider_review_lane_gets_one_executor_per_review_seat(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        seated = self._admit("reviewing")
+
+        assert self._executors()["cheap"] == len(seated) == 3
+
+    def test_review_seats_and_executors_sit_beside_a_full_coding_lane(self) -> None:
+        coding = self._admit("coding")
+        reviews = self._admit("reviewing")
+        executors = self._executors()
+
+        assert (executors["default"], executors["cheap"]) == (len(coding), len(reviews)) == (4, 2)
 
     def test_a_seat_never_lapses_into_a_second_booking(self) -> None:
         ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)

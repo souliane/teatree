@@ -66,8 +66,8 @@ from tests._git_repo import make_git_repo, run_git
 
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
-# The directive_candidate envelope example was removed after the prior pin.
-_OPTIONS_SHA256 = "27acb3ab6c2ded43d3f05cbd5af6918efb2308b2ba14b65f8b9be9cb5bf2fe97"
+# Every headless spawn loads only the injected teatree MCP server (strict_mcp_config).
+_OPTIONS_SHA256 = "8605a5883aef449d6496710f97d362595eec6baa6692b318dbcfb66b627ded69"
 _SYSTEM_CONTEXT_SHA256 = "0cf9fa686abd48da9e2835248103340a92df451663820b6c0286de4ac6f9dcb1"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
@@ -154,7 +154,7 @@ class TestClaudeSdkDispatchIsPinned(TestCase):
 
     def _dispatch(self) -> tuple[str, dict[str, object]]:
         with (
-            patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", self._skills_dir),
+            patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", self._skills_dir),
             patch("teatree.agents.skill_injection.harness_skills_dirs", return_value=[self._skills_dir]),
         ):
             system_context = build_system_context(

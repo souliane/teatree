@@ -4,8 +4,8 @@ The one place the capability toolsets, the phase-scoping filter, the hard-deny
 wrapper, the soft-gate approval, and the MCP toolsets are composed into the list
 ``PydanticAiHarness`` passes as ``Agent(toolsets=...)``. Composition order (inner
 to outer): capabilities → phase filter → hard-deny wrapper → soft-gate approval;
-the read-only MCP toolsets ride alongside, EXCEPT for an empty (non-``None``)
-phase allowance — a ``_NONE`` phase (``short_describe``)
+the MCP toolsets ride alongside — launched with the phase's own serve flags —
+EXCEPT for an empty (non-``None``) phase allowance — a ``_NONE`` phase (``short_describe``)
 may call nothing, so no MCP attaches past the phase filter.
 """
 
@@ -21,8 +21,9 @@ from teatree.agents.lane_b.mcp import build_mcp_toolsets
 from teatree.agents.lane_b.shell import build_shell_toolset
 from teatree.agents.lane_b.tool_names import lane_b_tool_name
 from teatree.agents.skill_files import SkillFileIndex
-from teatree.agents.skill_injection import harness_skills_dirs
+from teatree.core.mcp_registration import serve_flags_for_phase
 from teatree.core.modelkit.phase_tools import tools_for_phase
+from teatree.skill_support.index import harness_skills_dirs
 
 
 @dataclass(frozen=True)
@@ -50,10 +51,10 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     toolset, or a skill-file-only toolset when there is no worktree — so a cited
     reference is followable either way. The composed capabilities are wrapped
     in :class:`HardDenyToolset` (the shared-registry hard-deny) and, when a soft
-    gate is configured, in the native ``approval_required`` deferral. The read-only
-    MCP toolsets are appended un-filtered — UNLESS the phase allowance is a
-    non-``None`` empty set (a ``_NONE`` phase), which exposes nothing and so gets
-    no MCP either.
+    gate is configured, in the native ``approval_required`` deferral. The MCP
+    toolsets are appended un-filtered — launched with the phase's own serve
+    flags — UNLESS the phase allowance is a non-``None`` empty set (a
+    ``_NONE`` phase), which exposes nothing and so gets no MCP either.
     """
     allowed = tools_for_phase(config.phase) if config.phase else None
     capability_toolsets: list[AbstractToolset[None]] = []
@@ -86,6 +87,10 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
 
     # A _NONE-phase allowance (empty, but NOT None) means the phase may call
     # nothing — so no MCP toolset may attach past the phase filter either.
-    mcp_toolsets: list[AbstractToolset[None]] = [] if allowed is not None and not allowed else build_mcp_toolsets()
+    mcp_toolsets: list[AbstractToolset[None]] = (
+        []
+        if allowed is not None and not allowed
+        else build_mcp_toolsets(serve_flags=serve_flags_for_phase(config.phase) if config.phase else [])
+    )
     toolsets: list[AbstractToolset[None]] = [gated, *mcp_toolsets]
     return LaneBToolsets(toolsets=toolsets, needs_deferred_output=bool(soft_gated))

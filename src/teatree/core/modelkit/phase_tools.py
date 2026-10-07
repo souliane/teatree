@@ -22,6 +22,14 @@ from typing import Final
 
 from teatree.core.modelkit.phases import normalize_phase
 
+#: Grants the teatree MCP server's write tools; a phase without it gets ``t3 mcp serve --read-only``.
+MCP_WRITE: Final = "mcp_write"
+
+#: The one write tool a phase without :data:`MCP_WRITE` still reaches: its own deliverable.
+_MCP_WRITE_TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
+    "requesting_review": frozenset({"review_request_post"}),
+}
+
 #: Every capability tool name Lane B can expose. A phase's allowance is a subset;
 #: the complement (universe minus allowance) is the disallow list Lane A injects.
 ALL_TOOLS: Final[frozenset[str]] = frozenset(
@@ -36,6 +44,7 @@ ALL_TOOLS: Final[frozenset[str]] = frozenset(
         "dispatch_subtask",
         "recall_memory",
         "record_attempt",
+        MCP_WRITE,
     }
 )
 
@@ -66,7 +75,7 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 #: --detach`` cold checkout) is how they post findings — a shell-less codex member
 #: reads the diff but never delivers, stalling and leaking an "I have no
 #: Bash/git/gh" question to the owner. ``requesting_review`` is deliberately NOT a
-#: member: it records no verdict and stays plain read-only.
+#: member: it records no verdict and stays shell-less.
 VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
     {"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"}
 )
@@ -94,12 +103,11 @@ ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 #: verify-gates`` / ``git`` / ``git log -S`` archaeology, and RECORD the verdict via
 #: ``t3 <overlay> review record`` / ``t3 review post-comment`` — with NO write/edit (a review
 #: never mutates source), so they stay least-privilege while being ABLE to produce a
-#: merge_safe/hold verdict (F4). The teatree MCP review
-#: tools (``mcp__teatree__github_pr_diff`` / ``review_post_comment`` /
-#: ``task_complete``) are MCP-server tools, not built-in capabilities, so they are
-#: never in the disallow complement and reach the spawn independently of this table.
-#: An unknown phase falls back to read-only (:func:`tools_for_phase`) —
-#: deny-by-default, so a new phase never silently inherits shell/write until it is
+#: merge_safe/hold verdict (F4). The teatree MCP server's read tools reach every
+#: phase that mounts it; its write tools need :data:`MCP_WRITE`, which only the
+#: authoring phases and ``shipping`` hold — ``requesting_review`` reaches the one
+#: tool that posts its request instead. An unknown phase falls back to read-only
+#: (:func:`tools_for_phase`) — deny-by-default, so a new phase never silently inherits shell/write until it is
 #: added here. TOTALITY: every dispatchable ``SUBAGENT_BY_PHASE`` phase MUST have an
 #: explicit entry here (the ``test_registry_parity`` totality lane), so the
 #: read-only fallback is defense-in-depth for a genuinely unregistered phase, never
@@ -130,7 +138,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # finds the real core seam and drafts a sketch, never edits or shells out.
     "directive_interpreting": _READ_ONLY | _WEB,
     "bughunt": _READ_ONLY | {"shell", "dispatch_subtask"},
-    "shipping": _READ_ONLY | {"shell", "record_attempt"},
+    "shipping": _READ_ONLY | {"shell", "record_attempt", MCP_WRITE},
     "answering": _READ_ONLY | _WEB,
     "retro": _READ_ONLY | _WRITE,
     # Scanner-dispatched phases (#3386): a loop scanner writes these directly to
@@ -152,7 +160,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     # (``_resolve_task_cwd``), which the write tools may NOT mutate —
     # ``core.gates.main_clone_guard`` denies an Edit/Write landing there, so the
     # authoring happens in the worktree the phase cuts off that clone.
-    "architectural_review": _READ_ONLY | _WEB | _WRITE | {"shell"},
+    "architectural_review": _READ_ONLY | _WEB | _WRITE | {"shell", MCP_WRITE},
     # ``dogfood_smoke`` shells out to ``t3 dogfood overlay-provision-smoke`` to run
     # the provision smoke, so it needs the shell (read-only+shell, mirroring
     # ``bughunt``/``shipping``); it never mutates source through the write tools.
@@ -191,3 +199,8 @@ def tools_for_phase(phase: str) -> frozenset[str]:
 def disallowed_tools_for_phase(phase: str) -> frozenset[str]:
     """Return the complement — the tools *phase* may NOT call (Lane A injects this)."""
     return ALL_TOOLS - tools_for_phase(phase)
+
+
+def mcp_write_tools_for_phase(phase: str) -> frozenset[str]:
+    """The teatree MCP write tools a phase without :data:`MCP_WRITE` still reaches — none for most."""
+    return _MCP_WRITE_TOOLS_BY_PHASE.get(normalize_phase(phase), frozenset())

@@ -33,13 +33,11 @@ def _warn_unrecognised_route_tiers(
 
 
 def _check_account_switch() -> bool:
-    """Detect a mid-session ``/login`` switch and report connector recovery (#1916).
+    """Detect a mid-session ``/login`` switch and invalidate the caches it leaves stale (#1916).
 
-    Runs the detect-invalidate-reprobe cycle. A clean run (no switch, or a
-    switch where every connector re-probed reachable) is OK. A switch that
-    leaves a connector unreachable is a hard FAIL — the stale bridge would
-    otherwise route DMs silently to the old workspace. Crash-proof: any error
-    degrades to a WARN so a doctor run never aborts on this check.
+    A switch is recovered here — the backend cache reset and the per-account token health
+    expired — so it is reported OK, never FAIL. Crash-proof: any error degrades to a WARN
+    so a doctor run never aborts on this check.
     """
     try:
         from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415 — lazy CLI import
@@ -48,22 +46,13 @@ def _check_account_switch() -> bool:
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Account-switch check crashed: {exc.__class__.__name__}: {exc}")
         return True
-    if not outcome.switched:
-        return True
-    if outcome.all_reachable:
+    if outcome.switched:
         typer.echo(
             f"OK    Claude account switch recovered ({outcome.previous_fingerprint[:8]}… → "
-            f"{outcome.current_fingerprint[:8]}…); backend cache reinvalidated, token health expired "
-            f"({outcome.token_health_rows_expired} row(s)), connectors reachable.",
+            f"{outcome.current_fingerprint[:8]}…); backend cache invalidated, token health expired "
+            f"({outcome.token_health_rows_expired} row(s)).",
         )
-        return True
-    unreachable = ", ".join(f"{p.name} ({p.detail})" for p in outcome.probes if not p.reachable)
-    typer.echo(
-        f"FAIL  Claude account switch detected ({outcome.previous_fingerprint[:8]}… → "
-        f"{outcome.current_fingerprint[:8]}…) but connectors are unreachable: {unreachable}. "
-        "Re-auth the MCP connector(s) in the Claude.ai UI, then re-run `t3 doctor check`.",
-    )
-    return False
+    return True
 
 
 def _check_agent_session_pins() -> bool:

@@ -19,10 +19,10 @@ from datetime import datetime
 from django.db import models, transaction
 from django.utils import timezone
 
-#: The marker prefix stamped on a parked ``TaskAttempt.error`` so a limit-park reads
-#: distinctly from a real failure — the sibling of ``headless._STUCK_LOOP_PREFIX``. Kept
-#: here (a DOMAIN home) so the ``teatree.agents`` park recorder AND the
-#: ``teatree.core`` repair-loop budget both reference ONE constant: a limit-park is a
+#: The marker prefix stamped on a parked ``TaskAttempt.error`` — a usage-window limit-park or a
+#: deploy-drain checkpoint — so a park reads distinctly from a real failure, the sibling of
+#: ``headless._STUCK_LOOP_PREFIX``. Kept here (a DOMAIN home) so the ``teatree.agents`` park
+#: recorder AND the ``teatree.core`` repair-loop budget both reference ONE constant: a park is a
 #: scheduling event, not a work iteration, so ``task_repair.phase_attempts`` excludes it.
 LIMIT_PARKED_PREFIX = "limit_parked: "
 

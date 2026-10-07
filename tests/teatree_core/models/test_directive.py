@@ -128,10 +128,30 @@ class TestAdmitIsHumanGated(TestCase):
         directive = _interpreted_directive()
         question = DeferredQuestion.record("Ratify?", options_hash="directive_ratify:test2")
         directive.attach_ratification(question)
-        DeferredQuestion.consume(question.pk, answer="approve")
+        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         directive.refresh_from_db()
         directive.admit()
         assert directive.state == Directive.State.ADMITTED
+
+    def test_admit_refuses_an_answer_no_owner_channel_gave(self) -> None:
+        for resolved_via in (DeferredQuestion.ResolvedVia.AGENT, DeferredQuestion.ResolvedVia.UNRESOLVED):
+            with self.subTest(resolved_via=resolved_via):
+                directive = _answered_directive(resolved_via)
+                with pytest.raises(DirectiveError, match="owner channel"):
+                    directive.admit()
+                directive.refresh_from_db()
+                assert directive.state == Directive.State.RATIFY_PENDING
+
+    def test_admit_accepts_every_owner_channel(self) -> None:
+        for resolved_via in (
+            DeferredQuestion.ResolvedVia.SLACK,
+            DeferredQuestion.ResolvedVia.LOCAL,
+            DeferredQuestion.ResolvedVia.POLICY,
+        ):
+            with self.subTest(resolved_via=resolved_via):
+                directive = _answered_directive(resolved_via)
+                directive.admit()
+                assert directive.state == Directive.State.ADMITTED
 
     def test_attach_ratification_requires_the_interpreted_state(self) -> None:
         directive = Directive.objects.capture("not yet interpreted", source=Directive.Source.CLI)
@@ -140,12 +160,17 @@ class TestAdmitIsHumanGated(TestCase):
             directive.attach_ratification(question)
 
 
-def _admitted_directive() -> Directive:
+def _answered_directive(resolved_via: str) -> Directive:
     directive = _interpreted_directive()
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    DeferredQuestion.consume(question.pk, answer="approve")
+    question.apply_answer("approve", resolved_via=resolved_via)
     directive.refresh_from_db()
+    return directive
+
+
+def _admitted_directive() -> Directive:
+    directive = _answered_directive(DeferredQuestion.ResolvedVia.LOCAL)
     directive.admit()
     return directive
 

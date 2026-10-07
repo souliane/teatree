@@ -15,12 +15,12 @@ from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import enqueue_llm_critic, record_critic_findings
 from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.intake.landscape_persist import persist_intake_landscape
-from teatree.core.managers import _claimable_now_q
 from teatree.core.managers_task_claim import claim_when_admitted
 from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
+from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
@@ -162,7 +162,7 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
 
 
 def drain_queue_body() -> dict[str, list[int]]:
-    """Auto-enqueue pending tasks for execution (safety net), failing poison rows.
+    """Fail poison rows, then run the admission walk (the safety net behind the post_save walk).
 
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
@@ -175,46 +175,21 @@ def drain_queue_body() -> dict[str, list[int]]:
     (:func:`teatree.loops.timer_reconciler.drain_chain`) that schedules it, so the
     two call sites can never drift.
 
-    A frozen factory (``headless_admission_block_reason``) withholds live rows like a
-    governor DENY; poison rows still fail, since that is cleanup, not paid work.
+    A frozen factory withholds live rows like a governor DENY; poison rows still fail,
+    since that is cleanup, not paid work.
     """
-    from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
-    from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — cycle-safe queue policy
+    from teatree.core.task_dispatch import admit_waiting_tasks  # noqa: PLC0415 — cycle-safe queue policy
 
-    # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
-    # ``not_before``. Draining it here would re-enqueue it, let the runner pre-flight
-    # re-park it, and churn a junk park attempt every ~5 min for the whole park window.
-    # The same ``_claimable_now_q`` gate the claim path uses skips it until its window
-    # re-arms, so the park is honoured once at both the drain and the claim seam.
-    pending = (
-        Task.objects.filter(status=Task.Status.PENDING)
-        .filter(_claimable_now_q(timezone.now()))
-        .select_related("ticket")
-        .only("pk", "phase", "ticket__role", "ticket__overlay")
-    )
-    # One probe per drain, resolved per row's phase cost class (#4098). A DENY applies
-    # backpressure to the ENQUEUE step only — poison rows are still failed this tick,
-    # live rows stay PENDING for the next admitted drain.
-    admission = agent_admission_verdict()
-    admission.log_denials()
-    blocked = headless_admission_block_reason()
-    if blocked:
-        logger.info("drain_queue_body: withholding new admissions — %s", blocked)
-    enqueued: list[int] = []
     failed_unknown_overlay: list[int] = []
-    for task_obj in pending:
-        if not task_obj.ticket.has_dispatchable_overlay():
-            reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
-            logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
-            task_obj.claim(claimed_by="unknown-overlay-guard")
-            task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
-            failed_unknown_overlay.append(task_obj.pk)
+    for task_obj in Task.objects.waiting_for_admission().only("pk", "phase", "ticket__role", "ticket__overlay"):
+        if task_obj.ticket.has_dispatchable_overlay():
             continue
-        if blocked or not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
-            continue
-        enqueue_execution(task_obj.pk, task_obj.phase)
-        enqueued.append(task_obj.pk)
-    return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
+        reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
+        logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
+        task_obj.claim(claimed_by="unknown-overlay-guard")
+        task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
+        failed_unknown_overlay.append(task_obj.pk)
+    return {"enqueued": admit_waiting_tasks(at="queue drain"), "failed_unknown_overlay": failed_unknown_overlay}
 
 
 @task()
@@ -301,6 +276,9 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
             ticket.save()
     except CriticGateError as exc:
         _persist_critic_block(ticket_id, exc)
+        return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(None, phase="retro", ticket=Ticket.objects.get(pk=ticket_id), refusal=str(exc))
         return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
@@ -520,7 +498,9 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
 
     A failure on a ticket with no repos yet, or one the runner marks retryable (a remote
     could not be read), re-enqueues itself as *attempt* + 1 on ``NO_REPOS_RETRY_DELAYS``
-    and asks the owner only once that budget is spent.
+    and asks the owner only once that budget is spent. A ticket with no repo and no forge
+    issue to attach one from (a repair ticket, a synthetic key, a PR url) has nothing to check
+    out and is skipped.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
@@ -532,11 +512,12 @@ def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.WORK_STARTED:
+        if ticket.state != Ticket.State.WORK_STARTED or not ticket.has_checkout_source:
             logger.info(
-                "execute_provision skipped for ticket %s: state=%s (not WORK_STARTED)",
+                "execute_provision skipped for ticket %s: state=%s, has_checkout_source=%s",
                 ticket_id,
                 ticket.state,
+                ticket.has_checkout_source,
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 

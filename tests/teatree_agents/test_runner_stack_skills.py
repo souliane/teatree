@@ -16,7 +16,8 @@ from teatree.agents import runner_preparation, skill_assurance
 from teatree.agents.runner import run_agent
 from teatree.agents.skill_assurance import assess_skill_dispatch
 from teatree.core.models import Session, Task
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
+from teatree.skill_support import index as skill_index
+from teatree.skill_support.index import DEFAULT_SKILLS_DIR
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -50,9 +51,10 @@ class TestEveryCodePhaseRequiresBothStackSkills(TestCase):
         clone = workspace / "souliane" / "teatree"
         (clone / ".git").mkdir(parents=True)
         (clone / "manage.py").write_text("# django project\n", encoding="utf-8")
-        review_skill = Path.home() / ".claude" / "skills" / "code-review"
-        review_skill.mkdir(parents=True)
-        (review_skill / "SKILL.md").write_text("# code-review\n", encoding="utf-8")
+        for name in ("code-review", "ac-reviewing-codebase"):
+            installed = Path.home() / ".claude" / "skills" / name
+            installed.mkdir(parents=True)
+            (installed / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
 
     def _task(self, phase: str) -> Task:
         ticket = planned_ticket(repos=["souliane/teatree"], overlay="t3-teatree")
@@ -79,6 +81,7 @@ class TestEveryCodePhaseRequiresBothStackSkills(TestCase):
         with (
             fake_sdk(success_stream({"summary": "should not run"})) as fake,
             patch.object(skill_assurance, "harness_skills_dirs", return_value=[DEFAULT_SKILLS_DIR, only_django]),
+            patch.object(skill_index, "install_roots", return_value=[only_django, *skill_index.install_roots()]),
         ):
             attempt = run_agent(self._task("planning"), phase="planning", overlay_skill_metadata={})
             opened = fake.last_options

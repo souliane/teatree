@@ -231,7 +231,7 @@ depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 [[modules]]
 path = "teatree.skill_support"
 layer = "platform"
-depends_on = ["teatree.types", "teatree.utils", "teatree.project"]
+depends_on = ["teatree.types", "teatree.utils", "teatree.project", "teatree.provisioning"]
 
 [[modules]]
 path = "teatree.provisioning"
@@ -508,10 +508,13 @@ depends_on = [
   "teatree.core.admission",
   "teatree.core.modelkit",
   "teatree.core.models",
+  # the heartbeat checkpoints a run on the drain subset of the claim composition.
+  "teatree.core.managers_task_claim",
   # The headless attempt recorder emits a bounded receipt after persistence;
   # this telemetry leaf has no edge back into agents.
   "teatree.core.telemetry",
   "teatree.credential_config",
+  "teatree.paths",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config"
@@ -646,6 +649,7 @@ depends_on = [
   "teatree.quality",
   "teatree.hooks",
   "teatree.mcp",
+  "teatree.browser",
   "teatree.cli.eval"
 ]
 
@@ -825,11 +829,18 @@ layer = "domain"
 depends_on = ["teatree.loop.loop_scoping", "teatree.loop.statusline_palette"]
 
 [[modules]]
+# The drain gate's ORM-level read and write, so the domain-layer statusline can show a deploy drain.
+path = "teatree.loop.drain"
+layer = "domain"
+depends_on = ["teatree.core.models"]
+
+[[modules]]
 path = "teatree.loop.statusline_loops"
 layer = "domain"
 depends_on = [
   "teatree.config",
   "teatree.core",
+  "teatree.loop.drain",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
   "teatree.loop.session_identity",
@@ -1099,9 +1110,14 @@ layer = "platform"
 depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
+path = "teatree.browser"
+layer = "integration"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.visual_qa"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.utils"]
+depends_on = ["teatree.browser", "teatree.core", "teatree.utils"]
 
 [[modules]]
 path = "teatree.instance_id"

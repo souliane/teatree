@@ -223,6 +223,16 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `live`
+
+Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+
+| Subcommand | Description |
+| --- | --- |
+| `inspect` | Show one live session's state, tool and progress without contacting the agent |
+| `steer` | Send input into a running agent's current turn and print its receipt (active) |
+| `list` | List every live session on this host's workers (passive) |
+
 ## `loop_directive_set`
 
 Switch standing-directive slots off (disable) or back on (enable) (#4166).
@@ -608,8 +618,9 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
 | `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
-| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
+| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, address_self_review, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
+| `rework-hold` | Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
 | `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |
 | `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |

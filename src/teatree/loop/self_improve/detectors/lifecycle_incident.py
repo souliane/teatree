@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
@@ -94,6 +95,7 @@ class LifecycleIncidentDetector:
         now = self.now()
         telemetry = checked_lifecycle_observations(directory=self.directory, now=now)
         reports = self._failed_tasks(now) + self._recent_attempt_failures(telemetry.rows) + self._stalled_tasks(now)
+        reports.extend(self._phase_wedges())
         reports.extend(self._inbound_questions(now))
         reports.extend(self._outbound_questions(now))
         prefix = self._key("attempt_failure_burst", "")
@@ -309,6 +311,51 @@ class LifecycleIncidentDetector:
                     action="Inspect the existing self-improve repair ticket and its stalled task.",
                 )
             )
+        return reports
+
+    def _phase_wedges(self) -> list[DetectorReport]:
+        """Pending fsm-wedge rows, grouped by phase; the ticket comes from the marker, as a retro row has no session.
+
+        Deterministic like a stalled task, so a wedge goes straight to the ticket rung; a repair
+        ticket's own wedge stays on the statusline, never opening a repair ticket for a repair ticket.
+        """
+        wedges = {
+            (int(match["ticket"]), match["phase"])
+            for marker in DeferredQuestion.pending()
+            .filter(dedupe_marker__startswith="fsm-wedge:")
+            .values_list("dedupe_marker", flat=True)
+            if (match := PHASE_WEDGE_MARKER_RE.match(marker))
+        }
+        tickets = Ticket.objects.filter(pk__in={ticket_id for ticket_id, _phase in wedges})
+        if self.overlay_name:
+            tickets = tickets.filter(overlay=self.overlay_name)
+        sources = dict(tickets.values_list("pk", "extra__source"))
+        by_phase: dict[str, list[int]] = defaultdict(list)
+        repair_by_phase: dict[str, list[int]] = defaultdict(list)
+        for ticket_id, phase in sorted(wedges):
+            if ticket_id in sources:
+                groups = repair_by_phase if sources[ticket_id] == "self_improve" else by_phase
+                groups[phase].append(ticket_id)
+        reports = [
+            self._report(
+                kind="phase_wedge",
+                cause=phase,
+                ids=ids,
+                rung=ActionRung.TICKET,
+                action="Find why the completed phase could not advance its ticket, fix that path, then re-drive it.",
+            )
+            for phase, ids in sorted(by_phase.items())
+        ]
+        reports.extend(
+            self._report(
+                kind="repair_phase_wedge",
+                cause=phase,
+                ids=ids,
+                rung=ActionRung.STATUSLINE,
+                action="Inspect the wedged self-improve repair ticket; do not create a second repair ticket.",
+            )
+            for phase, ids in sorted(repair_by_phase.items())
+        )
         return reports
 
     def _inbound_questions(self, now: datetime) -> list[DetectorReport]:

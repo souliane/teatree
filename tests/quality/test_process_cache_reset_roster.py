@@ -137,6 +137,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
     "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
+    "teatree.agents.live_registry:_shared_registries": "reset_shared_registries",
     "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
     "teatree.core.backend_factory:_code_host_cache": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_cache": "reset_backend_caches",
@@ -226,6 +227,13 @@ EXEMPT: dict[str, str] = {
         "resetting it would clear nothing"
     ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
+    "teatree.skill_support.pin_shadow:_running_code_manifest": (
+        "@cache of the apm.yml beside the running code; derived from __file__, so process-stable"
+    ),
+    "teatree.skill_support.pin_shadow:_parsed": (
+        "manifest-path-keyed memo re-validated against the file's mtime_ns on every read, so an "
+        "edited or per-test manifest is always re-parsed"
+    ),
     "teatree.config.setting_taxonomy:taxonomy": (
         "a view over import-populated registries (feature flags, gate evidence, cold + "
         "registry key sets); nothing mutates them at runtime, so the memo cannot hold another test's state"

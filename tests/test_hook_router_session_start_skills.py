@@ -1,3 +1,5 @@
+# test-path: cross-cutting
+# Drives hooks/scripts/session_start_skills.py through hook_router; no src/teatree mirror.
 """``autoload = true`` must put the context skills in the FIRST turn's context (#3869).
 
 SessionStart is the one skill-selection path, so the skills arrive before the first turn —
@@ -16,6 +18,7 @@ from unittest import mock
 import pytest
 
 from hooks.scripts import hook_router, session_start_skills
+from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
 
 
 @pytest.fixture
@@ -128,8 +131,25 @@ class TestDefaultOffAndNeverLockoutAreUnchanged:
             mock.patch.object(session_start_skills, "_suggest", side_effect=RuntimeError("boom")),
         ):
             _bootstrap()  # must not raise
-        assert "LOAD THESE SKILLS" not in _emitted_context(capsys)
+        context = _emitted_context(capsys)
+        assert "LOAD THESE SKILLS" not in context
+        assert "apm pin" not in context
         # And the session is still ENGAGED — the failure cost the hint, not the engagement.
+        assert (state_dir / "s1.teatree-active").is_file()
+
+    def test_a_shadowed_apm_pin_is_named_in_the_context_instead_of_vanishing(
+        self, state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        shadow = SkillShadowsDeclaredPinError("ac-x", "owner/skills/ac-x#abc", Path("/repo/skills/ac-x/SKILL.md"))
+        with (
+            mock.patch.object(hook_router, "_autoload_enabled", return_value=True),
+            mock.patch.object(hook_router, "_loop_auto_load_active", return_value=False),
+            mock.patch.object(session_start_skills, "_suggest", side_effect=shadow),
+        ):
+            _bootstrap()  # must not raise
+        context = _emitted_context(capsys)
+        assert "owner/skills/ac-x#abc" in context
+        assert "/repo/skills/ac-x/SKILL.md" in context
         assert (state_dir / "s1.teatree-active").is_file()
 
     def test_no_suggestions_writes_no_pending_demand(self, state_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:

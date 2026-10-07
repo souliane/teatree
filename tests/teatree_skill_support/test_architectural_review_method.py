@@ -19,6 +19,8 @@ stores" shape the pass is supposed to find.
 import re
 from pathlib import Path
 
+import yaml
+
 from teatree.core.modelkit.phase_tools import tools_for_phase
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
 from teatree.quality.catalog import load_catalog
@@ -156,3 +158,20 @@ class TestMethodNotes:
     def test_probe_venue_is_confirmed(self) -> None:
         body = _body().lower()
         assert "probe from the place that matters" in body, "the probe-venue note is missing"
+
+
+class TestTheGenericMethodIsACompanion:
+    """#4769: ``ac-reviewing-codebase`` is the method; this skill keeps only the tier rules."""
+
+    def test_the_skill_requires_exactly_the_generic_review_skill(self) -> None:
+        _, frontmatter, _ = _body().split("---", 2)
+        assert yaml.safe_load(frontmatter)["requires"] == ["ac-reviewing-codebase"]
+
+    def test_every_generic_confirmation_step_has_a_headless_rule(self) -> None:
+        section = _body().split("## Headless: the generic skill's confirmation steps", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("| ") and not line.startswith("| Generic")]
+        named = " ".join(row.split(" | ", 1)[0] for row in rows)
+        steps = ("0.3", "0.4", "0.5", "0.6", "Rule 4", "Rule 10", "5.2", "5.3", "6.6", "6.7", "6.8")
+        for step in (*steps, "review-verify", "Configuration fallback"):
+            assert step in named, f"generic step {step} has no headless rule"
+        assert all(row.split(" | ")[1].strip(" |") for row in rows), "a headless row names a step but no rule"

@@ -560,6 +560,11 @@ class PathHelpers:
         return base if all(marker.exists() for marker in markers) else None
 
     @staticmethod
+    def browser_session_dir(checkout: Path) -> Path:
+        """Where the ``t3 browser`` session of *checkout* keeps its state; removing it ends the session."""
+        return data_dir_root() / "browser-sessions" / isolated_slug(checkout)
+
+    @staticmethod
     def get_data_dir(namespace: str) -> Path:
         data_dir = DATA_DIR / namespace
         data_dir.mkdir(parents=True, exist_ok=True)

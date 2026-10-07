@@ -8,25 +8,40 @@ re-queues via its lease lapse. ``sleep`` / ``monotonic`` are injected so the wai
 driven without wall-clock time.
 """
 
-from datetime import datetime, timedelta
+import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from unittest.mock import patch
 
 import django.test
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from django.utils import timezone
 
+from teatree.agents._runner_options import _build_options
+from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat
+from teatree.agents.runner_interruption import CeilingSalvage
+from teatree.agents.runner_outcomes import record_outcome
+from teatree.agents.runner_usage import DispatchProvenance
+from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
+from teatree.core.managers_task_claim import drain_block_reason
 from teatree.core.models import ConfigSetting, WorkerGeneration
 from teatree.core.models.task import Task
+from teatree.core.models.task_claim import drive_claim
 from teatree.loop.drain import (
     DrainOutcome,
     DrainPacing,
     DrainProgress,
+    DrainReport,
     GenerationNotDrainableError,
+    QuiescePayload,
+    QuiesceStatus,
     drain_worker,
+    quiesce_status,
     set_worker_quiescing,
 )
-from tests.factories import TaskFactory
+from tests.factories import TaskFactory, planned_ticket
+from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarness
 
 _NO_WAIT = DrainPacing(sleep=lambda _seconds: None)
 
@@ -200,3 +215,137 @@ class TestGenerationScopedDrain(django.test.TestCase):
     def test_an_unregistered_generation_cannot_be_drained(self) -> None:
         with pytest.raises(GenerationNotDrainableError, match="cccccccccccc is not registered"):
             drain_worker(timeout=1800, generation="c" * 40, pacing=_NO_WAIT)
+
+
+_RESUMED_SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+class TestAnInFlightRunCheckpointsOnTheDrain(django.test.TestCase):
+    """The drain ends at the in-flight run's next heartbeat, and the fresh worker resumes it (#5089)."""
+
+    def setUp(self) -> None:
+        self.task = cast("Task", TaskFactory(ticket=planned_ticket(), status=Task.Status.PENDING))
+        self.task.claim(claimed_by="old-worker", lease_seconds=900)
+        # Claimed long ago, so only the drive marker (not the fresh-claim grace) can hold the drain.
+        Task.objects.filter(pk=self.task.pk).update(claimed_at=timezone.now() - timedelta(minutes=10))
+        self.task.refresh_from_db()
+
+    def _run_to_its_checkpoint(self, _seconds: float) -> None:
+        # Read here: the run's heartbeat thread cannot see this TestCase's uncommitted gate row.
+        drain = drain_block_reason()
+        harness = OneSessionHarness(InterruptibleSession([], session_id=_RESUMED_SESSION))
+        runtime = HeartbeatRuntime(
+            watchdog=LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0),
+            heartbeat_interval=0.005,
+            sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+            renew_lease=lambda _task: None,
+            drain_reason=lambda: drain,
+        )
+        outcome = asyncio.run(drive_with_heartbeat(self.task, "p", ClaudeAgentOptions(), harness, runtime=runtime))
+        record_outcome(
+            self.task, outcome, harness, CeilingSalvage(phase="coding", lane="", provenance=DispatchProvenance())
+        )
+
+    def _drain(self) -> DrainReport:
+        clock = _FakeClock([0.0, 0.0, 700.0])
+        with drive_claim(self.task):
+            return drain_worker(
+                timeout=600, pacing=DrainPacing(poll_interval=0, sleep=self._run_to_its_checkpoint, monotonic=clock)
+            )
+
+    def test_the_drain_ends_once_the_run_checkpoints(self) -> None:
+        report = self._drain()
+
+        assert report.outcome is DrainOutcome.DRAINED
+        assert report.still_claimed == []
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING, "the run parked to resume; a watchdog kill would read FAILED"
+
+    def test_the_fresh_worker_claims_the_run_and_resumes_its_conversation(self) -> None:
+        self._drain()
+        set_worker_quiescing(value=False)
+
+        claimed = Task.objects.claim_next_pending(claimed_by="fresh-worker")
+
+        assert claimed == self.task
+        assert _build_options(claimed, "ctx", phase="coding", skills=[]).resume == _RESUMED_SESSION
+
+
+_DRAIN_STARTED = datetime(2026, 10, 6, 16, 26, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("status", "line", "payload"),
+    [
+        pytest.param(
+            QuiesceStatus(since=_DRAIN_STARTED, age_seconds=725.4, in_flight=[5461, 5462]),
+            "deploy drain: quiescing since 16:26Z (12m), waiting on task(s) 5461, 5462, "
+            "which checkpoint at their next heartbeat",
+            {"since": "2026-10-06T16:26:00+00:00", "age_seconds": 725, "in_flight": [5461, 5462]},
+            id="dated-with-runs-in-flight",
+        ),
+        pytest.param(
+            QuiesceStatus(since=None, age_seconds=None, in_flight=[]),
+            "deploy drain: quiescing outside the config store, so undateable, no task in flight",
+            {"since": None, "age_seconds": None, "in_flight": []},
+            id="undateable-and-idle",
+        ),
+    ],
+)
+def test_a_quiesced_worker_reports_its_drain(status: QuiesceStatus, line: str, payload: QuiescePayload) -> None:
+    assert status.status_line() == line
+    assert status.as_json() == payload
+
+
+class TestQuiesceStatus(django.test.TestCase):
+    def test_an_open_gate_reports_no_drain(self) -> None:
+        set_worker_quiescing(value=False)
+
+        assert quiesce_status() is None
+
+    def test_a_quiesced_worker_is_dated_by_its_gate_row(self) -> None:
+        set_worker_quiescing(value=True)
+        ConfigSetting.objects.filter(key="worker_quiescing").update(updated_at=timezone.now() - timedelta(minutes=3))
+
+        status = quiesce_status()
+
+        assert status is not None
+        assert status.since is not None
+        assert 170 <= (status.age_seconds or 0) <= 200
+
+
+class TestTheDrainWaitsOnlyOnRunsAWorkerDrives(django.test.TestCase):
+    """An operator's in-session claim is not executed by the worker, so it cannot hold the drain."""
+
+    def _claimed(self, *, claimed_by: str, lease_seconds: int, minutes_ago: int) -> Task:
+        task = cast("Task", TaskFactory(status=Task.Status.PENDING))
+        task.claim(claimed_by=claimed_by, claimed_by_session="sess-operator", lease_seconds=lease_seconds)
+        Task.objects.filter(pk=task.pk).update(claimed_at=timezone.now() - timedelta(minutes=minutes_ago))
+        return task
+
+    def _drain(self) -> DrainReport:
+        return drain_worker(timeout=600, pacing=DrainPacing(sleep=lambda _s: None, monotonic=_FakeClock([0.0, 700.0])))
+
+    def test_an_operators_in_session_claim_does_not_hold_the_drain(self) -> None:
+        self._claimed(claimed_by="interactive-decongest", lease_seconds=4 * 3600, minutes_ago=10)
+
+        report = self._drain()
+
+        assert report.outcome is DrainOutcome.DRAINED
+        assert report.still_claimed == []
+
+    def test_a_run_its_worker_drives_still_holds_the_drain(self) -> None:
+        task = self._claimed(claimed_by="task-worker", lease_seconds=900, minutes_ago=10)
+
+        with drive_claim(task):
+            report = self._drain()
+
+        assert report.outcome is DrainOutcome.GRACE_EXCEEDED
+        assert report.still_claimed == [task.pk]
+
+    def test_a_fresh_claim_not_yet_driving_still_holds_the_drain(self) -> None:
+        task = self._claimed(claimed_by="task-worker", lease_seconds=900, minutes_ago=0)
+
+        report = self._drain()
+
+        assert report.still_claimed == [task.pk]

@@ -11,7 +11,7 @@ The three readers under test:
 
 * ``managed_repo.load_protected_branches`` — overlay ``protected_branches``;
 * ``managed_repo.overlay_managed_repo_signals`` — overlay repo slugs + ``path``;
-* ``hook_router._self_dm_destination_ids`` — overlay Slack DM/user ids.
+* ``self_dm_destinations.read_self_dm_destinations`` — overlay Slack DM/user ids.
 """
 
 import json
@@ -20,8 +20,7 @@ from pathlib import Path
 
 import pytest
 
-import hooks.scripts.hook_router as router
-from hooks.scripts import managed_repo
+from hooks.scripts import managed_repo, self_dm_destinations
 
 
 def _make_config_db(path: Path, *, overlays: dict[str, object]) -> None:
@@ -108,7 +107,7 @@ class TestSelfDmDestinationIdsDbFirst:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         _empty_home(tmp_path, monkeypatch)
 
-        dest = router._self_dm_destination_ids()
+        dest = self_dm_destinations.read_self_dm_destinations()
 
         assert dest.resolved is True
         assert "U0ACMEUSER0" in dest.ids
@@ -119,7 +118,7 @@ class TestSelfDmDestinationIdsDbFirst:
         _empty_home(tmp_path, monkeypatch)
         _no_db(tmp_path, monkeypatch)
 
-        dest = router._self_dm_destination_ids()
+        dest = self_dm_destinations.read_self_dm_destinations()
 
         assert dest.resolved is False
         assert dest.ids == frozenset()

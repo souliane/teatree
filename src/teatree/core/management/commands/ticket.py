@@ -18,6 +18,7 @@ from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._note_commands import NoteCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
+from teatree.core.management.commands._rework_hold_commands import ReworkHoldCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
 from teatree.core.management.commands._target_branch_commands import TargetBranchCommands
@@ -108,10 +109,10 @@ def _verdict_slug(request: ClearRequest, resolved_slug: str) -> str:
     )
 
 
-# The 10-mixin base list is a django-typer requirement, not a composition-bar
+# The 12-mixin base list is a django-typer requirement, not a composition-bar
 # violation: django-typer discovers ``@command``-decorated methods by walking the
 # Command class's own MRO, so each cohesive command group (rubric, plan, show,
-# context, close, attachment, merge-keystone, sweep, target-branch, clear-backfill) MUST be a base
+# context, close, attachment, merge-keystone, note, sweep, target-branch, clear-backfill, rework-hold) MUST be a base
 # class of the single ``Command`` rather than a plain collaborator it delegates to — a helper
 # object's methods would never register as CLI subcommands. The mixins stay
 # single-concern; only their registration is inheritance-shaped.
@@ -127,6 +128,7 @@ class Command(
     SweepCommands,
     TargetBranchCommands,
     ClearBackfillCommands,
+    ReworkHoldCommands,
     MachineOutputCommand,
     # #4234: every refusal below is RETURNED so the loop can route on it —
     # `CallCommandMergeKeystone.merge_clear` reads five keys off `merge`. The base class

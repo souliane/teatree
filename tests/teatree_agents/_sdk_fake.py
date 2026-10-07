@@ -18,6 +18,7 @@ threaded DB read under ``TestCase``'s wrapping SQLite transaction is a harness
 artifact that deadlocks the connection — not production behaviour.
 """
 
+import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Iterator
@@ -41,6 +42,7 @@ import teatree.agents.skill_assurance as skill_assurance_mod
 import teatree.agents.skill_injection as skill_injection_mod
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.runner import TaskUsage
+from teatree.skill_support import index as skill_index
 
 
 def result_message(**overrides: Any) -> ResultMessage:
@@ -140,8 +142,6 @@ class FakeHarnessSession:
         type(self).last_prompt = prompt
 
     async def receive_response(self) -> AsyncIterator[Any]:
-        import asyncio  # noqa: PLC0415
-
         for message in self._messages:
             # Model the real SDK: once ``interrupt()`` lands the server stops
             # streaming, so the consumer never sees the remaining messages. The
@@ -178,6 +178,48 @@ class FakeHarness:
         yield FakeHarnessSession(self._messages, delay=self._delay)
 
 
+class InterruptibleSession:
+    """A session that streams *opening*, keeps working until interrupted, then ends as the SDK does."""
+
+    def __init__(self, opening: list[Any], *, session_id: str) -> None:
+        self._opening = opening
+        self._session_id = session_id
+        self._interrupted = asyncio.Event()
+        self.interrupts = 0
+
+    async def query(self, prompt: str) -> None:
+        pass
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        for message in self._opening:
+            yield message
+        await self._interrupted.wait()
+        yield result_message(
+            session_id=self._session_id,
+            subtype="error_during_execution",
+            is_error=True,
+            num_turns=12,
+            usage={"input_tokens": 900, "output_tokens": 300},
+        )
+
+    async def interrupt(self) -> None:
+        self.interrupts += 1
+        self._interrupted.set()
+
+
+class OneSessionHarness:
+    """A ``Harness`` double that opens the one *session* it was handed."""
+
+    capabilities = HarnessCapabilities()
+
+    def __init__(self, session: InterruptibleSession) -> None:
+        self.session = session
+
+    @contextlib.asynccontextmanager
+    async def open(self, _options: Any) -> AsyncIterator[InterruptibleSession]:
+        yield self.session
+
+
 @contextlib.contextmanager
 def fake_sdk(
     messages: list[Any],
@@ -203,7 +245,9 @@ def fake_sdk(
     # remain fail-closed if the explicit stack skill is missing from the host.
     fixture_skills = Path(__file__).parents[1] / "fixtures" / "agent_skills"
     skill_dirs = [*skill_injection_mod.harness_skills_dirs(), fixture_skills]
+    install_roots = [fixture_skills, *skill_index.install_roots()]
     with (
+        patch.object(skill_index, "install_roots", return_value=install_roots),
         patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
         patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),

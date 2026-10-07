@@ -71,7 +71,7 @@ Two checks assert it: `tests/conformance/test_github_access_is_https.py` scans t
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
 - **Search the open backlog first, and reuse a host issue where one fits.** `gh issue list` returns 30 rows by default, so a first-page read reports "nothing open matches this" while the host sits at position 40 — pass `--limit 200`. Extending beats filing a near-duplicate: append the new evidence and acceptance criteria to the existing issue's **body**, so the host carries the whole ask. A cross-link from a second issue is not reuse.
-- **The description is the specification; a comment is not.** A lane reads the issue body and nothing else, so a requirement, change request, scope change or decision posted as a comment is silently never executed. Record one with `t3 <overlay> ticket comment <url> --purpose requirement|change_request|scope_change|decision` (or the `<forge>_issue_note` MCP tool) — it appends a dated section to the description. Only `--purpose status|evidence` stays a comment, and a ticket sweep refuses even those. Both surfaces refuse a ticket the owner or the factory bot did not file: external people's tickets stay theirs.
+- **The description is the specification; a comment is not.** A lane reads the issue body and nothing else, so a requirement, change request, scope change or decision posted as a comment is silently never executed. Record one with `t3 <overlay> ticket comment <url> --purpose requirement|change_request|scope_change|decision` (or the `<forge>_issue_note` MCP tool) — it appends a dated section to the description. Only `--purpose status|evidence` stays a comment, and a ticket sweep refuses even those. Both surfaces refuse a ticket the owner, the factory bot, or the CI workflows of a repo in the owner's own namespace (`github-actions[bot]`) did not file: external people's tickets stay theirs.
 - **One issue per root cause, not per finding.** Findings that a single PR would close belong in one issue. The exception is scope, not similarity: a genuinely unrelated defect in another subsystem still gets its own issue — this rule bounds duplication, never the backlog's coverage.
 - **Teatree is a public repository.** Only generic, project-agnostic issues belong here. Never mention downstream project names, tenant names, customer names, internal architecture, feature flags, or any proprietary information.
 - **Overlay-specific issues go on the overlay repository.** If an issue involves both core teatree and an overlay, create it on the overlay repo and reference the core component — not the other way around.
@@ -191,6 +191,25 @@ queryset inside `except (OperationalError, ProgrammingError): return
 <empty>` — narrow to the missing-relation classes so a genuine DB
 outage still surfaces via `_run_job`. Canonical exemplars:
 `IncomingEventsScanner.scan`, `_reap_stale_task_claims`.
+
+### Squashing the core migrations (Non-Negotiable)
+
+Whoever writes up or performs a squash of `src/teatree/core/migrations/`
+follows both rules, in the code and in the squash PR's deploy note:
+
+- **The squashed initial migration takes a NEW name.** Never `0001_initial`,
+  and never a name any install already recorded, the current squash's own
+  name included. Code from before the squash that meets a squashed database
+  then finds none of its own rows and stops at its first `CreateModel` on an
+  existing table. A reused name would instead read the squash as its own
+  first migration and replay its later, destructive migrations over the
+  squashed schema. Add every retired name to `_PRE_SQUASH_ROWS` in
+  `tests/teatree_core/test_migration_squash_existing_db.py`, which refuses
+  a squash that reuses one.
+- **The squash has no automatic rollback.** The one-time rewrite of the
+  `core` rows in `django_migrations` cannot be undone by `migrate`. The only
+  rollback is restoring the pre-squash backup taken in the maintenance
+  window, so the deploy note names that backup and says so.
 
 ## Three-Tier Command Split
 
@@ -339,7 +358,7 @@ bash dev/test-matrix.sh             # Declared exception: Docker matrix, Python 
 
 **`dev/test-fast.sh` and `dev/test-matrix.sh` are explicit opt-in local runners, not the push path.** Run `dev/test-fast.sh` when you want the host suite locally on Python 3.13. Run `dev/test-matrix.sh` before merges that touch `dev/Dockerfile.test`, `uv.lock`, or system dependencies: it runs the suite in Docker across Python 3.13 + 3.14 and catches missing system dependencies and Python-version-specific differences the host gate can't. If the Dockerfile changed, remove the cached image first: `docker rmi teatree-test`.
 
-**The CI `test (3.13)` gate is sharded 4-way behind an unchanged combiner.** The heavy lane is a `test-shard` matrix (`pytest-split --splits 4 --group N`, `-n auto` within each shard) that measures coverage but enforces NO floor; the `test` COMBINER job aggregates them — it fails if any shard failed, asserts the shards partition the suite exactly once (`scripts/ci/check_shard_completeness.py`), then combines the coverage and enforces the 93% floor + per-module floors ONCE over the whole tree. The required check context stays `test (3.13)` (the combiner's job key + matrix are unchanged); local parity is still the single-process `bash dev/test-cov.sh`. Shard balance is tuned by the committed `dev/.test_durations` — staleness only degrades balance, never correctness (pytest-split falls back to even chunking). Regenerate it from a full run when balance drifts: `uv run --group shard pytest --store-durations --durations-path dev/.test_durations` (the `shard` group is opt-in, out of the default `dev` group like `shuffle`). The weekly (Sunday) scheduled run does this for you onto the stable `ci/test-durations-refresh` branch. Fixes that refresh's own review requires (raised timeout ceilings, markers) belong **on that branch**: the next run merges the base under them and preserves every path other than `dev/.test_durations`, or refuses and says why — it no longer rebuilds the ref over them (#4717).
+**The CI `test (3.13)` gate is sharded 12-way behind an unchanged combiner.** The heavy lane is a `test-shard` matrix (`pytest-split --splits 12 --group N`, `-n auto` within each shard) that measures coverage but enforces NO floor; the `test` COMBINER job aggregates them — it fails if any shard failed, asserts the shards partition the suite exactly once (`scripts/ci/check_shard_completeness.py`), then combines the coverage and enforces the 93% floor + per-module floors ONCE over the whole tree. The required check context stays `test (3.13)` (the combiner's job key + matrix are unchanged); local parity is still the single-process `bash dev/test-cov.sh`. Shard balance is tuned by the committed `dev/.test_durations` — staleness only degrades balance, never correctness (pytest-split falls back to even chunking). Regenerate it from a full run when balance drifts: `uv run --group shard pytest --store-durations --durations-path dev/.test_durations` (the `shard` group is opt-in, out of the default `dev` group like `shuffle`). The weekly (Sunday) scheduled run does this for you onto the stable `ci/test-durations-refresh` branch. Fixes that refresh's own review requires (raised timeout ceilings, markers) belong **on that branch**: the next run merges the base under them and preserves every path other than `dev/.test_durations`, or refuses and says why — it no longer rebuilds the ref over them (#4717).
 
 ### Test-Writing Doctrine (Non-Negotiable)
 

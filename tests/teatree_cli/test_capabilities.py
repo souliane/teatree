@@ -50,6 +50,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         env,
         followup,
         identities,
+        live,
         loop_preset,
         pr,
         questions,
@@ -84,6 +85,9 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "loop preset show": loop_preset.Command.show,
         "teatree questions list": questions.Command.list_pending,
         "teatree questions reachability": questions.Command.reachability,
+        "teatree live list": live.Command.list_sessions,
+        "teatree live inspect": live.Command.inspect,
+        "teatree live steer": live.Command.steer,
         # ``signals`` is a bare-``handle`` command (no subcommand token): like
         # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
         # so its real ``--json`` param lives on the registered typer callback.
@@ -96,6 +100,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree ticket set-target-branch": ticket.Command.set_target_branch,
+        "teatree ticket rework-hold": ticket.Command.rework_hold,
         "teatree ticket sweep-begin": ticket.Command.sweep_begin,
         "teatree ticket sweep-finish": ticket.Command.sweep_finish,
         "teatree ticket sweep-trend": ticket.Command.sweep_trend,

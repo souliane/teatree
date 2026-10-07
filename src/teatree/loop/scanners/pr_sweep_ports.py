@@ -36,7 +36,7 @@ class PrApiClient(Protocol):
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool: ...  # pragma: no branch
 
-    def merge_pr_squash_bound(
+    def merge_pr_bound(
         self,
         *,
         slug: str,

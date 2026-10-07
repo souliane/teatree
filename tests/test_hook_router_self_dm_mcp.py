@@ -1,9 +1,9 @@
-# test-path: cross-cutting — the gate spans hook_router.py (hooks/) and teatree.config.host_projection.
-"""Self-DM-token gate: refuse claude.ai Slack MCP writes to a bot↔user DM channel.
+# test-path: cross-cutting — the gate spans hooks/scripts/self_dm_destinations.py and teatree.config.host_projection.
+"""Self-DM-token gate: refuse third-party Slack MCP writes to a bot↔user DM channel.
 
-The claude.ai Slack MCP write tools (``slack_send_message``,
-``slack_add_reaction``, ``slack_schedule_message``, ``slack_send_message_draft``)
-publish under the USER's OAuth token. A post/react to the operator's own bot↔user
+A Slack MCP server other than teatree's (``slack_send_message``,
+``slack_add_reaction``, ``slack_schedule_message``, ``slack_send_message_draft``, …)
+publishes under the USER's token. A post/react to the operator's own bot↔user
 DM renders as user-authored and lets the loop's scanners react to the agent's own
 message. The on-behalf egress class governs colleague surfaces but never sees an
 MCP tool call.
@@ -29,12 +29,16 @@ projection, exactly as the id reads themselves resolve them.
 """
 
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import self_dm_destinations
 from teatree.config.host_projection import ProjectionPublisher
 
 
@@ -80,10 +84,10 @@ _ROWS_GLOBAL_USER_ONLY: dict[str, object] = {"slack_user_id": "U0GLOBALUSER"}
 _USER_ID = "U0AAAAAAAAA"
 _DM_CHANNEL = "D0BFIRSTDM01"
 
-_SEND = "mcp__claude_ai_Slack__slack_send_message"
-_REACT = "mcp__claude_ai_Slack__slack_add_reaction"
-_SCHEDULE = "mcp__claude_ai_Slack__slack_schedule_message"
-_DRAFT = "mcp__claude_ai_Slack__slack_send_message_draft"
+_SEND = "mcp__slack__slack_send_message"
+_REACT = "mcp__slack__slack_add_reaction"
+_SCHEDULE = "mcp__slack__slack_schedule_message"
+_DRAFT = "mcp__slack__slack_send_message_draft"
 
 
 def _point_at_seeded_db(db: Path, rows: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,7 +212,7 @@ class TestPassesThroughColleagueAndUnrelated:
         [
             "Bash",
             "Edit",
-            "mcp__claude_ai_Slack__slack_read_channel",
+            "mcp__slack__slack_read_channel",
         ],
     )
     def test_non_target_tool_passes_through(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -294,7 +298,7 @@ class TestResolvesFromTheHostProjection:
         _project_onto_host(tmp_path, monkeypatch, _ROWS_WITH_DM_CHANNELS)
 
     def test_ids_resolve_from_the_projection(self) -> None:
-        destinations = router._self_dm_destination_ids()
+        destinations = self_dm_destinations.read_self_dm_destinations()
 
         assert destinations.resolved is True
         assert destinations.ids == frozenset({_USER_ID, "D0BFIRSTDM01", "D0BSECONDDM2"})
@@ -302,7 +306,7 @@ class TestResolvesFromTheHostProjection:
     def test_global_user_id_resolves_from_the_projection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _project_onto_host(tmp_path / "another-host", monkeypatch, _ROWS_GLOBAL_USER_ONLY)
 
-        assert router._self_dm_destination_ids().ids == frozenset({"U0GLOBALUSER"})
+        assert self_dm_destinations.read_self_dm_destinations().ids == frozenset({"U0GLOBALUSER"})
 
     @pytest.mark.parametrize(
         ("tool_name", "tool_input"),
@@ -409,3 +413,83 @@ class TestKillSwitch:
 class TestRegisteredInPreToolUseChain:
     def test_handler_is_registered(self) -> None:
         assert router.handle_block_self_dm_via_mcp in router._HANDLERS["PreToolUse"]
+
+
+_HOOK_ROUTER = Path(router.__file__).resolve()
+
+
+def _run_router(payload: dict, settings: dict[str, object], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    db = tmp_path / "chain.sqlite3"
+    _seed_config_db(db, settings)
+    env = {key: value for key, value in os.environ.items() if key != "XDG_DATA_HOME"}
+    return subprocess.run(
+        [sys.executable, str(_HOOK_ROUTER), "--event", "PreToolUse"],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env={**env, "HOME": str(tmp_path), "T3_CONFIG_DB": str(db)},
+    )
+
+
+_LIFTS_THE_WRITE_GUARD: dict[str, tuple[dict[str, object], str]] = {
+    "fail-open switch stored true": ({"danger_gate_fail_open": True}, "status"),
+    "per-call token an agent can add": ({}, "status [slack-mcp-ok: vetted one-off]"),
+    "write guard switched off": ({"mcp_slack_write_gate_enabled": False}, "status"),
+}
+
+
+class TestNothingOnTheCallLiftsTheSelfDmRefusal:
+    """Through the whole PreToolUse chain: what lifts the Slack write guard never lifts this gate."""
+
+    @pytest.mark.parametrize("lift", list(_LIFTS_THE_WRITE_GUARD))
+    def test_a_self_dm_write_is_still_refused(self, lift: str, tmp_path: Path) -> None:
+        settings, text = _LIFTS_THE_WRITE_GUARD[lift]
+        payload = {"session_id": "chain", "tool_name": _SEND, "tool_input": {"channel": _DM_CHANNEL, "text": text}}
+
+        result = _run_router(payload, {**_ROWS_WITH_DM_CHANNELS, **settings}, tmp_path)
+
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "SELF-DM REFUSED" in json.loads(result.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+
+    @pytest.mark.parametrize("lift", list(_LIFTS_THE_WRITE_GUARD))
+    def test_the_same_write_to_a_colleague_channel_goes_through(self, lift: str, tmp_path: Path) -> None:
+        settings, text = _LIFTS_THE_WRITE_GUARD[lift]
+        payload = {"session_id": "chain", "tool_name": _SEND, "tool_input": {"channel": "C0COLLEAGUE1", "text": text}}
+
+        result = _run_router(payload, {**_ROWS_WITH_DM_CHANNELS, **settings}, tmp_path)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "SELF-DM REFUSED" not in result.stdout
+
+
+class TestTeatreesOwnServerIsNotThirdParty:
+    def test_its_slack_write_to_the_self_dm_is_left_to_its_own_bot_token_gates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
+
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event("mcp__teatree__slack_react", {"channel": _DM_CHANNEL, "name": "eyes"}, session_id="own")
+        )
+
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestAnyThirdPartySlackWriteShape:
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _point_at_seeded_db(tmp_path / "db.sqlite3", _ROWS_WITH_DM_CHANNELS, monkeypatch)
+
+    @pytest.mark.parametrize("tool_name", ["mcp__workspace_slack__chat_postMessage", "mcp__slack__conversations_add"])
+    def test_a_write_the_old_roster_never_named_is_refused(
+        self, tool_name: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(tool_name, {"channel": _DM_CHANNEL, "text": "x"}, session_id="shape")
+        )
+
+        assert verdict is True
+        assert _parse_deny(capsys) is not None

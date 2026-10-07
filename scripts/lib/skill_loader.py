@@ -8,24 +8,22 @@ lifecycle skills load explicitly via slash commands, ``t3 agent --phase/--skill`
 and the transitive ``requires`` chain.
 
 The skill (requires) index is read from a cached index in the XDG data
-directory when available; otherwise skills are scanned on the fly from
-``skill_search_dirs``.
+directory when it is fresh; otherwise the policy builds the same index live
+over every skill root.
 """
 
 from __future__ import annotations  # noqa: TID251 — standalone script, not a teatree package module
 
 import json
-import operator
 import os
 import sys
 from pathlib import Path
-
-from lib.requires_parser import parse_companions, parse_requires
 
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+from teatree.skill_support.index import harness_skills_dirs, skill_mtimes
 from teatree.skill_support.loading import SkillLoadingPolicy
 
 
@@ -84,74 +82,17 @@ def _read_metadata_cache() -> dict:
 
 
 def _cache_is_stale(metadata: dict) -> bool:
-    """Check if any SKILL.md file has been modified since the cache was written."""
-    cached_mtimes = metadata.get("skill_mtimes", {})
+    """Whether any SKILL.md in any skill root was added, removed or edited since the cache was written."""
+    cached_mtimes = metadata.get("skill_mtimes")
     if not isinstance(cached_mtimes, dict):
         return False  # No mtimes stored — can't check, assume fresh.
-    home = Path.home()
-    skills_dir = home / ".claude" / "skills"
-    if not skills_dir.is_dir():
-        return False
-    for skill_dir in skills_dir.iterdir():
-        resolved = skill_dir.resolve() if skill_dir.is_symlink() else skill_dir
-        if not resolved.is_dir():
-            continue
-        skill_md = resolved / "SKILL.md"
-        if not skill_md.is_file():
-            continue
-        try:
-            current_mtime = skill_md.stat().st_mtime_ns
-        except OSError:
-            continue
-        cached_mtime = cached_mtimes.get(skill_dir.name)
-        if cached_mtime is None or current_mtime != cached_mtime:
-            return True
-    return False
+    return skill_mtimes(harness_skills_dirs()) != cached_mtimes
 
 
-def build_requires_index(skill_search_dirs: list[Path]) -> list[dict]:
-    """Scan skill directories and index each skill's ``requires:`` list.
-
-    Returns a list of ``{"skill": name, "requires": [...]}`` dicts, one per
-    discovered SKILL.md, sorted by skill name.
-    """
-    seen: set[str] = set()
-    index: list[dict] = []
-
-    for search_dir in skill_search_dirs:
-        if not search_dir.is_dir():
-            continue
-        for skill_dir in sorted(search_dir.iterdir()):
-            if not skill_dir.is_dir():
-                continue
-            skill_name = skill_dir.name
-            if skill_name in seen:
-                continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.is_file():
-                continue
-            try:
-                text = skill_md.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            seen.add(skill_name)
-            index.append(
-                {
-                    "skill": skill_name,
-                    "requires": parse_requires(text) or [],
-                    "companions": parse_companions(text) or [],
-                }
-            )
-
-    index.sort(key=operator.itemgetter("skill"))
-    return index
-
-
-def _read_skill_index() -> list[dict]:
-    """Read the cached skill (requires) index from the XDG data directory."""
-    metadata = _read_metadata_cache()
-    index = metadata.get("skill_index", [])
-    return index if isinstance(index, list) else []
+def _read_skill_index() -> list[dict] | None:
+    """The cached skill (requires) index, or ``None`` so the policy builds it live."""
+    index = _read_metadata_cache().get("skill_index")
+    return index if isinstance(index, list) else None
 
 
 def read_overlay_skill_metadata() -> dict[str, object]:

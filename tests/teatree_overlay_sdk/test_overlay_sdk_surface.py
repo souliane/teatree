@@ -188,8 +188,6 @@ EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
 }
 
 EXPECTED_CONNECTOR_SIGNATURES: dict[str, str] = {
-    "manifest": "(self) -> list['ConnectorRequirement']",
-    "mcp_provider_expectations": "(self) -> dict[str, str]",
     "mcp_tool_group": "(self) -> teatree.core.mcp_tool_group.McpToolGroup | None",
     "preflight": "(self) -> list[collections.abc.Callable[[], None]]",
 }

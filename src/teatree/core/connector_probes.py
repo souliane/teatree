@@ -1,12 +1,9 @@
-"""Reusable connector-preflight probes derived from an overlay's declarations (#3333).
+"""Reusable connector-preflight probes an overlay wires into its preflight (#3333).
 
-Core owns the preflight seam (:meth:`OverlayConnectors.preflight`) and the service
-declarations (:meth:`OverlayConnectors.manifest` /
-:meth:`OverlayConnectors.mcp_provider_expectations`) but shipped no probes to
-connect them, so every overlay hand-wrote its own reachability code — ~200 lines
-of transport classification, re-derived (and mis-derived) per overlay. The
-dangerous failures are the fail-OPEN ones: a broken connector produces a quiet
-no-op loop rather than an error.
+Core owns the preflight seam (:meth:`OverlayConnectors.preflight`) but shipped no probes
+for it, so every overlay hand-wrote its own reachability code — ~200 lines of transport
+classification, re-derived (and mis-derived) per overlay. The dangerous failures are the
+fail-OPEN ones: a broken connector produces a quiet no-op loop rather than an error.
 
 This module is that probe library, written and tested ONCE:
 
@@ -17,18 +14,12 @@ definitive" is testable on its own.
 :func:`reachability_probe` is a generic HTTP host-reachability probe encoding the
 non-obvious inversion "any HTTP status proves the host is up; only a transport
 failure is down".
-
-:func:`standard_probes` builds live connector probes from the overlay's own
-declarations, so :meth:`OverlayConnectors.preflight` can default to them and a
-declared required connector becomes meaningful by itself.
 """
 
 import logging
 from collections.abc import Callable
 
 import httpx
-
-from teatree.core.connector_manifest import ConnectorRequirement, ConnectorUnavailableError, require_connector
 
 logger = logging.getLogger(__name__)
 
@@ -93,34 +84,4 @@ def reachability_probe(
     return probe
 
 
-def _connectivity_probe(name: str, *, required: bool) -> Callable[[], None]:
-    """A probe asserting the named MCP connector is connected (fail-open if unprobeable)."""
-
-    def probe() -> None:
-        try:
-            require_connector(name)
-        except ConnectorUnavailableError as exc:
-            _raise_or_warn(required=required, message=str(exc))
-
-    return probe
-
-
-def standard_probes(
-    manifest: list[ConnectorRequirement],
-    expectations: dict[str, str],
-) -> list[Callable[[], None]]:
-    """Build connector probes from an overlay's own declarations.
-
-    One live MCP-connectivity probe per server in
-    :meth:`OverlayConnectors.mcp_provider_expectations`; required-ness comes from
-    :meth:`OverlayConnectors.manifest` (a server also declared a REQUIRED connector
-    hard-fails, otherwise it warns). Empty when the overlay declares no
-    expectations — so an overlay that declares none keeps exactly its previous
-    ``preflight()`` behaviour, and the claude.ai manifest classification stays
-    owned by :func:`teatree.core.connector_preflight.assert_required_connectors`.
-    """
-    required_names = {req.name for req in manifest if req.required}
-    return [_connectivity_probe(server, required=server in required_names) for server in expectations]
-
-
-__all__ = ["is_transient", "reachability_probe", "standard_probes"]
+__all__ = ["is_transient", "reachability_probe"]

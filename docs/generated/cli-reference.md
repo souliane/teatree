@@ -78,8 +78,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
-│ mcp             Read-only MCP server exposing teatree's structured search    │
-│                 (stdio).                                                     │
+│ mcp             MCP server exposing teatree's structured search and          │
+│                 gate-preserving writes (stdio).                              │
+│ browser         Drive a headless browser held open for this worktree         │
+│                 (Playwright): open, act, inspect, close.                     │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -4112,8 +4114,8 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 │                         it via ``pass``.                                     │
 │ slack-provision         Run the full Slack app lifecycle (manifest, scopes,  │
 │                         channels, tokens) idempotently.                      │
-│ recover-account-switch  Detect a Claude account switch, invalidate the       │
-│                         backend cache, re-probe connectors.                  │
+│ recover-account-switch  Detect a Claude account switch and invalidate the    │
+│                         backend and token-health caches.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4183,12 +4185,10 @@ Usage: t3 setup slack-provision [OPTIONS]
 ```
 Usage: t3 setup recover-account-switch [OPTIONS]
 
- Detect a Claude account switch, invalidate the backend cache, re-probe
- connectors.
+ Detect a Claude account switch and invalidate the backend and token-health
+ caches.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each connector reconnect URL in a browser   │
-│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5352,7 +5352,7 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 │ status   Report the worker: flock holder, admitted loops, timers, staleness, │
 │          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
-│ drain    Quiesce the worker and wait for in-flight tasks to finish           │
+│ drain    Quiesce the worker and wait for in-flight tasks to checkpoint       │
 │          (drain-then-deploy).                                                │
 │ stop     Stop the running singleton worker gracefully and VERIFY that it     │
 │          exited.                                                             │
@@ -5422,18 +5422,25 @@ Usage: t3 worker ensure [OPTIONS]
 ```
 Usage: t3 worker drain [OPTIONS]
 
- Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+ Quiesce the worker and wait for in-flight tasks to checkpoint
+ (drain-then-deploy).
 
  Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
- then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
- the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
- when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
- CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
- stuck
- task re-queues via its lease lapse. The wait heartbeats to stderr while it
- runs, so
- the deploy's SSH session never idles out mid-drain and takes the deploy with
- it.
+ and
+ every in-flight run interrupts itself at its next heartbeat and parks PENDING
+ with its
+ session id, to resume on the fresh worker. Waits up to ``--timeout`` seconds
+ for every
+ live CLAIMED lease to clear — the supervisor is never stopped and no in-flight
+ sub-agent is killed. Exits 0 when the worker is drained; exits
+ ``_GRACE_EXCEEDED_EXIT``
+ (naming the still-CLAIMED task pks) when the grace lapses, so a deploy can
+ proceed
+ knowing a run that could not checkpoint re-queues via its lease lapse. The
+ wait
+ heartbeats to stderr while it runs, so the deploy's SSH session never idles
+ out
+ mid-drain and takes the deploy with it.
 
  THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container
  boot
@@ -5442,8 +5449,8 @@ Usage: t3 worker drain [OPTIONS]
  self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only
  once the
  gate has stood for longer than a real deploy could still explain (currently
- ~40
- minutes with liveness proving the convergence dead, ~80 minutes on age alone)
+ ~20
+ minutes with liveness proving the convergence dead, ~60 minutes on age alone)
  — a
  drain held deliberately past that window is auto-cleared, not respected.
  Before
@@ -5465,8 +5472,8 @@ Usage: t3 worker drain [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
-│                                 finish.                                      │
-│                                 [default: 1800]                              │
+│                                 checkpoint.                                  │
+│                                 [default: 600]                               │
 │ --poll-interval        FLOAT    Seconds between in-flight checks.            │
 │                                 [default: 5.0]                               │
 │ --generation           TEXT     Drain only this image generation (a 40-hex   │
@@ -5507,7 +5514,7 @@ Usage: t3 worker stop [OPTIONS]
 │                                          [default: drain]                    │
 │ --timeout                       INTEGER  Grace seconds for the drain         │
 │                                          (ignored with --no-drain).          │
-│                                          [default: 1800]                     │
+│                                          [default: 600]                      │
 │ --exit-timeout                  FLOAT    Seconds to wait for the flock to be │
 │                                          released.                           │
 │                                          [default: 60.0]                     │
@@ -5542,7 +5549,7 @@ Usage: t3 worker restart [OPTIONS]
 │                                           [default: drain]                   │
 │ --timeout                        INTEGER  Grace seconds for the drain        │
 │                                           (ignored with --no-drain).         │
-│                                           [default: 1800]                    │
+│                                           [default: 600]                     │
 │ --exit-timeout                   FLOAT    Seconds to wait for the flock to   │
 │                                           be released.                       │
 │                                           [default: 60.0]                    │
@@ -5590,7 +5597,7 @@ Usage: t3 deploy roll [OPTIONS]
 │                                       [required]                             │
 │    --drain-timeout           INTEGER  Grace seconds for the old generation's │
 │                                       claims.                                │
-│                                       [default: 1800]                        │
+│                                       [default: 600]                         │
 │    --verify-timeout          FLOAT    Seconds the new generation has to      │
 │                                       verify.                                │
 │                                       [default: 300.0]                       │
@@ -5723,18 +5730,15 @@ Usage: t3 loops tick [OPTIONS]
 ```
 Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 
- Read-only MCP server exposing teatree's structured search (stdio).
+ MCP server exposing teatree's structured search and gate-preserving writes
+ (stdio).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve              Run the structured-search MCP server over stdio (blocks   │
-│                    until stdin closes).                                      │
-│ reconnect          Reconnect (or print exact steps for) every                │
-│                    declared-but-down claude.ai connector.                    │
-│ browser-diagnosis  Report the chrome-devtools-mcp registration (the default  │
-│                    browser tool, default on).                                │
+│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
+│        closes).                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5760,45 +5764,100 @@ Usage: t3 mcp serve [OPTIONS]
  :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --read-only                Register only the read tools (what a headless     │
+│                            phase without write access launches).             │
+│ --allow-write        TEXT  A write tool a --read-only server still registers │
+│                            (repeatable).                                     │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 browser`
+
+```
+Usage: t3 browser [OPTIONS] COMMAND [ARGS]...
+
+ Drive a headless browser held open for this worktree (Playwright): open, act,
+ inspect, close.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Load URL in this worktree's headless browser, launching the browser │
+│          on first use.                                                       │
+│ act      Perform one interaction on the open page: click, fill, type, press, │
+│          upload, wait, or eval.                                              │
+│ inspect  Save the page's accessibility snapshot, HTML and screenshot; print  │
+│          what it did since it loaded.                                        │
+│ close    End this worktree's browser session.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser open`
+
+```
+Usage: t3 browser open [OPTIONS] URL
+
+ Load URL in this worktree's headless browser, launching the browser on first
+ use.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --timeout        FLOAT  Seconds to wait for the page's load event.           │
+│                         [default: 30.0]                                      │
+│ --json                  Print the step as one JSON object.                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser act`
+
+```
+Usage: t3 browser act [OPTIONS] VERB:{click|fill|type|press|upload|wait|eval}
+                       [ARGUMENTS]...
+
+ Perform one interaction on the open page: click, fill, type, press, upload,
+ wait, or eval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    verb           VERB:{click|fill|type|press  [required]                  │
+│                     |upload|wait|eval}                                       │
+│      arguments      [ARGUMENTS]...               SELECTOR                    │
+│                                                  [VALUE|TEXT|KEY|FILE...],   │
+│                                                  or EXPRESSION               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp reconnect`
+#### `t3 browser inspect`
 
 ```
-Usage: t3 mcp reconnect [OPTIONS]
+Usage: t3 browser inspect [OPTIONS]
 
- Reconnect (or print exact steps for) every declared-but-down claude.ai
- connector.
-
- claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
- via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
- per down connector across every registered overlay's manifest, and exits
- non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
+ Save the page's accessibility snapshot, HTML and screenshot; print what it did
+ since it loaded.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each reconnect URL in a browser             │
-│                 (fail-open).                                                 │
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp browser-diagnosis`
+#### `t3 browser close`
 
 ```
-Usage: t3 mcp browser-diagnosis [OPTIONS]
+Usage: t3 browser close [OPTIONS]
 
- Report the chrome-devtools-mcp registration (the default browser tool, default
- on).
-
- Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
- exact ``claude mcp add`` line that registers it — so an agent can drive and
- inspect a deployed page (navigate/click/fill, network/console/DOM) before
- proposing a root cause for browser-visible breakage. No enforcement; a
- diagnostic and interaction aid only.
+ End this worktree's browser session.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7255,6 +7314,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
+│ live            Sessions running now on this host's workers: inspect them    │
+│                 passively, steer them actively.                              │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -11275,6 +11336,78 @@ Usage: t3 teatree standup stale [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree live`
+
+```
+Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
+
+ Sessions running now on this host's workers: inspect them passively, steer
+ them actively.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list     List every live session on this host's workers (passive).           │
+│ inspect  Show one live session's state, tool and progress without contacting │
+│          the agent.                                                          │
+│ steer    Send input into a running agent's current turn and print its        │
+│          receipt (active).                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live list`
+
+```
+Usage: t3 teatree live list [OPTIONS]
+
+ List every live session on this host's workers (passive).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON on stdout instead of the human view.               │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live inspect`
+
+```
+Usage: t3 teatree live inspect [OPTIONS] TASK
+
+ Show one live session's state, tool and progress without contacting the agent.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON on stdout instead of the human view.               │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live steer`
+
+```
+Usage: t3 teatree live steer [OPTIONS] TASK
+
+ Send input into a running agent's current turn and print its receipt (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input, at most 16 KiB, delivered into the     │
+│                            running turn.                                     │
+│ --command-id        TEXT   Idempotency key; resending it with the same text  │
+│                            returns the first receipt.                        │
+│ --wait              FLOAT  Seconds to wait for the agent's next safe         │
+│                            boundary (at most 900).                           │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree checking`
 
 ```
@@ -11963,6 +12096,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              a ticket (#88).                                 │
 │ set-target-branch            Set one repo's stacked-delivery parent branch   │
 │                              for this ticket.                                │
+│ rework-hold                  Re-queue the findings of a self-review HOLD a   │
+│                              ticket was parked past.                         │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
@@ -12020,9 +12155,9 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
  Transition a ticket to a new state. Allowed transition names: scope, start,
  plan, code, code_direct, test, review, ship, request_review, mark_merged,
- retrospect, mark_delivered, rework, reopen, reopen_for_followup,
- mark_review_no_action, mark_reviewed_externally, reconcile_reviewed,
- reconcile_merged, ignore, unignore.
+ retrospect, mark_delivered, rework, address_self_review, reopen,
+ reopen_for_followup, mark_review_no_action, mark_reviewed_externally,
+ reconcile_reviewed, reconcile_merged, ignore, unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │
@@ -12297,6 +12432,24 @@ Usage: t3 teatree ticket set-target-branch [OPTIONS] TICKET_ID REPO BRANCH
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rework-hold`
+
+```
+Usage: t3 teatree ticket rework-hold [OPTIONS] TICKET_ID
+
+ Supersede the ticket's active tasks and queue one coding task carrying its
+ held self-review's findings.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run          Report the rework without writing it.                     │
+│ --json             Emit the outcome as JSON.                                 │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12697,7 +12850,7 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 
  Resolves the code host per-URL across all registered overlays, so it
  works for any tracker an overlay is configured for. Only tickets the
- owner or the factory bot filed may be changed.
+ owner, the factory bot, or our own repos' CI workflows filed may be changed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
@@ -12909,8 +13062,9 @@ Usage: t3 teatree ticket expedite [OPTIONS] TICKET_ID
  Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
 
  A flagged ticket may push before CI completes; the merge keystone is NEVER
- relaxed — merge stays gated on local review + test evidence. Surfaces on
- ``ticket show`` and as a ⚡ statusline chip.
+ relaxed — merge stays gated on local review + test evidence. Its tasks also
+ rank first at admission (after reviews). Surfaces on ``ticket show`` and as
+ a ⚡ statusline chip.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

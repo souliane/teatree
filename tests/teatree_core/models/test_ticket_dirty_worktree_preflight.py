@@ -26,6 +26,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DirtyWorktreeError, Task, Ticket, Worktree
+from tests.teatree_core._self_review_helpers import completed_self_review
 from tests.teatree_core.models._shared import (
     _advance_ticket_to_tested,
     _advance_work_started_to_plan_recorded,
@@ -88,6 +89,19 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SELF_REVIEWED  # ship did NOT advance
+        assert str(repo_dir) in str(exc.value)
+
+    def test_address_self_review_refused_when_worktree_tracked_dirty(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+        _wt, repo_dir = self._attach_worktree(ticket)
+        completed_self_review(ticket, "hold")
+        (repo_dir / "f0.txt").write_text("rework left uncommitted\n")
+
+        with pytest.raises(DirtyWorktreeError) as exc:
+            ticket.address_self_review()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
         assert str(repo_dir) in str(exc.value)
 
     def test_refusal_through_real_loop_path_rolls_back_and_task_is_reclaimable(self) -> None:
