@@ -25,10 +25,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from types import ModuleType
+from typing import Any
 
 # When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
 # the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
@@ -184,6 +181,7 @@ from hooks.scripts.raw_review_post_guard import (
 )
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
+from hooks.scripts.self_dm_destinations import handle_block_self_dm_via_mcp
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.session_start_delivery import StartClaims
@@ -392,29 +390,6 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
 # the gates' own broken-env posture, because THIS helper is the relax path.
 
 
-def _bootstrap_teatree_src() -> "ModuleType | None":
-    """Import the self-rescue resolver from the sibling ``src/``.
-
-    The hook runs in the user's session shell with no guarantee ``teatree``
-    is importable (#1314), so ``src/`` is bootstrapped onto ``sys.path``.
-    Returns ``None`` on any import failure — the caller then fails CLOSED (deny).
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.hooks import self_rescue  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-    return self_rescue
-
-
 def _is_self_rescue(command: str) -> bool:
     """True iff ``command``'s first segment is an always-allowed self-rescue command.
 
@@ -424,11 +399,11 @@ def _is_self_rescue(command: str) -> bool:
     """
     if not command:
         return False
-    self_rescue = _bootstrap_teatree_src()
-    if self_rescue is None:
-        return False
     try:
-        return bool(self_rescue.is_self_rescue(command))
+        with _teatree_src_on_path():
+            from teatree.hooks import self_rescue  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+
+            return bool(self_rescue.is_self_rescue(command))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
@@ -3877,6 +3852,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_main_clone_mutation,
         handle_block_second_branch,
         handle_block_interactive_authoring,
+        handle_block_self_dm_via_mcp,
         handle_block_mcp_slack_write,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,

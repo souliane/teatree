@@ -151,6 +151,7 @@ Every over-deny gate ships a never-lockout path. This is the ONE catalog of them
 | `t3 <overlay> gate general-purpose disable` | blank `general-purpose` sub-agent dispatch gate |
 | `t3 <overlay> gate verbatim-paste disable` | verbatim operator-paste publish gate |
 | `t3 <overlay> gate delegation disable` | orchestrator delegation gate (unbounded reads belong in a sub-agent) |
+| `t3 <overlay> config_setting set self_dm_gate_enabled false` | self-DM Slack MCP gate when its destination registry is wrong or unreadable |
 | `t3 <overlay> config_setting set schema_readiness_gate_enabled false` | schema-readiness claim gate, including a false `BEHIND` reading in either direction |
 | `t3 review gate fail-open enable` | master `danger_gate_fail_open` — flips EVERY over-deny gate to fail-open (PUBLIC-egress gate excluded) |
 

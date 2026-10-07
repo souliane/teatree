@@ -137,7 +137,7 @@ def _load_core():  # noqa: ANN202 — returns a lazily-imported handle; annotati
 
     The hook runs in the user's session shell with no guarantee ``teatree`` is
     importable, so ``src/`` is added to ``sys.path`` first (mirroring the
-    router's ``_bootstrap_teatree_src``). Returns the core module, or ``None``
+    shared ``managed_repo.teatree_src_on_path``). Returns the core module, or ``None``
     on any import failure — the caller then fails OPEN (allow). This keeps the
     gate crash-proof: a cold hook env without ``teatree`` must never traceback.
     """

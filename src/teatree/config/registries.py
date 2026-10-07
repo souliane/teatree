@@ -183,6 +183,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "plan_edit_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "visible_plan_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "mcp_slack_write_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "self_dm_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "orchestrator_boundary_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
