@@ -183,6 +183,7 @@ class AutoReviewDispatch(models.Model):
 
     class Meta:
         db_table = "teatree_auto_review_dispatch"
+        verbose_name_plural = "auto review dispatches"
         ordering: ClassVar = ["-dispatched_at"]
         constraints: ClassVar = [
             models.UniqueConstraint(

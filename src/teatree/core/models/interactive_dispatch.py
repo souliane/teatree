@@ -106,6 +106,7 @@ class InteractiveDispatch(models.Model):
 
     class Meta:
         db_table = "teatree_interactive_dispatch"
+        verbose_name_plural = "interactive dispatches"
         ordering: ClassVar = ["admitted_at"]
         indexes: ClassVar = [models.Index(fields=["released_at", "admitted_at"], name="idx_dispatch_seat_live")]
 

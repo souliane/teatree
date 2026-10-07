@@ -100,6 +100,7 @@ conformance_core=(
     tests/conformance/test_config_key_classification.py
     tests/conformance/test_config_key_readers.py
     tests/conformance/test_consumer_caller_walk.py
+    tests/conformance/test_every_model_has_an_admin.py
     tests/conformance/test_gate_evidence_declared.py
     tests/conformance/test_gate_registry_walk.py
     tests/conformance/test_overlay_default_noops.py
