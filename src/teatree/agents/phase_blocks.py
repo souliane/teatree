@@ -340,7 +340,8 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         ),
         (
             "Return `anti_vacuity` with AC coverage and each revert-fix -> RED test "
-            "(or an honest no_new_tests claim); maker review of shippable work cannot complete without it."
+            "(or an honest no_new_tests claim); a merge_safe maker review of shippable work cannot complete "
+            "without it, while a `hold` owes none."
         ),
         (
             "For a multi-repo ticket, inspect the combined changeset and return "

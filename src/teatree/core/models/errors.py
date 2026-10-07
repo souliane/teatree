@@ -45,6 +45,12 @@ class CriticGateError(InvalidTransitionError):
         self.specs = specs or []
 
 
+class SelfReviewReworkRefusedError(InvalidTransitionError):
+    def __init__(self, message: str, *, hint: str) -> None:
+        super().__init__(message)
+        self.hint = hint
+
+
 class QualityGateError(ValueError):
     pass
 

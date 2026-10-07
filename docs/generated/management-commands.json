@@ -1220,12 +1220,16 @@
           "name": "plan"
         },
         {
-          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore",
+          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, address_self_review, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore",
           "name": "transition"
         },
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
           "name": "clear"
+        },
+        {
+          "help": "Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings",
+          "name": "rework-hold"
         },
         {
           "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",

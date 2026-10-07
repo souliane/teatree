@@ -100,6 +100,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree ticket dead-rows": ticket.Command.dead_rows,
         "teatree ticket reconcile-clears": ticket.Command.reconcile_clears,
         "teatree ticket set-target-branch": ticket.Command.set_target_branch,
+        "teatree ticket rework-hold": ticket.Command.rework_hold,
         "teatree ticket sweep-begin": ticket.Command.sweep_begin,
         "teatree ticket sweep-finish": ticket.Command.sweep_finish,
         "teatree ticket sweep-trend": ticket.Command.sweep_trend,

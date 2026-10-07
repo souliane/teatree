@@ -54,6 +54,7 @@ from teatree.loop.transient_requeue import (
     requeue_transient_failed,
 )
 from teatree.loop.transient_requeue_disposal import SUPERSEDED_HEAD_STAMP
+from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -1586,3 +1587,42 @@ class TestARefusedReviewEnvelopeIsCorrectedOnceInItsOwnSession(TestCase):
 
         task.refresh_from_db()
         assert HALT_STAMP in task.execution_reason
+
+
+class TestAFailedHoldReworkIsALiveFailure(TestCase):
+    """A rework a self-review HOLD still owes is unfinished work, never a superseded dead row."""
+
+    def _failed_rework(self, error: str) -> tuple[Ticket, Task]:
+        ticket = author_ticket()
+        held = completed_self_review(ticket, "hold")
+        with mock.patch.object(Ticket, "has_shippable_diff", return_value=True):
+            Task.objects.replay_orphaned_transitions()
+        rework = Task.objects.get(ticket=ticket, phase="coding", parent_task=held)
+        _add_failed_attempt(rework, error=error)
+        return ticket, rework
+
+    def _both_sweeps(self) -> None:
+        requeue_transient_failed()
+        with mock.patch.object(Ticket, "has_shippable_diff", return_value=True):
+            Task.objects.replay_orphaned_transitions()
+
+    def _assert_still_owed(self, ticket: Ticket, rework: Task) -> None:
+        ticket.refresh_from_db()
+        rework.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert rework.status != Task.Status.COMPLETED
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_crashed_rework_is_not_retired_and_replayed_as_finished(self) -> None:
+        ticket, rework = self._failed_rework("agent crashed: exit code -9")
+
+        self._both_sweeps()
+
+        self._assert_still_owed(ticket, rework)
+
+    def test_a_rework_that_returned_no_envelope_is_not_retired_and_replayed_as_finished(self) -> None:
+        ticket, rework = self._failed_rework(NO_ENVELOPE_ERROR)
+
+        self._both_sweeps()
+
+        self._assert_still_owed(ticket, rework)

@@ -58,6 +58,7 @@ class TestStatusFacetCohesionSplit:
             "is_settled",
             "admits_review",
             "has_completed_phase",
+            "owes_self_review_rework",
             "phase_producing_state",
             "may_expedite",
             "ticket_number",

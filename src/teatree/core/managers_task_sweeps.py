@@ -167,6 +167,8 @@ def replay_orphaned_transitions(qs: "models.QuerySet") -> int:
     by ``_advance_ticket`` with an interactive followup scheduled —
     the sweep must not force-advance it past that phase, and does not,
     because ``_apply_phase_transition`` itself no-ops for a held task.
+    A self-review HOLD is held the same way: the ticket stays TESTED
+    and its rework is queued once, never re-minted by a later replay.
     Returns the number of tickets a transition actually fired for.
     """
     # Latest COMPLETED task per ticket: iterate newest-first and keep

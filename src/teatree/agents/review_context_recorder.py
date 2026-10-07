@@ -11,6 +11,7 @@ from teatree.agents.result_schema import AgentResultBlob
 from teatree.core.gates.review_context_gate import missing_review_context_fields
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
+from teatree.core.models.self_review import SelfReview
 from teatree.core.models.ticket_evidence import anti_vacuity_problems
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.types import AntiVacuityAttestation, ReviewContext
@@ -30,8 +31,9 @@ def anti_vacuity_refusal(raw: object) -> str:
 
 
 def _record_author_anti_vacuity(task: Task, result: AgentResultBlob) -> str:
-    """Bind the maker's self-review proof to its worktree head."""
-    if task.ticket.role != task.ticket.Role.AUTHOR or not task.ticket.has_shippable_diff():
+    """Bind the maker's self-review proof to its worktree head; a HOLD owes none, it ships nothing."""
+    ticket = task.ticket
+    if ticket.role != ticket.Role.AUTHOR or _returned_hold(task, result) or not ticket.has_shippable_diff():
         return ""
     raw = result.get("anti_vacuity")
     if refusal := anti_vacuity_refusal(raw):
@@ -51,6 +53,11 @@ def _record_author_anti_vacuity(task: Task, result: AgentResultBlob) -> str:
         no_new_tests=attestation.get("no_new_tests") is True,
     )
     return ""
+
+
+def _returned_hold(task: Task, result: AgentResultBlob) -> bool:
+    review = SelfReview.from_result(task.pk, result)
+    return review is not None and review.is_hold
 
 
 def record_returned_review_context(task: Task, result: AgentResultBlob, *, phase: str) -> str:
