@@ -387,6 +387,8 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: uv run playwright install --with-deps chromium
+      - name: Real-browser `t3 browser` lane (headless keeper, CDP re-attach)
+        run: uv run pytest e2e/browser -n0 -p no:randomly -p no:cacheprovider
       - name: Provide ttyd + a stub claude for the terminal-launch e2e
         # The header terminal button spawns `ttyd --once <claude>` on a loopback
         # port; the spec asserts the launch URL renders (it never connects, and

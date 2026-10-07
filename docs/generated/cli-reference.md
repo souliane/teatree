@@ -80,6 +80,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             MCP server exposing teatree's structured search and          │
 │                 gate-preserving writes (stdio).                              │
+│ browser         Drive a headless browser held open for this worktree         │
+│                 (Playwright): open, act, inspect, close.                     │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -4112,8 +4114,8 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 │                         it via ``pass``.                                     │
 │ slack-provision         Run the full Slack app lifecycle (manifest, scopes,  │
 │                         channels, tokens) idempotently.                      │
-│ recover-account-switch  Detect a Claude account switch, invalidate the       │
-│                         backend cache, re-probe connectors.                  │
+│ recover-account-switch  Detect a Claude account switch and invalidate the    │
+│                         backend and token-health caches.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4183,12 +4185,10 @@ Usage: t3 setup slack-provision [OPTIONS]
 ```
 Usage: t3 setup recover-account-switch [OPTIONS]
 
- Detect a Claude account switch, invalidate the backend cache, re-probe
- connectors.
+ Detect a Claude account switch and invalidate the backend and token-health
+ caches.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each connector reconnect URL in a browser   │
-│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5737,12 +5737,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve              Run the structured-search MCP server over stdio (blocks   │
-│                    until stdin closes).                                      │
-│ reconnect          Reconnect (or print exact steps for) every                │
-│                    declared-but-down claude.ai connector.                    │
-│ browser-diagnosis  Report the chrome-devtools-mcp registration (the default  │
-│                    browser tool, default on).                                │
+│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
+│        closes).                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5776,41 +5772,92 @@ Usage: t3 mcp serve [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp reconnect`
+### `t3 browser`
 
 ```
-Usage: t3 mcp reconnect [OPTIONS]
+Usage: t3 browser [OPTIONS] COMMAND [ARGS]...
 
- Reconnect (or print exact steps for) every declared-but-down claude.ai
- connector.
-
- claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
- via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
- per down connector across every registered overlay's manifest, and exits
- non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
+ Drive a headless browser held open for this worktree (Playwright): open, act,
+ inspect, close.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each reconnect URL in a browser             │
-│                 (fail-open).                                                 │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Load URL in this worktree's headless browser, launching the browser │
+│          on first use.                                                       │
+│ act      Perform one interaction on the open page: click, fill, type, press, │
+│          upload, wait, or eval.                                              │
+│ inspect  Save the page's accessibility snapshot, HTML and screenshot; print  │
+│          what it did since it loaded.                                        │
+│ close    End this worktree's browser session.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser open`
+
+```
+Usage: t3 browser open [OPTIONS] URL
+
+ Load URL in this worktree's headless browser, launching the browser on first
+ use.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --timeout        FLOAT  Seconds to wait for the page's load event.           │
+│                         [default: 30.0]                                      │
+│ --json                  Print the step as one JSON object.                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser act`
+
+```
+Usage: t3 browser act [OPTIONS] VERB:{click|fill|type|press|upload|wait|eval}
+                       [ARGUMENTS]...
+
+ Perform one interaction on the open page: click, fill, type, press, upload,
+ wait, or eval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    verb           VERB:{click|fill|type|press  [required]                  │
+│                     |upload|wait|eval}                                       │
+│      arguments      [ARGUMENTS]...               SELECTOR                    │
+│                                                  [VALUE|TEXT|KEY|FILE...],   │
+│                                                  or EXPRESSION               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp browser-diagnosis`
+#### `t3 browser inspect`
 
 ```
-Usage: t3 mcp browser-diagnosis [OPTIONS]
+Usage: t3 browser inspect [OPTIONS]
 
- Report the chrome-devtools-mcp registration (the default browser tool, default
- on).
-
- Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
- exact ``claude mcp add`` line that registers it — so an agent can drive and
- inspect a deployed page (navigate/click/fill, network/console/DOM) before
- proposing a root cause for browser-visible breakage. No enforcement; a
- diagnostic and interaction aid only.
+ Save the page's accessibility snapshot, HTML and screenshot; print what it did
+ since it loaded.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser close`
+
+```
+Usage: t3 browser close [OPTIONS]
+
+ End this worktree's browser session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

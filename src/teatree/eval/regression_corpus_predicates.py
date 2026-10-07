@@ -19,22 +19,17 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
 
+from teatree.eval.regression_corpus_fixtures import git as _git
 from teatree.eval.regression_corpus_fixtures import (
-    StubBackend,
     seed_repo_behind_but_clean,
     seed_repo_on_branch,
     seed_repo_with_diverging_target,
     unused_pid,
     without_git_overrides,
 )
-from teatree.eval.regression_corpus_fixtures import git as _git
-
-if TYPE_CHECKING:
-    from teatree.core.backend_protocols import MessagingBackend
 
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
@@ -299,60 +294,54 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
 
 
 def _check_account_switch_detect_and_recover() -> bool:
-    """#1916: the full `/login` switch-and-verify cycle, both directions.
+    """#1916: the full `/login` switch cycle, both directions.
 
-    Drives the REAL :class:`AccountSwitchRecovery` under a hermetic home with
-    the cache-reset and backends-provider seams stubbed (no network, no ``pass``).
-    must-detect: active fingerprint B != recorded A → switch reported, cache
-    invalidated, connectors re-probed, new account recorded. must-not-fire:
-    active fingerprint == recorded → no switch, no cache reset. verify: a switch
-    whose connector probes unreachable surfaces ``all_reachable is False``.
+    Drives the REAL :class:`AccountSwitchRecovery` under a hermetic home with the
+    cache-reset and token-health seams stubbed (no DB, no ``pass``). must-detect:
+    active fingerprint B != recorded A → switch reported, backend cache invalidated
+    once, token health expired once, B recorded. must-not-fire: active fingerprint ==
+    recorded → no switch, nothing invalidated.
 
-    Anti-vacuous: reverting detection (always ``switched=False``) fails the
-    must-detect leg RED; a probe that ignored ``auth_test`` fails the verify leg.
+    Anti-vacuous: reverting detection (always ``switched=False``) fails the must-detect
+    leg RED; a recovery that skips the token-health expiry or the record fails the
+    verify leg.
     """
-    from teatree.core.account_switch import AccountSwitchRecovery, record_fingerprint  # noqa: PLC0415 — lazy import
+    from teatree.core.account_switch import (  # noqa: PLC0415 — lazy import
+        AccountSwitchRecovery,
+        load_recorded_fingerprint,
+        record_fingerprint,
+    )
 
-    reset_calls = {"n": 0}
+    calls = {"reset": 0, "expired": 0}
+    expired_rows = 3
 
     def _fake_reset() -> None:
-        reset_calls["n"] += 1
+        calls["reset"] += 1
 
-    def _reachable_backends() -> "list[MessagingBackend]":
-        # `AccountSwitchRecovery` only ever calls `.auth_test()`/`.name`; the stub
-        # implements exactly that slice, not the whole MessagingBackend surface.
-        return cast("list[MessagingBackend]", [StubBackend(ok=True)])
+    def _fake_expire() -> int:
+        calls["expired"] += 1
+        return expired_rows
 
-    def _unreachable_backends() -> "list[MessagingBackend]":
-        return cast("list[MessagingBackend]", [StubBackend(ok=False)])
-
-    def _no_token_health() -> int:
-        return 0
-
-    reachable = AccountSwitchRecovery(
-        reset_caches=_fake_reset, backends=_reachable_backends, expire_token_health=_no_token_health
-    )
-    unreachable_recovery = AccountSwitchRecovery(
-        reset_caches=_fake_reset, backends=_unreachable_backends, expire_token_health=_no_token_health
-    )
+    recovery = AccountSwitchRecovery(reset_caches=_fake_reset, expire_token_health=_fake_expire)
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
         (home / ".claude.json").write_text('{"oauthAccount": {"accountUuid": "uuid-B"}}', encoding="utf-8")
 
-        same = reachable.run(home=home)  # records uuid-B (first run, no switch)
-        if same.switched or reset_calls["n"] != 0:
+        same = recovery.run(home=home)  # records uuid-B (first run, no switch)
+        if same.switched or calls != {"reset": 0, "expired": 0}:
             return False
 
         record_fingerprint("uuid-A", home=home)
-        switched = reachable.run(home=home)
-        if not (switched.switched and reset_calls["n"] == 1 and switched.all_reachable):
-            return False
+        switched = recovery.run(home=home)
+        recorded = load_recorded_fingerprint(home=home)
 
-        record_fingerprint("uuid-A", home=home)
-        unreachable = unreachable_recovery.run(home=home)
-
-    return unreachable.switched and unreachable.all_reachable is False
+    return (
+        switched.switched
+        and calls == {"reset": 1, "expired": 1}
+        and switched.token_health_rows_expired == expired_rows
+        and recorded == "uuid-B"
+    )
 
 
 def _check_private_repo_allowlist_path_segment_match() -> bool:

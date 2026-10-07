@@ -83,6 +83,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             MCP server exposing teatree's structured search and          │
 │                 gate-preserving writes (stdio).                              │
+│ browser         Drive a headless browser held open for this worktree         │
+│                 (Playwright): open, act, inspect, close.                     │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │

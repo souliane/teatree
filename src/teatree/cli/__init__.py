@@ -49,6 +49,7 @@ from teatree.cli import (
 )
 from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
+from teatree.cli.browser import browser_app
 from teatree.cli.ci import ci_app
 from teatree.cli.codex import codex_app
 from teatree.cli.command_tree import command_catalogue
@@ -243,6 +244,7 @@ app.add_typer(worker_app, name="worker")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(browser_app, name="browser")
 app.add_typer(notion_app, name="notion")
 app.add_typer(prompts_app, name="prompts")
 app.add_typer(slack_app, name="slack")

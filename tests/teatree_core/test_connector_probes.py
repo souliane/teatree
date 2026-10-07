@@ -11,8 +11,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from teatree.core.connector_manifest import ConnectorRequirement, ConnectorUnavailableError
-from teatree.core.connector_probes import is_transient, reachability_probe, standard_probes
+from teatree.core.connector_probes import is_transient, reachability_probe
 
 
 def _status_error(code: int) -> httpx.HTTPStatusError:
@@ -60,36 +59,3 @@ class TestReachabilityProbe:
     def test_definitive_failure_only_warns_for_an_optional_connector(self) -> None:
         with patch("teatree.core.connector_probes.httpx.get", side_effect=httpx.UnsupportedProtocol("no scheme")):
             reachability_probe(name="api", url="api.test", required=False)()  # no raise
-
-
-class TestStandardProbes:
-    def test_no_expectations_yields_no_probes(self) -> None:
-        assert standard_probes([ConnectorRequirement(name="claude.ai Slack")], expectations={}) == []
-
-    def test_required_server_probe_raises_when_down(self) -> None:
-        manifest = [ConnectorRequirement(name="slack", required=True)]
-        probes = standard_probes(manifest, expectations={"slack": "slack"})
-        assert len(probes) == 1
-        with (
-            patch(
-                "teatree.core.connector_probes.require_connector",
-                side_effect=ConnectorUnavailableError("slack"),
-            ),
-            pytest.raises(RuntimeError, match="slack"),
-        ):
-            probes[0]()
-
-    def test_optional_server_probe_warns_when_down(self) -> None:
-        manifest = [ConnectorRequirement(name="notion", required=False)]
-        probes = standard_probes(manifest, expectations={"notion": "notion"})
-        with patch(
-            "teatree.core.connector_probes.require_connector",
-            side_effect=ConnectorUnavailableError("notion"),
-        ):
-            probes[0]()  # optional — warns, never raises
-
-    def test_connected_server_probe_passes(self) -> None:
-        manifest = [ConnectorRequirement(name="slack", required=True)]
-        probes = standard_probes(manifest, expectations={"slack": "slack"})
-        with patch("teatree.core.connector_probes.require_connector", return_value=None):
-            probes[0]()  # connected — no raise

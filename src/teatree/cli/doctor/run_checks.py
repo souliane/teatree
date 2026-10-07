@@ -27,6 +27,7 @@ from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_blank_work_overlays import check_blank_work_overlays
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
+from teatree.cli.doctor.checks_browser import _check_browser_ready
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
 from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool
 from teatree.cli.doctor.checks_cold_hooks import (
@@ -73,9 +74,7 @@ from teatree.cli.doctor.checks_loop import (
     _check_unconsumed_merge_clears,
 )
 from teatree.cli.doctor.checks_mcp import (
-    _check_chrome_devtools_mcp_suggestion,
-    _check_connector_manifest,
-    _check_mcp_connectivity,
+    _check_declared_services_configured,
     _check_teatree_mcp_liveness,
     _check_teatree_mcp_registration,
 )
@@ -144,11 +143,10 @@ def _optional_tooling_advisories() -> None:
     """Surfacing-only advisories for optional tooling (never gate the exit code).
 
     #3263 WARNs when this box serves the admin dashboard but its loopback
-    "Debug session" terminal's ttyd is missing. #3271 INFO-suggests the OPTIONAL
-    chrome-devtools MCP e2e/debug aid when absent (teatree's runtime requires zero
-    MCP). #3232 WARNs when the operator opted into the containerized ``t3`` workflow
-    but a piece the wrapper depends on (compose stack, the executable ``deploy/t3``
-    entry, the docker CLI, a non-drifted alias path) is missing — silent inside a
+    "Debug session" terminal's ttyd is missing. #3232 WARNs when the operator opted
+    into the containerized ``t3`` workflow but a piece the wrapper depends on
+    (compose stack, the executable ``deploy/t3`` entry, the docker CLI, a
+    non-drifted alias path) is missing — silent inside a
     container and on a host that never opted in. The tmpfs-headroom check WARNs when
     a RAM-backed ``/tmp`` is filling toward ENOSPC (the fill that wedges the box);
     runtime temp is routed to disk and the watchdog trims stale scratch on a cadence.
@@ -163,7 +161,6 @@ def _optional_tooling_advisories() -> None:
     :func:`run_doctor_checks`, not advisories here.)
     """
     _check_ttyd_for_dashboard()
-    _check_chrome_devtools_mcp_suggestion()
     _check_tmp_tmpfs_headroom()
     _check_tmp_tmpfs_sizing()
     _check_scratch_sweep_probe()
@@ -418,27 +415,20 @@ def _run_advisory_finalisers(*, repair: bool) -> None:
 
 
 def _run_mcp_checks(*, repair: bool = False) -> bool:
-    """Every MCP gate, in dependence order; ``False`` when any of them hard-FAILs.
+    """The teatree MCP server and the services it serves; ``False`` when any of them hard-FAILs.
 
-    Grouped so ``run_doctor_checks`` reads as a list of concerns rather than a list of
-    calls. The order is load-bearing: connectivity and the connector manifest run after
-    the account-switch gate (a `/login` invalidates the backend cache), and they share
-    one live `claude mcp list` probe; the exercising liveness check runs last so its
-    spawn sees the post-recovery state.
-
-    Two of the four are advisory by design. `_check_teatree_mcp_registration` is
-    structural — the resolved main clone can legitimately lag a merged change until the
-    next `t3 update`. `_check_teatree_mcp_liveness` is the authoritative one: it spawns
-    the registered `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause
-    (stale tool env / delegation failure / startup over the handshake budget) and the
-    remedy, because `claude mcp list` only ever says `Connection closed` (#4049).
+    `_check_teatree_mcp_registration` is structural and advisory — the resolved main clone
+    can legitimately lag a merged change until the next `t3 update`. The declared-services
+    check FAILs a service an overlay needs that teatree holds no credentials for. The
+    exercising liveness check is authoritative and runs last: it spawns the registered
+    `t3 mcp serve` and hard-FAILs when it is not usable, naming the cause (stale tool env /
+    delegation failure / startup over the handshake budget) and the remedy (#4049).
 
     ``repair`` reaches the liveness check alone: it is the only MCP gate that can mutate
     the operator's env, and it reinstalls the running tool env only when asked.
     """
-    ok = _check_mcp_connectivity()
-    ok = _check_connector_manifest() and ok
     _check_teatree_mcp_registration()
+    ok = _check_declared_services_configured()
     return _check_teatree_mcp_liveness(repair=repair) and ok
 
 
@@ -612,8 +602,8 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # exhaustion kills a dispatch at execve with no partial degradation.
     ok = _check_agent_spawn_headroom() and ok
 
-    # Optional-tooling advisories (ttyd / chrome-devtools MCP / containerized-t3
-    # wiring) — all surfacing-only, never gating the exit code.
+    # Optional-tooling advisories (ttyd / containerized-t3 wiring) — all
+    # surfacing-only, never gating the exit code.
     _optional_tooling_advisories()
 
     # H24 self-heal (owner directive #10): the hard-FAIL silent-freeze detectors —
@@ -698,7 +688,8 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
 
     ok = _check_claude_session_posture() and ok
 
-    ok = _run_mcp_checks(repair=repair) and ok
+    # The browser gate follows the MCP checks: their skew repair is what restores a missing Playwright.
+    ok = all((_run_mcp_checks(repair=repair), _check_browser_ready(repair=repair))) and ok
 
     _run_advisory_finalisers(repair=repair)
 

@@ -25,10 +25,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from types import ModuleType
+from typing import Any
 
 # When run as a script (the live hook: ``python3 .../hooks/scripts/hook_router.py``)
 # the plugin root — the directory that CONTAINS ``hooks/`` — is not on ``sys.path``,
@@ -184,10 +181,7 @@ from hooks.scripts.raw_review_post_guard import (
 )
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
-from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
-from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
-from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_destination
-from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
+from hooks.scripts.self_dm_destinations import handle_block_self_dm_via_mcp
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.session_start_delivery import StartClaims
@@ -396,31 +390,6 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
 # the gates' own broken-env posture, because THIS helper is the relax path.
 
 
-def _bootstrap_teatree_src() -> "tuple[ModuleType, ModuleType] | None":
-    """Import the self-rescue + fail-open resolvers from the sibling ``src/``.
-
-    The hook runs in the user's session shell with no guarantee ``teatree``
-    is importable (#1314), so ``src/`` is bootstrapped onto ``sys.path``.
-    Returns ``(self_rescue, teatree_gate)`` modules, or ``None`` on any
-    import failure — the caller then fails CLOSED (deny).
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.cli import teatree_gate  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-        from teatree.hooks import self_rescue  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-    return self_rescue, teatree_gate
-
-
 def _is_self_rescue(command: str) -> bool:
     """True iff ``command``'s first segment is an always-allowed self-rescue command.
 
@@ -430,30 +399,22 @@ def _is_self_rescue(command: str) -> bool:
     """
     if not command:
         return False
-    modules = _bootstrap_teatree_src()
-    if modules is None:
-        return False
-    self_rescue, _ = modules
     try:
-        return bool(self_rescue.is_self_rescue(command))
+        with _teatree_src_on_path():
+            from teatree.hooks import self_rescue  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
+
+            return bool(self_rescue.is_self_rescue(command))
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
         return False
 
 
 def _danger_gate_fail_open_enabled() -> bool:
-    """True iff the master ``[teatree] danger_gate_fail_open`` switch is ON.
+    """True iff the master ``[teatree] danger_gate_fail_open`` switch is an explicit ``true``.
 
-    Fails CLOSED to disabled (return ``False``) on any import/resolution
-    error so a broken environment never silently relaxes every gate.
+    Read through the Django-free cold reader, so a deny never boots Django; any
+    unreadable or non-bool value fails CLOSED to disabled, never relaxing every gate.
     """
-    modules = _bootstrap_teatree_src()
-    if modules is None:
-        return False
-    _, teatree_gate = modules
-    try:
-        return bool(teatree_gate.danger_gate_fail_open_is_enabled())
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return False
+    return _teatree_bool_setting("danger_gate_fail_open", default=False)
 
 
 def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -> bool:
@@ -1483,95 +1444,6 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         override=False,
     )
     return False
-
-
-# ── PreToolUse: refuse self-DM via the user-token MCP tools (#1464) ──
-
-_SELF_DM_MCP_WRITE_TOOLS: frozenset[str] = frozenset(
-    {
-        "slack_send_message",
-        "slack_add_reaction",
-        "slack_schedule_message",
-        "slack_send_message_draft",
-    }
-)
-
-
-def _self_dm_destination_ids() -> _SelfDmDestinations:
-    # DB-only: the overlay registry and the global ``slack_user_id`` resolve from the
-    # DB-home ``ConfigSetting`` store, so the gate self-identifies the operator there.
-    return _read_self_dm_destinations()
-
-
-def _self_dm_gate_enabled() -> bool:
-    """Keep a cold-read, default-on escape for an unreadable or wrong DM registry."""
-    return _teatree_bool_setting("self_dm_gate_enabled", default=True)
-
-
-def handle_block_self_dm_via_mcp(data: dict) -> bool:
-    """Refuse a claude.ai Slack MCP write to the operator's own bot↔user DM.
-
-    The ``mcp__claude_ai_Slack__slack_*`` write tools publish under the USER's
-    OAuth token, so a post/react to the operator's own self-IM renders as
-    user-authored and the loop's scanners then react to the agent's own message.
-    teatree's egress chokepoints (the slack_voice_classifier, the on-behalf
-    egress class) never see an MCP tool call, so this PreToolUse deny is the only
-    place the write can be stopped.
-
-    DENY scope: the MCP write tools (``slack_send_message``,
-    ``slack_add_reaction``, ``slack_schedule_message``,
-    ``slack_send_message_draft``) whose destination resolves to a self-DM id.
-    Mirroring the canonical ``SlackBotBackend._is_self_dm``, a self-DM id is
-    either a configured ``[overlays.*].slack_dm_channel_id`` (``D…``) OR a
-    configured ``slack_user_id`` / global ``[teatree] slack_user_id`` (``U…``,
-    which Slack opens as the self-IM). The reason points the caller at the
-    bot-token path (``t3 teatree notify send -``). Posts to any other channel
-    (colleague surfaces, governed by the on-behalf gate) pass through untouched.
-
-    Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify
-    the author without the config (no MCP token or network in the hook
-    subprocess, and the tool-schema text is not part of the hook input), so an
-    unreachable config store DENIES with an error naming the fix. A
-    genuinely-empty configuration (store readable, nothing declared) is a real
-    state, not an error, so it allows silently. A stored
-    ``self_dm_gate_enabled = false`` is the operator's escape when this
-    classification misfires.
-    """
-    if not _self_dm_gate_enabled():
-        return False
-    tool_name = data.get("tool_name", "")
-    if _slack_tool_suffix(tool_name) not in _SELF_DM_MCP_WRITE_TOOLS:
-        return False
-    tool_input = data.get("tool_input", {}) or {}
-    if not isinstance(tool_input, dict):
-        return False
-
-    destinations = _self_dm_destination_ids()
-    if not destinations.resolved:
-        return emit_pretooluse_deny(
-            "SELF-DM REFUSED (fail-closed): could not read the bot↔user DM destination ids "
-            "from the config store (the DB is missing, locked, or unreadable), so this gate "
-            "cannot confirm the Slack MCP write is not a self-DM under the USER's OAuth "
-            "token. Declare the per-overlay slack_dm_channel_id / slack_user_id keys via "
-            "`t3 <overlay> config_setting set`, or disable this gate with "
-            "`t3 <overlay> config_setting set self_dm_gate_enabled false`. "
-            "To DM the user now, use the bot-token path: "
-            "`t3 teatree notify send -` (reads the body from stdin).",
-            gate_id="self_dm",
-        )
-
-    destination = _self_dm_destination(tool_input, destinations.ids)
-    if not destination:
-        return False
-
-    return emit_pretooluse_deny(
-        f"SELF-DM REFUSED: this claude.ai Slack MCP write targets the operator's own "
-        f"bot↔user DM ({destination}) under the USER's OAuth token, so it renders "
-        f"as user-authored and the loop's scanners will react to the agent's own message. "
-        f"Use the bot-token path instead: `t3 teatree notify send -` (reads the body from "
-        f"stdin). Posts to colleague channels are unaffected by this gate.",
-        gate_id="self_dm",
-    )
 
 
 # ── PreToolUse: pre-dispatch quote-scanner gate (#1401) ─────────────
@@ -2941,31 +2813,15 @@ _LOOP_SLOT_OWNER_DIRECTIVE = (
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
     "TEATREE — Claude account switch detected (`/login`).\n\n"
-    "The active Claude account changed since teatree last recovered the connectors, so the in-process "
-    "MCP/backend token cache may still route Slack/Notion calls to the OLD workspace: delivery returns ok while "
-    "the new account sees nothing (souliane/teatree#1176), so nothing at the call site will tell you. The cached "
-    "per-account token health goes stale the same way — an exhausted verdict is trusted until its window resets, "
-    "so the governor keeps denying every dispatch on the OLD account's exhaustion (souliane/teatree#4736). "
-    "Run `t3 setup recover-account-switch` NOW. It invalidates the backend cache, expires the token-health cache "
-    "so the next `t3 tokens` re-probes, re-probes only this account's connectors (a live `auth.test` each plus a "
-    "30s-bounded `claude mcp list`), and records the new fingerprint — which is what stops this notice repeating "
-    "every session. This fires only on an ACTUAL switch, so it is a rare one-off, not a session-start ritual. "
-    "Do NOT reach for `t3 doctor check` instead: it is containerized and sweeps every check, costing MINUTES, "
-    "and it must never sit on the session-start path. If the recovery reports a connector unreachable, re-auth "
-    "it in the Claude.ai UI and re-run the recovery."
-)
-
-_MCP_CONNECTIVITY_DIRECTIVE = (
-    "TEATREE — verify enabled MCP servers are connected.\n\n"
-    "Enabled MCP servers are configured for this account. An enabled MCP that "
-    "is not connected fails tool calls late, so the verification belongs at the "
-    "point of use, not here: a failing MCP tool call is the loud, detectable "
-    "trigger. When one DOES fail, run `t3 mcp reconnect` — it live-probes the "
-    "declared connectors with one bounded `claude mcp list` and prints the exact "
-    "reconnect target per down connector — then re-auth that connector in the "
-    "Claude.ai UI (or restart its local command). Do NOT run `t3 doctor check` "
-    "for this, here or after a failure: it is containerized and sweeps every "
-    "check, costing MINUTES, and it must never sit on the session-start path."
+    "The active Claude account changed since teatree last recovered. The cached per-account token health "
+    "goes stale on a switch — an exhausted verdict is trusted until its window resets, so the governor keeps "
+    "denying every dispatch on the OLD account's exhaustion (souliane/teatree#4736) — and the in-process "
+    "backend cache still holds the old account's state. Run `t3 setup recover-account-switch` NOW. It "
+    "invalidates the backend cache, expires the token-health cache so the next `t3 tokens` re-probes, and "
+    "records the new fingerprint — which is what stops this notice repeating every session. This fires only "
+    "on an ACTUAL switch, so it is a rare one-off, not a session-start ritual. Do NOT reach for "
+    "`t3 doctor check` instead: it is containerized and sweeps every check, costing MINUTES, and it must "
+    "never sit on the session-start path."
 )
 
 _LOOP_SLOT_NON_OWNER_DIRECTIVE = (
@@ -3094,26 +2950,6 @@ def _account_switch_advisory() -> str | None:
         return None
 
 
-def _mcp_connectivity_advisory() -> str | None:
-    """Return the #2282 advisory when any MCP server is enabled.
-
-    Uses the cheap, network-free ``~/.claude.json`` reader (NOT the live probe)
-    to keep the network probe off the every-session SessionStart hot path: even
-    within the 30s hook budget a slow or hung MCP endpoint would stall every
-    session start. So the directive verifies nothing here and names the reactive
-    recovery instead — ``t3 mcp reconnect``, run when an MCP tool actually fails,
-    which is the only detectable trigger. Any import / read failure returns None
-    so the directive never blocks SessionStart.
-    """
-    try:
-        with _teatree_src_on_path():
-            from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415 — cold-hook import
-
-            return _MCP_CONNECTIVITY_DIRECTIVE if has_enabled_mcp_servers() else None
-    except Exception:  # noqa: BLE001 — never block SessionStart on a config read hiccup
-        return None
-
-
 def _start_session(context: str, session_id: str, source: str) -> None:
     claims = StartClaims()
     claims.deliver(_merge_session_start_context(context, session_id, source, claims))
@@ -3139,7 +2975,6 @@ def _merge_session_start_context(context: str, session_id: str, source: str, cla
     autocompact = _autocompact_kill_switch_advisory()
     leading = (
         _account_switch_advisory(),
-        _mcp_connectivity_advisory(),
         session_start_hook_budget_advisory(),
         resume_admission_advisory(session_id, source),
         hand_back_context(session_id, claims),

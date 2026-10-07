@@ -15,9 +15,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from teatree.backends.types import Service
-from teatree.core.backend_factory import sentry_client_from_overlay
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import SENTRY
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import SentryReadClient
@@ -34,11 +32,7 @@ INSTRUCTIONS = (
 
 
 def _client() -> "SentryReadClient":
-    return resolve_declaring_overlay_client(
-        Service.SENTRY,
-        sentry_client_from_overlay,
-        description="Sentry org (sentry_org + sentry_token_pass_key)",
-    )
+    return SENTRY.resolve()
 
 
 async def _sentry_top_issues(project: str, *, limit: int = 10) -> list[dict[str, Any]]:

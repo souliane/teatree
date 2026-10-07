@@ -14,7 +14,5 @@ from teatree.hooks.quote_scanner import _SLACK_MCP_WRITE_TOOLS
 
 class TestGuardCoversTheWriteToolRegistry:
     def test_every_registry_tool_classifies_as_a_write(self) -> None:
-        unclassified = [
-            tool for tool in _SLACK_MCP_WRITE_TOOLS if not is_slack_mcp_write(f"mcp__claude_ai_Slack__{tool}")
-        ]
+        unclassified = [tool for tool in _SLACK_MCP_WRITE_TOOLS if not is_slack_mcp_write(f"mcp__slack__{tool}")]
         assert unclassified == []

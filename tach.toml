@@ -644,6 +644,7 @@ depends_on = [
   "teatree.quality",
   "teatree.hooks",
   "teatree.mcp",
+  "teatree.browser",
   "teatree.cli.eval"
 ]
 
@@ -1104,9 +1105,14 @@ layer = "platform"
 depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
+path = "teatree.browser"
+layer = "integration"
+depends_on = ["teatree.paths", "teatree.utils", "teatree.core.loop_lease_liveness"]
+
+[[modules]]
 path = "teatree.visual_qa"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.utils"]
+depends_on = ["teatree.browser", "teatree.core", "teatree.utils"]
 
 [[modules]]
 path = "teatree.instance_id"

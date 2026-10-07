@@ -73,43 +73,32 @@ A fresh / non-owner session DRAINS every hand-off claimable by it (targeted at i
 
 The queue is drained, not sampled: a hand-off targeted AT this session leads (more specific than the open broadcast), then the parked tier follows OLDEST-first, so the backlog makes progress instead of one newest row starving every older one forever. When several hand-offs arrive together each renders behind its own `## Hand-off N of M — from <session>` fence, so the receiver does not read N authors' state as one narrative. Both pickup call sites go through the single `handover.claim_handovers` seam, so neither can drift back to a claim-one policy.
 
-## Session recovery — MCP connectors after a network change, account switch, or restart
+## Session recovery — the teatree MCP after a network change, account switch, or restart
 
-Handovers cluster around the moments that break MCP: a `/login` account switch, a session
-restart, or a transient network change (e.g. a VPN toggled off for a moment). The receiving
-session — or the same session after the switch — needs this recovery procedure, because dead
-MCP tools silently block any interactive work that depends on them (an optional connector like
-Notion gates connector-driven work, and the failure is silent).
+Handovers cluster around the moments that can break a session's MCP tools: a `/login` account
+switch, a session restart, or a transient network change (e.g. a VPN toggled off for a moment).
+teatree depends on exactly one MCP server, its own (`t3 mcp serve`, registered by the plugin's
+`.mcp.json`). Slack, Notion, the forges, Sentry and SharePoint all go through it on teatree's own
+credentials, and the browser tool is `t3 browser`, so there is nothing else to reconnect.
 
-This recovery is only for the **optional** claude.ai connectors an interactive session (or an
-overlay) leans on — it is not a teatree runtime dependency. Teatree's own runtime Slack posts
-through the **direct Slack API** with a `pass`-stored token (never the claude.ai Slack connector),
-so a wedged connector never blocks teatree's runtime; the browser tool is now chrome-devtools-mcp,
-which drives its own Chrome and needs no connector recovery at all. So a down connector only
-affects connector-driven interactive work.
-
-**Symptom.** A claude.ai connector (e.g. Notion, or an optional Slack/Sentry/Drive connector an
-overlay uses) shows connected in `claude mcp list` / `t3 doctor`, but the in-session MCP tools are
-dead — calls fail, and a `/mcp` reconnect returns `HTTP 404 at https://mcp.notion.com/mcp` or
-"Authentication successful, but server reconnection failed." The OAuth tokens are stored fine;
-it is the in-process socket/handshake that went stale. A short VPN drop or an account switch is
-enough to wedge it.
+**Symptom.** A `mcp__plugin_t3_teatree__*` tool call fails, or `/mcp` shows the teatree server as
+not connected.
 
 **Fix (in-session, NO restart needed).**
 
-1. Re-run **`/login`** — this re-registers the claude.ai built-ins and re-drives the OAuth
-   handshake that `/mcp` alone cannot. `/mcp` re-auth by itself does **not** recover a wedged
-   socket; `/login` does.
-2. If the first `/login` does not flip the connectors to usable, **run `/login` a second time** —
-   a second pass has recovered it when the first did not.
-3. Confirm with a read-only MCP probe (e.g. a Notion `get-teams` or a Slack channel search), not
-   just `claude mcp list` — the list can show ✔ while the socket is still dead.
+1. Reconnect the teatree server from `/mcp`.
+2. If it still fails, run `t3 doctor check`: its MCP liveness check spawns the registered
+   `t3 mcp serve`, speaks a real `initialize` to it and prints the cause and the remedy
+   (a stale tool env, a delegation failure, a slow start), which `/mcp` never shows.
+3. After a `/login` account switch, run `t3 setup recover-account-switch` so the per-account
+   token-health cache is re-probed instead of trusting the old account's verdict.
+4. Meanwhile, keep working through the `t3` CLI — every teatree MCP tool has a CLI leaf
+   (`mcp__plugin_t3_teatree__command_search` or `t3 --help` names it).
 
 Do **not** restart to fix this — a restart kills in-flight background sub-agents (E2E runs,
 coders) for nothing. Durable state survives a restart anyway (open PRs live on the forge, harness
 tasks and the PreCompact snapshot persist), so if a restart is ever needed, let in-flight runs
-finish first. Upstream context: the Notion-side OAuth regression that caused the 404 was fixed in
-Claude Code ≥ 2.1.136; on a current build, `/login` is the reliable in-session recovery.
+finish first.
 
 ## Claude → another runtime
 

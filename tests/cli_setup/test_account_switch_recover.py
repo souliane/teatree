@@ -3,49 +3,33 @@
 from unittest.mock import patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from teatree.cli.account_switch_recover import recover_account_switch
-from teatree.core.account_switch import AccountSwitchOutcome, ConnectorProbeResult
-from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
-from teatree.core.mcp_connectivity import McpConnectivityOutcome
+from teatree.core.account_switch import AccountSwitchOutcome
 
 runner = CliRunner()
 
 
-def _app():
-    import typer  # noqa: PLC0415
-
+def _app() -> typer.Typer:
     app = typer.Typer()
     app.command("recover-account-switch")(recover_account_switch)
     return app
 
 
-def _outcome(*, switched: bool, probes: tuple[ConnectorProbeResult, ...] = ()) -> AccountSwitchOutcome:
+def _outcome(*, switched: bool) -> AccountSwitchOutcome:
     return AccountSwitchOutcome(
         current_fingerprint="uuid-bbbbbbbb",
         previous_fingerprint="uuid-aaaaaaaa",
         switched=switched,
-        probes=probes,
+        token_health_rows_expired=4 if switched else 0,
     )
 
 
 @pytest.fixture(autouse=True)
 def _no_django(monkeypatch):
     monkeypatch.setattr("teatree.cli.account_switch_recover.ensure_django", lambda: None)
-
-
-@pytest.fixture(autouse=True)
-def _mcp_clean(monkeypatch):
-    """Default the MCP connectivity check to clean so account-switch tests stay focused.
-
-    The recover path now also re-runs the #2282 enabled-MCP check; tests that
-    care about it override this with their own ``check_mcp_connectivity`` patch.
-    """
-    monkeypatch.setattr(
-        "teatree.core.mcp_connectivity.check_mcp_connectivity",
-        lambda: McpConnectivityOutcome(ok=True),
-    )
 
 
 class TestRecoverAccountSwitchCommand:
@@ -58,105 +42,17 @@ class TestRecoverAccountSwitchCommand:
         assert result.exit_code == 0
         assert "No account switch" in result.output
 
-    def test_switch_all_reachable_exits_zero(self):
-        probes = (ConnectorProbeResult(name="slack", reachable=True),)
+    def test_a_switch_reports_what_it_invalidated_and_exits_zero(self):
         with patch(
             "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
+            return_value=_outcome(switched=True),
         ):
             result = runner.invoke(_app(), [])
         assert result.exit_code == 0
-        assert "All connectors reachable" in result.output
-        assert "slack: reachable" in result.output
+        assert "Account switch: uuid-aaa… → uuid-bbb…" in result.output
+        assert "token health expired (4 row(s)" in result.output
+        assert "new account recorded" in result.output
 
-    def test_switch_unreachable_exits_nonzero(self):
-        probes = (ConnectorProbeResult(name="slack", reachable=False, detail="invalid_auth"),)
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            result = runner.invoke(_app(), [])
-        assert result.exit_code == 1
-        assert "UNREACHABLE" in result.output
-        assert "invalid_auth" in result.output
-
-    def test_switch_reachable_but_mcp_disconnected_exits_nonzero(self, monkeypatch):
-        """AC2: the same enabled-MCP check re-runs on the account-switch path."""
-        probes = (ConnectorProbeResult(name="slack", reachable=True),)
-        monkeypatch.setattr(
-            "teatree.core.mcp_connectivity.check_mcp_connectivity",
-            lambda: McpConnectivityOutcome(
-                ok=False,
-                findings=["MCP server 'claude.ai Notion' is enabled but NOT connected. Reconnect it: ..."],
-            ),
-        )
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            result = runner.invoke(_app(), [])
-        assert result.exit_code == 1
-        assert "claude.ai Notion" in result.output
-        assert "All connectors reachable" not in result.output
-
-    def test_unreachable_prints_reconnect_lines(self, monkeypatch):
-        """A switch that leaves a declared connector down surfaces its RECONNECT line."""
-        probes = (ConnectorProbeResult(name="slack", reachable=False, detail="invalid_auth"),)
-        down = [
-            DownConnector(
-                requirement=ConnectorRequirement("claude.ai Slack"),
-                overlay="ov",
-                ever_connected=True,
-            ),
-        ]
-        monkeypatch.setattr(
-            "teatree.core.connector_manifest.check_connector_manifest",
-            lambda: ConnectorManifestOutcome(ok=False, down=down),
-        )
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            result = runner.invoke(_app(), [])
-        assert result.exit_code == 1
-        assert "RECONNECT claude.ai Slack -> https://claude.ai/settings/connectors" in result.output
-
-    def test_open_flag_opens_reconnect_urls(self, monkeypatch):
-        probes = (ConnectorProbeResult(name="slack", reachable=False, detail="invalid_auth"),)
-        down = [DownConnector(requirement=ConnectorRequirement("claude.ai Slack"), overlay="ov", ever_connected=True)]
-        opened: list[str] = []
-        monkeypatch.setattr(
-            "teatree.core.connector_manifest.check_connector_manifest",
-            lambda: ConnectorManifestOutcome(ok=False, down=down),
-        )
-        monkeypatch.setattr(
-            "teatree.cli.mcp.open_reconnect_targets",
-            lambda urls: opened.extend(urls) or len(urls),
-        )
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            result = runner.invoke(_app(), ["--open"])
-        assert result.exit_code == 1
-        assert opened == ["https://claude.ai/settings/connectors"]
-
-    def test_switch_mcp_degraded_warn_is_printed_and_exits_zero(self, monkeypatch):
-        """A degraded probe (claude absent) prints its WARN here too, matching the doctor path."""
-        probes = (ConnectorProbeResult(name="slack", reachable=True),)
-        monkeypatch.setattr(
-            "teatree.core.mcp_connectivity.check_mcp_connectivity",
-            lambda: McpConnectivityOutcome(
-                ok=True,
-                degraded=True,
-                findings=["Could not live-probe MCP connectivity (FileNotFoundError: claude binary not on PATH); ..."],
-            ),
-        )
-        with patch(
-            "teatree.core.account_switch.detect_and_recover_account_switch",
-            return_value=_outcome(switched=True, probes=probes),
-        ):
-            result = runner.invoke(_app(), [])
-        assert result.exit_code == 0
-        assert "Could not live-probe MCP connectivity" in result.output
-        assert "All connectors reachable" in result.output
+    def test_the_command_takes_no_open_flag(self):
+        result = runner.invoke(_app(), ["--open"])
+        assert result.exit_code == 2

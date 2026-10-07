@@ -20,9 +20,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
-from teatree.backends.types import Service
-from teatree.core.backend_factory import sharepoint_client_from_overlay
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import SHAREPOINT
 from teatree.types import ShareLinkVerification, SharePointEntry
 
 if TYPE_CHECKING:
@@ -43,11 +41,7 @@ INSTRUCTIONS = (
 
 
 def _client() -> "SharePointReadClient":
-    return resolve_declaring_overlay_client(
-        Service.SHAREPOINT,
-        sharepoint_client_from_overlay,
-        description="SharePoint document library (TEATREE_SHAREPOINT_* environment)",
-    )
+    return SHAREPOINT.resolve()
 
 
 async def _sharepoint_list(subpath: str = "", *, recursive: bool = True) -> list[SharePointEntry]:

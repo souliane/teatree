@@ -95,7 +95,7 @@ When the user gives a debugging hint, **investigate that hint FIRST** before oth
 
 When the bug report includes screenshots or videos, **analyze ALL visual evidence before writing any code.** Use `t3 tool analyze-video` for videos. Each frame may reveal additional issues beyond what the text description mentions.
 
-**Browser-visible breakage is diagnosed IN the browser, before any root-cause guess.** Inspect the live page's network, console, and DOM with `chrome-devtools-mcp`; run `t3 mcp browser-diagnosis` for its registration line. Performance and trace enforcement remains in Playwright.
+**Browser-visible breakage is diagnosed IN the browser, before any root-cause guess.** Load the page with `t3 browser open <url>` and read what it reports — console errors, page errors, failed requests, HTTP errors — then `t3 browser inspect` for the accessibility tree, HTML and a screenshot (`/t3:e2e` § "Browser tool: `t3 browser`"). Performance and trace enforcement remains in the Playwright E2E lane.
 
 ### Phase 0c: What Changed Recently?
 

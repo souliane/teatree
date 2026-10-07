@@ -7,6 +7,9 @@ import in ``teatree.mcp``); the HTTP transport is the only mock.
 """
 
 import asyncio
+import contextlib
+import dataclasses
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +21,13 @@ from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import services_sentry
 from teatree.mcp.server import build_server
+
+
+@contextlib.contextmanager
+def _builder(**mock_kwargs: object) -> Iterator[MagicMock]:
+    build = MagicMock(**mock_kwargs)
+    with patch.object(services_sentry, "SENTRY", dataclasses.replace(services_sentry.SENTRY, build=build)):
+        yield build
 
 
 class _SentryOverlay:
@@ -34,7 +44,7 @@ class TestSentryClientResolution(TestCase):
         built = MagicMock(org="acme", base_url="https://sentry.io")
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SentryOverlay()}),
-            patch("teatree.mcp.services_sentry.sentry_client_from_overlay", return_value=built) as build,
+            _builder(return_value=built) as build,
         ):
             client = services_sentry._client()
 
@@ -46,7 +56,7 @@ class TestSentryClientResolution(TestCase):
         # (no sentry_org) — the resolver falls through to the loud refusal.
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SentryOverlay(org="")}),
-            patch("teatree.mcp.services_sentry.sentry_client_from_overlay", return_value=None),
+            _builder(return_value=None),
             pytest.raises(ToolError, match="Sentry org"),
         ):
             services_sentry._client()

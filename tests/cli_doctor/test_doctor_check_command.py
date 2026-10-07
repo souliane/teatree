@@ -79,6 +79,9 @@ def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
     # tests/teatree_cli/doctor/test_root_disk_headroom_check.py; pin it to a pass
     # here so this smoke test stays deterministic.
     monkeypatch.setattr(teatree_cli_doctor, "_check_root_disk_headroom", lambda: True)
+    # The headless-browser gate launches a real Chromium; CI's unit lane installs none.
+    # Both outcomes are exercised in tests/teatree_cli/doctor/test_checks_browser.py.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_browser_ready", lambda *, repair: True)
     # The dream-pass staleness escalation gate (#3993) reads the real DreamRunMarker
     # row — on this runner's own control DB it is genuinely stale, so it FAILs
     # deterministically off-box for a reason unrelated to the doctor's dispatch under
@@ -185,6 +188,30 @@ class TestDoctorCheckCommand(TestCase):
             runner.invoke(app, ["doctor", "check"])
 
         assert order.index("entrypoint") < order.index("editable")
+
+    def test_browser_gate_runs_after_the_env_repair_it_may_need(self):
+        """A missing Playwright is restored by the skew repair, so the gate that needs it comes after."""
+        _stage_home(self.tmp_path, self.monkeypatch)
+        order: list[str] = []
+
+        def _env_repair(*, repair: bool = False) -> bool:
+            order.append(f"env-repair:{repair}")
+            return False
+
+        def _browser(*, repair: bool) -> bool:
+            order.append(f"browser:{repair}")
+            return True
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(teatree_cli_doctor, "_check_teatree_mcp_liveness", side_effect=_env_repair),
+            patch.object(teatree_cli_doctor, "_check_browser_ready", side_effect=_browser),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor", "check", "--repair"])
+
+        assert order == ["env-repair:True", "browser:True"]
+        assert result.exit_code == 1
 
     def test_reports_all_checks_passed(self):
         _stage_home(self.tmp_path, self.monkeypatch)

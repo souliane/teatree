@@ -88,10 +88,9 @@ def read_declared_mcp_servers(path: Path) -> dict[str, dict]:
 def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
     """Verify *repo* ships a well-formed ``teatree`` entry in ``.mcp.json``.
 
-    Structural only — no live probe. A ``t3 doctor check`` caller layers a
-    live ``claude mcp list`` probe (:mod:`teatree.core.mcp_connectivity`) on
-    top of this; ``t3 setup`` uses this alone (setup has no reason to shell
-    out to ``claude`` — it only needs to confirm the file it ships is intact).
+    Structural only — no live probe. ``t3 doctor check`` pairs it with the
+    exercising liveness check (:mod:`teatree.mcp.liveness`); ``t3 setup`` uses
+    this alone, since it only needs to confirm the file it ships is intact.
     """
     path = mcp_json_path(repo)
     entry = read_declared_mcp_servers(path).get(TEATREE_MCP_SERVER_NAME)

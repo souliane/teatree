@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, override
 from teatree.overlay_sdk import (
     OverlayBase,
     OverlayConfig,
-    OverlayConnectors,
     OverlayMetadata,
     OverlayProvisioning,
     OverlayReview,
@@ -112,15 +111,6 @@ class TeatreeMetadata(OverlayMetadata):
             "skill_root": str(root / "skills"),
             "remote_patterns": ["souliane/teatree"],
         }
-
-
-class TeatreeConnectors(OverlayConnectors):
-    @override
-    def mcp_provider_expectations(self) -> dict[str, str]:
-        # The teatree dogfood overlay declares no per-server provider — the
-        # connectivity check (#2282) enforces only connected-ness here. The real
-        # per-server values live in the overlay repo (souliane/teatree#251).
-        return {}
 
 
 class TeatreeProvisioning(OverlayProvisioning):
@@ -239,7 +229,6 @@ class TeatreeOverlay(OverlayBase):
     provisioning = TeatreeProvisioning()
     runtime = TeatreeRuntime()
     review = TeatreeReview()
-    connectors = TeatreeConnectors()
 
     @override
     def get_repos(self) -> list[str]:
