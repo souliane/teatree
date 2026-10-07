@@ -60,9 +60,7 @@ def pinned_regressions(
     a must-allow input. Any violated invariant exits non-zero.
 
     ``--strict`` additionally demands a VALIDATED green (#4005), matching the suite's
-    own ``t3 eval --strict``. The default stays lenient because the pre-push hook runs
-    on the host, where the container-owned control DB is unreachable by design and
-    blocking every push there is the false red the skip exists to end.
+    own ``t3 eval --strict``.
     """
     ensure_django()
     require_valid_format(output_format)
