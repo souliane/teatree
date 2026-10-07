@@ -454,9 +454,9 @@ graph TD
     teatree.overlay_sdk --> teatree.visual_qa
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
-    teatree.browser --> teatree.core
     teatree.browser --> teatree.paths
     teatree.browser --> teatree.utils
+    teatree.browser --> teatree.core.loop_lease_liveness
     teatree.visual_qa --> teatree.browser
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
