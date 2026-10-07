@@ -9,12 +9,13 @@ the CLI's ``SystemExit`` / ``typer.Exit`` primitive into a structured
 
 import contextlib
 import io
-import json
-from typing import Any, cast
+from typing import Any
 
 import typer
 from django.core.management import call_command
 from mcp.server.mcpserver.exceptions import ToolError
+
+from teatree.core.machine_output import last_json_object
 
 
 def run_command(command: str, *args: object, **kwargs: object) -> object:
@@ -37,17 +38,6 @@ def run_command(command: str, *args: object, **kwargs: object) -> object:
         raise ToolError(message) from exc
 
 
-def _last_json_object(text: str) -> dict[str, Any] | None:
-    """The last stdout line that parses as a JSON object, or ``None``."""
-    for raw in reversed(text.strip().splitlines()):
-        line = raw.strip()
-        if not (line.startswith("{") and line.endswith("}")):
-            continue
-        with contextlib.suppress(json.JSONDecodeError):
-            return cast("dict[str, Any]", json.loads(line))
-    return None
-
-
 def run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[str, Any]:
     """Run a command that reports its verdict via one JSON line + ``SystemExit``.
 
@@ -67,7 +57,7 @@ def run_emitting_command(command: str, *args: object, **kwargs: object) -> dict[
         contextlib.suppress(SystemExit, typer.Exit),
     ):
         call_command(command, *args, **kwargs)
-    payload = _last_json_object(out.getvalue())
+    payload = last_json_object(out.getvalue())
     if payload is not None:
         return payload
     message = err.getvalue().strip() or out.getvalue().strip() or f"{command} produced no machine-readable output"

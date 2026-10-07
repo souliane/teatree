@@ -4,12 +4,13 @@ The decision is :func:`teatree.core.review.mr_triage.triage`, which is pure; thi
 module is the other half — it reads the forge and does the arithmetic the ladder
 refuses to do, then emits what it found.
 
-It never posts to colleagues or dispatches an action. It does create a durable
-owner question when the ladder finds a merge request ready for a review NOBODY
-HAS ASKED FOR — a statusline zone is where that fact goes to die, so it is put
-to the owner over
-:func:`~teatree.core.review.mr_state_question.ask_mr_state`, the bot→owner
-channel that carries no publishing gate and is bounded per tick.
+It never posts to colleagues or dispatches an action. When the ladder finds a merge
+request ready for a review NOBODY HAS ASKED FOR, the followup flow's
+:class:`~teatree.loop.scanners.review_request_send.ReviewRequestSendScanner` sends it
+from :meth:`MrTriageScanner.triaged`. Where no sender is selected the fact would die
+in a statusline zone, so this surveyor puts it to the owner instead over
+:func:`~teatree.core.review.mr_state_question.ask_mr_state`, the bot→owner channel
+that carries no publishing gate and is bounded per tick.
 
 The pass is TWO-PASS because a work group is a property of the whole listing: the
 groups are built first over everything the operator authored, and only then is each
@@ -29,7 +30,7 @@ this runs.
 
 import datetime as dt
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from django.utils import timezone
@@ -67,7 +68,7 @@ logger = logging.getLogger(__name__)
 #: review already happened. Emitting them would be noise, not surveillance.
 _QUIET = frozenset({TriageAction.NONE})
 
-_MISSING_REVIEW_OPTIONS = ("Post the review request", "I will ask in person", "It is not ready yet")
+MISSING_REVIEW_OPTIONS = ("Post the review request", "I will ask in person", "It is not ready yet")
 _MISSING_REVIEW_REASON = (
     "it is green and out of draft, its work group is ready, and the review channel carries no request for it."
 )
@@ -145,6 +146,13 @@ class _Survey:
     exempt_patterns: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TriagedMr:
+    url: str
+    pr: RawAPIDict
+    verdict: TriageVerdict
+
+
 @dataclass(slots=True)
 class MrTriageScanner:
     """Walk the operator's open MRs, decide each one, and say so.
@@ -154,6 +162,7 @@ class MrTriageScanner:
     about how long a repo waits. ``ci_enricher`` supplies CI for an MR whose list
     payload carries none — the cross-project shape — and is optional: without it
     such an MR simply stays UNKNOWN, which the ladder handles.
+    ``ask_owner_on_missing_review`` is off only where a review-request sender acts on the verdict.
     """
 
     host: CodeHostBackend
@@ -165,6 +174,7 @@ class MrTriageScanner:
     ci_enricher: CiEnricher | None = None
     #: Bounds ONE survey pass, so a wide open-MR listing stays one reviewable batch.
     max_mrs_per_tick: int = 20
+    ask_owner_on_missing_review: bool = True
     now: dt.datetime | None = None
     name: str = "mr_triage"
     _scope: RepositoryScope = field(init=False)
@@ -173,23 +183,34 @@ class MrTriageScanner:
         self._scope = RepositoryScope(self.allowed_url_prefixes, scanner=self.name, log=logger)
 
     def scan(self) -> list[ScanSignal]:
-        if self._scope.refuses():
-            return []
-        authors = self._resolve_identities()
-        if not authors:
-            return []
-        survey = self._survey(authors)
         signals: list[ScanSignal] = []
-        for url, pr in survey.merge_requests.items():
-            verdict = triage(self._facts(pr, url=url, survey=survey), thresholds=self.thresholds)
-            if verdict.action in _QUIET:
+        for item in self.triaged():
+            if item.verdict.action in _QUIET:
                 continue
-            if verdict.action is TriageAction.REQUEST_REVIEW:
-                ask_mr_state(mr_url=url, reason=_MISSING_REVIEW_REASON, options=_MISSING_REVIEW_OPTIONS)
-            signals.append(self._signal(verdict, url=url, title=_str_field(pr, "title")))
+            if item.verdict.action is TriageAction.REQUEST_REVIEW and self.ask_owner_on_missing_review:
+                ask_mr_state(
+                    mr_url=item.url,
+                    reason=_MISSING_REVIEW_REASON,
+                    options=MISSING_REVIEW_OPTIONS,
+                    head_sha=head_sha(item.pr),
+                )
+            signals.append(self._signal(item.verdict, url=item.url, title=_str_field(item.pr, "title")))
             if len(signals) >= self.max_mrs_per_tick:
                 break
         return signals
+
+    def triaged(self) -> Iterator[TriagedMr]:
+        """Every in-scope open merge request with the ladder's verdict, decided one at a time."""
+        if self._scope.refuses():
+            return
+        authors = self._resolve_identities()
+        if not authors:
+            return
+        survey = self._survey(authors)
+        for url, pr in survey.merge_requests.items():
+            yield TriagedMr(
+                url=url, pr=pr, verdict=triage(self._facts(pr, url=url, survey=survey), thresholds=self.thresholds)
+            )
 
     def _survey(self, authors: tuple[str, ...]) -> _Survey:
         """Pass one: read the listing whole, group it, and resolve each group's readiness."""
@@ -332,7 +353,10 @@ class MrTriageScanner:
         return ref.slug if ref is not None else ""
 
     def _open_review_requests(self) -> dict[str, ReviewRequestPost]:
-        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
+        # An unposted claim is a request nobody received; the guard reclaims it once stale.
+        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name).exclude(
+            slack_thread_ts=""
+        )
         return {row.mr_url: row for row in rows}
 
     def _resolve_identities(self) -> tuple[str, ...]:
@@ -356,4 +380,4 @@ class MrTriageScanner:
         return collected
 
 
-__all__ = ["MrTriageScanner"]
+__all__ = ["MISSING_REVIEW_OPTIONS", "MrTriageScanner", "TriagedMr"]

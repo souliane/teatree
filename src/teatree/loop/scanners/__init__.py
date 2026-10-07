@@ -56,6 +56,7 @@ from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
 from teatree.loop.scanners.review_request_resume import ReviewRequestResumeScanner
+from teatree.loop.scanners.review_request_send import ReviewRequestSendScanner
 from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
@@ -125,6 +126,7 @@ __all__ = [
     "ReviewNagScanner",
     "ReviewRequestMergeReactScanner",
     "ReviewRequestResumeScanner",
+    "ReviewRequestSendScanner",
     "ReviewedPrHeadScanner",
     "ReviewerPrsScanner",
     "ScanSignal",

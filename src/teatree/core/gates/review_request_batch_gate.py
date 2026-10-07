@@ -233,13 +233,14 @@ class _OpenMergeRequests:
     def _pause_blocker(self, mr_url: str) -> str:
         """The pause-axis code, or ``""``.
 
-        A merge request nobody has broadcast yet carries no hold to read, and one
-        the owner has explicitly resumed carries a hold they already lifted — so
-        neither costs a messaging round trip, and a transport failure at that
-        point cannot re-arm a pause that is provably over.
+        A merge request nobody has broadcast yet (no row, or a claim with no posted
+        thread) carries no hold to read, and one the owner has explicitly resumed
+        carries a hold they already lifted — so neither costs a messaging round
+        trip, and a transport failure at that point cannot re-arm a pause that is
+        provably over.
         """
         post = ReviewRequestPost.objects.filter(mr_url=mr_url).first()
-        if post is None or post.resumed_at is not None:
+        if post is None or not post.slack_thread_ts or post.resumed_at is not None:
             return ""
         return _PAUSE_BLOCKERS.get(read_pause_state(post, messaging_from_overlay(self.overlay_name or None)), "")
 

@@ -25,6 +25,10 @@ def suppress_on_behalf_egress(suppressor: EgressSuppressor) -> Iterator[None]:
         _EGRESS_SUPPRESSOR.reset(token)
 
 
+def egress_suppressed() -> bool:
+    return _EGRESS_SUPPRESSOR.get() is not None
+
+
 def suppressed_egress_response(target: str, action: str, kind: EgressKind) -> RawAPIDict | None:
     suppressor = _EGRESS_SUPPRESSOR.get()
     return suppressor(target, action, kind) if suppressor is not None else None
