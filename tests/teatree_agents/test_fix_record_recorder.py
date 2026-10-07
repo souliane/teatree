@@ -173,3 +173,15 @@ class TestFixRecordMissingFields(TestCase):
 
     def test_order_follows_the_declaration(self) -> None:
         assert fix_record_missing_fields({}) == list(FIX_RECORD_FIELDS)
+
+
+class TestAVerdictReviewPhaseLeavesTheRecordToTheReviewRecorder(TestCase):
+    def test_a_reviewing_task_writes_nothing_on_its_own_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.REVIEWER, kind=Ticket.Kind.FIX)
+        session = Session.objects.create(ticket=ticket, agent_id="review")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        assert record_returned_fix_record(task, {"summary": "s", "fix_record": dict(_COMPLETE_RECORD)}) == ""
+
+        ticket.refresh_from_db()
+        assert "fix_record" not in ticket.extra

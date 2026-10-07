@@ -1,7 +1,7 @@
 """CriticDispatch (SELFCATCH-5): the idempotent enqueue of the async headless critic.
 
 Mirrors ``AutoReviewDispatch``: one row per ``(ticket, transition, head_sha)`` linking
-the claimable headless ``Task(phase="reviewing")`` the loop self-pump dispatches. A
+the claimable headless ``Task(phase="reviewing")`` the worker dispatches. A
 re-fire at the same delivered head returns ``None`` (no second critic); the row and its
 task share one transaction.
 """
@@ -64,15 +64,29 @@ class TestStrandedCriticDispatchIsReArmable(TestCase):
         return row
 
     @staticmethod
-    def _expire(row: CriticDispatch) -> None:
+    def _expire_claim(row: CriticDispatch) -> None:
         CriticDispatch.objects.filter(pk=row.pk).update(deadline=timezone.now() - dt.timedelta(minutes=1))
+
+    @classmethod
+    def _expire(cls, row: CriticDispatch) -> None:
+        Task.objects.filter(pk=row.task_id).update(status=Task.Status.FAILED)
+        cls._expire_claim(row)
 
     def test_a_live_claim_still_dedups(self) -> None:
         self._arm()
         assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="again") is None
         assert Task.objects.filter(phase="critic_reviewing").count() == 1
 
-    def test_an_expired_claim_re_arms_once(self) -> None:
+    def test_an_expired_claim_whose_critic_is_still_queued_arms_no_second_critic(self) -> None:
+        first = self._arm()
+        self._expire_claim(first)
+
+        assert CriticDispatch.enqueue(ticket=self.ticket, transition="merge", head_sha=HEAD, contract="again") is None
+        assert Task.objects.filter(phase="critic_reviewing").count() == 1
+        first.refresh_from_db()
+        assert first.attempts == 1
+
+    def test_an_expired_claim_whose_critic_died_re_arms_once(self) -> None:
         first = self._arm()
         self._expire(first)
 
@@ -85,6 +99,7 @@ class TestStrandedCriticDispatchIsReArmable(TestCase):
         assert again.attempts == 2
         assert again.task is not None
         assert again.task.pk != first.task_id
+        assert Task.objects.filter(phase="critic_reviewing").count() == 2
 
     def test_an_expired_claim_with_budget_left_is_not_saturated(self) -> None:
         # Re-armable, so not the doctor's business: saturation is the END of the

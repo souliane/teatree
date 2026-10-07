@@ -4,16 +4,17 @@ The half of :mod:`teatree.loop.transient_requeue` that answers "is this row's wo
 over, or is someone else finishing it?" — split out because it is a distinct concern
 from the sweep's routing and budget, and the two together exceeded the module LOC cap.
 
-Two dispositions, differing in whether the phase's work is done. A DEAD ARTIFACT is
+Three dispositions, differing in whether the phase's work is done. A DEAD ARTIFACT is
 retired COMPLETED — nothing can still land, so the row's replayed transition is inert.
 A row with a LIVE SUCCESSOR is parked FAILED — its phase is unfinished and someone else
-is finishing it, so marking it COMPLETED would advance the ticket over the successor.
+is finishing it, so marking it COMPLETED would advance the ticket over the successor. A
+run whose TARGET MOVED under it is parked FAILED too, once the sweep has queued its recovery.
 """
 
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.phase_tools import VERDICT_REVIEW_PHASES
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.phase_landing import phase_landing_evidence
 
@@ -39,32 +40,11 @@ DEAD_REVIEW_STAMP = "[dead-review-retired]"
 #: out of the scan, because the recovery is the fresh dispatch at the NEW head that the
 #: sweep arms by itself, so a question would cost the owner one prompt per push.
 SUPERSEDED_HEAD_STAMP = "[head-superseded-parked]"
+#: Kinds whose run failed because its target moved under it: a PR head past the review, a base past the plan.
+MOVED_TARGET_KINDS = frozenset({FailureKind.HEAD_SUPERSEDED, FailureKind.PLAN_STALE})
 
 
-def dispose_without_reopen(task: Task, *, error: str) -> bool:
-    """Dispose of a FAILED row the sweep must neither reopen nor escalate; ``True`` if handled.
-
-    Three dispositions, differing in whether the phase's work is over. A DEAD ARTIFACT is
-    retired COMPLETED — nothing can still land, so the row's transition is inert. A row
-    with a LIVE SUCCESSOR is parked FAILED — its phase is unfinished and someone else is
-    finishing it, so marking it COMPLETED would advance the ticket over the successor. A
-    review whose PR MOVED PAST the head it judged is parked FAILED too, and is keyed on the
-    failure *error* rather than on the dispatch claim's state: only a quarter of
-    verdict-review tasks hold a claim row, so a claim-keyed test left a legitimate push
-    escalating one question per push on the other three quarters (#4737).
-    """
-    if _retire_if_dead_artifact(task):
-        return True
-    if classify_failure(error) == FailureKind.HEAD_SUPERSEDED:
-        _park_superseded_head(task)
-        return True
-    if _has_live_successor(task):
-        _park_live_successor(task)
-        return True
-    return False
-
-
-def _retire_if_dead_artifact(task: Task) -> bool:
+def retire_if_dead_artifact(task: Task) -> bool:
     """Retire a FAILED task whose phase output is already moot; ``True`` if retired.
 
     Two ways a FAILED row becomes a dead artifact to retire (COMPLETED) rather than
@@ -123,6 +103,14 @@ def _has_live_successor(task: Task) -> bool:
     ).exists()
 
 
+def park_if_live_successor(task: Task) -> bool:
+    """Park *task* when a live successor holds its ``(ticket, phase)``; ``True`` if parked."""
+    if not _has_live_successor(task):
+        return False
+    _park_live_successor(task)
+    return True
+
+
 def _park_live_successor(task: Task) -> None:
     """Park a FAILED task whose ``(ticket, phase)`` a live successor now holds. Idempotent.
 
@@ -144,13 +132,14 @@ def _park_live_successor(task: Task) -> None:
     Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(execution_reason=reason)
 
 
-def _park_superseded_head(task: Task) -> None:
-    """Park a review whose PR advanced past the head it judged. Idempotent.
+def park_moved_target(task: Task) -> None:
+    """Park a run whose target moved under it — a PR head past the review, a base past the plan. Idempotent.
 
-    FAILED, not COMPLETED, for :func:`_park_live_successor`'s reason: no verdict landed, so
-    marking it COMPLETED would make it the ticket's newest completed task and
-    ``replay_orphaned_transitions`` would fire the reviewing transition over a review that
-    never concluded.
+    FAILED, not COMPLETED, for :func:`_park_live_successor`'s reason: the phase did not land,
+    so marking it COMPLETED would make it the ticket's newest completed task and
+    ``replay_orphaned_transitions`` would fire its transition over unfinished work. Keyed on
+    the failure kind rather than a dispatch claim: only a quarter of verdict-review tasks hold
+    a claim row (#4737). The caller queues whatever recovery nothing else arms first.
     """
     if SUPERSEDED_HEAD_STAMP in task.execution_reason:
         return
@@ -225,7 +214,10 @@ def _retire_superseded(task: Task) -> None:
 __all__ = [
     "DEAD_REVIEW_STAMP",
     "LIVE_SUCCESSOR_STAMP",
+    "MOVED_TARGET_KINDS",
     "SUPERSEDED_HEAD_STAMP",
     "SUPERSEDED_STAMP",
-    "dispose_without_reopen",
+    "park_if_live_successor",
+    "park_moved_target",
+    "retire_if_dead_artifact",
 ]

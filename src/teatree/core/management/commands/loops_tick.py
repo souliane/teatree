@@ -186,7 +186,7 @@ def _drain_pending_reinstall_guarded() -> None:
 
 
 class Command(TyperCommand):
-    help = "Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires."
+    help = "Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires."
 
     def _emit_skip(self, reason: str, *, json_output: bool, statusline_file: Path | None) -> None:
         from teatree.loop.tick import _write_tick_meta  # noqa: PLC0415 — deferred: keeps command import light
@@ -360,15 +360,15 @@ class Command(TyperCommand):
         # claim and the release that follows it can never resolve to two
         # different principals. The loop runner declares its own durable
         # principal, so its next tick re-claims the lease its previous tick took
-        # instead of meeting it as a stranger; a Claude self-pump still resolves
-        # its own session exactly as before.
+        # instead of meeting it as a stranger; an in-session run still resolves
+        # its own session.
         #
         # The lease ``owner_pid`` MUST be the durable owning process, not
-        # ``os.getppid()`` of this tick subprocess (the self-pump runs it inside a
+        # ``os.getppid()`` of this tick subprocess (an in-session run executes it in a
         # Bash-tool shell the harness tears down seconds later — anchoring on it
         # collapses the pid-liveness protection back to TTL-only, #1706). It is
         # the runner's own pid for a runner tick and the loop registry's durable
-        # session pid for a self-pump; ``os.getppid()`` is the fallback only for a
+        # session pid for an in-session run; ``os.getppid()`` is the fallback only for a
         # direct in-session invocation with no registry record.
         session_id, principal_pid = loop_principal()
         owner_pid = principal_pid or os.getppid()
@@ -381,7 +381,7 @@ class Command(TyperCommand):
             session_id=session_id,
             ttl_seconds=loop_owner_ttl_seconds(),
             owner_pid=owner_pid,
-            driver=detect_driver(session_id),
+            driver=detect_driver(),
         )
         if not won:
             self._emit_skip(

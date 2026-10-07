@@ -4,11 +4,7 @@ import json
 import os
 from pathlib import Path
 
-# #786 WS3: the immortal-roster name tuple (t3-main/review/cross-review/
-# bug-hunt) is RETIRED — there is no fixed set of long-lived loop
-# sub-agents. ``OWNER_LOOP`` remains only as the single registry key
-# identifying which *session* is the tick-owner (the Django-free anchor
-# the #758/#810 Stop self-pump gates on).
+# The single registry key naming which *session* holds the host's attended loop slot.
 OWNER_LOOP = "t3-loop-tick-owner"
 
 

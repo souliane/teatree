@@ -285,6 +285,17 @@ class ForgeMergeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PrMessage:
+    """The PR/MR title and body a bound merge publishes as its commit message."""
+
+    title: str
+    body: str
+
+    def as_text(self) -> str:
+        return f"{self.title}\n\n{self.body}" if self.body else self.title
+
+
+@dataclass(frozen=True, slots=True)
 class UploadVerification:
     """One uploaded artifact's existence check + the reference to embed (#2156, #2165).
 
@@ -537,12 +548,15 @@ class CodeHostBackend(Protocol):
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
 
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None: ...  # pragma: no branch
+
     def merge_pr_squash_bound(
         self,
         *,
         slug: str,
         pr_id: int,
         expected_head_oid: str,
+        message: PrMessage,
         squash: bool = True,
     ) -> ForgeMergeResult: ...  # pragma: no branch
 

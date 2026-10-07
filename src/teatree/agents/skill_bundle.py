@@ -188,20 +188,18 @@ def _warn_unresolvable_stage_skills(skills: list[str], phase: str) -> None:
             logger.warning("Stage skill %r for phase %r resolves to no SKILL.md — continuing", name, phase)
 
 
-def _dispatch_cwd(worktree_path: str | Path | None) -> Path:
+def _dispatch_cwd(detection_root: Path | None) -> Path:
     """The detection root for framework + overlay skill discovery (PR-12).
 
-    A dispatched task runs in its OWN worktree, so skills must be detected from
-    the ticket's checkout, never the orchestrator's ambient cwd (the loop's
-    clone). Falls back to the ambient cwd when no worktree exists yet
-    (pre-provision) or the recorded path is gone — the byte-identical
-    pre-PR-12 behaviour.
+    The ticket's worktree or repo clone (``dispatch_detection_root``), never the
+    orchestrator's ambient cwd, which is the drain process's directory and holds no
+    project file. The cwd stays the last resort, and says so.
     """
-    if worktree_path:
-        candidate = Path(worktree_path)
-        if candidate.is_dir():
-            return candidate
-    return Path.cwd()
+    if detection_root is not None and detection_root.is_dir():
+        return detection_root
+    cwd = Path.cwd()
+    logger.warning("No worktree or clone resolves for this dispatch; detecting stack skills from the cwd %s", cwd)
+    return cwd
 
 
 def resolve_skill_bundle(
@@ -209,7 +207,7 @@ def resolve_skill_bundle(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
     skill_index: SkillIndex | None = None,
-    worktree_path: str | Path | None = None,
+    detection_root: Path | None = None,
     stage_skills: list[str] | None = None,
 ) -> list[str]:
     """Resolve the phase's skill bundle for a dispatch.
@@ -228,7 +226,7 @@ def resolve_skill_bundle(
         stage_skills = active_overlay_stage_skills(phase)
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
-        cwd=_dispatch_cwd(worktree_path),
+        cwd=_dispatch_cwd(detection_root),
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
         skill_index=skill_index,

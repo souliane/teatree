@@ -17,7 +17,7 @@ from django_tasks_db.models import DBTaskResult
 from teatree import standing_directives_cache
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Mode, Prompt
-from teatree.loop.standing_directives import SELF_PUMP_LOOP, override_prompt_name, resolve_standing_directives
+from teatree.loop.standing_directives import DISPATCH_LOOP, override_prompt_name, resolve_standing_directives
 from teatree.loops import timer_reconciler
 from teatree.loops.standing_directives_publish import (
     PUBLISH_POLL_SECONDS,
@@ -72,7 +72,7 @@ class TestThePublishChain(django.test.TestCase):
     def test_a_mode_change_reaches_the_hooks_on_the_next_fire(self) -> None:
         self._fire()
         paused = ResolvedMode(
-            mode=Mode(name="off", entries={SELF_PUMP_LOOP: False}), source="override", until=None, reason="test"
+            mode=Mode(name="off", entries={DISPATCH_LOOP: False}), source="override", until=None, reason="test"
         )
 
         with mock.patch("teatree.core.mode_resolution.resolve_active_mode", return_value=paused):

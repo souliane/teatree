@@ -194,3 +194,15 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "", valu
     if "$(" in value and _raw_substitution_is_live(raw, value_offset):
         return FAIL_CLOSED_SENTINEL
     return value
+
+
+def resolve_attached_value(value: str, base: Path | None, raw: str, prefix: str) -> str:
+    """Resolve the value of an attached ``<prefix>value`` flag token.
+
+    A token whose span does not open with ``prefix`` (a quote before the flag) gives no
+    trustworthy value span, so it resolves as live.
+    """
+    if not raw.startswith(prefix):
+        return resolve_inline_body_value(value, base)
+    separator = 1 if raw[len(prefix) :].startswith("=") and not prefix.endswith("=") else 0
+    return resolve_inline_body_value(value, base, raw, len(prefix) + separator)

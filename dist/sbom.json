@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.161",
+      "description": "requirements line 38: claude-agent-sdk==0.2.163",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.161",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.163",
       "type": "library",
-      "version": "0.2.161"
+      "version": "0.2.163"
     },
     {
       "bom-ref": "requirements-L40",
@@ -587,7 +587,7 @@
     },
     {
       "bom-ref": "requirements-L128",
-      "description": "requirements line 128: mcp==2.2.0",
+      "description": "requirements line 128: mcp==2.3.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -596,13 +596,13 @@
         }
       ],
       "name": "mcp",
-      "purl": "pkg:pypi/mcp@2.2.0",
+      "purl": "pkg:pypi/mcp@2.3.0",
       "type": "library",
-      "version": "2.2.0"
+      "version": "2.3.0"
     },
     {
       "bom-ref": "requirements-L132",
-      "description": "requirements line 132: mcp-types==2.2.0",
+      "description": "requirements line 132: mcp-types==2.3.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -611,9 +611,9 @@
         }
       ],
       "name": "mcp-types",
-      "purl": "pkg:pypi/mcp-types@2.2.0",
+      "purl": "pkg:pypi/mcp-types@2.3.0",
       "type": "library",
-      "version": "2.2.0"
+      "version": "2.3.0"
     },
     {
       "bom-ref": "requirements-L134",
@@ -1661,7 +1661,7 @@
           ],
           "name": "cyclonedx-py",
           "type": "application",
-          "version": "7.4.0"
+          "version": "7.5.0"
         },
         {
           "description": "Python library for CycloneDX",

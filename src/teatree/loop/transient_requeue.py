@@ -27,7 +27,8 @@ is NOT reopened blindly, but it must never sit silent either. On a non-terminal
 ticket, a failure whose last attempt was an ENVELOPE REFUSAL — classified by the
 shared :mod:`teatree.agents.envelope_refusal` vocabulary, so the producing and
 consuming sides can never drift — gets exactly ONE bounded corrective retry, reopened
-with the phase-accurate emit-the-envelope instruction appended to its prompt. Any
+with the phase-accurate emit-the-envelope instruction appended to its prompt (a
+reviewer's refused verdict envelope gets the refusal itself, naming the keys). Any
 other deterministic failure, and any refusal that already spent its retry, hits the
 :class:`DeferredQuestion` path. An EMPTY-error FAILED task (no recorded error at
 all — neither transient nor deterministic) would otherwise match no branch and
@@ -101,18 +102,28 @@ orchestration-layer module may compose both.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
+from teatree.agents.envelope_refusal import (
+    corrective_instruction,
+    is_no_envelope_refusal,
+    is_recorder_refusal,
+    is_review_shape_refusal,
+    refused_envelope_instruction,
+)
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.forge_url import is_synthetic_ticket_url
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import (
+    PLAN_STALE_PREFIX,
+    FailureKind,
     RecoveryStrategy,
     classify_failure,
     recovery_strategy,
@@ -120,6 +131,8 @@ from teatree.core.modelkit.task_failure_taxonomy import (
 )
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.review_target import review_target_for_task
 from teatree.core.models.task_repair import phase_attempts
 from teatree.core.repair_loop import (
     IterationStalled,
@@ -130,7 +143,14 @@ from teatree.core.repair_loop import (
 from teatree.failure_signatures import is_spawn_failure
 from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
 from teatree.loop.config_self_repair import repair_for_error
-from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, SUPERSEDED_HEAD_STAMP, dispose_without_reopen
+from teatree.loop.transient_requeue_disposal import (
+    LIVE_SUCCESSOR_STAMP,
+    MOVED_TARGET_KINDS,
+    SUPERSEDED_HEAD_STAMP,
+    park_if_live_successor,
+    park_moved_target,
+    retire_if_dead_artifact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +207,7 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     escalated), it just can no longer take the whole tick down with it.
     """
     error = _latest_error(task)
-    if dispose_without_reopen(task, error=error):
+    if retire_if_dead_artifact(task) or _answer_moved_target(task, error=error) or park_if_live_successor(task):
         task.ticket.pop_task_thread(int(task.pk))
         return 0
     if not error:
@@ -206,6 +226,44 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     if (cause := recoverable_exhaustion_cause(error)) is not None:
         return _requeue_on_window_reset(task, cause, now=now)
     return _handle_deterministic(task, strategy)
+
+
+def _answer_moved_target(task: Task, *, error: str) -> bool:
+    """Park a run whose target moved under it, first queuing the recovery nothing else arms; ``True`` if handled.
+
+    A stale plan is owed a planning pass and an author ticket's own review of a PR that moved is
+    owed a fresh review; no sweep arms either, least of all for a ticket with an open PR. A
+    reviewer ticket's moved head is re-armed by the PR sweep, so it is only parked. The recovery
+    spends the failed phase's own budget, and a spent one halts internally instead.
+    """
+    kind = classify_failure(error)
+    if kind not in MOVED_TARGET_KINDS:
+        return False
+    recovery = _moved_target_recovery(task, kind=kind, error=error)
+    if recovery is None:
+        park_moved_target(task)
+        return True
+    halt = _budget_halt_reason(task)
+    if halt is None:
+        try:
+            recovery()
+        except InvalidTransitionError as exc:
+            halt = f"could not queue the recovery for a target that moved: {exc}"
+    if halt is None:
+        park_moved_target(task)
+    else:
+        _escalate_once(task, reason=halt)
+    return True
+
+
+def _moved_target_recovery(task: Task, *, kind: str, error: str) -> Callable[[], Task] | None:
+    ticket = task.ticket
+    if kind == FailureKind.PLAN_STALE:
+        return partial(ticket.schedule_plan_reaffirm, refusal=error.removeprefix(PLAN_STALE_PREFIX), parent_task=task)
+    target = review_target_for_task(task)
+    if target is not None and target.bind_live_head:
+        return partial(ticket.schedule_review, parent_task=task)
+    return None
 
 
 def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) -> int:
@@ -297,16 +355,21 @@ def _corrective_note(task: Task) -> str | None:
     ``debugging`` (already in :data:`_CORRECTIVE_PHASES`) plus every no-evidence,
     non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
     ``codex_*``) — which the old gate left paging a human on the first prose-only run.
-    A RECORDER-side refusal stays gated on the set: a withheld ``reviewing`` verdict is
-    a judgement to surface, not a format slip. ``None`` for a genuine defect, and for a
-    task whose one corrective retry is already spent.
+    A RECORDER-side refusal stays gated on the set, except that a ``reviewing`` run whose
+    verdict envelope was refused for a misnamed, misplaced or malformed key is told that
+    refusal once — the reopened row resumes its own conversation, so the reviewer fixes
+    the keys without repeating the review. A withheld verdict is still a judgement to
+    surface. ``None`` for a genuine defect, and for a task whose one corrective retry is
+    already spent.
     """
     if _CORRECTIVE_MARKER in task.execution_reason:
         return None
     error = _latest_error(task)
-    gated = normalize_phase(task.phase) in _CORRECTIVE_PHASES and is_recorder_refusal(error)
-    if is_no_envelope_refusal(error) or gated:
+    phase = normalize_phase(task.phase)
+    if is_no_envelope_refusal(error) or (phase in _CORRECTIVE_PHASES and is_recorder_refusal(error)):
         return corrective_instruction(task.phase)
+    if phase == "reviewing" and is_review_shape_refusal(error):
+        return refused_envelope_instruction(error)
     return None
 
 

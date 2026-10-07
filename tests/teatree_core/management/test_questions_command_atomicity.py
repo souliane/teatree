@@ -23,6 +23,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from tests._harness_env import harness_signature
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -35,7 +36,8 @@ def _make_question() -> DeferredQuestion:
 class TestAnswerCommandAtomicity:
     def test_answer_writes_both_resolution_and_audit(self) -> None:
         row = _make_question()
-        call_command("questions", "answer", row.pk, "yes", "--resolver", "test-user")
+        with harness_signature({}):
+            call_command("questions", "answer", row.pk, "yes", "--resolver", "test-user")
         row.refresh_from_db()
         assert row.answered_at is not None
         assert row.resolved_via == DeferredQuestion.ResolvedVia.LOCAL

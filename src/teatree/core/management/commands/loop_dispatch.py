@@ -5,7 +5,7 @@ import logging
 from typing import IO, Annotated, Any, cast
 
 import typer
-from django_typer.management import TyperCommand, command
+from django_typer.management import TyperCommand, command, initialize
 
 from teatree.config import UserSettings, cadence_seconds, get_effective_settings
 from teatree.core.machine_output import emit
@@ -14,7 +14,7 @@ from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_
 from teatree.core.models import Task
 from teatree.core.models.task_claim import claim_generation
 from teatree.core.models.task_handoff import dispatch_reason
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.dispatch_gates import spawn_display_name
@@ -102,8 +102,7 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # The generation this claim minted. The slot hands it straight back to
         # ``tasks record-attempt --claim-token``, which is what stops a run whose
         # lease lapsed and was re-offered mid-flight from recording its outcome
-        # onto the generation the next tick is executing. Empty on an unclaimed
-        # row (``pending-spawn``): there is no claim to record against yet.
+        # onto the generation the next tick is executing.
         "claim_token": claim_generation(task),
     }
 
@@ -167,9 +166,9 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
 def _resolve_skill_bundle(task: Task) -> list[str]:
     """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
 
-    Resolves the overlay and the framework/detection cwd from the TASK's ticket
-    (its overlay + its worktree, PR-12) — never the orchestrator's ambient cwd,
-    which is the loop's clone rather than the ticket's checkout. Imports
+    Resolves the overlay and the framework/detection root from the TASK's ticket
+    (its overlay + its worktree or repo clone, PR-12) — never the orchestrator's
+    ambient cwd, which is the loop's clone rather than the ticket's checkout. Imports
     ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
     ``teatree.agents`` dependency edge (core is the lower layer).
     """
@@ -182,75 +181,16 @@ def _resolve_skill_bundle(task: Task) -> list[str]:
         return resolve_skill_bundle(
             phase=task.phase,
             overlay_skill_metadata=overlay_skill_metadata,
-            worktree_path=dispatch_worktree_path(task.ticket),
+            detection_root=dispatch_detection_root(task.ticket),
         )
     except Exception:  # noqa: BLE001 — a failure degrades to no candidates
         return []
 
 
 class Command(TyperCommand):
-    @command(name="pending-spawn")
-    def pending_spawn(
-        self,
-        *,
-        json_output: Annotated[
-            bool,
-            typer.Option("--json", help="Emit the pending list as JSON instead of a table."),
-        ] = False,
-        claimable_only: Annotated[
-            bool,
-            typer.Option(
-                "--claimable-only",
-                help="Report work ONLY when a claim could land (honour the admit budget).",
-            ),
-        ] = False,
-    ) -> None:
-        """List pending Tasks the ``/loop`` slot should spawn in-session.
-
-        Tasks are returned in FIFO order (oldest pending first), filtered through
-        the SAME ``Task.dispatchable_q()`` SSOT the atomic ``claim-next`` uses
-        (#6), so the preview cannot drift from the claim: a non-dispatchable pair
-        and a ticket under a live #2104 external-delivery lease are both excluded
-        here exactly as they are at claim time. The ``subagent`` field tells the slot which subagent_type
-        to pass to its ``Agent`` tool; the ``display_name`` field
-        (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the slot
-        passes, so every spawn is attributable and type-prefixed.
-
-        ``--claimable-only`` (TODO #100) applies the SAME admit-budget gate
-        ``claim-next`` applies, so the probe answers "is there a unit a claim
-        could actually take?" rather than "is there any dispatchable PENDING
-        row?". The Stop-hook self-pump uses it: without the gate the probe
-        reports an un-advanceable unit (one held back by a full in-flight
-        budget) forever, so the self-pump re-offers a unit ``claim-next``
-        would always refuse — it never advances or stops. The gate degrades to
-        no SIDECAR clamp on an absent / stale / unreadable budget, identical to
-        the claimer — and identically, the governor's own ceiling still applies.
-        """
-        if claimable_only and _admit_budget_exhausted():
-            payload: list[dict[str, Any]] = []
-        else:
-            pending = (
-                Task.objects.filter(status=Task.Status.PENDING)
-                .filter(Task.dispatchable_q())
-                .select_related("ticket")
-                .order_by("pk")
-            )
-            payload = [_task_to_dict(task) for task in pending]
-        if not payload:
-            human: str | None = "No pending spawn requests."
-        else:
-            human = "\n".join(
-                f"task={entry['task_id']:<5} subagent={entry['subagent']:<18} "
-                f"phase={entry['phase']:<10} url={entry['issue_url']}"
-                for entry in payload
-            )
-        emit(
-            payload,
-            json_output=json_output,
-            out=cast("IO[str]", self.stdout),
-            err=cast("IO[str]", self.stderr),
-            human=human,
-        )
+    @initialize()
+    def init(self) -> None:
+        """``loop_dispatch`` group root."""
 
     @command(name="claim-next")
     def claim_next(
@@ -306,7 +246,7 @@ class Command(TyperCommand):
         # owner stopped heartbeating (its lease lapsed) is returned to PENDING so
         # THIS healthy session's claim picks it up. The full loop tick already
         # runs this via ``_reap_stale_task_claims``; the standalone ``claim-next``
-        # entry (Stop-hook self-pump / slack-answer cycle) did not, so a dead
+        # entry did not, so a dead
         # session's unit stalled CLAIMED until some other session happened to run
         # a full tick. ``reclaim_orphaned_claims`` is the budget-aware (#2009)
         # CAS — a no-op when nothing is stale, and it leaves a still-live lease

@@ -19,10 +19,12 @@ import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.action_verification import action_verification_error
 from teatree.agents.coding_result_salvage import salvage_coding_result
+from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import landing_verification_error
@@ -38,7 +40,8 @@ from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import Task, TaskAttempt
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
+from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
 
 if TYPE_CHECKING:
     from teatree.agents.pydantic_ai_turn import ToolCallEntry
@@ -149,7 +152,8 @@ def record_result_envelope(
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
-    Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
+    Validation order: the measured key-drift aliases are normalized
+    (:mod:`teatree.agents.envelope_aliases`) → schema-key check → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
     LANDING check (coding/debugging must have committed) → the PLAN record (a planning
     envelope whose plan is refused fails the attempt, never the recorder) —
@@ -185,6 +189,7 @@ def record_result_envelope(
     transition).
     """
     usage = usage or AttemptUsage()
+    result = normalize_envelope_aliases(result)
     checked = _check_before_recording(task, result, phase=phase, usage=usage, envelope_parsed=envelope_parsed)
     result = checked.result
     if checked.error:
@@ -204,14 +209,19 @@ def record_result_envelope(
 
     record_reactive_envelopes(task, result, phase=phase)
 
-    attempt = TaskAttempt.objects.create(
-        task=task,
-        ended_at=timezone.now(),
-        exit_code=0,
-        result=with_transport_records(result, usage),
-        **usage_fields(usage),
-    )
-    task.complete(result_artifact_path="")
+    try:
+        with transaction.atomic():
+            attempt = TaskAttempt.objects.create(
+                task=task,
+                ended_at=timezone.now(),
+                exit_code=0,
+                result=with_transport_records(result, usage),
+                **usage_fields(usage),
+            )
+            task.complete(result_artifact_path="")
+    except NoCurrentPlanError as exc:
+        task.refresh_from_db()
+        return _record_failure(task, error=f"{PLAN_STALE_PREFIX}{exc}", result=result, usage=usage)
     return attempt
 
 

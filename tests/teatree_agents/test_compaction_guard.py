@@ -88,7 +88,7 @@ class TestAManualCompaction:
 class TestAGuardedHarness:
     def test_the_session_it_opens_is_the_one_an_automatic_compaction_interrupts(self) -> None:
         guard = CompactionGuard()
-        guarded = GuardedHarness(harness=FakeHarness([]), guard=guard)
+        guarded = GuardedHarness(harness=FakeHarness([]), guard=guard, name="fake")
 
         async def _open_and_compact() -> bool:
             async with guarded.open(options=None) as session:
@@ -100,7 +100,9 @@ class TestAGuardedHarness:
     def test_it_reports_the_wrapped_harness_capabilities(self) -> None:
         harness = FakeHarness([])
 
-        assert GuardedHarness(harness=harness, guard=CompactionGuard()).capabilities is harness.capabilities
+        assert (
+            GuardedHarness(harness=harness, guard=CompactionGuard(), name="fake").capabilities is harness.capabilities
+        )
 
 
 class TestWithCompactionOff:

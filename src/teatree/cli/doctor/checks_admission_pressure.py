@@ -9,16 +9,12 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
-import os
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import typer
 
 if TYPE_CHECKING:
     from teatree.core.admission_pressure import MachineSignal
-
-_MAX_STALL_MINUTES = 24 * 60
 
 
 def _check_intake_budget_deadlock() -> bool:
@@ -232,9 +228,8 @@ def _check_drain_lane_starved() -> bool:
     The signature of a factory that has stopped moving while every surface reads healthy:
     the worker is busy, the loop ticks, no error is raised — and the queued work that would
     RETIRE a pull request cannot get in behind expensive work that only creates more.
-    Advisory: the reservation is what prevents the state, this only names it, and a box run
-    deliberately at ``drain_slot_reservation = 0`` should not go red for it. Crash-proof:
-    any error degrades to OK.
+    Advisory: the review lane outside the coding ceiling is what prevents the state, this
+    only names it. Crash-proof: any error degrades to OK.
     """
     from teatree.core.factory.drain_starvation import read_drain_lane_state  # noqa: PLC0415 — ORM read at call time
 
@@ -246,51 +241,36 @@ def _check_drain_lane_starved() -> bool:
     if not state.starved:
         return True
     typer.echo(
-        f"WARN  {state.report()}. Reserve more capacity for it with "
-        "`t3 <overlay> config_setting set drain_slot_reservation <n>` (#4374).",
+        f"WARN  {state.report()}. Widen the review lane with "
+        "`t3 <overlay> config_setting set cheap_phase_admission_ceiling <n>` (#5051).",
     )
     return False
-
-
-def _queue_stall_minutes() -> int:
-    """Bound a configurable floor so an invalid override cannot disable the alarm."""
-    try:
-        minutes = int(os.environ.get("TEATREE_QUEUE_STALL_MINUTES", "30"))
-    except ValueError:
-        return 30
-    return minutes if 1 <= minutes <= _MAX_STALL_MINUTES else 30
 
 
 def _check_queue_stall() -> bool:
     """FAIL when queued work has gone unclaimed for a sustained interval.
 
-    The oldest pending row supplies the age floor. A current claim or a recently
-    finished real attempt is evidence of claim progress, so neither state is a
-    stall. The reason is diagnostic only: missing OTel data cannot hide a stalled
+    The predicate is :func:`teatree.core.factory.queue_stall.read_queue_stall` over every
+    PENDING row. The reason is diagnostic only: missing OTel data cannot hide a stalled
     queue, and a specific brake is never baked into the stall predicate.
     """
-    from django.db.models import Count, Min  # noqa: PLC0415 — ORM at check time
     from django.utils import timezone  # noqa: PLC0415 — ORM at check time
 
-    from teatree.core.models import Task, TaskAttempt  # noqa: PLC0415 — ORM import needs app registry
-    from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX  # noqa: PLC0415
+    from teatree.core.factory.queue_stall import (  # noqa: PLC0415 — ORM read at call time
+        read_queue_stall,
+        stall_minutes,
+    )
+    from teatree.core.models import Task  # noqa: PLC0415 — ORM import needs app registry
     from teatree.core.telemetry.admission import latest_admission_reason  # noqa: PLC0415 — lazy CLI import
 
     now = timezone.now()
-    minutes = _queue_stall_minutes()
-    cutoff = now - timedelta(minutes=minutes)
+    minutes = stall_minutes()
     try:
-        queue = Task.objects.filter(status=Task.Status.PENDING).aggregate(count=Count("pk"), oldest=Min("created_at"))
-        pending = queue["count"]
-        oldest = queue["oldest"]
-        if not pending or oldest is None or oldest >= cutoff:
-            return True
-        if Task.objects.filter(status=Task.Status.CLAIMED).exists():
-            return True
-        if TaskAttempt.objects.filter(started_at__gte=cutoff).exclude(error__startswith=LIMIT_PARKED_PREFIX).exists():
-            return True
+        stall = read_queue_stall(Task.objects.filter(status=Task.Status.PENDING), now=now, minutes=minutes)
     except Exception as exc:  # noqa: BLE001 — an unreadable DB is diagnosed by its own doctor gate
         typer.echo(f"WARN  Queue-stall check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if stall is None:
         return True
 
     try:
@@ -298,9 +278,9 @@ def _check_queue_stall() -> bool:
     except Exception:  # noqa: BLE001 — no telemetry must not mask the stalled queue
         reason = None
     explanation = reason or "no recent admission decision recorded"
-    age_minutes = int((now - oldest).total_seconds() // 60)
+    age_minutes = int((now - stall.oldest_created_at).total_seconds() // 60)
     typer.echo(
-        f"FAIL  Queue stalled: {pending} pending task(s), oldest waiting {age_minutes}m, "
+        f"FAIL  Queue stalled: {stall.pending} pending task(s), oldest waiting {age_minutes}m, "
         f"zero claimed/running for at least {minutes}m; latest admission decision: {explanation}"
     )
     return False

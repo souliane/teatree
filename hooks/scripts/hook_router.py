@@ -19,7 +19,6 @@ import json
 import os
 import re
 import shutil
-import subprocess  # noqa: S404 — stdlib subprocess for trusted internal git/CLI calls
 import sys
 import tempfile
 import time
@@ -55,7 +54,6 @@ from hooks.scripts.active_repo_tracking import handle_track_active_repo
 from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
-from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
 from hooks.scripts.brief_anchor_gate import handle_brief_anchor_lint
 from hooks.scripts.classifier_relax_gate import (
     _SETTINGS_JSON_PATH,  # noqa: F401 — re-export for test access
@@ -121,13 +119,10 @@ from hooks.scripts.handlers.classifier_denial import handle_classifier_deny_stop
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
-from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
 from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
-from hooks.scripts.loop_registry_liveness import session_owns_loop as _session_owns_loop
 from hooks.scripts.loop_registry_path import OWNER_LOOP as _OWNER_LOOP
 from hooks.scripts.loop_registry_path import loop_registry_path as _loop_registry_path
 from hooks.scripts.loop_registry_path import read_loop_registry as _read_loop_registry
-from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
 from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
@@ -193,7 +188,6 @@ from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDest
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
 from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_destination
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
-from hooks.scripts.session_end_self_pump import handle_session_end_self_pump
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
 from hooks.scripts.session_start_delivery import StartClaims
@@ -210,7 +204,7 @@ from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render
 from hooks.scripts.stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from hooks.scripts.subagent_hint import suppress_self_auth_hint_for_subagent as _suppress_self_auth_hint_for_subagent
 from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
-from hooks.scripts.t3_invocation import run_t3, spawn_t3_detached, t3_argv, t3_available, t3_never_started
+from hooks.scripts.t3_invocation import spawn_t3_detached, t3_argv, t3_available, t3_never_started
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
@@ -278,7 +272,7 @@ _SWEEP_SENTINEL = ".last-sweep"
 # repeated for the life of the session — and ``statusline.sh`` gates the WHOLE
 # statusline on its presence (exits blank when absent). Sweeping it makes a
 # long-lived session's statusline silently go blank. The throttle-and-recreate
-# markers (``pump-armed`` / ``mr_refreshed`` …) are NOT
+# markers (``mr_refreshed`` …) are NOT
 # listed: their absence is the safe default and they are re-armed on demand.
 #
 # ``.agents`` / ``.agents-stopped`` (#4108) are a THIRD reason to protect, distinct
@@ -509,9 +503,9 @@ def _teatree_engaged(session_id: str) -> bool:
 
 
 def _loop_auto_load_active(session_id: str) -> bool:
-    """Whether this session may auto-arm the loop/statusline machinery (#256).
+    """Whether this session may take the attended loop slot and show the loop statusline (#256).
 
-    The gate the tick-owner bootstrap (:func:`handle_session_start_bootstrap`)
+    The gate the loop-slot bootstrap (:func:`handle_session_start_bootstrap`)
     applies. Two conditions must BOTH hold:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
@@ -519,10 +513,9 @@ def _loop_auto_load_active(session_id: str) -> bool:
     - the operator enabled autoload (:func:`_autoload_enabled`).
 
     ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
-    ``T3_AUTOLOAD`` env): it both ENGAGES the session and ARMS its loops. It
-    defaults OFF so a colleague who merely clones the repo (and even loads a
-    teatree skill) is never nagged to register a cron or shown the loop
-    statusline.
+    ``T3_AUTOLOAD`` env): it both ENGAGES the session and elects it for the
+    loop slot. It defaults OFF so a colleague who merely clones the repo (and
+    even loads a teatree skill) never takes the slot or sees the loop statusline.
     """
     return _teatree_active(session_id) and _autoload_enabled()
 
@@ -541,8 +534,8 @@ def _loop_cadence_seconds() -> int:
 
     Routes through the shared ``teatree.config.cadence_seconds()`` resolver
     (``T3_LOOP_CADENCE`` env first, then the DB-home ``loop_cadence_seconds``
-    setting) so the hook's tick-staleness window and the loop-registration cron
-    minutes can never diverge from the real slot cadence. Best-effort: if
+    setting) so the hook's tick-staleness window can never diverge from the real
+    slot cadence. Best-effort: if
     ``teatree`` is not importable in this hook process, fall back to the env-only
     read.
     """
@@ -1281,8 +1274,8 @@ def _ai_sig_scan_argv() -> list[str] | None:
 
 
 # A genuine finding is recognisable by the scanner's well-formed summary
-# header ``AI-signature scan: N banned trailer(s)`` (``scripts/
-# ai_signature_scan.py`` ``_summary``). The scanner exits 1 on a finding AND
+# header ``AI-signature scan: N banned trailer(s)`` (``teatree.hooks.
+# ai_signature_scan.summary``). The scanner exits 1 on a finding AND
 # nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
 # exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
 # two apart — keying on the summary line does, mirroring the sibling
@@ -2660,13 +2653,8 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
             "",
             "## Loop assignment",
             (
-                "This session is the loop OWNER. The loops are tick-driven and PER-LOOP (#786 WS3, #2650): there is "
-                "no master tick and no roster of long-lived sub-agents to resume — re-arm by ensuring each enabled "
-                "loop's own native `/loop` (firing `t3 loops tick --loop <name>`) is registered for this session; "
-                "each per-loop tick atomically claims the next pending unit via `t3 loop claim-next`, and records "
-                "that unit's outcome with `t3 <overlay> tasks record-attempt <task_id> <result_json> "
-                "--claim-token <token>` when its sub-agent returns. Recording is what ends the unit: an unrecorded "
-                "claim is reclaimed and re-offered, never finished."
+                "This session holds the host's attended loop slot. "
+                "The `t3 worker` runs the loops; there is nothing to re-arm."
             ),
         ]
         for _name, entry in sorted(owned):
@@ -2922,114 +2910,6 @@ def _loop_registry_txn() -> Iterator[list[dict[str, dict]]]:
         _write_loop_registry_locked(box[0])
 
 
-# ── #786 WS4: per-agent work-consolidation registry (invariant 3) ─────
-#
-# Invariant 3 of the #786 acceptance contract: exactly ONE per-agent
-# work-consolidation loop (the issue's "todo-consolidation loop") per
-# agent/sub-agent — per-actor, deduped by agent identity across ALL
-# sessions (NOT per-session, NOT a global singleton). The consolidation
-# loop IS the Stop self-pump. WS3 gated it
-# on the single global tick-owner session (``_session_owns_loop``), which
-# (a) collapsed it to one global loop and (b) keyed anti-spin by
-# ``session_id`` so one agent spanning two sessions armed two markers.
-#
-# This registry is a SEPARATE JSON file from the tick-owner
-# ``loop-registry.json`` (the tick-owner singleton — invariant 2 — and
-# the per-agent consolidation loop — invariant 3 — are orthogonal
-# concerns and must not share a keyspace). It reuses the WS3 substrate
-# verbatim: the same ``_registry_write_lock`` flock, ``tmp.replace``
-# publish, and ``_prune_dead_owner`` pid-liveness prune — no new locking
-# or liveness primitive is invented. Keyed by ``agent_id``; each entry
-# records the holding ``session_id``/``pid``/``heartbeat_ts``.
-
-
-def _consolidation_registry_path() -> Path:
-    """Per-agent consolidation registry JSON, beside ``loop-registry.json``.
-
-    Same directory and ``T3_LOOP_REGISTRY_DIR`` override as the tick-owner
-    registry (so test isolation redirects both at once) but a DISTINCT
-    file — the tick-owner singleton and the per-agent consolidation loop
-    are independent invariants and must not collide in one keyspace.
-    """
-    return _loop_registry_path().with_name("consolidation-registry.json")
-
-
-def _read_consolidation_registry() -> dict[str, dict]:
-    path = _consolidation_registry_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_consolidation_registry_locked(registry: dict[str, dict]) -> None:
-    path = _consolidation_registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
-
-
-def _claim_agent_consolidation_slot(agent_id: str, session_id: str) -> bool:
-    """Atomically claim the consolidation slot for ``agent_id``.
-
-    Returns ``True`` iff this ``(agent_id, session_id)`` owns the single
-    consolidation loop for that agent identity. ``False`` when a *live,
-    different* session of the SAME agent already holds it (the
-    cross-session dedup that makes the loop exactly-one-per-agent).
-
-    The read → decide → write runs inside one ``_registry_write_lock``
-    critical section (the WS3 flock, shared deliberately — both
-    registries' writes are sub-millisecond and a single lock removes any
-    lock-ordering hazard) so two concurrent ticks racing to claim the
-    same agent cannot both win (the WS3 double-claim TOCTOU, applied
-    per-agent). Dead-holder entries are pruned via ``_prune_dead_owner``
-    (the existing pid-liveness primitive).
-
-    #810 fail-safe: a ``Stop`` hook runs under whatever interpreter the
-    harness invokes — ``teatree`` may be unimportable, so the
-    pid-liveness primitive is unavailable. Without it a stale holder
-    cannot be distinguished from a live one, so we CANNOT safely claim;
-    return ``False`` (skip the pump) rather than claim on an unprunable
-    registry and risk a duplicate consolidation loop. This matches the
-    ``_session_owns_loop`` degradation contract (ownership unknown ⇒ do
-    not pump) the pre-WS4 tests assert.
-    """
-    try:
-        from teatree.utils.singleton import pid_alive  # noqa: F401, PLC0415 — deferred: cold-hook import; re-export
-    except ImportError:
-        return False
-    with _registry_write_lock():
-        registry = _prune_dead_owner(_read_consolidation_registry())
-        holder = registry.get(agent_id)
-        if holder is not None and holder.get("session_id") != session_id:
-            return False
-        registry[agent_id] = {
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "pid": os.getppid(),
-            "heartbeat_ts": _now_ts(),
-        }
-        _write_consolidation_registry_locked(registry)
-        return True
-
-
-def _release_agent_consolidation_slot(session_id: str) -> None:
-    """Drop every consolidation entry held by ``session_id`` (clean exit)."""
-    with _registry_write_lock():
-        registry = _read_consolidation_registry()
-        survivors = {
-            agent_id: entry
-            for agent_id, entry in registry.items()
-            if not (isinstance(entry, dict) and entry.get("session_id") == session_id)
-        }
-        if survivors != registry:
-            _write_consolidation_registry_locked(survivors)
-
-
 def _emit_osc_title() -> None:
     """Best-effort set the terminal tab title for the t3-master session.
 
@@ -3039,14 +2919,6 @@ def _emit_osc_title() -> None:
     """
     with contextlib.suppress(OSError), open(_TTY_PATH, "a", encoding="utf-8") as tty:  # noqa: PTH123 — builtin open on a device/proc path; Path.open adds nothing here
         tty.write("\033]0;TEATREE LOOP\007")
-
-
-# #786 WS3: the per-loop spawn-brief machinery (_LOOP_SPAWN_BRIEFS /
-# _loop_spawn_briefs / _brief_block / _DURABILITY_NOTE) is RETIRED — there
-# is no immortal roster to re-spawn from a brief. The loop is the
-# `t3 loops tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
-# an owner death is "the next session becomes tick-owner and keeps
-# ticking", not "re-spawn N sub-agents from persisted briefs".
 
 
 def _now_ts() -> int:
@@ -3060,37 +2932,14 @@ _RENAME_REMINDER = (
 )
 
 
-# ── #786 WS3: tick-dispatch directives (immortal roster retired) ──────
-#
-# The loop is no longer a fixed roster of long-lived sub-agents that a
-# coordinator must keep alive / re-spawn on death/compaction. It is
-# driven PER-LOOP (#2650): one native Claude ``/loop`` per enabled DB
-# ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own
-# cadence — there is no master tick. Each per-loop tick atomically claims
-# pending DB work (WS1 ``t3 loop claim-next`` — conditional-UPDATE CAS)
-# and spawns a FRESH, BOUNDED sub-agent for just that unit, then records
-# that unit's outcome (``tasks record-attempt --claim-token``) when it returns.
-# Statelessness across ticks IS the compaction-proofing — a worker dying
-# mid-task leaves its Task reclaimable; the next tick re-dispatches it. A
-# worker that RETURNS without recording is not the same thing: its unit is
-# reclaimed and re-offered too, forever, because nothing ever ends it. The
-# per-loop *executor* mutex is the WS2 ``LoopLease`` ``loop:<name>`` row;
-# this Django-free hook registry only records which *session* owns a loop
-# (one record, never a roster) so the #758/#810 Stop-hook self-pump can
-# gate on it without a Django bootstrap in the hot path.
+# The ``t3 worker`` runs every loop, so neither directive asks the session to arm or run anything.
 
-_TICK_DISPATCH_OWNER_DIRECTIVE = (
-    "TEATREE LOOP — tick-driven per-loop, no roster to spawn.\n\n"
-    "This session is a teatree loop OWNER. The loop is NOT a set of long-lived sub-agents you spawn or keep alive, "
-    "and there is NO master tick: each enabled loop is its own native Claude `/loop` firing "
-    "`t3 loops tick --loop <name>` on its own cadence. Each per-loop tick, claim the next pending unit atomically "
-    "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for just that unit (it does the work and "
-    "returns). When it returns you MUST record its outcome with `t3 <overlay> tasks record-attempt <task_id> "
-    "<result_json> --claim-token <token>`, passing back the `claim_token` the claim emitted — the claim is the "
-    "spawn boundary, NOT the finish, and an unrecorded unit is reclaimed and re-offered forever. No persistent "
-    "loop roster, nothing to re-spawn on compaction — a worker dying mid-task leaves its Task reclaimable and the "
-    "next tick re-dispatches it. Ensure each enabled loop's `/loop` is registered for "
-    "this session." + _RENAME_REMINDER
+_LOOP_SLOT_OWNER_DIRECTIVE = (
+    "TEATREE: this session holds this host's attended loop slot. The `t3 worker` runs every teatree loop "
+    "and drains the task queue, with or without a session, so there is nothing for this session to arm, "
+    "tick or claim. If loops look stalled, run `t3 worker status` (`t3 worker ensure` starts one). The slot "
+    "only decides which session gets the per-host directives (PR board) and the loop-driven Stop gates."
+    + _RENAME_REMINDER
 )
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
@@ -3122,37 +2971,19 @@ _MCP_CONNECTIVITY_DIRECTIVE = (
     "check, costing MINUTES, and it must never sit on the session-start path."
 )
 
-_TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
-    "TEATREE LOOP — tick-driven per-loop; another session owns the loop.\n\n"
-    "Another live session owns the teatree loop(s) (owner session "
-    "{owner_session}). Do NOT register competing per-loop `/loop`s and do "
-    "NOT spawn loop sub-agents. The per-loop owner gate (#1073) is a HARD "
-    "gate: a non-owner `t3 loops tick --loop <name>` will SKIP before any "
-    "scanner / Slack DM-drain / dispatch runs at all — it does NOT execute the "
-    "tick. Stay idle with respect to the loop. (If you ARE the user's main "
-    "session and a foreign session has hijacked a loop, run `t3 loop "
-    "claim --slot loop:<name> --take-over` and the hijacker's next tick SKIPs "
-    "within one tick.)"
+_LOOP_SLOT_NON_OWNER_DIRECTIVE = (
+    "TEATREE: another live session ({owner_session}) holds this host's attended loop slot. "
+    "The `t3 worker` runs the loops; nothing here needs arming or ticking."
 )
 
 
 def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
-    """Single owner-session record under ``_OWNER_LOOP`` (no roster, #786 WS3).
-
-    The hook layer only needs *which session* is the tick-owner so the
-    Stop-hook self-pump (#758/#810) can gate on it Django-free. The
-    immortal-roster fields (per-loop ``spawn_brief``) are retired — there
-    is nothing to re-spawn. The owner pid is ``os.getppid()`` (the
-    long-lived session process, not this ephemeral hook subprocess), and it
-    is recorded beside the namespace it resolves in (#4270) — the
-    driver-detection probe attributes the integer by it before probing.
-    """
+    """The single ``_OWNER_LOOP`` record; the pid is the long-lived session process, not this hook."""
     return {
         _OWNER_LOOP: {
             "session_id": session_id,
             "agent_id": agent_id,
             "pid": os.getppid(),
-            "pid_namespace": _pid_namespace(),
             "heartbeat_ts": _now_ts(),
         }
     }
@@ -3325,24 +3156,11 @@ def _merge_session_start_context(context: str, session_id: str, source: str, cla
 
 
 def handle_session_start_bootstrap(data: dict) -> None:
-    """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
+    """Elect the host's attended loop-slot owner and tell the session the worker runs the loops.
 
-    The immortal-singleton roster (spawn/takeover/resume/re-attach a fixed
-    set of long-lived loop sub-agents) is GONE. The loop is the
-    ``t3 loops tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
-    tick mutex. This hook only decides which *session* is the tick-owner
-    (one Django-free record, so the #758/#810 Stop self-pump can gate on
-    it without a Django bootstrap) and orients the session accordingly:
-
-    No live owner, or this session already owns it (e.g. post
-    compaction): this session is/stays the tick-owner — claim it and emit
-    the tick-dispatch owner directive. Post-compaction there is nothing
-    to re-spawn (statelessness across ticks is the compaction-proofing);
-    the same session simply continues ticking.
-
-    A *different* live session owns it: stay idle w.r.t. the loop (a
-    non-owner tick would find nothing to claim — #789 subsumed); never
-    arm a competing tick or spawn loop sub-agents.
+    No live owner, or this session already owns it (e.g. post compaction): this
+    session is/stays the slot owner. A *different* live session owns it: the
+    record stands and the session is told who holds it.
 
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
@@ -3393,11 +3211,9 @@ def handle_session_start_bootstrap(data: dict) -> None:
         owner = registry.get(_OWNER_LOOP)
 
         if owner is not None and owner.get("session_id") != session_id:
-            # A different live session owns the tick — stay idle, never
-            # arm a competing tick (#789 subsumed: a non-owner tick finds
-            # nothing to claim anyway). Persist the prune only.
+            # A different live session holds the slot. Persist the prune only.
             box[0] = registry
-            context = _TICK_DISPATCH_NON_OWNER_DIRECTIVE.format(
+            context = _LOOP_SLOT_NON_OWNER_DIRECTIVE.format(
                 owner_session=owner.get("session_id", "?"),
             )
             emit_osc = False
@@ -3411,7 +3227,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
             db_live_owner = _db_live_foreign_owner(session_id, current_pid=current_pid)
             if db_live_owner:
                 box[0] = registry
-                context = _TICK_DISPATCH_NON_OWNER_DIRECTIVE.format(
+                context = _LOOP_SLOT_NON_OWNER_DIRECTIVE.format(
                     owner_session=db_live_owner,
                 )
                 emit_osc = False
@@ -3420,24 +3236,23 @@ def handle_session_start_bootstrap(data: dict) -> None:
                 # Mark for stale DB eviction (post-compaction path).
                 became_owner_after_rotation = True
                 box[0] = _tick_owner_record(session_id, agent_id or "")
-                context = _TICK_DISPATCH_OWNER_DIRECTIVE
+                context = _LOOP_SLOT_OWNER_DIRECTIVE
                 emit_osc = True
         else:
             # This session already owns the registry — same-session restart
             # (post-compaction same-id, or hook re-fire). No eviction needed.
             box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
-            context = _TICK_DISPATCH_OWNER_DIRECTIVE
+            context = _LOOP_SLOT_OWNER_DIRECTIVE
             emit_osc = True
 
     # #1380 / #1604: conditionally evict any stale DB ``t3-master`` row.
     # Runs when the registry had no entry (fresh machine or dead-owner prune)
     # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
     # compaction resume — the eviction ORPHANS the stale lease (``session_id=""``)
-    # synchronously before any tick, so the lead's next ``t3 loops tick``
-    # re-anchors ``t3-master`` uncontested and no maker pane can win the
-    # compaction-window CAS race against the rotated lead session. (The eviction
-    # only orphans; it does NOT itself re-claim — the re-claim is the lead's next
-    # tick.) The eviction is conditional on liveness either way
+    # synchronously before any tick, so the next tick re-anchors ``t3-master``
+    # uncontested and no maker pane can win the compaction-window CAS race against
+    # the rotated lead session. (The eviction only orphans; it does NOT itself
+    # re-claim — the re-claim is the next tick.) The eviction is conditional on liveness either way
     # (``evict_stale_owner``'s decision table), so a LIVE foreign DB lease is
     # preserved — a pane never hijacks a genuinely live owner. ``current_pid``
     # is the lead's new process and ``keep_session_id`` its (rotated) session,
@@ -3483,44 +3298,7 @@ def handle_session_end_loop_registry(data: dict) -> None:
         box[0] = registry
 
 
-# ── Stop: per-session loop self-pump (#758 / board #50) ──────────────
-#
-# Replaces the manual coordinator pump. When the loop-OWNER session
-# finishes a turn and consolidated work remains, the Stop hook returns
-# ``{"decision": "block", "reason": ...}`` to self-continue the loop
-# without an external re-prompt. No work => no block (idle by design,
-# mirroring #748 "zero sessions = dead, accepted"). Non-owner sessions
-# never pump (the loop-registry dedup from #718/#748 is authoritative).
-# Anti-spin: a per-session ``<session>.pump-armed`` marker plus an
-# mtime min-interval (same shape as ``_tick_meta_stale``) so a Stop
-# storm cannot hot-loop. SessionEnd clears the marker.
-
-_SELF_PUMP_MIN_INTERVAL = 60
-_SELF_PUMP_PENDING_TIMEOUT = 5
-_SELF_PUMP_PREVIEW = 5
-
-
-def _consolidated_pending_work() -> list[dict]:
-    """Return the loop's CLAIMABLE pending work via ``t3 loop pending-spawn``.
-
-    ``--claimable-only`` (TODO #100) makes the probe budget-aware so a unit
-    a full in-flight budget will refuse never re-arms the self-pump (the
-    un-advanceable re-offer). ``[]`` on any failure so it fails safe to idle.
-    """
-    argv = t3_argv("loop", "pending-spawn", "--json", "--claimable-only")
-    if argv is None:
-        return []
-    try:
-        result = run_t3(argv, timeout=_SELF_PUMP_PENDING_TIMEOUT)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    try:
-        parsed = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
+# ── Loop-driven turn detection ──────────────────────────────────────
 
 
 def _session_drives_loop(session_id: str) -> bool:
@@ -3529,14 +3307,13 @@ def _session_drives_loop(session_id: str) -> bool:
     The single signal the loop-driven Stop gates (inline-question, completion-claim,
     standing-goal) share to decide "is this an autonomous/loop-driven turn vs an
     attended interactive one". Reuses the existing pid-anchored tick-owner
-    registry (``_OWNER_LOOP`` / ``_session_owns_loop`` / ``_prune_dead_owner``)
-    — no new ownership primitive. A session drives the loop when EITHER:
+    registry (``_OWNER_LOOP`` / ``_prune_dead_owner``) — no new ownership
+    primitive. A session drives the loop when EITHER:
 
     - it already owns the live tick-owner record (the autonomous loop runner), OR
     - there is currently NO live owner anywhere (bootstrap / fresh machine /
         dead-owner prune). A no-owner session is the one expected to claim the
-        loop at its next SessionStart, so it must still be treated as a driver —
-        otherwise nobody is ever nagged to register and the loop never starts.
+        loop slot at its next SessionStart, so it must still be treated as a driver.
 
     It does NOT drive the loop only when a *different* live session owns the
     tick: that is the attended, non-owner interactive session the user is
@@ -3556,159 +3333,6 @@ def _session_drives_loop(session_id: str) -> bool:
     if owner is None:
         return True
     return owner.get("session_id") == session_id
-
-
-def _self_pump_recently_armed(marker: Path) -> bool:
-    if not marker.is_file():
-        return False
-    return int(time.time()) - int(marker.stat().st_mtime) < _SELF_PUMP_MIN_INTERVAL
-
-
-def _format_pending_summary(pending: list[dict]) -> str:
-    preview = pending[:_SELF_PUMP_PREVIEW]
-    lines = [
-        f"  - task {p.get('task_id', '?')} → {p.get('subagent', '?')} "
-        f"({p.get('phase', '?')}) {p.get('issue_url', '')}".rstrip()
-        for p in preview
-    ]
-    if len(pending) > _SELF_PUMP_PREVIEW:
-        lines.append(f"  - …and {len(pending) - _SELF_PUMP_PREVIEW} more")
-    return "\n".join(lines)
-
-
-def _actor_key(data: dict) -> str:
-    """The identity the consolidation loop is deduped by (#786 invariant 3).
-
-    The Stop payload's ``agent_id`` when present (the per-actor key —
-    stable for one agent across sessions, distinct across agents);
-    otherwise the ``session_id`` (a session with no separate agent
-    identity is its own actor — the degenerate-but-correct case of "one
-    loop per agent identity").
-    """
-    return data.get("agent_id") or data.get("session_id", "")
-
-
-def handle_loop_self_pump(data: dict) -> bool | None:
-    """Self-continue the per-agent consolidation loop on Stop (#786 WS4).
-
-    Returns ``True`` (emitting a ``block`` decision) for the agent that
-    owns the single consolidation slot for its identity (deduped across
-    ALL sessions — invariant 3, NOT the global tick-owner singleton),
-    with consolidated pending work, outside the anti-spin interval.
-    Otherwise returns ``None`` (idle / deduped / spin-guarded) so the
-    session may end normally.
-
-    Crash-proof by contract (#810): a ``Stop`` hook must NEVER raise to
-    the session. A broad boundary guard contains any unexpected error
-    in the self-pump path (a missing/unimportable ``teatree``, registry
-    I/O, etc.) to a single stderr line and a clean ``None`` — the
-    session ends normally and the self-pump is simply skipped.
-    """
-    try:
-        return _loop_self_pump(data)
-    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] loop self-pump skipped (unexpected error: {exc})",
-            file=sys.stderr,
-        )
-        return None
-
-
-_DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
-
-
-def _self_pump_suppressed(session_id: str) -> bool:
-    """Is the Stop self-pump gated off for this session (#959)?
-
-    The self-pump is a SINGLETON bound to the ONE designated t3-master
-    session (the ``_OWNER_LOOP`` record — set at SessionStart, released
-    at SessionEnd, transferable across sessions). WS4's "per-agent,
-    decoupled from the tick-owner" model leaked the loop into EVERY
-    fresh/unrelated session — a brand-new blog-writing session
-    immediately started pumping ``t3 loops tick``/``claim-next`` and
-    spawning review sub-agents. This gate is checked FIRST so a
-    non-owner session's Stop hook is a clean no-op: no ``pending-spawn``
-    subprocess, no registry write, no error noise in the transcript. The
-    per-agent consolidation slot stays as a secondary cross-session
-    dedup, NOT a substitute for this gate.
-
-    A durable DB ``LoopState`` pause/disable of ``dispatch`` (the loop the
-    self-pump drives) makes the owner's Stop hook a clean no-op so a paused
-    control plane cannot busy-loop on stale pending work — the
-    restart-surviving 'pause everything' (#1913,
-    :func:`db_loop_state_suppresses_self_pump`). Loop control is ``/loops`` +
-    the DB only; there is no env kill-switch.
-
-    Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy (in the session's
-    env or the bash env file, resolved via :func:`_resolve_loop_env`) makes
-    even the owner's Stop hook a clean no-op, so a session can stop driving
-    the loop in-process without touching the registry or ending the session.
-
-    """
-    if db_loop_state_suppresses_self_pump():
-        return True
-    if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
-        return True
-    return not _session_owns_loop(session_id)
-
-
-def _loop_self_pump(data: dict) -> bool | None:
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return None
-    if _self_pump_suppressed(session_id):
-        return None
-
-    actor = _actor_key(data)
-
-    _ensure_state_dir()
-    # Anti-spin marker keyed by the ACTOR (agent identity), not the
-    # session — one agent spanning two sessions must share one marker
-    # (#786 WS4: pre-WS4 the session-keyed marker let the same agent
-    # re-pump immediately in a fresh session).
-    marker = _state_file(actor, "pump-armed")
-    if _self_pump_recently_armed(marker):
-        return None
-
-    pending = _consolidated_pending_work()
-    if not pending:
-        return None
-
-    # Exactly one consolidation loop per agent identity across all
-    # sessions (invariant 3). A live different session of the SAME agent
-    # already holding the slot ⇒ this one stays idle (deduped); the
-    # claim is an atomic flock CAS so two concurrent ticks can't both win.
-    if not _claim_agent_consolidation_slot(actor, session_id):
-        return None
-
-    marker.write_text("1", encoding="utf-8")
-    # Tag the tick with the owner session id AND the durable session pid so
-    # its re-claim heartbeat always lands under the real session and anchors
-    # the lease on the long-lived session process — instead of resolving the
-    # id to "" and the pid to os.getppid() of the torn-down Bash-tool shell
-    # (#1107/#1722). The session id IS the owner here (the self-pump only
-    # fires for the owner), and os.getppid() in this Stop hook IS that
-    # durable session process (the same value SessionStart records in the
-    # loop registry), so the pid-anchored claim keeps the lease anchored
-    # even when the tick subprocess cannot read the registry (#1073).
-    session_pid = os.getppid()
-    reason = (
-        "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
-        "without waiting for an external prompt. Repeatedly run "
-        f"`T3_LOOP_SESSION_ID={session_id} T3_LOOP_SESSION_PID={session_pid} "
-        "t3 loop claim-next` and spawn ONE fresh, bounded sub-agent (Agent tool) "
-        "for each claimed unit until it returns nothing — the claim is atomic "
-        "(#786 WS1), so no separate post-spawn claim step and no double-dispatch "
-        "(the per-loop `/loop`s do the scanning; the self-pump only drains the "
-        "already-pending work). The claim is the spawn boundary, NOT the finish: "
-        "when a sub-agent returns you MUST record its outcome with "
-        "`t3 <overlay> tasks record-attempt <task_id> <result_json>`. An Agent-tool "
-        "dispatch never reaches the headless TaskAttempt flow, so nothing else "
-        "records it — an unrecorded unit stays CLAIMED until its lease lapses, is "
-        "reclaimed to PENDING, and is re-offered forever. Outstanding now:\n" + _format_pending_summary(pending)
-    )
-    json.dump({"decision": "block", "reason": reason}, sys.stdout)
-    return True
 
 
 # ── Stop: structured-question gate (#807) ───────────────────────────
@@ -4375,9 +3999,7 @@ def _consideration_gate(data: dict) -> bool | None:
     # ``PostToolUse`` / ``PostToolBatch``. Soft-block via top-level
     # ``systemMessage`` (schema-valid; non-decision; visible to the agent).
     json.dump({"systemMessage": body}, sys.stdout)
-    # Return True to break the Stop chain — preserves the JSON shape and
-    # preempts the loop self-pump (which would override our soft-block
-    # with a continuation directive).
+    # Return True to break the Stop chain so no later handler writes a second JSON object.
     return True
 
 
@@ -4452,7 +4074,7 @@ _HANDLERS: dict[str, list] = {
     # #845: PostCompact deliberately NOT registered — the harness has no
     # hookSpecificOutput entry for it and discards its output. Recovery
     # runs in handle_session_start_bootstrap on source=="compact".
-    "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
+    "SessionEnd": [handle_session_end, handle_session_end_loop_registry],
     "Stop": [
         # FIRST: a later handler that breaks the chain must not leave the next turn on this turn's counters.
         handle_reset_turn_tool_budget,
@@ -4466,9 +4088,8 @@ _HANDLERS: dict[str, list] = {
         handle_consideration_gate,
         handle_speak_all_on_stop,
         handle_stop_snapshot_slot,
-        # After every gate that can refuse the stop, before the loop pump that blocks every loop-driven stop.
+        # After every gate that can refuse the stop.
         handle_hand_back_answers,
-        handle_loop_self_pump,
     ],
     "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent, handle_subagent_stop_release],
 }

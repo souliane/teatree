@@ -89,6 +89,7 @@ graph TD
     teatree.core.admission --> teatree.core.managers_task_claim
     teatree.core.admission --> teatree.core.models
     teatree.core.admission --> teatree.loops.enable_verdict
+    teatree.core.factory.queue_stall --> teatree.core.models
     teatree.core.telemetry --> teatree.core.modelkit
     teatree.core.session_handover_manager --> teatree.core.session_identity
     teatree.core.loop_lease_liveness --> teatree.utils
@@ -148,8 +149,10 @@ graph TD
     teatree.agents --> teatree.core.admission
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
+    teatree.agents --> teatree.core.managers_task_claim
     teatree.agents --> teatree.core.telemetry
     teatree.agents --> teatree.credential_config
+    teatree.agents --> teatree.paths
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
@@ -315,8 +318,10 @@ graph TD
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loop_chunks --> teatree.loop.loop_scoping
     teatree.loop.statusline_loop_chunks --> teatree.loop.statusline_palette
+    teatree.loop.drain --> teatree.core.models
     teatree.loop.statusline_loops --> teatree.config
     teatree.loop.statusline_loops --> teatree.core
+    teatree.loop.statusline_loops --> teatree.loop.drain
     teatree.loop.statusline_loops --> teatree.loop.loop_cadences
     teatree.loop.statusline_loops --> teatree.loop.loop_scoping
     teatree.loop.statusline_loops --> teatree.loop.session_identity
@@ -386,6 +391,8 @@ graph TD
     teatree.loop.dispatch --> teatree.loop.dispatch_tables
     teatree.loop.dispatch --> teatree.loop.dispatch_reducer
     teatree.loop.dispatch --> teatree.loop.dispatch_gates
+    teatree.loop.self_improve --> teatree.core.admission
+    teatree.loop.self_improve --> teatree.core.factory.queue_stall
     teatree.loop.self_improve --> teatree.core.models
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners

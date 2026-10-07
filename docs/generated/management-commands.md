@@ -223,6 +223,16 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `live`
+
+Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+
+| Subcommand | Description |
+| --- | --- |
+| `inspect` | Show one live session's state, tool and progress without contacting the agent |
+| `steer` | Send input into a running agent's current turn and print its receipt (active) |
+| `list` | List every live session on this host's workers (passive) |
+
 ## `loop_directive_set`
 
 Switch standing-directive slots off (disable) or back on (enable) (#4166).
@@ -238,9 +248,10 @@ Print the standing directives with their resolved cadence, scope and text (#4166
 
 ## `loop_dispatch`
 
+``loop_dispatch`` group root.
+
 | Subcommand | Description |
 | --- | --- |
-| `pending-spawn` | List pending Tasks the ``/loop`` slot should spawn in-session |
 | `claim-next` | Atomically claim the oldest pending dispatchable Task, then emit it |
 
 ## `loop_drain_queue`
@@ -321,7 +332,7 @@ List DB-configured autonomous loops (read-only; #1796).
 
 ## `loops_tick`
 
-Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
+Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires.
 
 ## `makemigrations`
 

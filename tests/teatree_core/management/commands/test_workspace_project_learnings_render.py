@@ -58,6 +58,8 @@ class WorkspaceTicketProjectLearningsWiringTest(TestCase):
         super().setUp()
         mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
         self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # ``cut_start_point`` reads origin through Popen, which the ``subprocess.run`` mock never reaches.
+        self.enterContext(patch("teatree.core.runners.provision.git.cut_start_point", return_value="origin/main"))
         workspace = Path(os.environ["HOME"]) / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend"):

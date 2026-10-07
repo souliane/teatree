@@ -268,6 +268,22 @@ def pr_open_state(*, pr_url: str, token: str) -> PrOpenState:
     return pr_open_state_from_payload(pr)
 
 
+def open_pr_url_for_branch(*, repo: str, branch: str) -> str | None:
+    """The OPEN PR whose head is *branch*, as the shared ``str | None`` tri-state.
+
+    ``gh`` IS in the deploy image, so this arm keeps the CLI probe and its writer
+    credential chain (``forge_cli_env``) rather than moving to HTTP — the reason the
+    GitLab side had to move does not apply here. *repo* is the repo DIRECTORY, which
+    is what ``gh`` resolves the slug from.
+
+    The import is deferred so this module's import graph stays acyclic: ``core``
+    reaches this host through the provider seam, and the probe reaches back.
+    """
+    from teatree.core.forge_pr_probe import probe_github_open_pr  # noqa: PLC0415 — deferred: acyclic graph
+
+    return probe_github_open_pr(repo, branch).url_or_none_on_unknown()
+
+
 def pr_author(*, pr_url: str, token: str) -> str:
     """Return the PR author's GitHub login, or ``""`` when it can't be resolved.
 

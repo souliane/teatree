@@ -163,6 +163,7 @@ class TeatreeSettingsSchema(BaseSettings):
         return (init_settings, _TeatreeTableTomlSource(settings_cls))
 
     admission_pressure_shed_at: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
+    admission_write_concurrency_per_core: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY_BOX]
     metered_token_ceiling: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     metered_spend_window_hours: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     admit_colleague_prs_to_board: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
@@ -201,7 +202,6 @@ class TeatreeSettingsSchema(BaseSettings):
     disk_warn_free_gb: Annotated[float, BeforeValidator(_parse_strict_float), _DEFAULT_OVERLAY]
     dogfood_smoke_overlay: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     dogfood_smoke_skill: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
-    drain_slot_reservation: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]
     dream_memory_promote: Annotated[bool, BeforeValidator(_parse_strict_bool), _DEFAULT_OVERLAY]
     dream_umbrella_url: Annotated[str, BeforeValidator(_parse_strict_str), _DEFAULT_OVERLAY]
     envelope_stop_gate_refusals: Annotated[int, BeforeValidator(_parse_strict_int), _DEFAULT_OVERLAY]

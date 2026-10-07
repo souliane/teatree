@@ -139,8 +139,19 @@ class TestHardDenyWithinAssembledToolsets:
 class TestMcpHonoursEmptyPhaseAllowance:
     def _pin_sentinel_mcp(self, monkeypatch: pytest.MonkeyPatch) -> AbstractToolset[None]:
         sentinel: AbstractToolset[None] = CombinedToolset([])
-        monkeypatch.setattr(toolsets_module, "build_mcp_toolsets", lambda: [sentinel])
+        monkeypatch.setattr(toolsets_module, "build_mcp_toolsets", lambda **_: [sentinel])
         return sentinel
+
+    def test_the_mounted_server_matches_the_phase_grant(self) -> None:
+        for phase, serve_flags in (
+            ("reviewing", ["--read-only"]),
+            ("requesting_review", ["--read-only", "--allow-write", "review_request_post"]),
+            ("shipping", []),
+            ("coding", []),
+        ):
+            with patch.object(toolsets_module, "build_mcp_toolsets", return_value=[]) as built:
+                build_lane_b_toolsets(LaneBToolConfig(phase=phase))
+            built.assert_called_once_with(serve_flags=serve_flags)
 
     def test_none_phase_gets_no_mcp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # short_describe maps to the empty (NON-None) allowance — it may call NOTHING,
@@ -179,7 +190,7 @@ _QUARANTINED_PHASES = ("short_describe",)
 def _rendered_context(phase: str) -> str:
     ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{abs(hash(phase)) % 100_000}")
     task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
-    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata(), worktree_path=_REPO_ROOT)
+    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=SkillMetadata(), detection_root=_REPO_ROOT)
     return build_system_context(task, skills=skills, lifecycle_skill=SkillLoadingPolicy.lifecycle_for_phase(phase))
 
 
@@ -252,7 +263,7 @@ class TestSkillFilesTheContextNamesAreReadable(TestCase):
         (home := self.scratch / "empty-home").mkdir()
         for patcher in (
             patch.dict(os.environ, {"HOME": str(home)}),
-            patch.object(toolsets_module, "build_mcp_toolsets", list),
+            patch.object(toolsets_module, "build_mcp_toolsets", return_value=[]),
             patch.object(skill_injection, "DEFAULT_SKILLS_DIR", _REPO_SKILLS),
         ):
             patcher.start()

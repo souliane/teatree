@@ -63,30 +63,23 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 worker alive; on a headless box start it once from a login   │
 │                 profile). The active preset is the stop condition — one that │
 │                 admits zero loops stops them entirely (there is no fallback  │
-│                 plane). Each per-loop tick atomically claims the next        │
-│                 pending unit (`t3 loop claim-next`), spawns one fresh        │
-│                 bounded sub-agent for it, and records the outcome when that  │
-│                 sub-agent returns (`tasks record-attempt --claim-token`) —   │
-│                 the claim is the spawn boundary, not the finish, and an      │
-│                 unrecorded unit is reclaimed and re-offered rather than ever │
-│                 completing; a dying worker leaves its Task reclaimable and   │
-│                 the next tick re-dispatches it. Check the worker with `t3    │
-│                 worker status`; ensure one is running with `t3 worker        │
-│                 ensure`.                                                     │
+│                 plane). The worker also drains the task queue, claiming each │
+│                 pending task headlessly. Check the worker with `t3 worker    │
+│                 status`; ensure one is running with `t3 worker ensure`.      │
 │ goal            Standing verified-green goals (PR-25).                       │
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
 │                 holder + how many loops the active preset admits + whether   │
-│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
-│                 `ensure` spawns a detached worker iff the flock is free;     │
-│                 `drain` quiesces admission without stopping anything; `stop` │
-│                 / `restart` end the live worker and verify it against the    │
-│                 flock.                                                       │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet) +   │
+│                 how the agent admission ceiling is derived; `ensure` spawns  │
+│                 a detached worker iff the flock is free; `drain` quiesces    │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
-│ mcp             Read-only MCP server exposing teatree's structured search    │
-│                 (stdio).                                                     │
+│ mcp             MCP server exposing teatree's structured search and          │
+│                 gate-preserving writes (stdio).                              │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -276,6 +269,11 @@ Usage: t3 push [OPTIONS]
  disabled, so a missing credential fails immediately instead of hanging.
  The pre-push hooks still run.
 
+ `--repo` defaults to the checkout t3 was invoked from, and a relative
+ one resolves from there. `--branch HEAD:<branch>` pushes a detached
+ HEAD to <branch> without creating a local branch; no other refspec
+ form is accepted.
+
  Success means the remote was read back with `git ls-remote` and holds the
  branch at the local tip. Each way that fails exits with its own code, so a
  caller can branch on the fix it needs: 1 transport, 2 config, 3 credential,
@@ -283,12 +281,13 @@ Usage: t3 push [OPTIONS]
  remote-sha-mismatch), 7 unverifiable, 8 remote-rejected, 9 gate-aborted.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repo                    TEXT  Repository to push (defaults to the current  │
-│                                 directory).                                  │
-│                                 [default: .]                                 │
+│ --repo                    PATH  Repository to push (default: where t3 was    │
+│                                 invoked).                                    │
+│                                 [default: (dynamic)]                         │
 │ --remote                  TEXT  Remote to push to. [default: origin]         │
-│ --branch                  TEXT  Branch to push (defaults to the checked-out  │
-│                                 branch).                                     │
+│ --branch                  TEXT  Branch to push (default: the checked-out     │
+│                                 one). On a detached HEAD, HEAD:<branch>      │
+│                                 publishes HEAD as it.                        │
 │ --force-with-lease              Overwrite the remote branch only if it is    │
 │                                 where we last saw it.                        │
 │ --json                          Emit the outcome as JSON.                    │
@@ -311,9 +310,9 @@ Usage: t3 fast-push [OPTIONS]
 │ --message    -m      TEXT  Commit message (auto-generated when omitted).     │
 │ --remaining          TEXT  Unfinished work, recorded as a REMAINING: PR-body │
 │                            section.                                          │
-│ --repo               TEXT  Repository to push (defaults to the current       │
-│                            directory).                                       │
-│                            [default: .]                                      │
+│ --repo               PATH  Repository to push (default: where t3 was         │
+│                            invoked).                                         │
+│                            [default: (dynamic)]                              │
 │ --json                     Emit the outcome as JSON.                         │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1810,10 +1809,7 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 
  ``--strict`` additionally demands a VALIDATED green (#4005), matching the
  suite's
- own ``t3 eval --strict``. The default stays lenient because the pre-push hook
- runs
- on the host, where the container-owned control DB is unreachable by design and
- blocking every push there is the false red the skip exists to end.
+ own ``t3 eval --strict``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
@@ -4328,14 +4324,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  and the DB loops run with no Claude session open (the SessionStart supervisor
  keeps one worker alive; on a headless box start it once from a login profile).
  The active preset is the stop condition — one that admits zero loops stops
- them entirely (there is no fallback plane). Each per-loop tick atomically
- claims the next pending unit (`t3 loop claim-next`), spawns one fresh bounded
- sub-agent for it, and records the outcome when that sub-agent returns (`tasks
- record-attempt --claim-token`) — the claim is the spawn boundary, not the
- finish, and an unrecorded unit is reclaimed and re-offered rather than ever
- completing; a dying worker leaves its Task reclaimable and the next tick
- re-dispatches it. Check the worker with `t3 worker status`; ensure one is
- running with `t3 worker ensure`.
+ them entirely (there is no fallback plane). The worker also drains the task
+ queue, claiming each pending task headlessly. Check the worker with `t3 worker
+ status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -4344,9 +4335,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ tick             Run one user-manual full-scan tick by hand: scan every      │
 │                  overlay, dispatch, render.                                  │
 │ status           Show the loop's last-rendered statusline.                   │
-│ pending-spawn    List pending Tasks for the Stop hook's read-only probe.     │
-│ start            Spawn a Claude Code session; the t3-master registers each   │
-│                  enabled loop's ``/loop``.                                   │
+│ start            Start a Claude Code session; the ``t3 worker`` runs the     │
+│                  loops.                                                      │
 │ stop             Print how to stop the durable, worker-driven loops.         │
 │ claim            Claim the session-scoped t3-master slot for this Claude     │
 │                  session (#1073).                                            │
@@ -4434,53 +4424,20 @@ Usage: t3 loop status [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 loop pending-spawn`
-
-```
-Usage: t3 loop pending-spawn [OPTIONS]
-
- List pending Tasks for the Stop hook's read-only probe.
-
- Reads the dispatch DB (``Task`` rows in PENDING status) and prints
- each with its ``subagent`` hint. This is a pure read with NO claim:
- The Stop-hook self-pump uses this non-mutating probe to decide whether
- to offer work. The ``/loop`` slot claims with ``claim-next``.
-
- ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
- reports work ONLY when a unit ``claim-next`` could actually claim,
- so the Stop-hook self-pump stops re-offering a PENDING unit that a
- full in-flight admit budget will always refuse.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json                    Emit pending list as JSON.                         │
-│ --claimable-only          Report work ONLY when a claim could land (honour   │
-│                           the admit budget).                                 │
-│ --help                    Show this message and exit.                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 loop start`
 
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session; the t3-master registers each enabled loop's
- ``/loop``.
+ Start a Claude Code session; the ``t3 worker`` runs the loops.
 
- Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
- model/effort pins). Under #2650 the live set of native Claude ``/loop``s
- mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
- ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
- registers them automatically, so there is no single fat slot to pass on the
- command line. When ``claude`` is unavailable or the caller is already inside a
- Claude Code session, prints the per-loop registration guidance instead.
-
- Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
- With no session open the loop is paused until the next session start.
+ Looks for ``claude`` on ``PATH`` and execs it with the interactive session
+ model/effort pins. When ``claude`` is unavailable or the caller is already
+ inside a Claude Code session, prints the loop guidance instead.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only          Print the per-loop registration guidance instead of    │
-│                       spawning a Claude Code session.                        │
+│ --print-only          Print the loop guidance instead of starting a Claude   │
+│                       Code session.                                          │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4516,9 +4473,9 @@ Usage: t3 loop claim [OPTIONS]
 │                          hand-off (#1073).                                   │
 │ --slot             TEXT  t3-master slot name (default: t3-master).           │
 │                          [default: t3-master]                                │
-│ --driver           TEXT  Explicit tick driver                                │
-│                          (self_pump/loop_runner/external); overrides         │
-│                          detection. Use 'external' for a foreign scheduler.  │
+│ --driver           TEXT  Explicit tick driver (loop_runner/external);        │
+│                          overrides detection. Use 'external' for a foreign   │
+│                          scheduler.                                          │
 │ --json                   Emit JSON.                                          │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -5382,20 +5339,20 @@ Usage: t3 worker [OPTIONS] [COMMAND] [ARGS]...
 
  The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence
  owner). `status` reports the live holder + how many loops the active preset
- admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet);
- `ensure` spawns a detached worker iff the flock is free; `drain` quiesces
- admission without stopping anything; `stop` / `restart` end the live worker
- and verify it against the flock.
+ admits + whether loops actually tick (it EXITS NON-ZERO on a stale fleet) +
+ how the agent admission ceiling is derived; `ensure` spawns a detached worker
+ iff the flock is free; `drain` quiesces admission without stopping anything;
+ `stop` / `restart` end the live worker and verify it against the flock.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ run      Run the singleton loop-timer worker — the cadence owner (#1796).    │
-│ status   Report the worker: flock holder, admitted loops under the active    │
-│          preset, timers, staleness.                                          │
+│ status   Report the worker: flock holder, admitted loops, timers, staleness, │
+│          and the agent admission ceiling.                                    │
 │ ensure   Spawn a detached worker iff the flock is free.                      │
-│ drain    Quiesce the worker and wait for in-flight tasks to finish           │
+│ drain    Quiesce the worker and wait for in-flight tasks to checkpoint       │
 │          (drain-then-deploy).                                                │
 │ stop     Stop the running singleton worker gracefully and VERIFY that it     │
 │          exited.                                                             │
@@ -5421,8 +5378,8 @@ Usage: t3 worker run [OPTIONS]
 ```
 Usage: t3 worker status [OPTIONS]
 
- Report the worker: flock holder, admitted loops under the active preset,
- timers, staleness.
+ Report the worker: flock holder, admitted loops, timers, staleness, and the
+ agent admission ceiling.
 
  Exits NON-ZERO when the loop fleet is stale.
 
@@ -5465,18 +5422,25 @@ Usage: t3 worker ensure [OPTIONS]
 ```
 Usage: t3 worker drain [OPTIONS]
 
- Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+ Quiesce the worker and wait for in-flight tasks to checkpoint
+ (drain-then-deploy).
 
  Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
- then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
- the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
- when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
- CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a
- stuck
- task re-queues via its lease lapse. The wait heartbeats to stderr while it
- runs, so
- the deploy's SSH session never idles out mid-drain and takes the deploy with
- it.
+ and
+ every in-flight run interrupts itself at its next heartbeat and parks PENDING
+ with its
+ session id, to resume on the fresh worker. Waits up to ``--timeout`` seconds
+ for every
+ live CLAIMED lease to clear — the supervisor is never stopped and no in-flight
+ sub-agent is killed. Exits 0 when the worker is drained; exits
+ ``_GRACE_EXCEEDED_EXIT``
+ (naming the still-CLAIMED task pks) when the grace lapses, so a deploy can
+ proceed
+ knowing a run that could not checkpoint re-queues via its lease lapse. The
+ wait
+ heartbeats to stderr while it runs, so the deploy's SSH session never idles
+ out
+ mid-drain and takes the deploy with it.
 
  THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container
  boot
@@ -5485,8 +5449,8 @@ Usage: t3 worker drain [OPTIONS]
  self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only
  once the
  gate has stood for longer than a real deploy could still explain (currently
- ~40
- minutes with liveness proving the convergence dead, ~80 minutes on age alone)
+ ~20
+ minutes with liveness proving the convergence dead, ~60 minutes on age alone)
  — a
  drain held deliberately past that window is auto-cleared, not respected.
  Before
@@ -5508,8 +5472,8 @@ Usage: t3 worker drain [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --timeout              INTEGER  Grace seconds to wait for in-flight tasks to │
-│                                 finish.                                      │
-│                                 [default: 1800]                              │
+│                                 checkpoint.                                  │
+│                                 [default: 600]                               │
 │ --poll-interval        FLOAT    Seconds between in-flight checks.            │
 │                                 [default: 5.0]                               │
 │ --generation           TEXT     Drain only this image generation (a 40-hex   │
@@ -5550,7 +5514,7 @@ Usage: t3 worker stop [OPTIONS]
 │                                          [default: drain]                    │
 │ --timeout                       INTEGER  Grace seconds for the drain         │
 │                                          (ignored with --no-drain).          │
-│                                          [default: 1800]                     │
+│                                          [default: 600]                      │
 │ --exit-timeout                  FLOAT    Seconds to wait for the flock to be │
 │                                          released.                           │
 │                                          [default: 60.0]                     │
@@ -5585,7 +5549,7 @@ Usage: t3 worker restart [OPTIONS]
 │                                           [default: drain]                   │
 │ --timeout                        INTEGER  Grace seconds for the drain        │
 │                                           (ignored with --no-drain).         │
-│                                           [default: 1800]                    │
+│                                           [default: 600]                     │
 │ --exit-timeout                   FLOAT    Seconds to wait for the flock to   │
 │                                           be released.                       │
 │                                           [default: 60.0]                    │
@@ -5633,7 +5597,7 @@ Usage: t3 deploy roll [OPTIONS]
 │                                       [required]                             │
 │    --drain-timeout           INTEGER  Grace seconds for the old generation's │
 │                                       claims.                                │
-│                                       [default: 1800]                        │
+│                                       [default: 600]                         │
 │    --verify-timeout          FLOAT    Seconds the new generation has to      │
 │                                       verify.                                │
 │                                       [default: 300.0]                       │
@@ -5766,7 +5730,8 @@ Usage: t3 loops tick [OPTIONS]
 ```
 Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 
- Read-only MCP server exposing teatree's structured search (stdio).
+ MCP server exposing teatree's structured search and gate-preserving writes
+ (stdio).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -5803,7 +5768,11 @@ Usage: t3 mcp serve [OPTIONS]
  :mod:`teatree.mcp.serve_lifecycle`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --read-only                Register only the read tools (what a headless     │
+│                            phase without write access launches).             │
+│ --allow-write        TEXT  A write tool a --read-only server still registers │
+│                            (repeatable).                                     │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7298,6 +7267,8 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 (#3693).                                                     │
 │ followup        Follow-up snapshots.                                         │
 │ standup         Auto-generated daily update (read-only).                     │
+│ live            Sessions running now on this host's workers: inspect them    │
+│                 passively, steer them actively.                              │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
@@ -11318,6 +11289,78 @@ Usage: t3 teatree standup stale [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree live`
+
+```
+Usage: t3 teatree live [OPTIONS] COMMAND [ARGS]...
+
+ Sessions running now on this host's workers: inspect them passively, steer
+ them actively.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list     List every live session on this host's workers (passive).           │
+│ inspect  Show one live session's state, tool and progress without contacting │
+│          the agent.                                                          │
+│ steer    Send input into a running agent's current turn and print its        │
+│          receipt (active).                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live list`
+
+```
+Usage: t3 teatree live list [OPTIONS]
+
+ List every live session on this host's workers (passive).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON on stdout instead of the human view.               │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live inspect`
+
+```
+Usage: t3 teatree live inspect [OPTIONS] TASK
+
+ Show one live session's state, tool and progress without contacting the agent.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON on stdout instead of the human view.               │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree live steer`
+
+```
+Usage: t3 teatree live steer [OPTIONS] TASK
+
+ Send input into a running agent's current turn and print its receipt (active).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task      INTEGER  The task id, as `live list` shows it. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --text              TEXT   The input, at most 16 KiB, delivered into the     │
+│                            running turn.                                     │
+│ --command-id        TEXT   Idempotency key; resending it with the same text  │
+│                            returns the first receipt.                        │
+│ --wait              FLOAT  Seconds to wait for the agent's next safe         │
+│                            boundary (at most 900).                           │
+│                            [default: 60.0]                                   │
+│ --json                     Emit JSON on stdout instead of the human view.    │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree checking`
 
 ```
@@ -12740,7 +12783,7 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 
  Resolves the code host per-URL across all registered overlays, so it
  works for any tracker an overlay is configured for. Only tickets the
- owner or the factory bot filed may be changed.
+ owner, the factory bot, or our own repos' CI workflows filed may be changed.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
@@ -12952,8 +12995,9 @@ Usage: t3 teatree ticket expedite [OPTIONS] TICKET_ID
  Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
 
  A flagged ticket may push before CI completes; the merge keystone is NEVER
- relaxed — merge stays gated on local review + test evidence. Surfaces on
- ``ticket show`` and as a ⚡ statusline chip.
+ relaxed — merge stays gated on local review + test evidence. Its tasks also
+ rank first at admission (after reviews). Surfaces on ``ticket show`` and as
+ a ⚡ statusline chip.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

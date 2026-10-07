@@ -178,8 +178,9 @@ class TicketShowCommands(TyperCommand):
         """Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
 
         A flagged ticket may push before CI completes; the merge keystone is NEVER
-        relaxed — merge stays gated on local review + test evidence. Surfaces on
-        ``ticket show`` and as a ⚡ statusline chip.
+        relaxed — merge stays gated on local review + test evidence. Its tasks also
+        rank first at admission (after reviews). Surfaces on ``ticket show`` and as
+        a ⚡ statusline chip.
         """
         try:
             ticket = Ticket.objects.get(pk=ticket_id)

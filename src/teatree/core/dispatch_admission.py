@@ -54,6 +54,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from teatree.core.admission_governor import decide_admission, read_machine_signal, read_quota_signal
+from teatree.request_cache import request_scope
 
 if TYPE_CHECKING:
     from teatree.core.models import InteractiveDispatch, InteractiveDispatchManager, Task
@@ -159,6 +160,7 @@ def release_interactive_dispatch(*, session_id: str, agent_id: str) -> bool:
     return _seats().release_seat(session_id=session_id, agent_id=agent_id)
 
 
+@request_scope()  # the ceiling and the pressure each resolve settings; one resolution per dispatch
 def dispatch_admission_denied_reason(*, apply_ceiling: bool = True, session_id: str = "") -> str | None:
     """The governor's reason to DENY one more interactive dispatch, or ``None`` to admit.
 

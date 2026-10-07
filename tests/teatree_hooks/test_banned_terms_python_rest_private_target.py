@@ -5,7 +5,7 @@ non-public, and :func:`_python_rest_detection.find_python_forge_rest_urls`
 already resolves the ``api/v<N>/projects/<slug>`` (GitLab) /
 ``repos/<owner>/<repo>`` (GitHub) target out of a python script's URL literal.
 The two were never joined for the HEREDOC form: a heredoc body is not tokenised
-into the segment's words, so ``_destination_from_python_script`` saw only
+into the segment's words, so ``_destination_from_rest_url`` saw only
 ``['python3', '-', '<<PY']``, resolved no destination, and the fail-closed arm
 scanned a post that could never reach a public surface.
 

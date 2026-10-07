@@ -27,6 +27,7 @@ from teatree.core.backend_protocols import (
     DraftState,
     ForgeMergeResult,
     PrMergeState,
+    PrMessage,
     PrOpenState,
     PrReviewComment,
     PullRequestSpec,
@@ -531,19 +532,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _pr_reads.pr_author(pr_url=pr_url, token=self._token)
 
     def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:  # noqa: PLR6301 — CodeHostBackend Protocol surface; the probe is repo-dir scoped, not client-scoped.
-        """The OPEN PR whose head is *branch*, as the shared ``str | None`` tri-state.
-
-        ``gh`` IS in the deploy image, so this arm keeps the CLI probe and its writer
-        credential chain (``forge_cli_env``) rather than moving to HTTP — the reason the
-        GitLab side had to move does not apply here. *repo* is the repo DIRECTORY, which
-        is what ``gh`` resolves the slug from.
-
-        The import is deferred so this module's import graph stays acyclic: ``core``
-        reaches this host through the provider seam, and the probe reaches back.
-        """
-        from teatree.core.forge_pr_probe import probe_github_open_pr  # noqa: PLC0415 — deferred: acyclic graph
-
-        return probe_github_open_pr(repo, branch).url_or_none_on_unknown()
+        return _pr_reads.open_pr_url_for_branch(repo=repo, branch=branch)
 
     def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
         return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))
@@ -575,9 +564,12 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
+
     def merge_pr_squash_bound(
-        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:
         return self._merge_rpc().merge_pr_squash_bound(
-            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, squash=squash
+            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, message=message, squash=squash
         )

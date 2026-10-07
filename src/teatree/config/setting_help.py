@@ -22,6 +22,9 @@ conformance suite reads ``key = value`` lines out of the rendered TOML by that s
 SETTING_HELP: dict[str, str] = {
     "active_loop_schedule": "name of the weekly schedule deciding when the autonomous loops may run",
     "admission_pressure_shed_at": "pressure at which expensive agents are refused while review and ship keep draining",
+    "admission_write_concurrency_per_core": (
+        "agents the admission governor admits per CPU core before weekly pacing, in every dispatch lane"
+    ),
     "metered_token_ceiling": "the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset",
     "metered_spend_window_hours": "the window the metered token ceiling is measured over",
     "admit_colleague_prs_to_board": "put pull requests opened by colleagues onto the review board",
@@ -65,7 +68,10 @@ SETTING_HELP: dict[str, str] = {
     "boost_concurrency": "extra concurrent units allowed while the box is in boost",
     "brief_anchor_gate_enabled": "refuse a sub-agent brief that asserts specifics it anchors to nothing",
     "bulk_close_threshold": "how many closes in one run count as a bulk action needing approval",
-    "cheap_phase_admission_ceiling": "how many cheap-class phase agents still run while the box is braked",
+    "cheap_phase_admission_ceiling": (
+        "review lane width: reviewing/critic/shipping agents admitted outside the coding ceiling,"
+        " one review executor each (min 1)"
+    ),
     "clean_ignore": "branch globs the cleanup reapers never touch",
     "colleague_repo_url_pattern": "regex matching repo URLs owned by colleagues rather than the operator",
     "completion_claim_gate_enabled": "refuse a multi-deliverable completion claim carrying no evidence map",
@@ -85,7 +91,6 @@ SETTING_HELP: dict[str, str] = {
     "disk_warn_free_gb": "free disk below this many GB warns",
     "dogfood_smoke_overlay": "overlay the dogfood smoke run exercises",
     "dogfood_smoke_skill": "skill the dogfood smoke loop runs",
-    "drain_slot_reservation": "slots only reviewing/shipping agents may occupy, so drains never starve",
     "dream_memory_promote": "let the dream pass promote a core-gap memory to a fix",
     "dream_umbrella_url": "issue whose ticket queues the dream pass's collected gaps for the backlog sweep",
     "e2e_repos": "repos whose changes are subject to the E2E gate",

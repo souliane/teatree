@@ -14,15 +14,21 @@ import os
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from unittest import mock
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, HEAD_SUPERSEDED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CANCELLED_PREFIX,
+    HEAD_SUPERSEDED_PREFIX,
+    PLAN_STALE_PREFIX,
+    FailureKind,
+)
 from teatree.core.models import (
     AutoReviewDispatch,
     PullRequest,
@@ -1362,6 +1368,94 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
 
+class TestAStalePlanGetsItsPlanningPassWhereItIsParked(TestCase):
+    _ERROR = f"{PLAN_STALE_PREFIX}Refusing to advance ticket 1 to CODED — its plan is stale on a declared seam."
+
+    def _stale_coding_failure(self, *, state: str = Ticket.State.PLAN_RECORDED) -> Task:
+        task = _failed_task(state=state)
+        _add_failed_attempt(task, error=self._ERROR)
+        return task
+
+    def test_the_row_is_parked_and_one_planning_pass_is_queued_even_with_an_open_pr(self) -> None:
+        for open_pr in (False, True):
+            with self.subTest(open_pr=open_pr):
+                task = self._stale_coding_failure()
+                if open_pr:
+                    PullRequest.objects.create(
+                        ticket=task.ticket, url=f"https://github.com/o/r/pull/{task.pk}", repo="o/r", iid=str(task.pk)
+                    )
+
+                assert requeue_transient_failed() == 0
+                requeue_transient_failed()
+
+                task.refresh_from_db()
+                assert task.status == Task.Status.FAILED
+                assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+                planning = task.ticket.tasks.get(phase="planning")
+                assert planning.parent_task_id == task.pk
+                assert "The plan is not current" in planning.execution_reason
+                assert "stale on a declared seam" in planning.execution_reason
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_spent_coding_budget_halts_internally_instead_of_queueing_another_pass(self) -> None:
+        task = self._stale_coding_failure()
+        for index in range(max_phase_iterations()):
+            _add_failed_attempt(task, error=f"{self._ERROR} run {'x' * (index + 1)}")
+
+        requeue_transient_failed()
+
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_a_ticket_that_already_reached_coded_gets_no_planning_pass(self) -> None:
+        task = self._stale_coding_failure(state=Ticket.State.CODED)
+
+        requeue_transient_failed()
+
+        assert not task.ticket.tasks.filter(phase="planning").exists()
+
+
+class TestAnAuthorsOwnReviewOfAMovedPrIsReArmed(TestCase):
+    def _moved_review(self, *, role: str, issue_url: str, with_pr_row: bool) -> Task:
+        ticket = Ticket.objects.create(role=role, state=Ticket.State.TESTED, issue_url=issue_url)
+        if with_pr_row:
+            PullRequest.objects.create(ticket=ticket, url="https://github.com/o/r/pull/9", repo="o/r", iid="9")
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="review"), phase="reviewing"
+        )
+        task.fail(reason=_REASON, by_holder=True)
+        _add_failed_attempt(task, error=_REASON)
+        return task
+
+    def test_the_tickets_own_review_gets_one_fresh_review_and_the_row_is_parked(self) -> None:
+        task = self._moved_review(
+            role=Ticket.Role.AUTHOR, issue_url="https://github.com/o/r/issues/8", with_pr_row=True
+        )
+
+        with _pr_is_live():
+            requeue_transient_failed()
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        fresh = task.ticket.tasks.get(phase="reviewing", status=Task.Status.PENDING)
+        assert fresh.parent_task_id == task.pk
+        assert not DeferredQuestion.objects.exists()
+
+    def test_a_reviewer_tickets_moved_head_is_only_parked_because_the_pr_sweep_re_arms_it(self) -> None:
+        task = self._moved_review(
+            role=Ticket.Role.REVIEWER, issue_url="https://github.com/o/r/pull/9", with_pr_row=False
+        )
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.NOT_STARTED)
+
+        with _pr_is_live():
+            requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert SUPERSEDED_HEAD_STAMP in task.execution_reason
+        assert not task.ticket.tasks.filter(status=Task.Status.PENDING).exists()
+
+
 class TestKeptThirdPartyClaimIsNotSwept(TestCase):
     """A third-party fail keeps a live holder's claim; the sweep must leave that row alone (#4872)."""
 
@@ -1435,3 +1529,60 @@ class TestKeptThirdPartyClaimIsNotSwept(TestCase):
         requeue_transient_failed()
 
         assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
+
+
+class TestARefusedReviewEnvelopeIsCorrectedOnceInItsOwnSession(TestCase):
+    """A reviewer whose verdict envelope is refused for its SHAPE is asked once to fix it."""
+
+    _ENVELOPE: ClassVar[dict[str, object]] = {
+        "summary": "Cold review of the pull request.",
+        "review_verdict": {
+            "verdict": "hold",
+            "reviewed_sha": "a" * 40,
+            "reviewer_identity": "cold-reviewer",
+            "findings": [],
+        },
+        "review_context": {"work_link": "https://example.test/issues/1", "documents": ["spec"], "analysis": "read"},
+    }
+
+    def _refused_review(self, task: Task | None = None) -> Task:
+        if task is None:
+            ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.TESTED)
+            session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+            task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        task.claim(claimed_by="headless-reviewer")
+        attempt = record_result_envelope(task, dict(self._ENVELOPE), phase="reviewing")
+        assert "unknown keys work_link" in attempt.error
+        return task
+
+    def test_the_first_refusal_reopens_the_task_with_the_refused_key_named(self) -> None:
+        task = self._refused_review()
+
+        assert requeue_transient_failed() == 1
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "[auto-corrective-retry]" in task.execution_reason
+        assert "work_link" in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_second_refusal_escalates_instead_of_reopening(self) -> None:
+        task = self._refused_review()
+        assert requeue_transient_failed() == 1
+        self._refused_review(Task.objects.get(pk=task.pk))
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert HALT_STAMP in task.execution_reason
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_a_withheld_verdict_is_still_escalated_not_retried(self) -> None:
+        task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
+        _add_failed_attempt(task, error="missing required evidence for phase 'reviewing'")
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert HALT_STAMP in task.execution_reason

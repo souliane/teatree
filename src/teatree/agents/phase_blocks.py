@@ -22,11 +22,14 @@ from teatree.agents.dispatch_preflight import (
 )
 from teatree.agents.skill_injection import _explicit_load_name
 from teatree.core.answering.work_intent import owes_work_item
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
+from teatree.core.review.live_head import live_head_at
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -189,7 +192,7 @@ _ARTICLE_SUGGESTIONS_RETURN_LINES: tuple[str, ...] = (
 # ``_review_verdict_return_lines``. The fields are spelled out rather than derived from
 # ``FIX_RECORD_FIELDS`` because each carries prose no tuple can supply; drift is caught
 # mechanically instead, by the test asserting every declared field appears here.
-_FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
+_FIX_RECORD_FIELD_LINES: tuple[str, ...] = (
     "",
     "THIS IS A FIX TICKET — RETURN ITS FixRecord IN THE ENVELOPE (the Definition-of-Done gate",
     "refuses DELIVERED without one, and nothing but this envelope writes it):",
@@ -201,10 +204,17 @@ _FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
     "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
     "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
     "A merged manifestation patch with no stated root cause is not done.",
+)
+_FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
     (
         "Before editing, run `repro record-red` on the pre-fix HEAD; coding completion requires it "
         "and testing records GREEN automatically."
     ),
+)
+_FIX_RECORD_REVIEW_LINES: tuple[str, ...] = (
+    *_FIX_RECORD_FIELD_LINES,
+    "Return it only with merge_safe; observed_red is your own revert-to-RED proof.",
 )
 
 _REVIEWER_LIFECYCLE_SKILL = "t3:review"
@@ -356,9 +366,13 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     check-runs, across eight consecutive reviews of one PR.
     """
     target = review_target_for_task(task)
-    if target is None or not target.head_sha:
+    if target is None:
         return ()
     head = target.head_sha
+    if not head and target.bind_live_head:
+        head = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind).sha
+    if not head:
+        return ()
     return (
         "",
         f"GREEN-PROOF BINDING: the head under review is {head}.",
@@ -469,12 +483,14 @@ _FIXING_PHASES = frozenset({"coding", "debugging"})
 
 
 def _fix_record_lines(task: Task, phase: str) -> tuple[str, ...]:
-    """The FixRecord return directive for a fixing phase on a ``kind=fix`` ticket, else ``()``."""
+    """The FixRecord return directive for a fixing phase on a fix ticket, or the review of a fix PR, else ``()``."""
     from teatree.core.gates.fix_dod_gate import is_fix  # noqa: PLC0415 — deferred: ORM/app-registry
 
-    if phase not in _FIXING_PHASES or not is_fix(task.ticket):
-        return ()
-    return _FIX_RECORD_RETURN_LINES
+    if phase in _FIXING_PHASES and is_fix(task.ticket):
+        return _FIX_RECORD_RETURN_LINES
+    if phase in ENVELOPE_VERDICT_PHASES and (gated := gated_ticket_for_review_task(task)) and is_fix(gated):
+        return _FIX_RECORD_REVIEW_LINES
+    return ()
 
 
 #: Per-phase trailing-block builders (excluding coding, which needs *skills* +

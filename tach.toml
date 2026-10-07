@@ -311,6 +311,11 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.factory.queue_stall"
+layer = "domain"
+depends_on = ["teatree.core.models"]
+
+[[modules]]
 path = "teatree.core.modelkit"
 layer = "domain"
 depends_on = []
@@ -498,10 +503,13 @@ depends_on = [
   "teatree.core.admission",
   "teatree.core.modelkit",
   "teatree.core.models",
+  # the heartbeat checkpoints a run on the drain subset of the claim composition.
+  "teatree.core.managers_task_claim",
   # The headless attempt recorder emits a bounded receipt after persistence;
   # this telemetry leaf has no edge back into agents.
   "teatree.core.telemetry",
   "teatree.credential_config",
+  "teatree.paths",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config"
@@ -815,11 +823,18 @@ layer = "domain"
 depends_on = ["teatree.loop.loop_scoping", "teatree.loop.statusline_palette"]
 
 [[modules]]
+# The drain gate's ORM-level read and write, so the domain-layer statusline can show a deploy drain.
+path = "teatree.loop.drain"
+layer = "domain"
+depends_on = ["teatree.core.models"]
+
+[[modules]]
 path = "teatree.loop.statusline_loops"
 layer = "domain"
 depends_on = [
   "teatree.config",
   "teatree.core",
+  "teatree.loop.drain",
   "teatree.loop.loop_cadences",
   "teatree.loop.loop_scoping",
   "teatree.loop.session_identity",
@@ -973,6 +988,8 @@ depends_on = [
 path = "teatree.loop.self_improve"
 layer = "domain"
 depends_on = [
+  "teatree.core.admission",
+  "teatree.core.factory.queue_stall",
   "teatree.core.models",
   "teatree.utils",
   "teatree.loop.scanners",

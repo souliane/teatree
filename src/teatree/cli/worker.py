@@ -19,13 +19,13 @@ from typing import TYPE_CHECKING, TypedDict
 
 import typer
 
+from teatree.cli.worker_status import admission_line, agent_admission_report, deploy_drain_report, holder_lines
 from teatree.generation import is_generation_sha
+from teatree.loop.drain import DEFAULT_DRAIN_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
-    from teatree.loops.loop_staleness import LoopHealth
-    from teatree.utils.singleton import HolderRecord
 
 
 class DrainPayload(TypedDict):
@@ -40,7 +40,8 @@ worker_app = typer.Typer(
     help=(
         "The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence "
         "owner). `status` reports the live holder + how many loops the active preset admits "
-        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet); `ensure` spawns "
+        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet) + how the agent "
+        "admission ceiling is derived; `ensure` spawns "
         "a detached worker iff the flock is free; `drain` quiesces admission without stopping "
         "anything; `stop` / `restart` end the live worker and verify it against the flock."
     ),
@@ -113,40 +114,9 @@ def _timer_counts() -> dict[str, dict[str, int]]:
     }
 
 
-def _admission_line(health: "LoopHealth") -> str:
-    """The fleet's stop condition: does the active preset admit any loop at all?"""
-    verdict = health.admission
-    state = "admits work" if health.fleet_admits else "admits ZERO loops — the fleet is stopped"
-    return f"preset {verdict.mode!r} (source={verdict.source}) {state}"
-
-
-def _holder_lines(record: "HolderRecord | None") -> list[str]:
-    """Where the flock holder is, and a pointer to the gate when it should not be there.
-
-    ``worker: RUNNING`` is equally true of a singleton held from OUTSIDE the deployment
-    (#3976), which is how that starvation stayed invisible: the flock genuinely is held
-    and the loops genuinely do tick, driven by a process this service can never become.
-    """
-    from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-        DEPLOYMENT_WORKER_ROLE,
-        current_context,
-    )
-
-    if record is None:
-        return []
-    lines = [f"worker holder: PID {record.pid} in {record.context.describe()}"]
-    mine = current_context()
-    if mine.role and record.context.role != DEPLOYMENT_WORKER_ROLE:
-        lines.append(
-            f"WARN  that holder is not this deployment's {DEPLOYMENT_WORKER_ROLE} service — the deployed "
-            "worker cannot start while it lives. Run `t3 doctor check` (#3976)."
-        )
-    return lines
-
-
 @worker_app.command("status")
 def status_command(*, json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON.")) -> None:
-    """Report the worker: flock holder, admitted loops under the active preset, timers, staleness.
+    """Report the worker: flock holder, admitted loops, timers, staleness, and the agent admission ceiling.
 
     Exits NON-ZERO when the loop fleet is stale.
     """
@@ -179,6 +149,8 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     # is reused in place on the next acquire and describes nobody.
     record = read_holder(default_pid_path(WORKER_SINGLETON)) if running else None
     health = loop_health(timezone.now())
+    agent_line, agent_json = agent_admission_report()
+    drain_line, drain_json = deploy_drain_report()
 
     if json_output:
         typer.echo(
@@ -189,10 +161,12 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                     "holder": record.context.as_json() if record is not None else None,
                     "flock_held": flock_held,
                     "timers": timers,
+                    "quiescing": drain_json,
                     # The admission verdict comes from ``health``: the fail-safe reader the
                     # chain itself gates on, so the JSON cannot report a posture the timers
                     # do not obey.
                     **health.as_json(),
+                    "agent_admission": agent_json,
                 }
             )
         )
@@ -205,9 +179,12 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     else:
         state = "NOT running"
     typer.echo(f"worker: {state}")
-    for line in _holder_lines(record):
+    for line in holder_lines(record):
         typer.echo(line)
-    typer.echo(_admission_line(health))
+    typer.echo(admission_line(health))
+    typer.echo(agent_line)
+    if drain_line:
+        typer.echo(drain_line)
     if health.fleet_admits and not running:
         typer.echo("The active preset admits work but no worker is running — run `t3 worker ensure`.")
     ready_total = sum(c["ready"] for c in timers.values())
@@ -303,8 +280,8 @@ _GRACE_EXCEEDED_EXIT = 3
 
 #: Shortest measured drain-to-broken-pipe interval across the three deploys that died
 #: mid-drain (276.8s / 280.0s / ~280s). A 3s spread is a fixed idle timeout, not a flaky
-#: link — so a silent wait can never reach its own 1800s budget, and the deploy dies
-#: before the swap that clears `worker_quiescing` (#3983).
+#: link — so a silent wait can never reach its own budget, and the deploy dies before the
+#: swap that clears `worker_quiescing` (#3983).
 OBSERVED_SSH_IDLE_TIMEOUT_SECONDS = 276.0
 #: Heartbeat cadence, chosen to leave room for several missed lines inside that window.
 _PROGRESS_ECHO_INTERVAL_SECONDS = 60.0
@@ -335,28 +312,32 @@ class _DrainHeartbeat:
 @worker_app.command("drain")
 def drain_command(
     *,
-    timeout: int = typer.Option(1800, "--timeout", help="Grace seconds to wait for in-flight tasks to finish."),
+    timeout: int = typer.Option(
+        DEFAULT_DRAIN_TIMEOUT_SECONDS, "--timeout", help="Grace seconds to wait for in-flight tasks to checkpoint."
+    ),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between in-flight checks."),
     generation: str = typer.Option(
         "", "--generation", help="Drain only this image generation (a 40-hex sha); omit to quiesce the whole worker."
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
 ) -> None:
-    """Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
+    """Quiesce the worker and wait for in-flight tasks to checkpoint (drain-then-deploy).
 
-    Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work,
-    then waits up to ``--timeout`` seconds for every live CLAIMED lease to clear —
-    the supervisor is never stopped and no in-flight sub-agent is killed. Exits 0
-    when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT`` (naming the still-
-    CLAIMED task pks) when the grace lapses, so a deploy can proceed knowing a stuck
-    task re-queues via its lease lapse. The wait heartbeats to stderr while it runs, so
-    the deploy's SSH session never idles out mid-drain and takes the deploy with it.
+    Sets ``worker_quiescing`` ON so the claim/admission path admits ZERO new work, and
+    every in-flight run interrupts itself at its next heartbeat and parks PENDING with its
+    session id, to resume on the fresh worker. Waits up to ``--timeout`` seconds for every
+    live CLAIMED lease to clear — the supervisor is never stopped and no in-flight
+    sub-agent is killed. Exits 0 when the worker is drained; exits ``_GRACE_EXCEEDED_EXIT``
+    (naming the still-CLAIMED task pks) when the grace lapses, so a deploy can proceed
+    knowing a run that could not checkpoint re-queues via its lease lapse. The wait
+    heartbeats to stderr while it runs, so the deploy's SSH session never idles out
+    mid-drain and takes the deploy with it.
 
     THE WORKER IS LEFT QUIESCED: this command stops nothing. A fresh container boot
     (``deploy/entrypoint.sh``) clears the gate; so does the doctor's stranded-quiescing
     self-heal (:mod:`~teatree.cli.doctor.self_heal_quiescing`, #4359), but only once the
-    gate has stood for longer than a real deploy could still explain (currently ~40
-    minutes with liveness proving the convergence dead, ~80 minutes on age alone) — a
+    gate has stood for longer than a real deploy could still explain (currently ~20
+    minutes with liveness proving the convergence dead, ~60 minutes on age alone) — a
     drain held deliberately past that window is auto-cleared, not respected. Before
     then, or on a bare host with the doctor not run, nothing clears it, so the box keeps
     running while admitting no work until you run
@@ -433,7 +414,9 @@ def stop_command(
     drain: bool = typer.Option(
         True, "--drain/--no-drain", help="Quiesce and wait for in-flight tasks before signalling (default)."
     ),
-    timeout: int = typer.Option(1800, "--timeout", help="Grace seconds for the drain (ignored with --no-drain)."),
+    timeout: int = typer.Option(
+        DEFAULT_DRAIN_TIMEOUT_SECONDS, "--timeout", help="Grace seconds for the drain (ignored with --no-drain)."
+    ),
     exit_timeout: float = typer.Option(60.0, "--exit-timeout", help="Seconds to wait for the flock to be released."),
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
 ) -> None:
@@ -474,7 +457,9 @@ def restart_command(
     drain: bool = typer.Option(
         True, "--drain/--no-drain", help="Quiesce and wait for in-flight tasks before signalling (default)."
     ),
-    timeout: int = typer.Option(1800, "--timeout", help="Grace seconds for the drain (ignored with --no-drain)."),
+    timeout: int = typer.Option(
+        DEFAULT_DRAIN_TIMEOUT_SECONDS, "--timeout", help="Grace seconds for the drain (ignored with --no-drain)."
+    ),
     exit_timeout: float = typer.Option(60.0, "--exit-timeout", help="Seconds to wait for the flock to be released."),
     start_timeout: float = typer.Option(60.0, "--start-timeout", help="Seconds to wait for the FRESH worker."),
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),

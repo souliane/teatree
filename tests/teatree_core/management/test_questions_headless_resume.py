@@ -22,6 +22,7 @@ from django.core.management import call_command
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._harness_env import harness_signature
 from tests.factories import planned_ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -55,7 +56,8 @@ class TestAnswerResumesParkedTask:
         parked = _parked_task()
         question = _parked_question(parked)
 
-        call_command("questions", "answer", question.pk, "use postgres-1")
+        with harness_signature({}):
+            call_command("questions", "answer", question.pk, "use postgres-1")
 
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"

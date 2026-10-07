@@ -137,6 +137,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
     "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
+    "teatree.agents.live_registry:_shared_registries": "reset_shared_registries",
     "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
     "teatree.core.backend_factory:_code_host_cache": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_cache": "reset_backend_caches",

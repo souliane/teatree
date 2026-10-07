@@ -15,8 +15,8 @@ zero teatree changes.
 
 **Every directive rides a turn that already exists.** None of them wakes a
 session or asks it to arm anything recurring, so delivering one costs no turn.
-The slots that send the session to work are the ones the self-pump brake below
-drops while the active mode masks that loop off; the golden rule is never
+The slots that send the session to work are the ones the dispatch brake below
+drops while the active mode masks the dispatch loop off; the golden rule is never
 suppressed, because a safety rule that costs nothing has no reason to be rationed.
 
 **The hooks read a publication, never the store.** :func:`publish` writes the
@@ -149,8 +149,8 @@ _PR_BOARD_TEXT = (
 class StandingDirective:
     """One standing instruction, its cadence, who receives it, and whether it sends the session to work.
 
-    ``drives_work`` is what the self-pump brake reads: a slot that sends the session
-    to work has nothing to do while the active mode masks that loop off.
+    ``drives_work`` is what the dispatch brake reads: a slot that sends the session
+    to work has nothing to do while the active mode masks the dispatch loop off.
     """
 
     slot_id: str
@@ -244,9 +244,9 @@ def _resolve_text(directive: StandingDirective, overrides: dict[str, str]) -> st
 #: WARNING with ``exc_info=True``.
 _MODE_READ_LOGGERS = ("teatree.core.mode_resolution", "teatree.loop.preset_resolution")
 
-#: The loop the Stop self-pump drives. A mode that masks it OFF is not self-driving,
-#: so a slot that sends the session to work has nothing to send it to.
-SELF_PUMP_LOOP = "dispatch"
+#: A mode that masks this loop OFF dispatches no work, so a slot that sends the
+#: session to work has nothing to send it to.
+DISPATCH_LOOP = "dispatch"
 
 
 def _drop_record(_record: logging.LogRecord) -> bool:
@@ -275,8 +275,8 @@ def _mode_read_unlogged() -> Iterator[None]:
             resolver.removeFilter(_drop_record)
 
 
-def _self_pump_paused() -> bool:
-    """Whether the active mode masks the self-pump's loop OFF — then nothing should be driving work.
+def _dispatch_masked() -> bool:
+    """Whether the active mode masks the dispatch loop OFF — then nothing should be driving work.
 
     Reads the MERGED mode (#4196), never the override/schedule layer: that layer stops
     at ``None`` when neither governs, so it cannot see the configured default mode.
@@ -287,7 +287,7 @@ def _self_pump_paused() -> bool:
 
     try:
         with _mode_read_unlogged():
-            return resolve_active_mode().state_for(SELF_PUMP_LOOP) is False
+            return resolve_active_mode().state_for(DISPATCH_LOOP) is False
     except Exception:
         logger.debug("the active mode is unreadable — the brake stays off", exc_info=True)
         return False
@@ -298,7 +298,7 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
 
     Fails open to the compiled defaults: a directive that cannot be looked up is
     still worth delivering, and a store outage must not silently drop the golden
-    rule from every session. A mode that pauses the self-pump drops the slots that
+    rule from every session. A mode that masks dispatch off drops the slots that
     drive work and only those — the golden rule keeps reaching a session that is
     deliberately idle, because it costs that session nothing. The brake is read
     only once a work-driving slot has survived text resolution: with those slots
@@ -314,7 +314,7 @@ def resolve_standing_directives() -> list[ResolvedDirective]:
         for directive in STANDING_DIRECTIVES
         if (text := _resolve_text(directive, overrides)) is not None
     ]
-    if any(directive.drives_work for directive, _ in resolved) and _self_pump_paused():
+    if any(directive.drives_work for directive, _ in resolved) and _dispatch_masked():
         resolved = [(directive, text) for directive, text in resolved if not directive.drives_work]
     return [
         ResolvedDirective(directive.slot_id, directive.cadence_seconds(), text, directive.scope)

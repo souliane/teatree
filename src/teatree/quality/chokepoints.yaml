@@ -128,3 +128,22 @@
     - teatree.mcp.services_forge
   refs:
     - souliane/teatree#117
+
+- id: merge-message-seam
+  name: Bound merge publishing a PR title/body as the default-branch commit message
+  concern: >
+    The merge publishes its message on the default branch, where no edit can
+    scrub it. execute_bound_merge scans it (core.gates.merge_message_gate: the
+    AI-signature matcher, the public-repo leak scan and the publish hook's
+    quote detector) and sends exactly the scanned text, so merge_pr_squash_bound
+    is called only there and by the forge clients delegating to their merge RPC.
+    A new caller would merge past the scan.
+  match_kind: method
+  protected_attrs:
+    - merge_pr_squash_bound
+  allowed_modules:
+    - teatree.backends.github.client
+    - teatree.backends.gitlab.client
+    - teatree.core.merge.execution
+  refs:
+    - souliane/teatree#4924

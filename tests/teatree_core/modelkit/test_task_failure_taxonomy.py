@@ -16,6 +16,8 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     COMPACTION_BLOCKED_MARKER,
     CONTEXT_EXHAUSTED_MARKER,
     HEAD_SUPERSEDED_PREFIX,
+    NON_REPAIR_KINDS,
+    PLAN_STALE_PREFIX,
     RECOVERY,
     RESULT_ERROR_MARKER,
     REVIEW_UNRECORDABLE_PREFIX,
@@ -54,6 +56,8 @@ _ENVIRONMENTAL_BEFORE = {
 _ENVIRONMENTAL_ADDED = {
     # A moved PR head is not a fault in the work — souliane/teatree#4737.
     FailureKind.HEAD_SUPERSEDED,
+    # A base that moved under the plan is not a fault in the work either (#5030).
+    FailureKind.PLAN_STALE,
 }
 
 
@@ -253,6 +257,24 @@ class TestThePlanGateRefusalIsNamed:
 
     def test_it_is_not_environmental(self) -> None:
         assert is_environmental(FailureKind.PLAN_MISSING) is False
+
+
+class TestAStalePlanRefusalIsNamed:
+    _REFUSAL = (
+        'Traceback (most recent call last):\n  File "tasks.py", line 141\n'
+        "NoCurrentPlanError: Refusing to advance ticket 7 to CODED — its latest plan is not adequate."
+    )
+
+    def test_the_recorders_prefix_classifies_as_plan_stale_ahead_of_the_traceback(self) -> None:
+        assert classify_failure(f"{PLAN_STALE_PREFIX}{self._REFUSAL}") == FailureKind.PLAN_STALE
+
+    def test_the_same_traceback_without_the_prefix_is_still_a_harness_crash(self) -> None:
+        assert classify_failure(self._REFUSAL) == FailureKind.HARNESS_CRASH
+
+    def test_it_halts_as_an_environmental_non_repair_kind(self) -> None:
+        assert recovery_strategy(FailureKind.PLAN_STALE) is RecoveryStrategy.HALT
+        assert is_environmental(FailureKind.PLAN_STALE) is True
+        assert FailureKind.PLAN_STALE in NON_REPAIR_KINDS
 
 
 class TestTheUnrecordableReviewRefusalIsNamed:

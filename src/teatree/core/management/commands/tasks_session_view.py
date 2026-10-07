@@ -45,7 +45,7 @@ class TaskRow(TypedDict):
     phase: str
     execution_reason: str
     claimed_by: str
-    admission_rank: NotRequired[int]
+    admission_score: NotRequired[int]
     parent_task_id: NotRequired[int | None]
     # #3957: WHY the task failed, as distinct from ``execution_reason`` (why it was
     # scheduled). Blank on every non-failed row. ``failure_environmental`` separates an

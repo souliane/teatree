@@ -45,7 +45,12 @@ from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
-from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat, renew_lease_closing_connection
+from teatree.agents.runner_heartbeat import (
+    HeartbeatRuntime,
+    drain_reason_closing_connection,
+    drive_with_heartbeat,
+    renew_lease_closing_connection,
+)
 from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_occupancy_deferred
 from teatree.agents.runner_outcomes import UNROUTED as _UNROUTED  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_outcomes import Transport as _Transport
@@ -81,7 +86,7 @@ from teatree.agents.usage_window import maybe_park_for_active_window, park_task_
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.core.worktree.occupancy import (
     WorktreeOccupiedError,
     occupy_ticket_checkout,
@@ -354,7 +359,7 @@ def _run_agent(
                     task,
                     prepared.prompt,
                     prepared.options,
-                    GuardedHarness(harness=harness, guard=prepared.compaction_guard),
+                    GuardedHarness(harness=harness, guard=prepared.compaction_guard, name=preflight.dispatch.name),
                     watchdog=watchdog,
                 )
             )
@@ -464,7 +469,7 @@ def _preflight(
     skills = resolve_skill_bundle(
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
-        worktree_path=dispatch_worktree_path(task.ticket),
+        detection_root=dispatch_detection_root(task.ticket),
         stage_skills=stage_skills,
     )
     dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
@@ -582,5 +587,6 @@ async def _drive_with_heartbeat(
             heartbeat_interval=_HEARTBEAT_INTERVAL,
             sample_usage=_sample_usage_closing_connection,
             renew_lease=_renew_lease_closing_connection,
+            drain_reason=drain_reason_closing_connection,
         ),
     )

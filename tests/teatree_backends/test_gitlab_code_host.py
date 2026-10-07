@@ -10,7 +10,7 @@ from teatree.backends.gitlab.discussions import (
     thread_opened_solely_by,
 )
 from teatree.core.backend_protocols import BackendResolutionError, DraftState, PrReviewComment, PullRequestSpec
-from teatree.core.self_forge_identities import ExternalIssueRefusedError
+from teatree.core.self_forge_identities import NOT_SELF_AUTHORED_REASON, ExternalIssueRefusedError
 
 
 def _project() -> ProjectInfo:
@@ -533,7 +533,7 @@ def test_create_sub_issue_refuses_a_colleagues_parent_before_any_forge_write() -
     with patch(
         "teatree.backends.gitlab.client.require_self_authored_issue",
         side_effect=ExternalIssueRefusedError(
-            "https://gitlab.com/org/repo/-/issues/8", "someone.else", "not authored by the owner or the factory bot"
+            "https://gitlab.com/org/repo/-/issues/8", "someone.else", NOT_SELF_AUTHORED_REASON
         ),
     ) as guard:
         result = host.create_sub_issue(parent_url="https://gitlab.com/org/repo/-/issues/8", title="child", body="")

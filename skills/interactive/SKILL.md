@@ -1,12 +1,12 @@
 ---
 name: interactive
-description: "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, and interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
+description: "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
 compatibility: any
 requires:
   - rules
-eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
+eval_exempt: harness-wiring reference plus invariants enforced by deterministic mechanisms, each pinned by its own tests (engagement by tests/test_teatree_opt_in.py); the factory-watch duty is a read-and-route order whose commands and symbols the skill-command and symbol-ref lanes pin, and its detectors are health collectors and doctor checks with their own tests, so it gets a trajectory eval once issue 5069 gives it one pure-read command to anchor on
 metadata:
-  version: 0.0.2
+  version: 0.0.3
 ---
 
 # TeaTree — Interactive Session
@@ -175,15 +175,40 @@ Three readouts lie in the same direction — they say *finished* while work is l
 
 The rule is one line: **a status is evidence about the reporter, not about the thing.** Before repeating one to a person, name what you actually observed — the count, the SHA, the file — or say you read a status and did not confirm it.
 
+## Factory watch — BLOCKING first (Non-Negotiable)
+
+An attended session is the operator's eyes on the factory. It looks for abnormalities — an agent run without its phase's skills, a missing skill, failing tasks — and handles the blocking ones before anything else. Each abnormality, with its tier, the command that answers it and today's detector (or the issue for the missing one), is in [`skills/interactive/references/factory-watch.md`](references/factory-watch.md); reading the health chip itself is [`/t3:health`](../health/SKILL.md).
+
+**When:** at session start, after every compaction, before any status report to the operator, and at least on every `standing-todo-consolidate` delivery.
+
+**The cheapest bounded reads, in order:** `t3 worker status --json`, `t3 <overlay> health show --json`, `t3 loop self-improve status --limit 30`, `t3 loop preset show`, `t3 tokens --cached --json`. `health show` reconciles before it prints, so it writes. A pure-read `--no-reconcile` flag and an exit-coded `--fail-on blocking` are coming in #5069; neither exists yet.
+
+**`t3 doctor check --json` takes minutes, so it is worth its cost when** health is red with no row naming the cause, a `health-collector-failed` row is open, or the watchdog pages nobody (it records a doctor FAIL on the pulled surface, `notify digest`). Read only its non-OK findings.
+
+**Tiers:**
+
+- **BLOCKING** — delivery or merging has stopped, or the factory works ungoverned or blind: an agent dispatched without its phase's skills, a missing skill, a merge-gating critic starved behind newer tasks (#5051), quota blindness, a red default branch (`t3 ci fetch-errors main`).
+- **DEGRADING** — the factory still delivers, but late or with a weaker guard: a shadowed skill, a schedule firing in the wrong timezone (#5053), an override left on past its reason.
+- **COSMETIC** — untidy state or a wrong readout that changes no run: a tracked file matching `.gitignore` (`git ls-files -ci --exclude-standard`), a stale statusline entry.
+
+**BLOCKING preempts the PR board and the todo drain.** Handle each finding in this order:
+
+1. **Find the durable record before filing anything:** a health row, a self-improve firing at the `ticket` rung, or an open issue found through the forge tool's dedupe above. A recurrence EXTENDS that record instead of starting a new one.
+2. **Unblock now** whatever is not implementation — review, merge, answer, re-run — per § "This session does not implement". Unblocking never stops an in-flight agent; let it finish. A review or critic starved behind newer tasks goes to a cold reviewer at once ([`/t3:review`](../review/SKILL.md)), not to the back of the factory queue.
+3. **Notify the owner once per episode, for BLOCKING only:** `mcp__teatree__notify_user` with `idempotency_key="factory-watch:<fingerprint>:<opened-on>"`, or `t3 <overlay> notify dm '<finding>' --idempotency-key factory-watch:<fingerprint>:<opened-on>`, where `<opened-on>` is the UTC date this episode was first seen. A sent key never expires, so without it a recurrence would never page. Not `notify send`: it records an unregistered key without delivering it. Skip the DM when the finding has already paged through a registered push signal (`teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS`).
+4. **Never leave a finding silent:** keep a TODO naming its fingerprint and DM key, so a re-read after compaction reuses the key, and close it only on a durable record. When no detector raised it, add one with `t3 <overlay> health add '<fingerprint>: <finding>' --critical` (without `--critical` for DEGRADING).
+
+**No intake priority exists yet (#5071).** Intake claims the oldest admissible issue first, so a filed fix waits its turn — tell the operator so. The one lever today is by hand: `t3 <overlay> workspace ticket <url>`, then a planning task through `mcp__teatree__task_create` or `t3 <overlay> tasks create <ticket-pk> --phase planning --reason "…"`. `workspace ticket` also stamps a one-hour external-delivery lease, and the loop dispatches no task on a leased ticket — its reviews included — so even this starts within the hour rather than at once.
+
 ## Skill Loading
 
 Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via the runtime's native syntax (`/t3:code` in Claude Code, `$t3:code` in Codex), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. `t3 agent` resolves that selection before launching either runtime and injects the selected skill names through the runtime's native context channel.
 
 The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
 
-**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing either runtime's skills does NOT force teatree onto every session. The engagement markers and loop scheduling described here are Claude-only hook automation: Claude's `InstructionsLoaded` hook writes `<session>.teatree-active` when this skill (or a requiring skill) loads, while `handle_track_skill_usage` writes `<session>.t3-engaged` for any `t3:` skill. Codex has no equivalent plugin-hook adapter today, so loading `$t3:interactive` adopts this contract but does not write either marker, deliver standing directives, or arm loops. That absence is fail-safe: no loop starts merely because Codex can read the skill.
+**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing either runtime's skills does NOT force teatree onto every session. The engagement markers described here are Claude-only hook automation: Claude's `InstructionsLoaded` hook writes `<session>.teatree-active` when this skill (or a requiring skill) loads, while `handle_track_skill_usage` writes `<session>.t3-engaged` for any `t3:` skill. Codex has no equivalent plugin-hook adapter today, so loading `$t3:interactive` adopts this contract but does not write either marker or deliver standing directives. That absence is fail-safe: the `t3 worker` runs the loops whichever runtime reads the skill.
 
-In Claude Code, a fresh session is *not engaged*: SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages when the owner sets `[teatree] autoload = true` (or `T3_AUTOLOAD=1`), a teatree-requiring skill loads, or any `t3:` skill loads. `InstructionsLoaded` writes the `.teatree-active` marker used by loop scheduling; skill usage writes `.t3-engaged` for engagement tracking. Loading `/t3:interactive` writes the engagement marker for later hook events. No teatree hook runs when the owner submits a prompt.
+In Claude Code, a fresh session is *not engaged*: SessionStart shows a one-line how-to advisory instead of electing the host's attended loop slot. A session engages when the owner sets `[teatree] autoload = true` (or `T3_AUTOLOAD=1`), a teatree-requiring skill loads, or any `t3:` skill loads. `InstructionsLoaded` writes the `.teatree-active` marker the loop-slot election reads; skill usage writes `.t3-engaged` for engagement tracking. Loading `/t3:interactive` writes the engagement marker for later hook events. No teatree hook runs when the owner submits a prompt.
 
 ## Standing directives
 
@@ -203,7 +228,7 @@ your prompt once its own cadence has passed. That comes to **0 self-woken turns*
 wakes the session, and nothing asks it to register a `/loop` or a cron — teatree's worker
 runs the loops. The board is one board per host, so only the session that owns the host's
 loop slot receives it — N sessions each driving it would mean N cold reviews per PR and two
-sub-agents on one branch. While the active preset masks the self-pump's loop off, the two
+sub-agents on one branch. While the active preset masks the dispatch loop off, the two
 slots that send the session to work are not delivered; the golden rule still arrives.
 
 Read the live text with `t3 loop directives show` (`--json` for the machine contract:
@@ -226,6 +251,18 @@ The directives themselves are harness-neutral: teatree owns the text, the cadenc
 scoping rule and the mode brake, and each harness supplies its own delivery adapter over the JSON contract above.
 They are advisory — repeated prose, not a gate. A rule that is repeated is one the session
 still holds; it is not one it cannot break.
+
+## Reach a running factory agent
+
+When a running factory task needs something only this session has — a page or document its credentials cannot read, a correction, a decision — hand it to the running agent. Never re-run its work here.
+
+1. `t3 <overlay> live list` — the sessions running now on this host's workers, each with its task id and `steerable` flag.
+2. `t3 <overlay> live inspect <task>` — PASSIVE: state, phase, open tool and progress; the agent is not contacted.
+3. `t3 <overlay> live steer <task> --text "<input>"` — ACTIVE: the text enters the agent's current turn at its next tool boundary or turn end.
+
+To hand over a resource, paste it (at most 16 KiB) or write it into the task's worktree and steer with the path.
+
+Read the receipt, not the hope. `accepted_current_turn` (exit 0) means the session took the input — not that the model will follow it. `rejected` (exit 3) names why: `turn_ended`, `not_accepted_in_time` (withdrawn, never delivered later), `backpressure`, `too_large`, `not_steerable`, `duplicate_mismatch`. `unknown_delivery` (exit 4) means the answer was lost: inspect first, and resend only with the same `--command-id`, which returns the first receipt rather than delivering twice. Exit 5 means no worker runs the task: use the durable route, `mcp__teatree__question_answer` (CLI fallback: `t3 <overlay> questions answer`) or the task list. The same commands serve a Codex `$t3:interactive` session; a factory agent cannot run them.
 
 ## Claude-only hook automation
 

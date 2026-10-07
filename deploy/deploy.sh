@@ -64,7 +64,7 @@ DEPLOY_LOCK_DIR=""
 # leaves a lock no pid names. Derived from the one hold that varies — the drain —
 # plus an hour for the build, the swap and the admin wait, so it can never expire a
 # live convergence.
-DEPLOY_LOCK_MAX_AGE_MINUTES=$(((${TEATREE_DRAIN_TIMEOUT:-1800} + 3600) / 60))
+DEPLOY_LOCK_MAX_AGE_MINUTES=$(((${TEATREE_DRAIN_TIMEOUT:-600} + 3600) / 60))
 DEPLOY_LOCK_MAX_RECLAIMS=5
 
 if command -v flock >/dev/null 2>&1; then
@@ -97,18 +97,13 @@ fi
 # within three beats. The deadline is the lock's own reclaim age. Cleared on exit.
 DEPLOY_HEARTBEAT_INTERVAL=60
 DEPLOY_DEADLINE=$(($(date -u +%s) + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
-_write_deploy_record() {
-    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$DEPLOY_DEADLINE" >"$DEPLOY_LOCK"
-}
-_write_deploy_record "$$"
+write_deploy_record "$$" "$DEPLOY_DEADLINE"
 # The beat stops with its parent and never recreates a record the exit trap cleared; fd 9 is
 # closed so a SIGKILLed deploy's flock is not held by it.
 (
     exec 9>&-
     while sleep "$DEPLOY_HEARTBEAT_INTERVAL" && kill -0 "$$" 2>/dev/null; do
-        if [ -s "$DEPLOY_LOCK" ]; then
-            _write_deploy_record "$$" || true
-        fi
+        beat_deploy_record "$$" "$DEPLOY_DEADLINE" || true
     done
 ) </dev/null >/dev/null 2>&1 &
 _DEPLOY_HEARTBEAT_PID=$!
@@ -224,6 +219,21 @@ worker_restart_state() {
     cid="${ids%%$'\n'*}"
     [ -n "$cid" ] || return 1
     docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}' "$cid" 2>/dev/null
+}
+
+# The live worker container's whole-core CPU cap, cut to the daemon's CPUs (a downsized host
+# would refuse the old cap); fails when there is none or it is unreadable.
+live_worker_cpus() {
+    local ids cid nano live daemon
+    ids="$(compose ps -q teatree-worker 2>/dev/null)" || return 1
+    cid="${ids%%$'\n'*}"
+    [ -n "$cid" ] || return 1
+    nano="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$cid" 2>/dev/null)" || return 1
+    case "$nano" in "" | 0 | *[!0-9]*) return 1 ;; esac
+    live=$((nano / 1000000000))
+    daemon="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+    case "$daemon" in "" | *[!0-9]*) ;; *) [ "$live" -le "$daemon" ] || live="$daemon" ;; esac
+    echo "$live"
 }
 
 # Seconds since the epoch for a Docker RFC 3339 UTC stamp, on GNU and BSD date alike.
@@ -446,6 +456,7 @@ echo "deploy: container UID (host deploy user) — TEATREE_UID=$TEATREE_UID"
 # the pre-existing silent degrade to that default. stderr can no longer be discarded: it
 # is where the refusal's remedy is written.
 TEATREE_WORKER_CPUS="${TEATREE_WORKER_CPUS:-}"
+OPERATOR_WORKER_CPUS="$TEATREE_WORKER_CPUS"
 TEATREE_WORKER_MEM_LIMIT="${TEATREE_WORKER_MEM_LIMIT:-}"
 if command -v python3 >/dev/null 2>&1; then
     SIZING_ERR="$(mktemp)"
@@ -460,6 +471,12 @@ if command -v python3 >/dev/null 2>&1; then
         exit 1
     fi
     rm -f "$SIZING_ERR"
+fi
+# A cap raised on the live worker (`docker update --cpus`) outlives the swap: the derived
+# value is the floor, never a cut.
+if [ -z "$OPERATOR_WORKER_CPUS" ] && LIVE_WORKER_CPUS="$(live_worker_cpus)" &&
+    [ "$LIVE_WORKER_CPUS" -gt "${TEATREE_WORKER_CPUS:-0}" ] 2>/dev/null; then
+    TEATREE_WORKER_CPUS="$LIVE_WORKER_CPUS"
 fi
 export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
 echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
@@ -561,11 +578,12 @@ wait_for_init() {
 
 # Quiesce the RUNNING worker: `t3 worker drain` sets the `worker_quiescing` admission
 # gate (the claim path then admits ZERO new work) and waits up to
-# TEATREE_DRAIN_TIMEOUT seconds for every live CLAIMED lease to finish. The
-# supervisor stays up while that succeeds, so in-flight sub-agents keep renewing and
-# complete. If the drain cannot run or its grace expires, STOP and verify the old
-# worker before proceeding: a crash-looping entrypoint must not contend with init for
-# the runtime clone. Any interrupted task re-queues PENDING via its lease lapse.
+# TEATREE_DRAIN_TIMEOUT seconds for every live CLAIMED lease to clear. Each in-flight
+# sub-agent reads the gate at its next heartbeat, interrupts itself and parks PENDING
+# with its session id, so the fresh worker resumes it. If the drain cannot run or its
+# grace expires, STOP and verify the old worker before proceeding: a crash-looping
+# entrypoint must not contend with init for the runtime clone. A run that could not
+# checkpoint re-queues PENDING via its lease lapse.
 contain_worker_for_deploy() {
     local require_admin="${1:-false}" state
     if [ "$require_admin" = true ] && worker_crash_looping; then
@@ -621,11 +639,11 @@ drain_worker() {
         return 1
         ;;
     esac
-    echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
+    echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-600}s for in-flight agents to checkpoint) ..."
     _WORKER_RESTARTS_AT_DRAIN="$(worker_restart_state | awk '{print $2}')" || _WORKER_RESTARTS_AT_DRAIN=""
     _DRAINED=true
     if compose exec -T teatree-worker \
-        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}"; then
+        t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-600}"; then
         return 0
     fi
     contain_worker_for_deploy true

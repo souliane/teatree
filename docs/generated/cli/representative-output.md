@@ -66,30 +66,23 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 worker alive; on a headless box start it once from a login   │
 │                 profile). The active preset is the stop condition — one that │
 │                 admits zero loops stops them entirely (there is no fallback  │
-│                 plane). Each per-loop tick atomically claims the next        │
-│                 pending unit (`t3 loop claim-next`), spawns one fresh        │
-│                 bounded sub-agent for it, and records the outcome when that  │
-│                 sub-agent returns (`tasks record-attempt --claim-token`) —   │
-│                 the claim is the spawn boundary, not the finish, and an      │
-│                 unrecorded unit is reclaimed and re-offered rather than ever │
-│                 completing; a dying worker leaves its Task reclaimable and   │
-│                 the next tick re-dispatches it. Check the worker with `t3    │
-│                 worker status`; ensure one is running with `t3 worker        │
-│                 ensure`.                                                     │
+│                 plane). The worker also drains the task queue, claiming each │
+│                 pending task headlessly. Check the worker with `t3 worker    │
+│                 status`; ensure one is running with `t3 worker ensure`.      │
 │ goal            Standing verified-green goals (PR-25).                       │
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
 │                 holder + how many loops the active preset admits + whether   │
-│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
-│                 `ensure` spawns a detached worker iff the flock is free;     │
-│                 `drain` quiesces admission without stopping anything; `stop` │
-│                 / `restart` end the live worker and verify it against the    │
-│                 flock.                                                       │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet) +   │
+│                 how the agent admission ceiling is derived; `ensure` spawns  │
+│                 a detached worker iff the flock is free; `drain` quiesces    │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
-│ mcp             Read-only MCP server exposing teatree's structured search    │
-│                 (stdio).                                                     │
+│ mcp             MCP server exposing teatree's structured search and          │
+│                 gate-preserving writes (stdio).                              │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -137,14 +130,9 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  and the DB loops run with no Claude session open (the SessionStart supervisor
  keeps one worker alive; on a headless box start it once from a login profile).
  The active preset is the stop condition — one that admits zero loops stops
- them entirely (there is no fallback plane). Each per-loop tick atomically
- claims the next pending unit (`t3 loop claim-next`), spawns one fresh bounded
- sub-agent for it, and records the outcome when that sub-agent returns (`tasks
- record-attempt --claim-token`) — the claim is the spawn boundary, not the
- finish, and an unrecorded unit is reclaimed and re-offered rather than ever
- completing; a dying worker leaves its Task reclaimable and the next tick
- re-dispatches it. Check the worker with `t3 worker status`; ensure one is
- running with `t3 worker ensure`.
+ them entirely (there is no fallback plane). The worker also drains the task
+ queue, claiming each pending task headlessly. Check the worker with `t3 worker
+ status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -153,9 +141,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ tick             Run one user-manual full-scan tick by hand: scan every      │
 │                  overlay, dispatch, render.                                  │
 │ status           Show the loop's last-rendered statusline.                   │
-│ pending-spawn    List pending Tasks for the Stop hook's read-only probe.     │
-│ start            Spawn a Claude Code session; the t3-master registers each   │
-│                  enabled loop's ``/loop``.                                   │
+│ start            Start a Claude Code session; the ``t3 worker`` runs the     │
+│                  loops.                                                      │
 │ stop             Print how to stop the durable, worker-driven loops.         │
 │ claim            Claim the session-scoped t3-master slot for this Claude     │
 │                  session (#1073).                                            │

@@ -221,6 +221,37 @@ class TestCheckerBehavior:
         src_file.write_text("def close_issue(self, *, issue_url, comment=''):\n    return {}\n", encoding="utf-8")
         assert checker.main([str(src_file)]) == 0
 
+    def test_flags_bound_merge_outside_the_merge_message_seam(
+        self, src_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src_file.write_text(
+            "host.merge_pr_squash_bound(slug='o/r', pr_id=1, expected_head_oid='x', message=m)\n", encoding="utf-8"
+        )
+        assert checker.main([str(src_file)]) == 1
+        assert "merge-message-seam" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("module", "expected_rc"),
+        [
+            ("core/merge/execution.py", 0),
+            ("backends/github/client.py", 0),
+            ("loop/scanners/pr_sweep.py", 1),
+            ("loop/scanners/pr_sweep_gitlab.py", 1),
+        ],
+    )
+    def test_only_execute_bound_merge_and_the_forge_clients_may_call_the_bound_merge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str, expected_rc: int
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / module
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            "host.merge_pr_squash_bound(slug='o/r', pr_id=1, expected_head_oid='x', message=m)\n", encoding="utf-8"
+        )
+        assert checker.main([str(target)]) == expected_rc
+
+
+_MERGE_MESSAGE_METHODS = frozenset({"merge_pr_squash_bound"})
 
 _FORGE_WRITE_BODY_METHODS = frozenset(
     {
@@ -327,25 +358,27 @@ class TestSelfMaintenance:
     def test_forge_write_seam_registers_every_body_bearing_protocol_method(
         self, registry: tuple[Chokepoint, ...]
     ) -> None:
-        """The seam registers EXACTLY the protocol's body-bearing forge-write methods.
+        """Every body-bearing protocol method sits at EXACTLY one of the two scanned seams.
 
         This is the anti-false-assurance guard: it ENUMERATES the CodeHostBackend
         protocol and derives "body-bearing" from each method's signature, so a NEW
         colleague-visible forge-write method (any method taking body/title/comment/
-        labels/description) that is added to the protocol but NOT registered here
-        turns this test RED — the exact way ``create_sub_issue`` slipped through a
-        hardcoded-list check. The registry, the local constant, and the live
-        protocol enumeration must all agree.
+        labels/description/message) that is added to the protocol but NOT registered
+        at the comment seam or the merge-message seam turns this test RED — the exact
+        way ``create_sub_issue`` slipped through a hardcoded-list check. The registry,
+        the local constants, and the live protocol enumeration must all agree.
         """
-        entry = next(e for e in registry if e.id == "forge-comment-write-seam")
+        by_id = {e.id: set(e.protected_attrs) for e in registry}
+        registered = _FORGE_WRITE_BODY_METHODS | _MERGE_MESSAGE_METHODS
         enumerated = _protocol_body_bearing_methods(CodeHostBackend)
         assert enumerated, "protocol enumeration found no body-bearing methods — the heuristic is broken"
-        assert enumerated == _FORGE_WRITE_BODY_METHODS, (
+        assert enumerated == registered, (
             "protocol body-bearing methods drifted from the registered set: "
-            f"unregistered={sorted(enumerated - _FORGE_WRITE_BODY_METHODS)}, "
-            f"stale={sorted(_FORGE_WRITE_BODY_METHODS - enumerated)}"
+            f"unregistered={sorted(enumerated - registered)}, "
+            f"stale={sorted(registered - enumerated)}"
         )
-        assert set(entry.protected_attrs) == _FORGE_WRITE_BODY_METHODS
+        assert by_id["forge-comment-write-seam"] == _FORGE_WRITE_BODY_METHODS
+        assert by_id["merge-message-seam"] == _MERGE_MESSAGE_METHODS
 
     def test_new_body_bearing_method_is_flagged_by_default(self) -> None:
         """A method carrying an un-allowlisted parameter is flagged — the fail-closed teeth.

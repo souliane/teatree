@@ -1,6 +1,6 @@
 # Teatree headless deploy to an existing box over direct SSH.
-# Runs on every push to main (each merged PR) plus the manual trigger; the
-# deploy script is idempotent and the concurrency group serializes runs, so a
+# Runs on every push to main (each merged PR, debounced) plus the manual trigger;
+# the deploy script is idempotent and the concurrency group serializes runs, so a
 # merge train converges the box to the newest main. The box is reached by a
 # fixed host/IP held in a secret (DEPLOY_SSH_HOST) — no cloud API resolves it,
 # so this works for a plain HostKey / bare-metal / any-provider box, not just
@@ -17,30 +17,47 @@ on:
 permissions:
   contents: read
 
-# Deploy debounce (drain-then-deploy Piece A). A single fixed group serializes
-# every deploy to the one box, and `cancel-in-progress: false` NEVER cancels a
-# RUNNING convergence mid-run — a merge train coalesces into: the in-flight run
-# finishes, and GitHub keeps only the NEWEST queued run (superseding older queued
-# ones), which `deploy/deploy.sh` fast-forwards to the latest main. So a burst of
-# merges converges the box to newest main with exactly one extra run, and an
-# in-flight drain (deploy.sh quiesces the worker and waits for in-flight agents)
-# is never interrupted. Both keys are pinned by tests/test_deploy_rolling_drain.py.
-concurrency:
-  group: deploy
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+  # Deploy debounce (drain-then-deploy Piece A). Every deploy closes admission for its
+  # drain + swap, so a merge burst must cost ONE deploy, not one per merge. A push first
+  # waits here; a newer push cancels this wait (its own group, cancel-in-progress), so
+  # only the newest run of a burst reaches the deploy job. workflow_dispatch skips the
+  # wait. 300s: back-to-back merges land 0.5-6 min apart, and the factory keeps
+  # admitting work while this waits.
+  debounce:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    # Must exceed the worst-case deploy.sh runtime (worker drain up to
-    # TEATREE_DRAIN_TIMEOUT=1800s/30min + image build + up + health wait). If the
-    # job times out while the remote deploy.sh is still draining, GitHub releases
-    # the `deploy` concurrency group and starts the next run WHILE the abandoned
-    # remote deploy keeps running — overlapping drains that strand worker_quiescing
-    # ON. Keep this comfortably above the drain window so the job holds the group
-    # until the convergence truly finishes. deploy.sh's host flock is the hard
-    # backstop if the timeouts ever drift out of order again.
-    timeout-minutes: 50
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-debounce
+      cancel-in-progress: true
+    steps:
+      - name: Wait for the merge burst to settle
+        run: sleep 300
+
+  deploy:
+    needs: debounce
+    # A cancelled debounce (a newer push superseded it) skips the deploy; a skipped one
+    # (workflow_dispatch) deploys at once.
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.debounce.result) }}
+    # A single fixed group serializes every deploy to the one box, and
+    # `cancel-in-progress: false` NEVER cancels a RUNNING convergence mid-run — the
+    # in-flight run finishes, and GitHub keeps only the NEWEST queued run, which
+    # `deploy/deploy.sh` fast-forwards to the latest main. Both keys are pinned by
+    # tests/test_deploy_rolling_drain.py.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    # Must cover what deploy.sh itself allows: both drains (2 x
+    # TEATREE_DRAIN_TIMEOUT=600s), the init wait (TEATREE_INIT_WAIT_TIMEOUT=1800s),
+    # the admin swap and the resume (300s each), plus the image build. If the job
+    # times out while the remote deploy.sh is still running, GitHub releases the
+    # `deploy` concurrency group and starts the next run WHILE the abandoned remote
+    # deploy keeps running — overlapping drains that strand worker_quiescing ON.
+    # deploy.sh's host flock is the hard backstop if the timeouts ever drift out of
+    # order again. Pinned against those defaults by tests/test_deploy_rolling_drain.py.
+    timeout-minutes: 75
     steps:
       - name: Validate required secrets
         env:
@@ -110,9 +127,9 @@ jobs:
           # ServerAlive* is load-bearing, not hygiene: three deploys died 276.8s /
           # 280.0s / ~280s into the worker drain, which prints nothing while it waits
           # for in-flight agents. A 3s spread across runs is a fixed idle timeout, and
-          # it fires far short of the 1800s the drain is allowed — so without
-          # keepalives the drain budget is unreachable and the deploy dies before the
-          # swap that clears `worker_quiescing`. 30s x 20 tolerates a 10-min stall.
+          # it fires short of the 600s the drain is allowed — so without keepalives
+          # the drain budget is unreachable and the deploy dies before the swap that
+          # clears `worker_quiescing`. 30s x 20 tolerates a 10-min stall.
           SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=20"
           TARGET="${SSH_USER}@${SERVER_HOST}"
 

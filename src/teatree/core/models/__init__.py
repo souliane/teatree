@@ -34,6 +34,7 @@ from teatree.core.models.errors import (
     DirtyWorktreeError,
     InvalidTransitionError,
     LeaseLostError,
+    NoCurrentPlanError,
     NoPlanArtifactError,
     QualityGateError,
 )
@@ -258,6 +259,7 @@ __all__ = [
     "ModeOverrideManager",
     "ModeSchedule",
     "ModeScheduleSlot",
+    "NoCurrentPlanError",
     "NoPlanArtifactError",
     "OnBehalfApproval",
     "OnBehalfApprovalError",

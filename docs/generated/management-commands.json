@@ -448,6 +448,24 @@
       ]
     },
     {
+      "help": "Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.",
+      "name": "live",
+      "subcommands": [
+        {
+          "help": "Show one live session's state, tool and progress without contacting the agent",
+          "name": "inspect"
+        },
+        {
+          "help": "Send input into a running agent's current turn and print its receipt (active)",
+          "name": "steer"
+        },
+        {
+          "help": "List every live session on this host's workers (passive)",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "Switch standing-directive slots off (disable) or back on (enable) (#4166).",
       "name": "loop_directive_set",
       "subcommands": [
@@ -467,13 +485,9 @@
       "subcommands": []
     },
     {
-      "help": "",
+      "help": "``loop_dispatch`` group root.",
       "name": "loop_dispatch",
       "subcommands": [
-        {
-          "help": "List pending Tasks the ``/loop`` slot should spawn in-session",
-          "name": "pending-spawn"
-        },
         {
           "help": "Atomically claim the oldest pending dispatchable Task, then emit it",
           "name": "claim-next"
@@ -631,7 +645,7 @@
       "subcommands": []
     },
     {
-      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each native Claude `/loop` fires.",
+      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each worker `loop_timer` fires.",
       "name": "loops_tick",
       "subcommands": []
     },
