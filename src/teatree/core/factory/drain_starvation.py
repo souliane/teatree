@@ -7,12 +7,12 @@ board simply stopped moving, because reviewing and shipping are what RETIRE a pu
 and none of them could get in.
 
 That state is invisible unless something names it, which is what this module is: the
-reservation in :mod:`teatree.core.agent_admission` is the fix, and this is the alarm for
-the state the fix exists to prevent — a rollback to ``drain_slot_reservation = 0``, a
-reservation too small for the box, or a lane the seat window has gone soft on all present
-this way. Like :mod:`teatree.core.intake.budget` it reads state and decides nothing, and
-it is the ONLY reader, so the doctor and any later surface cannot hold two opinions about
-whether the drain lane is starved.
+review lane outside the coding ceiling in :mod:`teatree.core.agent_admission` is the fix,
+and this is the alarm for the state the fix exists to prevent — a review lane too narrow
+for the box, or one the seat window has gone soft on, presents this way. Like
+:mod:`teatree.core.intake.budget` it reads state and decides nothing, and it is the ONLY
+reader, so the doctor and any later surface cannot hold two opinions about whether the
+drain lane is starved.
 """
 
 from dataclasses import dataclass

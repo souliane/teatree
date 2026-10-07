@@ -30,7 +30,7 @@ from teatree.core.merge.execution import execute_bound_merge, merge_ticket_pr
 from teatree.core.models import MergeClear, PullRequest, Ticket, TrustedIdentity
 from teatree.core.review import author_trust
 from teatree.utils.pr_ref import PrRef
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay, record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
@@ -95,7 +95,7 @@ class _GhStub:
                 return (0, out, "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
     @property
     def attempted_merge(self) -> bool:
@@ -339,7 +339,7 @@ class TestProvenanceGateUnit(TestCase):
 
 
 class TestBypassPathForkRefused(TestCase):
-    """The solo bypass (``merge_pr_squash_bound`` → ``execute_bound_merge``) also holds a fork.
+    """The solo bypass (``merge_pr_bound`` → ``execute_bound_merge``) also holds a fork.
 
     ``execute_bound_merge`` is the shared chokepoint BOTH merge paths cross. The
     provenance gate fires HERE too (defence-in-depth), so a fork PR cannot slip

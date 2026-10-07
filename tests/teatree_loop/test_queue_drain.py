@@ -26,9 +26,11 @@ from django.test import override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.models import Loop, LoopLease, Ticket
+from teatree.core.admission_priority import ADMISSION_ORDER, ADMISSION_SCORE_ALIAS, admission_priority_annotations
+from teatree.core.models import Loop, LoopLease, Session, Task, Ticket
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
+    admission_claim_order,
     drain_ready_batch,
     expire_stale_default_jobs,
     expire_stale_headless_jobs,
@@ -544,57 +546,79 @@ class TestQueueCommand:
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
 
 
-class TestAdmissionPriorityAnnotation:
-    """PR-13: the admission-rank annotation ranks new-ticket auto-starts LAST."""
+class TestAdmissionScore:
+    """Reviews first (expedited before plain), then expedited work, continuing work, new-ticket auto-starts."""
 
-    def _task(self, *, phase: str, parented: bool = False):
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
+    def _task(self, *, phase: str, parented: bool = False, expedited: bool = False) -> Task:
         url = f"https://x/{phase}/{Ticket.objects.count()}"
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme", expedited=expedited)
         session = Session.objects.create(ticket=ticket, agent_id=f"a-{ticket.pk}")
         parent = Task.objects.create(ticket=ticket, session=session, phase="planning") if parented else None
         return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
 
-    def _rank(self, task) -> int:
-        from teatree.core.admission_priority import ADMISSION_RANK_ALIAS  # noqa: PLC0415
-        from teatree.core.models import Task  # noqa: PLC0415
-        from teatree.loop.queue_drain import admission_priority_annotations  # noqa: PLC0415
+    @staticmethod
+    def _admission_order(tasks: list[Task]) -> list[int]:
+        ranked = Task.objects.filter(pk__in=[task.pk for task in tasks]).annotate(**admission_priority_annotations())
+        return list(ranked.order_by(*ADMISSION_ORDER).values_list("pk", flat=True))
 
+    def _score(self, task: Task) -> int:
         row = Task.objects.annotate(**admission_priority_annotations()).get(pk=task.pk)
-        return getattr(row, ADMISSION_RANK_ALIAS)
+        return getattr(row, ADMISSION_SCORE_ALIAS)
 
-    def test_new_ticket_planning_ranks_last(self) -> None:
-        assert self._rank(self._task(phase="planning")) == 1
+    def test_the_five_classes_admit_in_order_whatever_their_age(self) -> None:
+        new_ticket = self._task(phase="planning")
+        continuing = self._task(phase="coding")
+        expedited = self._task(phase="planning", expedited=True)
+        review = self._task(phase="shipping")
+        expedited_review = self._task(phase="critic_reviewing", expedited=True)
+
+        assert self._admission_order([new_ticket, continuing, expedited, review, expedited_review]) == [
+            expedited_review.pk,
+            review.pk,
+            expedited.pk,
+            continuing.pk,
+            new_ticket.pk,
+        ]
+
+    def test_the_older_row_wins_a_tie(self) -> None:
+        older, newer = self._task(phase="coding"), self._task(phase="coding")
+
+        assert self._admission_order([newer, older]) == [older.pk, newer.pk]
+
+    def test_the_loop_claim_takes_a_newer_review_before_an_older_coding_row(self) -> None:
+        self._task(phase="coding")
+        review = self._task(phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="test", ordering=admission_claim_order())
+
+        assert claimed is not None
+        assert claimed.pk == review.pk
 
     def test_new_ticket_scoping_ranks_last(self) -> None:
-        assert self._rank(self._task(phase="scoping")) == 1
+        assert self._score(self._task(phase="scoping")) < self._score(self._task(phase="coding"))
 
     def test_short_verb_plan_ranks_last(self) -> None:
         # A short-verb ``plan`` row normalizes to the same auto-start band.
-        assert self._rank(self._task(phase="plan")) == 1
+        assert self._score(self._task(phase="plan")) < self._score(self._task(phase="coding"))
 
-    def test_parentless_replan_on_shipped_ticket_drains_first(self) -> None:
+    def test_parentless_replan_on_shipped_ticket_drains_with_continuing_work(self) -> None:
         replan = self._task(phase="planning")
         Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.PR_OPENED)
-        assert self._rank(replan) == 0
+        assert self._score(replan) == self._score(self._task(phase="coding"))
 
     def test_planning_on_a_work_started_ticket_ranks_last(self) -> None:
         planning = self._task(phase="planning")
         Ticket.objects.filter(pk=planning.ticket_id).update(state=Ticket.State.WORK_STARTED)
-        assert self._rank(planning) == 1
+        assert self._score(planning) < self._score(self._task(phase="coding"))
 
-    def test_planning_on_a_plan_recorded_ticket_drains_first(self) -> None:
+    def test_planning_on_a_plan_recorded_ticket_drains_with_continuing_work(self) -> None:
         replan = self._task(phase="planning")
         Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.PLAN_RECORDED)
-        assert self._rank(replan) == 0
+        assert self._score(replan) == self._score(self._task(phase="coding"))
 
-    def test_downstream_phase_ranks_first(self) -> None:
-        assert self._rank(self._task(phase="coding")) == 0
-
-    def test_followup_planning_ranks_first(self) -> None:
+    def test_followup_planning_drains_with_continuing_work(self) -> None:
         # A planning task WITH a parent is continuing work, not a new-ticket start.
-        assert self._rank(self._task(phase="planning", parented=True)) == 0
+        assert self._score(self._task(phase="planning", parented=True)) == self._score(self._task(phase="coding"))
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
