@@ -11,6 +11,14 @@ _DELETE = ("core", "0003_delete_drain_slot_reservation_rows")
 
 @pytest.mark.timeout(480)
 class TestDeleteDrainSlotReservationRows(TransactionTestCase):
+    def setUp(self) -> None:
+        self.addCleanup(self._migrate_to_graph_leaves)
+
+    @staticmethod
+    def _migrate_to_graph_leaves() -> None:
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
     def test_every_scope_of_the_retired_key_is_deleted_and_other_keys_are_kept(self) -> None:
         executor = MigrationExecutor(connection)
         executor.migrate([_BEFORE])
