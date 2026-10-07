@@ -26,8 +26,8 @@ and named so at each call site. The deliberate split is that foreign occupancy B
 producer and only REPORTS on the rest: the admission-pressure scalar bounds intake, because
 slowing the producer cannot deadlock a factory whose review and ship lanes still drain the
 pile, while the agent lanes keep only the binary watermark brake below — scaling their
-already-small ``floor(cores * WRITE_CONCURRENCY_PER_CORE)`` ceiling by the same headroom
-would leave a 4-core box ONE expensive slot and starve the drain.
+``floor(cores * admission_write_concurrency_per_core)`` ceiling by the same headroom would,
+at the shipped factor, leave a 4-core box ONE expensive slot and starve the drain.
 
 **The brakes are ONE scalar, not six ``if``s (#4508).** Every watermark below normalises
 to ``1.0`` in :mod:`teatree.core.admission_pressure`, so :func:`decide_admission` refuses
@@ -47,6 +47,7 @@ from dataclasses import dataclass
 
 from teatree.core.admission import machine_load
 from teatree.core.admission.metered_spend import read_metered_signal
+from teatree.core.admission.write_ceiling import AdmissionCeiling, admission_ceiling
 from teatree.core.admission_pressure import (
     BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
@@ -72,33 +73,17 @@ logger = logging.getLogger(__name__)
 
 _MIB_PER_GB = 1024.0
 
-#: WRITE concurrency as a function of cores, not a magic number, so a bigger box scales
-#: up automatically. 8 cores → 4.
-#:
-#: This was 0.25 (8 cores → 2), calibrated against the meltdown recorded on
-#: :data:`TOTAL_TEST_WORKERS_PER_CORE` below — which names its own cause: "the per-agent
-#: expansion is the melt driver, NOT the agent count". That driver is now bounded
-#: independently by :func:`per_agent_test_workers`, which divides a ``cores * 2`` TOTAL
-#: worker budget by the active-agent count, so total workers stay bounded however many
-#: agents run. The old value was set before that guard existed and priced agent count as
-#: if it were the hazard.
-#:
-#: Raising it is safe to attempt rather than safe by assertion: the load brake still denies
-#: above ``BRAKE_LOAD_PER_CORE * cores`` and holds to ``RESUME_LOAD_PER_CORE * cores``, so an
-#: over-aggressive value throttles itself instead of melting the box. Measured at the change:
-#: load 13.4/15.9/16.5 on 8 cores against a deny watermark of 40, 14 GB RAM free.
-WRITE_CONCURRENCY_PER_CORE = 0.5
-
 #: Total test workers across ALL concurrent agents, as a multiple of cores. The measured
 #: meltdown was 12 agents x auto-detected 8 workers ≈ 96 workers at load ~70: the
 #: per-agent expansion is the melt driver, not the agent count.
 TOTAL_TEST_WORKERS_PER_CORE = 2
 
 #: TOTAL host agent population per core — deliberately its own constant rather than the
-#: per-lane :data:`WRITE_CONCURRENCY_PER_CORE`. A lane's concurrency bounds that lane; the
-#: population a session RESTORE re-creates is a whole-box fact, and pricing it off a lane
-#: setting is exactly the conflation #4108 records (a lane capped at 3 while the box carried
-#: enough agents to reach load 58 on 8 cores).
+#: per-lane :data:`~teatree.config.settings.WRITE_CONCURRENCY_PER_CORE`. A
+#: lane's concurrency bounds that lane; the population a session RESTORE re-creates is a
+#: whole-box fact, and pricing it off a lane setting is exactly the conflation #4108
+#: records (a lane capped at 3 while the box carried enough agents to reach load 58 on 8
+#: cores).
 HOST_AGENT_POPULATION_PER_CORE = 1.0
 
 #: Yield-per-token: high burn producing nothing is the waste that matters. Below this
@@ -225,25 +210,16 @@ def per_agent_test_workers(
     and passes it in.
 
     The share floors at 1 (an agent with zero test workers cannot run its suite), so the
-    total bound holds while *active_agents* stays within the admission ceiling — which
-    is the other half of the same governor and is far below ``cores * 2``. Past that the
-    floor wins: a 50-agent box is already a governor failure, not a division problem.
+    total bound holds while *active_agents* stays within the total. The admission ceiling,
+    the other half of the same governor, reaches ``cores * 2`` only at the per-core
+    factor's upper clamp. Past the total the floor wins: a 50-agent box is already a
+    governor failure, not a division problem.
     """
     total = max(1, int(cores)) * TOTAL_TEST_WORKERS_PER_CORE
     if ram_available_gb is not None and per_worker_gb > 0:
         budget = math.floor(max(0.0, ram_available_gb - RAM_BRAKE_FLOOR_GB) / per_worker_gb)
         total = min(total, budget)
     return max(1, total // max(1, int(active_agents)))
-
-
-def _machine_ceiling(machine: MachineSignal) -> int:
-    """The core-derived WRITE default, floored at 1 — the part that needs NO quota signal."""
-    return max(1, math.floor(max(1, machine.cores) * WRITE_CONCURRENCY_PER_CORE))
-
-
-def _adaptive_ceiling(quota: QuotaSignal, machine: MachineSignal) -> int:
-    """The live ceiling: the core-derived WRITE default, scaled by weekly pace, floored at 1."""
-    return max(1, math.floor(_machine_ceiling(machine) * min(1.0, weekly_pace(quota))))
 
 
 def _shed_at() -> float:
@@ -310,7 +286,7 @@ def decide_admission(
     the target.
 
     An UNKNOWN quota is the conservative case, never the unbounded one (#4097): the
-    ceiling falls back to :func:`_machine_ceiling`, which reads only the machine signal
+    ceiling falls back to :attr:`AdmissionCeiling.machine`, which reads only the machine signal
     the governor DID read successfully, so not knowing the budget can never buy more
     concurrency than knowing it is healthy. Only the weekly-pace scaling on top of that
     base genuinely needs a fresh quota, and that is exactly what is dropped. The load
@@ -323,7 +299,7 @@ def decide_admission(
     :func:`~teatree.core.agent_admission.agent_admission_verdict`, the seam that already
     owns the cheap/expensive split.
     """
-    ceiling = _adaptive_ceiling(quota, machine) if quota.fresh else _machine_ceiling(machine)
+    ceiling = admission_ceiling(quota, machine).value
     if static_ceiling is not None:
         ceiling = max(1, min(ceiling, static_ceiling))
 
@@ -580,6 +556,7 @@ __all__ = [
     "RAM_BRAKE_FLOOR_GB",
     "RAM_RESUME_FLOOR_GB",
     "UNBRAKED",
+    "AdmissionCeiling",
     "AdmissionDecision",
     "AdmissionPressure",
     "MachineBrake",
@@ -588,6 +565,7 @@ __all__ = [
     "PressureBand",
     "QuotaSignal",
     "YieldSignal",
+    "admission_ceiling",
     "box_load_headroom",
     "decide_admission",
     "per_agent_test_workers",

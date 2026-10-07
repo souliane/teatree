@@ -73,11 +73,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
 │                 runs it (the cadence owner). `status` reports the live       │
 │                 holder + how many loops the active preset admits + whether   │
-│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
-│                 `ensure` spawns a detached worker iff the flock is free;     │
-│                 `drain` quiesces admission without stopping anything; `stop` │
-│                 / `restart` end the live worker and verify it against the    │
-│                 flock.                                                       │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet) +   │
+│                 how the agent admission ceiling is derived; `ensure` spawns  │
+│                 a detached worker iff the flock is free; `drain` quiesces    │
+│                 admission without stopping anything; `stop` / `restart` end  │
+│                 the live worker and verify it against the flock.             │
 │ deploy          Roll the runtime stack between immutable image generations;  │
 │                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
