@@ -47,8 +47,12 @@ _SKIP_REASON = _skip_reason()
 
 @pytest.mark.integration
 @pytest.mark.timeout(300)
-@pytest.mark.skipif(bool(_SKIP_REASON), reason=_SKIP_REASON)
 class LiveSmokeTests(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        if _SKIP_REASON:
+            self.skipTest(_SKIP_REASON)
+
     def test_a_real_running_session_accepts_a_steer_into_its_current_turn(self) -> None:
         ticket = planned_ticket()
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")

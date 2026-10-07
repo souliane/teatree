@@ -12,10 +12,10 @@ import json
 import os
 import sys
 import tempfile
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -48,26 +48,11 @@ def _until(predicate: Callable[[], bool], what: str) -> None:
         time.sleep(0.02)
 
 
-class _Background(threading.Thread):
-    """Run *work* off the main thread, keeping its return value or exception for the assertion."""
-
-    def __init__(self, work: Callable[[], Any]) -> None:
-        super().__init__(daemon=True)
-        self._work = work
-        self.value: Any = None
-        self.error: BaseException | None = None
-
-    def run(self) -> None:
-        try:
-            self.value = self._work()
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread by result()
-            self.error = exc
-
-    def result(self) -> Any:
-        self.join(timeout=_WAIT_LIMIT)
-        if self.error is not None:
-            raise self.error
-        return self.value
+def _in_background[T](work: Callable[[], T]) -> Future[T]:
+    pool = ThreadPoolExecutor(max_workers=1)
+    outcome = pool.submit(work)
+    pool.shutdown(wait=False)
+    return outcome
 
 
 class _FakeCliRun:
@@ -136,18 +121,15 @@ class LiveControlIntegrationTests(TestCase):
         self.live = LiveClient()
 
     def dispatch(self, run: _FakeCliRun, operator: Callable[[], Any]) -> Any:
-        background = _Background(operator)
         with _real_sdk_on_fake_cli(run):
-            background.start()
+            background = _in_background(operator)
             attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
-        value = background.result()
+        value = background.result(timeout=_WAIT_LIMIT)
         self.attempt = attempt
         return value
 
-    def steer_async(self, text: str, *, command_id: str, wait: float = 20) -> _Background:
-        steering = _Background(lambda: self.live.steer(self.task.pk, text, command_id=command_id, wait=wait))
-        steering.start()
-        return steering
+    def steer_async(self, text: str, *, command_id: str, wait: float = 20) -> Future[ReceiptPayload]:
+        return _in_background(lambda: self.live.steer(self.task.pk, text, command_id=command_id, wait=wait))
 
     def pending(self) -> int:
         return int(self.live.inspect(self.task.pk)["pending_inputs"])
@@ -186,7 +168,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("Use the spec at docs/x.md", command_id=command_id)
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            return steering.result()
+            return steering.result(timeout=_WAIT_LIMIT)
 
         receipt = self.dispatch(run, operator)
 
@@ -208,7 +190,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("Mention the release note", command_id=command_id)
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_stop.touch()
-            return steering.result()
+            return steering.result(timeout=_WAIT_LIMIT)
 
         receipt = self.dispatch(run, operator)
 
@@ -226,7 +208,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("too late", command_id="late-1")
             _until(lambda: self.pending() == 1, "the late steer to be pending")
             run.release_stop.touch()
-            return steering.result()
+            return steering.result(timeout=_WAIT_LIMIT)
 
         receipt = self.dispatch(run, operator)
 
@@ -260,7 +242,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("same words", command_id="dup-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            first = steering.result()
+            first = steering.result(timeout=_WAIT_LIMIT)
             again = self.live.steer(self.task.pk, "same words", command_id="dup-1", wait=5)
             changed = self.live.steer(self.task.pk, "other words", command_id="dup-1", wait=5)
             return first, again, changed
@@ -283,7 +265,7 @@ class LiveControlIntegrationTests(TestCase):
             overflow = self.live.steer(self.task.pk, "one too many", command_id="bp-over", wait=5)
             oversize = self.live.steer(self.task.pk, "x" * 16_385, command_id="bp-big", wait=5)
             run.release_tool.touch()
-            return [steering.result() for steering in queued], overflow, oversize
+            return [steering.result(timeout=_WAIT_LIMIT) for steering in queued], overflow, oversize
 
         accepted, overflow, oversize = self.dispatch(run, operator)
 
@@ -304,7 +286,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("for the main thread", command_id="main-only")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            return steering.result()
+            return steering.result(timeout=_WAIT_LIMIT)
 
         receipt = self.dispatch(run, operator)
 
@@ -321,7 +303,7 @@ class LiveControlIntegrationTests(TestCase):
             steering = self.steer_async("last words", command_id="kept-1")
             _until(lambda: self.pending() == 1, "the steer to be pending")
             run.release_tool.touch()
-            return steering.result()
+            return steering.result(timeout=_WAIT_LIMIT)
 
         accepted = self.dispatch(run, operator)
 
