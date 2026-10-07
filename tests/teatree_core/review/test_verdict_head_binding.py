@@ -161,3 +161,37 @@ class TestTheBoundHeadIsSpelledAsTheSourceSpelledIt:
         binding = _resolve(_ELSEWHERE, _Probe(LiveHeadRead(sha=_DISPATCH.upper(), unreadable=False)))
 
         assert not binding.superseded
+
+
+class TestAReviewWithNoPinnedHeadBindsToTheLiveHeadOrIsReArmed:
+    """An issue-anchored ticket's own PR: no claim pinned a head, so only the live head counts."""
+
+    def _resolve_unpinned(self, asserted: str, probe: _Probe) -> object:
+        return resolve_verdict_head(
+            asserted=asserted,
+            dispatch_head="",
+            pr=PrRef(slug=_SLUG, pr_id=_PR_ID, host_kind="github"),
+            read_live_head=probe,
+        )
+
+    def test_the_live_head_binds(self) -> None:
+        assert self._resolve_unpinned(_LIVE, _moved()).head == _LIVE
+
+    def test_a_judged_head_the_pr_no_longer_points_at_is_superseded_and_names_both_heads(self) -> None:
+        binding = self._resolve_unpinned(_ELSEWHERE, _moved())
+
+        assert binding.head == ""
+        assert binding.superseded
+        assert binding.error.startswith(HEAD_SUPERSEDED_PREFIX)
+        assert _LIVE[:8] in binding.error
+        assert _ELSEWHERE[:8] in binding.error
+        assert "()" not in binding.error
+
+    def test_no_refusal_prints_an_empty_dispatched_head(self) -> None:
+        unreadable = self._resolve_unpinned(_ELSEWHERE, _Probe(LiveHeadRead(sha="", unreadable=True)))
+        omitted = self._resolve_unpinned("", _moved())
+
+        for binding in (unreadable, omitted):
+            assert binding.error
+            assert "()" not in binding.error
+            assert f"{_SLUG}#{_PR_ID}" in binding.error

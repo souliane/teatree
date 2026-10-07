@@ -29,6 +29,7 @@ from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import Task
 from teatree.core.models.review_target import assigned_reviewer_identity_for, review_target_for_task
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
+from teatree.core.review.live_head import live_head_at
 
 # The anti-rubber-stamp contract for a verification brief — prove the change out
 # first, then grade every quality dimension.
@@ -365,9 +366,13 @@ def _green_proof_binding_lines(task: Task) -> tuple[str, ...]:
     check-runs, across eight consecutive reviews of one PR.
     """
     target = review_target_for_task(task)
-    if target is None or not target.head_sha:
+    if target is None:
         return ()
     head = target.head_sha
+    if not head and target.bind_live_head:
+        head = live_head_at(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind).sha
+    if not head:
+        return ()
     return (
         "",
         f"GREEN-PROOF BINDING: the head under review is {head}.",
