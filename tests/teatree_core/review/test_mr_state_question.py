@@ -20,6 +20,7 @@ backlog of undecidable merge requests cannot arrive as a flood.
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
@@ -217,6 +218,15 @@ class TestAHeadBoundQuestion(TestCase):
         assert new.pk != old.pk
         open_for_this_mr = [row.pk for row in _open_mr_state_questions() if row.dedupe_marker == mr_state_marker(_MR)]
         assert open_for_this_mr == [new.pk]
+
+    def test_a_replacement_that_fails_leaves_the_old_question_open(self) -> None:
+        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        assert old is not None
+
+        with patch.object(DeferredQuestion, "record", side_effect=RuntimeError), pytest.raises(RuntimeError):
+            ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+
+        assert [row.pk for row in _open_mr_state_questions()] == [old.pk]
 
     def test_another_callers_untagged_question_is_never_superseded(self) -> None:
         untagged = ask_mr_state(mr_url=_MR, reason=_REASON)

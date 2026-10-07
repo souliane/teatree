@@ -183,7 +183,7 @@ def _world(slack: _Slack, forge: _Forge) -> Iterator[Path]:
         yield Path(data_dir)
 
 
-def _backend(forge: _Forge, slack: _Slack) -> OverlayBackends:
+def _backend(forge: _Forge, slack: _Slack | None) -> OverlayBackends:
     return OverlayBackends(name=_OVERLAY, hosts=(forge,), messaging=slack, identities=("alice",))
 
 
@@ -195,7 +195,7 @@ def _followup_pass(forge: _Forge, slack: _Slack) -> list[ScanSignal]:
     return senders[0].scan()
 
 
-def _ship_triage_pass(forge: _Forge, slack: _Slack) -> list[ScanSignal]:
+def _ship_triage_pass(forge: _Forge, slack: _Slack | None) -> list[ScanSignal]:
     """One SHIP pass of the triage surveyor the domain selected."""
     backend = _backend(forge, slack)
     jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
@@ -719,10 +719,19 @@ class TestTheOwnerQuestionLivesWhereTheSenderIsAbsent(_SenderCase):
         assert _mr_state_questions() == [mr_state_marker(_URL)]
 
     def test_a_forbidding_posture_still_asks_the_owner(self) -> None:
+        _admit_followup(runs=True)
         seed_forbidding_posture()
 
         with _world(self.slack, self.forge):
             self._ship_triage_scan()
+
+        assert _mr_state_questions() == [mr_state_marker(_URL)]
+
+    def test_no_messaging_backend_still_asks_the_owner(self) -> None:
+        _admit_followup(runs=True)
+
+        with _world(self.slack, self.forge):
+            _ship_triage_pass(self.forge, None)
 
         assert _mr_state_questions() == [mr_state_marker(_URL)]
 

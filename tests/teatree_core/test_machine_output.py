@@ -54,7 +54,7 @@ class TestToJsonable:
 
 class TestLastJsonObject:
     def test_skips_noise_and_returns_the_last_object(self) -> None:
-        text = '{"action": "post"}\ntrailing prose\n{unclosed\n{bad json}'
+        text = '{"action": "draft"}\nprose\n{"action": "post"}\ntrailing prose\n{unclosed\n{bad json}'
         assert last_json_object(text) == {"action": "post"}
 
     def test_returns_none_without_a_json_object(self) -> None:
