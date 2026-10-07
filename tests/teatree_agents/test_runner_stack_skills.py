@@ -51,9 +51,10 @@ class TestEveryCodePhaseRequiresBothStackSkills(TestCase):
         clone = workspace / "souliane" / "teatree"
         (clone / ".git").mkdir(parents=True)
         (clone / "manage.py").write_text("# django project\n", encoding="utf-8")
-        review_skill = Path.home() / ".claude" / "skills" / "code-review"
-        review_skill.mkdir(parents=True)
-        (review_skill / "SKILL.md").write_text("# code-review\n", encoding="utf-8")
+        for name in ("code-review", "ac-reviewing-codebase"):
+            installed = Path.home() / ".claude" / "skills" / name
+            installed.mkdir(parents=True)
+            (installed / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
 
     def _task(self, phase: str) -> Task:
         ticket = planned_ticket(repos=["souliane/teatree"], overlay="t3-teatree")
