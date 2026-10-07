@@ -575,6 +575,15 @@ class TestAMergeSafeReviewRecordsTheFixRecord(TestCase):
         assert ticket.extra["fix_record"] == _FIX_RECORD
         assert "fix_record" not in task.ticket.extra
 
+    def test_a_record_returned_for_a_feature_ticket_is_kept_like_the_coders_is(self) -> None:
+        ticket = _author_ticket()
+
+        _task, error = self._review(record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        assert ticket.extra["fix_record"] == _FIX_RECORD
+
     def test_a_hold_records_no_fix_record(self) -> None:
         ticket = self._fix_ticket()
 

@@ -132,10 +132,15 @@ def unattachable_verdict_refusal(task: "Task") -> str:
     live = ticket.pull_requests.live().count()  # ty: ignore[unresolved-attribute]
     if ticket.role == ticket.Role.AUTHOR and not live:
         return ""
+    recorded = (
+        "its one live PR row carries a url that names no pull request"
+        if live == 1
+        else f"the ticket records {live} live PR(s), not exactly one"
+    )
     return (
         f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be attached to a pull request: task {task.pk} "
-        f"has no dispatch row, {ticket.issue_url or f'ticket {ticket.pk}'} names no PR, and the ticket records "
-        f"{live} live PR(s), not exactly one — no merge guard could ever read this verdict"
+        f"has no dispatch row, {ticket.issue_url or f'ticket {ticket.pk}'} names no PR, and {recorded} — "
+        "no merge guard could ever read this verdict"
     )
 
 

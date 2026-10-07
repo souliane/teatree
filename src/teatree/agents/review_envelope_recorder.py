@@ -17,7 +17,6 @@ from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.fix_record_recorder import fix_record_refusal
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
 from teatree.agents.review_context_recorder import anti_vacuity_refusal
-from teatree.core.gates.fix_dod_gate import is_fix
 from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
@@ -316,7 +315,7 @@ def _record_verdict_and_grades(
                     [str(node) for node in anti_vacuity.get("proven_tests", [])],
                     no_new_tests=anti_vacuity.get("no_new_tests") is True,
                 )
-            if ticket is not None and merge_safe and fix_record is not None and is_fix(ticket):
+            if ticket is not None and merge_safe and fix_record is not None:
                 ticket.record_fix_record(cast("FixRecord", fix_record))
             ReviewVerdict.record(
                 pr_id=target.pr_id,
