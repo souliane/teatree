@@ -10,8 +10,6 @@ wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
 import logging
 from typing import TYPE_CHECKING
 
-from django_fsm import can_proceed
-
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.plan_decision import has_plan_decision
@@ -20,9 +18,13 @@ from teatree.core.models.ticket import Ticket
 from teatree.core.repair_loop import max_phase_iterations
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+_CAP_QUESTION_FINDINGS_BUDGET = 8_000
 
 #: The lifecycle-FSM target state each phase's completion should reach. A
 #: completed phase task whose ticket sits BEHIND its target with no matching
@@ -92,7 +94,11 @@ def dispose_unshippable_review(ticket: Ticket) -> None:
 
 
 def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
-    """Fire a completed coding task's transition, or escalate a wedge; ``True`` iff one fired."""
+    """Fire a completed coding task's transition, or escalate a wedge; ``True`` iff one fired.
+
+    Only the rework parented on a held self-review discharges it: any other coding run on a
+    held ticket queues that rework instead, so the HOLD's own findings always reach a coder.
+    """
     if ticket.state == Ticket.State.PLAN_RECORDED:
         ticket.code(parent_task=task)
     elif ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED} and (
@@ -101,7 +107,10 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
         # A plan recorded off the WORK_STARTED rung (``ticket plan`` / ``skip-planning`` on an
         # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
         ticket.code_direct(parent_task=task)
-    elif can_proceed(ticket.address_self_review):
+    elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
+        if task.parent_task_id != held.task_pk:  # ty: ignore[unresolved-attribute]
+            queue_self_review_rework(ticket, held)
+            return False
         ticket.address_self_review(parent_task=task)
     else:
         escalate_unmatched_phase_transition(task, phase="coding", ticket=ticket)
@@ -112,7 +121,11 @@ def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
 
 def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
     """Advance a TESTED ticket on its completed self-review, unless that review held."""
-    if dispose_self_review_hold(task, ticket):
+    if ticket.state != Ticket.State.TESTED:
+        escalate_unmatched_phase_transition(task, phase="reviewing", ticket=ticket)
+        return False
+    if (review := SelfReview.of_task(task)) is not None and review.is_hold:
+        queue_self_review_rework(ticket, review)
         return False
     ticket.review(parent_task=task)
     ticket.save()
@@ -120,30 +133,59 @@ def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
     return True
 
 
-def dispose_self_review_hold(task: "Task", ticket: Ticket) -> bool:
-    """Keep a TESTED ticket whose self-review held in TESTED, queueing its rework once; ``True`` iff it held.
+def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
+    """Ship a SELF_REVIEWED ticket on its completed shipping task, through the same gates as ``pr create``.
 
-    Idempotent per HOLD (keyed on the rework's parent), so the replay sweep re-reading this
-    completed review never re-queues a failed rework or asks the owner twice.
+    #1284 (codex #1282-2): the task-based completion path enforces the visited-phases gate
+    ``_check_shipping_gate`` runs, so a SELF_REVIEWED ticket with missing testing/reviewing
+    attestations cannot reach PR_OPENED through the task path. ``check_gate_across_ticket``
+    raises ``QualityGateError`` when phases are missing, which propagates to the caller. A
+    self-review HOLD the ticket was parked past stops it too, and queues that HOLD's rework.
     """
-    review = SelfReview.of_task(task)
-    if review is None or not review.is_hold:
+    if ticket.state != Ticket.State.SELF_REVIEWED:
+        escalate_unmatched_phase_transition(task, phase="shipping", ticket=ticket)
         return False
-    if ticket.tasks.filter(parent_task=task, phase__in=phase_spellings("coding")).exists():
-        return True
-    earlier_holds = SelfReview.hold_count(ticket, excluding=task.pk)
-    if earlier_holds >= max_phase_iterations():
-        DeferredQuestion.record(
-            f"[self-review-hold {ticket.issue_url or f'ticket {ticket.pk}'}] The self-review held this ticket "
-            f"{earlier_holds + 1} times, so no more rework is queued. Latest HOLD at {review.reviewed_sha} "
-            f"(reviewing task {review.task_pk}) with {len(review.findings)} finding(s). "
-            f"Rework it (`t3 <overlay> ticket rework-hold {ticket.pk}`), or ignore the ticket?",
-            task_session=task.session,
-            dedupe_marker=f"self-review-hold-cap:{ticket.pk}",
-        )
-        return True
-    ticket.schedule_self_review_rework(task, review)
+    if (held := SelfReview.open_hold_for(ticket)) is not None:
+        queue_self_review_rework(ticket, held)
+        return False
+    task.session.check_gate_across_ticket("shipping")
+    ticket.ship()
+    ticket.save()
     return True
+
+
+def queue_self_review_rework(ticket: Ticket, review: SelfReview) -> None:
+    """Queue *review*'s rework once, keyed on its parent link, or at the cap record why none is queued."""
+    if ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding")).exists():
+        return
+    other_heads = SelfReview.held_heads(ticket) - {review.head_key}
+    if len(other_heads) >= max_phase_iterations():
+        _record_hold_cap(ticket, review, held_heads=len(other_heads) + 1)
+        return
+    ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
+
+
+def _record_hold_cap(ticket: Ticket, review: SelfReview, *, held_heads: int) -> None:
+    """One INTERNAL row per ticket, sticky across answered and dismissed rows: the factory never pages on it."""
+    marker = f"self-review-hold-cap:{ticket.pk}"
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
+        return
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    findings = "\n".join(review.rendered_findings(budget=_CAP_QUESTION_FINDINGS_BUDGET))
+    DeferredQuestion.record(
+        f"[self-review-hold {where}] The self-review held {held_heads} heads of this ticket, so no rework is "
+        f"queued for the HOLD at {review.reviewed_sha or 'an unrecorded head'} (reviewing task {review.task_pk}). "
+        f"`t3 <overlay> ticket rework-hold {ticket.pk}` queues it by hand. Its findings:\n{findings}",
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
+    )
+
+
+AUTHOR_PHASE_ADVANCES: "dict[str, Callable[[Task, Ticket], bool]]" = {
+    "coding": advance_coded_ticket,
+    "reviewing": advance_self_reviewed_ticket,
+    "shipping": advance_shipped_ticket,
+}
 
 
 def phase_output_reached(ticket: Ticket, phase: str) -> bool:
@@ -157,6 +199,8 @@ def phase_output_reached(ticket: Ticket, phase: str) -> bool:
     """
     target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
     if target is None or ticket.state not in _STATE_ORDER:
+        return False
+    if target == Ticket.State.CODED and ticket.owes_self_review_rework():
         return False
     return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
 

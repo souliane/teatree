@@ -44,3 +44,11 @@ class TestAHeldSelfReviewBlocksShipping(TestCase):
         completed_self_review(ticket, "hold")
 
         assert check_shipping_gate(ticket) is None
+
+    def test_a_hold_from_the_shipped_cycle_does_not_refuse_the_follow_up(self) -> None:
+        ticket = _attested_ticket(state=Ticket.State.DELIVERED)
+        completed_self_review(ticket, "hold")
+        ticket.reopen_for_followup()
+        ticket.save()
+
+        assert check_shipping_gate(ticket) is None

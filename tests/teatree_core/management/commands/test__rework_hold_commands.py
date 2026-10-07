@@ -1,17 +1,20 @@
 """``ticket rework-hold`` re-queues the findings of a HOLD a ticket was parked past."""
 
 import json
+import tempfile
 from io import StringIO
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.management.commands import ticket as ticket_mod
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE
 from teatree.core.modelkit.task_failure_taxonomy import SUPERSEDED_PREFIX
-from teatree.core.models import PullRequest, Task, Ticket
+from teatree.core.models import PullRequest, Task, Ticket, Worktree
 from tests.teatree_core._self_review_helpers import HELD_FINDINGS, HELD_SHA, author_ticket, completed_self_review
 
 
@@ -48,6 +51,7 @@ class TestReworkHoldRequeuesTheFindings(TestCase):
             "reviewed_sha": HELD_SHA,
             "findings": len(HELD_FINDINGS),
             "rework_task": rework.pk,
+            "supersedes": [{"task": shipping.pk, "phase": "shipping", "status": Task.Status.PENDING}],
             "dry_run": False,
         }
 
@@ -65,16 +69,18 @@ class TestReworkHoldRequeuesTheFindings(TestCase):
         second = _rework_hold(ticket)
 
         assert second["rework_task"] == first["rework_task"]
+        assert second["supersedes"] == []
         assert Task.objects.filter(ticket=ticket, phase="coding").count() == 1
 
-    def test_a_dry_run_writes_nothing(self) -> None:
-        ticket, held, _shipping = _parked_past_a_hold()
+    def test_a_dry_run_names_the_tasks_it_would_fail_and_writes_nothing(self) -> None:
+        ticket, held, shipping = _parked_past_a_hold()
         before = _task_rows(ticket)
 
         result = _rework_hold(ticket, "--dry-run")
 
         assert result["held_task"] == held.pk
         assert result["rework_task"] is None
+        assert result["supersedes"] == [{"task": shipping.pk, "phase": "shipping", "status": Task.Status.PENDING}]
         assert result["dry_run"] is True
         assert _task_rows(ticket) == before
 
@@ -106,6 +112,36 @@ class TestReworkHoldRefuses(TestCase):
         )
 
         self._assert_refused_and_untouched(ticket, "open pull request")
+
+    def test_an_open_pull_request_only_the_forge_knows_about(self) -> None:
+        ticket, _held, _shipping = _parked_past_a_hold()
+        with tempfile.TemporaryDirectory() as checkout:
+            Worktree.objects.create(
+                ticket=ticket, repo_path=checkout, branch="5076-x", extra={"worktree_path": checkout}
+            )
+            found = PrProbe.found("https://github.com/souliane/teatree/pull/5130")
+            with patch(
+                "teatree.core.management.commands._rework_hold_commands.find_open_pr_for_branch", return_value=found
+            ):
+                self._assert_refused_and_untouched(ticket, "pull/5130")
+
+    def test_a_forge_that_cannot_be_asked(self) -> None:
+        ticket, _held, _shipping = _parked_past_a_hold()
+        with tempfile.TemporaryDirectory() as checkout:
+            Worktree.objects.create(
+                ticket=ticket, repo_path=checkout, branch="5076-x", extra={"worktree_path": checkout}
+            )
+            unknown = PrProbe.unknown()
+            with patch(
+                "teatree.core.management.commands._rework_hold_commands.find_open_pr_for_branch", return_value=unknown
+            ):
+                self._assert_refused_and_untouched(ticket, "could not ask the forge")
+
+    def test_a_claimed_task_it_would_fail(self) -> None:
+        ticket, _held, shipping = _parked_past_a_hold()
+        shipping.claim(claimed_by="shipper")
+
+        self._assert_refused_and_untouched(ticket, f"task {shipping.pk}")
 
     def test_a_ticket_still_short_of_testing(self) -> None:
         ticket = author_ticket(state=Ticket.State.CODED)
@@ -143,5 +179,6 @@ class TestReworkHoldOutput(TestCase):
 
         rework = Task.objects.get(ticket=ticket, phase="coding")
         assert "would queue a rework task" in dry.getvalue()
+        assert "superseding task" in dry.getvalue()
         assert f"rework task {rework.pk} carrying {len(HELD_FINDINGS)} finding(s)" in done.getvalue()
         assert "rework-hold refused: Ticket 987654 not found" in refused.getvalue()

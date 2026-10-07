@@ -14,11 +14,12 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.core.modelkit.review_state import ReviewState
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.task_phase_disposition import phase_output_reached
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from tests.factories import planned_ticket, record_test_plan
 from tests.teatree_core._self_review_helpers import (
+    FAILURE_SCENARIO,
     HELD_FINDINGS,
     HELD_SHA,
     author_ticket,
@@ -530,6 +531,7 @@ class TestASelfReviewHoldKeepsTheTicketTested(TestCase):
             assert str(finding["summary"]) in rework.execution_reason
             assert f"{finding['file']}:{finding['line']}" in rework.execution_reason
         assert HELD_SHA in rework.execution_reason
+        assert FAILURE_SCENARIO in rework.execution_reason
         assert not Task.objects.filter(ticket=ticket, phase="shipping").exists()
 
     def test_the_live_path_advances_a_merge_safe_to_self_reviewed_with_shipping(self) -> None:
@@ -586,3 +588,55 @@ class TestASelfReviewHoldKeepsTheTicketTested(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.TESTED
         assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_verdict_spelled_in_capitals_still_holds(self) -> None:
+        ticket = author_ticket()
+
+        _returned_self_review(ticket, " HOLD ")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert len(_coding_tasks(ticket)) == 1
+
+    def test_an_open_pull_request_does_not_exempt_a_pre_ship_hold(self) -> None:
+        ticket = author_ticket()
+        PullRequest.objects.create(
+            ticket=ticket, overlay="test", url="https://github.com/souliane/teatree/pull/7", repo="souliane/teatree"
+        )
+
+        _returned_self_review(ticket, "hold")
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        assert len(_coding_tasks(ticket)) == 1
+
+    def test_an_unrelated_coding_completion_queues_the_rework_instead_of_discharging_the_hold(self) -> None:
+        ticket = author_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        unrelated = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        held = completed_self_review(ticket, "hold")
+        _replay()
+        assert _coding_tasks(ticket) == [unrelated], "the in-flight sibling swallows the first mint"
+        unrelated.claim(claimed_by="coder")
+
+        unrelated.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        [rework] = Task.objects.filter(ticket=ticket, phase="coding", parent_task=held)
+        assert str(HELD_FINDINGS[0]["summary"]) in rework.execution_reason
+        assert not Task.objects.filter(ticket=ticket, phase="testing").exists()
+
+    def test_a_shipping_completion_past_a_hold_does_not_ship_and_queues_the_rework(self) -> None:
+        ticket = author_ticket(state=Ticket.State.SELF_REVIEWED)
+        held = completed_self_review(ticket, "hold")
+        session = Session.objects.create(ticket=ticket, agent_id="shipping")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        shipping = Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
+
+        assert shipping._apply_phase_transition() is False
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert Task.objects.filter(ticket=ticket, phase="coding", parent_task=held).exists()

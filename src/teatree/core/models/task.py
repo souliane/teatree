@@ -24,8 +24,7 @@ from teatree.core.models.task_claim import fail_claimed as _fail_claimed_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
 from teatree.core.models.task_claim import window_parked as _window_parked
 from teatree.core.models.task_phase_disposition import (
-    advance_coded_ticket,
-    advance_self_reviewed_ticket,
+    AUTHOR_PHASE_ADVANCES,
     escalate_unmatched_phase_transition,
     transition_source_states,
 )
@@ -425,10 +424,8 @@ class Task(models.Model):
                 and ticket.state in mark_reviewed_externally_source_states
             ):
                 return self._advance_reviewer_ticket(ticket)
-            if phase == "coding":
-                return advance_coded_ticket(self, ticket)
-            if phase == "reviewing" and ticket.state == Ticket.State.TESTED:
-                return advance_self_reviewed_ticket(self, ticket)
+            if (advance := AUTHOR_PHASE_ADVANCES.get(phase)) is not None:
+                return advance(self, ticket)
             if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
@@ -437,21 +434,6 @@ class Task(models.Model):
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
                 ticket.test(passed=True, parent_task=self)
-                ticket.save()
-            elif phase == "shipping" and ticket.state == Ticket.State.SELF_REVIEWED:
-                # #1284 (codex #1282-2): the task-based completion path must
-                # enforce the same visited-phases gate the ``pr create`` path
-                # runs through ``_check_shipping_gate`` — otherwise a SELF_REVIEWED
-                # ticket with missing testing/reviewing attestations advances
-                # to PR_OPENED through the task path, bypassing the gate. The
-                # single source of truth is ``Session.visited_phases`` union
-                # across the ticket (#694); ``check_gate_across_ticket``
-                # raises ``QualityGateError`` when phases are missing, which
-                # propagates out of ``_apply_phase_transition`` so the caller
-                # surfaces the structured failure rather than silently
-                # advancing the FSM.
-                self.session.check_gate_across_ticket("shipping")
-                ticket.ship()
                 ticket.save()
             else:
                 escalate_unmatched_phase_transition(self, phase=phase, ticket=ticket)

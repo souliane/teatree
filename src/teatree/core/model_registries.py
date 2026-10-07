@@ -44,8 +44,7 @@ def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":
 
 
 def _self_review_holds(ticket: "Ticket") -> bool:
-    review = SelfReview.latest_for(ticket)
-    return review is not None and review.is_hold
+    return SelfReview.open_hold_for(ticket) is not None
 
 
 def populate_model_registries() -> None:

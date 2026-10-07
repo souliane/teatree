@@ -234,11 +234,10 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
 
 
 def _held_pre_pr_self_review(ticket: Ticket) -> ShippingGateFailure | None:
-    """Refuse a ticket with no PR yet whose latest self-review held; a PR's own review gates it after."""
+    """Refuse a pre-ship ticket whose self-review held in this delivery cycle; once shipped, the PR review governs."""
     if ticket.state not in Ticket.pre_ship_states():
         return None
-    review = SelfReview.latest_for(ticket)
-    if review is None or not review.is_hold:
+    if (review := SelfReview.open_hold_for(ticket)) is None:
         return None
     return ShippingGateFailure(
         allowed=False,
