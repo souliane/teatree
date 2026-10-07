@@ -1,0 +1,114 @@
+# TEMPORARY — one measurement run on this branch, deleted before its final head.
+# Each leg runs its shard variants back to back on ONE runner: hosted runners come in
+# hardware classes ~1.7x apart, so an unpaired before/after only measures that lottery.
+name: CI · Shard probe (temporary)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/zz-shard-probe.yml
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  probe:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 75
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        order:
+          - base tmpfs n2 n6
+          - tmpfs n6 base n2
+          - n2 base n6 tmpfs
+          - pushbase pushnotach
+          - pushnotach pushbase
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Record the runner's hardware
+        run: |
+          echo "nproc=$(nproc) mem_mib=$(free -m | awk '/^Mem:/{print $2}') cpu=$(lscpu | sed -n 's/^Model name: *//p')"
+      - name: Obtain the prebuilt test image
+        id: image
+        run: |
+          REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${REPO_LC}-test:${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$IMAGE" || docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      - name: Cache the migrated test-DB template
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/django-test-template
+          key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py') }}
+      # Every variant is the test-shard command for group 2; only the named difference changes.
+      - name: Run the leg's variants in order
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          ORDER: ${{ matrix.order }}
+        run: |
+          set +e -uo pipefail
+          results="$RUNNER_TEMP/probe-results.txt"
+          : > "$results"
+          summary_re='(passed|failed|error).* in [0-9.]+s'
+
+          for variant in $ORDER; do
+            docker_extra=()
+            flags=(-p no:tach)
+            case "$variant" in
+              base | pushnotach) ;;
+              tmpfs) docker_extra=(--tmpfs /tmp:rw,exec,nosuid,mode=1777,size=4g) ;;
+              n2) flags+=(-n 2) ;;
+              n6) flags+=(-n 6) ;;
+              pushbase) flags=() ;;
+              *) echo "unknown variant: $variant" >&2; exit 2 ;;
+            esac
+
+            # A real shard starts from a fresh checkout: no bytecode, no coverage data, no leftovers.
+            git clean -fdxq -e .cache
+            mkdir -p .cache/django-test-template
+            case "$variant" in
+              push*) git checkout -q -B main ;;
+              *) git checkout -q --detach; git branch -q -D main 2>/dev/null ;;
+            esac
+            echo "variant=$variant shape branch='$(git branch --show-current)' main=$(git rev-parse -q --verify main || echo absent)"
+
+            echo "variant=$variant start"
+            start=$(date +%s)
+            seen=""
+            timeout --kill-after=30 1200 docker run --rm --name "probe-$variant" "${docker_extra[@]}" \
+              -v "$PWD":/app \
+              -e COVERAGE_FILE=/app/coverage.shard2 \
+              -e PYTHONPATH=/app \
+              -e TEATREE_TEST_DB_TEMPLATE_DIR=/app/.cache/django-test-template \
+              "$IMAGE" \
+              uv run --group shard -p 3.13 pytest --no-header -q -n auto \
+              "${flags[@]}" \
+              -o cache_dir=/tmp/.pytest_cache \
+              -o timeout=180 \
+              --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0 \
+              --splits 12 --group 2 --durations-path dev/.test_durations \
+              --splitting-algorithm least_duration \
+              -p scripts.ci.shard_stats_plugin \
+              --shard-stats-out=/app/shard-stats.2.json \
+              -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn 2>&1 |
+              while IFS= read -r line; do
+                printf '%s\n' "$line"
+                if [ -z "$seen" ] && [[ "$line" == *"bringing up nodes"* ]]; then
+                  seen=1
+                  echo "variant=$variant pre_test_s=$(($(date +%s) - start))" | tee -a "$results"
+                fi
+                if [[ "$line" =~ $summary_re ]]; then
+                  echo "variant=$variant summary=$(printf '%s' "$line" | sed 's/\x1b\[[0-9;]*m//g')" | tee -a "$results"
+                fi
+              done
+            rc=${PIPESTATUS[0]}
+            docker rm -f "probe-$variant" >/dev/null 2>&1
+            echo "variant=$variant rc=$rc wall_s=$(($(date +%s) - start))" | tee -a "$results"
+          done
+
+          echo "=== probe results (order: $ORDER) ==="
+          cat "$results"
