@@ -50,3 +50,21 @@ def test_find_pr_review_matches_the_marker_in_a_review_body() -> None:
         assert host.find_pr_review(repo="o/r", pr_iid=5, marker=_MARKER)
         assert not host.find_pr_review(repo="o/r", pr_iid=5, marker="<!-- z -->")
     assert get.call_args.args[0] == "repos/o/r/pulls/5/reviews?per_page=100"
+
+
+def test_get_pr_file_diffs_keys_each_patch_by_its_old_and_new_path() -> None:
+    files = [
+        {"filename": "a.py", "patch": "@@ -1 +1 @@\n+x"},
+        {"filename": "new.py", "previous_filename": "old.py", "patch": "@@ -1 +1 @@\n+y"},
+        {"filename": "big.bin"},
+    ]
+    with patch("teatree.backends.github.client._gh_api_get_paginated", return_value=files) as get:
+        diffs = GitHubCodeHost(token="t").get_pr_file_diffs(repo="o/r", pr_iid=5)
+
+    assert diffs == {
+        "a.py": "@@ -1 +1 @@\n+x",
+        "old.py": "@@ -1 +1 @@\n+y",
+        "new.py": "@@ -1 +1 @@\n+y",
+        "big.bin": "",
+    }
+    assert get.call_args.args[0] == "repos/o/r/pulls/5/files?per_page=100"

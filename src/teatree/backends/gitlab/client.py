@@ -198,6 +198,13 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        project = self._resolve_project(repo)
+        if project is None:
+            msg = f"Could not resolve project: {repo}"
+            raise ValueError(msg)
+        return _pr_reads.project_pr_file_diffs(self._client, project, pr_iid=pr_iid)
+
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
 

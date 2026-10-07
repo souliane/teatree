@@ -32,6 +32,7 @@ _PRIVATE_SLUG = "democorp-engineering/widgets"
 _SELF = "owner-login"
 _COLLEAGUE = "carol"
 _LONG_SUMMARY = "word " * 210
+_TODO_DIFF = "@@ -9,0 +10,4 @@\n+def retry():\n+    pass\n+    # TODO: bound the retry loop\n+    return\n"
 
 
 class _FakeHost:
@@ -41,6 +42,7 @@ class _FakeHost:
         self.reviews: list[PrReview] = []
         self.author = author
         self.live_head = live_head
+        self.diff_reads = 0
 
     def get_pr_author(self, *, pr_url: str) -> str:
         _ = pr_url
@@ -56,6 +58,11 @@ class _FakeHost:
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
         _ = repo, pr_iid
         return any(review.marker == marker for review in self.reviews)
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        _ = repo, pr_iid
+        self.diff_reads += 1
+        return {"a.py": _TODO_DIFF}
 
     def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
         self.reviews.append(review)
@@ -91,6 +98,12 @@ class _VanishingHost(_FakeHost):
 
 class _UnreadableHost(_FakeHost):
     def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        msg = "forge unreachable"
+        raise RuntimeError(msg)
+
+
+class _UnreadableDiffHost(_FakeHost):
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
         msg = "forge unreachable"
         raise RuntimeError(msg)
 
@@ -144,7 +157,7 @@ class TestPublishReachesThePr(_PublishBase):
         )
         host = _FakeHost()
 
-        outcome = publish_verdict_findings(verdict, backend=host)
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
 
         assert outcome.published
         assert len(host.reviews) == 1
@@ -160,8 +173,8 @@ class TestPublishReachesThePr(_PublishBase):
         verdict = self._verdict()
         host = _FakeHost()
 
-        publish_verdict_findings(verdict, backend=host)
-        second = publish_verdict_findings(verdict, backend=host)
+        publish_verdict_findings(verdict, host_kind="github", backend=host)
+        second = publish_verdict_findings(verdict, host_kind="github", backend=host)
 
         assert second.skipped_existing
         assert not second.published
@@ -171,17 +184,26 @@ class TestPublishReachesThePr(_PublishBase):
         self._allow_posting()
         host = _FakeHost()
 
-        outcome = publish_verdict_findings(self._verdict([]), backend=host)
+        outcome = publish_verdict_findings(self._verdict([]), host_kind="github", backend=host)
 
         assert not outcome.published
         assert not host.reviews
         assert "no findings" in outcome.note
 
+    def test_an_unknown_forge_withholds_before_any_forge_read(self) -> None:
+        self._allow_posting()
+        host = _UnreadableAuthorHost()
+
+        outcome = publish_verdict_findings(self._verdict(), host_kind="", backend=host)
+
+        assert not host.reviews
+        assert "the forge hosting democorp-engineering/widgets is unknown" in outcome.blocked_reason
+
     def test_a_moved_head_withholds_the_review(self) -> None:
         self._allow_posting()
         host = _FakeHost(live_head="f" * 40)
 
-        outcome = publish_verdict_findings(self._verdict(), backend=host)
+        outcome = publish_verdict_findings(self._verdict(), host_kind="github", backend=host)
 
         assert not host.reviews
         assert "head moved" in outcome.blocked_reason
@@ -198,7 +220,9 @@ class TestSelfAuthoredPrGetsNothing(_PublishBase):
         host = _FakeHost(author=_SELF)
 
         for sha, verdict_word in (("1" * 40, "hold"), ("2" * 40, "merge_safe")):
-            outcome = publish_verdict_findings(self._verdict(verdict=verdict_word, sha=sha), backend=host)
+            outcome = publish_verdict_findings(
+                self._verdict(verdict=verdict_word, sha=sha), host_kind="github", backend=host
+            )
 
             assert outcome.self_review
             assert not outcome.published
@@ -210,7 +234,7 @@ class TestSelfAuthoredPrGetsNothing(_PublishBase):
 
     def test_an_own_pr_is_not_published_even_when_the_on_behalf_gate_would_block(self) -> None:
         ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
-        outcome = publish_verdict_findings(self._verdict(), backend=_FakeHost(author=_SELF))
+        outcome = publish_verdict_findings(self._verdict(), host_kind="github", backend=_FakeHost(author=_SELF))
         assert outcome.self_review
         assert not self.dms
 
@@ -218,7 +242,7 @@ class TestSelfAuthoredPrGetsNothing(_PublishBase):
         self._allow_posting()
         verdict = self._verdict()
         for host in (_UnreadableAuthorHost(), _FakeHost(author="")):
-            outcome = publish_verdict_findings(verdict, backend=host)
+            outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
             assert not host.reviews
             assert "could not be read" in outcome.blocked_reason
         assert not self.dms
@@ -228,14 +252,14 @@ class TestPublishFailsLoud(_PublishBase):
     def test_an_unreadable_review_list_refuses_rather_than_risking_a_duplicate(self) -> None:
         self._allow_posting()
         with pytest.raises(FindingsPublishError) as exc:
-            publish_verdict_findings(self._verdict(), backend=_UnreadableHost())
+            publish_verdict_findings(self._verdict(), host_kind="github", backend=_UnreadableHost())
         assert "refusing to risk a duplicate" in str(exc.value)
 
     def test_no_resolvable_backend_raises_instead_of_silently_skipping(self) -> None:
         self._allow_posting()
         self.monkeypatch.setattr("teatree.core.backend_factory.code_host_from_overlay", lambda *_a, **_k: None)
         with pytest.raises(FindingsPublishError) as exc:
-            publish_verdict_findings(self._verdict())
+            publish_verdict_findings(self._verdict(), host_kind="github")
         assert "no code-host backend resolved" in str(exc.value)
 
     def test_a_banned_term_bound_for_a_public_repo_is_refused_and_never_posted(self) -> None:
@@ -245,7 +269,7 @@ class TestPublishFailsLoud(_PublishBase):
         host = _FakeHost()
 
         with pytest.raises(OutboundLeakError):
-            publish_verdict_findings(verdict, backend=host)
+            publish_verdict_findings(verdict, host_kind="github", backend=host)
         assert not host.reviews
 
     def test_a_forge_refusal_is_not_reported_as_published(self) -> None:
@@ -253,7 +277,7 @@ class TestPublishFailsLoud(_PublishBase):
         verdict = self._verdict()
         for host in (_RefusingHost(), _RaisingHost()):
             with pytest.raises(FindingsPublishError) as exc:
-                publish_verdict_findings(verdict, backend=host)
+                publish_verdict_findings(verdict, host_kind="github", backend=host)
             assert "refused the findings review" in str(exc.value)
 
     def test_a_forge_refusal_spends_no_approval(self) -> None:
@@ -263,7 +287,7 @@ class TestPublishFailsLoud(_PublishBase):
         OnBehalfApproval.record(target, ACTION, "owner")
 
         with pytest.raises(FindingsPublishError):
-            publish_verdict_findings(self._verdict(), backend=_RefusingHost())
+            publish_verdict_findings(self._verdict(), host_kind="github", backend=_RefusingHost())
 
         assert OnBehalfApproval.objects.filter(target=target, action=ACTION, consumed_at__isnull=True).exists()
         assert not OnBehalfAudit.objects.exists()
@@ -275,7 +299,7 @@ class TestPublishFailsLoud(_PublishBase):
         OnBehalfApproval.record(target, ACTION, "owner")
 
         with pytest.raises(FindingsPublishError) as exc:
-            publish_verdict_findings(self._verdict(), backend=_PartialHost())
+            publish_verdict_findings(self._verdict(), host_kind="github", backend=_PartialHost())
 
         assert "1 of 3" in str(exc.value)
         assert OnBehalfAudit.objects.filter(target=target, action=ACTION).exists()
@@ -283,7 +307,7 @@ class TestPublishFailsLoud(_PublishBase):
     def test_a_review_that_does_not_read_back_is_not_reported_as_published(self) -> None:
         self._allow_posting()
         with pytest.raises(FindingsPublishError) as exc:
-            publish_verdict_findings(self._verdict(), backend=_VanishingHost())
+            publish_verdict_findings(self._verdict(), host_kind="github", backend=_VanishingHost())
         assert "does not read back" in str(exc.value)
 
 
@@ -293,7 +317,7 @@ class TestOnBehalfGate(_PublishBase):
         verdict = self._verdict()
         host = _FakeHost()
 
-        outcome = publish_verdict_findings(verdict, backend=host)
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
 
         assert not outcome.published
         assert not host.reviews
@@ -301,7 +325,7 @@ class TestOnBehalfGate(_PublishBase):
 
     def test_the_block_is_reported_not_swallowed(self) -> None:
         ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
-        outcome = publish_verdict_findings(self._verdict(), backend=_FakeHost())
+        outcome = publish_verdict_findings(self._verdict(), host_kind="github", backend=_FakeHost())
         assert outcome.blocked_reason
         assert not outcome.skipped_existing
 
@@ -310,7 +334,7 @@ class TestOnBehalfGate(_PublishBase):
         self.monkeypatch.setattr("teatree.core.notify.notify_user", lambda text, **_kw: dms.append(text))
         ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
 
-        publish_verdict_findings(self._verdict(), backend=_FakeHost())
+        publish_verdict_findings(self._verdict(), host_kind="github", backend=_FakeHost())
 
         assert len(dms) == 1
         assert "unbounded loop" in dms[0]
@@ -341,7 +365,7 @@ class TestCommentChecks(_PublishBase):
         )
         host = _FakeHost()
 
-        outcome = publish_verdict_findings(verdict, backend=host)
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
 
         assert outcome.published
         assert [(c.path, c.line) for c in host.reviews[0].comments] == [("a.py", 9), ("b.py", 2)]
@@ -355,21 +379,23 @@ class TestCommentChecks(_PublishBase):
                 {"severity": "nit", "summary": "rename y", "file": "b.py", "line": 2},
             ]
         )
-        outcome = publish_verdict_findings(verdict, backend=host)
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
         self._assert_withheld(outcome, host, "the comment on a.py:3 — unbacked claim")
 
     def test_a_stakeholder_handle_is_withheld(self) -> None:
         self._allow_posting()
         host = _FakeHost()
         outcome = publish_verdict_findings(
-            self._verdict([{"severity": "nit", "summary": "@bob flagged this loop"}]), backend=host
+            self._verdict([{"severity": "nit", "summary": "@bob flagged this loop"}]), host_kind="github", backend=host
         )
         self._assert_withheld(outcome, host, "comment bloat")
 
     def test_an_over_cap_body_is_withheld(self) -> None:
         self._allow_posting()
         host = _FakeHost()
-        outcome = publish_verdict_findings(self._verdict([{"severity": "nit", "summary": _LONG_SUMMARY}]), backend=host)
+        outcome = publish_verdict_findings(
+            self._verdict([{"severity": "nit", "summary": _LONG_SUMMARY}]), host_kind="github", backend=host
+        )
         self._assert_withheld(outcome, host, "colleague prose cap")
 
     def test_a_clean_review_is_submitted_once_and_audited(self) -> None:
@@ -379,7 +405,7 @@ class TestCommentChecks(_PublishBase):
         )
         host = _FakeHost()
 
-        outcome = publish_verdict_findings(verdict, backend=host)
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
 
         assert outcome.published
         assert len(host.reviews) == 1
@@ -394,10 +420,65 @@ class TestCommentChecks(_PublishBase):
         host = _FakeHost()
 
         outcome = publish_verdict_findings(
-            self._verdict([{"severity": "major", "summary": "the retry helper is missing"}]), backend=host
+            self._verdict([{"severity": "major", "summary": "the retry helper is missing"}]),
+            host_kind="github",
+            backend=host,
         )
 
         assert "unbacked claim" in outcome.blocked_reason
         assert not host.reviews
         assert OnBehalfApproval.objects.filter(target=target, action=ACTION, consumed_at__isnull=True).exists()
         assert not SendAudit.objects.exists()
+
+    def test_a_three_paragraph_summary_is_posted_because_the_marker_is_not_counted(self) -> None:
+        self._allow_posting()
+        verdict = self._verdict([{"severity": "minor", "summary": "log the retry\n\nwith its count\n\nand cause"}])
+        host = _FakeHost()
+
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
+
+        assert outcome.published
+        assert host.reviews[0].body.count("\n\n") == 2
+
+
+class TestTodoAnchor(_PublishBase):
+    """A blocker-shaped inline finding next to the author's own TODO is work they deferred — withheld, no DM."""
+
+    @pytest.fixture(autouse=True)
+    def _dms(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.dms: list[str] = []
+        monkeypatch.setattr("teatree.core.notify.notify_user", lambda text, **_kw: self.dms.append(text))
+
+    def test_a_blocker_on_the_authors_todo_withholds_the_review_naming_the_line(self) -> None:
+        self._allow_posting()
+        host = _FakeHost()
+        verdict = self._verdict(
+            [{"severity": "major", "summary": "this loop must be bounded", "file": "a.py", "line": 11}]
+        )
+
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
+
+        assert not host.reviews
+        assert "the comment on a.py:11 — TODO-anchored blocker: line 12" in outcome.blocked_reason
+        assert not self.dms
+
+    def test_findings_that_read_as_no_blocker_never_read_the_diff(self) -> None:
+        self._allow_posting()
+        host = _FakeHost()
+        verdict = self._verdict([{"severity": "nit", "summary": "rename the loop", "file": "a.py", "line": 12}])
+
+        assert publish_verdict_findings(verdict, host_kind="github", backend=host).published
+        assert host.diff_reads == 0
+
+    def test_an_unreadable_diff_refuses_rather_than_skipping_the_check(self) -> None:
+        self._allow_posting()
+        host = _UnreadableDiffHost()
+        verdict = self._verdict(
+            [{"severity": "major", "summary": "this loop must be bounded", "file": "a.py", "line": 11}]
+        )
+
+        with pytest.raises(FindingsPublishError) as exc:
+            publish_verdict_findings(verdict, host_kind="github", backend=host)
+
+        assert "could not read the diff" in str(exc.value)
+        assert not host.reviews

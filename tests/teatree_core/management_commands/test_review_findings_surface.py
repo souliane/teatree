@@ -45,9 +45,10 @@ class _FakeHost:
     def __init__(self, *, author: str = "carol") -> None:
         self.posted: list[PrReview] = []
         self.author = author
+        self.author_reads: list[str] = []
 
     def get_pr_author(self, *, pr_url: str) -> str:
-        _ = pr_url
+        self.author_reads.append(pr_url)
         return self.author
 
     @staticmethod
@@ -81,7 +82,7 @@ class _FindingsSurfaceBase(TestCase):
     def _allow_posting(self) -> None:
         seed_permitting_posture()
 
-    def _record(self, **overrides: object) -> dict[str, object]:
+    def _record(self, *, forge: str = "github", **overrides: object) -> dict[str, object]:
         kwargs: dict[str, object] = {
             "reviewed_sha": _SHA,
             "verdict": "hold",
@@ -91,7 +92,10 @@ class _FindingsSurfaceBase(TestCase):
             "findings_json": _FINDINGS,
         }
         kwargs.update(overrides)
-        with patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host):
+        with (
+            patch("teatree.core.backend_factory.code_host_from_overlay", return_value=self.host),
+            patch("teatree.core.management.commands._review_impl.forge_for_repo_slug", return_value=forge),
+        ):
             return cast("dict[str, object]", call_command("review", "record", "4476", _SLUG, **kwargs))
 
     @staticmethod
@@ -174,6 +178,19 @@ class TestFindingsReachThePr(_FindingsSurfaceBase):
         result = self._record()
         assert not result["findings_published"]
         assert "self-review" in cast("str", result["findings_publish_note"])
+        assert not self.host.posted
+
+    def test_recording_reads_the_author_on_the_forge_that_hosts_the_repo(self) -> None:
+        self._allow_posting()
+        self._record(forge="gitlab")
+        assert self.host.author_reads == [f"https://gitlab.com/{_SLUG}/-/merge_requests/4476"]
+
+    def test_recording_on_a_repo_with_no_declared_forge_posts_nothing_and_says_why(self) -> None:
+        self._allow_posting()
+        result = self._record(forge="")
+        assert not result["findings_published"]
+        assert "forge hosting" in cast("str", result["findings_publish_note"])
+        assert not self.host.author_reads
         assert not self.host.posted
 
     def test_publish_findings_does_not_post_a_second_copy(self) -> None:

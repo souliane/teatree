@@ -193,6 +193,14 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
                 return []
             raise
 
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        return {
+            str(path): str(entry.get("patch") or "")
+            for entry in self.get_pr_diff(repo=repo, pr_iid=pr_iid)
+            for path in (entry.get("previous_filename"), entry.get("filename"))
+            if path
+        }
+
     def list_pr_reviews(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
         """Return the PR's submitted reviews (state + author); ``[]`` ONLY for a genuine HTTP 404.
 

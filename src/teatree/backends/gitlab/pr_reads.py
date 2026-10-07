@@ -77,6 +77,21 @@ def project_pr_diff(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: i
     return client.get_json_paginated(f"projects/{project.project_id}/merge_requests/{pr_iid}/diffs?per_page=100")
 
 
+def project_pr_file_diffs(client: GitLabAPI, project: ProjectInfo, *, pr_iid: int) -> dict[str, str]:
+    changes = client.get_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/changes?access_raw_diffs=true")
+    entries = changes.get("changes") if isinstance(changes, dict) else None
+    if not isinstance(entries, list):
+        msg = f"MR !{pr_iid} changes response had no `changes` array"
+        raise TypeError(msg)
+    return {
+        str(path): str(entry.get("diff") or "")
+        for entry in entries
+        if isinstance(entry, dict)
+        for path in (entry.get("old_path"), entry.get("new_path"))
+        if path
+    }
+
+
 def list_project_pr_commits(client: GitLabAPI, project: ProjectInfo | None, *, pr_iid: int) -> list[RawAPIDict]:
     if project is None:
         return []

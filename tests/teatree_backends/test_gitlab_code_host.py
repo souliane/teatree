@@ -2000,3 +2000,28 @@ def test_submit_pr_review_returns_error_when_project_not_resolved() -> None:
     result = host.submit_pr_review(repo="org/unknown", pr_iid=1, review=_review("s"))
 
     assert result == {"error": "Could not resolve project: org/unknown"}
+
+
+def test_get_pr_file_diffs_reads_the_raw_changes_by_old_and_new_path() -> None:
+    host, client = _gitlab_host()
+    client.get_json.return_value = {
+        "changes": [
+            {"old_path": "a.py", "new_path": "a.py", "diff": "@@ +x"},
+            {"old_path": "old.py", "new_path": "new.py", "diff": "@@ +y"},
+            "junk",
+        ]
+    }
+
+    assert host.get_pr_file_diffs(repo="org/repo", pr_iid=10) == {"a.py": "@@ +x", "old.py": "@@ +y", "new.py": "@@ +y"}
+    client.get_json.assert_called_once_with("projects/42/merge_requests/10/changes?access_raw_diffs=true")
+
+
+def test_get_pr_file_diffs_raises_rather_than_reading_an_unusable_answer_as_no_diff() -> None:
+    host, client = _gitlab_host()
+    client.get_json.return_value = {"message": "403 Forbidden"}
+    with pytest.raises(TypeError, match="changes"):
+        host.get_pr_file_diffs(repo="org/repo", pr_iid=10)
+
+    client.resolve_project.return_value = None
+    with pytest.raises(ValueError, match="Could not resolve project: org/unknown"):
+        host.get_pr_file_diffs(repo="org/unknown", pr_iid=10)

@@ -10,11 +10,13 @@ whole review — then the two gates every colleague-visible forge body must pass
 audit/allowlist) and the on-behalf pre-gate.
 
 An on-behalf block DMs the owner the findings, so the block can never also hide the content.
-An unresolvable backend, a forge refusal, a partial post, and a review that does not read back
-all raise :class:`FindingsPublishError`.
+An unresolvable backend, an unreadable diff, a forge refusal, a partial post, and a review that
+does not read back all raise :class:`FindingsPublishError`.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import cache
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview
@@ -57,15 +59,18 @@ class PublishOutcome:
 def publish_verdict_findings(
     verdict: ReviewVerdict,
     *,
-    host_kind: str = "github",
+    host_kind: str,
     backend: "CodeHostBackend | None" = None,
 ) -> PublishOutcome:
     """Submit *verdict*'s findings as one inline review on its colleague PR, or report why not.
 
     Idempotent by the hidden marker: a re-run finds the verdict's own review and skips.
+    An empty *host_kind* withholds: a bare slug names no forge, and a guessed one misreads the author.
     """
     if not findings_payload(verdict):
         return PublishOutcome(note=f"verdict {verdict.pk} carries no findings — nothing to publish")
+    if not host_kind:
+        return PublishOutcome(blocked_reason=f"the forge hosting {verdict.slug} is unknown — findings withheld")
 
     host = backend if backend is not None else _resolve_backend(verdict)
     target = f"{verdict.slug}#{verdict.pr_id}"
@@ -74,7 +79,7 @@ def publish_verdict_findings(
         return stop
 
     review = review_for(verdict)
-    refusal = review_refusal(review)
+    refusal = review_refusal(review, file_diffs=_diff_reader(host, verdict, target=target))
     if refusal:
         return PublishOutcome(blocked_reason=f"comment check — {refusal}")
     outcome = _submit_gated(host, verdict, review=_scrubbed(review, verdict, host_kind=host_kind, target=target))
@@ -101,6 +106,18 @@ def _stop_before_posting(
             blocked_reason=f"head moved: reviewed {verdict.reviewed_sha[:8]}, live {live_head[:8] or 'unreadable'}"
         )
     return None
+
+
+def _diff_reader(host: "CodeHostBackend", verdict: ReviewVerdict, *, target: str) -> Callable[[], dict[str, str]]:
+    @cache
+    def read() -> dict[str, str]:
+        try:
+            return host.get_pr_file_diffs(repo=verdict.slug, pr_iid=int(verdict.pr_id))
+        except Exception as exc:
+            msg = f"could not read the diff of {target} for the TODO-anchor check — findings withheld"
+            raise FindingsPublishError(msg) from exc
+
+    return read
 
 
 def _resolve_backend(verdict: ReviewVerdict) -> "CodeHostBackend":

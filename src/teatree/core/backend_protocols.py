@@ -407,6 +407,10 @@ class CodeHostBackend(Protocol):
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:  # pragma: no branch
+        """Each changed file's unified diff, keyed by both its old and new path; a failed read raises."""
+        ...
+
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def get_repo(self, *, repo: str) -> RawAPIDict: ...  # pragma: no branch

@@ -1,42 +1,70 @@
-"""The findings-comment checks and ``review post-comment``'s gate chain agree (#4968).
+"""The findings-review checks and ``review post-comment``'s gate chain agree (#4968).
 
-Both compose the same predicates in ``teatree.core.review.comment_checks``. This pins the two
-COMPOSITIONS: for a general note on a colleague's PR with no escapes, the first CLI gate that
-refuses is the check the core composition names, and a body one passes the other passes too.
+Both compose the predicates in ``teatree.core.review.comment_checks``. This pins the two
+COMPOSITIONS by driving the real ``run_pre_publish_gates`` on a colleague's MR with no escapes:
+the first gate that refuses is the check the core composition names, and a body one passes the
+other passes too — for a general note and for an inline comment next to an author's TODO.
 """
 
-from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.review.bloat_gate import check_review_bloat
-from teatree.cli.review.evidence_gate import check_finding_evidence
-from teatree.cli.review.general_inline_gate import check_general_inline_findings
-from teatree.cli.review.shape_gate import check_review_shape
-from teatree.core.review.comment_checks import comment_refusal
+from teatree.cli.review import ReviewService
+from teatree.cli.review.pre_publish_gates import run_pre_publish_gates
+from teatree.core.backend_protocols import PrReview, PrReviewComment
+from teatree.core.review.comment_checks import review_refusal
+from tests.teatree_backends._gitlab_wire import GitLabWire
+
+_MR = "projects/o%2Fr/merge_requests/7"
+_DIFF = "@@ -9,0 +10,4 @@\n+def retry():\n+    pass\n+    # TODO: bound the retry loop\n+    return\n"
+_TODO_LINE = 12
+
+_CLI_REFUSALS = (
+    ("Refusing colleague-MR", "colleague prose cap"),
+    ("Refusing bloated review note", "comment bloat"),
+    ("Refusing general note", "multi-finding general note"),
+    ("Refusing MR-level draft note", "inline drafts pending"),
+    ("Refusing TODO-anchored blocker post", "TODO-anchored blocker"),
+    ("'missing/wrong/broken'", "unbacked claim"),
+)
 
 
-class _ColleagueApi:
-    def get_json(self, endpoint: str) -> dict[str, object]:
-        _ = endpoint
-        return {"author": {"username": "carol"}}
-
-    def current_username(self) -> str:
-        return "alice"
-
-
-def _cli_first_refusing_check(body: str) -> str:
-    api = cast("Any", _ColleagueApi())
-    chain = (
-        ("colleague prose cap", check_review_shape(api=api, encoded_repo="o%2Fr", mr=7, body=body, inline=False)),
-        ("comment bloat", check_review_bloat(body=body)),
-        ("multi-finding general note", check_general_inline_findings(body=body, inline=False)),
-        ("unbacked claim", check_finding_evidence(body=body, evidence=None)),
+def _colleague_mr() -> GitLabWire:
+    return GitLabWire(
+        {
+            "user": {"username": "alice"},
+            _MR: {"author": {"username": "carol"}},
+            f"{_MR}/draft_notes": [],
+            f"{_MR}/changes": {"changes": [{"old_path": "a.py", "new_path": "a.py", "diff": _DIFF}]},
+        }
     )
-    return next((name for name, refusal in chain if refusal), "")
 
 
-_BODIES = (
+def _cli_first_refusing_check(body: str, *, line: int = 0) -> str:
+    service = ReviewService("token", repo="o/r", api=_colleague_mr())
+    with patch("teatree.cli.review.pre_publish_gates.check_on_behalf", return_value=""):
+        refusal = run_pre_publish_gates(
+            service,
+            repo="o/r",
+            mr=7,
+            note=body,
+            file="a.py" if line else "",
+            line=line,
+            action="post_comment",
+            evidence=None,
+        )
+    if not refusal:
+        return ""
+    return next(name for prefix, name in _CLI_REFUSALS if prefix in refusal)
+
+
+def _core_first_refusing_check(review: PrReview) -> str:
+    refusal = review_refusal(review, file_diffs=lambda: {"a.py": _DIFF})
+    return refusal.split(" — ", 1)[1].split(":", 1)[0] if refusal else ""
+
+
+_GENERAL_BODIES = (
     "rename the retry helper",
     "see `a.py:10` and `b.ts`",
     "see `a.py:10` and `b.ts:3`",
@@ -51,10 +79,31 @@ _BODIES = (
     "a\n\nb\n\nc\n\nd",
     "word " * 201,
     "@bob said so\n\na\n\nb\n\nc",
+    "@bob see a.py:1 and b.py:2",
+    "a.py:1\n\nb.py:2\n\nc\n\nd",
+    "@bob the retry helper is missing",
+    "word " * 201 + "and the retry helper is missing",
+)
+
+_INLINE_BODIES = (
+    "rename the retry helper",
+    "this loop must be bounded",
+    "the bound must be added, the guard is missing",
+    "@bob says this must be fixed",
+    "word " * 201 + "so it must be fixed",
+    "the retry helper is missing",
+    "see `a.py:10` and `b.ts:3`",
 )
 
 
-@pytest.mark.parametrize("body", _BODIES)
-def test_the_core_composition_refuses_where_the_cli_chain_refuses(body: str) -> None:
-    core = comment_refusal(body, general=True)
-    assert (core.split(":", 1)[0] if core else "") == _cli_first_refusing_check(body)
+@pytest.mark.parametrize("body", _GENERAL_BODIES)
+def test_a_general_note_is_refused_by_the_same_check_in_both_chains(body: str) -> None:
+    core = _core_first_refusing_check(PrReview(commit_sha="c" * 40, body=body, comments=(), marker="<!-- m -->"))
+    assert core == _cli_first_refusing_check(body)
+
+
+@pytest.mark.parametrize("body", _INLINE_BODIES)
+def test_an_inline_comment_is_refused_by_the_same_check_in_both_chains(body: str) -> None:
+    comment = PrReviewComment(path="a.py", line=_TODO_LINE, body=body)
+    core = _core_first_refusing_check(PrReview(commit_sha="c" * 40, body="", comments=(comment,), marker="<!-- m -->"))
+    assert core == _cli_first_refusing_check(body, line=_TODO_LINE)

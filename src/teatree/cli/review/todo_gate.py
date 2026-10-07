@@ -41,10 +41,10 @@ Design choices:
     the same line or the function header" variant.
 """
 
-import re
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from teatree.core.modelkit.gate_verdict import guarded_read
+from teatree.core.review.comment_checks import deferred_marker_near, looks_like_blocker
 
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
@@ -54,75 +54,6 @@ if TYPE_CHECKING:
 # types because the API surface mixes strings (paths, diffs) and bools
 # (renamed/new_file flags).
 type ChangeEntry = dict[str, object]
-
-TODO_ANCHOR_WINDOW = 3
-
-_TODO_MARKER_RE = re.compile(
-    r"(?:#|//|/\*|\*)\s*(?:TODO|FIXME|XXX|HACK)\b|"
-    r"\b(?:not\s+in\s+this\s+(?:MR|PR)|follow[\s-]?up|deferred|"
-    r"implement\s+later|out\s+of\s+scope)\b",
-    re.IGNORECASE,
-)
-
-# Blocker-shaped language in the COMMENT BODY (not in the code). Matches
-# the #1186 shape — "must be done", "this is blocking", "has to be
-# implemented", "required before merge", etc. Anchored on word
-# boundaries so an incidental "blockchain" or "mustard" does not trip.
-_BLOCKER_BODY_RE = re.compile(
-    r"\b(?:"
-    r"must\s+(?:be|do|happen|fix|implement|add|remove|change)|"
-    r"has\s+to\s+(?:be|do|happen|implement|fix)|"
-    r"needs?\s+to\s+(?:be|do|happen|implement|fix)|"
-    r"should\s+be\s+(?:done|fixed|implemented|addressed)\s+(?:before|in)\s+(?:merge|this)|"
-    r"required\s+before\s+merge|"
-    r"this\s+is\s+blocking|"
-    r"blocking[:\s]|"
-    r"cannot\s+merge|"
-    r"can'?t\s+merge|"
-    r"do\s+not\s+merge|"
-    r"don'?t\s+merge"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-
-
-def looks_like_blocker(body: str) -> bool:
-    """Whether ``body`` reads as a blocker (REQUEST_CHANGES-shaped) comment.
-
-    True when the body contains any of the canonical blocker phrases
-    (``must``, ``blocking``, ``cannot merge``, ``required before merge``,
-    etc.). The list is biased to refuse — a false-positive on a borderline
-    body costs one rephrase; a false-negative recurs #1186.
-    """
-    if not body:
-        return False
-    return _BLOCKER_BODY_RE.search(body) is not None
-
-
-def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
-    """Return ``{new_line_number: line_text}`` for every ``+``-added line.
-
-    Mirrors :func:`teatree.backends.gitlab.inline_position.find_added_line` but keeps the
-    line text so we can scan for TODO markers without re-fetching.
-    """
-    added: dict[int, str] = {}
-    nl: int | None = None
-    for raw in diff_text.splitlines():
-        m = _HUNK_HEADER.match(raw)
-        if m:
-            nl = int(m.group(1))
-            continue
-        if nl is None:
-            continue
-        sign = raw[:1] if raw else " "
-        if sign == "-":
-            continue
-        if sign == "+":
-            added[nl] = raw[1:]  # strip the leading '+'
-        nl += 1
-    return added
 
 
 def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: str) -> str:
@@ -187,7 +118,7 @@ def check_todo_anchor(  # noqa: PLR0913 — gate entry-point; each kwarg is a do
     * ``body`` does not look like a blocker.
     * The diff fetch fails (fail-open — never break the happy path).
     * No TODO/FIXME/XXX/HACK marker (or deferral phrase) sits on the
-        anchor line or within :data:`TODO_ANCHOR_WINDOW` of it on the
+        anchor line or within :data:`~teatree.core.review.comment_checks.TODO_ANCHOR_WINDOW` of it on the
         ``+``-added lines of the MR diff.
 
     Returns a clear refusal string otherwise. The caller short-circuits
@@ -203,13 +134,10 @@ def check_todo_anchor(  # noqa: PLR0913 — gate entry-point; each kwarg is a do
     diff_text = _fetch_file_diff(api, encoded_repo, mr, anchor.file)
     if not diff_text:
         return ""
-    added = _collect_added_lines_with_text(diff_text)
-    for offset in range(-TODO_ANCHOR_WINDOW, TODO_ANCHOR_WINDOW + 1):
-        neighbour = anchor.line + offset
-        text = added.get(neighbour)
-        if text and _TODO_MARKER_RE.search(text):
-            return _refusal(anchor.file, anchor.line, neighbour, text.strip())
-    return ""
+    marker = deferred_marker_near(diff_text, anchor.line)
+    if marker is None:
+        return ""
+    return _refusal(anchor.file, anchor.line, marker.line, marker.text)
 
 
 def _refusal(file: str, anchor_line: int, marker_line: int, marker_text: str) -> str:

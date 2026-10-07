@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, NoReturn, TypedDict
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.head_read_diagnosis import read_credential_state
+from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
 from teatree.core.models.review_verdict import Finding, FindingDict
@@ -234,7 +235,7 @@ def _publish_on_record(recorded: ReviewVerdict) -> tuple[bool, str]:
     if not recorded.findings:
         return False, ""
     try:
-        outcome = publish_verdict_findings(recorded)
+        outcome = publish_verdict_findings(recorded, host_kind=forge_for_repo_slug(recorded.slug))
     except (FindingsRenderError, FindingsPublishError) as exc:
         return False, f"  findings NOT posted to {recorded.slug}#{recorded.pr_id}: {exc}"
     except Exception as exc:  # noqa: BLE001 — a forge failure must not discard the recorded verdict

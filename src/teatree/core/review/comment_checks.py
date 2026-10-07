@@ -2,10 +2,12 @@
 
 The predicates are the policy. The ``teatree.cli.review`` gates wrap them with their per-call
 escapes and steering text; :func:`comment_refusal` composes them, in the same order, for a
-published colleague review, which has no escapes.
+published colleague review, which has no escapes. The CLI's pending-draft check has no
+counterpart: the review posts no drafts, and every file-and-line finding is already inline.
 """
 
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from teatree.core.backend_protocols import PrReview
@@ -13,6 +15,7 @@ from teatree.core.backend_protocols import PrReview
 COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
 COLLEAGUE_PROSE_CAP_WORDS = 200
 MIN_DISTINCT_FINDINGS = 2
+TODO_ANCHOR_WINDOW = 3
 
 # An ``@`` preceded by a word character is an email or an infix, never a person.
 _HANDLE_RE = re.compile(r"(?<![\w.])@[A-Za-z][\w.-]{1,}\b")
@@ -93,10 +96,44 @@ _EVIDENCE_CLAIM_RE = re.compile(
 )
 
 
+_TODO_MARKER_RE = re.compile(
+    r"(?:#|//|/\*|\*)\s*(?:TODO|FIXME|XXX|HACK)\b|"
+    r"\b(?:not\s+in\s+this\s+(?:MR|PR)|follow[\s-]?up|deferred|"
+    r"implement\s+later|out\s+of\s+scope)\b",
+    re.IGNORECASE,
+)
+
+# Biased to refuse: a false positive costs one rephrase, a false negative recurs #1186.
+_BLOCKER_BODY_RE = re.compile(
+    r"\b(?:"
+    r"must\s+(?:be|do|happen|fix|implement|add|remove|change)|"
+    r"has\s+to\s+(?:be|do|happen|implement|fix)|"
+    r"needs?\s+to\s+(?:be|do|happen|implement|fix)|"
+    r"should\s+be\s+(?:done|fixed|implemented|addressed)\s+(?:before|in)\s+(?:merge|this)|"
+    r"required\s+before\s+merge|"
+    r"this\s+is\s+blocking|"
+    r"blocking[:\s]|"
+    r"cannot\s+merge|"
+    r"can'?t\s+merge|"
+    r"do\s+not\s+merge|"
+    r"don'?t\s+merge"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
 @dataclass(frozen=True, slots=True)
 class ProseCapBreach:
     breach: str
     cap: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredMarker:
+    line: int
+    text: str
 
 
 def _count_paragraphs(body: str) -> int:
@@ -155,10 +192,43 @@ def looks_like_evidence_claim(body: str) -> bool:
     return bool(evidence_claim_phrase(body))
 
 
-def comment_refusal(body: str, *, general: bool) -> str:
+def looks_like_blocker(body: str) -> bool:
+    """Whether *body* reads as a blocker ("must be", "cannot merge", "required before merge", ...)."""
+    return bool(body) and _BLOCKER_BODY_RE.search(body) is not None
+
+
+def _added_lines(diff_text: str) -> dict[int, str]:
+    """``{new_line_number: text}`` for every ``+``-added line of a unified diff."""
+    added: dict[int, str] = {}
+    number: int | None = None
+    for raw in diff_text.splitlines():
+        hunk = _HUNK_HEADER.match(raw)
+        if hunk:
+            number = int(hunk.group(1))
+            continue
+        if number is None or raw.startswith("-"):
+            continue
+        if raw.startswith("+"):
+            added[number] = raw[1:]
+        number += 1
+    return added
+
+
+def deferred_marker_near(diff_text: str, line: int) -> DeferredMarker | None:
+    """The author's TODO or deferral marker on an added line within ``TODO_ANCHOR_WINDOW`` of *line*."""
+    added = _added_lines(diff_text)
+    for neighbour in range(line - TODO_ANCHOR_WINDOW, line + TODO_ANCHOR_WINDOW + 1):
+        text = added.get(neighbour)
+        if text and _TODO_MARKER_RE.search(text):
+            return DeferredMarker(line=neighbour, text=text.strip())
+    return None
+
+
+def comment_refusal(body: str, *, general: bool, deferred: DeferredMarker | None = None) -> str:
     """The first check *body* fails as an escape-free colleague comment, or ``""``.
 
     The multi-finding check reads a *general* note only: an inline comment already sits on its line.
+    *deferred* is the author's marker next to a blocker-shaped inline comment.
     """
     breach = prose_cap_breach(body)
     if breach is not None:
@@ -168,20 +238,27 @@ def comment_refusal(body: str, *, general: bool) -> str:
     count = inline_findings_count(body)
     if general and count >= MIN_DISTINCT_FINDINGS:
         return f"multi-finding general note: {count} file:line findings in one note need one inline comment each"
+    if deferred is not None:
+        return f"TODO-anchored blocker: line {deferred.line} reads {deferred.text!r}, work the author deferred"
     phrase = evidence_claim_phrase(body)
     if phrase:
         return f"unbacked claim: {phrase!r} asserts something is missing or wrong without FindingEvidence receipts"
     return ""
 
 
-def review_refusal(review: PrReview) -> str:
-    """The first check any body of *review* fails, prefixed with which body, or ``""``."""
-    bodies = [
-        ("the summary", review.body, True),
-        *((f"the comment on {item.path}:{item.line}", item.body, False) for item in review.comments),
-    ]
-    for where, body, general in bodies:
-        refusal = comment_refusal(body, general=general)
+def review_refusal(review: PrReview, *, file_diffs: Callable[[], Mapping[str, str]]) -> str:
+    """The first check any body of *review* fails, prefixed with which body, or ``""``.
+
+    *file_diffs* maps each changed path to its unified diff; it is read only for a blocker-shaped comment.
+    """
+    summary = comment_refusal(review.body, general=True)
+    if summary:
+        return f"the summary — {summary}"
+    for item in review.comments:
+        deferred = (
+            deferred_marker_near(file_diffs().get(item.path, ""), item.line) if looks_like_blocker(item.body) else None
+        )
+        refusal = comment_refusal(item.body, general=False, deferred=deferred)
         if refusal:
-            return f"{where} — {refusal}"
+            return f"the comment on {item.path}:{item.line} — {refusal}"
     return ""

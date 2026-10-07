@@ -118,6 +118,10 @@ class _FakeCodeHost:
         _ = (repo, pr_iid, review)
         return {}
 
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        _ = (repo, pr_iid)
+        return {}
+
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> dict[str, object]:
         _ = (repo, pr_iid, comment_id, body)
         return {}
