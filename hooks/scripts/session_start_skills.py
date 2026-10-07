@@ -41,7 +41,7 @@ def _suggest(loader_input: dict[str, Any]) -> dict[str, Any]:
         sys.path.pop(0)
 
 
-def _shadowed_pin_warning(exc: Exception) -> str:
+def _shadowed_pin_warning(exc: BaseException | None) -> str:
     """A shadowed apm pin is a misconfiguration the session must see; any other suggester failure stays silent."""
     pin_shadow = sys.modules.get("teatree.skill_support.pin_shadow")
     if pin_shadow is None or not isinstance(exc, pin_shadow.SkillShadowsDeclaredPinError):
@@ -84,9 +84,9 @@ def session_start_skill_context(session_id: str) -> str:
         warning = ""
         try:
             result = _suggest(loader_input)
-        except Exception as exc:  # noqa: BLE001 — the autoload demand must not depend on the suggester surviving
+        except Exception:  # noqa: BLE001 — the autoload demand must not depend on the suggester surviving
             result = {}
-            warning = _shadowed_pin_warning(exc)
+            warning = _shadowed_pin_warning(sys.exception())
         result["suggestions"] = [*autoload_skill_demand(loader_input["loaded_skills"]), *result.get("suggestions", [])]
         message = render_skill_suggestion_message(
             result,
