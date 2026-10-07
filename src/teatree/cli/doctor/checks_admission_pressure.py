@@ -228,9 +228,8 @@ def _check_drain_lane_starved() -> bool:
     The signature of a factory that has stopped moving while every surface reads healthy:
     the worker is busy, the loop ticks, no error is raised — and the queued work that would
     RETIRE a pull request cannot get in behind expensive work that only creates more.
-    Advisory: the reservation is what prevents the state, this only names it, and a box run
-    deliberately at ``drain_slot_reservation = 0`` should not go red for it. Crash-proof:
-    any error degrades to OK.
+    Advisory: the review lane outside the coding ceiling is what prevents the state, this
+    only names it. Crash-proof: any error degrades to OK.
     """
     from teatree.core.factory.drain_starvation import read_drain_lane_state  # noqa: PLC0415 — ORM read at call time
 
@@ -242,8 +241,8 @@ def _check_drain_lane_starved() -> bool:
     if not state.starved:
         return True
     typer.echo(
-        f"WARN  {state.report()}. Reserve more capacity for it with "
-        "`t3 <overlay> config_setting set drain_slot_reservation <n>` (#4374).",
+        f"WARN  {state.report()}. Widen the review lane with "
+        "`t3 <overlay> config_setting set cheap_phase_admission_ceiling <n>` (#5051).",
     )
     return False
 

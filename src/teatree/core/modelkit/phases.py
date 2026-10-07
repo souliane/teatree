@@ -186,10 +186,11 @@ class PhaseCost(StrEnum):
     EXPENSIVE = "expensive"
 
 
-#: Phases whose agent does not MUTATE SOURCE, and whose expected turn count is short —
-#: the verdict producers plus the lanes whose whole job is to RETIRE work.
-#: That is the whole of the claim: cheap is not free. ``_TOOLS_BY_PHASE`` grants these
-#: phases ``shell``, the cold-review procedure provisions a detached review checkout, a
+#: The REVIEW LANE: phases that gate a merge — the verdict producers plus the lanes whose
+#: whole job is to RETIRE work — admitted outside the coding ceiling on their own runners.
+#: Background assessors gate no merge, so they stay in the coding lane.
+#: Cheap is not free: ``_TOOLS_BY_PHASE`` grants these phases ``shell``, the
+#: cold-review procedure provisions a detached review checkout, a
 #: reviewer is told to run the suite, and a ``shipping`` agent's push fires the parity
 #: hook — so one of these agents can load the box. What separates them is that their
 #: work CONVERGES: a review ends at a verdict, a ship ends at a merged PR that frees a
@@ -211,12 +212,6 @@ CHEAP_PHASES: frozenset[str] = frozenset(
         # its agent, so refusing these under load removes the only relief available.
         "shipping",
         "requesting_review",
-        # Short assessors and responders — shell-denied or read-only by their contract.
-        "triage_assessing",
-        "answering",
-        "directive_interpreting",
-        "scanning_news",
-        "short_describe",
     }
 )
 

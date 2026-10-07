@@ -7,7 +7,7 @@ from typing import IO, Annotated, cast
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.admission_priority import ADMISSION_RANK_ALIAS, admission_priority_annotations
+from teatree.core.admission_priority import ADMISSION_SCORE_ALIAS, admission_priority_annotations
 from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
@@ -478,7 +478,7 @@ class Command(TyperCommand):
 
         Enqueue and claim are two ways to START work, so the governor's verdict decides both:
         a box braked enough to stop the drain enqueueing kept claiming through this seam.
-        A shed EXPENSIVE lane narrows the candidates to the reserved cheap phases IN THE
+        A shed EXPENSIVE lane narrows the candidates to the review-lane phases IN THE
         QUERY rather than walking a backed-up queue row by row, so the review that retires
         work is reachable behind a coding row instead of stuck behind it.
 
@@ -548,7 +548,7 @@ def _task_row(task: Task) -> TaskRow:
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
-        admission_rank=getattr(task, ADMISSION_RANK_ALIAS),
+        admission_score=getattr(task, ADMISSION_SCORE_ALIAS),
         parent_task_id=task.parent_task_id,  # ty: ignore[unresolved-attribute]
         failure_kind=task.failure_kind,
         failure_reason=task.failure_reason,
