@@ -13,6 +13,7 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
+from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import (
     DeferredQuestion,
     Directive,
@@ -20,6 +21,7 @@ from teatree.core.models import (
     PendingArticleSuggestion,
     PendingChatInjection,
     PendingTriageRecommendation,
+    PlanArtifact,
     Session,
     Task,
     TaskAttempt,
@@ -247,6 +249,25 @@ class TestLandingVerifiedCompletion(TestCase):
         assert task.ticket.state == Ticket.State.WORK_STARTED  # FSM did NOT advance
         assert latest is not None
         assert latest.error.startswith("landing_unverified:")
+
+    def test_a_plan_refused_at_coded_fails_the_attempt_as_plan_stale_with_no_success_row(self) -> None:
+        task = self._claimed()
+        Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.PLAN_RECORDED)
+        PlanArtifact.objects.create(ticket=task.ticket, plan_text="legacy", recorded_by="op")
+        self._attach_worktree(task.ticket, commits_ahead=1)
+
+        attempt = record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "f0.txt", "action": "created"}]},
+        )
+
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.failure_kind == FailureKind.PLAN_STALE
+        assert list(task.attempts.values_list("pk", flat=True)) == [attempt.pk]
+        assert attempt.error.startswith(PLAN_STALE_PREFIX)
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_files_modified_with_real_commit_completes(self) -> None:
         task = self._claimed()

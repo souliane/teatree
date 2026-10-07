@@ -64,12 +64,13 @@ def resolve_verdict_head(
     # Bound verbatim, compared case-folded: the bound head is re-compared against the
     # source spelling, so a fold would read an unmoved head as a rebind.
     pinned = dispatch_head.strip()
+    expected = f"the head this review was dispatched for ({dispatch_head})" if pinned else _live_head_of(pr)
     if not claimed:
         return HeadBinding(
             error=(
-                "review verdict omits reviewed_sha — the head it bound to is undisclosed, so nothing "
-                f"was checked against the head this review was dispatched for ({dispatch_head}); the "
-                "verdict is not recorded. Return that full 40-char head, which your brief named"
+                f"review verdict omits reviewed_sha — the head it bound to is undisclosed, so nothing "
+                f"was checked against {expected}; the verdict is not recorded. Return that full 40-char "
+                "head, which your brief named"
             ),
         )
     if _abbreviates(claimed, pinned.lower()):
@@ -79,29 +80,38 @@ def resolve_verdict_head(
     if live.unreadable or not live.sha:
         return HeadBinding(
             error=(
-                f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched "
-                f"for ({dispatch_head}), and the forge could not confirm what {pr.slug}#{pr.pr_id} points at "
-                f"now — the verdict is not recorded. Retry the read; the claim is untouched"
+                f"review verdict reviewed_sha {asserted!r} is not {expected}, and the forge could not confirm "
+                f"what {pr.slug}#{pr.pr_id} points at now — the verdict is not recorded. Retry the read; the "
+                "claim is untouched"
             ),
         )
     current = live.sha.strip()
     if _abbreviates(claimed, current.lower()):
         return HeadBinding(head=current)
-    if current.lower() != pinned.lower():
-        return HeadBinding(
-            error=(
-                f"{HEAD_SUPERSEDED_PREFIX}{pr.slug}#{pr.pr_id} advanced from {dispatch_head[:8]} to "
-                f"{current[:8]} while this review ran, and the reviewer judged {asserted[:8]} — "
-                f"neither tree. The verdict is not recorded; review is re-armed at the new head"
-            ),
-            superseded=True,
-        )
+    if not pinned or current.lower() != pinned.lower():
+        return HeadBinding(error=_moved_head_refusal(asserted, pinned=pinned, current=current, pr=pr), superseded=True)
     return HeadBinding(
         error=(
-            f"review verdict reviewed_sha {asserted!r} is not the head this review was dispatched for "
-            f"({dispatch_head}) — a reviewer that judged a different tree than the one it was "
-            f"dispatched for is itself a finding; the verdict is not recorded"
+            f"review verdict reviewed_sha {asserted!r} is not {expected} — a reviewer that judged a "
+            f"different tree than the one it was dispatched for is itself a finding; the verdict is not recorded"
         ),
+    )
+
+
+def _live_head_of(pr: PrRef) -> str:
+    return f"the head {pr.slug}#{pr.pr_id} points at"
+
+
+def _moved_head_refusal(asserted: str, *, pinned: str, current: str, pr: PrRef) -> str:
+    if pinned:
+        return (
+            f"{HEAD_SUPERSEDED_PREFIX}{pr.slug}#{pr.pr_id} advanced from {pinned[:8]} to "
+            f"{current[:8]} while this review ran, and the reviewer judged {asserted[:8]} — "
+            f"neither tree. The verdict is not recorded; review is re-armed at the new head"
+        )
+    return (
+        f"{HEAD_SUPERSEDED_PREFIX}{pr.slug}#{pr.pr_id} points at {current[:8]}, not the {asserted[:8]} the "
+        f"reviewer judged. The verdict is not recorded; review is re-armed at the live head"
     )
 
 

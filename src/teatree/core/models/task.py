@@ -427,7 +427,12 @@ class Task(models.Model):
             if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
-            elif phase == "planning" and ticket.state == Ticket.State.WORK_STARTED:
+            elif (
+                phase == "planning"
+                and ticket.state in Ticket.EARLY_STATES
+                and (ticket.state == Ticket.State.WORK_STARTED or has_plan_decision(ticket))
+            ):
+                ticket.walk_to_work_started()
                 ticket.plan(parent_task=self)
                 ticket.save()
             elif phase == "coding" and ticket.state == Ticket.State.PLAN_RECORDED:

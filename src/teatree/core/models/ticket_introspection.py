@@ -4,13 +4,14 @@ from django.apps import apps
 from django.db.models import Max
 from django_fsm import can_proceed
 
+from teatree.core.forge_url import is_forge_url
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models.ticket_data import TicketFacet
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead
 from teatree.core.models.types import SlackAnswerContext
-from teatree.utils.url_slug import is_synthetic_loop_umbrella_url
+from teatree.utils.url_slug import is_synthetic_loop_umbrella_url, pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.managers import SessionQuerySet, TaskQuerySet
@@ -74,6 +75,11 @@ class TicketIntrospectionModel(TicketFacet):
         if newest is None:
             return False
         return self.tasks.filter(created_at=newest, failure_kind=FailureKind.CANCELLED).exists()  # Django reverse FK
+
+    @property
+    def has_checkout_source(self: "Ticket") -> bool:
+        """A repo is attached, or a forge issue (not a PR url) exists for ``workspace ticket`` to attach one from."""
+        return bool(self.repos) or (is_forge_url(self.issue_url) and pr_ref_from_url(self.issue_url) is None)
 
     @property
     def is_settled(self) -> bool:

@@ -119,7 +119,7 @@ def check_fix_record_dod(ticket: "Ticket") -> None:
     if not missing:
         return
     msg = (
-        f"Refusing to merge fix-ticket {ticket} — its Definition of Done requires a "
+        f"Refusing to deliver fix-ticket {ticket} — its Definition of Done requires a "
         f"validated FixRecord and these fields are missing: {', '.join(missing)}. "
         f"A merged manifestation patch with no stated root cause is not done. The way "
         f"through is to RECORD one: the fixing agent returns a `fix_record` object in "

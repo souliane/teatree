@@ -8,11 +8,15 @@ the audit's resolver id, shared with the tick sweep in :mod:`teatree.loop.questi
 from collections.abc import Callable, Iterable, Sequence
 
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.task_phase_disposition import phase_wedges_healed
 from teatree.core.provision.failure_question import provision_failures_healed
 
 HealCheck = Callable[[Sequence[DeferredQuestion]], dict[int, str]]
 
-HEAL_CHECKS: tuple[tuple[str, HealCheck], ...] = (("provision_healed", provision_failures_healed),)
+HEAL_CHECKS: tuple[tuple[str, HealCheck], ...] = (
+    ("provision_healed", provision_failures_healed),
+    ("phase_wedge_healed", phase_wedges_healed),
+)
 
 
 def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:

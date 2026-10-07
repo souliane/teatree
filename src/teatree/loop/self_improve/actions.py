@@ -29,7 +29,6 @@ from django.db import transaction
 from teatree.config import discover_active_overlay, discover_overlays
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.ticket import Ticket
-from teatree.loop.persistence_phase_task import create_phase_task
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, fresh_or_escalated
 from teatree.loop.self_improve.persistence import (
     SLACK_RATE_CAP_SECONDS,
@@ -206,12 +205,9 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> Sel
             _require_ticket_owner(existing_ticket, overlay_name)
         settled = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         if existing_ticket is not None and existing_ticket.state not in settled:
-            if not existing_ticket.tasks.exists():
-                create_phase_task(
-                    existing_ticket,
-                    phase="planning",
-                    agent_id="self-improve",
-                    reason=f"Investigate {report.detector}: {report.summary}; verify the pressure cause",
+            if existing_ticket.state in Ticket.EARLY_STATES and not existing_ticket.tasks.exists():
+                existing_ticket.begin_planning(
+                    intent=f"Investigate {report.detector}: {report.summary}; verify the pressure cause"
                 )
             return firing
         suggested = report.payload.get("suggested_action")
@@ -227,11 +223,8 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> Sel
         )
         firing.ticket = ticket
         firing.save(update_fields=["ticket"])
-        create_phase_task(
-            ticket,
-            phase="planning",
-            agent_id="self-improve",
-            reason=f"Investigate {report.detector}: {report.summary}; use telemetry and verify the cause before fixing",
+        ticket.begin_planning(
+            intent=f"Investigate {report.detector}: {report.summary}; use telemetry and verify the cause before fixing"
         )
         return firing
 

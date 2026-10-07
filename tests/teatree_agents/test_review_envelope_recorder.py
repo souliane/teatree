@@ -13,16 +13,19 @@ unmergeable forever. ATOMICITY: the verdict, the claim retirement, the lock rele
 the grades land in ONE transaction, so a refused grade rolls the verdict back with it.
 """
 
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.agents.envelope_refusal import is_recorder_refusal
+from teatree.agents.envelope_refusal import MALFORMED_FIX_RECORD_PREFIX, is_recorder_refusal
 from teatree.core.gates.anti_vacuity_gate import check_anti_vacuity_attestation
 from teatree.core.gates.integration_review_gate import check_integration_review
 from teatree.core.gates.review_request_state_gate import check_reviewed_state, has_review_evidence
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.merge.ticket_gates import assert_ticket_scoped_gates
+from teatree.core.modelkit.task_failure_taxonomy import REVIEW_UNRECORDABLE_PREFIX
 from teatree.core.models import (
     AutoReviewDispatch,
     HonestyEscalation,
@@ -37,6 +40,7 @@ from teatree.core.models import (
 )
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
+from teatree.core.review.live_head import LiveHeadRead
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -537,3 +541,120 @@ class TestAPhaseOutsideTheGradedSetOwesNoGrades(TestCase):
             RubricCriterion.Status.PENDING,
             RubricCriterion.Status.PENDING,
         ]
+
+
+_FIX_RECORD = {
+    "root_cause": "the review recorder never wrote the record the DoD gate reads",
+    "evidence": "a fix PR merged without a coding envelope left extra['fix_record'] empty",
+    "regression_test": "tests/teatree_agents/test_review_envelope_recorder.py::TestAMergeSafeReviewRecordsTheFixRecord",
+    "observed_red": "reverted the fix and the test failed",
+    "recurrence_fingerprint": "review_envelope_recorder:no_fix_record_writer",
+}
+
+
+class TestAMergeSafeReviewRecordsTheFixRecord(TestCase):
+    def _fix_ticket(self) -> Ticket:
+        ticket = _author_ticket()
+        Ticket.objects.filter(pk=ticket.pk).update(kind=Ticket.Kind.FIX)
+        return ticket
+
+    def _review(self, *, verdict: str = "merge_safe", record: dict[str, str]) -> tuple[Task, str]:
+        result = _envelope(grades=_full_pass(), verdict=verdict)
+        result["fix_record"] = record
+        task = _reviewing_task_via_dispatch()
+        return task, record_result_envelope(task, result, phase="reviewing").error
+
+    def test_merge_safe_lands_the_record_on_the_gated_ticket_not_the_reviewer_row(self) -> None:
+        ticket = self._fix_ticket()
+
+        task, error = self._review(record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert ticket.extra["fix_record"] == _FIX_RECORD
+        assert "fix_record" not in task.ticket.extra
+
+    def test_a_record_returned_for_a_feature_ticket_is_kept_like_the_coders_is(self) -> None:
+        ticket = _author_ticket()
+
+        _task, error = self._review(record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        assert ticket.extra["fix_record"] == _FIX_RECORD
+
+    def test_a_hold_records_no_fix_record(self) -> None:
+        ticket = self._fix_ticket()
+
+        _task, error = self._review(verdict="hold", record=dict(_FIX_RECORD))
+
+        assert error == ""
+        ticket.refresh_from_db()
+        assert "fix_record" not in ticket.extra
+
+    def test_a_malformed_record_is_refused_before_any_verdict(self) -> None:
+        self._fix_ticket()
+
+        _task, error = self._review(record={"root_cause": "only one field"})
+
+        assert error.startswith(MALFORMED_FIX_RECORD_PREFIX)
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+
+
+class TestAReviewOnAnIssueAnchoredTicketRecordsOnItsOwnPr(TestCase):
+    """Task 5582's shape: no dispatch row, the ticket keyed on its issue, the PR recorded on it."""
+
+    def _task(self, *, prs: int) -> Task:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/{_SLUG}/issues/5072",
+            state=Ticket.State.REVIEW_REQUESTED,
+        )
+        for offset in range(prs):
+            pr_id = _PR_ID + offset
+            PullRequest.objects.create(
+                ticket=ticket, url=f"https://github.com/{_SLUG}/pull/{pr_id}", repo=_SLUG, iid=str(pr_id)
+            )
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="review"), phase="reviewing"
+        )
+        task.claim(claimed_by="headless-reviewer")
+        return task
+
+    def _record(self, task: Task, *, live_head: str = _HEAD) -> str:
+        with patch(
+            "teatree.core.review.verdict_head_binding.live_head_at",
+            return_value=LiveHeadRead(sha=live_head, unreadable=False),
+        ):
+            return record_result_envelope(task, _envelope(verdict="hold"), phase="reviewing").error
+
+    def test_a_hold_lands_on_the_tickets_one_live_pr_at_the_live_head(self) -> None:
+        task = self._task(prs=1)
+
+        assert self._record(task) == ""
+
+        verdict = ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID)
+        assert (verdict.verdict, verdict.reviewed_sha, verdict.ticket_id) == ("hold", _HEAD, task.ticket_id)
+
+    def test_a_verdict_that_fits_no_single_pr_is_refused_loudly(self) -> None:
+        task = self._task(prs=2)
+
+        error = self._record(task)
+
+        assert error.startswith(REVIEW_UNRECORDABLE_PREFIX)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert not ReviewVerdict.objects.exists()
+
+    def test_a_pre_pr_self_review_keeps_its_verdict_on_the_attempt(self) -> None:
+        task = self._task(prs=0)
+
+        assert self._record(task) == ""
+        assert not ReviewVerdict.objects.exists()
+
+    def test_a_reviewer_who_judged_a_head_the_pr_no_longer_points_at_records_nothing(self) -> None:
+        task = self._task(prs=1)
+
+        assert self._record(task, live_head="9" * 40) != ""
+        assert not ReviewVerdict.objects.exists()

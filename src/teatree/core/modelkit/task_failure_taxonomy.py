@@ -116,6 +116,9 @@ HEAD_SUPERSEDED_PREFIX = "head_superseded: "
 #: Prefix a run carries when the CLI fell back because its build cannot serve the requested model.
 CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
 
+#: Prefix a finished coding run carries when its CODED transition was refused for plan currency.
+PLAN_STALE_PREFIX = "plan_stale: "
+
 
 class FailureKind(models.TextChoices):
     """The named cause of a FAILED task, stamped on the attempt that failed it."""
@@ -148,6 +151,7 @@ class FailureKind(models.TextChoices):
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
     HEAD_SUPERSEDED = "head_superseded", "PR head advanced past the reviewed tree"
     CLI_TOO_OLD_FOR_MODEL = "cli_too_old_for_model", "Claude Code too old for the configured model"
+    PLAN_STALE = "plan_stale", "Plan not current at the CODED transition"
 
 
 class RecoveryStrategy(StrEnum):
@@ -226,6 +230,8 @@ RECOVERY: Mapping[str, Recovery] = {
     FailureKind.AGENT_ABANDONED: Recovery(_HALT, environmental=False),
     # Re-running re-reviews the head this task pinned; the recovery is a fresh dispatch.
     FailureKind.HEAD_SUPERSEDED: Recovery(_HALT, environmental=True),
+    # Re-running reproduces the refusal; the base moving is the environment's, the remedy a planning pass.
+    FailureKind.PLAN_STALE: Recovery(_HALT, environmental=True),
 }
 
 #: Kinds where the HARNESS itself failed to run the work — the agent never got to be
@@ -236,12 +242,12 @@ RECOVERY: Mapping[str, Recovery] = {
 _HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKind.HARNESS_CONTROL_TIMEOUT})
 
 #: Kinds that end a task WITHOUT the repair loop having failed on its own merits — an
-#: operator cancellation or a supersede by rework. Public (not the environmental axis:
-#: both are ``environmental=False`` above) because two independent readers need the
+#: operator cancellation, a supersede by rework, or a base that moved under the plan. Public
+#: (not the environmental axis, which the first two are off) because two independent readers need the
 #: SAME answer to "was this a real repair failure?": the incident detector (which of
 #: these to page on) and the repair-burn factory signal (which to count toward its
 #: failure fraction). One shared set keeps them from silently disagreeing.
-NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED})
+NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED, FailureKind.PLAN_STALE})
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
 #: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
@@ -279,6 +285,8 @@ _UNNAMED: frozenset[str] = frozenset(
 # RUNTIME CEILING, and only the former is environmental, so the lease phrase must be
 # tested before the generic prefix claims the reason.
 _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # First: the recorder stamps it ahead of a NoCurrentPlanError message that may quote any other phrase.
+    (FailureKind.PLAN_STALE, (PLAN_STALE_PREFIX,)),
     (FailureKind.LEASE_EXPIRED, (LEASE_EXPIRED_PREFIX,)),
     (FailureKind.CANCELLED, (CANCELLED_PREFIX,)),
     # Ahead of SUPERSEDED: the reasons are tested by CONTAINMENT and "head_superseded: "
@@ -447,6 +455,7 @@ __all__ = [
     "CLI_TOO_OLD_PREFIX",
     "LEASE_EXPIRED_PREFIX",
     "NON_REPAIR_KINDS",
+    "PLAN_STALE_PREFIX",
     "RECOVERY",
     "REVIEW_UNRECORDABLE_PREFIX",
     "SUPERSEDED_PREFIX",
