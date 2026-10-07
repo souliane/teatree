@@ -23,7 +23,7 @@ def site() -> Iterator[BrokenSite]:
 @pytest.fixture
 def browser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[BrowserCli]:
     repo = (tmp_path / "repo").resolve()
-    run_checked(["git", "init", "-q", str(repo)])
+    run_checked(["git", "init", "-q", "-b", "main", str(repo)])
     monkeypatch.chdir(repo)
     monkeypatch.delenv(INVOCATION_CWD_ENV, raising=False)
     monkeypatch.setitem(os.environ, "T3_DATA_DIR", str(tmp_path / "data"))

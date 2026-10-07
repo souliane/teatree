@@ -30,7 +30,7 @@ def test_no_tracked_file_names_a_retired_mcp_surface() -> None:
 
 
 def test_the_scan_finds_a_planted_retired_term(tmp_path: Path) -> None:
-    run_checked(["git", "init", "-q", str(tmp_path)])
+    run_checked(["git", "init", "-q", "-b", "main", str(tmp_path)])
     (tmp_path / "notes.md").write_text("register chrome" + "-devtools for the browser\n", encoding="utf-8")
     run_checked(["git", "-C", str(tmp_path), "add", "notes.md"])
 

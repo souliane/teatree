@@ -15,6 +15,7 @@ import typer
 
 from teatree.browser.evidence import BrowserEvent
 from teatree.browser.session import BrowserError, BrowserSession, StepReport, Verb
+from teatree.core.invocation_cwd import invocation_cwd
 
 SNAPSHOT_PREVIEW_LINES = 200
 
@@ -73,15 +74,18 @@ def inspect(*, as_json: JsonFlag = False) -> None:
 
 
 @browser_app.command()
-def close() -> None:
+def close(*, as_json: JsonFlag = False) -> None:
     """End this worktree's browser session."""
     closed = _run(lambda session: session.close())
+    if as_json:
+        typer.echo(json.dumps({"closed": closed}))
+        return
     typer.echo("Closed the browser session." if closed else "No open browser session.")
 
 
 def _run[T](step: Callable[[BrowserSession], T]) -> T:
     try:
-        return step(BrowserSession.for_invocation())
+        return step(BrowserSession.for_directory(invocation_cwd()))
     except BrowserError as exc:
         typer.echo(f"ERROR {exc}", err=True)
         raise typer.Exit(code=1) from exc

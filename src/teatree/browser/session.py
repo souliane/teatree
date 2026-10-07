@@ -24,7 +24,6 @@ import httpx
 
 from teatree.browser.evidence import BrowserEvent, EventLog
 from teatree.browser.state import SessionFiles
-from teatree.core.invocation_cwd import invocation_cwd
 from teatree.paths import data_dir_root, isolated_slug
 from teatree.utils.run import spawn_session_leader
 from teatree.utils.work_tree import WorkTreeError, resolve
@@ -108,12 +107,11 @@ class BrowserSession:
         return cls(SessionFiles(data_dir_root() / "browser-sessions" / isolated_slug(checkout)))
 
     @classmethod
-    def for_invocation(cls) -> "BrowserSession":
-        cwd = invocation_cwd()
+    def for_directory(cls, directory: Path) -> "BrowserSession":
         try:
-            checkout = resolve(cwd).root
+            checkout = resolve(directory).root
         except WorkTreeError:
-            checkout = cwd.resolve()
+            checkout = directory.resolve()
         return cls.for_checkout(checkout)
 
     def cdp_url(self) -> str | None:

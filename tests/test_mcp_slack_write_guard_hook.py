@@ -123,6 +123,10 @@ class TestTeatreesOwnServerIsNotADirectSlackWrite:
             "mcp__plugin_t3_teatreex__slack_react",
             "mcp__xteatree__slack_send_message",
             "mcp__slack__teatree_send_message",
+            "mcp__teatree__evil__slack_send_message",
+            "mcp__plugin_t3_teatree__x__slack_react",
+            "mcp__Teatree__slack_react",
+            "mcp__plugin_t3_TEATREE__slack_mentions",
         ],
     )
     def test_a_lookalike_server_is_still_denied(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:

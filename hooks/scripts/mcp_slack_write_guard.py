@@ -84,7 +84,8 @@ TEATREE_MCP_SERVERS: frozenset[str] = frozenset({"teatree", "plugin_t3_teatree"}
 
 def is_slack_mcp_tool(tool_name: str) -> bool:
     """Whether *tool_name* is a Slack MCP tool (``mcp__*slack*``) on a server other than teatree's."""
-    server = tool_name.removeprefix("mcp__").split("__", 1)[0]
+    # Everything before the LAST `__`, so `mcp__teatree__x__send` names server `teatree__x`, never `teatree`.
+    server = tool_name.removeprefix("mcp__").rpartition("__")[0]
     return tool_name.startswith("mcp__") and "slack" in tool_name.lower() and server not in TEATREE_MCP_SERVERS
 
 

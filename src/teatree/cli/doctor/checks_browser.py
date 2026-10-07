@@ -22,7 +22,7 @@ def _check_browser_ready(*, repair: bool) -> bool:
     typer.echo(
         f"FAIL  the headless browser cannot launch, so `t3 browser` and the visual-QA gate cannot run: "
         f"{failure.splitlines()[0] if failure else 'unknown error'}. "
-        f"Run `t3 doctor check --repair` (runs `{' '.join(INSTALL_ARGV[1:])}`)."
+        f"Run `t3 doctor check --repair` (runs `{' '.join(INSTALL_ARGV)}`)."
     )
     return False
 

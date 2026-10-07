@@ -9,6 +9,7 @@ import pytest
 
 from teatree.browser.session import BrowserSession
 from teatree.browser.state import SessionFiles
+from tests._git_repo import make_git_repo
 
 
 @pytest.fixture
@@ -71,3 +72,21 @@ def test_sessions_are_keyed_by_the_checkout(tmp_path: Path, monkeypatch: pytest.
 
     assert first != second
     assert first.parent == second.parent == tmp_path / "browser-sessions"
+
+
+def test_a_directory_inside_a_checkout_shares_the_checkouts_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    repo = make_git_repo(tmp_path / "repo").resolve()
+    (repo / "src").mkdir()
+
+    assert BrowserSession.for_directory(repo / "src").files.root == BrowserSession.for_checkout(repo).files.root
+
+
+def test_a_directory_outside_git_is_its_own_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    loose = tmp_path / "loose"
+    loose.mkdir()
+
+    assert BrowserSession.for_directory(loose).files.root == BrowserSession.for_checkout(loose.resolve()).files.root

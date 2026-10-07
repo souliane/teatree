@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ def test_a_missing_browser_build_fails_naming_the_repair(
     out = capsys.readouterr().out
     assert out.startswith("FAIL  the headless browser cannot launch")
     assert "t3 doctor check --repair" in out
+    assert f"`{sys.executable} -m playwright install chromium-headless-shell`" in out
 
 
 def test_repair_installs_the_browser_then_probes_again(capsys: pytest.CaptureFixture[str]) -> None:

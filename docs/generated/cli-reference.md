@@ -5837,6 +5837,7 @@ Usage: t3 browser close [OPTIONS]
  End this worktree's browser session.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

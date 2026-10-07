@@ -1,5 +1,6 @@
 """``t3 browser`` refuses loudly when it cannot run a step — never an empty, green-looking result."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -62,3 +63,10 @@ def test_close_without_a_session_is_a_no_op() -> None:
 
     assert result.exit_code == 0
     assert "No open browser session." in result.output
+
+
+def test_close_reports_as_json_too() -> None:
+    result = runner.invoke(browser_app, ["close", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"closed": False}
