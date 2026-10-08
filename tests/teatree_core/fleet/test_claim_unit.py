@@ -337,8 +337,8 @@ class TestForgeHostIsPartOfTheIdentity:
         # not read as "different", or the host check would newly reject clones the
         # slug check accepts. Asserted on the predicate: a local origin never even
         # reaches it in practice, because `remote_slug` yields no owner/repo for one.
-        for url in (f"file://{tmp_path}/souliane/teatree.git", f"{tmp_path}/souliane/teatree.git"):
-            clone = init_with_origin(tmp_path / f"c{abs(hash(url))}", url)
+        for n, url in enumerate((f"file://{tmp_path}/souliane/teatree.git", f"{tmp_path}/souliane/teatree.git")):
+            clone = init_with_origin(tmp_path / f"c{n}", url)
             assert fleet_claim_wire._forge_host_conflict(str(clone), _KEY) is False, url
 
     def test_the_issue_url_host_is_read_from_the_url_itself(self) -> None:
