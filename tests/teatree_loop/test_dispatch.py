@@ -557,10 +557,10 @@ def test_answering_task_preserves_original_payload_keys() -> None:
     assert agent.payload["phase"] == "answering"
 
 
-# --- Slack-ping → auto-review bridge (#219) ----------------------------------
+# --- Incoming-event review request → auto-review bridge (#219) ---------------
 #
-# A Slack review request ("can you review MR X") arriving via the webhook
-# path (`/hooks/slack/` → IncomingEvent → classifier → router → scanner)
+# A review request ("can you review MR X") arriving as an IncomingEvent
+# (classifier → router → scanner)
 # becomes an ``incoming_event.task_needed`` signal with phase ``coding``.
 # Before the bridge it fell through to a passive statusline note and the
 # referenced PR was never independently reviewed. The bridge mirrors the
