@@ -79,9 +79,9 @@ def slack_pr_url(signal: ScanSignal) -> str:
 def task_pr_url(signal: ScanSignal) -> str:
     """Extract a PR URL from an ``incoming_event.task_needed`` signal.
 
-    The webhook path (``/hooks/slack/`` → IncomingEvent → classifier →
-    router → scanner) puts the inbound body in ``payload['detail']`` and
-    echoes it into ``summary``. A Slack message like "can you review
+    The incoming-event path (IncomingEvent → classifier → router →
+    scanner) puts the inbound body in ``payload['detail']`` and
+    echoes it into ``summary``. A message like "can you review
     https://…/merge_requests/42" classifies as ``TASK`` (the imperative
     "review" keyword) and would otherwise drop to a passive statusline
     note — the referenced PR never gets an independent review (#219).

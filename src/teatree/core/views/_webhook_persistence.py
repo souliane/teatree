@@ -26,8 +26,6 @@ class IngestionRecord:
     actor: str = ""
     channel_ref: str = ""
     thread_ref: str = ""
-    parent_ts: str = ""
-    parent_text: str = ""
     body: str = ""
     payload_json: dict = field(default_factory=dict)
     dead_letter_reason: str = ""
@@ -36,8 +34,8 @@ class IngestionRecord:
 
 
 def persist_incoming_event(record: IngestionRecord) -> bool:
-    # The single ingestion chokepoint every inbound flow passes through (all three
-    # webhook views + the future socket lane), so the #116 provenance is stamped ONCE
+    # The single ingestion chokepoint every inbound flow passes through (both webhook
+    # views + the GitLab Pub/Sub scanner), so the #116 provenance is stamped ONCE
     # here from (source, actor) — the views need no change.
     provenance = classify_provenance(record.source, record.actor)
     try:
@@ -47,8 +45,6 @@ def persist_incoming_event(record: IngestionRecord) -> bool:
                 actor=record.actor,
                 channel_ref=record.channel_ref,
                 thread_ref=record.thread_ref,
-                parent_ts=record.parent_ts,
-                parent_text=record.parent_text,
                 body=record.body,
                 payload_json=record.payload_json or {},
                 idempotency_key=record.idempotency_key,

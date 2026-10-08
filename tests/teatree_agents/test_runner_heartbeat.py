@@ -12,6 +12,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from typing import Any
 from unittest.mock import patch
 
@@ -38,6 +39,19 @@ from tests.teatree_agents._sdk_fake import InterruptibleSession, OneSessionHarne
 _DRAIN = "this worker is quiescing for a rolling deploy"
 _SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
 _TASK_PK = 7
+
+
+_WATCHDOG = LoopWatchdog(max_runtime_seconds=5, max_turns=0, max_cost_usd=0.0)
+
+
+@dataclass(frozen=True, slots=True)
+class _Ceilings:
+    watchdog: LoopWatchdog = _WATCHDOG
+    heartbeat_interval: float = 0.005
+    turns: int = 0
+
+
+_NO_BREACH = _Ceilings()
 
 
 def _drain_from_beat(first: int, calls: list[str]) -> Callable[[], str]:
@@ -69,13 +83,13 @@ def _drive(
     *,
     drain_reason: Callable[[], str],
     renew_lease: Callable[[Task], None] = _no_lease_renewal,
-    max_runtime_seconds: float = 5,
+    ceilings: _Ceilings = _NO_BREACH,
     task: Task | None = None,
 ) -> HarnessOutcome:
     runtime = HeartbeatRuntime(
-        watchdog=LoopWatchdog(max_runtime_seconds=max_runtime_seconds, max_turns=0, max_cost_usd=0.0),
-        heartbeat_interval=0.005,
-        sample_usage=lambda _task: TaskUsage(turns=0, cost_usd=0.0),
+        watchdog=ceilings.watchdog,
+        heartbeat_interval=ceilings.heartbeat_interval,
+        sample_usage=lambda _task: TaskUsage(turns=ceilings.turns, cost_usd=0.0),
         renew_lease=renew_lease,
         drain_reason=drain_reason,
     )
@@ -224,19 +238,44 @@ class _OperatorSteerableSession(InterruptibleSession):
 
 
 @pytest.mark.parametrize(
-    ("drain_reason", "renew_lease"),
+    ("drain_reason", "renew_lease", "ceilings", "stopped_by"),
     [
-        pytest.param(_drain_from_beat(1, []), _no_lease_renewal, id="deploy-checkpoint"),
-        pytest.param(_drain_from_beat(10**9, []), _lease_lost_on_beat(1), id="lost-lease"),
+        pytest.param(
+            _drain_from_beat(1, []), _no_lease_renewal, _NO_BREACH, "deploy checkpoint:", id="deploy-checkpoint"
+        ),
+        pytest.param(
+            _drain_from_beat(10**9, []), _lease_lost_on_beat(1), _NO_BREACH, "lease lost for task", id="lost-lease"
+        ),
+        pytest.param(
+            _drain_from_beat(10**9, []),
+            _no_lease_renewal,
+            _Ceilings(watchdog=replace(_WATCHDOG, max_turns=1), turns=2),
+            "turns ceiling exceeded",
+            id="watchdog-breach",
+        ),
+        pytest.param(
+            _drain_from_beat(10**9, []),
+            _no_lease_renewal,
+            _Ceilings(watchdog=replace(_WATCHDOG, max_runtime_seconds=0.05), heartbeat_interval=60),
+            "runtime ceiling exceeded",
+            id="runtime-ceiling",
+        ),
     ],
 )
 def test_a_steer_that_lands_as_the_run_is_told_to_stop_is_refused_not_delivered(
-    drain_reason: Callable[[], str], renew_lease: Callable[[Task], None]
+    drain_reason: Callable[[], str], renew_lease: Callable[[Task], None], ceilings: _Ceilings, stopped_by: str
 ) -> None:
     session = _OperatorSteerableSession()
 
-    _drive(session, drain_reason=drain_reason, renew_lease=renew_lease, task=Task(pk=_TASK_PK, phase="coding"))
+    outcome = _drive(
+        session,
+        drain_reason=drain_reason,
+        renew_lease=renew_lease,
+        ceilings=ceilings,
+        task=Task(pk=_TASK_PK, phase="coding"),
+    )
 
+    assert (outcome.stuck_reason or "").startswith(stopped_by)
     assert session.interrupts == 1
     assert [(r.outcome, r.code) for r in session.receipts] == [(ControlOutcome.REJECTED, RejectCode.SESSION_CLOSED)]
     assert session.steered == []

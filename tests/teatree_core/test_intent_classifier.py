@@ -15,7 +15,7 @@ def _slack_event(text: str, **overrides: object) -> IncomingEvent:
         "thread_ref": "1234.0001",
         "body": text,
         "payload_json": {"event": {"type": "app_mention", "text": text}},
-        "idempotency_key": f"slack:Ev{abs(hash(text))}",
+        "idempotency_key": f"slack:{text}",
     }
     payload.update(overrides)
     return IncomingEvent.objects.create(**payload)
@@ -29,7 +29,7 @@ def _gitlab_event(action: str, **overrides: object) -> IncomingEvent:
         "thread_ref": "",
         "body": f"MR action: {action}",
         "payload_json": {"object_kind": "merge_request", "object_attributes": {"action": action}},
-        "idempotency_key": f"gitlab:{abs(hash(action))}",
+        "idempotency_key": f"gitlab:{action}",
     }
     payload.update(overrides)
     return IncomingEvent.objects.create(**payload)

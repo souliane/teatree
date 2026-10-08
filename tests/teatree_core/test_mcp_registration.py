@@ -88,6 +88,15 @@ class TestVerifyTeatreeMcpRegistration:
 
         assert outcome.ok is False
 
+    def test_fails_when_args_is_not_a_list(self, tmp_path: Path) -> None:
+        entry = {"command": "t3", "args": 5}
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {TEATREE_MCP_SERVER_NAME: entry}}))
+
+        outcome = verify_teatree_mcp_registration(tmp_path)
+
+        assert outcome.ok is False
+        assert "5" in outcome.message
+
 
 class TestShippedMcpJson:
     """The committed repo-root ``.mcp.json`` must declare the teatree server.
