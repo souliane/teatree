@@ -133,6 +133,12 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
         assert statuses == {200}
         assert IncomingEvent.objects.count() == 61
 
+    def test_signature_covers_the_raw_bytes_not_a_reserialisation(self) -> None:
+        body = '{"action":"opened" ,  "sender": {"login": "zo\u00eb"}}'.encode()
+
+        assert self.deliver(body).status_code == 200
+        assert IncomingEvent.objects.get().actor == "zo\u00eb"
+
     def test_odd_payload_shapes_are_stored_never_500(self) -> None:
         cases = [
             ("pull_request", {"sender": "x"}),
@@ -187,6 +193,11 @@ class TestMalformedRequest(GitHubWebhookTestCase):
     def test_no_cap_means_no_413(self) -> None:
         assert self.deliver().status_code == 200
 
+    def test_content_length_at_the_cap_is_accepted_and_one_above_is_413(self) -> None:
+        for cap, status in ((len(DEFAULT_BODY), 200), (len(DEFAULT_BODY) - 1, 413)):
+            with self.subTest(cap=cap), override_settings(DATA_UPLOAD_MAX_MEMORY_SIZE=cap):
+                assert self.deliver(headers={"X-GitHub-Delivery": f"cap-{cap}"}).status_code == status
+
     @override_settings(DATA_UPLOAD_MAX_MEMORY_SIZE=16)
     def test_413_warns_with_delivery_event_and_length(self) -> None:
         response = self.deliver(headers={"X-GitHub-Delivery": "big-7", "X-GitHub-Event": "push"})
@@ -208,6 +219,13 @@ class TestSecretSelection(GitHubWebhookTestCase):
 
         assert response.status_code == 401
         assert IncomingEvent.objects.count() == 1
+
+    def test_the_body_cannot_choose_the_secret(self) -> None:
+        self.store.entries[f"{PREFIX}/repository-202"] = SECRET_B
+        body = _payload(repository={"id": 202, "full_name": "owner/other"})
+
+        assert self.deliver(body, secret=SECRET_B).status_code == 401
+        assert self.deliver(body, headers={"X-GitHub-Delivery": "d-2"}).status_code == 200
 
     def test_missing_or_malformed_signature_is_401_before_the_store(self) -> None:
         for signature in (None, "sha256=deadbeef", "sha1=" + "0" * 40, "sha256=" + "\u00e9" * 64):
