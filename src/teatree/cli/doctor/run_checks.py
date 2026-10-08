@@ -30,6 +30,7 @@ from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_browser import _check_browser_ready
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
 from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool
+from teatree.cli.doctor.checks_codex_login import check_codex_login
 from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
@@ -273,6 +274,7 @@ def _run_loop_intent_gates() -> bool:
     check_metered_lane_ceiling()
     check_metered_usage_unknown()
     check_overlay_harness_agreement()
+    check_codex_login()
     verdicts = [
         _check_loop_presets(),
         _check_loop_classification_drift(),
