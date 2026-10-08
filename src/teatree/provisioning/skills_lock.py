@@ -18,9 +18,10 @@ def read_install_refs(home: Path) -> dict[str, tuple[str, str]] | None:
         record = json.loads(lock_path(home).read_text(encoding="utf-8"))
         if record["version"] != _SCHEMA:
             return None
-        return {
-            name: (entry.get("source", "").lower(), (entry.get("ref") or "").lower())
-            for name, entry in record["skills"].items()
-        }
+        refs: dict[str, tuple[str, str]] = {}
+        for name, entry in record["skills"].items():
+            source = entry.get("source")
+            refs[name] = ((source if source is not None else "").lower(), (entry.get("ref") or "").lower())
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
+    return refs
