@@ -190,7 +190,7 @@ enumerates ([#3652](https://github.com/souliane/teatree/issues/3652)):
 
 | Surface | Declares | Provisioned by |
 | --- | --- | --- |
-| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …) | `t3 setup` (`MandatedSkillProvisioner`) |
+| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …), each pinned to a 40-hex commit | `t3 setup` (`MandatedSkillProvisioner`) |
 | `pyproject.toml` → `[tool.teatree.provisioning].required_binaries` | required tools (`direnv`, `git`, `jq`) | the operator's package manager |
 | `~/.claude/settings.json` → `enabledPlugins` | enabled agent plugins | `t3 setup` (plugin registrars) |
 
@@ -202,7 +202,10 @@ up with no edit to the check.
 
 `t3 setup` installs every enumerable manifest dependency for Claude Code and Codex
 through the pinned skills CLI. It selects the declared names explicitly and remains
-idempotent when the container entrypoint runs setup on every start.
+idempotent when the container entrypoint runs setup on every start. It refuses any entry
+that is not a 40-hex commit (`pinned_commit`), and any pin that is also a branch or tag
+name on its source or cannot be read there, before the CLI runs; overlay skill sources
+and skill links never replace a pinned skill.
 
 The hooks cover these events:
 

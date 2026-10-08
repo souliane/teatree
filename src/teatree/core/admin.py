@@ -1,7 +1,12 @@
+import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from django import forms
+from django.apps import apps
 from django.contrib import admin
+from django.db import models
+from django.db.models.constants import LOOKUP_SEP
 from django.forms.renderers import BaseRenderer
 from django.utils.safestring import SafeString
 
@@ -11,18 +16,14 @@ from teatree.core.config_display import is_secret, masked_display, withholds_val
 from teatree.core.models import (
     ConfigSetting,
     Loop,
+    LoopState,
     Mode,
     ModeOverride,
     ModeSchedule,
     ModeScheduleSlot,
     Prompt,
     PromptVersion,
-    PullRequest,
-    Session,
-    Task,
-    TaskAttempt,
     Ticket,
-    Worktree,
 )
 from teatree.core.models.config_setting import ConfigValue
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
@@ -30,36 +31,88 @@ from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 if TYPE_CHECKING:
     from django.http import HttpRequest
 
+# Reads as a credential, a command or captured text; Text/JSON/Binary columns are hidden by type already.
+_MASKED_NAME = re.compile(
+    r"token|secret|passw|credential|cookie|webhook|api_?key|private_?key|command|cmd|argv"
+    r"|(^|_)(env|pass|value|body|text|message|payload|prompt|content|output|stdout|stderr"
+    r"|error|reason|rationale|question|signature|detail|note|hint|email)(_|$)",
+    re.IGNORECASE,
+)
+_NOT_TEXTUAL = (
+    models.IntegerField,
+    models.FloatField,
+    models.DecimalField,
+    models.DateField,
+    models.TimeField,
+    models.DurationField,
+    models.BooleanField,
+)
+
+
+class ReadOnlyAdmin(admin.ModelAdmin):
+    show_full_result_count = False
+    list_display_links = None
+
+    @staticmethod
+    def is_masked(field: models.Field) -> bool:
+        if isinstance(field, models.TextField | models.JSONField | models.BinaryField):
+            return True
+        if field.is_relation or field.choices or isinstance(field, _NOT_TEXTUAL):
+            return False
+        return _MASKED_NAME.search(field.name) is not None
+
+    def visible_fields(self) -> list[models.Field]:
+        return [field for field in self.opts.concrete_fields if not self.is_masked(field)]
+
+    @override
+    def get_list_display(self, request: "HttpRequest") -> list[str]:
+        return [field.attname for field in self.visible_fields()]
+
+    @override
+    def get_list_filter(self, request: "HttpRequest") -> list[str]:
+        return [
+            field.name for field in self.visible_fields() if field.choices or isinstance(field, models.BooleanField)
+        ]
+
+    @override
+    def get_queryset(self, request: "HttpRequest") -> models.QuerySet:
+        return super().get_queryset(request).only(*(field.attname for field in self.visible_fields()))
+
+    # django-types 0.24 predates the ``request`` argument Django 5.0 added to this hook.
+    @override
+    def lookup_allowed(self, lookup: str, value: str, request: "HttpRequest") -> bool:  # ty: ignore[invalid-method-override]
+        masked = {field.name for field in self.opts.concrete_fields if self.is_masked(field)}
+        allowed = super().lookup_allowed(lookup, value, request)  # ty: ignore[too-many-positional-arguments]
+        return lookup.split(LOOKUP_SEP, 1)[0] not in masked and allowed
+
+    @override
+    def has_add_permission(self, request: "HttpRequest") -> bool:
+        return False
+
+    @override
+    def has_change_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
+        return False
+
+    @override
+    def has_delete_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
+        return False
+
+    @override
+    def has_view_permission(self, request: "HttpRequest", obj: models.Model | None = None) -> bool:
+        return obj is None and super().has_view_permission(request)
+
+
+def register_read_only_defaults(site: admin.AdminSite, candidates: Iterable[type[models.Model]]) -> None:
+    for model in candidates:
+        if site.is_registered(model) or isinstance(ReadOnlyAdmin(model, site).opts.pk, models.CompositePrimaryKey):
+            continue
+        site.register(model, ReadOnlyAdmin)
+
 
 @admin.register(Ticket)
-class TicketAdmin(admin.ModelAdmin):
-    list_display = ("id", "state", "variant", "issue_url", "repo_namespaced_key")
+class TicketAdmin(ReadOnlyAdmin):
     search_fields = ("issue_url", "repo_namespaced_key")
-
-
-@admin.register(Worktree)
-class WorktreeAdmin(admin.ModelAdmin):
-    list_display = ("id", "ticket", "repo_path", "branch", "state")
-
-
-@admin.register(Session)
-class SessionAdmin(admin.ModelAdmin):
-    list_display = ("id", "ticket", "agent_id", "started_at", "ended_at")
-
-
-@admin.register(Task)
-class TaskAdmin(admin.ModelAdmin):
-    list_display = ("id", "ticket", "phase", "status", "claimed_by")
-
-
-@admin.register(TaskAttempt)
-class TaskAttemptAdmin(admin.ModelAdmin):
-    list_display = ("id", "task", "exit_code", "ended_at")
-
-
-@admin.register(PullRequest)
-class PullRequestAdmin(admin.ModelAdmin):
-    list_display = ("id", "ticket", "repo", "iid", "state")
+    ordering = ("-pk",)
 
 
 class ShippedDeleteRouting(admin.ModelAdmin):
@@ -113,6 +166,13 @@ class LoopAdmin(ShippedDeleteRouting):
     @staticmethod
     def cadence(obj: Loop) -> str:
         return obj.cadence_label
+
+
+@admin.register(LoopState)
+class LoopStateAdmin(admin.ModelAdmin):
+    list_display = ("name", "status", "updated_at")
+    list_filter = ("status",)
+    search_fields = ("name",)
 
 
 class PromptVersionInline(admin.TabularInline):
@@ -279,3 +339,7 @@ class ModeScheduleSlotAdmin(admin.ModelAdmin):
     list_display = ("id", "schedule", "days", "start_time", "preset_name")
     list_filter = ("schedule",)
     search_fields = ("preset_name",)
+
+
+# Last on purpose: every core model without a hand-written admin above gets the read-only default.
+register_read_only_defaults(admin.site, apps.get_app_config("core").get_models())

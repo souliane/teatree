@@ -176,6 +176,7 @@ class ConsolidatedMemory(models.Model):
 
     class Meta:
         db_table = "teatree_consolidated_memory"
+        verbose_name_plural = "consolidated memories"
         ordering: ClassVar = ["-created_at"]
 
     def __str__(self) -> str:

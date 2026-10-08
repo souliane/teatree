@@ -13,6 +13,7 @@ class AgentRouteAvailability(models.Model):
 
     class Meta:
         db_table = "teatree_agentrouteavailability"
+        verbose_name_plural = "agent route availabilities"
         constraints = (
             models.UniqueConstraint(
                 fields=("overlay", "harness", "provider", "model", "phase"),

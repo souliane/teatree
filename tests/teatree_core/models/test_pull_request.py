@@ -1,25 +1,11 @@
-"""Admin registration and PullRequest model tests.
+"""PullRequest model tests.
 
 souliane/teatree#443 split of test_models.py.
 """
 
-from django.contrib import admin
 from django.test import TestCase
 
-from teatree.core import admin as core_admin
-from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
-
-
-class TestAdmin(TestCase):
-    def test_registers_all_core_models(self) -> None:
-        registry = admin.site._registry
-
-        assert Ticket in registry
-        assert Worktree in registry
-        assert Session in registry
-        assert Task in registry
-        assert TaskAttempt in registry
-        assert core_admin is not None
+from teatree.core.models import PullRequest, Ticket
 
 
 class TestPullRequestModel(TestCase):

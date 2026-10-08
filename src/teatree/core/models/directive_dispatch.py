@@ -94,6 +94,7 @@ class DirectiveDispatch(models.Model):
 
     class Meta:
         db_table = "teatree_directive_dispatch"
+        verbose_name_plural = "directive dispatches"
         ordering: ClassVar = ["-dispatched_at"]
         constraints: ClassVar = [
             models.UniqueConstraint(

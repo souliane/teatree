@@ -4,8 +4,8 @@ An install root (``~/.agents/skills``, ``~/.claude/skills``, ``~/.codex/skills``
 where ``t3 setup`` and apm put a pinned skill. A repo's or overlay's own ``skills/``
 folder resolves first, so a directory there named like a pin silently replaces the
 declared source everywhere the name is loaded (#4766). The resolver refuses that
-instead. Realpath is deliberately not consulted: an install-root symlink into a live
-clone of the declared repo is legitimate, and ``t3 doctor check`` audits provenance.
+instead. Realpath is deliberately not consulted here: ``t3 doctor check`` FAILs an install
+that resolves outside the install roots or into a checkout.
 """
 
 from functools import cache

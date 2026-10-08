@@ -1,10 +1,11 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from teatree.core import skill_sources
 from teatree.harness_skills import SkillsHarness
-from teatree.provisioning.skill_clone_install import CloneInstall
+from teatree.provisioning.skill_clone_install import CloneInstall, InstallPolicy
 from teatree.provisioning.skill_drift import SkillSourceClone
 from teatree.skill_support.demands import SkillDemand
 
@@ -63,7 +64,7 @@ def test_overlay_without_config_has_no_demands(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_declared_source_install_receives_demands_exclusions_and_cli(
-    tmp_path: object,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clone = SkillSourceClone(label="team/skills")
@@ -77,10 +78,14 @@ def test_declared_source_install_receives_demands_exclusions_and_cli(
     monkeypatch.setattr(skill_sources, "install_published_skills", install)
     cli = object()
 
+    manifest = tmp_path / "apm.yml"
+    manifest.write_text("dependencies:\n  apm:\n    - team/skills/backend-dev#abc\n", encoding="utf-8")
+
     result = skill_sources.install_declared_sources(
         cache_root=tmp_path,
         demand_names={"backend-dev"},
         harness_exclusions=["codex:backend-dev"],
+        manifest=manifest,
         cli=cli,
     )
 
@@ -91,7 +96,9 @@ def test_declared_source_install_receives_demands_exclusions_and_cli(
             {
                 "cache_root": tmp_path,
                 "demand_names": {"backend-dev"},
-                "harness_exclusions": [f"{SkillsHarness.CODEX.value}:backend-dev"],
+                "policy": InstallPolicy(
+                    [f"{SkillsHarness.CODEX.value}:backend-dev"], {"backend-dev": "team/skills/backend-dev#abc"}
+                ),
                 "cli": cli,
             },
         )

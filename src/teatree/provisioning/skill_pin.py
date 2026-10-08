@@ -70,30 +70,33 @@ class RemoteHead:
     unreachable: str = ""
 
 
-def read_remote_head(url: str) -> RemoteHead:
-    """The default branch and its tip at *url*, from one ``git ls-remote``.
-
-    Terminal prompting is disabled: a source needing credentials must come back
-    as unreachable rather than blocking a setup run on a password prompt that no
-    unattended caller can answer.
-    """
+def _ls_remote(url: str, *patterns: str, symref: bool = False) -> tuple[str, str]:
+    """``(stdout, "")`` for one ``git ls-remote``, or ``("", why)``; credentials mean unreachable, never a prompt."""
     try:
         result = run_allowed_to_fail(
-            ["git", "ls-remote", "--symref", url, _HEAD],
+            ["git", "ls-remote", *(["--symref"] if symref else []), url, *patterns],
             expected_codes=None,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
             timeout=_LS_REMOTE_TIMEOUT_SECONDS,
         )
     except TimeoutExpired:
-        return RemoteHead(unreachable=f"{url} did not answer within {_LS_REMOTE_TIMEOUT_SECONDS}s")
+        return "", f"{url} did not answer within {_LS_REMOTE_TIMEOUT_SECONDS}s"
     except OSError as exc:
-        return RemoteHead(unreachable=f"{url} could not be read: {exc}")
+        return "", f"{url} could not be read: {exc}"
     if result.returncode != 0:
         detail = next((line.strip() for line in reversed(result.stderr.splitlines()) if line.strip()), "")
-        return RemoteHead(unreachable=f"{url} is unreachable: {detail or f'git exited {result.returncode}'}")
+        return "", f"{url} is unreachable: {detail or f'git exited {result.returncode}'}"
+    return result.stdout, ""
+
+
+def read_remote_head(url: str) -> RemoteHead:
+    """The default branch and its tip at *url*, from one ``git ls-remote``."""
+    stdout, unreachable = _ls_remote(url, _HEAD, symref=True)
+    if unreachable:
+        return RemoteHead(unreachable=unreachable)
 
     branch, sha = "", ""
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         left, _, right = line.partition("\t")
         if right.strip() != _HEAD:
             continue
@@ -104,6 +107,14 @@ def read_remote_head(url: str) -> RemoteHead:
     if not sha:
         return RemoteHead(branch=branch, unreachable=f"{url} reports no {_HEAD} commit")
     return RemoteHead(sha=sha, branch=branch)
+
+
+def refs_named(url: str, name: str) -> tuple[str, ...] | None:
+    """The branches and tags at *url* named *name* (the CLI clones ``--branch`` first), or ``None`` if unreadable."""
+    stdout, unreachable = _ls_remote(url, f"refs/heads/{name}", f"refs/tags/{name}")
+    if unreachable:
+        return None
+    return tuple(line.partition("\t")[2] for line in stdout.splitlines() if line)
 
 
 @dataclass(frozen=True, slots=True)
