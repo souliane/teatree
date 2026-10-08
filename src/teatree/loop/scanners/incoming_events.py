@@ -155,9 +155,9 @@ class IncomingEventsScanner:
     def _resolve_parent_text(self, event: "IncomingEvent") -> None:
         """Fetch and persist the parent message's text for a thread reply (#2230).
 
-        The webhook records ``parent_ts`` deterministically (no network on
-        the fast-return path) but a reply payload never carries the parent's
-        text. Here in the loop — off the receiver's fast path — the parent
+        No current receiver sets ``parent_ts``, so only rows stored with one
+        reach this, and a reply payload never carries the parent's text.
+        Here in the loop — off the receiver's fast path — the parent
         text is fetched via the messaging backend and persisted so the
         answerer reads the referent ("approve posting the evidence?") rather
         than guessing from the bare reply. The backend resolves against the
