@@ -25,6 +25,7 @@ from teatree.core.models import CriticDispatch, CriticVerdict, DeferredQuestion,
 from teatree.core.models.directive import Directive
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.quality.debt_delta import DebtWaiver
+from tests._owner_channel import answer_on_slack
 from tests.integration.directive_dogfood.exemplar import (
     ACCEPTANCE_NODE_ID,
     EXEMPLAR_ENVELOPE,
@@ -66,7 +67,7 @@ def _admitted_setting_policy_gate() -> Directive:
     directive.record_interpretation(sketch_from_envelope(raw), constraint_statement="at most 1 open PR")
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    answer_on_slack(question, "approve")
     directive.refresh_from_db()
     directive.admit()
     return directive

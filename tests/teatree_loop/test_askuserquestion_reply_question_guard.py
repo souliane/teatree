@@ -25,6 +25,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -44,6 +45,7 @@ class FakeMessaging:
 
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
     route_token: str = "self"
+    user_id: str = OWNER_SLACK_ID
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
@@ -77,7 +79,7 @@ def _record_question(*, slack_ts: str) -> DeferredQuestion:
 
 def _record_reply(text: str, *, slack_ts: str) -> PendingChatInjection:
     row = PendingChatInjection.record(
-        channel=_CHANNEL, slack_ts=slack_ts, text=text, context=DmContext(user_id="U-owner")
+        channel=_CHANNEL, slack_ts=slack_ts, text=text, context=DmContext(user_id=OWNER_SLACK_ID)
     )
     assert row is not None
     return row
