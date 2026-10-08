@@ -4,20 +4,25 @@ from pathlib import Path
 from typing import cast
 
 from teatree.harness_skills import SkillsHarness
-from teatree.provisioning.declared import DeclarationUnreadableError, skills_declared_in_apm_manifest
-from teatree.provisioning.skill_source import SkillSource, parse_skill_source
+from teatree.provisioning.declared import (
+    TEATREE_REPOSITORY,
+    DeclarationUnreadableError,
+    skills_declared_in_apm_manifest,
+)
+from teatree.provisioning.skill_pin import DEFAULT_REMOTE_BASE, refs_named
+from teatree.provisioning.skill_source import SkillSource, parse_skill_source, pinned_commit
 from teatree.provisioning.skills_cli import SkillAddResult, SkillAddStatus, SkillsCli, SkillsCliError
 
 type Echo = Callable[[str], None]
 
 _HARNESSES = (SkillsHarness.CLAUDE_CODE, SkillsHarness.CODEX)
-_TEATREE_REPOSITORY = "souliane/teatree"
 
 
 class MandatedSkillProvisioner:
-    def __init__(self, repo: Path, *, cli: SkillsCli | None = None) -> None:
+    def __init__(self, repo: Path, *, cli: SkillsCli | None = None, remote_base: str = DEFAULT_REMOTE_BASE) -> None:
         self.repo = repo
         self.cli = cli or SkillsCli()
+        self.remote_base = remote_base
 
     def provision(self, echo: Echo) -> bool:
         try:
@@ -31,19 +36,24 @@ class MandatedSkillProvisioner:
             echo(f"WARN  Mandated-skill provisioning skipped: {error}")
             return False
 
-        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        succeeded = True
+        grouped: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         for dependency in declared:
             source = cast("SkillSource", parse_skill_source(dependency.source))
-            if source.owner_repo == _TEATREE_REPOSITORY:
+            if source.owner_repo == TEATREE_REPOSITORY:
                 continue
-            package = f"{source.owner_repo}{f'#{source.ref}' if source.ref else ''}"
-            grouped.setdefault(package, []).append(dependency.name)
+            if not (commit := pinned_commit(dependency.source)):
+                echo(f"WARN  Skill '{dependency.name}' not installed: `{dependency.source}` has no 40-hex commit")
+                succeeded = False
+                continue
+            key = (f"{source.owner_repo}#{commit}", source.remote_url(self.remote_base))
+            grouped.setdefault(key, []).append(dependency.name)
 
-        if not grouped:
-            return True
-
-        succeeded = True
-        for package, names in grouped.items():
+        for (package, url), names in grouped.items():
+            if reason := self._refusal(package, url):
+                echo(f"WARN  Mandated skills from {package} not installed: {reason}.")
+                succeeded = False
+                continue
             try:
                 results = self.cli.add_selected(package, _HARNESSES, tuple(names))
             except SkillsCliError as error:
@@ -54,14 +64,20 @@ class MandatedSkillProvisioner:
         return succeeded
 
     @staticmethod
+    def _refusal(package: str, url: str) -> str:
+        commit = package.partition("#")[2]
+        refs = refs_named(url, commit)
+        if refs is None:
+            return f"{url} is unreadable (a private source cannot be proved); the installed copy is left unchanged"
+        return f"{url} has {', '.join(refs)} named like the pin, so the CLI installs its tip" if refs else ""
+
+    @staticmethod
     def _report(results: tuple[SkillAddResult, ...], echo: Echo) -> bool:
         succeeded = True
         for result in results:
-            if result.status is SkillAddStatus.FAILED:
+            if result.status is SkillAddStatus.INSTALLED:
+                echo(f"OK    Mandated skill '{result.name}' installed for Claude Code and Codex.")
+            else:
                 echo(f"WARN  Mandated skill '{result.name}' could not be provisioned by the skills CLI.")
                 succeeded = False
-            elif result.status is SkillAddStatus.SKIPPED:
-                echo(f"OK    Mandated skill '{result.name}' already installed for Claude Code and Codex.")
-            else:
-                echo(f"OK    Mandated skill '{result.name}' installed for Claude Code and Codex.")
         return succeeded

@@ -218,19 +218,8 @@ class TestADeclaredSkillSatisfiedByAnotherSource:
         ok, output = _run(project_root, home)
 
         assert not ok
-        assert f"a checkout of souliane/teatree, not the declared `souliane/skills/ac-python#{_PIN}`" in output
-
-    def test_an_install_symlink_into_a_live_clone_of_the_declared_repo_is_silent(
-        self, project_root: Path, home: Path, tmp_path: Path
-    ) -> None:
-        clone = _checkout(tmp_path / "skills-clone", "git@github.com:souliane/skills.git", "ac-python")
-        (home / ".claude" / "skills" / "ac-python").symlink_to(clone, target_is_directory=True)
-        _install(home / ".claude" / "skills", "ac-django")
-
-        ok, output = _run(project_root, home)
-
-        assert ok
-        assert "FAIL" not in output
+        assert str(foreign.resolve()) in output
+        assert f"`souliane/skills/ac-python#{_PIN}`" in output
 
 
 class TestADeclaredSkillSpecMustPinAFullCommit:
@@ -261,3 +250,211 @@ class TestADeclaredSkillSpecMustPinAFullCommit:
 
         assert "Declared dependency not provisioned: skill" in output, "the shipped manifest was not enumerated"
         assert "names no 40-hex commit" not in output
+
+
+@pytest.fixture(autouse=True)
+def _no_xdg_state_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+
+
+def _standard_install(home: Path, name: str) -> Path:
+    real = _install(home / ".agents" / "skills", name)
+    (home / ".claude" / "skills" / name).symlink_to(Path("../../.agents/skills") / name)
+    return real
+
+
+def _both_installed(home: Path, *, except_name: str = "") -> None:
+    for name in ("ac-python", "ac-django"):
+        if name != except_name:
+            _standard_install(home, name)
+
+
+def _write_record(home: Path, **skills: dict[str, str]) -> None:
+    lock = home / ".agents" / ".skill-lock.json"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"version": 3, "skills": skills}), encoding="utf-8")
+
+
+def _matching_record(home: Path) -> None:
+    _write_record(home, **{name: {"source": "souliane/skills", "ref": _PIN} for name in ("ac-python", "ac-django")})
+
+
+class TestAnInstallMustBeAnInstallerManagedCopy:
+    """A pinned skill that resolves into a checkout or any tree no installer manages is a FAIL (#4769)."""
+
+    def _assert_refused(self, project_root: Path, home: Path, offender: Path) -> None:
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert f"FAIL  Declared skill 'ac-python' at {offender}" in output
+        assert "remove the link" in output
+        assert f"`souliane/skills/ac-python#{_PIN}`" in output
+        assert "t3 setup" in output
+        assert "ac-django" not in output
+
+    def test_the_standard_layout_a_real_directory_and_a_home_that_is_a_git_repo_are_silent(
+        self, project_root: Path, home: Path
+    ) -> None:
+        (home / ".git").mkdir()
+        _standard_install(home, "ac-python")
+        _install(home / ".claude" / "skills", "ac-django")
+        _matching_record(home)
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "FAIL" not in output
+
+    def test_a_link_into_a_clone_of_the_declared_repo_fails(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        clone = _checkout(tmp_path / "skills-clone", "git@github.com:souliane/skills.git", "ac-python")
+        (home / ".claude" / "skills" / "ac-python").symlink_to(clone, target_is_directory=True)
+        _standard_install(home, "ac-django")
+
+        self._assert_refused(project_root, home, home / ".claude" / "skills" / "ac-python")
+
+    def test_a_link_into_the_overlay_tree_fails_although_it_is_no_checkout(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        overlay_copy = _install(tmp_path / "overlay" / "skills", "ac-python")
+        (home / ".claude" / "skills" / "ac-python").symlink_to(overlay_copy, target_is_directory=True)
+        _standard_install(home, "ac-django")
+
+        self._assert_refused(project_root, home, home / ".claude" / "skills" / "ac-python")
+
+    def test_a_replaced_front_door_fails_although_agents_holds_an_intact_copy(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        clone = _checkout(tmp_path / "skills-clone", "git@github.com:souliane/skills.git", "ac-python")
+        _install(home / ".agents" / "skills", "ac-python")
+        (home / ".claude" / "skills" / "ac-python").symlink_to(clone, target_is_directory=True)
+        _standard_install(home, "ac-django")
+        order = [project_root / "skills", home / ".agents" / "skills", home / ".claude" / "skills"]
+
+        ok, output = _run(project_root, home, search_dirs=order)
+
+        assert not ok
+        assert f"FAIL  Declared skill 'ac-python' at {home / '.claude' / 'skills' / 'ac-python'}" in output
+
+    def test_a_references_dir_linked_into_a_clone_fails(self, project_root: Path, home: Path, tmp_path: Path) -> None:
+        skill = _standard_install(home, "ac-python")
+        _standard_install(home, "ac-django")
+        outside = tmp_path / "skills-clone" / "references"
+        outside.mkdir(parents=True)
+        (skill / "references").symlink_to(outside, target_is_directory=True)
+
+        self._assert_refused(project_root, home, home / ".agents" / "skills" / "ac-python")
+
+    def test_an_install_root_that_is_itself_a_link_into_a_clone_fails(
+        self, project_root: Path, home: Path, tmp_path: Path
+    ) -> None:
+        clone_skills = _checkout(tmp_path / "skills-clone", "git@github.com:souliane/skills.git", "ac-python").parent
+        _install(clone_skills, "ac-django")
+        (home / ".claude" / "skills").rmdir()
+        (home / ".claude" / "skills").symlink_to(clone_skills, target_is_directory=True)
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert f"FAIL  Declared skill 'ac-python' at {home / '.claude' / 'skills' / 'ac-python'}" in output
+        assert "inside the git checkout" in output
+
+    def test_a_real_directory_that_is_a_git_checkout_fails(self, project_root: Path, home: Path) -> None:
+        skill = _install(home / ".claude" / "skills", "ac-python")
+        git_run.run_strict(repo=str(skill), args=["init", "-q"])
+        _install(home / ".claude" / "skills", "ac-django")
+
+        self._assert_refused(project_root, home, home / ".claude" / "skills" / "ac-python")
+
+    def test_a_declared_whole_repo_entry_without_a_commit_fails(self, project_root: Path, home: Path) -> None:
+        (project_root / "apm.yml").write_text(_manifest_body(*_DECLARED_SKILLS, "obra/superpowers"), encoding="utf-8")
+        _both_installed(home)
+        _matching_record(home)
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert "`obra/superpowers` names no 40-hex commit" in output
+
+
+class TestTheInstallRecordProvesTheRequestedRef:
+    def test_a_matching_record_is_silent(self, project_root: Path, home: Path) -> None:
+        _both_installed(home)
+        _matching_record(home)
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "FAIL" not in output
+        assert "UNVERIFIED" not in output
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"source": "souliane/skills"},
+            {"source": "souliane/skills", "ref": "a" * 40},
+            {"source": "someone/else", "ref": _PIN},
+        ],
+        ids=["no-ref", "other-ref", "other-source"],
+    )
+    def test_a_record_naming_another_ref_or_source_fails_and_says_what_it_proves(
+        self, project_root: Path, home: Path, entry: dict[str, str]
+    ) -> None:
+        _both_installed(home)
+        _write_record(home, **{"ac-python": entry, "ac-django": {"source": "souliane/skills", "ref": _PIN}})
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert "FAIL  Declared skill 'ac-python'" in output
+        assert "requested ref" in output
+        assert "ac-django" not in output
+
+    def test_a_record_file_without_an_entry_for_an_installed_skill_fails(self, project_root: Path, home: Path) -> None:
+        _both_installed(home)
+        _write_record(home, **{"ac-django": {"source": "souliane/skills", "ref": _PIN}})
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        assert "holds no entry for 'ac-python'" in output
+
+    @pytest.mark.parametrize("body", [None, "{garbage", json.dumps({"version": 4, "skills": {}})])
+    def test_an_absent_unparsable_or_other_schema_record_is_one_unverified_warn(
+        self, project_root: Path, home: Path, body: str | None
+    ) -> None:
+        _both_installed(home)
+        if body is not None:
+            (home / ".agents" / ".skill-lock.json").write_text(body, encoding="utf-8")
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert output.count("UNVERIFIED") == 1
+        assert "FAIL" not in output
+
+    def test_the_record_is_read_where_xdg_state_home_puts_it_never_from_a_stale_agents_copy(
+        self, project_root: Path, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _both_installed(home)
+        _write_record(
+            home, **{name: {"source": "souliane/skills", "ref": "a" * 40} for name in ("ac-python", "ac-django")}
+        )
+        state = tmp_path / "state" / "skills"
+        state.mkdir(parents=True)
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        (state / ".skill-lock.json").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "skills": {n: {"source": "souliane/skills", "ref": _PIN} for n in ("ac-python", "ac-django")},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "FAIL" not in output

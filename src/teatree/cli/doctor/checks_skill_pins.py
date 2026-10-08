@@ -24,11 +24,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.provisioning.declared import (
-    DeclarationUnreadableError,
-    pinned_specs_in_apm_manifest,
-    project_root_for_running_code,
-)
+from teatree.provisioning.declared import DeclarationUnreadableError, apm_entries, project_root_for_running_code
 from teatree.provisioning.skill_pin import (
     MEASUREMENT_HORIZON,
     PinAudit,
@@ -114,7 +110,7 @@ def _unmeasured_pin_lines(audit: PinAudit, manifest: Path | None) -> list[str]:
             )
         ]
     try:
-        declared = pinned_specs_in_apm_manifest(surface)
+        declared = [spec for spec in apm_entries(surface) if spec.partition("#")[2].strip()]
     except DeclarationUnreadableError as exc:
         return [
             (

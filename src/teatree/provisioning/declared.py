@@ -26,8 +26,11 @@ from typing import Literal
 
 import yaml
 
+from teatree.provisioning.skill_source import owner_repo, pinned_commit
+
 type DependencyKind = Literal["skill", "binary", "integration"]
 
+TEATREE_REPOSITORY = "souliane/teatree"
 _APM_MANIFEST = "apm.yml"
 _PYPROJECT = "pyproject.toml"
 _CLAUDE_SETTINGS = (".claude", "settings.json")
@@ -94,12 +97,11 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
 
     An entry of shape ``<owner>/<repo>/<subpath>[#<ref>]`` names ONE skill (its
     last path segment). A two-segment entry is a whole-repo bundle that names no
-    single skill, so it declares nothing enumerable here — and therefore nothing
-    the pin surface can measure either, which is why
-    :func:`pinned_specs_in_apm_manifest` exists alongside this.
+    single skill, so it declares nothing enumerable here — which is why
+    :func:`unpinned_apm_entries` reads every entry instead.
     """
     declared: list[DeclaredDependency] = []
-    for spec in _apm_entries(manifest):
+    for spec in apm_entries(manifest):
         segments = spec.split("#", 1)[0].strip("/").split("/")
         if len(segments) < _MIN_SKILL_SPEC_SEGMENTS:
             continue
@@ -115,23 +117,17 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
     return declared
 
 
-def pinned_specs_in_apm_manifest(manifest: Path) -> list[str]:
-    """EVERY ``dependencies.apm`` entry carrying a ``#<ref>``, whatever its shape.
+def unpinned_apm_entries(manifest: Path) -> list[str]:
+    """Every ``dependencies.apm`` entry, whole-repo bundles included, that names no 40-hex commit.
 
-    The pin surface's counterpart to :func:`skills_declared_in_apm_manifest`, and
-    deliberately a different question. That one enumerates entries naming ONE
-    installable skill, so it drops a two-segment whole-repo bundle — right for "is this
-    skill present", wrong for "is this pin current": a bundle pin mandates a commit
-    like any other.
-
-    Returns raw specs rather than :class:`DeclaredDependency` rows precisely so this
-    cannot be mistaken for an install mandate and handed to the provisioner, which would
-    try to install a skill named after the repo and fail the very gate it feeds.
+    This repository's own in-repo skills are exempt: they install from the running checkout.
     """
-    return [spec for spec in _apm_entries(manifest) if spec.partition("#")[2].strip()]
+    return [
+        spec for spec in apm_entries(manifest) if owner_repo(spec) != TEATREE_REPOSITORY and not pinned_commit(spec)
+    ]
 
 
-def _apm_entries(manifest: Path) -> list[str]:
+def apm_entries(manifest: Path) -> list[str]:
     """The ``dependencies.apm`` list as trimmed non-empty strings.
 
     Raises :class:`DeclarationUnreadableError` when the surface cannot be read: "I could
