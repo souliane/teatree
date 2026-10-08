@@ -199,6 +199,12 @@ exit "${STUB_FF_EXIT:-0}"
 """
 
 
+_SYNC_HOOK_ENV_STUB = """#!/usr/bin/env bash
+printf 'sync-hook-env %s\\n' "$*" >>"${STUB_DOCKER_LOG:-/dev/null}"
+exit "${STUB_SYNC_EXIT:-0}"
+"""
+
+
 def _seconds_ago(seconds: int) -> str:
     return (datetime.now(UTC) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
 
@@ -219,6 +225,7 @@ def checkout(tmp_path: Path) -> Path:
     (deploy / "deploy.sh").chmod(0o755)
     (deploy / "teatree.env").write_text("", encoding="utf-8")
     _write_exec(deploy / "fast-forward-checkout.sh", _FF_STUB)
+    _write_exec(deploy / "sync-hook-env.sh", _SYNC_HOOK_ENV_STUB)
     _write_exec(deploy / "install-host-pressure.zsh", "#!/usr/bin/env bash\nexit 0\n")
 
     probe = root / "src" / "teatree" / "utils"
@@ -895,3 +902,21 @@ class TestTheContainersLearnTheHostOs:
         _, calls = _run(checkout, tmp_path, TEATREE_HOST_OS="")
 
         assert f"host-os {os.uname().sysname}" in calls
+
+
+class TestTheHostHookEnvFollowsTheConvergedCheckout:
+    def test_a_converged_deploy_re_syncs_the_hook_env_after_the_last_up(self, checkout: Path, tmp_path: Path) -> None:
+        proc, calls = _run(checkout, tmp_path)
+
+        sync_at = next((i for i, call in enumerate(calls) if call.startswith("sync-hook-env ")), -1)
+        last_up_at = max(i for i, call in enumerate(calls) if _is_up(_compose_args(call)))
+        assert proc.returncode == 0, proc.stderr
+        assert sync_at != -1, "a converged deploy never re-syncs the host hook tool env"
+        assert calls[sync_at] == f"sync-hook-env {checkout.resolve()}"
+        assert sync_at > last_up_at
+
+    def test_a_failed_re_sync_fails_the_deploy_naming_the_converged_stack(self, checkout: Path, tmp_path: Path) -> None:
+        proc, _ = _run(checkout, tmp_path, STUB_SYNC_EXIT="1")
+
+        assert proc.returncode != 0
+        assert "the stack converged; only the host hook tool env re-sync above failed" in proc.stderr

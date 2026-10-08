@@ -6,6 +6,9 @@ against a declared ``mcp>=2,<3``. Nothing was MISSING, so
 ever surfaced as an ``ImportError`` at the moment the MCP server had to start.
 """
 
+import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -103,3 +106,58 @@ class TestItsOwnImportsAreDeclared:
         assert "packaging" in declared_dependency_names(pyproject), (
             f"{pyproject} does not declare 'packaging', which teatree.utils.dep_skew imports directly"
         )
+
+
+class TestMainKeepsStaleApartFromCrashed:
+    """The deploy verify reads rc 1 WITH stdout as stale, and anything else as could-not-verify."""
+
+    def test_a_satisfied_env_exits_zero_and_prints_nothing(
+        self, pyproject: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert dep_skew.main([str(_write(pyproject, "pytest>=1"))]) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_skew_exits_one_with_each_summary_on_stdout(
+        self, pyproject: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert dep_skew.main([str(_write(pyproject, "t5764-absent-dep>=1", "pytest<1"))]) == 1
+
+        lines = capsys.readouterr().out.splitlines()
+        assert len(lines) == 2
+        assert lines[0] == "t5764-absent-dep declares '>=1' but NOT INSTALLED is installed"
+        assert lines[1].startswith("pytest declares '<1' but ")
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            pytest.param(lambda _tmp: [], id="no-argument"),
+            pytest.param(lambda tmp: [str(tmp / "a.toml"), str(tmp / "b.toml")], id="two-arguments"),
+            pytest.param(lambda tmp: [str(tmp / "absent.toml")], id="unreadable-pyproject"),
+            pytest.param(lambda tmp: [str(_garbled(tmp))], id="invalid-toml"),
+        ],
+    )
+    def test_usage_and_read_errors_exit_two_on_stderr_only(
+        self, argv: Callable[[Path], list[str]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert dep_skew.main(argv(tmp_path)) == 2
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.strip()
+
+    def test_the_module_entry_point_exits_one_for_an_absent_dep(self, pyproject: Path) -> None:
+        proc = subprocess.run(
+            [sys.executable, "-m", "teatree.utils.dep_skew", str(_write(pyproject, "t5764-absent-dep>=1"))],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proc.returncode == 1, proc.stderr
+        assert "t5764-absent-dep declares '>=1'" in proc.stdout
+
+
+def _garbled(tmp_path: Path) -> Path:
+    path = tmp_path / "garbled.toml"
+    path.write_text("[project\n", encoding="utf-8")
+    return path

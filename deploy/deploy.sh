@@ -807,6 +807,11 @@ done
 
 if [ "$admin_up" = true ] && worker_running; then
     echo "deploy: admin + worker are up; stack converged."
+    # After convergence: it never lengthens the drained window or aborts a half-swapped stack.
+    bash "$SCRIPT_DIR/sync-hook-env.sh" "$REPO_ROOT" || {
+        echo "deploy: the stack converged; only the host hook tool env re-sync above failed." >&2
+        exit 1
+    }
     exit 0
 fi
 

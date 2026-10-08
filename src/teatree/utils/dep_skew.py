@@ -11,9 +11,11 @@ only ever surfaced as an ``ImportError`` at the exact moment the server had to s
 
 Separate module because the answer needs real specifier semantics
 (:mod:`packaging`), which is a non-stdlib import that has no business inside the
-bootstrap-safe drift check. This one runs post-bootstrap, from ``t3 doctor``.
+bootstrap-safe drift check. This one runs post-bootstrap: from ``t3 doctor``, from
+``t3 update``, and as ``python -m`` for the deploy's host hook tool env verify.
 """
 
+import sys
 import tomllib
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -21,7 +23,7 @@ from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
 
-from teatree.utils.dep_drift import normalize
+from teatree.utils import dep_drift
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +86,37 @@ def find_version_skew(pyproject_path: Path) -> list[VersionSkew]:
             continue
         skew.append(
             VersionSkew(
-                name=normalize(requirement.name),
+                name=dep_drift.normalize(requirement.name),
                 declared=str(requirement.specifier) or "any",
                 installed=installed,
             ),
         )
     return skew
+
+
+def running_env_skew() -> tuple[Path, list[VersionSkew]] | None:
+    """The running env's skew against its editable source, or ``None`` when there is no source to measure."""
+    source = dep_drift.editable_source_path()
+    if source is None or not (source / "pyproject.toml").is_file():
+        return None
+    return source, find_version_skew(source / "pyproject.toml")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Exit 0 when satisfied, 1 with one summary per skew on stdout, 2 when the check itself cannot run."""
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        sys.stderr.write("usage: python -m teatree.utils.dep_skew <pyproject.toml>\n")
+        return 2
+    try:
+        skews = find_version_skew(Path(args[0]))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        sys.stderr.write(f"cannot read {args[0]}: {exc}\n")
+        return 2
+    for skew in skews:
+        sys.stdout.write(f"{skew.summary}\n")
+    return 1 if skews else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

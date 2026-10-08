@@ -12,6 +12,7 @@ The stubs are recording callables, not ``Mock()`` assertions on call_args.
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,12 +28,13 @@ from teatree.cli.update import (
     RepoUpdate,
     UpdateStatus,
     _collect_repos,
-    _declared_deps_missing,
     _git_toplevel,
     _reinstall_and_resetup,
+    _tool_env_skew,
     update_repo,
 )
 from teatree.core.worktree.branch_classification import content_equivalence_blockers
+from teatree.utils import dep_drift
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -528,7 +530,7 @@ class TestReinstallAndResetup:
     ) -> None:
         called: list[bool] = []
         monkeypatch.setattr(update_mod, "reinstall_running_editable", lambda: called.append(True))
-        monkeypatch.setattr(update_mod, "_declared_deps_missing", list)
+        monkeypatch.setattr(update_mod, "_tool_env_skew", dict)
 
         _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UP_TO_DATE)])
 
@@ -586,7 +588,11 @@ class TestReinstallAndResetup:
         # MUST still fire — the bare advance flag would have skipped it.
         reinstalled: list[bool] = []
         monkeypatch.setattr(update_mod.shutil, "which", lambda _name: "/usr/bin/uv")
-        monkeypatch.setattr(update_mod, "_declared_deps_missing", lambda: ["django-linear-migrations"])
+        monkeypatch.setattr(
+            update_mod,
+            "_tool_env_skew",
+            lambda: {"django-linear-migrations": "django-linear-migrations declares '>=2' but NOT INSTALLED"},
+        )
         monkeypatch.setattr(
             update_mod,
             "reinstall_running_editable",
@@ -601,32 +607,138 @@ class TestReinstallAndResetup:
         assert "resyncing" in out.lower()
 
 
-class TestDeclaredDepsMissing:
-    """The drift probe that decouples the dep re-sync from the per-run flag (#2377).
+class TestToolEnvSkew:
+    """The probe that decouples the dep re-sync from the per-run flag (#2377).
 
-    Detection reuses ``teatree.utils.dep_drift`` against the running ``t3``'s
-    editable source; the only thing stubbed is that source resolution, which
+    Detection is the doctor's own ``dep_skew.running_env_skew`` against the running
+    ``t3``'s editable source; the only thing stubbed is that source resolution, which
     reaches into the host install metadata.
     """
 
-    def test_non_editable_install_reports_no_drift(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(update_mod, "editable_source_path", lambda: None)
+    def test_non_editable_install_reports_no_skew(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(dep_drift, "editable_source_path", lambda: None)
 
-        assert _declared_deps_missing() == []
+        assert _tool_env_skew() == {}
 
-    def test_missing_pyproject_reports_no_drift(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setattr(update_mod, "editable_source_path", lambda: tmp_path)
+    def test_missing_pyproject_reports_no_skew(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(dep_drift, "editable_source_path", lambda: tmp_path)
 
-        assert _declared_deps_missing() == []
+        assert _tool_env_skew() == {}
 
-    def test_reports_declared_dep_absent_from_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\ndependencies = ["a-dep-that-is-not-installed-xyz>=1.0"]\n',
-            encoding="utf-8",
+    def test_an_env_that_cannot_import_the_skew_check_is_stale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = []\n", encoding="utf-8")
+        monkeypatch.setattr(dep_drift, "editable_source_path", lambda: tmp_path)
+        monkeypatch.delitem(sys.modules, "teatree.utils.dep_skew", raising=False)
+        monkeypatch.setitem(sys.modules, "packaging.requirements", None)
+
+        assert _tool_env_skew() == {
+            "packaging.requirements": "the skew check cannot import packaging.requirements",
+        }
+
+
+@dataclass
+class _ToolEnv:
+    source: Path
+    site: Path
+    reinstalls: list[bool]
+
+    def declare(self, *deps: str) -> None:
+        listed = ", ".join(f'"{dep}"' for dep in deps)
+        (self.source / "pyproject.toml").write_text(f"[project]\ndependencies = [{listed}]\n", encoding="utf-8")
+
+    def reinstall(self, result: ReinstallResult, *, installs: str = "") -> Callable[[], ReinstallResult]:
+        def stub() -> ReinstallResult:
+            self.reinstalls.append(True)
+            if installs:
+                dist = self.site / f"{installs}-1.0.dist-info"
+                dist.mkdir()
+                (dist / "METADATA").write_text(
+                    f"Metadata-Version: 2.1\nName: {installs}\nVersion: 1.0\n", encoding="utf-8"
+                )
+            return result
+
+        return stub
+
+
+@pytest.fixture
+def tool_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _ToolEnv:
+    clone = _clone(tmp_path, _make_remote(tmp_path))
+    env = _ToolEnv(source=tmp_path / "source", site=tmp_path / "site", reinstalls=[])
+    env.source.mkdir()
+    env.site.mkdir()
+    monkeypatch.syspath_prepend(str(env.site))
+    monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("clone", clone)])
+    monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
+    monkeypatch.setattr(dep_drift, "editable_source_path", lambda: env.source)
+    return env
+
+
+def _drive_update(capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    try:
+        update_mod._run_update()
+    except click.exceptions.Exit as exc:
+        return exc.exit_code, capsys.readouterr().out.splitlines()
+    return 0, capsys.readouterr().out.splitlines()
+
+
+class TestToolEnvResyncedThenVerified:
+    """A stale tool env is re-synced even with no repo advanced, and a re-sync that leaves it stale fails the run."""
+
+    def test_an_installed_but_out_of_range_dep_triggers_the_resync(
+        self, tool_env: _ToolEnv, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        tool_env.declare("pytest<1")
+        monkeypatch.setattr(
+            update_mod, "reinstall_running_editable", tool_env.reinstall(ReinstallResult(ok=True, reinstalled=True))
         )
-        monkeypatch.setattr(update_mod, "editable_source_path", lambda: tmp_path)
 
-        assert _declared_deps_missing() == ["a-dep-that-is-not-installed-xyz"]
+        _drive_update(capsys)
+
+        assert tool_env.reinstalls == [True]
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            pytest.param(ReinstallResult(ok=True, reinstalled=True), id="reinstall-ok"),
+            pytest.param(ReinstallResult(ok=False, reinstalled=False, error="reinstall: boom"), id="reinstall-failed"),
+        ],
+    )
+    def test_a_resync_that_leaves_the_env_stale_fails_the_run_with_one_line(
+        self,
+        result: ReinstallResult,
+        tool_env: _ToolEnv,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        tool_env.declare("t5764-absent-dep>=1")
+        monkeypatch.setattr(update_mod, "reinstall_running_editable", tool_env.reinstall(result))
+
+        code, lines = _drive_update(capsys)
+
+        failures = [line for line in lines if line.startswith("FAIL  ")]
+        assert code == 1
+        assert len(failures) == 1, lines
+        assert "t5764-absent-dep" in failures[0]
+        assert "fix:" in failures[0]
+        assert result.error in failures[0]
+
+    def test_an_env_the_resync_repairs_is_measured_again_and_passes(
+        self, tool_env: _ToolEnv, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        tool_env.declare("t5764-fake-dep>=1")
+        monkeypatch.setattr(
+            update_mod,
+            "reinstall_running_editable",
+            tool_env.reinstall(ReinstallResult(ok=True, reinstalled=True), installs="t5764_fake_dep"),
+        )
+
+        code, lines = _drive_update(capsys)
+
+        assert tool_env.reinstalls == [True]
+        assert code == 0, lines
+        assert not [line for line in lines if line.startswith("FAIL  ")]
 
 
 class TestSelfDbMigrationOnUpdate:
