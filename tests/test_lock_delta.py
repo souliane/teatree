@@ -62,6 +62,9 @@ class TestClassify:
             ("0.9.1", "0.10.0", Level.MINOR),
             ("1.2.3", "2.0.0", Level.MAJOR),
             ("2.0.0", "1.9.0", Level.DOWNGRADE),
+            pytest.param("1.2.4-custom", "1.2.3-custom", Level.DOWNGRADE, id="non-pep440-falls-back-to-release"),
+            pytest.param("2.0.0a1", "2.0.0.dev1", Level.DOWNGRADE, id="dev-release-sorts-before-alpha"),
+            pytest.param("1!1.0.0", "2.0.0", Level.DOWNGRADE, id="epoch-outranks-release"),
         ],
     )
     def test_boundary_level(self, before: str, after: str, expected: Level) -> None:
