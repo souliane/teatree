@@ -98,6 +98,10 @@ def _is_worktree_isolated_db(db_path: str, *, isolation_root: Path) -> bool:
     return True
 
 
+def active_db_is_worktree_isolated() -> bool:
+    return _is_worktree_isolated_db(_active_db_path(), isolation_root=paths.auto_isolated_worktrees_dir())
+
+
 def assert_lifecycle_db_is_canonical(
     ticket: Ticket,
     *,
@@ -122,14 +126,7 @@ def assert_lifecycle_db_is_canonical(
     embedded in the refusal message (production reads the real connection /
     :data:`paths.TRUE_CANONICAL_DB`).
     """
-    if auto_isolated is None:
-        is_isolated = _is_worktree_isolated_db(
-            _active_db_path(),
-            isolation_root=paths.auto_isolated_worktrees_dir(),
-        )
-    else:
-        is_isolated = auto_isolated
-    if not is_isolated:
+    if not (active_db_is_worktree_isolated() if auto_isolated is None else auto_isolated):
         return
     raise WrongWorktreeDBError(
         ticket,
