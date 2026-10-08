@@ -39,6 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
+from teatree.config.agent_spawn import _skill_models_from, parse_phase_harness_entry
 from teatree.config.setting_parsers import (
     _parse_private_repos,
     _parse_strict_bool,
@@ -62,10 +63,15 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
 
 def _parse_agent_skill_models(raw: object) -> dict[str, list[object]]:
     value = _parse_registry_dict(raw)
-    if any(not isinstance(routes, list) for routes in value.values()):
-        msg = "agent_skill_models must map each skill to a list policy"
-        raise TypeError(msg)
+    _skill_models_from(value)
     return cast("dict[str, list[object]]", value)
+
+
+def _parse_agent_phase_harness(raw: object) -> dict[str, Any]:
+    value = _parse_registry_dict(raw)
+    for phase, harness in value.items():
+        parse_phase_harness_entry(str(phase), harness)
+    return value
 
 
 @dataclass(frozen=True)
@@ -121,7 +127,7 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     "agent_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
     "agent_pydantic_ai_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
     "agent_tier_effort": ColdHookSetting(_parse_registry_dict, default={}),
-    "agent_phase_harness": ColdHookSetting(_parse_registry_dict, default={}),
+    "agent_phase_harness": ColdHookSetting(_parse_agent_phase_harness, default={}),
     # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
     "agent_compaction_keep_recent": ColdHookSetting(_parse_registry_dict, default={}),
     # Per-phase depth at which that lane stubs a stale tool result (#4816).

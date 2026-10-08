@@ -84,6 +84,7 @@ from teatree.agents.skill_routing import (
 from teatree.agents.spawn_payload import AgentSpawnError
 from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
 from teatree.config import AgentHarnessProvider
+from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.worktree.occupancy import (
@@ -495,6 +496,7 @@ def _resolve_backend_or_failure(
         CredentialError,
         AmbiguousSkillRouteError,
         ConflictingHarnessRoutingError,
+        InvalidAgentConfigError,
     ) as exc:
         return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
 
