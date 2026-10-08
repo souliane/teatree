@@ -1,0 +1,44 @@
+# TRIGGER: daily, on demand, and on a change to this file — red when a force push landed on main in the last 26 hours.
+name: Scheduled · Force-push alert
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/force-push-alert.yml
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail on a force push to main inside the 26-hour window
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EVENTS="$(gh api "repos/${GITHUB_REPOSITORY}/activity?activity_type=force_push&ref=refs/heads/main&per_page=100")" || {
+            echo "::error::could not read the force-push activity of main" >&2
+            exit 1
+          }
+          export EVENTS
+          python3 - <<'PY'
+          import json, os, sys
+          from datetime import datetime, timedelta, timezone
+
+          cutoff = datetime.now(timezone.utc) - timedelta(hours=26)
+          recent = [
+              event
+              for event in json.loads(os.environ["EVENTS"])
+              if datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00")) >= cutoff
+          ]
+          for event in recent:
+              actor = (event.get("actor") or {}).get("login", "unknown")
+              print(f"::error::force push to main at {event['timestamp']} by {actor}")
+          sys.exit(1 if recent else 0)
+          PY

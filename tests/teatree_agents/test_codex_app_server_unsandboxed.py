@@ -396,7 +396,7 @@ def test_a_protocol_failure_while_reading_the_status_is_not_recorded_as_an_unrea
     command, _log = _command(tmp_path, "garbage_status")
     managers = [] if manager is None else [manager]
 
-    def fresh_manager(code_home: Path) -> SharedCodexAppServer:
+    def fresh_manager(code_home: Path, _forge_env: object = None) -> SharedCodexAppServer:
         managers.append(SharedCodexAppServer(code_home=code_home, cache=_FakeCache(), command=command, process_env={}))
         return managers[-1]
 

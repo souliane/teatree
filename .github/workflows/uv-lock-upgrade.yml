@@ -36,12 +36,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   refresh-lockfile:
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       # #4262: FIRST, because the checkout below is what consumes the credential. A rejected
       # PAT makes checkout die in `could not read Username for 'https://github.com'` — the
@@ -78,6 +81,7 @@ jobs:
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: true
           # Full history so the PR branch can be force-pushed cleanly on reruns.
           fetch-depth: 0
           # Persist a PAT (not the default GITHUB_TOKEN) as the git credential so
@@ -90,7 +94,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       # #4437: the resolve overwrites uv.lock in place, so the only chance to keep the
