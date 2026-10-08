@@ -46,7 +46,7 @@ _SHELL_ESSENTIALS = (
 
 _PYTHON_WRAPPER = f"""#!/bin/sh
 printf 'python %s\\n' "$*" >>"$STUB_LOG"
-if [ "${{FAKE_PY_CRASH:-}}" = 1 ]; then exit 1; fi
+if [ "${{FAKE_PY_CRASH:-}}" = 1 ] && [ "$1" = -m ]; then exit 1; fi
 PYTHONPATH="${{PYTHONPATH:+$PYTHONPATH:}}$FAKE_SITE" exec "{sys.executable}" "$@"
 """
 
@@ -171,7 +171,7 @@ class TestAnOwnedStaleEnvIsSyncedThenVerified:
         assert proc.returncode == 1
         assert len(fatal) == 1, proc.stderr
         assert host.fix in fatal[0]
-        assert host.calls("python ") == []
+        assert host.calls("python -m ") == []
 
     def test_a_crashed_verify_is_reported_as_unverified_never_as_stale(self, host: _Host) -> None:
         proc = host.run(STUB_UV_INSTALLS=_FAKE_DIST, FAKE_PY_CRASH="1")
@@ -219,6 +219,28 @@ class TestOwnership:
         assert proc.returncode == 0, proc.stderr
         assert len(host.calls("uv ")) == 1
 
+    def test_a_comment_cannot_claim_ownership_of_a_foreign_env(self, host: _Host) -> None:
+        (host.hook_env / "uv-receipt.toml").write_text(
+            f'[tool]\nrequirements = [{{ name = "other", editable = "/other" }}]\n'
+            f'# name = "teatree", editable = "{host.checkout}"\n',
+            encoding="utf-8",
+        )
+
+        proc = host.run(STUB_UV_INSTALLS=_FAKE_DIST)
+
+        assert proc.returncode == 0, proc.stderr
+        assert host.calls("uv ") == []
+
+    def test_an_invalid_receipt_fails_loud_before_touching_the_env(self, host: _Host) -> None:
+        (host.hook_env / "uv-receipt.toml").write_text("[tool\n", encoding="utf-8")
+
+        proc = host.run(STUB_UV_INSTALLS=_FAKE_DIST)
+
+        assert proc.returncode == 1
+        assert len(_fatal(proc)) == 1, proc.stderr
+        assert "could not read" in proc.stderr
+        assert host.calls("uv ") == []
+
 
 def test_no_resolvable_uv_fails_loud_naming_uv(host: _Host, tmp_path: Path) -> None:
     bare_bin = tmp_path / "bare-bin"
@@ -234,3 +256,17 @@ def test_no_resolvable_uv_fails_loud_naming_uv(host: _Host, tmp_path: Path) -> N
     assert proc.returncode == 1
     assert len(fatal) == 1, proc.stderr
     assert "no working uv" in fatal[0]
+
+
+def test_a_failed_uv_candidate_walk_reports_the_resolver_not_a_missing_install(host: _Host) -> None:
+    (host.checkout / "scripts" / "hooks" / "lib" / "resolve-uv.sh").write_text(
+        "resolve_uv() { return 2; }\n", encoding="utf-8"
+    )
+
+    proc = host.run()
+
+    assert proc.returncode == 1
+    assert len(_fatal(proc)) == 1, proc.stderr
+    assert "could not resolve uv" in proc.stderr
+    assert "install uv" not in proc.stderr
+    assert host.calls("uv ") == []

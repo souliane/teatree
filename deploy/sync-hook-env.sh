@@ -10,7 +10,29 @@ if [ ! -x "$HOOK_ENV/bin/python" ]; then
     exit 0
 fi
 
-owner="$(sed -n '/name = "teatree"/s/.*editable = "\([^"]*\)".*/\1/p' "$HOOK_ENV/uv-receipt.toml" 2>/dev/null)" || owner=""
+owner=""
+if [ -f "$HOOK_ENV/uv-receipt.toml" ]; then
+    owner_rc=0
+    owner="$("$HOOK_ENV/bin/python" - "$HOOK_ENV/uv-receipt.toml" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+try:
+    data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    for requirement in data.get("tool", {}).get("requirements", []):
+        if requirement.get("name") == "teatree":
+            print(requirement.get("editable", ""))
+            break
+except (OSError, UnicodeError, tomllib.TOMLDecodeError, AttributeError, TypeError):
+    raise SystemExit(2)
+PY
+)" || owner_rc=$?
+    if [ "$owner_rc" -ne 0 ]; then
+        echo "deploy: FATAL — could not read the host hook tool env receipt $HOOK_ENV/uv-receipt.toml (rc $owner_rc); leaving the env alone." >&2
+        exit 1
+    fi
+fi
 owner_real=""
 if [ -n "$owner" ]; then
     owner_real="$(cd "$owner" 2>/dev/null && pwd -P)" || owner_real=""
@@ -24,7 +46,11 @@ fi
 uv_rc=0
 UV="$(resolve_uv)" || uv_rc=$?
 if [ "$uv_rc" -ne 0 ]; then
-    echo "deploy: FATAL — no working uv for the host hook tool env re-sync (resolve_uv rc $uv_rc); install uv at ~/.local/bin/uv." >&2
+    if [ "$uv_rc" -eq 2 ]; then
+        echo "deploy: FATAL — could not resolve uv for the host hook tool env re-sync (candidate walk failed); check scripts/hooks/lib/resolve-uv.sh." >&2
+    else
+        echo "deploy: FATAL — no working uv for the host hook tool env re-sync (resolve_uv rc $uv_rc); install uv at ~/.local/bin/uv." >&2
+    fi
     exit 1
 fi
 
