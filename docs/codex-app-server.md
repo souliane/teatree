@@ -38,12 +38,15 @@ this route is neither an Anthropic provider nor a metered API-key provider.
 With this direct harness setting, Teatree omits `model` and lets Codex select its
 own default. An ordered per-skill route can instead pin an explicit Codex model.
 
-Teatree's shipped verification guardrail still pins `testing`, `reviewing`, and
-`requesting_review` to `claude_sdk`. Setting the direct default harness to Codex
-does not silently remove that checker separation. An operator who deliberately
-wants Codex for a verification phase must explicitly override that phase's
-`agent_phase_harness`; an ordered per-skill route remains explicit about both its
-harness and model.
+A verification phase never routes to Codex. Teatree's shipped guardrail pins `testing`, `reviewing`
+and `requesting_review` to `claude_sdk`, and a route candidate naming another harness for a pinned phase
+is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
+write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
+those by sandbox only. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
+name Codex. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
+read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
+`"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
+overlay phase candidate list alike.
 
 ## Runtime lifecycle and concurrency
 
@@ -51,14 +54,13 @@ The harness ignores an ambient `CODEX_HOME`. It uses the stable private director
 named by `T3_CODEX_HOME`, or Teatree's data directory under `codex-home` by
 default. The child receives a minimal allowlisted process environment and its
 `HOME` and `CODEX_HOME` both point at that private directory. Direct Claude,
-provider, forge, and TeaTree secret values are not inherited. Controlled
-factory-owned runtime paths are retained only for TeaTree's config/control DB
-and repo. Git receives explicit author/committer identity with a private global
-config, no system config, and every inherited credential helper reset; pass/GPG,
-XDG, forge CLI, and Git credential-store
-paths are withheld. Credential-bearing lifecycle skills must route to a harness
-that owns those credentials rather than exposing a store to Codex. Before Codex starts,
-Teatree:
+provider, GitLab, Notion, mailbox and TeaTree secret values are not inherited, and the
+dispatch contributes exactly two keys: the overlay's routed `GH_TOKEN` and the pytest worker
+cap. Controlled factory-owned runtime paths are retained only for TeaTree's config/control DB
+and repo. Git receives explicit author/committer identity with a private global config; the
+image's system git config stays in force, so its `gh auth git-credential` helper authenticates
+through `GH_TOKEN`. Pass/GPG, XDG, forge CLI, and Git credential-store paths are withheld.
+Before Codex starts, Teatree:
 
 1. takes an exclusive file lease shared with the auth importer;
 2. reads and validates the pass entry;
@@ -85,6 +87,44 @@ lease: keep this authenticated runner at one replica, or acquire a Kubernetes
 Lease/shared lock before enabling concurrent Codex runs against the same pass
 entry. A hard kill cannot run graceful persistence; the next worker hydrates the
 last verified cache from pass.
+
+## Forge credential parity
+
+A Codex dispatch gets the same GitHub credential a Claude dispatch gets: the overlay's `github_token`
+route, resolved at dispatch and passed as `GH_TOKEN`, plus the pytest worker cap that keeps a `-n auto`
+run from multiplying across agents. A GitLab-hosted ticket gets no forge credential on Codex (the
+`GITLAB_TOKEN` stays out), so its attempt is blocked and falls through to the next candidate.
+
+The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
+(one credential writer). When the routed token changes, an idle server is retired and one new server
+starts; a busy server answers a fast `TRANSPORT` fallback ("busy with another credential") that the
+route turns into the next candidate or a later redispatch. The worker cap is fixed for the server's
+lifetime. Neither the token nor its fingerprint is logged.
+
+Known gap: Claude's secret-print guard (`hooks/scripts/secret_file_print_guard.py`) denies `cat`, `head`
+and `tail` of credential files, `.env`, key files and an unredirected `pass show`. Codex sends only
+commands it does not consider known-safe to the router, so the guard does not cover Codex's
+auto-approved reads. The mitigations that exist: Codex runs with `HOME` set to its private home, so
+`~/.netrc`, `~/.config/gh/hosts.yml` and `~/.password-store` do not resolve (absolute paths still do
+inside the container sandbox), and the excluded secrets are not in its environment. The owner accepted this
+gap; closing it needs a Codex-side change.
+
+## Login health
+
+- The availability probe stats `auth.json` in the private home without opening it. While it is absent the
+  Codex candidate is skipped with a reason that names `t3 codex auth import`. An import only writes the
+  `pass` entry, so run `t3 codex auth check` once afterwards: it hydrates the file and proves the login.
+- `t3 codex auth check` takes the same auth-cache lease a real turn takes, runs one turn in an empty
+  temporary directory (read-only sandbox, any approval declined) that asks for the single word OK, and
+  prints `Codex canary: PASS` or `FAIL: <named reason>` with exit code 1. It waits at most 60 seconds for
+  the lease and then fails with "Codex auth cache is held by another run". It never prints the login, and it
+  refreshes only what a real turn would.
+- A Codex authentication or quota failure holds the candidate unavailable for an hour and parks the
+  task for as long, whether it arrives before any side effect, after one started, or in an outcome that
+  already made tool calls. Other failures keep the two-minute hold. `t3 codex auth import` clears the
+  stored Codex holds.
+- `t3 doctor check` prints one Codex line: login present (file modification time) or missing, the last
+  long hold, and a warning while a Codex route exists with no active usage window.
 
 ## Policy translation
 
@@ -191,8 +231,8 @@ into the error text.
   retains the existing pass backup behavior.
 - **Recover:** if bootstrap reports missing, invalid-base64, or malformed JSON,
   do not hand-edit the encoded entry. Re-import a known-good complete
-  `auth.json`. If App Server reports the account is not managed ChatGPT auth,
-  repeat `codex login --device-auth` before importing.
+  `auth.json`, then run `t3 codex auth check`. If App Server reports the account is
+  not managed ChatGPT auth, repeat `codex login --device-auth` before importing.
 - **Revoke future bootstrap:** revoke the Codex/ChatGPT session and delete the
   `teatree/codex/auth-json-b64` pass entry.
 - **Revoke immediately:** also stop the worker and remove the private

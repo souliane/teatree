@@ -596,14 +596,20 @@ dispatch refuses the ambiguity instead of choosing by load order. The older
 `factory_phase_harness_candidates` route and a skill-owned route are mutually
 exclusive for the same dispatch.
 
-TeaTree resolves the first registered and available candidate. Availability is
+TeaTree resolves the first registered and available candidate that has not already failed on this
+task through its own fault (`harness_crash`, `landing_unverified`, `result_error` since the last usage-window
+park); when every eligible candidate has failed it retries the last one, so a one-candidate route is unchanged.
+A route reached through a skill the phase merely loads never captures a phase that bars write tools, and a
+candidate on a phase pinned to another harness is rejected naming the pin. Availability is
 keyed by overlay, harness, provider, and model, persisted in
 `AgentRouteAvailability`, and held in process memory: healthy results are reused
 for ten minutes and unavailable results for two. A worker therefore does not
 query the DB on every request. Cached unavailability also avoids repeating a
 known-dead lane; cached health repeats only the cheap local capability probe so a
 durable observation from a Codex-equipped worker cannot make a Claude-only
-worker select a missing binary. A runtime failure immediately updates the cache.
+worker select a missing binary. A runtime failure immediately updates the cache. A quota or authentication
+failure holds its candidate unavailable for an hour and parks the task for as long, whether it arrived before
+or after side effects started; other failures keep the two-minute hold.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next
