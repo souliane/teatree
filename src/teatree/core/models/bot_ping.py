@@ -243,6 +243,11 @@ class BotPing(models.Model):
         )
 
     @classmethod
+    def compact(cls, rows: "models.QuerySet[BotPing]") -> int:
+        """Blank the payload of *rows*, keeping the key and status that dedup reads."""
+        return rows.update(text="", error_message="")
+
+    @classmethod
     def delivered_keys(cls, keys: Iterable[str]) -> set[str]:
         """Which of *keys* the ledger has DELIVERED; an undelivered one stays a candidate to retry."""
         return set(

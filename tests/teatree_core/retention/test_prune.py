@@ -9,7 +9,7 @@ been quiet past the window. Each guard test names the mutation that turns it red
 import datetime as dt
 from unittest import mock
 
-from django.db.models import Min
+from django.db.models import Min, QuerySet
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -21,6 +21,7 @@ from teatree.core.models import (
     DeferredQuestion,
     DeliveryClaim,
     IncomingEvent,
+    IntentClassification,
     ScannedBroadcast,
     Session,
     Task,
@@ -182,7 +183,7 @@ class PlanRetentionTestCase(TestCase):
         assert plan.budget_exhausted is False
         assert _lane(plan, "Task (failed)").rows == 1
         assert _lane(plan, "Task (failed)").cascaded == 1
-        assert plan.total_rows == 3
+        assert (plan.total_rows, plan.total_compacted) == (2, 1)
         assert {table.max_batch_ms for table in plan.tables} == {0}
         assert Task.objects.count() == 1
         assert TaskAttempt.objects.count() == 1
@@ -235,8 +236,8 @@ class ApplyRetentionTestCase(TestCase):
         planned = plan_retention()
         applied = apply_retention()
 
-        assert [(t.table, t.rows, t.cascaded) for t in applied.tables] == [
-            (t.table, t.rows, t.cascaded) for t in planned.tables
+        assert [(t.table, t.rows, t.cascaded, t.compacted) for t in applied.tables] == [
+            (t.table, t.rows, t.cascaded, t.compacted) for t in planned.tables
         ]
         assert _lane(planned, "TaskAttempt (park)").rows == 1
         assert _lane(planned, "Task (failed)").cascaded == 1
@@ -246,6 +247,16 @@ class ApplyRetentionTestCase(TestCase):
         assert not _exists(stale_park)
         assert TaskAttempt.objects.count() == 0
         assert applied.budget_exhausted is False
+
+    def test_an_event_with_cascade_children_counts_the_same_in_plan_and_apply(self) -> None:
+        event = _event(idempotency_key="k-classified")
+        IntentClassification.objects.create(event=event, intent=IntentClassification.Intent.NOISE, confidence=0.5)
+
+        planned = _lane(plan_retention(), "IncomingEvent")
+        applied = _lane(apply_retention(), "IncomingEvent")
+
+        assert (applied.rows, applied.cascaded) == (planned.rows, planned.cascaded) == (1, 1)
+        assert not IntentClassification.objects.exists()
 
 
 class TaskHistoryLaneTestCase(TestCase):
@@ -296,6 +307,29 @@ class TaskHistoryLaneTestCase(TestCase):
         sibling = _task(ticket)
         apply_retention()
         assert _exists(sibling)
+
+    def test_claimed_task_keeps_its_terminal_sibling(self) -> None:
+        ticket = _ticket()
+        _task(ticket, status=Task.Status.CLAIMED, attempts=0)
+        sibling = _task(ticket)
+        apply_retention()
+        assert _exists(sibling)
+
+    def test_a_task_that_stops_qualifying_before_the_delete_is_kept(self) -> None:
+        task = _task()
+        select = prune._next_batch
+
+        def select_then_reactivate(rows: QuerySet) -> list[int]:
+            batch = select(rows)
+            if rows.model is Task and batch:
+                TaskAttempt.objects.create(task_id=batch[0])
+            return batch
+
+        with mock.patch.object(prune, "_next_batch", select_then_reactivate):
+            plan = apply_retention()
+
+        assert _exists(task)
+        assert _lane(plan, "Task (completed)").rows == 0
 
     def test_synthetic_ticket_is_kept_and_a_lookalike_url_is_not(self) -> None:
         synthetic = _task(_ticket(issue_url=f"{SYNTHETIC_LOOP_UMBRELLA_URL}#directive=7"))
@@ -397,6 +431,16 @@ class BudgetTestCase(TestCase):
         assert not _exists(first)
         assert all(_exists(task) for task in rest)
 
+    def test_a_task_over_the_attempt_cap_still_goes_alone(self) -> None:
+        task = _task(attempts=3)
+
+        with mock.patch.object(prune, "TASK_BATCH_MAX_ATTEMPTS", 2):
+            plan = apply_retention()
+
+        lane = _lane(plan, "Task (completed)")
+        assert (lane.rows, lane.cascaded) == (1, 3)
+        assert not _exists(task)
+
     def test_a_drained_run_reports_no_exhaustion(self) -> None:
         _task()
         with mock.patch.object(prune, "BATCH_SIZE", 1):
@@ -412,7 +456,8 @@ class BotPingPayloadLaneTestCase(TestCase):
 
         row = BotPing.objects.get(idempotency_key="pr-sweep-flag:42:conflict")
         assert (row.text, row.error_message, row.status) == ("", "", BotPing.Status.SENT)
-        assert _lane(plan, "BotPing (payload)").rows == 1
+        assert _lane(plan, "BotPing (payload)").compacted == 1
+        assert _lane(plan, "BotPing (payload)").rows == 0
         claim = BotPing.claim_delivery("pr-sweep-flag:42:conflict", kind=BotPing.Kind.INFO, text="again")
         assert claim == DeliveryClaim.ALREADY_SENT
 
@@ -432,7 +477,7 @@ class BotPingPayloadLaneTestCase(TestCase):
     def test_second_run_compacts_nothing(self) -> None:
         _ping("ping-1")
         apply_retention()
-        assert _lane(apply_retention(), "BotPing (payload)").rows == 0
+        assert _lane(apply_retention(), "BotPing (payload)").compacted == 0
 
 
 class ParkLaneReachesWhatTheTaskLanesCannotTestCase(TestCase):

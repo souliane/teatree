@@ -67,6 +67,7 @@ class _TableRow(TypedDict):
     retention_days: int
     rows: int
     cascaded: int
+    compacted: int
     disabled: bool
     batches: int
     max_batch_ms: int
@@ -109,6 +110,7 @@ def _vacuum_row(vacuum: VacuumOutcome) -> _VacuumRow:
 class RetentionReport(TypedDict):
     applied: bool
     total_rows: int
+    total_compacted: int
     budget_exhausted: bool
     tables: list[_TableRow]
     vacuum: _VacuumRow
@@ -192,6 +194,7 @@ class Command(TyperCommand):
         payload: RetentionReport = {
             "applied": plan.applied,
             "total_rows": plan.total_rows,
+            "total_compacted": plan.total_compacted,
             "budget_exhausted": plan.budget_exhausted,
             "tables": [
                 {
@@ -199,6 +202,7 @@ class Command(TyperCommand):
                     "retention_days": table.retention_days,
                     "rows": table.rows,
                     "cascaded": table.cascaded,
+                    "compacted": table.compacted,
                     "disabled": table.disabled,
                     "batches": table.batches,
                     "max_batch_ms": table.max_batch_ms,
@@ -209,8 +213,14 @@ class Command(TyperCommand):
             ],
             "vacuum": _vacuum_row(vacuum),
         }
-        verb = "Pruned" if apply else "Would prune"
-        logger.info("retention: %s %d row(s) across %d table(s)", verb.lower(), plan.total_rows, len(plan.tables))
+        logger.info(
+            "retention: %s %d row(s), %s %d payload(s) across %d table(s)",
+            "pruned" if apply else "would prune",
+            plan.total_rows,
+            "compacted" if apply else "would compact",
+            plan.total_compacted,
+            len(plan.tables),
+        )
 
         self.print_result = False
         emit(
@@ -469,7 +479,10 @@ _LANE_RULES = {
 def _detail(table: _TableRow) -> str:
     if table["disabled"]:
         return f"disabled ({table['reason'] or 'retention_days=0'})"
-    parts = [f"{table['rows']} (+{table['cascaded']} attempt(s))" if table["cascaded"] else str(table["rows"])]
+    if table["table"] == PING_PAYLOAD_TABLE:
+        parts = [f"{table['compacted']} compacted"]
+    else:
+        parts = [f"{table['rows']} (+{table['cascaded']} cascaded)" if table["cascaded"] else str(table["rows"])]
     parts.append(_LANE_RULES.get(table["table"], "terminal-owned"))
     if table["aged"]:
         parts.append(f">{table['retention_days']}d")
@@ -482,7 +495,11 @@ def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None
     verb = "Pruned" if applied else "Would prune"
     rows: list[list[str]] = [[table["table"], _detail(table)] for table in payload["tables"]]
     rows.append(["VACUUM", payload["vacuum"]["summary"]])
-    title = f"Retention — {verb.lower()} {payload['total_rows']} row(s)"
+    compact_verb = "compacted" if applied else "would compact"
+    title = (
+        f"Retention — {verb.lower()} {payload['total_rows']} row(s), "
+        f"{compact_verb} {payload['total_compacted']} payload(s)"
+    )
     if not applied:
         title += " (dry run — pass --apply to delete)"
     if payload["budget_exhausted"]:

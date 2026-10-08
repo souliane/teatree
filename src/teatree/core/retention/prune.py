@@ -4,10 +4,11 @@ One ordered lane table drives both the dry run and the delete, so the plan and t
 apply cannot disagree about a lane's row set. In run order: limit-park ``TaskAttempt``
 rows older than a week (a park returns its task to PENDING, so no ticket-keyed lane can
 reach one); the FAILED, then the COMPLETED ``Task`` rows of quiescent tickets
-(:mod:`teatree.core.retention.ticket_history`) with their attempts by CASCADE, so
-failures go first; ``BotPing`` payloads, blanked rather than deleted because dedup reads
-the key and status; settled ``IncomingEvent`` rows; ``TicketTransition`` rows that record
-no edge on a finished ticket; ``DBTaskResult`` through ``django_tasks_db``'s own prune.
+(:mod:`teatree.core.retention.ticket_history`) with their attempts by CASCADE, so failed
+history goes before completed history; ``BotPing`` payloads, blanked rather than deleted
+because dedup reads the key and status; settled ``IncomingEvent`` rows; ``TicketTransition``
+rows that record no edge on a finished ticket; ``DBTaskResult`` through ``django_tasks_db``'s
+own prune.
 
 Every lane deletes through the ORM, in short committed batches of pks re-filtered through
 its predicate, so a batch holds the write lock briefly and an interrupted pass only leaves
@@ -29,7 +30,7 @@ from django.utils import timezone
 from teatree.config import get_effective_settings
 from teatree.config.settings import UserSettings
 from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
-from teatree.core.models import BotPing, IncomingEvent, Task, TaskAttempt
+from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
 from teatree.core.models.transition import TicketTransition
 from teatree.core.retention.task_results import (
     prunable_task_results,
@@ -67,9 +68,11 @@ class TableRetention:
 
     table: str
     retention_days: int
+    #: Rows deleted; a compacting lane deletes none and reports ``compacted`` instead.
     rows: int
-    #: Attempts deleted with this lane's tasks, leaving out the park rows lane 1 owns.
+    #: Child rows the delete cascades into; a task lane leaves out the park rows lane 1 owns.
     cascaded: int = 0
+    compacted: int = 0
     disabled: bool = False
     reason: str = ""
     #: False for a lane whose rule is redundancy rather than age.
@@ -91,9 +94,13 @@ class RetentionPlan:
     def total_rows(self) -> int:
         return sum(table.rows for table in self.tables)
 
+    @property
+    def total_compacted(self) -> int:
+        return sum(table.compacted for table in self.tables)
+
     def counts(self) -> dict[str, int]:
         return {
-            **{table.table: table.rows for table in self.tables},
+            **{table.table: table.rows + table.compacted for table in self.tables},
             "cascaded": sum(table.cascaded for table in self.tables),
             "max_batch_ms": max((table.max_batch_ms for table in self.tables), default=0),
             "budget_exhausted": int(self.budget_exhausted),
@@ -105,7 +112,10 @@ class Lane:
     table: str
     days: int
     resolve: Callable[[dt.datetime], models.QuerySet]
-    compact: bool = False
+    #: Counts, for the dry run, the child rows deleting these rows cascades into.
+    cascade: Callable[[models.QuerySet, dt.datetime], int] | None = None
+    #: Rewrites the rows in place instead of deleting them; returns how many it rewrote.
+    compact: Callable[[models.QuerySet], int] | None = None
     aged: bool = True
 
     @property
@@ -125,14 +135,34 @@ def _closed_ticket_non_edges(_cutoff: dt.datetime) -> models.QuerySet:
     return TicketTransition.objects.prunable()
 
 
+def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:
+    parks = TaskAttempt.objects.prunable_parks(moment - dt.timedelta(days=PARK_ATTEMPT_RETENTION_DAYS))
+    return TaskAttempt.objects.filter(task__in=tasks).exclude(pk__in=parks).count()
+
+
+def _event_children(events: models.QuerySet, _moment: dt.datetime) -> int:
+    classified = IntentClassification.objects.filter(event__in=events).count()
+    return classified + ReplyDispatch.objects.filter(event__in=events).count()
+
+
 def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
     history_days = _task_history_days(cfg)
     return (
         Lane(PARK_TABLE, PARK_ATTEMPT_RETENTION_DAYS, TaskAttempt.objects.prunable_parks),
-        Lane(FAILED_TASK_TABLE, history_days, functools.partial(prunable_tasks, status=Task.Status.FAILED)),
-        Lane(COMPLETED_TASK_TABLE, history_days, functools.partial(prunable_tasks, status=Task.Status.COMPLETED)),
-        Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=True),
-        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, IncomingEvent.objects.prunable),
+        Lane(
+            FAILED_TASK_TABLE,
+            history_days,
+            functools.partial(prunable_tasks, status=Task.Status.FAILED),
+            cascade=_task_attempts,
+        ),
+        Lane(
+            COMPLETED_TASK_TABLE,
+            history_days,
+            functools.partial(prunable_tasks, status=Task.Status.COMPLETED),
+            cascade=_task_attempts,
+        ),
+        Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=BotPing.compact),
+        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, IncomingEvent.objects.prunable, cascade=_event_children),
         Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
     )
 
@@ -145,10 +175,9 @@ def _plan_lane(lane: Lane, moment: dt.datetime) -> TableRetention:
     if lane.disabled:
         return _disabled(lane.table, lane.days)
     rows = lane.rows(moment)
-    cascaded = 0
-    if rows.model is Task:
-        parks = TaskAttempt.objects.prunable_parks(moment - dt.timedelta(days=PARK_ATTEMPT_RETENTION_DAYS))
-        cascaded = TaskAttempt.objects.filter(task__in=rows).exclude(pk__in=parks).count()
+    if lane.compact is not None:
+        return TableRetention(lane.table, lane.days, 0, compacted=rows.count(), aged=lane.aged)
+    cascaded = lane.cascade(rows, moment) if lane.cascade is not None else 0
     return TableRetention(lane.table, lane.days, rows.count(), cascaded=cascaded, aged=lane.aged)
 
 
@@ -175,7 +204,7 @@ class _ApplyPass:
     def drain(self, lane: Lane) -> TableRetention:
         if lane.disabled:
             return _disabled(lane.table, lane.days)
-        rows = cascaded = batches = longest_ms = 0
+        acted = cascaded = batches = longest_ms = 0
         while True:
             pending = lane.rows(self.moment)
             if self.budget == 0:
@@ -184,20 +213,22 @@ class _ApplyPass:
             batch = _next_batch(pending)
             if not batch:
                 break
-            started = time.monotonic()
             with transaction.atomic():
-                acted, attempts = self._act(lane, pending.filter(pk__in=batch))
-            longest_ms = max(longest_ms, round((time.monotonic() - started) * 1000))
-            rows += acted
-            cascaded += attempts
+                locked_at = time.monotonic()
+                batch_acted, batch_cascaded = self._act(lane, pending.filter(pk__in=batch))
+            longest_ms = max(longest_ms, round((time.monotonic() - locked_at) * 1000))
+            acted += batch_acted
+            cascaded += batch_cascaded
             batches += 1
             if self.budget is not None:
                 self.budget -= 1
+        compacted = acted if lane.compact is not None else 0
         return TableRetention(
             lane.table,
             lane.days,
-            rows,
+            acted - compacted,
             cascaded=cascaded,
+            compacted=compacted,
             aged=lane.aged,
             batches=batches,
             max_batch_ms=longest_ms,
@@ -205,11 +236,11 @@ class _ApplyPass:
 
     @staticmethod
     def _act(lane: Lane, batch: models.QuerySet) -> tuple[int, int]:
-        if lane.compact:
-            return batch.update(text="", error_message=""), 0
-        attempts = TaskAttempt.objects.filter(task__in=batch).count() if batch.model is Task else 0
+        if lane.compact is not None:
+            return lane.compact(batch), 0
+        rows = batch.count()
         deleted, _ = batch.delete()
-        return deleted - attempts, attempts
+        return rows, deleted - rows
 
 
 def _task_result_lane_days(cfg: UserSettings) -> int | None:

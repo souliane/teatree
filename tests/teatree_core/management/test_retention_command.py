@@ -1,8 +1,9 @@
 """``t3 <overlay> retention prune`` — the operator surface for #3693.
 
 Integration-first via ``call_command`` against the real DB: the default is a dry
-run that deletes nothing and reports the plan; ``--apply`` deletes only the
-terminal-owned rows past the window. ``--json`` round-trips the machine payload.
+run that deletes nothing and reports the plan; ``--apply`` drains every lane with no
+batch budget (the hourly pass is the bounded one). ``--json`` round-trips the machine
+payload, with compacted payloads reported apart from deleted rows.
 
 ``--apply`` also VACUUMs (#3852) — deleting rows on SQLite reclaims no disk on its
 own, so a prune that only drops rows leaves the file exactly as large. The vacuum
@@ -30,6 +31,8 @@ from django.utils import timezone
 from teatree.core.cleanup import artifact_eviction, artifact_removal, process_table
 from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.core.retention import prune
+from teatree.core.retention.prune import SCHEDULED_MAX_BATCHES
 from teatree.utils.django_db.vacuum import VacuumOutcome
 from tests._git_repo import make_git_repo
 from tests._process_table_venue import blinded_process_table, this_process_in
@@ -90,11 +93,12 @@ class RetentionCommandStructureTestCase(TestCase):
         report: RetentionReport = {
             "applied": False,
             "total_rows": 0,
+            "total_compacted": 0,
             "budget_exhausted": False,
             "tables": [],
             "vacuum": _vacuum_row(VacuumOutcome(ran=False, reason="dry run")),
         }
-        assert set(report) == {"applied", "total_rows", "budget_exhausted", "tables", "vacuum"}
+        assert set(report) == {"applied", "total_rows", "total_compacted", "budget_exhausted", "tables", "vacuum"}
 
 
 class RetentionPruneCommandTestCase(TestCase):
@@ -151,7 +155,15 @@ class RetentionPruneCommandTestCase(TestCase):
         with patch(f"{_COMMAND}.vacuum_control_db", return_value=_RECLAIMED):
             call_command("retention", "prune", "--apply", stderr=err)
         rendered = " ".join(err.getvalue().split())
-        assert "1 (+1 attempt(s)), quiet finished ticket, >56d, 1 batch(es), longest" in rendered
+        assert "1 (+1 cascaded), quiet finished ticket, >56d, 1 batch(es), longest" in rendered
+
+    def test_apply_drains_past_the_scheduled_budget(self) -> None:
+        for n in range(SCHEDULED_MAX_BATCHES + 2):
+            _old_processed_event(f"k{n}")
+        with patch.object(prune, "BATCH_SIZE", 1):
+            payload, _ = _prune_json(_RECLAIMED, "--apply")
+        assert IncomingEvent.objects.count() == 0
+        assert payload["budget_exhausted"] is False
 
 
 class RetentionPruneVacuumTestCase(TestCase):

@@ -449,9 +449,10 @@ def _high_churn_counts() -> dict[str, tuple[int, int]]:
 def _check_high_churn_table_size(now: dt.datetime | None = None) -> ReconciliationFinding:
     """ALARM when a high-churn table's row count exceeds its ceiling (#3693, #3871).
 
-    Covers exactly the tables retention has a lane over, so the alarm and the
-    prescribed remedy stay in step: a table the check flags is always one
-    ``retention prune`` can act on. Advisory — surfaces DB growth before it bites.
+    Covers the tables the retention pass deletes from. That pass runs hourly in
+    bounded batches, so a table over its ceiling holds either a backlog the pass has
+    not caught up with or rows no lane may delete yet (a live or recently active
+    ticket). Advisory — surfaces DB growth before it bites.
     """
     del now  # a current-state row count, not a time window; taken for uniform dispatch
     check_id = "high_churn_table_size"
@@ -466,9 +467,9 @@ def _check_high_churn_table_size(now: dt.datetime | None = None) -> Reconciliati
         return _ok(check_id, " / ".join(f"{rows} {table}" for table, (rows, _) in counts.items()))
     return _alarm(
         check_id,
-        f"High-churn table size alarm: {', '.join(over)}. The control DB is growing unbounded — "
-        f"prune terminal-owned old rows with `t3 <overlay> retention prune` (dry-run) then "
-        f"`t3 <overlay> retention prune --apply`.",
+        f"High-churn table size alarm: {', '.join(over)}. The control DB is growing faster than the hourly "
+        f"retention pass removes rows — preview what its lanes may delete with `t3 <overlay> retention prune`, "
+        f"then drain them at once with `t3 <overlay> retention prune --apply`.",
     )
 
 
