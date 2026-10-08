@@ -189,3 +189,14 @@ def test_any_other_push_still_fails_on_a_held_lock_so_the_ship_case_is_not_vacuo
 
     assert not outcome.ok
     assert "database is locked" in outcome.detail
+
+
+def test_an_inherited_ship_marker_does_not_exempt_a_plain_push(
+    clone_pushing_through_the_hook: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(SHIP_PUSH_ENV, "1")
+
+    outcome = push_branch(repo=clone_pushing_through_the_hook)
+
+    assert not outcome.ok
+    assert "database is locked" in outcome.detail

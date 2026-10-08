@@ -505,6 +505,7 @@ def push_branch(
     if refusal is not None:
         return refusal
     env = git_env_non_interactive() | _credential_env(forge, credential.token)
+    env.pop(SHIP_PUSH_ENV, None)
     if ship_opens_pr:
         env[SHIP_PUSH_ENV] = "1"
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
