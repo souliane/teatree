@@ -22,6 +22,7 @@ its work away. UNKNOWN is therefore absorbed here: the gate refuses only when
 every checkable worktree is VERIFIABLY not ahead.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -63,6 +64,22 @@ def landing_verification_error(task: "Task", *, phase: str = "") -> str:
         return ""
     branch = checkable[0].branch or "(detached)"
     return f"{_UNVERIFIED_PREFIX} no new commit on {branch} — HEAD has not advanced past the base"
+
+
+def blocked_before_edits_error(task: "Task", result: Mapping[str, object], *, phase: str, routed: bool) -> str:
+    """A ``landing_unverified:`` error for a routed or non-claude_sdk coder that stopped before editing anything.
+
+    Its ``needs_user_input`` hand-off is only a success when work landed: no files and no new commit in any
+    checkable worktree is a refusal even when the ticket has no worktree for the check above to read.
+    """
+    if not routed or normalize_phase(phase or task.phase) not in _LANDING_VERIFIED_PHASES:
+        return ""
+    if not result.get("needs_user_input") or result.get("files_modified"):
+        return ""
+    checkable = [wt for wt in Worktree.objects.for_ticket(task.ticket) if _on_disk_repo(wt)]
+    if any(commits_ahead_or_unknown(wt) for wt in checkable):
+        return ""
+    return f"{_UNVERIFIED_PREFIX} blocked before edits - needs_user_input with no files modified and no new commit"
 
 
 def commits_ahead_or_unknown(worktree: "Worktree") -> bool | None:
