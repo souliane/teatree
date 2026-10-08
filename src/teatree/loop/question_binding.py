@@ -19,6 +19,9 @@ More than one candidate and no thread or id binds NOTHING. The newest-pending-
 wins pick it replaces silently answered the wrong row: with 149 questions
 mirrored into a single DM, a reply to a three-day-old question resolved
 whichever had been posted last, and ✅-acked the owner for it.
+
+Every rung binds only a reply whose recorded author is the owner's Slack user id;
+any other reply, or an unknown owner id, binds nothing and is left for the DM path.
 """
 
 import hashlib
@@ -47,12 +50,20 @@ class BoundAnswer:
     answer: str
 
 
-def bind_reply(reply: PendingChatInjection, *, reader: InboundReader, text: str = "") -> BoundAnswer | None:
+def owner_user_id(backend: object) -> str:
+    return str(getattr(backend, "user_id", "") or "")
+
+
+def bind_reply(
+    reply: PendingChatInjection, *, reader: InboundReader, owner_user_id: str, text: str = ""
+) -> BoundAnswer | None:
     """The question *reply* answers and the answer to apply, or ``None``.
 
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
+    if not owner_user_id or reply.user_id != owner_user_id:
+        return None
     body = text or reply.text
     addressed = _addressed(body)
     if addressed is not None:
@@ -182,4 +193,4 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
     return options
 
 
-__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "resolve_answer"]
+__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "owner_user_id", "resolve_answer"]

@@ -39,6 +39,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -52,6 +53,7 @@ class FakeMessaging:
 
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
     route_token: str = "self"
+    user_id: str = OWNER_SLACK_ID
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
@@ -97,7 +99,7 @@ def _reply(text: str, *, slack_ts: str, thread_ts: str = "") -> PendingChatInjec
         channel=_CHANNEL,
         slack_ts=slack_ts,
         text=text,
-        context=DmContext(user_id="U1", thread_ts=thread_ts),
+        context=DmContext(user_id=OWNER_SLACK_ID, thread_ts=thread_ts),
     )
     assert row is not None
     return row
