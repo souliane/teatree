@@ -106,19 +106,14 @@ def _precedence(version: str) -> Precedence | None:
     return int(match["epoch"] or 0), release, pre, post, dev
 
 
-def _moves_back(before: str, after: str, old: tuple[int, int, int], new: tuple[int, int, int]) -> bool:
-    old_precedence, new_precedence = _precedence(before), _precedence(after)
-    if old_precedence is None or new_precedence is None:
-        return new < old
-    return new_precedence < old_precedence
-
-
 def classify(before: str, after: str) -> Level:
     """The boundary a version move crosses, or ``UNKNOWN`` when either side is unparsable."""
     old, new = _release(before), _release(after)
     if old is None or new is None:
         return Level.UNKNOWN
-    if _moves_back(before, after, old, new):
+    old_order, new_order = _precedence(before), _precedence(after)
+    moves_back = new < old if old_order is None or new_order is None else new_order < old_order
+    if moves_back:
         return Level.DOWNGRADE
     if old[0] != new[0]:
         return Level.MAJOR
