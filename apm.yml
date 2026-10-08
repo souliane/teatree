@@ -38,7 +38,6 @@ dependencies:
   - souliane/skills/ac-python#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - souliane/skills/ac-django#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - fastapi/fastapi/fastapi/.agents/skills/fastapi#7ac0f1b541b8df5921b45486a5c72a49965d00af  # 0.140.4
-  - souliane/teatree
 install:
   pip: teatree
   post_install: t3 config write-skill-cache

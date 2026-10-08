@@ -38,6 +38,7 @@ from teatree.cli.slack.setup import slack_bot_setup
 from teatree.cli.slack.user_token_setup import slack_user_token_setup
 from teatree.core.skill_sources import demanded_skill_names, install_declared_sources
 from teatree.paths import get_data_dir
+from teatree.provisioning.declared import DeclarationUnreadableError
 from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skill_pin import default_record_path
 from teatree.provisioning.skills_cli import SkillsCli, SkillsCliError, refresh_inventory_receipt
@@ -140,6 +141,7 @@ def _provision_agent_skills(
             cache_root=get_data_dir("skill-sources"),
             demand_names=set(demanded_skill_names()),
             harness_exclusions=harness_exclusions,
+            manifest=repo / "apm.yml",
             cli=skills_cli,
         )
         for outcome in source_outcomes:
@@ -229,8 +231,9 @@ def _report_statusline_install(settings_json: Path, repo: Path) -> None:
         typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
 
 
-def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
-    """Sync overlay skill symlinks into every plugin-backed runtime."""
+def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str], manifest: Path) -> bool:
+    """Sync overlay skill symlinks into every plugin-backed runtime; ``False`` when no link could be synced."""
+    refused: dict[str, str] = {}
     for label, skills_dir in agent_skill_dirs():
         if not skills_dir.is_dir():
             continue
@@ -239,12 +242,20 @@ def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
         if removed:
             typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
 
-        created, fixed = linker.sync(sync_core=False)
+        try:
+            created, fixed = linker.sync(sync_core=False, manifest=manifest)
+        except DeclarationUnreadableError as error:
+            typer.echo(f"ERROR Skill links were not synced: {error}", err=True)
+            return False
+        refused.update(linker.refused)
         typer.echo(f"OK    {label}: {created} created, {fixed} fixed (core skills via plugin).")
 
         broken = linker.clean_broken()
         if broken:
             typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
+    for name, spec in refused.items():
+        typer.echo(f"WARN  Overlay skill {name!r} not linked: apm pins it as `{spec}`. Rename the skill or the pin.")
+    return True
 
 
 def _install_checkout_git_config(repo: Path) -> None:
@@ -344,7 +355,7 @@ def run(
     for _label, skills_dir in agent_skill_dirs():
         skills_dir.mkdir(parents=True, exist_ok=True)
 
-    _sync_runtime_skill_links(workspace_dir, all_excluded)
+    skill_links_ready = _sync_runtime_skill_links(workspace_dir, all_excluded, repo / "apm.yml")
 
     agent_skills_ready = _provision_agent_skills(
         repo,
@@ -355,7 +366,7 @@ def run(
     _complete_strict_skills_setup(
         skills_ready_marker,
         strict=strict_agent_skills,
-        ready=agent_skills_ready,
+        ready=agent_skills_ready and skill_links_ready,
     )
 
     # Per-overlay Slack-bot IM provisioning (#1342) — open ``conversations.open``

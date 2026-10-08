@@ -68,7 +68,7 @@ def run_assessment(
         root = Path.cwd()
     cli_path = _find_skill_cli()
     if not cli_path:
-        typer.echo("ac-reviewing-codebase skill not found. Install: apm install souliane/skills/ac-reviewing-codebase")
+        typer.echo("ac-reviewing-codebase skill not found. Install it with `t3 setup`.")
         raise typer.Exit(1)
 
     result = run_allowed_to_fail(

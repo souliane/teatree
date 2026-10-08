@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from teatree.cli.doctor import DoctorService
+from teatree.skill_support.pin_shadow import declared_pin_specs
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class SkillLinker:
     def __init__(self, runtime_skills: Path, workspace_dir: Path) -> None:
         self.runtime_skills = runtime_skills
         self.workspace_dir = workspace_dir
+        self.refused: dict[str, str] = {}
 
     def remove_excluded(self, excluded: list[str]) -> int:
         """Remove excluded skill symlinks/directories from the runtime skills dir."""
@@ -132,8 +134,10 @@ class SkillLinker:
                 removed += 1
         return removed
 
-    def sync(self, *, sync_core: bool = True) -> tuple[int, int]:
+    def sync(self, *, sync_core: bool = True, manifest: Path | None = None) -> tuple[int, int]:
         """Create or fix symlinks for core and overlay skills, pruning stale ones.
+
+        An overlay skill named like a declared apm pin is never linked and lands in ``refused``.
 
         When ``sync_core`` is ``False``, core skills are assumed to be delivered via
         a plugin; any existing core symlinks are pruned and only overlays are linked.
@@ -144,6 +148,7 @@ class SkillLinker:
         """
         from teatree.agents.skill_bundle import DEFAULT_SKILLS_DIR  # noqa: PLC0415 — deferred: keeps CLI startup light
 
+        pins = declared_pin_specs(manifest)
         created = 0
         fixed = 0
 
@@ -163,6 +168,9 @@ class SkillLinker:
         for target, link_name in overlay_skills:
             expected_names.add(link_name)
             if link_name in core_skill_names:
+                continue
+            if link_name in pins:
+                self.refused[link_name] = pins[link_name]
                 continue
             c, f = _ensure_skill_link(target, self.runtime_skills / link_name, self.workspace_dir)
             created += c
