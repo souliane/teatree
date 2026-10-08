@@ -29,6 +29,7 @@ from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON a
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
 from teatree.loop.scanners.pr_sweep_types import HOLD_AT_HEAD_REASON as _HOLD_AT_HEAD_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
+from teatree.loop.scanners.pr_sweep_types import NO_OWNING_TICKET_REASON as _NO_OWNING_TICKET_REASON
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
@@ -385,6 +386,7 @@ OWNER_ESCALATION_FLAG_REASONS: frozenset[str] = frozenset(
         _CLEAR_PRESENT_UNUSABLE_REASON,
         _CONTESTED_HOLD_REASON,
         _HOLD_AT_HEAD_REASON,
+        _NO_OWNING_TICKET_REASON,
     }
 )
 
@@ -403,6 +405,9 @@ _FLAG_TEXTS: dict[str, str] = {
     ),
     _HOLD_AT_HEAD_REASON: (
         f"a cold review returned HOLD at this PR's live head and nobody took it back, so {_HELD_REMEDY}"
+    ),
+    _NO_OWNING_TICKET_REASON: (
+        "no ticket owns this PR, so no merge gate binds: `worktree adopt <checkout>` or `ticket clear`"
     ),
 }
 

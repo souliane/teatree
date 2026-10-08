@@ -131,6 +131,24 @@ class AdoptCreatesTheRow(_AdoptCase):
         assert not Worktree.objects.exists()
 
 
+class AdoptOnASharedParent(_AdoptCase):
+    def test_a_catch_all_ticket_under_the_same_parent_does_not_capture_the_checkout(self) -> None:
+        # The shape that put a periodic pass's checkout on the `auto:HEAD` catch-all: the shared
+        # parent's only owner was that ticket, so the workspace-dir hint won before the fork.
+        sibling = self._linked_worktree("cold-review")
+        catch_all = Ticket.objects.create(issue_url="auto:HEAD")
+        Worktree.objects.create(
+            ticket=catch_all, repo_path="cold-review", branch="HEAD", extra={"worktree_path": str(sibling)}
+        )
+        checkout = self._linked_worktree("architectural-review")
+
+        self.run_adopt(str(checkout), branch="review-fixes/2026-10-07")
+
+        adopted = Worktree.objects.get(branch="review-fixes/2026-10-07")
+        assert adopted.ticket.issue_url == "auto:review-fixes/2026-10-07"
+        assert adopted.ticket_id != catch_all.pk
+
+
 class AdoptRefusals(_AdoptCase):
     def test_refuses_a_path_another_row_already_records(self) -> None:
         checkout = self._linked_worktree()

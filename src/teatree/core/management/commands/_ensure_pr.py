@@ -49,6 +49,7 @@ from teatree.core.runners.ship import (
     sanitize_close_keywords,
     should_close_ticket,
 )
+from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
 from teatree.quality.gate_receipt import append_gate_notice
 from teatree.utils import git, git_remote
@@ -216,20 +217,17 @@ def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) 
     return defer(repo_path, branch_name) if defer is not None else None
 
 
-def _ticket_for_branch(branch_name: str) -> "Ticket | None":
+def _ticket_for_branch(branch_name: str, repo_path: str = ".") -> "Ticket | None":
     """Return the owning ``Ticket`` for an orphan-branch PR, via the branch's ``Worktree`` row.
 
     The orphan path runs inside the git pre-push hook with no ticket handle;
-    the most-recent ``Worktree`` on *branch_name* names its ticket. A genuinely
-    orphan branch (no row) yields ``None``.
+    the live ticket owning *branch_name* in *repo_path*'s repo names it
+    (:func:`ticket_owning_pr_branch`). A genuinely orphan branch yields ``None``.
     """
-    from teatree.core.models import Worktree  # noqa: PLC0415 — avoid app-loading import cycle at module import
-
-    worktree = Worktree.objects.filter(branch=branch_name).order_by("-id").first()
-    return worktree.ticket if worktree is not None else None
+    return ticket_owning_pr_branch(branch_name, slug=git_remote.slug_from_remote(git.remote_url(repo=repo_path)))
 
 
-def _ticket_extra_for_branch(branch_name: str) -> dict | None:
+def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> dict | None:
     """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
 
     Resolving the ``extra`` via the branch's ``Worktree`` row lets
@@ -238,7 +236,7 @@ def _ticket_extra_for_branch(branch_name: str) -> dict | None:
     ``None`` — ``should_close_ticket`` then applies the close-on-merge
     default driven solely by the overlay setting.
     """
-    ticket = _ticket_for_branch(branch_name)
+    ticket = _ticket_for_branch(branch_name, repo_path)
     if ticket is None:
         return None
     return ticket.extra if isinstance(ticket.extra, dict) else None
@@ -315,7 +313,7 @@ def _named_author_refusal(repo_path: str, branch_name: str) -> str:
     itself, so an unreadable ticket or overlay registry degrades to ``""``.
     """
     try:
-        owning_ticket = _ticket_for_branch(branch_name)
+        owning_ticket = _ticket_for_branch(branch_name, repo_path)
         overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     except Exception:  # noqa: BLE001 — a pre-push hook must never raise; degrade to the generic message.
         logger.warning("could not resolve the overlay owning %s — leaving the generic no-host message", branch_name)
@@ -362,10 +360,10 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     title = commit_subject or f"WIP: {branch_name}"
     # A genuinely orphan branch has no owning ticket to scope the overlay by, so
     # it keeps the ambient default; a branch that HAS one is shipped under it.
-    owning_ticket = _ticket_for_branch(branch_name)
+    owning_ticket = _ticket_for_branch(branch_name, repo_path)
     overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     close_ticket = should_close_ticket(
-        _ticket_extra_for_branch(branch_name),
+        _ticket_extra_for_branch(branch_name, repo_path),
         setting_enabled=overlay.config.mr_close_ticket,
     )
     description = sanitize_close_keywords(

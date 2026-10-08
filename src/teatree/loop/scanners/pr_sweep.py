@@ -69,6 +69,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
 )
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
+from teatree.loop.scanners.pr_sweep_ticket_gate import unowned_pr_refusal
 from teatree.loop.scanners.pr_sweep_types import (
     CLEAR_PRESENT_UNUSABLE_REASON,
     CONTESTED_HOLD_REASON,
@@ -284,7 +285,8 @@ class PrSweepScanner:
             if unusable:
                 self._flag(slug=pr.slug, pr_id=pr.number, reason=CLEAR_PRESENT_UNUSABLE_REASON, url=pr.url)
             if self.solo_overlay:
-                return self._evaluate_solo_overlay(pr, unusable_clear=unusable)
+                refusal = unowned_pr_refusal(pr, identities=self.self_identities, flag=self._flag)
+                return refusal or self._evaluate_solo_overlay(pr, unusable_clear=unusable)
             return self._evaluate_no_clear_collaborative(pr)
         return self._evaluate_with_clear(pr, lookup.clear)
 

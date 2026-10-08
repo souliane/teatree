@@ -415,7 +415,7 @@ class TestEnsurePr(TestCase):
     def test_refuses_when_ticket_is_at_its_open_pr_budget(self) -> None:
         """North-star PR-2: the orphan path refuses before creating when at budget."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-q")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="feat-q")
         PullRequest.objects.create(
             ticket=ticket,
             url="https://github.com/souliane/teatree/pull/1",
@@ -452,7 +452,7 @@ class TestEnsurePr(TestCase):
     def test_refuses_when_branch_introduces_net_new_debt(self) -> None:
         """North-star PR-3: the orphan path refuses before creating on unwaived debt."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-d")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="feat-d")
         host = MagicMock()
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
@@ -636,7 +636,9 @@ class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
         """#4424: the branch's ``Worktree`` row names the ticket — a reference, never a closing keyword."""
         issue_url = "https://github.com/souliane/teatree/issues/1534"
         ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="1534-fix-the-real-work")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="1534-fix-the-real-work"
+        )
 
         spec = cast("PullRequestSpec", self._created_spec())
 
@@ -773,8 +775,8 @@ class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
                 }
             },
         )
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-a", branch="feat-a")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-b", branch="feat-b")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="acme/repo-a", branch="feat-a")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="acme/repo-b", branch="feat-b")
 
         spec_a = self._created_spec(repo_slug="acme/repo-a", branch="feat-a")
         spec_b = self._created_spec(repo_slug="acme/repo-b", branch="feat-b")

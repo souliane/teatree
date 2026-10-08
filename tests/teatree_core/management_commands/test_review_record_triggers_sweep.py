@@ -12,7 +12,10 @@ rows; only the sweep-scanner builder (which would otherwise reach the forge over
 ``gh``) is stubbed with a fake whose single-PR evaluation is asserted.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import cast
 from unittest.mock import patch
 
@@ -20,7 +23,9 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.loop.scanners.pr_sweep import MergeAttempt
+from teatree.loop.scanners.pr_sweep import MergeAttempt, PrSweepScanner
+from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
+from tests.teatree_loop.test_pr_sweep_scanner import FakeKeystone, FakePrApiClient, _open_pr
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -89,3 +94,57 @@ class TestRecordTriggersSweep(TestCase):
             result = _record()
 
         assert result["recorded"] is True
+
+
+@contextmanager
+def _ambient_reads() -> Iterator[None]:
+    with (
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names", return_value={"test (3.13)"}),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_changed_paths", return_value=["src/teatree/x.py"]),
+        patch("teatree.core.review.author_trust.repo_is_internal", return_value=True),
+    ):
+        yield
+
+
+class TestRecordReportsTheSweepsRefusal(TestCase):
+    """The same ``review record`` -> on-demand sweep seam, with a REAL scanner and only the forge faked."""
+
+    def _record_with_real_sweep(self, *, owned: bool) -> tuple[FakePrApiClient, str]:
+        api = FakePrApiClient(prs_by_slug={_SLUG: [_open_pr(pr_id=_PR_ID, head=_HEAD, owned=owned)]})
+        scanner = PrSweepScanner(
+            repos=(_SLUG,),
+            api=api,
+            keystone=FakeKeystone(),
+            notifier=NullMergeNotifier(),
+            overlay="teatree",
+            solo_overlay=True,
+            self_identities=("souliane",),
+        )
+        out = StringIO()
+        with _ambient_reads(), patch(f"{_SWEEP_MOD}._sweep_scanner_for_overlay", return_value=scanner):
+            call_command(
+                "review",
+                "record",
+                str(_PR_ID),
+                _SLUG,
+                reviewed_sha=_HEAD,
+                verdict="merge_safe",
+                reviewer_identity="cold-reviewer-agent",
+                gh_verify_result="green",
+                blast_class="logic",
+                stdout=out,
+                stderr=out,
+            )
+        return api, out.getvalue()
+
+    def test_an_unowned_own_pr_prints_the_refusal_and_never_merges(self) -> None:
+        api, printed = self._record_with_real_sweep(owned=False)
+
+        assert api.merge_pr_calls == []
+        assert f"pr_sweep blocked {_SLUG}#{_PR_ID}: no_owning_ticket" in printed
+
+    def test_an_owned_pr_prints_the_merged_line(self) -> None:
+        api, printed = self._record_with_real_sweep(owned=True)
+
+        assert api.merge_pr_calls == [(_SLUG, _PR_ID, _HEAD)]
+        assert f"pr_sweep merged {_SLUG}#{_PR_ID}" in printed
