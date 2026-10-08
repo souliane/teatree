@@ -1,5 +1,7 @@
 """Neutral option translation for the Codex App Server harness."""
 
+import json
+import logging
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.harness_options import HarnessOptions
 from teatree.utils.ports import running_in_container
+
+logger = logging.getLogger(__name__)
 
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
@@ -124,6 +128,22 @@ def codex_login_unavailable_reason(code_home: Path) -> str | None:
     if (code_home / "auth.json").is_file():
         return None
     return "no Codex login in the private home: run `t3 codex auth import`, then `t3 codex auth check`"
+
+
+def codex_model_unavailable_reason(code_home: Path, model: str) -> str | None:
+    """Fail open on a catalog this Codex release no longer writes in the shape read here."""
+    if not model:
+        return None
+    catalog_path = code_home / "models_cache.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        slugs = {entry["slug"] for entry in catalog["models"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.warning("Codex model catalog %s is unreadable; not checking %r against it", catalog_path, model)
+        return None
+    if model in slugs:
+        return None
+    return f"model {model!r} is not in the Codex catalog ({catalog_path}, fetched {catalog.get('fetched_at', '?')})"
 
 
 def codex_container_unavailable_reason() -> str | None:

@@ -579,7 +579,17 @@ t3 <overlay> config_setting set agent_skill_models \
 
 The list is authoritative and ordered. Each candidate requires `harness` and
 `model`; `provider`, capability-comparison `tier`, and reasoning `effort` are
-optional. Effort uses `low | medium | high | xhigh | max`; when omitted, the
+optional. `config_setting set` checks the SHAPE only: it refuses a candidate
+missing `harness` or `model`, an unknown key, or an off-scale `effort`, and names
+the entry (`agent_skill_models['code'][0].model`). A row stored before that check
+fails its dispatch once, as a recorded attempt. The write does NOT check that
+`harness` names a registered backend (Codex and overlay harnesses register in the
+agents layer, which the config layer cannot read), that `provider` is valid under
+it, or that the model is catalogued: each of those rejects the candidate at
+dispatch, naming the reason, and the next candidate runs. `agent_phase_harness`
+is refused unless each value is an `AgentHarness` or an inherit sentinel. A Codex
+candidate's model must also appear in the private home's `models_cache.json`
+catalog, or the candidate is skipped before dispatch. Effort uses `low | medium | high | xhigh | max`; when omitted, the
 normal phase/harness effort applies. A candidate whose explicit effort is not
 supported by its harness is rejected before dispatch, so the next route is used
 and provenance never records an effort the backend dropped. A Codex App

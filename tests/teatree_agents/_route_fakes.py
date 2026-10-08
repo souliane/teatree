@@ -9,7 +9,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
-from teatree.agents import harness_registry
+from teatree.agents import codex_app_server_options, harness_registry
 from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.skill_routing import clear_route_availability_cache
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
@@ -18,6 +18,7 @@ from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 MANAGED = "codex_like"
 CLAUDE_LIKE = "claude_like"
 CLAUDE_SDK = "claude_sdk"
+CODEX_CATALOG = Path(__file__).resolve().parents[1] / "fixtures" / "codex_app_server" / "0.155.1-models-cache.json"
 
 
 class CrashingSession(FakeHarnessSession):
@@ -96,3 +97,16 @@ def route_config(skill: str, *harnesses: str) -> AgentConfig:
 
 def routed_by(config: AgentConfig) -> AbstractContextManager[object]:
     return patch.object(harness_dispatch_mod, "resolve_agent_config", return_value=config)
+
+
+def make_codex_available(test: TestCase, home: Path) -> None:
+    """Let the real Codex candidate pass its host probes for the test's lifetime, with *home* as its private home."""
+    for patcher in (
+        patch.multiple(
+            codex_app_server_options, running_in_container=lambda: False, container_is_the_sandbox=lambda: False
+        ),
+        patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=False),
+        patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
+        patch.dict("os.environ", {"T3_CODEX_HOME": str(home)}),
+    ):
+        test.enterContext(patcher)

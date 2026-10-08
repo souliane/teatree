@@ -130,13 +130,23 @@ def _persist(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -
         return
 
 
+def _is_long_hold(observation: RouteAvailabilityObservation) -> bool:
+    return bool(observation.unavailable_reason) and observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
+
+
 def _hold_was_cleared(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> bool:
     """A long hold outlives its durable row only when an operator cleared it (``t3 codex auth import``).
 
     Read only while a long hold is cached, so the healthy path stays DB-free.
     """
-    long_hold = observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
-    return bool(observation.unavailable_reason) and long_hold and _persistent_observation(key) is None
+    return _is_long_hold(observation) and _persistent_observation(key) is None
+
+
+def held_until(overlay: str, candidate: AgentRouteCandidate, *, phase: str = "") -> datetime | None:
+    """When a quota or auth hold on *candidate* lifts; a short probe answer is no hold."""
+    with _LOCK:
+        observation = _MEMORY.get(_key(overlay, candidate, phase))
+    return observation.retry_at if observation is not None and _is_long_hold(observation) else None
 
 
 def cached_unavailable_reason(

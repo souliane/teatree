@@ -8,7 +8,7 @@ one DB key per setting. Set a value with
     t3 <overlay> config_setting set agent_session_model opus
     t3 <overlay> config_setting set agent_session_effort xhigh
     t3 <overlay> config_setting set agent_skill_models '{"code-review": [{"floor": "opus"}]}'
-    t3 <overlay> config_setting set agent_skill_models '{"code": [{"harness": "codex_app_server", "model": "codex"}]}'
+    t3 <overlay> config_setting set agent_skill_models '{"code":[{"harness":"codex_app_server","model":"gpt-6-sol"}]}'
     t3 <overlay> config_setting set agent_tier_models '{"frontier": "<a-newer-opus-id>"}'
     t3 <overlay> config_setting set agent_pydantic_ai_tier_models '{"frontier": "vendor/some-model"}'
     t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
@@ -49,6 +49,7 @@ to ``None`` at this boundary without ``config.agent_spawn`` importing UP into
 definition of "this value means inherit the default".
 """
 
+import contextlib
 import os
 from dataclasses import dataclass, field
 
@@ -107,6 +108,10 @@ class AgentRouteCandidate:
 
 
 type SkillModelPolicy = str | tuple[AgentRouteCandidate, ...] | None
+
+
+class InvalidAgentConfigError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -203,48 +208,55 @@ def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
         return {}
     resolved: dict[str, AgentHarness | None] = {}
     for phase, value in raw.items():
-        if not isinstance(value, str):
-            continue
-        if value.strip().lower() in _INHERIT_SENTINELS:
-            resolved[str(phase)] = None
-            continue
-        try:
-            resolved[str(phase)] = AgentHarness.parse(value)
-        except ValueError:
-            continue
+        with contextlib.suppress(InvalidAgentConfigError):
+            resolved[str(phase)] = parse_phase_harness_entry(str(phase), value)
     return resolved
+
+
+def parse_phase_harness_entry(phase: str, value: object) -> AgentHarness | None:
+    """An explicit unpin is ``None``, so it stays distinct from a phase with no entry."""
+    if not isinstance(value, str):
+        message = f"agent_phase_harness[{phase!r}] must be a string"
+        raise InvalidAgentConfigError(message)
+    if value.strip().lower() in _INHERIT_SENTINELS:
+        return None
+    try:
+        return AgentHarness.parse(value)
+    except ValueError as exc:
+        message = f"agent_phase_harness[{phase!r}]: {exc}, or inherit to unpin"
+        raise InvalidAgentConfigError(message) from exc
 
 
 def _route_candidate(skill: str, index: int, value: object) -> AgentRouteCandidate:
     if not isinstance(value, dict):
         message = f"agent_skill_models[{skill!r}][{index}] must be an object"
-        raise TypeError(message)
+        raise InvalidAgentConfigError(message)
     unknown = set(value) - {"harness", "model", "provider", "tier", "effort"}
     if unknown:
         message = f"agent_skill_models[{skill!r}][{index}] has unknown keys: {', '.join(sorted(unknown))}"
-        raise ValueError(message)
+        raise InvalidAgentConfigError(message)
     harness = value.get("harness")
     model = value.get("model")
     if not isinstance(harness, str) or not harness.strip():
         message = f"agent_skill_models[{skill!r}][{index}].harness must be a non-empty string"
-        raise ValueError(message)
+        raise InvalidAgentConfigError(message)
     if not isinstance(model, str) or not model.strip():
         message = f"agent_skill_models[{skill!r}][{index}].model must be a non-empty string"
-        raise ValueError(message)
+        raise InvalidAgentConfigError(message)
     provider = value.get("provider")
     tier = value.get("tier")
     effort = value.get("effort")
     if provider is not None and (not isinstance(provider, str) or not provider.strip()):
         message = f"agent_skill_models[{skill!r}][{index}].provider must be a non-empty string"
-        raise ValueError(message)
+        raise InvalidAgentConfigError(message)
     if tier is not None and (not isinstance(tier, str) or not tier.strip()):
         message = f"agent_skill_models[{skill!r}][{index}].tier must be a non-empty string"
-        raise ValueError(message)
+        raise InvalidAgentConfigError(message)
     try:
         parsed_effort = parse_effort(effort)
     except ValueError as exc:
         message = f"agent_skill_models[{skill!r}][{index}].effort is invalid: {exc}"
-        raise ValueError(message) from exc
+        raise InvalidAgentConfigError(message) from exc
     return AgentRouteCandidate(
         harness=harness.strip(),
         model=model.strip(),
@@ -254,7 +266,7 @@ def _route_candidate(skill: str, index: int, value: object) -> AgentRouteCandida
     )
 
 
-def _skill_models_from(raw: object) -> dict[str, SkillModelPolicy]:
+def parse_skill_models(raw: object) -> dict[str, SkillModelPolicy]:
     """Normalise list-form floor policies or ordered routes.
 
     A non-dict top-level value yields an empty policy map.
@@ -266,7 +278,7 @@ def _skill_models_from(raw: object) -> dict[str, SkillModelPolicy]:
         skill = str(raw_skill)
         if not isinstance(value, list):
             msg = f"agent_skill_models[{skill!r}] must be a list"
-            raise TypeError(msg)
+            raise InvalidAgentConfigError(msg)
         if len(value) == 1 and isinstance(value[0], dict) and set(value[0]) == {"floor"}:
             resolved[skill] = _normalize_model(value[0]["floor"])
             continue
@@ -385,7 +397,7 @@ def resolve_agent_config(scope: str = "") -> AgentConfig:
         return cold_reader.overlay_then_global(key, scope) if scope else cold_reader.read_setting(key)
 
     return AgentConfig(
-        skill_models=_skill_models_from(read("agent_skill_models")),
+        skill_models=parse_skill_models(read("agent_skill_models")),
         session_model=_session_model_from(read("agent_session_model")),
         session_effort=_session_effort_from(read("agent_session_effort")),
         session_permission_mode=_session_permission_mode_from(read("agent_session_permission_mode")),
