@@ -6,6 +6,7 @@ from django.utils import timezone
 from teatree.agents.harness_dispatch import DispatchHarness, candidate_selection, resolve_dispatch_harness
 from teatree.agents.harness_registry import HarnessBuildContext
 from teatree.core.models import Session, Task, TaskAttempt
+from teatree.core.models.types import validated_ticket_extra
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import CLAUDE_SDK, MANAGED, register_stub_harnesses, route_config, routed_by
 
@@ -53,3 +54,8 @@ class TestClaudeOnlyTicket(TestCase):
         assert selection is not None
         assert selection.spec.name == CLAUDE_SDK
         assert [str(r) for r in selection.rejected] == [f"{MANAGED}: {_REASON}"]
+
+
+class TestClaudeOnlySurvivesTheTicketTransitions(TestCase):
+    def test_the_key_is_declared_so_a_transition_does_not_strip_it(self) -> None:
+        assert validated_ticket_extra({"claude_only": True, "unrelated": 1}) == {"claude_only": True}

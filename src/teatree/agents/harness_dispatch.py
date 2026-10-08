@@ -20,6 +20,7 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.model_tiering import (
     HARNESS_EFFORT_SCALE,
+    PHASE_HARNESS,
     SpawnModelSelection,
     _resolve_spawn_model_selection,
     resolve_phase_harness,
@@ -32,7 +33,6 @@ from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolv
 from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.overlay_loader import OverlayConfigResolver
-from teatree.core.route_progress import failed_candidates
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 
@@ -194,7 +194,8 @@ def _managed_provider_name(spec: HarnessSpec, provider: AgentHarnessProvider | N
 def _static_rejection(context: HarnessBuildContext, candidate: AgentRouteCandidate, floor_rank: int) -> str | None:
     if reason := _route_effort_unavailable_reason(candidate.effort, candidate.harness):
         return reason
-    if (pinned := resolve_phase_harness(candidate.harness, context.phase)) != candidate.harness:
+    pinned = resolve_phase_harness(candidate.harness, context.phase)
+    if context.phase in PHASE_HARNESS and pinned != candidate.harness:
         return f"phase {context.phase!r} is pinned to harness {pinned!r}"
     if tier_rank(candidate.tier or candidate.model) < floor_rank:
         return "model is below a loaded skill's scalar floor"
@@ -236,7 +237,7 @@ def _skill_route_selection(
     source_skill, candidates = route
     if context.phase and source_skill != primary_skill and phase_bars_write_tools(context.phase):
         return None
-    failed = failed_candidates(context.task, source_skill) if context.task is not None else {}
+    failed = context.task.attempts.failed_route_candidates(source_skill) if context.task is not None else {}
     scalar_floors = [floor for skill in skills if isinstance((floor := config.skill_models.get(skill)), str)]
     floor_rank = max((tier_rank(floor) for floor in scalar_floors), default=-1)
     rejected: list[HarnessRejection] = []

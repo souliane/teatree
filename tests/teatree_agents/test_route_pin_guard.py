@@ -1,8 +1,13 @@
 """A phase pinned to claude_sdk, or one that bars write tools, never runs on another harness through a route."""
 
+from unittest.mock import patch
+
 from django.test import TestCase
 
+import teatree.agents.model_tiering as model_tiering_mod
 from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.config import AgentHarness
+from teatree.config.agent_spawn import AgentConfig
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import (
@@ -48,3 +53,14 @@ class TestRoutePinGuard(TestCase):
             dispatch = resolve_dispatch_harness(task, phase="bughunt", skills=["debug"])
 
         assert (dispatch.name, dispatch.route_candidate_index) == (CLAUDE_LIKE, 0)
+
+    def test_a_phase_override_outside_the_pinned_verification_phases_leaves_a_route_alone(self) -> None:
+        overrides = AgentConfig(phase_harness={"coding": AgentHarness.PYDANTIC_AI})
+        task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
+        with (
+            patch.object(model_tiering_mod, "resolve_agent_config", return_value=overrides),
+            routed_by(route_config("code", MANAGED, CLAUDE_SDK)),
+        ):
+            dispatch = resolve_dispatch_harness(task, phase="coding", skills=["code"])
+
+        assert (dispatch.name, dispatch.route_candidate_index) == (MANAGED, 0)

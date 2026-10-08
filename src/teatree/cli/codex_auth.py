@@ -12,7 +12,6 @@ from teatree.agents.codex_auth_cache import (
     store_auth_cache,
     store_auth_cache_from_reader,
 )
-from teatree.agents.codex_canary import canary_failure
 from teatree.utils.django_bootstrap import ensure_django
 
 codex_auth_app = typer.Typer(no_args_is_help=True, help="Manage the private Codex ChatGPT auth cache.")
@@ -64,6 +63,8 @@ def import_auth(
 @codex_auth_app.command("check")
 def check_auth() -> None:
     """Run one OK-turn through the stored login; it refreshes only what a real turn would."""
+    from teatree.agents.codex_canary import canary_failure  # noqa: PLC0415 — deferred: keeps CLI startup light
+
     typer.echo("Codex canary: starting")
     if (failure := canary_failure(resolve_codex_home())) is not None:
         typer.echo(f"FAIL: {failure}")
