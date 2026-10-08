@@ -99,6 +99,29 @@ class TestReferenceNamesTheAdoptLease:
         ), "the reference must have a loop agent read the worktree row before running `--adopt`"
 
 
+class TestReferenceNamesTheInstalledT3Hook:
+    def test_reference_cites_the_isolated_db_predicate_the_wrapper_and_the_soft_refusal(self) -> None:
+        text = _REFERENCE.read_text(encoding="utf-8")
+        for token in (
+            "teatree.core.provision.db_anchor.active_db_is_worktree_isolated",
+            "scripts/hooks/ensure-pr-installed-t3.sh",
+            "soft_refusal_commands",
+        ):
+            assert token in text, f"hook-opened-pr-ledger.md must name `{token}`"
+
+    def test_reference_ties_each_skip_exit_to_the_wrapper(self) -> None:
+        text = _REFERENCE.read_text(encoding="utf-8")
+        for code in ("69", "75", "127"):
+            assert _any_window_contains(text, "ensure-pr-installed-t3.sh", must_include=f"`{code}`", radius=900), (
+                f"the reference must say the wrapper skips on exit `{code}`"
+            )
+
+    def test_reference_names_the_shapes_the_hook_does_not_cover(self) -> None:
+        text = _REFERENCE.read_text(encoding="utf-8")
+        for token in ("detached HEAD", "t3 fast-push", "first ref", "uv run", "container"):
+            assert token in text, f"the reference must name the uncovered shape `{token}`"
+
+
 class TestPushersArePointedAtTheRule:
     def test_code_and_test_skills_point_at_4a1_with_the_adopt_flag(self) -> None:
         for skill in _POINTER_SKILLS:

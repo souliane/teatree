@@ -13,6 +13,23 @@ The no-orphan pre-push hook runs `t3 <overlay> pr ensure-pr` with no ticket hand
 
 That is how PR #4903 (issue #4900) merged with its ticket ignored and its rubric out of the merge gate's reach.
 
+## The Hook Runs the Installed `t3`
+
+The `PullRequest` ledger row, the `PendingPullRequest` obligation and the ticket's `extra` must land in the canonical control DB, the one the merge gates read. A checkout's own editable install resolves a per-worktree isolated SQLite copy instead (`teatree.core.provision.db_anchor.active_db_is_worktree_isolated`), so a hook that runs the checkout's code opens the PR and writes rows no gate ever sees: the reviewer's brief carries no rubric and the critic and anti-vacuity gates never bind.
+
+`scripts/hooks/ensure-pr-installed-t3.sh` runs `t3 teatree pr ensure-pr --repo <toplevel>` with every `PATH` entry under the checkout removed, so the `t3` it finds is the installed one (`deploy/t3` dispatches it into the worker). It acts only when `PRE_COMMIT_REMOTE_BRANCH` is `refs/heads/*`. The prek manual stage and `t3 tool verify-gates` leave that variable unset, and tag and claim pushes name other refs, so none of them writes an obligation.
+
+- The wrapper exits 0 with a warning that prints `t3 <overlay> pr ensure-pr --repo <abs> --branch <branch>` when `t3` exits `69`, `75` or `127`: `deploy/t3` returns `69` when this venue cannot run `t3` (checkout outside every translatable root, Docker unreachable, stack never built, secret store wedged), `75` for a stack mid-update, and a shell returns `127` for no installed `t3`. The push goes through and no PR opens until that command runs. The hook is `verbose: true` because prek hides a passing hook's output otherwise. Any other exit code fails the push.
+- `ensure-pr` on an isolated DB, which only a checkout's own `uv run` reaches, returns an `error` naming the installed `t3` and writes nothing. `ensure-pr` is in `soft_refusal_commands`, so the error still exits 0 and never blocks the push.
+
+Not covered:
+
+- `--repo` carries the checkout's host path and `deploy/t3` translates only the working directory. On a host whose paths differ from the container's, `ensure-pr` returns an `error` and exits 0, so no PR opens. The box has path identity.
+- A push from a detached HEAD to a branch name with no local branch: the classifier reads local refs and answers "branch ref is missing".
+- `t3 fast-push` opens its PRs through its own upsert and records no ledger row.
+- prek uses only the first ref of a multi-ref push, so a push that lists a tag first skips the branch.
+- A branch whose `.pre-commit-config.yaml` still carries the `uv run` entry keeps the isolated-DB behaviour until it merges `main`.
+
 ## Prevent
 
 - Create the checkout with `t3 <overlay> workspace ticket <issue-url>`, which writes the `Worktree` row.
@@ -38,4 +55,5 @@ After the push that opens the PR, `mcp__teatree__pr_for_ticket <ticket>` lists i
 1. Run the `--adopt` command inside the checkout. The next review then sees the worktree's commits and schedules shipping. The adopt also stamps the delivery lease above, so that review waits up to an hour.
 2. Re-running `t3 <overlay> pr ensure-pr` does not heal it. On a branch with an open PR, `teatree.core.management.commands._ensure_pr.skip_for_classified` returns the "open PR exists" skip and records nothing.
 3. On GitHub, the ship's `pr create` adopts the open PR (`teatree.backends.github.pr_create._adopt_existing_pr_or_reraise`) and records it. Read `mcp__teatree__pr_for_ticket` again afterwards. GitLab has no such adoption, so there step 4 applies.
-4. If the list is still empty, or the ticket is already ignored or merged, ask the owner, naming the PR and the ticket. Never report the work delivered.
+4. If the push printed the hook's `ensure-pr skipped` warning, run the command it prints from a checkout under a mounted root. Nothing opens the PR until then.
+5. If the list is still empty, or the ticket is already ignored or merged, ask the owner, naming the PR and the ticket. Never report the work delivered.
