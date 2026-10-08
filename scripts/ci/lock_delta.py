@@ -38,6 +38,17 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 _RELEASE = re.compile(r"^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+_PEP440 = re.compile(
+    r"^\s*v?(?:(?P<epoch>\d+)!)?(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[-_.]?(?P<pre>alpha|beta|preview|pre|rc|a|b|c)[-_.]?(?P<pre_n>\d+)?)?"
+    r"(?:-(?P<post_implicit>\d+)|[-_.]?(?P<post>post|rev|r)[-_.]?(?P<post_n>\d+)?)?"
+    r"(?:[-_.]?(?P<dev>dev)[-_.]?(?P<dev_n>\d+)?)?"
+    r"(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?\s*$",
+    re.IGNORECASE,
+)
+_PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "preview": 2}
+
+type Precedence = tuple[int, tuple[int, ...], tuple[int, int], int, float]
 
 
 class Level(Enum):
@@ -77,12 +88,37 @@ def _release(version: str) -> tuple[int, int, int] | None:
     return int(match.group(1)), int(match.group(2) or 0), int(match.group(3) or 0)
 
 
+def _precedence(version: str) -> Precedence | None:
+    """``packaging.version`` ordering without the import: this script runs on a bare interpreter."""
+    match = _PEP440.match(version)
+    if match is None:
+        return None
+    release = tuple(int(part) for part in match["release"].split("."))
+    while len(release) > 1 and release[-1] == 0:
+        release = release[:-1]
+    has_post = match["post"] is not None or match["post_implicit"] is not None
+    if match["pre"]:
+        pre = (_PRE_RANK[match["pre"].lower()], int(match["pre_n"] or 0))
+    else:
+        pre = (-1, 0) if match["dev"] and not has_post else (3, 0)
+    post = int(match["post_implicit"] or match["post_n"] or 0) if has_post else -1
+    dev = float(match["dev_n"] or 0) if match["dev"] else float("inf")
+    return int(match["epoch"] or 0), release, pre, post, dev
+
+
+def _moves_back(before: str, after: str, old: tuple[int, int, int], new: tuple[int, int, int]) -> bool:
+    old_precedence, new_precedence = _precedence(before), _precedence(after)
+    if old_precedence is None or new_precedence is None:
+        return new < old
+    return new_precedence < old_precedence
+
+
 def classify(before: str, after: str) -> Level:
     """The boundary a version move crosses, or ``UNKNOWN`` when either side is unparsable."""
     old, new = _release(before), _release(after)
     if old is None or new is None:
         return Level.UNKNOWN
-    if new < old:
+    if _moves_back(before, after, old, new):
         return Level.DOWNGRADE
     if old[0] != new[0]:
         return Level.MAJOR

@@ -56,9 +56,13 @@ class Cooldown:
         if span is None:
             msg = f"[tool.uv] exclude-newer must read 'N days', got {uv.get('exclude-newer')!r}"
             raise PolicyError(msg)
+        entries = uv.get("exclude-newer-package", {})
+        if not isinstance(entries, Mapping):
+            msg = f"[tool.uv] exclude-newer-package must be a table, got {entries!r}"
+            raise PolicyError(msg)
         problems: list[str] = []
         escapes: list[Escape] = []
-        for package, value in uv.get("exclude-newer-package", {}).items():
+        for package, value in entries.items():
             if not isinstance(value, str):
                 problems.append(f"{package} = {value!r} never expires; use the dated cutoff")
             elif not _WHOLE_SECOND_UTC.match(value):

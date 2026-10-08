@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from scripts.ci.cooldown_escapes import main
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "ci" / "cooldown_escapes.py"
+_CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 _HOOK_CONFIGS = (".pre-commit-config.yaml", "src/teatree/templates/overlay/.pre-commit-config.yaml.tmpl")
 _UV_HOOK = re.compile(
     r"repo: https://github\.com/astral-sh/uv-pre-commit\n\s+rev: (?P<sha>[0-9a-f]{40})\s+# (?P<version>\d+\.\d+\.\d+)\n"
@@ -34,6 +37,13 @@ def _hook_pin(config: str) -> tuple[str, str]:
     match = _UV_HOOK.search((_REPO_ROOT / config).read_text(encoding="utf-8"))
     assert match is not None, f"{config} must pin astral-sh/uv-pre-commit to a commit with its version label."
     return match["sha"], match["version"]
+
+
+def _audit_step(fragment: str) -> dict[str, Any]:
+    steps = yaml.safe_load(_CI.read_text(encoding="utf-8"))["jobs"]["uv-audit"]["steps"]
+    step = next((step for step in steps if fragment in step.get("run", "")), None)
+    assert step is not None, f"The uv-audit job has no step running {fragment!r}."
+    return step
 
 
 def _pyproject(tmp_path: Path, escapes: str = "") -> Path:
@@ -101,9 +111,32 @@ class TestTheRepoHoldsNewReleases:
             f'uv {version} cannot parse `exclude-newer = "7 days"`: it drops [tool.uv] and rewrites uv.lock.'
         )
 
+    def test_dependabot_waits_as_long_as_uv(self) -> None:
+        days = int(
+            tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["uv"][
+                "exclude-newer"
+            ].split()[0]
+        )
+        updates = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))["updates"]
+        assert {entry["cooldown"]["default-days"] for entry in updates} == {days}
+
     def test_the_committed_escapes_are_well_formed(self) -> None:
         argv = ["--pyproject", str(_REPO_ROOT / "pyproject.toml"), "--lock", str(_REPO_ROOT / "uv.lock")]
         assert main(argv, now=datetime.now(UTC), fetch_json=_unreachable) == 0
+
+
+class TestTheAuditRunsTheEscapeCheck:
+    def test_every_run_checks_the_escapes_and_only_the_schedule_fails_on_expiry(self) -> None:
+        step = _audit_step("scripts/ci/cooldown_escapes.py")
+        assert "--verify-lock" in step["run"]
+        assert "--fail-on-expired" not in step["run"]
+        assert step["env"]["FAIL_ON_EXPIRED"] == "${{ github.event_name == 'schedule' && '--fail-on-expired' || '' }}"
+        assert step["if"] == "${{ !cancelled() }}", "The check must also run when pip-audit reds."
+
+    def test_a_red_audit_points_at_the_escape_routine(self) -> None:
+        step = _audit_step("exclude-newer-package")
+        assert step["if"] == "failure() && steps.audit.outcome == 'failure'"
+        assert "BLUEPRINT §15" in step["run"]
 
 
 class TestEscapeEntries:
@@ -137,6 +170,12 @@ class TestEscapeEntries:
     ) -> None:
         assert _run(tmp_path, f"mcp = {value}") == 1
         assert reason in capsys.readouterr().err
+
+    def test_a_non_table_escape_value_is_refused(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[tool.uv]\nexclude-newer = "7 days"\nexclude-newer-package = "mcp"\n', encoding="utf-8")
+        assert main(["--pyproject", str(pyproject), "--lock", str(_lock(tmp_path))], now=_NOW) == 1
+        assert "must be a table" in capsys.readouterr().err
 
     def test_runs_on_stdlib_alone(self, tmp_path: Path) -> None:
         completed = subprocess.run(
