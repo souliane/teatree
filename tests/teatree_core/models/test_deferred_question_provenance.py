@@ -17,16 +17,17 @@ _NON_OWNER_PROVENANCE = (
     DeferredQuestion.ResolvedVia.STALE,
     "unknown",
 )
+_DECISIVE_ANSWERS = ("approve", "reject")
 
 
-def _answered(resolved_via: str | None) -> Directive:
+def _answered(resolved_via: str | None, answer: str = "approve") -> Directive:
     directive = Directive.objects.capture("max 1 MR per repo", source=Directive.Source.CLI)
     directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="at most 1 open PR")
     question = ask_ratification(directive)
     if resolved_via is None:
-        DeferredQuestion.consume(question.pk, answer="approve")
+        DeferredQuestion.consume(question.pk, answer=answer)
     else:
-        question.apply_answer("approve", resolved_via=resolved_via)
+        question.apply_answer(answer, resolved_via=resolved_via)
     directive.refresh_from_db()
     assert directive.ratify_question is not None
     return directive
@@ -69,18 +70,22 @@ class TestRatifyDecisionRestsOnRecordedProvenance(TestCase):
                 self._assert_refused(_answered(resolved_via))
 
     def test_a_failed_provenance_fetch_never_admits(self) -> None:
-        directive = _answered(DeferredQuestion.ResolvedVia.SLACK)
-        with patch.object(DeferredQuestion, "resolved_via", new=property(_unreadable_provenance)):
-            self._assert_never_admits(directive)
-        directive.refresh_from_db()
-        assert directive.state == Directive.State.RATIFY_PENDING
+        for answer in _DECISIVE_ANSWERS:
+            with self.subTest(answer=answer):
+                directive = _answered(DeferredQuestion.ResolvedVia.SLACK, answer)
+                with patch.object(DeferredQuestion, "resolved_via", new=property(_unreadable_provenance)):
+                    self._assert_never_admits(directive)
+                directive.refresh_from_db()
+                assert directive.state == Directive.State.RATIFY_PENDING
 
     def test_a_failed_owner_set_read_never_admits(self) -> None:
-        directive = _answered(DeferredQuestion.ResolvedVia.SLACK)
-        with patch.object(DeferredQuestion, "OWNER_CHANNELS", new=_UnreadableOwnerSet()):
-            self._assert_never_admits(directive)
-        directive.refresh_from_db()
-        assert directive.state == Directive.State.RATIFY_PENDING
+        for answer in _DECISIVE_ANSWERS:
+            with self.subTest(answer=answer):
+                directive = _answered(DeferredQuestion.ResolvedVia.SLACK, answer)
+                with patch.object(DeferredQuestion, "OWNER_CHANNELS", new=_UnreadableOwnerSet()):
+                    self._assert_never_admits(directive)
+                directive.refresh_from_db()
+                assert directive.state == Directive.State.RATIFY_PENDING
 
     def test_the_re_ask_never_mentions_the_command_line(self) -> None:
         directive = _answered(DeferredQuestion.ResolvedVia.AGENT)
