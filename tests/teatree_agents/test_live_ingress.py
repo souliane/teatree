@@ -1,5 +1,6 @@
 """Operator verbs on the worker socket are refused to the worker's own agent processes."""
 
+import asyncio
 import json
 import os
 import socket
@@ -11,8 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from teatree.agents.live_ingress import PeerCredentials, PeerRole, classify_peer, peer_credentials
+from teatree.agents.live_control import MAX_STEER_WAIT_SECONDS
+from teatree.agents.live_ingress import OperatorIngress, PeerCredentials, PeerRole, classify_peer, peer_credentials
 from teatree.agents.live_mailbox import LiveMailboxBroker
+from teatree.agents.live_registry import LiveSessionRegistry
 
 _AGENT_CHILD = """
 import asyncio, json, socket, sys
@@ -85,3 +88,54 @@ def test_credentials_are_read_from_a_connected_unix_socket() -> None:
     with left, right:
         assert peer_credentials(left) == PeerCredentials(pid=os.getpid(), uid=os.getuid())
     assert peer_credentials(None) is None
+
+
+def _served_by_an_operator(method: str, request: dict[str, object]) -> object:
+    registry = LiveSessionRegistry()
+    ingress = OperatorIngress(lambda: registry, worker_pid=os.getpid())
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    with left, right:
+        return asyncio.run(ingress.serve(method, {"method": method, **request}, left))
+
+
+_STEER = {"task": 7, "text": "use docs/x.md", "command_id": "c-1", "wait_seconds": 5}
+
+
+@pytest.mark.parametrize(
+    ("method", "request_fields", "refusal"),
+    [
+        pytest.param("live.inspect", {}, "positive integer task", id="no-task"),
+        pytest.param("live.inspect", {"task": 0}, "positive integer task", id="task-zero"),
+        pytest.param("live.inspect", {"task": True}, "positive integer task", id="task-bool"),
+        pytest.param("live.inspect", {"task": "7"}, "positive integer task", id="task-string"),
+        pytest.param("live.steer", {**_STEER, "text": ""}, "non-empty text", id="empty-text"),
+        pytest.param("live.steer", {**_STEER, "text": 5}, "non-empty text", id="text-not-a-string"),
+        pytest.param("live.steer", {**_STEER, "command_id": ""}, "1-128 byte command_id", id="empty-command-id"),
+        pytest.param("live.steer", {**_STEER, "command_id": "é" * 65}, "1-128 byte command_id", id="129-byte-id"),
+        pytest.param("live.steer", {**_STEER, "wait_seconds": 0}, "wait must be within", id="no-wait"),
+        pytest.param("live.steer", {**_STEER, "wait_seconds": 900.5}, "wait must be within", id="wait-over-cap"),
+        pytest.param("live.steer", {**_STEER, "wait_seconds": True}, "wait must be within", id="wait-bool"),
+        pytest.param("live.steer", {**_STEER, "wait_seconds": "5"}, "wait must be within", id="wait-string"),
+        pytest.param("live.kill", {"task": 7}, "Unknown live method", id="unknown-verb"),
+    ],
+)
+def test_a_malformed_operator_request_is_refused_before_any_session_is_touched(
+    method: str, request_fields: dict[str, object], refusal: str
+) -> None:
+    with pytest.raises(ValueError, match=refusal):
+        _served_by_an_operator(method, request_fields)
+
+
+def test_a_request_at_every_bound_reaches_the_registry() -> None:
+    boundary = {**_STEER, "command_id": "c" * 128, "wait_seconds": MAX_STEER_WAIT_SECONDS}
+
+    receipt = _served_by_an_operator("live.steer", boundary)
+
+    assert receipt == {
+        "command_id": "c" * 128,
+        "task": 7,
+        "outcome": "rejected",
+        "code": "unknown_session",
+        "mode": "active",
+        "accepted_at": None,
+    }
