@@ -201,11 +201,11 @@ def prune_task_results() -> dict[str, int]:
     The pass is :func:`teatree.core.retention.prune.apply_retention` — the lane table
     ``t3 <overlay> retention prune`` also reads, so the scheduled pass and the operator's
     cannot disagree about which rows are disposable. It spends at most
-    ``SCHEDULED_MAX_BATCHES`` short batches, failed task history first, and returns its
-    per-lane counts. The name predates the wider pass and stays, because the pending READY
-    row holds this module path. Successor-FIRST (F6): the next fire is queued before the
-    pass runs, in a try that records-but-never-propagates, so a body fault cannot orphan
-    the chain.
+    ``SCHEDULED_MAX_BATCHES`` short batches in lane order (stale parks, then failed before
+    completed task history) and returns its per-lane counts. The name predates the wider
+    pass and stays, because the pending READY row holds this module path. Successor-FIRST
+    (F6): the next fire is queued before the pass runs, in a try that
+    records-but-never-propagates, so a body fault cannot orphan the chain.
     """
     from teatree.core.retention import prune  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
