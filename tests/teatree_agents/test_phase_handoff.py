@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Iterator
@@ -40,6 +41,7 @@ from teatree.agents.lane_b.tool_names import TOOL_BASH, TOOL_READ
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.prompt import build_system_context
 from teatree.agents.runner import TaskUsage, run_agent
+from teatree.core.cleanup.checkout_registry import is_tagged_cache, scan_checkout_paths
 from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.types import AdequacySection, PlanAdequacy
@@ -435,3 +437,16 @@ class TestDeliveriesStayPrivateAndLeaveNothingBehind(_Handoff):
             pass
 
         assert str(handoff.parent) in logs.output[0]
+
+
+class TestTheStoreIsNoCheckoutScanGap(_Handoff):
+    """The store stays unlistable, so a checkout walk must skip it by its tag rather than record it unread (#4923)."""
+
+    def test_a_scan_over_the_data_dir_skips_the_store_without_a_gap(self) -> None:
+        with self._delivered(self._child("planning", "coding")) as (handoff, _):
+            store = handoff.parent.parent
+            registry = scan_checkout_paths((store.parent,))
+
+        assert stat.S_IMODE(store.stat().st_mode) == 0o300, "control: the store still cannot be listed"
+        assert registry.gaps == (), "an unreadable store vetoed every reap that waited on a complete scan"
+        assert is_tagged_cache(store)

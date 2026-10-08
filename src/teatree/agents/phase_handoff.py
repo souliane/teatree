@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from teatree.config import get_data_dir
+from teatree.core.cleanup.checkout_registry import CACHEDIR_SIGNATURE, CACHEDIR_TAG, is_tagged_cache
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task
 
@@ -41,6 +42,9 @@ def delivered_phase_handoff(task: Task) -> Iterator[Path | None]:
         return
     store = get_data_dir("handoff")
     store.chmod(_STORE_MODE)
+    if not is_tagged_cache(store):
+        # Unlistable on purpose, so a checkout walk must learn to skip it from the tag instead.
+        (store / CACHEDIR_TAG).write_bytes(CACHEDIR_SIGNATURE + b"\n# teatree phase handoffs, rendered per dispatch\n")
     delivery = Path(tempfile.mkdtemp(dir=store))
     try:
         handoff = delivery / _HANDOFF_FILENAME

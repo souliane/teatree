@@ -60,9 +60,9 @@ _NEVER_A_CHECKOUT = frozenset(
     {".git", "node_modules", "__pycache__", ".venv", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 )
 
-_CACHEDIR_TAG = "CACHEDIR.TAG"
+CACHEDIR_TAG = "CACHEDIR.TAG"
 #: What https://bford.info/cachedir/ requires the tag to open with; a file merely so named marks nothing.
-_CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ class CheckoutRegistry:
     #: The roots this venue actually walked. A path outside every one of them was
     #: never looked for here, so its absence from :attr:`paths` says nothing about
     #: whether it exists — the distinction #3872 turns on (see
-    #: :func:`~teatree.core.management.commands._workspace.owner_stamps.venue_can_observe`).
+    #: :func:`~teatree.core.cleanup.owner_stamps.venue_can_observe`).
     scanned_roots: tuple[Path, ...] = ()
     #: The non-checkout directories the walk listed — where a checkout created later appears.
     listed: tuple[Path, ...] = ()
@@ -139,8 +139,8 @@ def checkout_scan_roots(workspace: Path) -> tuple[Path, ...]:
 
 def is_tagged_cache(directory: Path) -> bool:
     try:
-        with (directory / _CACHEDIR_TAG).open("rb") as tag:
-            return tag.read(len(_CACHEDIR_SIGNATURE)) == _CACHEDIR_SIGNATURE
+        with (directory / CACHEDIR_TAG).open("rb") as tag:
+            return tag.read(len(CACHEDIR_SIGNATURE)) == CACHEDIR_SIGNATURE
     except OSError:
         return False
 
@@ -301,15 +301,15 @@ def _classify_git_file_checkout(directory: Path, marker: Path) -> tuple[bool, st
     return True, ""
 
 
-def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
+def live_checkout_paths(workspace: Path, *, deadline: float | None = None) -> CheckoutRegistry:
     """Every checkout path that exists, from the filesystem UNION the git registries.
 
     The scan is the comprehensive source; the registries are additive, covering a
     checkout git knows about that sits outside every scanned root. Both contribute
     gaps, and a gap from either makes the whole answer incomplete — the sources
-    widen coverage, they never vouch for each other.
+    widen coverage, they never vouch for each other. A walk *deadline* cuts short into a gap.
     """
-    scan = scan_checkout_paths(checkout_scan_roots(workspace))
+    scan = scan_checkout_paths(checkout_scan_roots(workspace), deadline=deadline)
     found = set(scan.paths)
     gaps = list(scan.gaps)
     for repo in sorted(candidate_clones(workspace)):
@@ -345,6 +345,8 @@ def one_spelling_each(paths: frozenset[str]) -> list[Path]:
 
 
 __all__ = [
+    "CACHEDIR_SIGNATURE",
+    "CACHEDIR_TAG",
     "CheckoutRegistry",
     "candidate_clones",
     "checkout_scan_roots",

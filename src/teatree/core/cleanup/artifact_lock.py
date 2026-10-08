@@ -17,8 +17,8 @@ from pathlib import Path
 #: The provisioned dependencies eviction may remove. ``.venv-hook*`` is a GLOB because the
 #: hook environment's name is platform-scoped (``scripts/hooks/lib/resolve-uv.sh``), so a
 #: bind-mounted clone accumulates one per platform that ever ran a hook in it — plus
-#: whatever husks a rebuild left beside them.
-ARTIFACT_NAMES = (".venv", ".venv-hook*", "node_modules", ".nx", ".angular")
+#: whatever husks a rebuild left beside them. ``mutants`` is mutmut's output tree.
+ARTIFACT_NAMES = (".venv", ".venv-hook*", "node_modules", ".nx", ".angular", "mutants")
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 

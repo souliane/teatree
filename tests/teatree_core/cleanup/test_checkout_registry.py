@@ -123,6 +123,15 @@ class TestCheckoutRegistry(TestCase):
         assert not registry.complete, "a broken clone registry must record a gap, never read as complete"
         assert any(str(self.clone) in gap for gap in registry.gaps)
 
+    def test_an_exhausted_walk_budget_makes_the_live_set_a_named_partial_answer(self) -> None:
+        full = live_checkout_paths(self.workspace, deadline=time.monotonic() + 600)
+        cut_short = live_checkout_paths(self.workspace, deadline=time.monotonic() - 1)
+
+        assert str(self.clone) in full.paths, "control: the unbudgeted walk finds the clone"
+        assert str(self.clone) not in cut_short.paths
+        assert not cut_short.complete
+        assert any("budget" in gap for gap in cut_short.gaps), cut_short.gaps
+
     def test_control_a_healthy_clone_reads_complete(self) -> None:
         """The control proving the probe above can distinguish broken from healthy."""
         self._register(self.clone)

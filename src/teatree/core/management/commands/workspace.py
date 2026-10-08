@@ -9,6 +9,7 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
+from teatree.core.cleanup.owner_stamps import backfill_owner_stamps
 from teatree.core.cleanup.prek_patch_recovery import render_report, resolve_patch_dir, restore_patch
 from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
@@ -25,7 +26,6 @@ from teatree.core.management.commands._workspace.docker import reap_stale_local_
 from teatree.core.management.commands._workspace.drift_report import run_drift_report
 from teatree.core.management.commands._workspace.finalize import run_finalize
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
-from teatree.core.management.commands._workspace.owner_stamps import backfill_owner_stamps
 from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,

@@ -15,9 +15,9 @@ from teatree.config import clone_root
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists, cleanup_worktree
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.cleanup.preview import preview_line
 from teatree.core.cleanup.working_tree_dirt import _porcelain_path, is_orchestration_debris
 from teatree.core.intake.resolve import match_worktree_by_path
-from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import (
     INCONCLUSIVE_SOURCE,
