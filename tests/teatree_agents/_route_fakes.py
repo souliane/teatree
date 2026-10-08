@@ -3,6 +3,7 @@
 import contextlib
 from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -78,6 +79,13 @@ def register_stub_harnesses(
 
         register_harness(HarnessSpec(name=name, factory=build, capabilities=capabilities, allows_provider=False))
         test.addCleanup(harness_registry._REGISTRY.pop, name, None)
+
+
+def write_codex_login(home: Path) -> Path:
+    """A stand-in ``auth.json`` in a private Codex home, so the Codex candidate's login probe passes."""
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text("{}")
+    return home
 
 
 def route_config(skill: str, *harnesses: str) -> AgentConfig:

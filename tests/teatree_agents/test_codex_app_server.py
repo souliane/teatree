@@ -43,6 +43,7 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.round_ceiling import ROUND_STARTED, starts_a_round
 from tests.teatree_agents._codex_command_shape import codex_wrapped
+from tests.teatree_agents._route_fakes import write_codex_login
 
 _THREAD_ID = "0197e1d4-1f5f-7b00-8000-000000000001"
 _PROTOCOL_CONTRACT = Path(__file__).parents[1] / "fixtures" / "codex_app_server" / "0.155.1-contract.json"
@@ -637,6 +638,11 @@ def test_factory_container_read_only_phase_selects_claude(monkeypatch: pytest.Mo
         harness_registry._REGISTRY.pop("codex_container_probe", None)
 
     assert selection.spec.name == harness.AgentHarness.CLAUDE_SDK.value
+
+
+@pytest.fixture
+def a_codex_login(tmp_path: Path) -> Path:
+    return write_codex_login(tmp_path / "codex-home")
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,7 @@
 """Direct Codex dispatches inherit Codex's model default, not a Claude tier id."""
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,6 +21,7 @@ from teatree.core.modelkit.phases import KNOWN_PHASES
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
+from tests.teatree_agents._route_fakes import write_codex_login
 
 
 class TestCodexRunnerModelSelection(TestCase):
@@ -170,9 +173,9 @@ class TestCodexRunnerModelSelection(TestCase):
             == TIER_MODELS["frontier"]
         )
 
-    @pytest.mark.usefixtures("a_codex_login")
     def test_every_dispatchable_phase_is_translatable_or_rejected_by_the_preflight_probe(self) -> None:
         spec = codex_app_server_spec()
+        write_codex_login(Path(os.environ["T3_CODEX_HOME"]))
         with patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"):
             for phase in sorted(KNOWN_PHASES):
                 options = _build_options(
