@@ -28,6 +28,7 @@ from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.review.gitlab_head_pipeline import reset_unmatched_head_reports
+from teatree.core.views._webhook_secrets import reset_webhook_secrets
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
 from teatree.eval.cost_observation import suite_budget_from_env
@@ -213,7 +214,7 @@ def _clear_backend_caches() -> Iterator[None]:
 
     reset_backend_caches()
     reset_overlay_cache()
-    with patch.object(_secrets_mod, "read_pass", _no_pass):
+    with patch.multiple(_secrets_mod, read_pass=_no_pass, pass_entry_names=lambda _prefix: frozenset()):
         yield
     reset_backend_caches()
     reset_overlay_cache()
@@ -367,12 +368,14 @@ def _inert_ambient_process_table() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_webhook_rate_limiter() -> Iterator[None]:
-    """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
+    """Drop the process-singleton webhook limiter and secret cache so neither leaks across tests."""
     from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415
 
     reset_webhook_rate_limiter()
+    reset_webhook_secrets()
     yield
     reset_webhook_rate_limiter()
+    reset_webhook_secrets()
 
 
 @pytest.fixture(autouse=True)

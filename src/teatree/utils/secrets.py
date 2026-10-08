@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
 
@@ -66,6 +67,10 @@ class SecretStoreError(RuntimeError):
     @classmethod
     def not_written(cls, key: str) -> "SecretStoreError":
         return cls(f"`pass insert {key}` failed — nothing was stored")
+
+    @classmethod
+    def unlisted(cls, prefix: str, error: OSError) -> "SecretStoreError":
+        return cls(f"listing {prefix!r} in the `pass` password store failed: {type(error).__name__}")
 
     @classmethod
     def unreadable(cls, key: str, returncode: int, detail: str) -> "SecretStoreError":
@@ -257,6 +262,20 @@ def remove_pass(key: str) -> bool:
     except (CommandFailedError, FileNotFoundError):
         return False
     return True
+
+
+def pass_entry_names(prefix: str) -> frozenset[str]:
+    """The entry names directly under *prefix*, read from the store directory without decrypting anything."""
+    root = Path(os.environ.get("PASSWORD_STORE_DIR") or Path.home() / ".password-store") / prefix
+    try:
+        with os.scandir(root) as entries:
+            return frozenset(
+                entry.name.removesuffix(".gpg") for entry in entries if entry.name.endswith(".gpg") and entry.is_file()
+            )
+    except FileNotFoundError:
+        return frozenset()
+    except OSError as exc:
+        raise SecretStoreError.unlisted(prefix, exc) from exc
 
 
 def pass_entry_exists(key: str) -> bool:
