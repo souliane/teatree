@@ -6,24 +6,19 @@ dormant build products (#4244). All three are DRY-RUN by default and delete only
 ``--apply``, because each removes something and none of the three is worth running
 against a population nobody has read.
 
-``prune`` is DRY-RUN by default: it reports what retention WOULD delete and
-touches nothing. Deleting requires the explicit ``--apply`` flag. Both the plan
-and the apply share one safety definition per lane (the managers' ``prunable``
-querysets): a row of a LIVE ticket or task is never a candidate. The terminal-owned
-lane reaches only rows OLDER than a per-table window. The park lane
-(``prunable_parks``) has its own definition — a limit-park audit row carrying no
-billed telemetry, aged on ``ended_at`` — because a park RETURNS its task to the
-queue, which makes the terminal-owned guard structurally unable to see one.
+The same ``prune`` lanes also run on their own every hour, bounded by a batch budget
+(``teatree.loops.timer_reconciler.prune_task_results``). ``prune`` is the operator's view
+of that pass: a dry run by default, and under ``--apply`` a drain with no budget followed
+by a ``VACUUM``. Plan and apply resolve each lane through the one lane table in
+:mod:`teatree.core.retention.prune`, so a row of a live ticket or task is never a candidate.
 
-The retention windows are the DB-home ``task_attempt_retention_days`` (default 30) and
-``task_result_retention_days`` (default 1) settings — per-overlay overridable, ``0``
-disables that lane. Set them with ``t3 <overlay> config_setting set``. The
-``IncomingEvent`` and park lanes carry no window setting: they are the fixed
-``INCOMING_EVENT_RETENTION_DAYS`` / ``PARK_ATTEMPT_RETENTION_DAYS``.
-
-The ``TicketTransition`` lane has no window: it fires when the owning ticket CLOSES,
-and it removes only rows that are not state edges (``from_state == to_state``), so a
-reopened ticket keeps its whole history.
+The windows are the DB-home ``task_attempt_retention_days`` (default 30, never below the
+56-day factory lookback, ``0`` disables the task-history lanes) and
+``task_result_retention_days`` (default 1, ``0`` disables that lane) settings. Set them
+with ``t3 <overlay> config_setting set``; the hourly pass reads the global values, not
+per-overlay overrides. The park, ping-payload and ``IncomingEvent``
+lanes carry no window setting: they are ``PARK_ATTEMPT_RETENTION_DAYS`` and
+``POST_MORTEM_RETENTION_DAYS``.
 
 ``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.utils.django_db.vacuum`). Deleting
 rows on SQLite reclaims no disk on its own — the pages move to the free list and
@@ -49,7 +44,15 @@ from teatree.core.cleanup.artifact_eviction import (
     plan_artifact_eviction,
 )
 from teatree.core.machine_output import emit
-from teatree.core.retention.prune import PARK_TABLE, apply_retention, plan_retention
+from teatree.core.retention.prune import (
+    COMPLETED_TASK_TABLE,
+    FAILED_TASK_TABLE,
+    PARK_TABLE,
+    PING_PAYLOAD_TABLE,
+    TRANSITION_TABLE,
+    apply_retention,
+    plan_retention,
+)
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweepPlan, sweep_scratch
 from teatree.core.table_output import print_table
 from teatree.utils.django_db.vacuum import VacuumOutcome, vacuum_control_db
@@ -63,9 +66,10 @@ class _TableRow(TypedDict):
     table: str
     retention_days: int
     rows: int
-    junk: int
+    cascaded: int
     disabled: bool
     batches: int
+    max_batch_ms: int
     reason: str
     aged: bool
 
@@ -105,6 +109,7 @@ def _vacuum_row(vacuum: VacuumOutcome) -> _VacuumRow:
 class RetentionReport(TypedDict):
     applied: bool
     total_rows: int
+    budget_exhausted: bool
     tables: list[_TableRow]
     vacuum: _VacuumRow
 
@@ -171,10 +176,12 @@ class Command(TyperCommand):
     ) -> None:
         """Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply).
 
-        Conservative: the terminal-owned lane deletes only rows past the retention
-        window whose owning task AND ticket are terminal, so a live/in-flight row is
-        never touched; the park lane deletes only aged limit-park audit rows that
-        carry no billed telemetry.
+        The lanes run in order: aged limit-park attempts; the failed, then
+        the completed tasks of finished tickets quiet for the task-history
+        window, with their attempts; old notification payloads, blanked so
+        dedup holds; settled inbound events; transitions that record no edge;
+        finished task results. The same pass runs hourly on its own under a
+        batch budget; ``--apply`` drains it with no budget.
 
         On ``--apply`` the deleted pages are handed back to the filesystem with a
         ``VACUUM``, which runs after the prune's transaction has committed because
@@ -185,14 +192,16 @@ class Command(TyperCommand):
         payload: RetentionReport = {
             "applied": plan.applied,
             "total_rows": plan.total_rows,
+            "budget_exhausted": plan.budget_exhausted,
             "tables": [
                 {
                     "table": table.table,
                     "retention_days": table.retention_days,
                     "rows": table.rows,
-                    "junk": table.junk,
+                    "cascaded": table.cascaded,
                     "disabled": table.disabled,
                     "batches": table.batches,
+                    "max_batch_ms": table.max_batch_ms,
                     "reason": table.reason,
                     "aged": table.aged,
                 }
@@ -447,23 +456,26 @@ def _render_scratch(plan: ScratchSweepPlan, stream: IO[str], *, applied: bool) -
     )
 
 
-def _detail(table: _TableRow) -> str:
-    """The one-line rule that produced this lane's count.
+#: Each lane names its own rule; the default fits the lanes keyed on a settled row.
+_LANE_RULES = {
+    PARK_TABLE: "limit-park marker, no billed telemetry",
+    FAILED_TASK_TABLE: "quiet finished ticket",
+    COMPLETED_TASK_TABLE: "quiet finished ticket",
+    PING_PAYLOAD_TABLE: "payload blanked, key and status kept",
+    TRANSITION_TABLE: "not a state edge, closed-ticket-owned",
+}
 
-    Each lane names its OWN criteria: reporting the park lane as "terminal-owned"
-    would restate the very guard that structurally cannot see a park row, and the
-    transition lane never measured an age at all.
-    """
+
+def _detail(table: _TableRow) -> str:
     if table["disabled"]:
         return f"disabled ({table['reason'] or 'retention_days=0'})"
-    if table["table"] == PARK_TABLE:
-        batched = f", {table['batches']} batch(es)" if table["batches"] else ""
-        return f"{table['rows']}, limit-park marker, no billed telemetry, >{table['retention_days']}d{batched}"
-    if not table["aged"]:
-        return f"{table['rows']}, not a state edge, closed-ticket-owned"
-    if table["junk"]:
-        return f"{table['rows']} (incl. {table['junk']} park junk), >{table['retention_days']}d, terminal-owned"
-    return f"{table['rows']}, >{table['retention_days']}d, terminal-owned"
+    parts = [f"{table['rows']} (+{table['cascaded']} attempt(s))" if table["cascaded"] else str(table["rows"])]
+    parts.append(_LANE_RULES.get(table["table"], "terminal-owned"))
+    if table["aged"]:
+        parts.append(f">{table['retention_days']}d")
+    if table["batches"]:
+        parts.append(f"{table['batches']} batch(es), longest {table['max_batch_ms']}ms")
+    return ", ".join(parts)
 
 
 def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None:
@@ -473,4 +485,6 @@ def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None
     title = f"Retention — {verb.lower()} {payload['total_rows']} row(s)"
     if not applied:
         title += " (dry run — pass --apply to delete)"
+    if payload["budget_exhausted"]:
+        title += " (stopped at the batch budget; the next pass continues)"
     print_table(["Table", verb], rows, title=title, stream=stream, justify=["left", "left"])

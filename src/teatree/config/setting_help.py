@@ -209,7 +209,10 @@ SETTING_HELP: dict[str, str] = {
     "substrate_auto_merge_authorized_by": "who authorized substrate changes to auto-merge",
     "substrate_self_signoff": "let a substrate change be signed off by its own author",
     "target_branch": "long-lived integration branch every pull request targets instead of the repo default",
-    "task_attempt_retention_days": "days a task attempt row is kept",
+    "task_attempt_retention_days": (
+        "days a quiet finished ticket's task history is kept, never below 56; 0 disables, "
+        "and the hourly pass reads the global value"
+    ),
     "task_result_retention_days": "days a task result row is kept",
     "task_sweep_recheck_interval_hours": "hours between rechecks of a swept task",
     "test_worker_ram_gb": "RAM one pytest worker is sized at when the governor caps test parallelism",

@@ -8,7 +8,6 @@ from django.db.models.functions import Coalesce
 from teatree.core.modelkit.gate_registry import get
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, classify_failure
 from teatree.core.models.task import Task
-from teatree.core.models.ticket import Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
 from teatree.core.telemetry.admission import LifecycleEvent, record_lifecycle_event
@@ -85,31 +84,11 @@ class TaskAttemptQuerySet(models.QuerySet):
         latest.refresh_from_db()
         return latest
 
-    def prunable(self, cutoff: datetime) -> "TaskAttemptQuerySet":
-        """Attempts safe to delete (#3693): the conservative double guard.
-
-        An attempt is prunable ONLY when it started before *cutoff* AND its owning task
-        is terminal AND that task's ticket is definitively finished. PR_OPENED is NOT
-        finished (its PR is still open, so the ticket may take review comments and
-        re-work), so ``marker_release_states()`` plus RETRO_RECORDED is the terminal set.
-        An attempt of an active task, or of a live ticket, is NEVER prunable — deleting
-        a referenced/in-flight row is far worse than a bloated DB.
-        """
-        return self.filter(
-            started_at__lt=cutoff,
-            task__status__in=Task.Status.terminal(),
-            task__ticket__state__in=Ticket.finished_states(),
-        )
-
     def prunable_parks(self, cutoff: datetime) -> "TaskAttemptQuerySet":
-        """Park-audit rows safe to delete — the lane :meth:`prunable` structurally cannot reach.
+        """Park-audit rows safe to delete — rows no ticket-keyed lane can reach.
 
-        :meth:`prunable`'s terminal-owned double guard is the right protection for a
-        REAL attempt and the wrong question for a park: ``usage_window.record_park``
-        returns the task to the queue PENDING, so a park row's owning task is by
-        construction NON-terminal and no park row is ever a candidate there. That is
-        why a park-bloated table reports "would prune 0" — the sanctioned remedy is a
-        guaranteed no-op on exactly the rows that bloated it.
+        ``usage_window.record_park`` returns the task to the queue PENDING, so a park
+        row's owning task is by construction active and its ticket never quiescent.
 
         This lane asks the park's own three questions instead.
 

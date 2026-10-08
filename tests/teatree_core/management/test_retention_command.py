@@ -67,6 +67,7 @@ def _old_terminal_attempt() -> TaskAttempt:
     ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.MERGED)
     session = Session.objects.create(ticket=ticket)
     task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
+    Task.objects.filter(pk=task.pk).update(created_at=_OLD)
     attempt = TaskAttempt.objects.create(task=task)
     TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=_OLD)
     return attempt
@@ -89,10 +90,11 @@ class RetentionCommandStructureTestCase(TestCase):
         report: RetentionReport = {
             "applied": False,
             "total_rows": 0,
+            "budget_exhausted": False,
             "tables": [],
             "vacuum": _vacuum_row(VacuumOutcome(ran=False, reason="dry run")),
         }
-        assert set(report) == {"applied", "total_rows", "tables", "vacuum"}
+        assert set(report) == {"applied", "total_rows", "budget_exhausted", "tables", "vacuum"}
 
 
 class RetentionPruneCommandTestCase(TestCase):
@@ -128,10 +130,28 @@ class RetentionPruneCommandTestCase(TestCase):
         call_command("retention", "prune", "--json", stdout=out)
         payload = json.loads(out.getvalue())
         assert payload["applied"] is False
+        assert payload["budget_exhausted"] is False
         assert payload["total_rows"] == 1
-        tables = {row["table"]: row for row in payload["tables"]}
-        assert tables["TaskAttempt"]["rows"] == 1
-        assert tables["TaskAttempt"]["retention_days"] == 30
+        assert [row["table"] for row in payload["tables"]] == [
+            "TaskAttempt (park)",
+            "Task (failed)",
+            "Task (completed)",
+            "BotPing (payload)",
+            "IncomingEvent",
+            "TicketTransition",
+            "DBTaskResult",
+        ]
+        completed = payload["tables"][2]
+        assert (completed["rows"], completed["cascaded"], completed["max_batch_ms"]) == (1, 1, 0)
+        assert completed["retention_days"] == 56
+
+    def test_human_view_names_each_lane_rule_and_the_batches(self) -> None:
+        _old_terminal_attempt()
+        err = StringIO()
+        with patch(f"{_COMMAND}.vacuum_control_db", return_value=_RECLAIMED):
+            call_command("retention", "prune", "--apply", stderr=err)
+        rendered = " ".join(err.getvalue().split())
+        assert "1 (+1 attempt(s)), quiet finished ticket, >56d, 1 batch(es), longest" in rendered
 
 
 class RetentionPruneVacuumTestCase(TestCase):

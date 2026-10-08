@@ -11137,7 +11137,7 @@ Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ artifacts  Reclaim dormant rebuildable build artifacts (dry-run unless       │
 │            --apply).                                                         │
-│ prune      Prune terminal-owned rows past the retention window (dry-run      │
+│ prune      Preview or drain the hourly control-DB retention pass (dry-run    │
 │            unless --apply).                                                  │
 │ scratch    Reclaim stale agent scratch under the temp root (dry-run unless   │
 │            --apply, #4165).                                                  │
@@ -11186,10 +11186,12 @@ Usage: t3 teatree retention prune [OPTIONS]
  Prune old rows from the high-churn tables, then reclaim the disk (dry-run
  unless --apply).
 
- Conservative: the terminal-owned lane deletes only rows past the retention
- window whose owning task AND ticket are terminal, so a live/in-flight row is
- never touched; the park lane deletes only aged limit-park audit rows that
- carry no billed telemetry.
+ The lanes run in order: aged limit-park attempts; the failed, then
+ the completed tasks of finished tickets quiet for the task-history
+ window, with their attempts; old notification payloads, blanked so
+ dedup holds; settled inbound events; transitions that record no edge;
+ finished task results. The same pass runs hourly on its own under a
+ batch budget; ``--apply`` drains it with no budget.
 
  On ``--apply`` the deleted pages are handed back to the filesystem with a
  ``VACUUM``, which runs after the prune's transaction has committed because

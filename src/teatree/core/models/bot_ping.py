@@ -229,6 +229,20 @@ class BotPing(models.Model):
         )
 
     @classmethod
+    def compactable(cls, cutoff: datetime, *, now: datetime | None = None) -> "models.QuerySet[BotPing]":
+        """Rows posted before *cutoff* whose payload no send path reads again.
+
+        Only ``text`` and ``error_message`` may be blanked: dedup reads the key and status, and
+        some keys are not date-scoped, so deleting the row would re-arm the DM. A SENDING row
+        this old is a stale claim, so ``redeliverable_q`` already keeps it.
+        """
+        return (
+            cls.objects.filter(posted_at__lt=cutoff)
+            .exclude(cls.redeliverable_q(now=now))
+            .exclude(text="", error_message="")
+        )
+
+    @classmethod
     def delivered_keys(cls, keys: Iterable[str]) -> set[str]:
         """Which of *keys* the ledger has DELIVERED; an undelivered one stays a candidate to retry."""
         return set(
