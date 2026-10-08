@@ -68,7 +68,12 @@ class Cooldown:
             elif not _WHOLE_SECOND_UTC.match(value):
                 problems.append(f"{package} = {value!r} must be a UTC timestamp at a whole second (…:SSZ)")
             else:
-                escapes.append(Escape(package, datetime.fromisoformat(value)))
+                try:
+                    cutoff = datetime.fromisoformat(value)
+                except ValueError:
+                    problems.append(f"{package} = {value!r} is an invalid UTC timestamp")
+                else:
+                    escapes.append(Escape(package, cutoff))
         if problems:
             raise PolicyError("; ".join(problems))
         return cls(timedelta(days=int(span[1])), tuple(escapes))

@@ -163,7 +163,12 @@ class TestEscapeEntries:
 
     @pytest.mark.parametrize(
         ("value", "reason"),
-        [("false", "never expires"), ('"2026-10-02T22:06:56.091Z"', "whole second"), ('"2026-10-02"', "whole second")],
+        [
+            ("false", "never expires"),
+            ('"2026-10-02T22:06:56.091Z"', "whole second"),
+            ('"2026-10-02"', "whole second"),
+            ('"2026-02-30T22:06:56Z"', "invalid UTC timestamp"),
+        ],
     )
     def test_a_malformed_escape_is_refused(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], value: str, reason: str
