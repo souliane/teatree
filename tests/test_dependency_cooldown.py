@@ -232,12 +232,17 @@ class TestVerifyLock:
     def test_fails_on_a_cutoff_later_than_the_rounded_up_upload(self, tmp_path: Path) -> None:
         assert _run(tmp_path, 'mcp = "2026-10-05T00:00:00Z"', "--verify-lock", fetch_json=_pypi()) == 1
 
+    @pytest.mark.parametrize(
+        ("locked", "missing"),
+        [((_MCP_WHEEL,), _MCP_SDIST), ((_MCP_SDIST,), _MCP_WHEEL)],
+        ids=["sdist", "py3-none-any-wheel"],
+    )
     def test_fails_when_the_lock_lacks_a_file_pypi_lists(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], locked: tuple[str, ...], missing: str
     ) -> None:
-        wheel_only = _lock(tmp_path, (_MCP_WHEEL,))
-        assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi(), lock=wheel_only) == 1
-        assert _MCP_SDIST in capsys.readouterr().err
+        lock = _lock(tmp_path, locked)
+        assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi(), lock=lock) == 1
+        assert missing in capsys.readouterr().err
 
     def test_a_wheel_the_locked_python_cannot_run_is_not_required(self, tmp_path: Path) -> None:
         older_python = ("mcp-2.3.0-cp312-cp312-manylinux_2_17_x86_64.whl", "2026-10-02T22:06:50.000Z")
@@ -246,8 +251,13 @@ class TestVerifyLock:
 
     @pytest.mark.parametrize(
         "wheel",
-        ["mcp-2.3.0-cp313-cp313-manylinux_2_17_x86_64.whl", "mcp-2.3.0-cp39-abi3-manylinux_2_17_x86_64.whl"],
-        ids=["cp3xx-at-the-lock-floor", "abi3-below-the-lock-floor"],
+        [
+            "mcp-2.3.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+            "mcp-2.3.0-cp39-abi3-manylinux_2_17_x86_64.whl",
+            "mcp-2.3.0-py2.py3-none-any.whl",
+            "mcp-2.3.0-py310-none-any.whl",
+        ],
+        ids=["cp3xx-at-the-lock-floor", "abi3-below-the-lock-floor", "py2-py3-universal", "py3x-below-the-lock-floor"],
     )
     def test_a_wheel_the_locked_python_can_run_must_be_locked(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], wheel: str
