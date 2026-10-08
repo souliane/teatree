@@ -108,7 +108,7 @@ class GitHubWebhookView(View):
         try:
             verified = _verified(headers.target, request.body, signature)
         except WebhookSecretUnavailableError as exc:
-            logger.warning("GitHub webhook delivery %s (%s) unavailable: %s", headers.delivery, headers.event, exc)
+            logger.debug("GitHub webhook delivery %s (%s) answered 503: %s", headers.delivery, headers.event, exc)
             return HttpResponse(status=503)
         return None if verified else HttpResponse(status=401)
 

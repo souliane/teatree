@@ -12,6 +12,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from teatree.core.models import IncomingEvent, Task
+from teatree.core.views import _webhook_secrets, github_webhook
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.utils import secrets
 
@@ -248,18 +249,25 @@ class TestSecretSelection(GitHubWebhookTestCase):
         assert self.store.reads == [KEY_EMPTY]
         assert not IncomingEvent.objects.exists()
 
-    def test_store_failure_is_503_and_warns_with_the_cause(self) -> None:
-        for failing, cause in (("list_error", "store dir unreadable"), ("read_error", "keyring did not answer")):
-            with self.subTest(failing):
-                self.store = FakeStore({KEY_A: SECRET_A})
-                setattr(self.store, failing, secrets.SecretStoreError(cause))
-                with patch.multiple(
-                    secrets,
-                    read_pass=self.store.read_pass,
-                    pass_entry_names=self.store.pass_entry_names,
-                ):
-                    assert self.deliver().status_code == 503
-                assert any(r.levelno == logging.WARNING and cause in r.getMessage() for r in self.caplog.records)
+    def test_store_read_failure_is_503_and_warns_with_the_cause(self) -> None:
+        self.store.read_error = secrets.SecretStoreError("keyring did not answer")
+
+        assert self.deliver().status_code == 503
+        assert any(
+            r.levelno == logging.WARNING and "keyring did not answer" in r.getMessage() for r in self.caplog.records
+        )
+        assert not IncomingEvent.objects.exists()
+
+    def test_store_listing_failure_is_503_warned_once_and_not_retried_inside_the_listing_ttl(self) -> None:
+        self.store.list_error = secrets.SecretStoreError("store dir unreadable")
+
+        statuses = {self.deliver(headers={"X-GitHub-Delivery": f"d-{n}"}).status_code for n in range(5)}
+
+        assert statuses == {503}
+        assert self.store.listings == 1
+        warnings = [r.getMessage() for r in self.caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "store dir unreadable" in warnings[0]
         assert not IncomingEvent.objects.exists()
 
     def test_warm_target_is_not_read_again(self) -> None:
@@ -300,6 +308,37 @@ class TestSecretSelection(GitHubWebhookTestCase):
             r for r in self.caplog.records if r.levelno == logging.WARNING and r.name.startswith("teatree.core.views")
         ]
         assert len(warnings) == 1
+
+
+class TestBoundedStoreCost(GitHubWebhookTestCase):
+    def test_forged_requests_against_a_failing_listed_target_reach_the_store_once(self) -> None:
+        for n in range(10):
+            response = self.deliver(secret="forged", headers={**TARGET_EMPTY, "X-GitHub-Delivery": f"empty-{n}"})
+            assert response.status_code == 503
+        self.store.read_error = secrets.SecretStoreError("keyring did not answer")
+        for n in range(10):
+            assert self.deliver(secret="forged", headers={"X-GitHub-Delivery": f"fail-{n}"}).status_code == 503
+
+        assert self.store.reads == [KEY_EMPTY, KEY_A]
+        warnings = [
+            r for r in self.caplog.records if r.levelno == logging.WARNING and r.name.startswith("teatree.core.views")
+        ]
+        assert len(warnings) == 2
+
+    def test_a_deleted_or_emptied_entry_stops_verifying_after_the_secret_ttl(self) -> None:
+        clock = [1000.0]
+        store = _webhook_secrets.WebhookSecrets(now=lambda: clock[0])
+        self.enterContext(patch.object(github_webhook, "webhook_secrets", lambda: store))
+        assert self.deliver().status_code == 200
+        assert self.deliver(secret=SECRET_B, headers={**TARGET_B, "X-GitHub-Delivery": "d-2"}).status_code == 200
+        del self.store.entries[KEY_A]
+        self.store.entries[KEY_B] = ""
+
+        clock[0] += _webhook_secrets.SECRET_TTL_SECONDS + 1
+
+        assert self.deliver(headers={"X-GitHub-Delivery": "d-3"}).status_code == 401
+        assert self.deliver(secret=SECRET_B, headers={**TARGET_B, "X-GitHub-Delivery": "d-4"}).status_code == 503
+        assert IncomingEvent.objects.count() == 2
 
 
 class TestNothingSecretLeaks(GitHubWebhookTestCase):
