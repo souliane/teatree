@@ -660,6 +660,7 @@ def test_factory_container_read_only_phase_selects_claude(monkeypatch: pytest.Mo
         "host-plan",
     ],
 )
+@pytest.mark.usefixtures("a_codex_login")
 def test_a_container_that_has_not_opted_in_refuses_codex_for_every_phase(
     monkeypatch: pytest.MonkeyPatch, *, in_container: bool, opted_in: bool, phase: str, refused: bool
 ) -> None:
@@ -686,6 +687,7 @@ def test_factory_container_refuses_codex_while_user_execpolicy_rules_are_install
     monkeypatch.setattr("teatree.agents.codex_app_server.container_is_the_sandbox", lambda: True)
     monkeypatch.setattr("teatree.agents.codex_app_server.shutil.which", lambda _name: "/usr/bin/codex")
     monkeypatch.setenv("T3_CODEX_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text("{}")
     context = HarnessBuildContext(phase="coding")
     assert codex_app_server_spec().unavailable_reason(context) is None
 

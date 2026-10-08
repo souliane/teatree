@@ -4,7 +4,8 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -21,6 +22,13 @@ from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbac
 from teatree.core.models import Session, Task
 from teatree.core.models.config_setting import ConfigSetting
 from tests.factories import planned_ticket
+
+
+@contextmanager
+def _with_a_login(home: Path) -> Iterator[None]:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text("{}")
+    yield
 
 
 def _refusal_on_open(task: Task, phase: str, cwd: Path) -> HarnessFallbackError:
@@ -111,6 +119,7 @@ class TestAPinnedCodexDispatchIsRefusedWhereItOpens(TestCase):
             patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
             tempfile.TemporaryDirectory() as directory,
             patch.dict("os.environ", {"T3_CODEX_HOME": str(Path(directory) / "home")}),
+            _with_a_login(Path(directory) / "home"),
             patch.object(
                 CodexAuthCache,
                 "hydrate",

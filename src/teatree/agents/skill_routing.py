@@ -130,6 +130,12 @@ def _persist(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -
         return
 
 
+def _hold_was_cleared(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> bool:
+    """A long hold outlives its durable row only when an operator cleared it (``t3 codex auth import``)."""
+    long_hold = observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
+    return bool(observation.unavailable_reason) and long_hold and _persistent_observation(key) is None
+
+
 def cached_unavailable_reason(
     overlay: str,
     candidate: AgentRouteCandidate,
@@ -146,6 +152,9 @@ def cached_unavailable_reason(
             observation = _persistent_observation(key)
             if observation is not None:
                 _MEMORY[key] = observation
+        if observation is not None and _hold_was_cleared(key, observation):
+            del _MEMORY[key]
+            observation = None
         if observation is not None and observation.retry_at > now:
             if observation.unavailable_reason:
                 return observation.unavailable_reason

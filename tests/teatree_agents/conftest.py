@@ -46,6 +46,15 @@ def no_real_codex_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("T3_CODEX_HOME", str(tmp_path / "codex-home"))
 
 
+@pytest.fixture
+def a_codex_login(tmp_path: Path) -> Path:
+    """A stand-in login in the private Codex home, for tests that need the Codex candidate available."""
+    home = tmp_path / "codex-home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "auth.json").write_text("{}")
+    return home
+
+
 @pytest.fixture(autouse=True)
 def installed_agent_test_skills(monkeypatch: pytest.MonkeyPatch) -> None:
     # Real fixture bodies satisfy strict preflight without the developer's installed stack skills; registered as an
