@@ -15,7 +15,7 @@ from teatree.agents.credential_policy import resolve_credential_provider
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
-from teatree.forge_credentials import ForgeTokenState, resolve_named_overlay_token
+from teatree.forge_credentials import ROUTED_GH_KEY_ENV, ForgeTokenState, resolve_named_overlay_token
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
 from teatree.utils.env import patched_environ
 from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
@@ -187,7 +187,8 @@ def with_routed_github_token(env: dict[str, str] | None, *, overlay: str) -> dic
         return env
     if resolution.state is not ForgeTokenState.TOKEN:
         return env
-    return {**(env or {}), "GH_TOKEN": resolution.token}
+    marker = {ROUTED_GH_KEY_ENV: resolution.pass_key} if resolution.pass_key else {}
+    return {**(env or {}), "GH_TOKEN": resolution.token, **marker}
 
 
 def system_child_env() -> dict[str, str] | None:

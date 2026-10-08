@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.agents.codex_app_server_options import CodexAppServerError
+from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 
 _PROCESS_ENV_KEYS = frozenset(
     {
@@ -36,7 +37,7 @@ def codex_command() -> tuple[str, ...]:
     return (executable,)
 
 
-_DISPATCH_ENV_KEYS = ("GH_TOKEN", "PYTEST_XDIST_AUTO_NUM_WORKERS")
+_DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS")
 
 
 def forge_token_fingerprint(dispatch_env: Mapping[str, str] | None) -> str:
@@ -50,7 +51,7 @@ def codex_process_env(
 ) -> dict[str, str]:
     """Build a private-home environment with controlled factory runtime paths.
 
-    Of *dispatch_env* only the routed forge token and the pytest worker cap cross into the child.
+    Of *dispatch_env* only the routed forge token, the pass key it came from and the pytest worker cap cross.
     """
     retained = {key: value for key, value in ambient.items() if key in _PROCESS_ENV_KEYS}
     retained.update({key: value for key, value in (dispatch_env or {}).items() if key in _DISPATCH_ENV_KEYS})

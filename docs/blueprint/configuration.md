@@ -579,7 +579,12 @@ t3 <overlay> config_setting set agent_skill_models \
 
 The list is authoritative and ordered. Each candidate requires `harness` and
 `model`; `provider`, capability-comparison `tier`, and reasoning `effort` are
-optional. Effort uses `low | medium | high | xhigh | max`; when omitted, the
+optional. `config_setting set` refuses a row the dispatcher could not route and
+names the entry (`agent_skill_models['code'][0].model`); a row stored before that
+check fails its dispatch once, as a recorded attempt. `agent_phase_harness` is
+refused the same way unless each value is an `AgentHarness` or an inherit
+sentinel. A Codex candidate's model must also appear in the private home's
+`models_cache.json` catalog, or the candidate is skipped before dispatch. Effort uses `low | medium | high | xhigh | max`; when omitted, the
 normal phase/harness effort applies. A candidate whose explicit effort is not
 supported by its harness is rejected before dispatch, so the next route is used
 and provenance never records an effort the backend dropped. A Codex App

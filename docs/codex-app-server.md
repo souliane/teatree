@@ -43,7 +43,7 @@ through. Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting
 and a route candidate naming another harness for a pinned phase is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
 write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
 those by sandbox only. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
-name Codex. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
+name Codex, and `config_setting set` refuses a value outside them. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
 read-only phase; a route keyed by the phase's own skill still does. A ticket whose `extra` carries
 `"claude_only": true` is never dispatched to a harness other than `claude_sdk`, on a skill route and on an
 overlay phase candidate list alike.
@@ -55,8 +55,8 @@ named by `T3_CODEX_HOME`, or Teatree's data directory under `codex-home` by
 default. The child receives a minimal allowlisted process environment and its
 `HOME` and `CODEX_HOME` both point at that private directory. Direct Claude,
 provider, GitLab, Notion, mailbox and TeaTree secret values are not inherited, and the
-dispatch contributes exactly two keys: the overlay's routed `GH_TOKEN` and the pytest worker
-cap. Controlled factory-owned runtime paths are retained only for TeaTree's config/control DB
+dispatch contributes three keys: the overlay's routed `GH_TOKEN`, `T3_ROUTED_GH_TOKEN_KEY`
+(the pass key that token was read from) and the pytest worker cap. Controlled factory-owned runtime paths are retained only for TeaTree's config/control DB
 and repo. Git receives explicit author/committer identity with a private global config; the
 image's system git config stays in force, so its `gh auth git-credential` helper authenticates
 through `GH_TOKEN`. Pass/GPG, XDG, forge CLI, and Git credential-store paths are withheld.
@@ -95,6 +95,12 @@ route, resolved at dispatch and passed as `GH_TOKEN`, plus the pytest worker cap
 run from multiplying across agents. A GitLab-hosted ticket gets no forge credential on Codex (the
 `GITLAB_TOKEN` stays out), so its attempt is blocked and falls through to the next candidate.
 
+The secret store stays out of the child's reach, so inside it `t3 push`, `pr create` and the other
+commands that resolve a GitHub token through the forge seam take `GH_TOKEN` only when
+`T3_ROUTED_GH_TOKEN_KEY` names the pass key the repository's own `github_token` route resolves to.
+A `GH_TOKEN` with no marker, a marker naming another key, and any `gitlab_token` route are refused
+as before, and a marker in the worker's own environment never crosses into the child.
+
 The shared App Server stays keyed by process and Codex home, because two servers cannot share one home
 (one credential writer). When the routed token changes, an idle server is retired and one new server
 starts; a busy server answers a fast `TRANSPORT` fallback ("busy with another credential") that the
@@ -108,6 +114,15 @@ auto-approved reads. The mitigations that exist: Codex runs with `HOME` set to i
 `~/.netrc`, `~/.config/gh/hosts.yml` and `~/.password-store` do not resolve (absolute paths still do
 inside the container sandbox), and the excluded secrets are not in its environment. The owner accepted this
 gap; closing it needs a Codex-side change.
+
+## Model catalog and cost
+
+- A route candidate's model is checked against `models_cache.json` in the private home, the catalog
+  Codex itself keeps (hidden models count as listed). A model it does not list rejects the candidate
+  before dispatch, naming the catalog and its fetch time, so the next candidate runs. An absent,
+  unreadable or reshaped catalog logs a WARNING and the check fails open.
+- A managed-lane run is recorded at $0 and not estimated: the ChatGPT plan pays for it, so the price
+  table never applies.
 
 ## Login health
 

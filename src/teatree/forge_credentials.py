@@ -4,14 +4,18 @@ Forge consumers live at several architecture layers, while the owning-overlay
 lookup and DB-backed pass-key route live in :mod:`teatree.core`.  This module
 keeps the dependency pointing down: consumers call one state-preserving seam,
 and the overlay loader registers the core-side provider once it is available.
-Before registration the seam fails closed; it never consults ambient forge
-credentials.
+Before registration the seam fails closed. It never consults ambient forge
+credentials, except a ``GH_TOKEN`` whose :data:`ROUTED_GH_KEY_ENV` dispatch
+marker names the route's own pass key.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+#: Names the pass key a dispatched agent's ``GH_TOKEN`` was read from, for a child the secret store is withheld from.
+ROUTED_GH_KEY_ENV = "T3_ROUTED_GH_TOKEN_KEY"
 
 
 class ForgeTokenState(StrEnum):
@@ -120,6 +124,7 @@ def resolve_slug_token(slug: str, *, forge: str, credential: str) -> ForgeTokenR
 
 
 __all__ = [
+    "ROUTED_GH_KEY_ENV",
     "ForgeCredentialRequest",
     "ForgeCredentialTarget",
     "ForgeTokenResolution",
