@@ -10,12 +10,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from teatree.core.cleanup.isolated_roots import LiveCheckoutSlugs, reap_orphan_isolated_worktree_roots
+from teatree.core.cleanup.preview import preview_line
 from teatree.core.management.commands._workspace.cleanup import WorktreeReaper
-from teatree.core.management.commands._workspace.isolated_roots import (
-    LiveCheckoutSlugs,
-    reap_orphan_isolated_worktree_roots,
-)
-from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.paths import IsolatedEnvDir
 
 
@@ -63,7 +60,7 @@ class TestIsolatedRootPreview:
 
     def test_names_the_env_dir_and_leaves_it_on_disk(self, tmp_path: Path) -> None:
         root = self._root(tmp_path)
-        module = "teatree.core.management.commands._workspace.isolated_roots"
+        module = "teatree.core.cleanup.isolated_roots"
         # A snapshot far in the future so the freshness guard cannot mistake this
         # just-created fixture dir for one minted mid-pass.
         live = LiveCheckoutSlugs(frozenset(), (), time.time() + 3600, (tmp_path,))

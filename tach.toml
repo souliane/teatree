@@ -74,7 +74,12 @@ depends_on = []
 [[modules]]
 path = "teatree.paths"
 layer = "foundation"
-depends_on = ["teatree.generation", "teatree.sqlite_snapshot"]
+depends_on = ["teatree.generation", "teatree.mount_identity", "teatree.sqlite_snapshot"]
+
+[[modules]]
+path = "teatree.mount_identity"
+layer = "foundation"
+depends_on = []
 
 [[modules]]
 path = "teatree.sqlite_snapshot"

@@ -3,6 +3,8 @@
 from pathlib import Path
 
 from teatree.core.cleanup.artifact_lock import artifact_name_pattern
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 #: What each name's documented rebuild command needs to FIND in the checkout before
 #: the artifact can honestly be called rebuildable. "Rebuildable" is a claim about the
@@ -39,6 +41,9 @@ _REBUILD_INPUTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: Names a repo may legitimately track, so only git's verdict makes one a generated output.
+_IGNORED_OUTPUTS = frozenset({"mutants"})
+
 
 def unrebuildable_reason(artifact: Path, *, checkout: Path) -> str:
     """Nothing in this checkout can rebuild it, so removing it is not a free reclaim.
@@ -49,6 +54,8 @@ def unrebuildable_reason(artifact: Path, *, checkout: Path) -> str:
     Checked here against :data:`_REBUILD_INPUTS`; a name with no entry is a build cache
     the next build regenerates unconditionally and is never withheld on this ground.
     """
+    if artifact_name_pattern(artifact.name) in _IGNORED_OUTPUTS and not _wholly_ignored(checkout, artifact.name):
+        return "git does not ignore it as a whole, so it may hold tracked source rather than a regenerable output"
     inputs = rebuild_inputs_for(artifact)
     if not inputs or any(_rebuild_input_present(checkout, name) for name in inputs):
         return ""
@@ -71,3 +78,13 @@ def _rebuild_input_present(checkout: Path, name: str) -> bool:
         return any(checkout.glob(name)) if "*" in name else (checkout / name).exists()
     except OSError:
         return False
+
+
+def _wholly_ignored(checkout: Path, name: str) -> bool:
+    """Whether git lists *name* as one ignored, untracked directory; any git failure reads as no."""
+    args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--", name]
+    try:
+        listing = git.run_strict_verbatim(repo=str(checkout), args=args)
+    except (CommandFailedError, OSError):
+        return False
+    return listing == f"{name}/\0"
