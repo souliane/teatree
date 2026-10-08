@@ -737,6 +737,8 @@ Usage: t3 codex auth [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ import  Store a locally authenticated ``auth.json`` as one base64 pass       │
 │         entry.                                                               │
+│ check   Run one OK-turn through the stored login; it refreshes only what a   │
+│         real turn would.                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -750,6 +752,19 @@ Usage: t3 codex auth import [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --from        PATH|-  [default: ~/.codex/auth.json]                          │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 codex auth check`
+
+```
+Usage: t3 codex auth check [OPTIONS]
+
+ Run one OK-turn through the stored login; it refreshes only what a real turn
+ would.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

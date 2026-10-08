@@ -21,6 +21,7 @@ from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbac
 from teatree.core.models import Session, Task
 from teatree.core.models.config_setting import ConfigSetting
 from tests.factories import planned_ticket
+from tests.teatree_agents._route_fakes import write_codex_login
 
 
 def _refusal_on_open(task: Task, phase: str, cwd: Path) -> HarnessFallbackError:
@@ -110,7 +111,7 @@ class TestAPinnedCodexDispatchIsRefusedWhereItOpens(TestCase):
             patch("teatree.agents.codex_app_server.container_is_the_sandbox", return_value=True),
             patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"),
             tempfile.TemporaryDirectory() as directory,
-            patch.dict("os.environ", {"T3_CODEX_HOME": str(Path(directory) / "home")}),
+            patch.dict("os.environ", {"T3_CODEX_HOME": str(write_codex_login(Path(directory) / "home"))}),
             patch.object(
                 CodexAuthCache,
                 "hydrate",

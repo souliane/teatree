@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import tempfile
+import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -39,6 +40,10 @@ class CodexAuthCacheError(RuntimeError):
     @classmethod
     def pass_verification_failed(cls, entry: str) -> "CodexAuthCacheError":
         return cls(f"Could not verify Codex auth written to pass entry {entry!r}.")
+
+    @classmethod
+    def lock_held(cls) -> "CodexAuthCacheError":
+        return cls("Codex auth cache is held by another run")
 
     @classmethod
     def missing_cache(cls) -> "CodexAuthCacheError":
@@ -111,12 +116,15 @@ def _exclusive_lock(code_home: Path) -> Iterator[None]:
         os.close(fd)
 
 
-async def _acquire_lock(fd: int) -> None:
+async def _acquire_lock(fd: int, give_up_after: float | None = None) -> None:
+    deadline = None if give_up_after is None else time.monotonic() + give_up_after
     acquired = False
     while not acquired:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise CodexAuthCacheError.lock_held() from None
             await asyncio.sleep(_LOCK_RETRY_SECONDS)
         else:
             acquired = True
@@ -180,12 +188,12 @@ class CodexAuthCache:
         return self.code_home / "auth.json"
 
     @asynccontextmanager
-    async def session(self) -> AsyncIterator[Path]:
+    async def session(self, *, lock_timeout: float | None = None) -> AsyncIterator[Path]:
         await asyncio.to_thread(self._prepare_home)
         fd = os.open(self.code_home / ".auth.lock", os.O_CREAT | os.O_RDWR, 0o600)
         os.fchmod(fd, 0o600)
         try:
-            await _acquire_lock(fd)
+            await _acquire_lock(fd, lock_timeout)
             await asyncio.to_thread(self.hydrate)
             body_error: BaseException | None = None
             try:

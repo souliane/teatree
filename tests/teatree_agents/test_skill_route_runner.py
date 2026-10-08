@@ -6,7 +6,6 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -180,10 +179,11 @@ class TestSkillRouteRuntimeFallback(TestCase):
         self._register("codex_like", _ProtocolFailureSession)
         self._register("claude_like", FakeHarnessSession)
 
-        with pytest.raises(RuntimeError, match="response schema"):
-            self._run(self._config("codex_like", "claude_like"))
+        final = self._run(self._config("codex_like", "claude_like"))
 
         assert self.built == ["codex_like"]
+        assert (final.failure_kind, final.route_candidate_index) == ("harness_crash", 0)
+        assert "response schema" in final.error
 
     def test_routed_claude_missing_cli_switches_to_the_next_candidate(self) -> None:
         self._register("claude_like", FakeHarnessSession, spawns_cli_child=True)

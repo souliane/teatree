@@ -171,6 +171,8 @@ class TicketExtra(TypedDict, total=False):
     # registered via ``workspace ticket --adopt``; the provisioner records the
     # path verbatim instead of ``git worktree add``.
     adopt: dict[str, str]
+    # Owner-set: dispatch this ticket on claude_sdk only (read by ``select_harness``).
+    claude_only: bool
     description: str
     provision: dict[str, str]
     shipping_skipped: str
