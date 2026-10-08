@@ -71,8 +71,7 @@ def _slim_root(tmp_path: Path) -> Path:
     return (tmp_path / "data" / "codex-plugin").resolve()
 
 
-def _install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[str | None, list[tuple[str, ...]]]:
-    """Run ``install()``; return ``None`` on success, else its WARN output, plus the CLI calls."""
+def _run_install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[bool, str, list[tuple[str, ...]]]:
     calls: list[tuple[str, ...]] = []
     queue = list(replies)
 
@@ -90,7 +89,13 @@ def _install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[str
         redirect_stdout(output),
     ):
         installed = registrar.install()
-    return (None if installed else output.getvalue()), calls
+    return installed, output.getvalue(), calls
+
+
+def _install(registrar: CodexPluginRegistrar, replies: list[Reply]) -> tuple[str | None, list[tuple[str, ...]]]:
+    """Run ``install()``; return ``None`` on success, else its WARN output, plus the CLI calls."""
+    installed, output, calls = _run_install(registrar, replies)
+    return (None if installed else output), calls
 
 
 def _fresh_install_calls(slim: Path) -> list[tuple[str, ...]]:
@@ -314,9 +319,10 @@ def test_a_codex_that_cannot_find_the_teatree_mcp_server_is_not_ready(env: Path)
         (_resolved_with(args=["mcp", "serve", "--read-only"]), "--read-only"),
         (_resolved_with(command="/usr/local/bin/t3"), "/usr/local/bin/t3"),
         (_resolved_with(args=None), '"args": null'),
+        (_resolved_with(args="mcp serve"), '"args": "mcp serve"'),
         ({"name": "teatree", "enabled": True}, '{"name": "teatree", "enabled": true}'),
     ],
-    ids=["disabled", "read-only-args", "absolute-command", "null-args", "no-transport"],
+    ids=["disabled", "read-only-args", "absolute-command", "null-args", "string-args", "no-transport"],
 )
 def test_a_teatree_mcp_server_codex_resolves_differently_is_not_ready(
     env: Path, resolved: dict[str, object], named: str
@@ -331,25 +337,36 @@ def test_a_teatree_mcp_server_codex_resolves_differently_is_not_ready(
 
 
 @pytest.mark.parametrize(
-    ("sandbox", "loaded", "warned"),
-    [(True, [], None), (True, [_TEATREE_ENTRY], "still loads teatree"), (False, None, None)],
-    ids=["worker-lane-loads-nothing", "worker-lane-still-loads-teatree", "outside-the-sandbox"],
+    ("listed", "warned"),
+    [([], None), ([_TEATREE_ENTRY], "still loads teatree"), ({}, "printed no JSON array")],
+    ids=["worker-lane-loads-nothing", "worker-lane-still-loads-teatree", "worker-lane-list-is-not-an-array"],
 )
-def test_the_worker_lane_mcp_check_runs_only_where_the_container_is_the_sandbox(
-    env: Path, *, sandbox: bool, loaded: list[object] | None, warned: str | None
+def test_inside_the_sandbox_the_plugin_off_mcp_list_gates_readiness(
+    env: Path, listed: list[object] | dict[str, object], warned: str | None
 ) -> None:
     repo = _with_codex_manifest(env / "teatree")
-    listed = [] if loaded is None else [_ok(loaded)]
 
-    with patch("teatree.cli.setup.codex_plugin_registrar.container_is_the_sandbox", return_value=sandbox):
-        reason, calls = _install(CodexPluginRegistrar(repo), [*_fresh_install_replies(), _MCP_RESOLVED, *listed])
+    with patch("teatree.cli.setup.codex_plugin_registrar.container_is_the_sandbox", return_value=True):
+        reason, calls = _install(CodexPluginRegistrar(repo), [*_fresh_install_replies(), _MCP_RESOLVED, _ok(listed)])
 
-    assert calls == [*_fresh_install_calls(_slim_root(env)), *([_PLUGIN_OFF_MCP_LIST] if sandbox else [])]
+    assert calls == [*_fresh_install_calls(_slim_root(env)), _PLUGIN_OFF_MCP_LIST]
     if warned is None:
         assert reason is None
     else:
         assert reason is not None
         assert warned in reason
+
+
+def test_the_ready_line_claims_only_what_codex_resolved(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+
+    installed, output, _calls = _run_install(CodexPluginRegistrar(repo), [*_fresh_install_replies(), _MCP_RESOLVED])
+
+    assert installed is True
+    assert output == (
+        f"OK    TeaTree Codex plugin registered from {_slim_root(env)}; "
+        "Codex resolves its `teatree` MCP server (t3 mcp serve).\n"
+    )
 
 
 @pytest.mark.parametrize("target", ["marketplace", "plugin"])
