@@ -75,8 +75,8 @@ class DeferredQuestion(models.Model):
         POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
         AGENT = "agent", "Agent surface"
 
-    #: The channels only the owner (or the owner's own graduated policy) answers on.
-    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.LOCAL, ResolvedVia.POLICY})
+    #: Provenance the server records and checks: a Slack reply by the owner, or the owner's graduated policy.
+    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY})
 
     class Audience(models.TextChoices):
         OWNER_QUESTION = "owner_question", "Owner question"

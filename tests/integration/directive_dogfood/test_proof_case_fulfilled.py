@@ -18,9 +18,10 @@ from django.test import TestCase
 
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget, resolve_pr_budget
-from teatree.core.models import DeferredQuestion, DirectiveDispatch, FactoryScoreSnapshot, PullRequest, Ticket
+from teatree.core.models import DirectiveDispatch, FactoryScoreSnapshot, PullRequest, Ticket
 from teatree.core.models.directive import Directive, DirectiveError
 from teatree.loops.directive_loop.interpret import build_interpreter_contract
+from tests._owner_channel import answer_on_slack
 from tests.integration.directive_dogfood.exemplar import EXEMPLAR_ENVELOPE, PROOF_CASE_TEXT, SCOPE, SETTING_KEY, tick
 
 #: The global ``timeout = 60`` budget is sized for a test that does not shell out.
@@ -65,7 +66,7 @@ class TestProofCaseFulfilled(TestCase):
             assert shown in question.question
         with pytest.raises(DirectiveError):
             directive.admit()  # an unconsumed ratify question cannot admit
-        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(question, "approve")
         assert tick().action == "admitted"
 
         # Stage 5 — activation_only skips IMPLEMENTING; the admission baseline is snapshotted for real.

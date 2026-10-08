@@ -12,16 +12,17 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, SendAudit
+from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.approval_metrics import DECLINE_RATE_THRESHOLD, WINDOW_DAYS, compute_metrics, metrics_breached
 from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, ON_BEHALF_POST, OUTER_LOOP_KEEP, PUBLIC_ISSUE_CREATE
+from tests._owner_channel import answer_on_slack
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _answered(options_hash: str, answer: str) -> None:
-    question = DeferredQuestion.record("q?", options_hash=options_hash)
-    DeferredQuestion.consume(question.pk, answer=answer)
+    answer_on_slack(DeferredQuestion.record("q?", options_hash=options_hash), answer)
 
 
 class TestQuestionMetrics:
@@ -49,12 +50,20 @@ class TestQuestionMetrics:
         assert metrics.resolved == 1
         assert metrics.declines == 0
 
-    def test_an_agent_answer_is_not_a_human_touchpoint(self) -> None:
-        question = DeferredQuestion.record("q?", options_hash="directive_ratify:9:0")
-        question.apply_answer("no", resolved_via=DeferredQuestion.ResolvedVia.AGENT)
+    def test_only_an_owner_channel_answer_is_a_human_touchpoint(self) -> None:
+        for resolved_via in (
+            DeferredQuestion.ResolvedVia.AGENT,
+            DeferredQuestion.ResolvedVia.LOCAL,
+            DeferredQuestion.ResolvedVia.UNRESOLVED,
+        ):
+            DeferredQuestion.record("q?", options_hash="directive_ratify:9:0").apply_answer(
+                "no", resolved_via=resolved_via
+            )
+        auto_answer_by_policy(DeferredQuestion.record("q?", options_hash="directive_ratify:10:0"), "approve")
+        _answered("directive_ratify:11:0", "no")
         metrics = compute_metrics(DIRECTIVE_ADMIT)
-        assert metrics.interventions == 1
-        assert (metrics.resolved, metrics.declines) == (0, 0)
+        assert metrics.interventions == 5
+        assert (metrics.resolved, metrics.declines) == (2, 1)
 
     def test_a_question_of_another_class_is_not_counted(self) -> None:
         _answered("directive_ratify:5:0", "no")
