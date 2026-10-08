@@ -18,7 +18,7 @@ from unittest import mock
 import pytest
 
 from hooks.scripts import hook_router, session_start_skills
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.skill_support.pin_shadow import SkillPinsUnreadableError, SkillShadowsDeclaredPinError
 
 
 @pytest.fixture
@@ -150,6 +150,21 @@ class TestDefaultOffAndNeverLockoutAreUnchanged:
         context = _emitted_context(capsys)
         assert "owner/skills/ac-x#abc" in context
         assert "/repo/skills/ac-x/SKILL.md" in context
+        assert (state_dir / "s1.teatree-active").is_file()
+
+    def test_an_unreadable_manifest_is_named_in_the_context_instead_of_vanishing(
+        self, state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        refusal = SkillPinsUnreadableError(Path("/repo/apm.yml"), "apm.yml at /repo/apm.yml is not a mapping")
+        with (
+            mock.patch.object(hook_router, "_autoload_enabled", return_value=True),
+            mock.patch.object(hook_router, "_loop_auto_load_active", return_value=False),
+            mock.patch.object(session_start_skills, "_suggest", side_effect=refusal),
+        ):
+            _bootstrap()  # must not raise
+        context = _emitted_context(capsys)
+        assert "/repo/apm.yml is not a mapping" in context
+        assert "git -C /repo checkout HEAD -- apm.yml" in context
         assert (state_dir / "s1.teatree-active").is_file()
 
     def test_no_suggestions_writes_no_pending_demand(self, state_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:

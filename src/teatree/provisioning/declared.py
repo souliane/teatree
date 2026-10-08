@@ -58,6 +58,10 @@ class DeclarationUnreadableError(RuntimeError):
     """A declaration surface could not be read, so its mandates are unknown."""
 
 
+class DeclarationMalformedError(DeclarationUnreadableError):
+    """``apm.yml`` exists but is not the declared shape; every skill dispatch parks on it, so doctor FAILs it."""
+
+
 @dataclass(frozen=True, slots=True)
 class DeclaredDependency:
     """One dependency the configuration mandates, with where it is declared."""
@@ -130,22 +134,23 @@ def unpinned_apm_entries(manifest: Path) -> list[str]:
 def apm_entries(manifest: Path) -> list[str]:
     """The ``dependencies.apm`` list as trimmed non-empty strings.
 
-    Raises :class:`DeclarationUnreadableError` when the surface cannot be read: "I could
-    not read the mandate" and "nothing is mandated" must never collapse into each other.
+    Raises :class:`DeclarationUnreadableError` when the surface cannot be read, and its
+    :class:`DeclarationMalformedError` subclass when it was read but is not the declared shape:
+    "I could not read the mandate" and "nothing is mandated" must never collapse into each other.
     """
     try:
         data = yaml.safe_load(_read_text(manifest, _APM_MANIFEST))
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, UnicodeError) as exc:
         msg = f"{_APM_MANIFEST} is not parsable at {manifest}: {exc}"
-        raise DeclarationUnreadableError(msg) from exc
+        raise DeclarationMalformedError(msg) from exc
     if not isinstance(data, dict):
         msg = f"{_APM_MANIFEST} at {manifest} is not a mapping"
-        raise DeclarationUnreadableError(msg)
+        raise DeclarationMalformedError(msg)
     dependencies = data.get("dependencies")
     entries = dependencies.get("apm") if isinstance(dependencies, dict) else None
     if not isinstance(entries, list):
         msg = f"{_APM_MANIFEST} at {manifest} declares no dependencies.apm list"
-        raise DeclarationUnreadableError(msg)
+        raise DeclarationMalformedError(msg)
     return [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
 
 
@@ -203,15 +208,16 @@ def integrations_declared_in_claude_settings(settings: Path) -> list[DeclaredDep
 
 @dataclass(frozen=True, slots=True)
 class Enumeration:
-    """What the declaration surfaces mandate, plus the ones that could not be read.
+    """What the declaration surfaces mandate, plus the ones that could not be read or are malformed.
 
-    The two halves are kept apart on purpose: one unreadable surface must not
+    The halves are kept apart on purpose: one unreadable surface must not
     suppress the mandates of the others, and it must not pass as "nothing is
     mandated" either — it is reported as its own unverified-surface finding.
     """
 
     dependencies: list[DeclaredDependency]
     unreadable: list[str]
+    malformed: list[str]
 
 
 def declared_dependencies(*, project_root: Path, home: Path) -> Enumeration:
@@ -223,9 +229,12 @@ def declared_dependencies(*, project_root: Path, home: Path) -> Enumeration:
     )
     dependencies: list[DeclaredDependency] = []
     unreadable: list[str] = []
+    malformed: list[str] = []
     for read in readers:
         try:
             dependencies.extend(read())
+        except DeclarationMalformedError as exc:
+            malformed.append(str(exc))
         except DeclarationUnreadableError as exc:
             unreadable.append(str(exc))
-    return Enumeration(dependencies=dependencies, unreadable=unreadable)
+    return Enumeration(dependencies=dependencies, unreadable=unreadable, malformed=malformed)

@@ -44,7 +44,7 @@ def _suggest(loader_input: dict[str, Any]) -> dict[str, Any]:
 def _shadowed_pin_warning(exc: BaseException | None) -> str:
     """A shadowed apm pin is a misconfiguration the session must see; any other suggester failure stays silent."""
     pin_shadow = sys.modules.get("teatree.skill_support.pin_shadow")
-    if pin_shadow is None or not isinstance(exc, pin_shadow.SkillShadowsDeclaredPinError):
+    if pin_shadow is None or not isinstance(exc, pin_shadow.SkillPinRefusalError):
         return ""
     return f"WARNING: {exc}"
 

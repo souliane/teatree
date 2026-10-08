@@ -2,7 +2,7 @@
 
 import typer
 
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.skill_support.pin_shadow import SkillPinRefusalError
 from teatree.utils.django_bootstrap import ensure_django
 
 config_app = typer.Typer(no_args_is_help=True, help="Configuration and autoloading.")
@@ -53,7 +53,7 @@ def write_skill_cache() -> None:
 
     try:
         write_skill_metadata_cache()
-    except SkillShadowsDeclaredPinError as exc:
+    except SkillPinRefusalError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Wrote skill metadata to {DATA_DIR / 'skill-metadata.json'}")

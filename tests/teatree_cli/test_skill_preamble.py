@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder, _overlay_skills_dir, _split_skill_args
 from teatree.skill_support import index as skill_index
+from tests._unreadable_apm_manifest import unreadable_running_manifest
 
 
 def _write_skill(skills_dir: Path, name: str, body: str) -> None:
@@ -97,6 +98,14 @@ class TestSkillPreambleFailsLoud:
         assert isinstance(result.exception, SystemExit)
         assert "souliane/skills/ac-django#" in result.output
         assert str(local / "ac-django" / "SKILL.md") in result.output
+
+    def test_an_unreadable_manifest_exits_nonzero_printing_the_refusal(self, app: typer.Typer, tmp_path: Path) -> None:
+        with unreadable_running_manifest(tmp_path) as manifest:
+            result = CliRunner().invoke(app, ["skill-preamble", "--skills", "t3:rules"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert str(manifest) in result.output
 
 
 class TestSplitSkillArgs:
