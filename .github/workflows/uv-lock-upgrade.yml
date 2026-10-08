@@ -91,7 +91,7 @@ jobs:
           # bot PR would sit with 0 check runs and could never merge (#3245). The
           # probe step above has already proved this credential usable.
           token: ${{ secrets.TEATREE_GH_TOKEN }}
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
