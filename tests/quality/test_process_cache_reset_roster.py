@@ -177,7 +177,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # a later one's healthy read leaves a marker it asserts was cleared.
     "teatree.config.override_read_health:note_healthy_read": "_reset_declaration_caches",
     # Opt-in env var + container marker, memoised per process; tests pin both venues in one interpreter.
-    "teatree.agents.codex_app_server_options:container_is_the_sandbox": "_reset_declaration_caches",
+    "teatree.agents.codex_sandbox:container_is_the_sandbox": "_reset_declaration_caches",
     # One suite budget per run, shared by every runner and judge. Kept across tests, one
     # test's spend would exhaust the cap a later test reads from the same env value.
     "teatree.eval.cost_observation:suite_budget_from_env": "_reset_suite_budget",
