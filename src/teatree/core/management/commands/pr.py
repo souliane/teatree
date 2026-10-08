@@ -25,7 +25,11 @@ from teatree.core.management.commands._ensure_pr import (
     skip_for_classified,
 )
 from teatree.core.management.commands._pending_pr_commands import PendingPrCommands
-from teatree.core.management.commands._pr_control_db import ControlDbUnreachableError, unreachable_control_db_reason
+from teatree.core.management.commands._pr_control_db import (
+    ControlDbUnreachableError,
+    isolated_control_db_reason,
+    unreachable_control_db_reason,
+)
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
     ShipDryRun,
@@ -456,6 +460,9 @@ class Command(PendingPrCommands, RefusalExitTyperCommand):
         unreachable = unreachable_control_db_reason()
         if unreachable is not None:
             return EnsurePrResult(skipped=unreachable, branch=branch_name)
+
+        if (isolated := isolated_control_db_reason(repo_path, branch_name)) is not None:
+            return EnsurePrResult(error=isolated, branch=branch_name)
 
         try:
             report = classify_branch(repo_path, branch_name)

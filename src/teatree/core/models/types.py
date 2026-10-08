@@ -151,6 +151,8 @@ class TicketExtra(TypedDict, total=False):
     ship_invoking_path: str
     ignored_from: str
     reopened_from: str
+    # Merged PRs a reopen covered, which rule A skips. Undeclared, the next ladder transition strips it.
+    reopened_over_pr_urls: list[str]
     # Board reconcile rule E's revival cap. Undeclared it is stripped by every
     # ladder transition, so the cap reads 0 forever and never fires (#4152).
     reopen_revivals: int

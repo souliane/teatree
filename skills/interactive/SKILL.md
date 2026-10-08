@@ -153,7 +153,7 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 When a session starts with a stranded-work report from the one that ended before it, re-check each item (the state may have moved) and run the command it prints for each item still stranded. The states are ordered, so an item usually needs its own next step and nothing more — commit, push, `t3 teatree pr ensure-pr --branch <name> --repo <absolute-worktree-path>`, or let the ship loop take the PR (`t3 loops tick --loop ship`).
 
-**Keep the `--repo` the printed command carries — typing `ensure-pr` by hand without it fails on EXIT 0.** The `.` default is right only for the pre-push hook, which runs with the repo as its cwd. Invoked by hand, `t3` execs into a container whose cwd is the image's own `WORKDIR` and never the host's, so `.` is not a checkout and the command refuses by name:
+**Keep the `--repo` the printed command carries — typing `ensure-pr` by hand without it fails on EXIT 0.** The pre-push hook passes `--repo` itself. Invoked by hand, `t3` execs into a container whose cwd is the image's own `WORKDIR` and never the host's, so `.` is not a checkout and the command refuses by name:
 
 ```text
 {'error': "the process cwd '<image WORKDIR>' (no --repo given) is not a git checkout on this filesystem. Pass --repo …"}

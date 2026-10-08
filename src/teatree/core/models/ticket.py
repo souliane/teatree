@@ -14,7 +14,7 @@ from teatree.core.models.ticket_evidence import (
     recorded_anti_vacuity_attestation,
 )
 from teatree.core.models.ticket_introspection import TicketIntrospectionModel
-from teatree.core.models.ticket_ledger import retire_phase_ledger
+from teatree.core.models.ticket_ledger import retire_phase_ledger, stamp_reopened_over
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_overlay import TicketOverlayModel
 from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
@@ -520,6 +520,7 @@ class Ticket(
     @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.SELF_REVIEWED)
     def reopen_for_followup(self) -> None:
         """Reopen a terminally-shipped ticket to SELF_REVIEWED for a follow-up PR (#3327)."""
+        stamp_reopened_over(self)
 
     @transition(field="state", source=[State.CODED, State.TESTED, State.SELF_REVIEWED], target=State.WORK_STARTED)
     def rework(self) -> None:
@@ -550,6 +551,7 @@ class Ticket(
         self.extra = extra
         self._cancel_pending_tasks()
         retire_phase_ledger(self)
+        stamp_reopened_over(self)
 
     @transition(
         field="state",

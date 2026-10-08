@@ -72,6 +72,9 @@ VERIFY_TIMEOUT_SECONDS = 60.0
 
 REDACTION = "<redacted>"
 
+#: Marks a push whose caller opens the PR itself and may hold the control-DB write lock; the ensure-pr hook skips it.
+SHIP_PUSH_ENV = "TEATREE_SHIP_PUSH"
+
 #: Userinfo prefixes that identify a forge token embedded in a remote URL. A bare
 #: ``https://<user>@host`` is a legitimate (non-secret) remote and is left alone;
 #: only a password component or one of these prefixes marks a URL as secret-bearing.
@@ -476,6 +479,7 @@ def push_branch(
     remote: str = "origin",
     branch: str = "",
     force_with_lease: bool = False,
+    ship_opens_pr: bool = False,
 ) -> PushOutcome:
     """Push *branch* of *repo* to *remote* over the supported credential path.
 
@@ -501,6 +505,8 @@ def push_branch(
     if refusal is not None:
         return refusal
     env = git_env_non_interactive() | _credential_env(forge, credential.token)
+    if ship_opens_pr:
+        env[SHIP_PUSH_ENV] = "1"
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
     tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.source)
@@ -557,6 +563,7 @@ def push_branch(
 __all__ = [
     "PUSH_TIMEOUT_SECONDS",
     "REDACTION",
+    "SHIP_PUSH_ENV",
     "VERIFY_TIMEOUT_SECONDS",
     "ObservedRemoteRef",
     "PushOutcome",

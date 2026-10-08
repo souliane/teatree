@@ -42,6 +42,11 @@ class TestValidatedTicketExtra:
         """Undeclared, the board's revival counter is stripped by every ladder transition (#4152)."""
         assert validated_ticket_extra({"reopen_revivals": 2})["reopen_revivals"] == 2
 
+    def test_reopened_over_pr_urls_survives_validation(self) -> None:
+        """Undeclared, the board's record of merged PRs a reopen covered is stripped by the next ladder transition."""
+        urls = ["https://github.com/souliane/teatree/pull/5049"]
+        assert validated_ticket_extra({"reopened_over_pr_urls": urls})["reopened_over_pr_urls"] == urls
+
 
 class TestValidatedWorktreeExtra:
     def test_none_returns_empty(self) -> None:

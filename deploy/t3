@@ -38,6 +38,9 @@ UPDATE_WAIT_SECONDS="${TEATREE_UPDATE_WAIT_SECONDS:-180}"
 # EX_TEMPFAIL, distinct from every code the CLI itself returns, so a caller branches
 # on "the substrate is mid-update" rather than parsing a message.
 UPDATE_IN_PROGRESS_EXIT=75
+# EX_UNAVAILABLE: THIS venue cannot run the CLI (checkout invisible, stack absent, secret store wedged). The
+# CLI itself returns 1 for a refusal, so a caller that must not block on a venue fault branches on 69 instead.
+VENUE_UNAVAILABLE_EXIT=69
 # The container path the source mount always lands on (the compose target is
 # fixed — it is what `teatree.paths` resolves inside the container).
 CONTAINER_SOURCE_DIR=/home/teatree/teatree
@@ -305,7 +308,7 @@ refuse_invisible_checkout() {
     echo "           Fix: work from a checkout under one of them — \`t3 <overlay> workspace" >&2
     echo "           ticket <id>\` creates one — or export TEATREE_INVOCATION_CWD to the" >&2
     echo "           container-side path when you know this tree is reachable there." >&2
-    exit 1
+    exit "$VENUE_UNAVAILABLE_EXIT"
 }
 
 if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
@@ -655,7 +658,7 @@ CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_
         echo "               (once a GitLab remote is reached)." >&2
         echo "               GNUPGHOME=${GNUPGHOME:-<unset>}; clear the daemons with: gpgconf --kill all" >&2
         echo "               A daemon under a DIFFERENT GNUPGHOME survives that - pgrep -al keyboxd gpg-agent." >&2
-        exit 1
+        exit 69
     fi
     GITLAB_TOKEN="$(printf %s "$token_out" | head -n1)"
     if [ -n "$GITLAB_TOKEN" ]; then
@@ -703,6 +706,8 @@ FORWARD_ENV_NAMES=(
     # inside. Mirrors `teatree.core.session_identity.AGENT_SDK_ENV_VARS`, pinned by the same test.
     CLAUDE_AGENT_SDK_VERSION
     CLAUDE_CODE_ENTRYPOINT
+    # prek names the pushed ref here; a push from a detached HEAD has no other way to name its branch.
+    PRE_COMMIT_REMOTE_BRANCH
 )
 if [ -n "${TEATREE_FORWARD_ENV:-}" ]; then
     IFS=',' read -r -a EXTRA_ENV_NAMES <<<"$TEATREE_FORWARD_ENV"
@@ -772,7 +777,7 @@ refuse_wedged_secret_store() {
     echo "             gpgconf --kill all" >&2
     echo "           A gpg-agent/keyboxd left under a DIFFERENT GNUPGHOME survives that — find" >&2
     echo "           it with 'pgrep -al keyboxd gpg-agent' and TERM it directly." >&2
-    exit 1
+    exit "$VENUE_UNAVAILABLE_EXIT"
 }
 
 host_keybox_lock_is_clear() {
@@ -1168,7 +1173,7 @@ refuse_absent_stack() {
     echo "deploy/t3: refusing to run — the teatree stack is not available on this host." >&2
     echo "           $1" >&2
     echo "           Start it with: $REPO_ROOT/deploy/deploy.sh" >&2
-    exit 1
+    exit "$VENUE_UNAVAILABLE_EXIT"
 }
 
 if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then

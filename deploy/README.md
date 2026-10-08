@@ -432,6 +432,12 @@ if a deploy is in flight, waits up to `TEATREE_UPDATE_WAIT_SECONDS` (default 180
 (`EX_TEMPFAIL`) saying an update is in progress. It never reports docker's bare
 `service "…" is not running`, which is the text a genuine outage produces.
 
+**A venue that cannot run `t3` is distinguishable from a refusal.** A checkout outside
+every translatable root, an unreachable Docker daemon, a stack never built here and a
+wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
+for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
+skips with a warning on 69, 75 and 127 and fails the push on anything else.
+
 ### Worker sizing: derived from the host
 
 The worker reads its own **cgroup-capped** CPU/RAM view, so a host-derived

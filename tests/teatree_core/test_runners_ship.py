@@ -75,7 +75,7 @@ class TestShipExecutor(TestCase):
             result = ShipExecutor(ticket).run()
 
         assert result.ok is True
-        push.assert_called_once_with(repo="/tmp/repo", remote="origin", branch="feat-x")
+        push.assert_called_once_with(repo="/tmp/repo", remote="origin", branch="feat-x", ship_opens_pr=True)
         (spec,) = host.create_pr.call_args.args
         assert spec.repo == "/tmp/repo"
         assert spec.branch == "feat-x"
@@ -468,7 +468,9 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         assert result.ok is True
         # The intended PR-B branch is pushed — NOT the stale PR-A row.
-        push.assert_called_once_with(repo="/tmp/repo-pr-b", remote="origin", branch="s-776-pr-b-current")
+        push.assert_called_once_with(
+            repo="/tmp/repo-pr-b", remote="origin", branch="s-776-pr-b-current", ship_opens_pr=True
+        )
         (spec,) = host.create_pr.call_args.args
         assert spec.branch == "s-776-pr-b-current"
         assert spec.repo == "/tmp/repo-pr-b"
@@ -555,7 +557,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
             result = ShipExecutor(ticket).run()
 
         assert result.ok is True
-        push.assert_called_once_with(repo="/tmp/repo-only", remote="origin", branch="s-777-first")
+        push.assert_called_once_with(repo="/tmp/repo-only", remote="origin", branch="s-777-first", ship_opens_pr=True)
 
     def test_refuses_merged_branch_when_no_invoking_hint_recorded(self) -> None:
         """Merged-branch refusal with no ``ship_invoking_branch`` key set.
@@ -642,7 +644,9 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
         # NOT silently return the stale workstream-A URL.
         assert result.ok is True
         assert result.detail == "https://example.com/pr/b-new"
-        push.assert_called_once_with(repo="/tmp/repo-1263-b", remote="origin", branch="s-1263-pr-b-current")
+        push.assert_called_once_with(
+            repo="/tmp/repo-1263-b", remote="origin", branch="s-1263-pr-b-current", ship_opens_pr=True
+        )
         host.create_pr.assert_called_once()
         (spec,) = host.create_pr.call_args.args
         assert spec.branch == "s-1263-pr-b-current"
@@ -797,7 +801,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         assert result.ok is True
         # (a) pushes the REAL branch, not the stale recorded one.
-        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo")
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo", ship_opens_pr=True)
         (spec,) = host.create_pr.call_args.args
         assert spec.branch == "1519-fix-foo"
         # (b) the DB rows are reconciled to the current branch.
@@ -848,7 +852,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             result = ShipExecutor(ticket).run()
 
         assert result.ok is True
-        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo")
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo", ship_opens_pr=True)
         # No spurious reconcile write when the names already agree.
         wt_save.assert_not_called()
         worktree.refresh_from_db()
@@ -877,7 +881,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         assert result.ok is True
         # Falls back to the recorded branch — never pushes the bare SHA / HEAD.
-        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket")
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket", ship_opens_pr=True)
         ticket.refresh_from_db()
         assert ticket.worktrees.get().branch == "1519-ticket"
 
@@ -896,7 +900,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             result = ShipExecutor(ticket).run()
 
         assert result.ok is True
-        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket")
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket", ship_opens_pr=True)
         (spec,) = host.create_pr.call_args.args
         assert spec.branch == "1519-ticket"
         ticket.refresh_from_db()
@@ -1635,8 +1639,8 @@ class _HookHost:
 class TestPostPushRefusalLeavesAReconcilableState(TestCase):
     """#4305: a refusal reached AFTER the push must not orphan the PR the push opened.
 
-    ``push_branch`` fires the git pre-push hook, which runs ``ensure-pr`` and opens
-    a PR for the branch. Every refusal after that point — the post-push fleet-claim
+    A pre-push hook that ignores the ship marker (a branch still on the pre-marker hook
+    config) runs ``ensure-pr`` and opens a PR for the branch. Every refusal after that point — the post-push fleet-claim
     fence here, the PR-open half's no-URL / wrong-slug / 404 returns — returns
     ``ok=False`` for a ship whose PR is live on the forge. Unrecorded, that PR was
     invisible to the retry, which collided with ``already exists``.
@@ -1681,7 +1685,7 @@ class TestPostPushRefusalLeavesAReconcilableState(TestCase):
         ship_host = MagicMock()
         ship_host.current_user.return_value = "souliane"
 
-        def fire_pre_push_hook(*, repo: str, remote: str, branch: str):
+        def fire_pre_push_hook(*, repo: str, remote: str, branch: str, ship_opens_pr: bool):
             create_or_defer_pr(repo, branch)
             return MagicMock(ok=True)
 
