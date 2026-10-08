@@ -171,8 +171,12 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
         overlay,
     ).distinct()
     return collect(
-        [ticket for ticket in candidates if not all_merges_reopened_over(ticket)],
-        lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run),
+        candidates,
+        lambda ticket: (
+            None
+            if all_merges_reopened_over(ticket)
+            else _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run)
+        ),
     )
 
 

@@ -50,7 +50,7 @@ _MAX_ELIDED_BYTES = 8192
 
 
 def _dispatch_task(phase: str) -> Task:
-    ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{abs(hash(phase)) % 100_000}")
+    ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{sorted(KNOWN_PHASES).index(phase) + 1}")
     return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase=phase)
 
 
