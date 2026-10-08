@@ -4,6 +4,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
 from typing import Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -116,6 +117,13 @@ def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> st
     if denied & _MUTATION_TOOLS and container_is_the_sandbox():
         return f"Codex cannot enforce {_CONTAINER_READ_ONLY_UNENFORCEABLE}"
     return None
+
+
+def codex_login_unavailable_reason(code_home: Path) -> str | None:
+    """Stat the private home's ``auth.json`` without opening it; ``t3 codex auth check`` is what creates it."""
+    if (code_home / "auth.json").is_file():
+        return None
+    return "no Codex login in the private home: run `t3 codex auth import`, then `t3 codex auth check`"
 
 
 def codex_container_unavailable_reason() -> str | None:

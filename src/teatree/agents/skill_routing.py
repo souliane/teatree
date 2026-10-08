@@ -57,6 +57,17 @@ _FALLBACK_PATTERNS = (
     re.compile(r"\b(?:spawn|process|could not start|failed to start|enoent)\b", re.IGNORECASE),
 )
 
+_STICKY_PATTERN = re.compile(
+    r"\b(?:401|403|429|auth(?:entication|orization)?|credential|quota|(?:rate|usage).?limit"
+    r"|subscription_(?:session|weekly)|api_credit|provider_budget)\b",
+    re.IGNORECASE,
+)
+
+
+def sticky_reason(text: str) -> bool:
+    """Whether a failure names a quota or credential state that will not clear in a couple of minutes."""
+    return _STICKY_PATTERN.search(text) is not None
+
 
 def runtime_fallback_reason(error: BaseException | str) -> str | None:
     text = str(error).strip()
@@ -82,6 +93,7 @@ _LOCK = RLock()
 # Re-reading durable state on every dispatch would defeat the no-DB-hot-path goal.
 _AVAILABLE_TTL = timedelta(minutes=10)
 _UNAVAILABLE_TTL = timedelta(minutes=2)
+QUOTA_AUTH_HOLD = timedelta(hours=1)
 
 
 def _key(overlay: str, candidate: AgentRouteCandidate, phase: str) -> _AvailabilityKey:
@@ -118,6 +130,15 @@ def _persist(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -
         return
 
 
+def _hold_was_cleared(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> bool:
+    """A long hold outlives its durable row only when an operator cleared it (``t3 codex auth import``).
+
+    Read only while a long hold is cached, so the healthy path stays DB-free.
+    """
+    long_hold = observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
+    return bool(observation.unavailable_reason) and long_hold and _persistent_observation(key) is None
+
+
 def cached_unavailable_reason(
     overlay: str,
     candidate: AgentRouteCandidate,
@@ -134,6 +155,9 @@ def cached_unavailable_reason(
             observation = _persistent_observation(key)
             if observation is not None:
                 _MEMORY[key] = observation
+        if observation is not None and _hold_was_cleared(key, observation):
+            del _MEMORY[key]
+            observation = None
         if observation is not None and observation.retry_at > now:
             if observation.unavailable_reason:
                 return observation.unavailable_reason
@@ -161,11 +185,11 @@ def record_route_unavailable(
     reason: str,
     *,
     phase: str = "",
-    retry_after: timedelta = _UNAVAILABLE_TTL,
+    retry_after: timedelta | None = None,
 ) -> None:
     key = _key(overlay, candidate, phase)
     now = timezone.now()
-    observation = RouteAvailabilityObservation(reason, now, now + retry_after)
+    observation = RouteAvailabilityObservation(reason, now, now + (retry_after or _UNAVAILABLE_TTL))
     with _LOCK:
         current = _MEMORY.get(key)
         if current is None or current.observed_at <= now:

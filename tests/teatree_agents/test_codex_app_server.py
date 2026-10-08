@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -44,6 +43,7 @@ from teatree.agents.harness_registry import (
 )
 from teatree.agents.round_ceiling import ROUND_STARTED, starts_a_round
 from tests.teatree_agents._codex_command_shape import codex_wrapped
+from tests.teatree_agents._route_fakes import write_codex_login
 
 _THREAD_ID = "0197e1d4-1f5f-7b00-8000-000000000001"
 _PROTOCOL_CONTRACT = Path(__file__).parents[1] / "fixtures" / "codex_app_server" / "0.155.1-contract.json"
@@ -478,10 +478,6 @@ def test_codex_process_env_is_private_and_drops_ambient_credentials(tmp_path: Pa
         "T3_CONTROL_DB_DIR": "/control",
         "T3_REPO": "/src/teatree",
         "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "credential.helper",
-        "GIT_CONFIG_VALUE_0": "",
         "CODEX_HOME": str(home),
         "HOME": str(home),
     }
@@ -644,6 +640,11 @@ def test_factory_container_read_only_phase_selects_claude(monkeypatch: pytest.Mo
     assert selection.spec.name == harness.AgentHarness.CLAUDE_SDK.value
 
 
+@pytest.fixture
+def a_codex_login(tmp_path: Path) -> Path:
+    return write_codex_login(tmp_path / "codex-home")
+
+
 @pytest.mark.parametrize(
     ("in_container", "opted_in", "phase", "refused"),
     [
@@ -665,6 +666,7 @@ def test_factory_container_read_only_phase_selects_claude(monkeypatch: pytest.Mo
         "host-plan",
     ],
 )
+@pytest.mark.usefixtures("a_codex_login")
 def test_a_container_that_has_not_opted_in_refuses_codex_for_every_phase(
     monkeypatch: pytest.MonkeyPatch, *, in_container: bool, opted_in: bool, phase: str, refused: bool
 ) -> None:
@@ -691,6 +693,7 @@ def test_factory_container_refuses_codex_while_user_execpolicy_rules_are_install
     monkeypatch.setattr("teatree.agents.codex_app_server.container_is_the_sandbox", lambda: True)
     monkeypatch.setattr("teatree.agents.codex_app_server.shutil.which", lambda _name: "/usr/bin/codex")
     monkeypatch.setenv("T3_CODEX_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text("{}")
     context = HarnessBuildContext(phase="coding")
     assert codex_app_server_spec().unavailable_reason(context) is None
 

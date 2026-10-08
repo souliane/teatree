@@ -53,3 +53,7 @@ def sdk_disallowed_tools_for_phase(phase: str) -> tuple[str, ...]:
     for capability in disallowed_tools_for_phase(phase):
         names |= CAPABILITY_TO_SDK_TOOLS.get(capability, frozenset())
     return tuple(sorted(names))
+
+
+def phase_bars_write_tools(phase: str) -> bool:
+    return "Write" in sdk_disallowed_tools_for_phase(phase)

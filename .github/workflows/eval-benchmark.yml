@@ -52,6 +52,9 @@ on:
         default: ""
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     permissions:

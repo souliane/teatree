@@ -129,6 +129,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 # Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
 # push-to-main or scheduled run (unique run_id group) so the full-tree
 # banned-terms / overlay-leak backstops always finish. See the CONCURRENCY
@@ -166,12 +169,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           # fetch-depth: 0 so the PR-vs-base ``git diff`` resolves.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Classify the PR diff into CI lanes
@@ -218,13 +222,16 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: Obtain the prebuilt lint image
         env:
           IMAGE: ${{ needs.build-image.outputs.image_lint }}
           MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$MODE" = "registry" ]; then
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             docker pull "$IMAGE"
           else
             docker build -f dev/Dockerfile.test --target lint -t "$IMAGE" .
@@ -274,26 +281,31 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           # fetch-depth: 0 so `git merge-base origin/main HEAD` resolves.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
       - name: Check for BLUEPRINT.md change in this PR
         id: blueprint_diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qx 'BLUEPRINT.md'; then
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qx 'BLUEPRINT.md'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
       - name: §17.1 invariant-numbering cross-PR check
         if: steps.blueprint_diff.outputs.changed == 'true'
-        run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref=origin/${{ github.base_ref }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref="origin/${BASE_REF}"
 
   # GATE: fails when a tracked file matches a .gitignore rule — a force-add or a
   # merge gets past .gitignore; an intended file is carved out with a `!` negation.
@@ -303,6 +315,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - run: scripts/hooks/refuse-tracked-ignored-files.sh
 
   # ── 3. Docs integrity ──────────────────────────────────────────────────────
@@ -321,11 +335,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -351,11 +366,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -379,10 +395,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -420,12 +438,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           # fetch-depth: 0 so `origin/<base>...HEAD` resolves.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -452,11 +471,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -476,10 +496,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group docs
@@ -569,10 +591,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -595,10 +619,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -616,8 +642,10 @@ jobs:
   # `lint` stage (`FROM base`, bakes prek's hook environments) so the `lint`
   # job below can pull a ready image instead of cold-installing every hook env
   # at `prek run` time — CI lint/Docker convergence (souliane/teatree
-  # CI-speedup). Both builds are SKIPPED entirely when their tag already
-  # exists, so steady-state cost is two manifest checks. Fork PRs cannot push
+  # CI-speedup). On a pull request both builds are SKIPPED entirely when their
+  # tag already exists, so steady-state cost is two manifest checks. Every other
+  # event (push, schedule, dispatch) rebuilds both, publishes only `main-` tags and
+  # hands consumers the pushed digest, so it never rewrites a tag a PR reuses. Fork PRs cannot push
   # to ghcr (read-only token, no secrets), so they set `mode=local` and each
   # downstream job (test-shard, lint) builds the image IT needs in-job — the
   # packages can stay PRIVATE (same-repo runs pull them with the job's
@@ -635,26 +663,32 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image: ${{ steps.meta.outputs.image }}
-      image_lint: ${{ steps.meta.outputs.image_lint }}
+      image: ${{ steps.test_image.outputs.digest || steps.meta.outputs.image }}
+      image_lint: ${{ steps.lint_image.outputs.digest || steps.meta.outputs.image_lint }}
       mode: ${{ steps.meta.outputs.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: Resolve the image refs (tag = hash of inputs) and push mode
         id: meta
         env:
           # Empty on push/schedule and same-repo PRs; 'true' only for a fork PR.
           IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
-        run: |
-          KEY="${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}"
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          KEY: ${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}
           # Widened key (adds .pre-commit-config.yaml): a hook-rev bump alone
           # must mint a fresh lint tag so baked hook envs can never silently go
           # stale. A tag MISS degrades gracefully — prek just cold-installs
           # whichever repo changed.
-          KEY_LINT="${{ hashFiles('dev/Dockerfile.test', 'uv.lock', '.pre-commit-config.yaml') }}"
-          REPO_LC="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          echo "image=ghcr.io/${REPO_LC}-test:${KEY}" >> "$GITHUB_OUTPUT"
-          echo "image_lint=ghcr.io/${REPO_LC}-lint:${KEY_LINT}" >> "$GITHUB_OUTPUT"
+          KEY_LINT: ${{ hashFiles('dev/Dockerfile.test', 'uv.lock', '.pre-commit-config.yaml') }}
+        run: |
+          REPO_LC="$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # Pull requests share the bare content-hash tags; every other event publishes its own `main-` tags.
+          if [ "$EVENT_NAME" = "pull_request" ]; then TAG_PREFIX=""; else TAG_PREFIX="main-"; fi
+          echo "image=ghcr.io/${REPO_LC}-test:${TAG_PREFIX}${KEY}" >> "$GITHUB_OUTPUT"
+          echo "image_lint=ghcr.io/${REPO_LC}-lint:${TAG_PREFIX}${KEY_LINT}" >> "$GITHUB_OUTPUT"
           if [ "$IS_FORK" = "true" ]; then
             echo "mode=local" >> "$GITHUB_OUTPUT"
           else
@@ -662,29 +696,43 @@ jobs:
           fi
       - name: Log in to ghcr
         if: steps.meta.outputs.mode == 'registry'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build and push the test image (skipped when the tag already exists)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push the test image (a pull request skips it when the tag already exists)
+        id: test_image
         if: steps.meta.outputs.mode == 'registry'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+          if [ "$EVENT_NAME" = "pull_request" ] && docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
             echo "Image $IMAGE already exists — skipping build (Dockerfile + uv.lock unchanged)."
             exit 0
           fi
           docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
           docker push "$IMAGE"
-      - name: Build and push the lint image (skipped when the tag already exists)
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push the lint image (a pull request skips it when the tag already exists)
+        id: lint_image
         if: steps.meta.outputs.mode == 'registry'
         env:
           IMAGE_LINT: ${{ steps.meta.outputs.image_lint }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if docker manifest inspect "$IMAGE_LINT" >/dev/null 2>&1; then
+          if [ "$EVENT_NAME" = "pull_request" ] && docker manifest inspect "$IMAGE_LINT" >/dev/null 2>&1; then
             echo "Image $IMAGE_LINT already exists — skipping build (Dockerfile + uv.lock + pre-commit config unchanged)."
             exit 0
           fi
           docker build -f dev/Dockerfile.test --target lint -t "$IMAGE_LINT" .
           docker push "$IMAGE_LINT"
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_LINT")"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          fi
 
   # GATE (heavy lane): one of the 12 coverage SHARDS. Each shard runs a
   # duration-balanced twelfth of the suite (pytest-split `--splits 12 --group N`)
@@ -725,6 +773,8 @@ jobs:
         group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       # Pull the prebuilt, deps-baked image that `build-image` produced (one
       # manifest fetch + layer pull), instead of rebuilding + cold-syncing it in
       # every shard. Fork PRs (mode=local) build it in-job — the ghcr package can
@@ -733,9 +783,10 @@ jobs:
         env:
           IMAGE: ${{ needs.build-image.outputs.image }}
           MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$MODE" = "registry" ]; then
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             docker pull "$IMAGE"
           else
             # --target base: the Dockerfile is multi-stage (a `lint` stage now
@@ -834,7 +885,7 @@ jobs:
           -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
           ${{ (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
       # A failed leg still hands its data to the combiner; a superseded, cancelled wave uploads nothing.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: shard-artifacts-${{ matrix.group }}
@@ -853,7 +904,7 @@ jobs:
       # job recognises that shape and drops it rather than merging month-old timings back.
       - name: Upload this shard's recorded durations (refresh source)
         if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: durations-shard-${{ matrix.group }}
           path: dev/.test_durations
@@ -911,6 +962,7 @@ jobs:
     if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
     timeout-minutes: 15
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: write
       pull-requests: write
@@ -950,6 +1002,7 @@ jobs:
           esac
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: true
           fetch-depth: 0
           # CI-2: persist the PAT (not the default GITHUB_TOKEN) as the git credential
           # so the `git push` to the refresh branch is attributed to a real identity and
@@ -965,7 +1018,7 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Merge shard durations and decide whether to refresh
@@ -1091,13 +1144,16 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: Obtain the prebuilt test image
         env:
           IMAGE: ${{ needs.build-image.outputs.image }}
           MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "$MODE" = "registry" ]; then
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             docker pull "$IMAGE"
           else
             docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
@@ -1162,10 +1218,12 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1215,7 +1273,7 @@ jobs:
         env:
           COVERAGE_FILE: .coverage
         run: uv run -p ${{ matrix.python-version }} t3 ci coverage
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: coverage-${{ matrix.python-version }}
@@ -1301,10 +1359,12 @@ jobs:
         seed: [7, 1, 13, 100]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: ${{ matrix.python-version }}
       # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
@@ -1367,12 +1427,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -1395,12 +1456,17 @@ jobs:
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -1452,11 +1518,13 @@ jobs:
           echo "skipped: the term registry secret is not available to pull requests from forks"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1492,13 +1560,15 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
           echo "skipped: the term registry secret is not available to pull requests from forks"
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-      - uses: astral-sh/setup-uv@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           enable-cache: true
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1539,7 +1609,9 @@ jobs:
           echo "skipped: the term registry secret is not available to pull requests from forks"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: "3.13"
@@ -1565,15 +1637,19 @@ jobs:
     if: github.event_name == 'pull_request'
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           # fetch-depth: 0 so `git merge-base origin/<base> HEAD` resolves.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
@@ -1628,10 +1704,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       # A green audit is only evidence if the audit can still SEE. Nothing reds
@@ -1660,7 +1738,7 @@ jobs:
         # shellcheck disable=SC2086 — word-splitting on IGNORE_FLAGS is intentional:
         # it expands to zero or more ``--ignore-vuln GHSA-xxxx`` pairs from the
         # committed requirements.audit.ignore allowlist (never user-supplied input).
-        run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
+        run: uvx pip-audit@2.10.1 --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
       # A raw CVE list makes the reader re-derive the question that decides what
       # to do. Django 6.0.8's High-severity raster CVE could not be reached from
       # src/ while its Moderate admin one could, so the severity column ranked
@@ -1672,7 +1750,7 @@ jobs:
           IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
         # shellcheck disable=SC2086 — same intentional word-splitting as above.
         run: |
-          uvx pip-audit --vulnerability-service osv --disable-pip --format json \
+          uvx pip-audit@2.10.1 --vulnerability-service osv --disable-pip --format json \
             -r requirements.audit.txt $IGNORE_FLAGS > audit-report.json || true
           uv run t3 tool dependency-audit --report audit-report.json
 
@@ -1684,16 +1762,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - run: uv sync
       - run: scripts/hooks/generate_sbom.sh
       - run: git diff --exit-code dist/sbom.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: sbom
@@ -1719,13 +1799,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
           # PIN the uv version: `uv audit` is preview, so a floating `latest`
           # could change flags out from under this lane. Bump deliberately.
           version: "0.11.15"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       # `--frozen` audits the locked `uv.lock` resolution without re-locking;

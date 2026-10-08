@@ -48,6 +48,7 @@ jobs:
     concurrency:
       group: deploy
       cancel-in-progress: false
+    environment: production
     runs-on: ubuntu-latest
     # Must cover what deploy.sh itself allows: both drains (2 x
     # TEATREE_DRAIN_TIMEOUT=600s), the init wait (TEATREE_INIT_WAIT_TIMEOUT=1800s),

@@ -18,11 +18,12 @@ from teatree.agents.codex_app_server import (
     _thread_params,
     transport_close_seconds,
 )
+from teatree.agents.codex_app_server_env import codex_process_env, forge_token_fingerprint
 from teatree.agents.codex_app_server_errors import transport_error
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_auth_cache import CodexAuthCache
 from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
-from teatree.agents.harness_registry import HarnessFallbackError
+from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ _IDLE_SECONDS = 5.0
 UNSUBSCRIBE_SECONDS = 5.0
 _OWNER_JOIN_SECONDS = 10.0
 _OWNER_STAGE = "shared worker"
+_BUSY_WITH_OTHER_CREDENTIAL = "Codex App Server is busy with another credential"
 type AppServerPayload = dict[str, Any]
 
 
@@ -53,6 +55,7 @@ class SharedCodexAppServer:
         idle_seconds: float = _IDLE_SECONDS,
     ) -> None:
         self.code_home = code_home
+        self.credential = forge_token_fingerprint(process_env)
         self.cache = cache or CodexAuthCache(code_home)
         self.command = command
         self.process_env = process_env
@@ -365,6 +368,11 @@ class SharedCodexAppServer:
         return self._retiring.is_set()
 
     @property
+    def busy(self) -> bool:
+        with self._opens_lock:
+            return bool(self._events) or self._opens_in_flight > 0
+
+    @property
     def stopped(self) -> bool:
         return self._thread is None or not self._thread.is_alive()
 
@@ -378,13 +386,13 @@ class SharedCodexSession(CodexAppServerSession):
     async def start(self, *, open_thread: bool = True) -> None:
         del open_thread
         if self.manager.retiring:
-            self.manager = shared_codex_app_server(self.manager.code_home)
+            self.manager = shared_codex_app_server(self.manager.code_home, self.options.core.env)
         try:
             self.thread_id, self.model = await self.manager.open_session(self.options, self.resume)
         except (CodexAppServerError, HarnessFallbackError):
             if not self.manager.retiring:
                 raise
-            self.manager = shared_codex_app_server(self.manager.code_home)
+            self.manager = shared_codex_app_server(self.manager.code_home, self.options.core.env)
             self.thread_id, self.model = await self.manager.open_session(self.options, self.resume)
 
     async def _request(self, method: str, params: AppServerPayload) -> AppServerPayload:
@@ -426,18 +434,28 @@ _managers: dict[tuple[int, Path], SharedCodexAppServer] = {}
 _managers_lock = threading.Lock()
 
 
-def shared_codex_app_server(code_home: Path) -> SharedCodexAppServer:
+def shared_codex_app_server(code_home: Path, forge_env: Mapping[str, str] | None = None) -> SharedCodexAppServer:
+    """The worker's one App Server for *code_home*, restarted when the routed forge token changed.
+
+    Two servers cannot share a Codex home (one credential writer), so a different token retires an
+    idle server and fails a busy one fast instead of starting a second.
+    """
     key = (os.getpid(), code_home.resolve())
+    credential = forge_token_fingerprint(forge_env)
     with _managers_lock:
-        if key in _managers and _managers[key].failed:
-            retiring = _managers[key]
-            retiring.close()
-            if not retiring.stopped:
+        current = _managers.get(key)
+        if current is not None and current.credential != credential and not current.failed and current.busy:
+            raise HarnessFallbackError(_BUSY_WITH_OTHER_CREDENTIAL, kind=HarnessFallbackKind.TRANSPORT)
+        if current is not None and (current.failed or current.credential != credential):
+            current.close()
+            if not current.stopped:
                 msg = "Previous Codex credential writer has not stopped"
                 raise CodexAppServerError(msg)
             _managers.pop(key)
         if key not in _managers:
-            _managers[key] = SharedCodexAppServer(code_home=code_home)
+            _managers[key] = SharedCodexAppServer(
+                code_home=code_home, process_env=codex_process_env(code_home, forge_env)
+            )
         return _managers[key]
 
 
