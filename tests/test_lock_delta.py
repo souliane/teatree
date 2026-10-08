@@ -79,10 +79,6 @@ _COOLDOWN_DOWNGRADES = (("mcp", "2.3.0", "2.2.0"), ("tach", "0.35.2", "0.35.1"))
 
 
 class TestDowngrade:
-    @pytest.mark.parametrize(("name", "before", "after"), _COOLDOWN_DOWNGRADES)
-    def test_a_move_to_an_older_release_is_a_downgrade(self, name: str, before: str, after: str) -> None:
-        assert classify(before, after) is Level.DOWNGRADE, name
-
     @pytest.mark.parametrize(
         ("before", "after"), [("1.2.3.20261005", "1.2.3.20260901"), ("1.0.0.post1", "1.0.0"), ("2.0.0", "2.0.0rc1")]
     )

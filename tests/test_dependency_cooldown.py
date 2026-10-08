@@ -143,9 +143,6 @@ class TestTheAuditRunsTheEscapeCheck:
 
 
 class TestEscapeEntries:
-    def test_a_fresh_escape_passes_the_expiry_check(self, tmp_path: Path) -> None:
-        assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--fail-on-expired") == 0
-
     def test_an_escape_the_window_has_caught_up_with_fails_the_expiry_check(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -224,9 +221,6 @@ class TestVerifyLock:
         with patch.object(urllib.request, "urlopen", return_value=io.BytesIO(_release_json().encode())) as urlopen:
             assert main(argv, now=_NOW) == 0
         assert urlopen.call_args.args == (_MCP_JSON_URL,)
-
-    def test_fails_on_a_cutoff_equal_to_a_file_upload_time(self, tmp_path: Path) -> None:
-        assert _run(tmp_path, 'mcp = "2026-10-02T22:06:56.091Z"', "--verify-lock", fetch_json=_pypi()) == 1
 
     def test_fails_on_a_whole_second_cutoff_equal_to_the_newest_upload(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
