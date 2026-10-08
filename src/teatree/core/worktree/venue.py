@@ -12,9 +12,9 @@ Three-valued, because two values is what conflates them:
 *   ``PRESENT`` — the path resolves to a directory here. Act on it.
 *   ``ABSENT`` — it does not resolve, AND the directory that would contain it is
     readable. Genuine absence; the checkout is gone.
-*   ``UNOBSERVABLE`` — the containing directory is unreadable too, so this
-    process is looking at a subtree that was never mounted. MISSING EVIDENCE —
-    never proof of anything.
+*   ``UNOBSERVABLE`` — the containing directory is unreadable too, or a directory
+    on the way cannot be searched, so this process is looking at a subtree that was
+    never mounted or is sealed off. MISSING EVIDENCE — never proof of anything.
 
 Nothing here TRANSLATES a path, and nothing here should ever learn to. A helper
 that knew a path's other name would make a host-written path work, and a
@@ -31,6 +31,7 @@ process is entitled to conclude from an unresolvable path.
 
 from enum import StrEnum
 from pathlib import Path
+from stat import S_ISDIR
 
 
 class VenueObservation(StrEnum):
@@ -39,17 +40,30 @@ class VenueObservation(StrEnum):
     UNOBSERVABLE = "unobservable"
 
 
+def _mode(path: Path) -> int | None:
+    try:
+        return path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
 def observe(path: Path) -> VenueObservation:
     """What this venue can say about *path* — resolved, absent, or out of reach.
 
-    ``Path.is_dir()`` answers ``False`` for an unreadable parent as readily as for
-    a missing one, which is precisely the conflation this function exists to
-    undo: the parent is probed separately so an unreadable neighbourhood reports
-    ``UNOBSERVABLE`` rather than being mistaken for an empty one.
+    Asks ``stat`` itself: ``Path.is_dir()`` raises a permission error on 3.13 and answers
+    ``False`` on 3.14, which reads a checkout behind a directory this process cannot search
+    as absent. Only a missing path under a directory this process can see is ``ABSENT``;
+    any other failure to look is ``UNOBSERVABLE``.
     """
-    if path.is_dir():
-        return VenueObservation.PRESENT
-    return VenueObservation.ABSENT if path.parent.is_dir() else VenueObservation.UNOBSERVABLE
+    try:
+        mode = _mode(path)
+        if mode is not None:
+            return VenueObservation.PRESENT if S_ISDIR(mode) else VenueObservation.ABSENT
+        parent_mode = _mode(path.parent)
+    except OSError:
+        return VenueObservation.UNOBSERVABLE
+    parent_is_dir = parent_mode is not None and S_ISDIR(parent_mode)
+    return VenueObservation.ABSENT if parent_is_dir else VenueObservation.UNOBSERVABLE
 
 
 def venue_can_observe(path: Path, scanned_roots: tuple[Path, ...]) -> bool:

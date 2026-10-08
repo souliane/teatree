@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from teatree.generation import current_generation, is_generation_sha
+from teatree.mount_identity import physical_location
 from teatree.sqlite_snapshot import _exclusive_lock, _sqlite_snapshot
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
@@ -224,6 +225,8 @@ def auto_isolated_worktrees_dir() -> Path:
 #: population the resolver mints for. The stamp closes that by recording the
 #: owner on the way in, so liveness becomes a fact the dir carries (#3852).
 OWNER_STAMP_NAME = "owner-checkout.path"
+#: The owner's :func:`~teatree.mount_identity.physical_location` as the birth venue saw it.
+OWNER_LOCATION_NAME = "owner-checkout.location"
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,9 +252,18 @@ class IsolatedEnvDir:
         """
         try:
             raw = (self.path / OWNER_STAMP_NAME).read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         return Path(raw) if raw else None
+
+    @property
+    def owner_location(self) -> str | None:
+        """Where the owner physically lived when stamped, or ``None`` for a stamp predating the record."""
+        try:
+            raw = (self.path / OWNER_LOCATION_NAME).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        return raw or None
 
     def open_for(self, repo_root: Path) -> None:
         """Bring this dir into existence owned by *repo_root*, stamped at birth (#3872).
@@ -274,12 +286,16 @@ class IsolatedEnvDir:
         filesystem must never turn a diagnostic aid into a failure to start.
         """
         stamp = self.path / OWNER_STAMP_NAME
+        location = self.path / OWNER_LOCATION_NAME
         try:
-            if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == str(repo_root):
-                return
-            self.path.mkdir(parents=True, exist_ok=True)
-            stamp.write_text(f"{repo_root}\n", encoding="utf-8")
-        except OSError:
+            if not (stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == str(repo_root)):
+                self.path.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(f"{repo_root}\n", encoding="utf-8")
+                location.unlink(missing_ok=True)
+            # Never overwritten: a second venue's reading of the same spelling may name another directory.
+            if self.owner_location is None and (where := physical_location(repo_root)):
+                location.write_text(f"{where}\n", encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             return
 
 
