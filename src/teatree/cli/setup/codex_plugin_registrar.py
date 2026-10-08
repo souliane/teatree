@@ -13,13 +13,16 @@ from pathlib import Path
 
 import typer
 
+from teatree.agents.codex_sandbox import container_is_the_sandbox
 from teatree.cli.setup.codex_plugin_payload import CodexPayloadError, CodexPluginPayload
 from teatree.cli.setup.codex_plugin_staging import codex_home, reclaiming_new_staging
 from teatree.cli.setup.plugin_registrar import MARKETPLACE_NAME, PLUGIN_CLI_TIMEOUT_S, PLUGIN_ID, PLUGIN_NAME
+from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME, launches_teatree_server
 from teatree.paths import get_data_dir
 from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_fail
 
 type JsonObject = dict[str, object]
+type JsonArray = list[object]
 
 _STDERR_TAIL_CHARS = 1000
 
@@ -72,14 +75,18 @@ class CodexPluginRegistrar:
             plugin_root = CodexPluginPayload(self.manifest_root, get_data_dir("codex-plugin")).materialize().resolve()
             self._ensure_marketplace(codex, plugin_root)
             self._ensure_plugin(codex, plugin_root)
+            self._confirm_mcp_server(codex)
         except (CodexPayloadError, CodexCliError) as exc:
             typer.echo(f"WARN  {exc} — setup continues.")
             return False
-        typer.echo(f"OK    TeaTree Codex plugin registered from {plugin_root} with shared skills and MCP tools.")
+        typer.echo(
+            f"OK    TeaTree Codex plugin registered from {plugin_root}; "
+            f"Codex resolves its `{TEATREE_MCP_SERVER_NAME}` MCP server (t3 mcp serve)."
+        )
         return True
 
     def _ensure_marketplace(self, codex: str, plugin_root: Path) -> None:
-        payload = self._json(codex, "inspect Codex marketplaces", "plugin", "marketplace", "list")
+        payload = self._json(dict, codex, "inspect Codex marketplaces", "plugin", "marketplace", "list")
         if self._marketplace_registered(payload, plugin_root):
             return
         if self._marketplace_present(payload):
@@ -89,13 +96,36 @@ class CodexPluginRegistrar:
         self._call(codex, "add the TeaTree Codex marketplace", "plugin", "marketplace", "add", str(plugin_root))
 
     def _ensure_plugin(self, codex: str, plugin_root: Path) -> None:
-        payload = self._json(codex, "inspect Codex plugins", "plugin", "list")
+        payload = self._json(dict, codex, "inspect Codex plugins", "plugin", "list")
         if self._plugin_registered(payload, plugin_root):
             return
         if self._plugin_present(payload):
             self._call(codex, "replace the TeaTree Codex plugin", "plugin", "remove", PLUGIN_ID)
         with reclaiming_new_staging(codex_home()):
             self._call(codex, "install the TeaTree Codex plugin", "plugin", "add", PLUGIN_ID)
+
+    @classmethod
+    def _confirm_mcp_server(cls, codex: str) -> None:
+        purpose = f"confirm the {TEATREE_MCP_SERVER_NAME} MCP server in Codex"
+        entry = cls._json(dict, codex, purpose, "mcp", "get", TEATREE_MCP_SERVER_NAME)
+        transport = entry.get("transport")
+        if (
+            entry.get("enabled") is not True
+            or not isinstance(transport, dict)
+            or not launches_teatree_server(transport)
+        ):
+            msg = f"Could not {purpose}: Codex resolves {_tail(json.dumps(entry))}, not an enabled `t3 mcp serve`"
+            raise CodexCliError(msg)
+        if not container_is_the_sandbox():
+            return
+        plugin_off = f'plugins={{"{PLUGIN_ID}"={{enabled=false}}}}'
+        loaded = cls._json(
+            list, codex, "list Codex MCP servers with the TeaTree plugin off", "-c", plugin_off, "mcp", "list"
+        )
+        if loaded:
+            names = ", ".join(str(server.get("name") if isinstance(server, dict) else server) for server in loaded)
+            msg = f"With the TeaTree plugin off, Codex still loads {names}; the worker refuses every Codex thread"
+            raise CodexCliError(msg)
 
     @staticmethod
     def _marketplace_present(payload: Mapping[str, object]) -> bool:
@@ -143,7 +173,7 @@ class CodexPluginRegistrar:
         return False
 
     @classmethod
-    def _json(cls, codex: str, purpose: str, *args: str) -> JsonObject:
+    def _json[Shape: (JsonObject, JsonArray)](cls, shape: type[Shape], codex: str, purpose: str, *args: str) -> Shape:
         stdout = cls._call(codex, purpose, *args).stdout
         decoder = json.JSONDecoder()
         offsets = (index for index, character in enumerate(stdout) if character in "[{")
@@ -152,9 +182,10 @@ class CodexPluginRegistrar:
                 payload, end = decoder.raw_decode(stdout, offset)
             except json.JSONDecodeError:
                 continue
-            if not stdout[end:].strip() and isinstance(payload, dict):
+            if not stdout[end:].strip() and isinstance(payload, shape):
                 return payload
-        msg = f"Could not {purpose}: `codex {' '.join(args)} --json` printed no JSON object ({_tail(stdout)})"
+        expected = "object" if shape is dict else "array"
+        msg = f"Could not {purpose}: `codex {' '.join(args)} --json` printed no JSON {expected} ({_tail(stdout)})"
         raise CodexCliError(msg)
 
     @staticmethod

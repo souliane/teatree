@@ -309,6 +309,17 @@ every virtualenv and the `plugins/t3 -> ..` loop. A failed or timed-out add has
 its `plugins/cache/*/plugin-install-*` staging removed, and setup prints the Codex
 CLI's exit code and stderr.
 
+Codex gets the `teatree` MCP server (`t3 mcp serve`) from the plugin's
+`.mcp.json`, and setup confirms it with `codex mcp get teatree --json`. Where the
+container is the Codex sandbox, setup also checks that
+`codex -c 'plugins={"t3@souliane"={enabled=false}}' mcp list --json` lists
+nothing, because worker threads switch the plugin off and refuse any MCP server
+still loaded. Setup writes no `[mcp_servers]` table: one added to `config.toml` by
+hand survives that switch-off, and the worker then refuses every Codex thread. A
+miss on either check withholds the single ready marker, so the worker admits no
+work at all, not only Codex work. A laptop Codex beside a Docker deployment gets
+nothing from setup, which reconciles only the container's volume home.
+
 ### The GPG home off-box: a container-local copy
 
 `gpg-agent` and `keyboxd` bind their `S.*` sockets **inside** `GNUPGHOME`. On the

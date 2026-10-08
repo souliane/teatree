@@ -21,6 +21,17 @@ def _failed(stderr: str, returncode: int = 1) -> CompletedProcess[str]:
     return CompletedProcess(["codex"], returncode, "", stderr)
 
 
+_STDIO_TEATREE = {"type": "stdio", "command": "t3", "args": ["mcp", "serve"]}
+_TEATREE_ENTRY = {"name": "teatree", "enabled": True, "transport": _STDIO_TEATREE}
+_MCP_RESOLVED = _ok(_TEATREE_ENTRY)
+_MCP_GET = ("mcp", "get", "teatree", "--json")
+_PLUGIN_OFF_MCP_LIST = ("-c", 'plugins={"t3@souliane"={enabled=false}}', "mcp", "list", "--json")
+
+
+def _resolved_with(**transport: object) -> dict[str, object]:
+    return {**_TEATREE_ENTRY, "transport": {**_STDIO_TEATREE, **transport}}
+
+
 def _with_codex_manifest(root: Path) -> Path:
     (root / ".agents" / "plugins").mkdir(parents=True)
     (root / ".agents" / "plugins" / "marketplace.json").write_text(
@@ -41,6 +52,7 @@ def _with_codex_manifest(root: Path) -> Path:
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     def _get_data_dir(namespace: str) -> Path:
         path = tmp_path / "data" / namespace
@@ -50,6 +62,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     with (
         patch("teatree.cli.setup.codex_plugin_registrar.get_data_dir", _get_data_dir),
         patch("teatree.cli.setup.codex_plugin_registrar.shutil.which", return_value="/usr/bin/codex"),
+        patch("teatree.cli.setup.codex_plugin_registrar.container_is_the_sandbox", return_value=False),
     ):
         yield tmp_path
 
@@ -86,7 +99,12 @@ def _fresh_install_calls(slim: Path) -> list[tuple[str, ...]]:
         ("plugin", "marketplace", "add", str(slim), "--json"),
         ("plugin", "list", "--json"),
         ("plugin", "add", "t3@souliane", "--json"),
+        _MCP_GET,
     ]
+
+
+def _fresh_install_replies() -> list[Reply]:
+    return [_ok({"marketplaces": []}), _ok(), _ok({"installed": []}), _ok()]
 
 
 def test_registers_a_slim_root_from_the_vendored_manifest_root_without_touching_the_checkout(env: Path) -> None:
@@ -95,7 +113,7 @@ def test_registers_a_slim_root_from_the_vendored_manifest_root_without_touching_
 
     reason, calls = _install(
         CodexPluginRegistrar(fork),
-        [_ok({"marketplaces": []}), _ok(), _ok({"installed": []}), _ok()],
+        [_ok({"marketplaces": []}), _ok(), _ok({"installed": []}), _ok(), _MCP_RESOLVED],
     )
 
     assert reason is None
@@ -114,7 +132,7 @@ def test_the_registered_root_excludes_checkout_junk_and_symlinks(env: Path) -> N
 
     reason, calls = _install(
         CodexPluginRegistrar(checkout),
-        [_ok({"marketplaces": []}), _ok(), _ok({"installed": []}), _ok()],
+        [_ok({"marketplaces": []}), _ok(), _ok({"installed": []}), _ok(), _MCP_RESOLVED],
     )
 
     registered = Path(calls[1][3])
@@ -188,10 +206,10 @@ def test_already_registered_slim_root_is_a_noop(env: Path) -> None:
         ]
     }
 
-    reason, calls = _install(CodexPluginRegistrar(repo), [_ok(marketplace), _ok(installed)])
+    reason, calls = _install(CodexPluginRegistrar(repo), [_ok(marketplace), _ok(installed), _MCP_RESOLVED])
 
     assert reason is None
-    assert calls == [("plugin", "marketplace", "list", "--json"), ("plugin", "list", "--json")]
+    assert calls == [("plugin", "marketplace", "list", "--json"), ("plugin", "list", "--json"), _MCP_GET]
 
 
 def test_a_disabled_plugin_is_reinstalled(env: Path) -> None:
@@ -209,7 +227,7 @@ def test_a_disabled_plugin_is_reinstalled(env: Path) -> None:
         ]
     }
 
-    reason, calls = _install(CodexPluginRegistrar(repo), [_ok(marketplace), _ok(disabled), _ok(), _ok()])
+    reason, calls = _install(CodexPluginRegistrar(repo), [_ok(marketplace), _ok(disabled), _ok(), _ok(), _MCP_RESOLVED])
 
     assert reason is None
     assert calls == [
@@ -217,6 +235,7 @@ def test_a_disabled_plugin_is_reinstalled(env: Path) -> None:
         ("plugin", "list", "--json"),
         ("plugin", "remove", "t3@souliane", "--json"),
         ("plugin", "add", "t3@souliane", "--json"),
+        _MCP_GET,
     ]
 
 
@@ -236,7 +255,7 @@ def test_a_checkout_root_registration_migrates_to_the_slim_root(env: Path) -> No
 
     reason, calls = _install(
         CodexPluginRegistrar(repo),
-        [_ok(marketplace), _ok(), _ok(), _ok(installed), _ok(), _ok()],
+        [_ok(marketplace), _ok(), _ok(), _ok(installed), _ok(), _ok(), _MCP_RESOLVED],
     )
 
     assert reason is None
@@ -247,6 +266,7 @@ def test_a_checkout_root_registration_migrates_to_the_slim_root(env: Path) -> No
         ("plugin", "list", "--json"),
         ("plugin", "remove", "t3@souliane", "--json"),
         ("plugin", "add", "t3@souliane", "--json"),
+        _MCP_GET,
     ]
 
 
@@ -271,6 +291,65 @@ def test_each_cli_failure_reports_its_exit_code_and_stderr(env: Path, replies: l
     assert purpose in reason
     assert "exited 1" in reason
     assert "marketplace db locked" in reason
+
+
+def test_a_codex_that_cannot_find_the_teatree_mcp_server_is_not_ready(env: Path) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+
+    reason, _calls = _install(
+        CodexPluginRegistrar(repo),
+        [*_fresh_install_replies(), _failed("Error: No MCP server named 'teatree' found.")],
+    )
+
+    assert reason is not None
+    assert "confirm the teatree MCP server in Codex" in reason
+    assert "exited 1" in reason
+    assert "No MCP server named 'teatree' found." in reason
+
+
+@pytest.mark.parametrize(
+    ("resolved", "named"),
+    [
+        ({**_TEATREE_ENTRY, "enabled": False}, '"enabled": false'),
+        (_resolved_with(args=["mcp", "serve", "--read-only"]), "--read-only"),
+        (_resolved_with(command="/usr/local/bin/t3"), "/usr/local/bin/t3"),
+        (_resolved_with(args=None), '"args": null'),
+        ({"name": "teatree", "enabled": True}, '{"name": "teatree", "enabled": true}'),
+    ],
+    ids=["disabled", "read-only-args", "absolute-command", "null-args", "no-transport"],
+)
+def test_a_teatree_mcp_server_codex_resolves_differently_is_not_ready(
+    env: Path, resolved: dict[str, object], named: str
+) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+
+    reason, _calls = _install(CodexPluginRegistrar(repo), [*_fresh_install_replies(), _ok(resolved)])
+
+    assert reason is not None
+    assert "confirm the teatree MCP server in Codex" in reason
+    assert named in reason
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "loaded", "warned"),
+    [(True, [], None), (True, [_TEATREE_ENTRY], "still loads teatree"), (False, None, None)],
+    ids=["worker-lane-loads-nothing", "worker-lane-still-loads-teatree", "outside-the-sandbox"],
+)
+def test_the_worker_lane_mcp_check_runs_only_where_the_container_is_the_sandbox(
+    env: Path, *, sandbox: bool, loaded: list[object] | None, warned: str | None
+) -> None:
+    repo = _with_codex_manifest(env / "teatree")
+    listed = [] if loaded is None else [_ok(loaded)]
+
+    with patch("teatree.cli.setup.codex_plugin_registrar.container_is_the_sandbox", return_value=sandbox):
+        reason, calls = _install(CodexPluginRegistrar(repo), [*_fresh_install_replies(), _MCP_RESOLVED, *listed])
+
+    assert calls == [*_fresh_install_calls(_slim_root(env)), *([_PLUGIN_OFF_MCP_LIST] if sandbox else [])]
+    if warned is None:
+        assert reason is None
+    else:
+        assert reason is not None
+        assert warned in reason
 
 
 @pytest.mark.parametrize("target", ["marketplace", "plugin"])
@@ -364,7 +443,7 @@ def test_a_trailing_json_object_after_cli_warnings_is_accepted(env: Path) -> Non
     repo = _with_codex_manifest(env / "teatree")
     noisy = CompletedProcess(["codex"], 0, 'Warning: ignored invalid metadata\n{"marketplaces": []}\n', "")
 
-    reason, calls = _install(CodexPluginRegistrar(repo), [noisy, _ok(), _ok({"installed": []}), _ok()])
+    reason, calls = _install(CodexPluginRegistrar(repo), [noisy, _ok(), _ok({"installed": []}), _ok(), _MCP_RESOLVED])
 
     assert reason is None
     assert calls == _fresh_install_calls(_slim_root(env))
