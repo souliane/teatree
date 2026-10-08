@@ -7,6 +7,7 @@ import pytest
 
 from teatree.provisioning.declared import (
     TEATREE_REPOSITORY,
+    DeclarationMalformedError,
     DeclarationUnreadableError,
     apm_entries,
     binaries_declared_in_pyproject,
@@ -103,6 +104,21 @@ class TestSkillsDeclaredInApmManifest:
         with pytest.raises(DeclarationUnreadableError):
             skills_declared_in_apm_manifest(_write_manifest(tmp_path, "dependencies: [oh: no\n"))
 
+    @pytest.mark.parametrize(
+        "body",
+        ["dependencies: [oh: no\n", "- just\n- a list\n", "dependencies:\n  pip: []\n"],
+        ids=["unparsable", "not-a-mapping", "no-apm-list"],
+    )
+    def test_a_manifest_that_exists_in_the_wrong_shape_is_malformed(self, tmp_path: Path, body: str) -> None:
+        with pytest.raises(DeclarationMalformedError):
+            apm_entries(_write_manifest(tmp_path, body))
+
+    def test_an_absent_manifest_is_unreadable_not_malformed(self, tmp_path: Path) -> None:
+        with pytest.raises(DeclarationUnreadableError) as excinfo:
+            apm_entries(tmp_path / "apm.yml")
+
+        assert not isinstance(excinfo.value, DeclarationMalformedError)
+
 
 class TestBinariesDeclaredInPyproject:
     def test_required_binaries_are_read_from_the_declared_table(self, tmp_path: Path) -> None:
@@ -172,6 +188,20 @@ class TestDeclaredDependencies:
 
         assert "ac-python" in {dep.name for dep in enumeration.dependencies}
         assert any("pyproject.toml" in reason for reason in enumeration.unreadable)
+
+    def test_a_malformed_manifest_is_reported_apart_from_an_unreadable_surface(
+        self, tmp_path: Path, home: Path
+    ) -> None:
+        _write_manifest(tmp_path, "- just\n- a list\n")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.teatree.provisioning]\nrequired_binaries = ["jq"]\n', encoding="utf-8"
+        )
+
+        enumeration = declared_dependencies(project_root=tmp_path, home=home)
+
+        assert [reason for reason in enumeration.malformed if str(tmp_path / "apm.yml") in reason]
+        assert enumeration.unreadable == []
+        assert {dep.kind for dep in enumeration.dependencies} == {"binary", "integration"}
 
 
 class TestUnpinnedApmEntries:

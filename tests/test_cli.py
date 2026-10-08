@@ -30,6 +30,7 @@ from teatree.cli.agent import _detect_agent_ticket_status
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers
 from teatree.overlay_init.generator import OverlayScaffolder, camelize
 from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from tests._unreadable_apm_manifest import unreadable_running_manifest
 
 runner = CliRunner()
 
@@ -371,6 +372,22 @@ class TestConfigCommands:
         assert isinstance(result.exception, SystemExit)
         assert "souliane/skills/ac-django#abc" in result.output
         assert str(shadow) in result.output
+        assert not (tmp_path / "skill-metadata.json").exists()
+
+    def test_write_skill_cache_exits_nonzero_printing_an_unreadable_manifest_refusal(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(skill_cache_mod, "DATA_DIR", tmp_path)
+        monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
+        with (
+            patch.object(config_mod, "discover_active_overlay", return_value=None),
+            patch("django.setup"),
+            patch.object(skill_cache_mod, "get_overlay", return_value=MagicMock()),
+            unreadable_running_manifest(tmp_path) as manifest,
+        ):
+            result = runner.invoke(app, ["config", "write-skill-cache"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert str(manifest) in result.output
         assert not (tmp_path / "skill-metadata.json").exists()
 
     def test_write_skill_cache_no_active_overlay(self, tmp_path, monkeypatch):
