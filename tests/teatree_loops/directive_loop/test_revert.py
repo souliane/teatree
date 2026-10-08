@@ -10,6 +10,7 @@ from django.test import TestCase
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, FactoryScoreSnapshot
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loops.directive_loop.revert import ask_revert, resolve_revert
+from tests._owner_channel import answer_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 _SCOPE = "t3-teatree"
@@ -23,7 +24,7 @@ def _revert_pending() -> Directive:
     )
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    answer_on_slack(question, "approve")
     directive.refresh_from_db()
     directive.admit()
     directive.skip_to_configuring(

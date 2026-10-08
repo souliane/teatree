@@ -11,6 +11,7 @@ from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loops.directive_loop.configure import Activation, apply_activation, clear_activation
+from tests._owner_channel import answer_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 _SCOPE = "t3-teatree"
@@ -22,7 +23,7 @@ def _admitted(**sketch_over: object) -> Directive:
     directive.record_interpretation(sketch_from_envelope(valid_envelope(**sketch_over)), constraint_statement="c")
     question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
     directive.attach_ratification(question)
-    question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    answer_on_slack(question, "approve")
     directive.refresh_from_db()
     directive.admit()
     return directive

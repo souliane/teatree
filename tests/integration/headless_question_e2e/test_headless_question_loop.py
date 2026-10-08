@@ -45,6 +45,7 @@ class FakeBackend:
     posted: list[str] = field(default_factory=list)
     reacts: list[tuple[str, str, str]] = field(default_factory=list)
     route_token: str = "self"
+    user_id: str = "U_ME"
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
