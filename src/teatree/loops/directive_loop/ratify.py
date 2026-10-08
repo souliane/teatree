@@ -5,8 +5,8 @@ records ONE :class:`DeferredQuestion` rendering the FULL sketch — so the human
 the DESIGN DIRECTION (setting, chokepoint, activation, the named rejected alternative),
 not vague intent — and moves the directive to ``RATIFY_PENDING``; :func:`try_admit` is
 the sole path that calls :meth:`Directive.admit`, and only after the owner's answer,
-recorded on an owner channel, approves it. An answer from an agent surface — the MCP
-tool, or a headless agent's CLI call — is re-asked of the owner. A denial rejects; an
+recorded on an owner channel, approves it. Any other answer — the MCP tool or the
+command line — is re-asked of the owner on Slack. A denial rejects; an
 amendment re-interprets (a later PR). There is no auto-admit code path, so a directive
 cannot become ``ADMITTED`` without a consumed question — the structural
 human-in-the-loop of self-modification.
@@ -149,8 +149,7 @@ def try_admit(directive: Directive) -> str:
 
 _UNDECIDABLE = "the recorded answer read as neither an approval nor a denial"
 _NOT_FROM_THE_OWNER = (
-    "the recorded answer came from an agent surface, and only the owner ratifies: reply to this DM, "
-    "or run `t3 teatree questions answer` from your own terminal or interactive session"
+    "the recorded answer did not arrive on an owner channel, and only the owner ratifies: reply to this Slack DM"
 )
 
 

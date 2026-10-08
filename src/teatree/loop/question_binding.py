@@ -11,7 +11,8 @@ module, so the reply→question join cannot drift between them.
 The ladder, strongest evidence first:
 
 (a) an explicit ``#<id>`` prefix — the format the backlog digest already
-instructs the owner to reply in, and which until now nothing parsed;
+instructs the owner to reply in, and which until now nothing parsed — naming a
+question mirrored on the reply's own DM;
 (b) the reply's ``thread_ts`` — an exact join onto the question's mirror ts;
 (c) a top-level reply when exactly ONE live question is mirrored on the channel.
 
@@ -19,6 +20,9 @@ More than one candidate and no thread or id binds NOTHING. The newest-pending-
 wins pick it replaces silently answered the wrong row: with 149 questions
 mirrored into a single DM, a reply to a three-day-old question resolved
 whichever had been posted last, and ✅-acked the owner for it.
+
+Every rung binds only a reply whose recorded author is the owner's Slack user id;
+any other reply, or an unknown owner id, binds nothing and is left for the DM path.
 """
 
 import hashlib
@@ -47,17 +51,25 @@ class BoundAnswer:
     answer: str
 
 
-def bind_reply(reply: PendingChatInjection, *, reader: InboundReader, text: str = "") -> BoundAnswer | None:
+def configured_owner_id(backend: object) -> str:
+    return str(getattr(backend, "user_id", "") or "")
+
+
+def bind_reply(
+    reply: PendingChatInjection, *, reader: InboundReader, owner_user_id: str, text: str = ""
+) -> BoundAnswer | None:
     """The question *reply* answers and the answer to apply, or ``None``.
 
     *text* overrides the row body for a caller that coalesces several rows into
     one logical turn. See the module docstring for the binding ladder.
     """
+    if not owner_user_id or reply.user_id != owner_user_id:
+        return None
     body = text or reply.text
     addressed = _addressed(body)
     if addressed is not None:
         question_id, body = addressed
-        question = _pending_by_id(question_id)
+        question = _pending_by_id(question_id, channel=reply.channel)
     else:
         question = _inferred_question(reply)
     if question is None:
@@ -131,9 +143,10 @@ def _addressed(text: str) -> tuple[int, str] | None:
     return None if match is None else (int(match.group(1)), (match.group(2) or "").strip())
 
 
-def _pending_by_id(question_id: int) -> DeferredQuestion | None:
+def _pending_by_id(question_id: int, *, channel: str) -> DeferredQuestion | None:
     return DeferredQuestion.objects.filter(
         pk=question_id,
+        slack_channel=channel,
         answered_at__isnull=True,
         dismissed_at__isnull=True,
     ).first()
@@ -182,4 +195,4 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
     return options
 
 
-__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "resolve_answer"]
+__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "configured_owner_id", "resolve_answer"]

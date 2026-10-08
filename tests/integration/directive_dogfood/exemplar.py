@@ -15,12 +15,13 @@ from django.core.management import call_command
 from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
 from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
-from teatree.core.models import DeferredQuestion, DirectiveDispatch
+from teatree.core.models import DirectiveDispatch
 from teatree.core.models.directive import Directive
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop.tick import DirectiveTickResult, TickSeams, run_tick
 from teatree.loops.directive_loop.verify import VerifySeams
 from teatree.loops.shared.guards import GuardSeams
+from tests._owner_channel import answer_on_slack
 
 #: The canonical north-star sentence. The customer overlay it would ship for is
 #: carried by :data:`SCOPE`, never baked into the public repo as a brand string.
@@ -124,7 +125,7 @@ def drive_activation_only_to_verifying() -> Directive:
     record_returned_directive_interpretation(task, EXEMPLAR_ENVELOPE)  # → INTERPRETED
     tick()  # → ratify_asked
     directive.refresh_from_db()
-    directive.ratify_question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    answer_on_slack(directive.ratify_question, "approve")
     tick()  # RATIFY_PENDING → admitted
     tick()  # ADMITTED → configuring
     tick()  # CONFIGURING → verifying

@@ -24,6 +24,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -37,6 +38,7 @@ class RecordingBackend:
 
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
+    user_id: str = OWNER_SLACK_ID
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         _ = (channel, ts)
@@ -96,7 +98,7 @@ def _reply(text: str, *, slack_ts: str, thread_ts: str = "") -> PendingChatInjec
         channel=_CHANNEL,
         slack_ts=slack_ts,
         text=text,
-        context=DmContext(user_id="U1", thread_ts=thread_ts),
+        context=DmContext(user_id=OWNER_SLACK_ID, thread_ts=thread_ts),
     )
     assert row is not None
     return row

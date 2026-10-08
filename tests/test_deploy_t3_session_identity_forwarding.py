@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.session_identity import AGENT_SDK_ENV_VARS, SESSION_ID_ENV_VARS
+from teatree.core.session_identity import SESSION_ID_ENV_VARS
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash (present in the deploy image and CI)")
 
@@ -66,7 +66,7 @@ def test_the_id_crosses_as_a_bare_name_never_an_argv_value() -> None:
     assert not any("=" in arg for arg in _forwarded_env_args(CLAUDE_CODE_SESSION_ID="sess-abc"))
 
 
-@pytest.mark.parametrize("name", AGENT_SDK_ENV_VARS)
-def test_the_harness_signature_crosses_the_boundary(name: str) -> None:
-    """Without it an agent calling the host wrapper answers a question as if it were the owner."""
-    assert _forwarded_env_args(**{name: "sdk-py"}) == ["--env", name]
+def test_only_the_session_id_crosses_beside_an_agent_harness_env() -> None:
+    """Nothing in the container reads the harness's own variables, so none of them is forwarded."""
+    harness = {"CLAUDE_AGENT_SDK_VERSION": "0.2.161", "CLAUDE_CODE_ENTRYPOINT": "sdk-py"}
+    assert _forwarded_env_args(**harness, CLAUDE_CODE_SESSION_ID="sess-abc") == ["--env", "CLAUDE_CODE_SESSION_ID"]

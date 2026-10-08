@@ -287,8 +287,8 @@ class Directive(models.Model):
         RAISES unless :attr:`ratify_question` is a consumed (answered) row: no code
         path can admit a directive without a human's recorded decision, exactly as
         ``OuterLoopExperiment.admit`` gates the experiment. The answer must also have
-        arrived on an owner channel (Slack, the local CLI, or the owner's graduated
-        policy) — an agent surface answering in the owner's place decides nothing.
+        arrived on an owner channel (a Slack reply by the owner, or the owner's graduated
+        policy) — an answer from the CLI or the MCP tool decides nothing.
         """
         self._require_state(self.State.RATIFY_PENDING)
         question = self.ratify_question

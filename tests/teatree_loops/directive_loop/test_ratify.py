@@ -15,7 +15,6 @@ from teatree.core.models import DeferredQuestion, Directive, IncomingEvent
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.core.models.provenance import Provenance
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.loops.directive_loop.ratify import (
     RatificationVerdict,
     ask_ratification,
@@ -25,6 +24,7 @@ from teatree.loops.directive_loop.ratify import (
 )
 from teatree.mcp.server import build_server
 from tests._harness_env import HEADLESS_AGENT_ENV, harness_signature
+from tests._owner_channel import answer_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 #: The six ratifications the owner actually recorded against directives #38, #40, #41,
@@ -166,7 +166,7 @@ class TestTryAdmit(TestCase):
     def test_an_approval_admits(self) -> None:
         directive = _interpreted_directive()
         question = ask_ratification(directive)
-        question.apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(question, "approve")
         directive.refresh_from_db()
         assert try_admit(directive) == "admitted"
         assert directive.state == Directive.State.ADMITTED
@@ -174,7 +174,7 @@ class TestTryAdmit(TestCase):
     def test_a_denial_rejects_with_the_humans_words(self) -> None:
         directive = _interpreted_directive()
         question = ask_ratification(directive)
-        question.apply_answer("no, scope it to open PRs only", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(question, "no, scope it to open PRs only")
         directive.refresh_from_db()
         assert try_admit(directive) == "rejected"
         assert directive.state == Directive.State.REJECTED
@@ -192,7 +192,7 @@ class TestProseRatification(TestCase):
         for answer in (*LIVE_OWNER_APPROVALS, DESTROYED_OWNER_APPROVAL):
             directive = _interpreted_directive()
             question = ask_ratification(directive)
-            question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            answer_on_slack(question, answer)
             directive.refresh_from_db()
             assert try_admit(directive) == "admitted", answer[:60]
             assert directive.state == Directive.State.ADMITTED
@@ -201,7 +201,7 @@ class TestProseRatification(TestCase):
         for answer in ("no, this is the wrong mechanism", "Rejected — it duplicates the existing gate."):
             directive = _interpreted_directive()
             question = ask_ratification(directive)
-            question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            answer_on_slack(question, answer)
             directive.refresh_from_db()
             assert try_admit(directive) == "rejected", answer
             assert directive.state == Directive.State.REJECTED
@@ -211,7 +211,7 @@ class TestProseRatification(TestCase):
         for answer in ("no", "rejected", "denied"):
             directive = _interpreted_directive()
             question = ask_ratification(directive)
-            question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            answer_on_slack(question, answer)
             directive.refresh_from_db()
             assert try_admit(directive) == "rejected", answer
             assert directive.state == Directive.State.REJECTED, answer
@@ -224,7 +224,7 @@ class TestNegatedApprovalIsADeferralNotARefusal(TestCase):
         for answer in (*NEGATED_APPROVALS, CONTRADICTED_DENIAL):
             directive = _interpreted_directive()
             first = ask_ratification(directive)
-            first.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            answer_on_slack(first, answer)
             directive.refresh_from_db()
             assert try_admit(directive) == "reasked", answer
             directive.refresh_from_db()
@@ -240,9 +240,7 @@ class TestUndecidableAnswerDefers(TestCase):
     def test_unrecognisable_answer_never_rejects(self) -> None:
         directive = _interpreted_directive()
         question = ask_ratification(directive)
-        question.apply_answer(
-            "let's talk about this at standup tomorrow", resolved_via=DeferredQuestion.ResolvedVia.LOCAL
-        )
+        answer_on_slack(question, "let's talk about this at standup tomorrow")
         directive.refresh_from_db()
         assert try_admit(directive) != "rejected"
         directive.refresh_from_db()
@@ -251,7 +249,7 @@ class TestUndecidableAnswerDefers(TestCase):
     def test_the_undecidable_answer_is_re_asked_not_left_wedged(self) -> None:
         directive = _interpreted_directive()
         first = ask_ratification(directive)
-        first.apply_answer("let's talk about this at standup tomorrow", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(first, "let's talk about this at standup tomorrow")
         directive.refresh_from_db()
         assert try_admit(directive) == "reasked"
         directive.refresh_from_db()
@@ -262,8 +260,7 @@ class TestUndecidableAnswerDefers(TestCase):
 
 
 def _answer_over_mcp(question: DeferredQuestion, text: str) -> None:
-    with harness_signature({}):
-        async_to_sync(build_server().call_tool)("question_answer", {"question_id": question.pk, "text": text})
+    async_to_sync(build_server().call_tool)("question_answer", {"question_id": question.pk, "text": text})
 
 
 def _answer_from_a_headless_agent(question: DeferredQuestion, text: str) -> None:
@@ -271,36 +268,32 @@ def _answer_from_a_headless_agent(question: DeferredQuestion, text: str) -> None
         call_command("questions", "answer", question.pk, text)
 
 
-def _answer_from_the_owners_terminal(question: DeferredQuestion, text: str) -> None:
+def _answer_on_the_command_line(question: DeferredQuestion, text: str) -> None:
     with harness_signature({}):
         call_command("questions", "answer", question.pk, text)
-
-
-def _answer_on_slack(question: DeferredQuestion, text: str) -> None:
-    assert apply_bound_answer(BoundAnswer(question=question, answer=text))
 
 
 def _answer_by_policy(question: DeferredQuestion, text: str) -> None:
     assert auto_answer_by_policy(question, text) is not None
 
 
-_AGENT_SURFACES = (_answer_over_mcp, _answer_from_a_headless_agent)
-_OWNER_CHANNELS = (_answer_from_the_owners_terminal, _answer_on_slack, _answer_by_policy)
+_NON_OWNER_SURFACES = (_answer_over_mcp, _answer_from_a_headless_agent, _answer_on_the_command_line)
+_OWNER_CHANNELS = (answer_on_slack, _answer_by_policy)
 _DIRECTIVE_SOURCES = (_ambient_interpreted_directive, _interpreted_directive)
 
 
 class TestOnlyTheOwnerRatifies(TestCase):
-    """An answer from an agent surface decides nothing; the owner's channels still do."""
+    """Only a Slack reply by the owner or the owner's graduated policy decides a ratification."""
 
-    def test_an_agent_approval_is_re_asked_of_the_owner(self) -> None:
+    def test_a_non_owner_approval_is_re_asked(self) -> None:
         for make_directive in _DIRECTIVE_SOURCES:
-            for answer in _AGENT_SURFACES:
+            for answer in _NON_OWNER_SURFACES:
                 with self.subTest(source=make_directive.__name__, surface=answer.__name__):
                     directive = make_directive()
                     first = ask_ratification(directive)
                     answer(first, "approve")
                     first.refresh_from_db()
-                    assert first.resolved_via == DeferredQuestion.ResolvedVia.AGENT
+                    assert first.resolved_via not in DeferredQuestion.OWNER_CHANNELS
 
                     directive.refresh_from_db()
                     assert try_admit(directive) == "reasked"
@@ -311,11 +304,11 @@ class TestOnlyTheOwnerRatifies(TestCase):
                     assert reasked is not None
                     assert reasked.pk != first.pk
                     assert reasked.is_pending
-                    assert "agent surface" in reasked.question
-                    assert "t3 teatree questions answer" in reasked.question
+                    assert "owner channel" in reasked.question
+                    assert "questions answer" not in reasked.question
 
-    def test_an_agent_denial_does_not_reject(self) -> None:
-        for answer in _AGENT_SURFACES:
+    def test_a_non_owner_denial_does_not_reject(self) -> None:
+        for answer in _NON_OWNER_SURFACES:
             with self.subTest(surface=answer.__name__):
                 directive = _interpreted_directive()
                 answer(ask_ratification(directive), "reject")
@@ -334,12 +327,12 @@ class TestOnlyTheOwnerRatifies(TestCase):
                     assert try_admit(directive) == "admitted"
                     assert directive.state == Directive.State.ADMITTED
 
-    def test_the_owner_answers_the_re_ask_from_their_terminal(self) -> None:
+    def test_the_owner_answers_the_re_ask_on_slack(self) -> None:
         directive = _interpreted_directive()
-        _answer_over_mcp(ask_ratification(directive), "approve")
+        _answer_on_the_command_line(ask_ratification(directive), "approve")
         directive.refresh_from_db()
         assert try_admit(directive) == "reasked"
         directive.refresh_from_db()
-        _answer_from_the_owners_terminal(directive.ratify_question, "approve")
+        answer_on_slack(directive.ratify_question, "approve")
         directive.refresh_from_db()
         assert try_admit(directive) == "admitted"
