@@ -19,6 +19,7 @@ from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners import board_reconcile
 from teatree.loop.scanners.board_reconcile import BoardReconcileScanner
+from tests.teatree_loop._reopened_tickets import merged_ticket, reopened_ticket
 
 _URL = "https://github.com/souliane/teatree/pull/3816"
 
@@ -66,6 +67,16 @@ class TestBoardReconcileScanner(TestCase):
             scanner = BoardReconcileScanner(overlay_name="t3-teatree")
             assert len(scanner.scan()) == 1
             assert scanner.scan() == []
+
+    def test_a_reopened_ticket_is_not_reverted_by_the_hourly_scan(self) -> None:
+        reopened = reopened_ticket()
+        control = merged_ticket(state=Ticket.State.NOT_STARTED)
+
+        signals = BoardReconcileScanner().scan()
+
+        assert [s.payload["ticket_id"] for s in signals] == [control.pk]
+        reopened.refresh_from_db()
+        assert reopened.state == Ticket.State.WORK_STARTED
 
     def test_a_reconcile_failure_reaches_the_tick_error_surface(self) -> None:
         job = _ScannerJob(scanner=BoardReconcileScanner(overlay_name="t3-teatree"), overlay="")

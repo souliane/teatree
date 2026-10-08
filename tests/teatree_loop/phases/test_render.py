@@ -18,6 +18,7 @@ from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.tick import TickReport, TickRequest
 from tests.factories import MergeAuditFactory
+from tests.teatree_loop._reopened_tickets import merged_ticket, reopened_ticket
 
 _NOW = dt.datetime(2026, 6, 16, tzinfo=dt.UTC)
 
@@ -127,6 +128,17 @@ class TestRenderPhaseReconcilesMergedTickets(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
+
+    def test_a_reopened_ticket_is_not_dragged_back_to_merged(self) -> None:
+        reopened = reopened_ticket()
+        control = merged_ticket(state=Ticket.State.NOT_STARTED)
+        report = TickReport(started_at=_NOW, signals=[])
+
+        render_phase(report, TickRequest(), jobs=[], statusline_path=self.sl, colorize=False)
+
+        reopened.refresh_from_db()
+        control.refresh_from_db()
+        assert (reopened.state, control.state) == (Ticket.State.WORK_STARTED, Ticket.State.MERGED)
 
 
 def test_render_phase_idle_renders_statusline_without_jobs(tmp_path: Path) -> None:
