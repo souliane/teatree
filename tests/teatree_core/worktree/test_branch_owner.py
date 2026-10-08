@@ -57,6 +57,13 @@ class TestOwnsTheBranch(TestCase):
         assert ticket_owning_pr_branch(_BRANCH, slug=_SLUG) == ticket
         assert ticket_owning_pr_branch(_BRANCH, slug="souliane/private-skills") == ticket
 
+    def test_one_ticket_with_two_checkouts_of_the_branch_still_owns_it(self) -> None:
+        ticket = _ticket()
+        _row(ticket)
+        _row(ticket, repo_path="Souliane/Teatree")
+
+        assert ticket_owning_pr_branch(_BRANCH, slug=_SLUG) == ticket
+
     def test_a_per_branch_local_anchor_owns_exactly_its_own_branch(self) -> None:
         ticket = _ticket(f"auto:{_BRANCH}")
         _row(ticket)
