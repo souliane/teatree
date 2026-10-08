@@ -66,6 +66,7 @@ from teatree.agents.runner_route_recording import NO_ROUTE_FALLBACK as _NO_ROUTE
 from teatree.agents.runner_route_recording import RouteFailureRecord as _RouteFailureRecord
 from teatree.agents.runner_route_recording import RouteFallback as _RouteFallback
 from teatree.agents.runner_route_recording import dispatch_provider_name as _dispatch_provider_name
+from teatree.agents.runner_route_recording import fail_routed_crash as _fail_routed_crash
 from teatree.agents.runner_route_recording import fallback_reason_for_outcome as _fallback_reason_for_outcome
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
@@ -373,26 +374,28 @@ def _run_agent(
         # thread as a side effect of BUILDING the harness — restore it, since
         # a run that never opened never actually consumed it (#2916).
         _restore_unconsumed_resume_thread(harness)
-        retry = _retry_route_exception(
+        attempt = _retry_route_exception(
             exc,
             task=task,
             preflight=preflight,
             route_retry=route_retry,
             route_fallback=route_fallback,
         )
-        if retry is not None:
-            return retry
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: the harness never opened, so no turn was billed
+        if attempt is None:
+            logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+            attempt = _record_failure(task, error=str(exc))  # no-usage: the harness never opened, so no turn was billed
+        return attempt
     except Exception:
         # AH-3 / #2916: a NON-CredentialError ``open()`` (or drive) failure must not
         # irrecoverably destroy a resumed task's parked thread either. ``resolve_dispatch_harness``
         # popped it when BUILDING the harness, and an escaping exception yields no outcome,
         # so the retain below never runs. Restore it so the resumed conversation survives for
-        # a retry, then let the failure propagate: the caller (``tasks.py``) records the
-        # durable failed attempt with the full traceback exactly as before.
+        # a retry. An unrouted failure then propagates to the caller (``tasks.py``), which records
+        # the durable failed attempt with the full traceback; a routed one is recorded here.
         _restore_unconsumed_resume_thread(harness)
-        raise
+        if preflight.dispatch.route_candidate_index is None:
+            raise
+        return _fail_routed_crash(task, preflight.dispatch, preflight.skills)
 
     # Retained before any outcome write, since the requeue sweep can see the row from that write on.
     retain_run_thread(task, outcome.thread)

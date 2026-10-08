@@ -1,5 +1,6 @@
 """Failure-attempt recording and learned availability for ordered skill routes."""
 
+import traceback
 from dataclasses import dataclass, replace
 
 from django.utils import timezone
@@ -85,6 +86,14 @@ def record_route_failure_attempt(
         error=record.reason,
         **usage_fields(usage),
     )
+
+
+def fail_routed_crash(task: Task, dispatch: DispatchHarness, skills: list[str]) -> TaskAttempt:
+    """Record the exception being handled as one FAILED attempt on its route candidate, so the sweep can move on."""
+    error = traceback.format_exc()
+    attempt = record_route_failure_attempt(task, dispatch, RouteFailureRecord(error, skills))
+    task.fail_claimed(reason=error)
+    return attempt
 
 
 def learn_route_failure(task: Task, dispatch: DispatchHarness, reason: str, *, phase: str) -> None:

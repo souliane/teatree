@@ -24,6 +24,7 @@ from teatree.agents.model_tiering import (
     _resolve_spawn_model_selection,
     resolve_phase_harness,
 )
+from teatree.agents.sdk_tool_map import phase_bars_write_tools
 from teatree.agents.session_lineage import honesty_subject
 from teatree.agents.skill_routing import resolve_skill_route
 from teatree.config import AgentHarnessProvider, get_effective_settings
@@ -31,6 +32,7 @@ from teatree.config.agent_spawn import EFFORT_SCALE, AgentRouteCandidate, resolv
 from teatree.core.cost import tier_rank
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.overlay_loader import OverlayConfigResolver
+from teatree.core.route_progress import failed_candidates
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 
@@ -177,6 +179,45 @@ def _route_provider(
     return provider
 
 
+@dataclass(frozen=True, slots=True)
+class _EligibleCandidate:
+    selection: HarnessSelection
+    provider: AgentHarnessProvider | None
+
+
+def _managed_provider_name(spec: HarnessSpec, provider: AgentHarnessProvider | None) -> str:
+    if provider is not None:
+        return provider.value
+    return MANAGED_CHATGPT_PROVIDER if spec.capabilities.managed_lane else ""
+
+
+def _static_rejection(candidate: AgentRouteCandidate, floor_rank: int) -> str | None:
+    if reason := _route_effort_unavailable_reason(candidate.effort, candidate.harness):
+        return reason
+    if tier_rank(candidate.tier or candidate.model) < floor_rank:
+        return "model is below a loaded skill's scalar floor"
+    return None
+
+
+def _eligible_candidate(
+    context: HarnessBuildContext, candidate: AgentRouteCandidate
+) -> _EligibleCandidate | tuple[HarnessRejection, ...]:
+    spec, registration_rejections = _registered_route_spec(context, candidate)
+    if spec is None:
+        return registration_rejections
+    try:
+        provider = _route_provider(context, candidate, spec)
+    except (CredentialError, ValueError) as exc:
+        return (HarnessRejection(candidate.harness, str(exc)),)
+    if window_reason := _active_window_reason(spec.capabilities, provider):
+        return (HarnessRejection(candidate.harness, window_reason),)
+    candidate_context = replace(context, model=candidate.model, provider=_managed_provider_name(spec, provider))
+    try:
+        return _EligibleCandidate(select_harness([candidate.harness], candidate_context), provider)
+    except NoAvailableHarnessError as exc:
+        return exc.rejected
+
+
 def _skill_route_selection(
     context: HarnessBuildContext,
     *,
@@ -184,57 +225,41 @@ def _skill_route_selection(
     phase_candidates: list[str],
 ) -> SkillRouteSelection | None:
     config = resolve_agent_config(context.overlay)
+    primary_skill = SkillLoadingPolicy.lifecycle_for_phase(context.phase or "")
     route = resolve_skill_route(
-        config.skill_models,
-        skills,
-        phase_candidates=phase_candidates,
-        primary_skill=SkillLoadingPolicy.lifecycle_for_phase(context.phase or ""),
+        config.skill_models, skills, phase_candidates=phase_candidates, primary_skill=primary_skill
     )
     if route is None:
         return None
     source_skill, candidates = route
+    if context.phase and source_skill != primary_skill and phase_bars_write_tools(context.phase):
+        return None
+    failed = failed_candidates(context.task, source_skill) if context.task is not None else {}
     scalar_floors = [floor for skill in skills if isinstance((floor := config.skill_models.get(skill)), str)]
     floor_rank = max((tier_rank(floor) for floor in scalar_floors), default=-1)
     rejected: list[HarnessRejection] = []
+    retry: SkillRouteSelection | None = None
     for index, candidate in enumerate(candidates):
-        if reason := _route_effort_unavailable_reason(candidate.effort, candidate.harness):
+        if reason := _static_rejection(candidate, floor_rank):
             rejected.append(HarnessRejection(candidate.harness, reason))
             continue
-        if tier_rank(candidate.tier or candidate.model) < floor_rank:
-            rejected.append(HarnessRejection(candidate.harness, "model is below a loaded skill's scalar floor"))
+        eligible = _eligible_candidate(context, candidate)
+        if not isinstance(eligible, _EligibleCandidate):
+            rejected.extend(eligible)
             continue
-        spec, registration_rejections = _registered_route_spec(context, candidate)
-        if spec is None:
-            rejected.extend(registration_rejections)
-            continue
-        try:
-            provider = _route_provider(context, candidate, spec)
-        except (CredentialError, ValueError) as exc:
-            rejected.append(HarnessRejection(candidate.harness, str(exc)))
-            continue
-        if window_reason := _active_window_reason(spec.capabilities, provider):
-            rejected.append(HarnessRejection(candidate.harness, window_reason))
-            continue
-        provider_name = (
-            provider.value
-            if provider is not None
-            else MANAGED_CHATGPT_PROVIDER
-            if spec.capabilities.managed_lane
-            else ""
-        )
-        candidate_context = replace(context, model=candidate.model, provider=provider_name)
-        try:
-            selection = select_harness([candidate.harness], candidate_context)
-        except NoAvailableHarnessError as exc:
-            rejected.extend(exc.rejected)
-            continue
-        return SkillRouteSelection(
+        passing = SkillRouteSelection(
             source_skill,
             index,
             candidate,
-            HarnessSelection(selection.spec, tuple(rejected)),
-            provider,
+            HarnessSelection(eligible.selection.spec, tuple(rejected)),
+            eligible.provider,
         )
+        if index not in failed:
+            return passing
+        retry = passing
+        rejected.append(HarnessRejection(candidate.harness, f"attempt {failed[index]} failed on this candidate"))
+    if retry is not None:
+        return retry
     raise NoAvailableHarnessError(tuple(rejected))
 
 
@@ -264,13 +289,7 @@ def resolve_dispatch_harness(
             context,
             model=route.candidate.model,
             tier=route.candidate.tier,
-            provider=(
-                provider.value
-                if provider is not None
-                else MANAGED_CHATGPT_PROVIDER
-                if spec.capabilities.managed_lane
-                else ""
-            ),
+            provider=_managed_provider_name(spec, provider),
         )
         return DispatchHarness(
             harness=spec.factory(candidate_context),

@@ -29,6 +29,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from teatree.agents.model_tiering import resolve_phase_harness
+from teatree.agents.sdk_tool_map import phase_bars_write_tools
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -206,6 +209,7 @@ class InvalidHarnessProviderError(ValueError):
     """
 
 
+_CLAUDE_SDK = "claude_sdk"
 _REGISTRY: dict[str, HarnessSpec] = {}
 _ENTRY_POINTS_LOADED = False
 
@@ -235,8 +239,25 @@ def resolve_harness_spec(name: str) -> HarnessSpec:
         raise UnknownHarnessError(msg) from exc
 
 
+def _barred_reason(spec: HarnessSpec, context: HarnessBuildContext) -> str | None:
+    if spec.name == _CLAUDE_SDK:
+        return None
+    if context.task is not None and (context.task.ticket.extra or {}).get("claude_only"):
+        return "ticket is claude_only"
+    if not context.phase:
+        return None
+    if (pinned := resolve_phase_harness(spec.name, context.phase)) != spec.name:
+        return f"phase {context.phase!r} is pinned to harness {pinned!r}"
+    if spec.capabilities.managed_lane and phase_bars_write_tools(context.phase):
+        return f"phase {context.phase!r} bars write tools, which a managed-lane harness cannot enforce"
+    return None
+
+
 def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) -> HarnessSelection:
     """The first registered, available candidate, with every rejection before it in order.
+
+    A candidate other than claude_sdk is also rejected for a ``claude_only`` ticket, for a phase
+    pinned to another harness, and — when it rides the managed lane — for a phase barring write tools.
 
     Raises :class:`NoAvailableHarnessError` naming each rejection when none qualifies.
     """
@@ -246,6 +267,9 @@ def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) ->
         spec = _REGISTRY.get(name)
         if spec is None:
             rejected.append(HarnessRejection(name, "not registered"))
+            continue
+        if barred := _barred_reason(spec, context):
+            rejected.append(HarnessRejection(name, barred))
             continue
         if context.model:
             from teatree.agents.skill_routing import cached_unavailable_reason  # noqa: PLC0415 — avoids registry cycle
