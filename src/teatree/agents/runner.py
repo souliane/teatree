@@ -522,7 +522,7 @@ def _resolve_child_env_or_failure(
 ) -> DispatchCredential | TaskAttempt:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
-        return DispatchCredential()
+        return DispatchCredential(env=_capped_forge_env(task, None) if harness.capabilities.managed_lane else None)
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:
@@ -547,8 +547,12 @@ def _resolve_child_env_or_failure(
             raise HarnessFallbackError(str(exc), kind=kind) from exc
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
-    capped = with_test_worker_cap(resolved.env, active_agents=_active_agent_count())
-    return replace(resolved, env=with_routed_github_token(capped, overlay=_overlay_scope(task)))
+    return replace(resolved, env=_capped_forge_env(task, resolved.env))
+
+
+def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str] | None:
+    capped = with_test_worker_cap(env, active_agents=_active_agent_count())
+    return with_routed_github_token(capped, overlay=_overlay_scope(task))
 
 
 def _active_agent_count() -> int:

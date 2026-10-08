@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -478,10 +477,6 @@ def test_codex_process_env_is_private_and_drops_ambient_credentials(tmp_path: Pa
         "T3_CONTROL_DB_DIR": "/control",
         "T3_REPO": "/src/teatree",
         "GIT_CONFIG_GLOBAL": str(home / ".gitconfig"),
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "credential.helper",
-        "GIT_CONFIG_VALUE_0": "",
         "CODEX_HOME": str(home),
         "HOME": str(home),
     }

@@ -448,7 +448,7 @@ class CodexAppServerHarness:
 
             session = SharedCodexSession(
                 translated,
-                manager=shared_codex_app_server(self.code_home),
+                manager=shared_codex_app_server(self.code_home, translated.core.env),
                 resume=options.resume,
             )
             try:
