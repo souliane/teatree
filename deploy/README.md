@@ -436,7 +436,7 @@ if a deploy is in flight, waits up to `TEATREE_UPDATE_WAIT_SECONDS` (default 180
 every translatable root, an unreachable Docker daemon, a stack never built here and a
 wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
 for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
-skips with a warning on 69, 75 and 127 and fails the push on anything else.
+skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
 
 ### Worker sizing: derived from the host
 

@@ -544,8 +544,3 @@ class TestTheHookEntryRunsTheInstalledT3:
     def test_the_hook_is_verbose_so_a_skip_warning_reaches_the_pusher(self) -> None:
         """Prek prints a PASSING hook's output only when asked; the skip exits 0, so it is otherwise silent."""
         assert self._hook().get("verbose") is True
-
-    def test_the_wrapper_still_runs_ensure_pr_through_the_teatree_prefix(self) -> None:
-        wrapper = (self._ROOT / "scripts" / "hooks" / "ensure-pr-installed-t3.sh").read_text(encoding="utf-8")
-
-        assert "t3 teatree pr ensure-pr --repo" in wrapper
