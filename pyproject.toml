@@ -745,6 +745,8 @@ managed = true
 package = true
 # A new release is locked only once it is seven days old; dated escapes and their routine: BLUEPRINT §15.
 exclude-newer = "7 days"
+# pydantic-ai-slim 2.53.0 fixes GHSA-6fqq-452j-qhrp (published 2026-10-08) and pins pydantic-graph 2.53.0.
+exclude-newer-package = { pydantic-ai-slim = "2026-10-02T03:18:10Z", pydantic-graph = "2026-10-02T03:18:13Z" }
 
 # Floor a transitive dependency above a published advisory without promoting it
 # to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions
