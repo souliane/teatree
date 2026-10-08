@@ -85,7 +85,7 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
                 name=f"{wt.repo}-routing",
                 description="Django runserver is up and routing — webhook view rejects GET with 405",
                 spec=HTTPProbeSpec(
-                    url=f"http://127.0.0.1:{port}/hooks/slack/",
+                    url=f"http://127.0.0.1:{port}/hooks/github/",
                     expected_status=405,
                     retries=6,
                     timeout_seconds=2.0,

@@ -1,6 +1,7 @@
 """Tests for the per-source webhook token-bucket rate limiter (#673 item 3)."""
 
-import json
+import hashlib
+import hmac
 
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
@@ -67,51 +68,33 @@ class TestWebhookRateLimiter:
             assert limiter.allow(source) is True
 
 
-SIGNING_SECRET = "test-signing-secret"
+SECRET = "test-github-secret"
 
 
-def _slack_post(client: Client, body: bytes):
-    import hashlib  # noqa: PLC0415
-    import hmac  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
-    ts = str(int(time.time()))
-    sig = "v0=" + hmac.new(SIGNING_SECRET.encode(), b"v0:" + ts.encode() + b":" + body, hashlib.sha256).hexdigest()
+def _github_status(client: Client, delivery: str) -> int:
+    body = b"{}"
+    signature = "sha256=" + hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
     return client.post(
-        reverse("teatree:slack_webhook"),
+        reverse("teatree:github_webhook"),
         data=body,
         content_type="application/json",
-        HTTP_X_SLACK_REQUEST_TIMESTAMP=ts,
-        HTTP_X_SLACK_SIGNATURE=sig,
-    )
+        HTTP_X_GITHUB_DELIVERY=delivery,
+        HTTP_X_HUB_SIGNATURE_256=signature,
+    ).status_code
 
 
 @override_settings(
-    TEATREE_SLACK_SIGNING_SECRET=SIGNING_SECRET,
+    TEATREE_GITHUB_WEBHOOK_SECRET=SECRET,
     TEATREE_WEBHOOK_RATE_CAPACITY=2,
     TEATREE_WEBHOOK_RATE_REFILL_PER_SECOND=0.0,
 )
-class TestSlackWebhookRateLimited(TestCase):
+class TestGitHubWebhookRateLimited(TestCase):
     # The limiter is reset between tests by the autouse
     # _reset_webhook_rate_limiter fixture in tests/conftest.py.
 
     def test_storm_is_throttled_with_429(self) -> None:
-        statuses = []
-        for i in range(4):
-            payload = json.dumps(
-                {"type": "event_callback", "event_id": f"Ev{i}", "event": {"type": "message"}}
-            ).encode()
-            statuses.append(_slack_post(self.client, payload).status_code)
+        statuses = [_github_status(self.client, f"delivery-{i}") for i in range(4)]
 
         assert statuses == [200, 200, 429, 429]
         # only the two accepted events were persisted — the storm did not fill the DB
         assert IncomingEvent.objects.count() == 2
-
-    def test_url_verification_challenge_not_rate_limited(self) -> None:
-        for _ in range(5):
-            resp = _slack_post(
-                self.client,
-                json.dumps({"type": "url_verification", "challenge": "abc"}).encode(),
-            )
-            assert resp.status_code == 200
-            assert resp.json() == {"challenge": "abc"}
