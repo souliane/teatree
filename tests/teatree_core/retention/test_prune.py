@@ -9,8 +9,8 @@ been quiet past the window. Each guard test names the mutation that turns it red
 import datetime as dt
 from unittest import mock
 
-from django.db.models import Min, QuerySet
-from django.test import TestCase, override_settings
+from django.db.models import CASCADE, Min, QuerySet
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from teatree.config.settings import UserSettings
@@ -22,6 +22,7 @@ from teatree.core.models import (
     DeliveryClaim,
     IncomingEvent,
     IntentClassification,
+    ReplyDispatch,
     ScannedBroadcast,
     Session,
     Task,
@@ -31,7 +32,13 @@ from teatree.core.models import (
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.retention import prune
-from teatree.core.retention.prune import RetentionPlan, TableRetention, apply_retention, plan_retention
+from teatree.core.retention.prune import (
+    EVENT_CASCADE_CHILDREN,
+    RetentionPlan,
+    TableRetention,
+    apply_retention,
+    plan_retention,
+)
 from teatree.core.retention.ticket_history import quiescent_tickets, synthetic_loop_umbrella_q
 from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL, is_synthetic_loop_umbrella_url
 
@@ -251,12 +258,38 @@ class ApplyRetentionTestCase(TestCase):
     def test_an_event_with_cascade_children_counts_the_same_in_plan_and_apply(self) -> None:
         event = _event(idempotency_key="k-classified")
         IntentClassification.objects.create(event=event, intent=IntentClassification.Intent.NOISE, confidence=0.5)
+        ReplyDispatch.objects.create(event=event, target_ref="C1", action_name="reply", idempotency_key="rd-1")
 
         planned = _lane(plan_retention(), "IncomingEvent")
         applied = _lane(apply_retention(), "IncomingEvent")
 
-        assert (applied.rows, applied.cascaded) == (planned.rows, planned.cascaded) == (1, 1)
+        assert (applied.rows, applied.cascaded) == (planned.rows, planned.cascaded) == (1, 2)
         assert not IntentClassification.objects.exists()
+        assert not ReplyDispatch.objects.exists()
+
+    def test_the_counted_event_children_are_every_cascade_child_of_the_model(self) -> None:
+        cascading = {rel.related_model for rel in IncomingEvent._meta.related_objects if rel.on_delete is CASCADE}
+        assert cascading == set(EVENT_CASCADE_CHILDREN)
+
+
+class RetentionPlanCountsTestCase(SimpleTestCase):
+    def test_counts_reports_each_lane_and_the_pass_totals(self) -> None:
+        plan = RetentionPlan(
+            _NOW,
+            (
+                TableRetention("Task (failed)", 56, 3, cascaded=2, max_batch_ms=40),
+                TableRetention("BotPing (payload)", 30, 0, compacted=5, max_batch_ms=90),
+            ),
+            applied=True,
+            budget_exhausted=True,
+        )
+        assert plan.counts() == {
+            "Task (failed)": 3,
+            "BotPing (payload)": 5,
+            "cascaded": 2,
+            "max_batch_ms": 90,
+            "budget_exhausted": 1,
+        }
 
 
 class TaskHistoryLaneTestCase(TestCase):

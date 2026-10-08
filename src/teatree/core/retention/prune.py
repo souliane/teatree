@@ -61,6 +61,9 @@ TASK_RESULT_TABLE = "DBTaskResult"
 
 _NO_RESULT_TABLE = "the default task backend does not store results in the DB"
 
+#: The models deleting an ``IncomingEvent`` cascades into; a test pins this to the model registry.
+EVENT_CASCADE_CHILDREN: tuple[type[models.Model], ...] = (IntentClassification, ReplyDispatch)
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TableRetention:
@@ -141,8 +144,7 @@ def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:
 
 
 def _event_children(events: models.QuerySet, _moment: dt.datetime) -> int:
-    classified = IntentClassification.objects.filter(event__in=events).count()
-    return classified + ReplyDispatch.objects.filter(event__in=events).count()
+    return sum(child.objects.filter(event__in=events).count() for child in EVENT_CASCADE_CHILDREN)
 
 
 def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:

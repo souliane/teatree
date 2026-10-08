@@ -124,12 +124,12 @@ def _check_cost_per_delivered_ticket(now: dt.datetime | None = None) -> Reconcil
     :data:`MAX_USD_PER_DELIVERED_TICKET`. Spend with zero deliveries is itself an
     alarm (every dollar reached no delivery).
 
-    Deliberately unwindowed, and not a ratchet: this is a running average whose
-    denominator grows with the numerator, so every delivery cheaper than the current
-    average drags it back down — normal operation clears the alarm. Windowing would
-    make it worse, not better. ``Ticket`` carries no timestamp, so only the numerator
-    could be windowed, and windowed spend over lifetime deliveries trends to zero —
-    a check that can never fire.
+    Unwindowed, and not a ratchet: a running average whose denominator grows with the
+    numerator, so every delivery cheaper than the current average drags it back down —
+    normal operation clears the alarm. The spend is not lifetime in practice: the hourly
+    retention pass deletes the attempts of tickets quiet past the task-history window,
+    while every delivered ticket stays in the denominator, so the figure drifts down as
+    old spend is pruned and mostly weighs recent spend against all deliveries.
     """
     del now  # a self-correcting running average, not a windowed aggregate; taken for uniform dispatch
     check_id = "cost_per_delivered_ticket"
@@ -432,7 +432,7 @@ def _check_review_dispatch_saturation(now: dt.datetime | None = None) -> Reconci
 
 
 def _high_churn_counts() -> dict[str, tuple[int, int]]:
-    """``{table: (rows, ceiling)}`` for every table retention has a lane over."""
+    """``{table: (rows, ceiling)}`` for the four high-churn tables the retention pass deletes rows from."""
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: heavy/optional dep at call site
 
     from teatree.core.models import IncomingEvent, TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
@@ -449,10 +449,12 @@ def _high_churn_counts() -> dict[str, tuple[int, int]]:
 def _check_high_churn_table_size(now: dt.datetime | None = None) -> ReconciliationFinding:
     """ALARM when a high-churn table's row count exceeds its ceiling (#3693, #3871).
 
-    Covers the tables the retention pass deletes from. That pass runs hourly in
-    bounded batches, so a table over its ceiling holds either a backlog the pass has
-    not caught up with or rows no lane may delete yet (a live or recently active
-    ticket). Advisory — surfaces DB growth before it bites.
+    Counts ``TaskAttempt``, ``IncomingEvent``, ``TicketTransition`` and ``DBTaskResult``,
+    each of which the retention pass deletes from. ``Task`` rows are deleted too but have
+    no ceiling here, and ``BotPing`` rows are only compacted, never deleted, so neither is
+    counted. The pass runs hourly in bounded batches, so a table over its ceiling holds
+    either a backlog the pass has not caught up with or rows no lane may delete yet (a
+    live or recently active ticket). Advisory — surfaces DB growth before it bites.
     """
     del now  # a current-state row count, not a time window; taken for uniform dispatch
     check_id = "high_churn_table_size"
@@ -467,8 +469,8 @@ def _check_high_churn_table_size(now: dt.datetime | None = None) -> Reconciliati
         return _ok(check_id, " / ".join(f"{rows} {table}" for table, (rows, _) in counts.items()))
     return _alarm(
         check_id,
-        f"High-churn table size alarm: {', '.join(over)}. The control DB is growing faster than the hourly "
-        f"retention pass removes rows — preview what its lanes may delete with `t3 <overlay> retention prune`, "
+        f"High-churn table size alarm: {', '.join(over)}. These rows accumulate faster than the hourly "
+        f"retention pass removes them — preview what the lanes may delete with `t3 <overlay> retention prune`, "
         f"then drain them at once with `t3 <overlay> retention prune --apply`.",
     )
 

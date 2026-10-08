@@ -111,7 +111,6 @@ class RetentionReport(TypedDict):
     applied: bool
     total_rows: int
     total_compacted: int
-    budget_exhausted: bool
     tables: list[_TableRow]
     vacuum: _VacuumRow
 
@@ -195,7 +194,6 @@ class Command(TyperCommand):
             "applied": plan.applied,
             "total_rows": plan.total_rows,
             "total_compacted": plan.total_compacted,
-            "budget_exhausted": plan.budget_exhausted,
             "tables": [
                 {
                     "table": table.table,
@@ -502,6 +500,4 @@ def _render(payload: RetentionReport, stream: IO[str], *, applied: bool) -> None
     )
     if not applied:
         title += " (dry run — pass --apply to delete)"
-    if payload["budget_exhausted"]:
-        title += " (stopped at the batch budget; the next pass continues)"
     print_table(["Table", verb], rows, title=title, stream=stream, justify=["left", "left"])

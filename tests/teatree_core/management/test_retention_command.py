@@ -29,8 +29,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.cleanup import artifact_eviction, artifact_removal, process_table
-from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
-from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.core.management.commands.retention import Command, RetentionReport
+from teatree.core.models import BotPing, IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.core.retention import prune
 from teatree.core.retention.prune import SCHEDULED_MAX_BATCHES
 from teatree.utils.django_db.vacuum import VacuumOutcome
@@ -90,15 +90,22 @@ class RetentionCommandStructureTestCase(TestCase):
         assert callable(Command.prune)
 
     def test_report_payload_keys(self) -> None:
-        report: RetentionReport = {
-            "applied": False,
-            "total_rows": 0,
-            "total_compacted": 0,
-            "budget_exhausted": False,
-            "tables": [],
-            "vacuum": _vacuum_row(VacuumOutcome(ran=False, reason="dry run")),
-        }
-        assert set(report) == {"applied", "total_rows", "total_compacted", "budget_exhausted", "tables", "vacuum"}
+        payload, _ = _prune_json(_RECLAIMED)
+        expected = {"applied", "total_rows", "total_compacted", "tables", "vacuum"}
+        assert set(payload) == set(RetentionReport.__required_keys__) == expected
+
+    def test_json_reports_compacted_payloads_apart_from_deleted_rows(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="old-ping",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT,
+            text="the whole notification",
+            posted_at=_OLD,
+        )
+        payload, _ = _prune_json(_RECLAIMED)
+        ping = next(row for row in payload["tables"] if row["table"] == "BotPing (payload)")
+        assert (payload["total_rows"], payload["total_compacted"]) == (0, 1)
+        assert (ping["rows"], ping["compacted"]) == (0, 1)
 
 
 class RetentionPruneCommandTestCase(TestCase):
@@ -134,7 +141,6 @@ class RetentionPruneCommandTestCase(TestCase):
         call_command("retention", "prune", "--json", stdout=out)
         payload = json.loads(out.getvalue())
         assert payload["applied"] is False
-        assert payload["budget_exhausted"] is False
         assert payload["total_rows"] == 1
         assert [row["table"] for row in payload["tables"]] == [
             "TaskAttempt (park)",
@@ -163,7 +169,7 @@ class RetentionPruneCommandTestCase(TestCase):
         with patch.object(prune, "BATCH_SIZE", 1):
             payload, _ = _prune_json(_RECLAIMED, "--apply")
         assert IncomingEvent.objects.count() == 0
-        assert payload["budget_exhausted"] is False
+        assert payload["applied"] is True
 
 
 class RetentionPruneVacuumTestCase(TestCase):
