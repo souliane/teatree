@@ -19,7 +19,8 @@ The `PullRequest` ledger row, the `PendingPullRequest` obligation and the ticket
 
 `scripts/hooks/ensure-pr-installed-t3.sh` runs `t3 teatree pr ensure-pr --repo <toplevel>` with every `PATH` entry under the checkout removed, so the `t3` it finds is the installed one (`deploy/t3` dispatches it into the worker). It acts only when `PRE_COMMIT_REMOTE_BRANCH` is `refs/heads/*`. The prek manual stage and `t3 tool verify-gates` leave that variable unset, and tag and claim pushes name other refs, so none of them writes an obligation.
 
-- The wrapper exits 0 with a warning that prints `t3 <overlay> pr ensure-pr --repo <abs> --branch <branch>` when `t3` exits `69`, `75` or `127`: `deploy/t3` returns `69` when this venue cannot run `t3` (checkout outside every translatable root, Docker unreachable, stack never built, secret store wedged), `75` for a stack mid-update, and a shell returns `127` for no installed `t3`. The push goes through and no PR opens until that command runs. The hook is `verbose: true` because prek hides a passing hook's output otherwise. Any other exit code fails the push.
+- The wrapper exits 0 with a warning that prints `t3 <overlay> pr ensure-pr --repo <abs> --branch <branch>` when `t3` exits `69`, `75`, `126`, `127` or `137`: `deploy/t3` returns `69` when this venue cannot run `t3` (checkout outside every translatable root, Docker unreachable, stack never built, secret store wedged) and `75` for a stack mid-update; a shell returns `126` for a `t3` that is not executable and `127` for no installed `t3`; `137` is a `t3` that was killed or ran out of memory. A broken deployed image therefore never blocks the push of its own fix: fix the image or stack, then run the printed command, which is the only thing that opens the PR. The hook is `verbose: true` because prek hides a passing hook's output otherwise. Any other exit code fails the push, and `SKIP=ensure-pr` skips the hook for that one push.
+- A ship push (`mcp__teatree__pr_create`, `t3 <overlay> pr create`, the loop's ship) sets `TEATREE_SHIP_PUSH` (`teatree.core.forge_push.SHIP_PUSH_ENV`, passed as `push_branch(ship_opens_pr=True)`), and the wrapper then exits 0 without calling `t3`. The ship opens the PR itself right after the push, and `pr create --sync` holds the control DB write lock (`BEGIN IMMEDIATE`) across that push, so the hook's own obligation write would wait on the lock for about 150 s (`retry_on_locked`, 5 x 30 s) and fail the push. A PR-open that fails after the push is the ship's own failure result, and the ship's retry opens it; no obligation row covers that branch.
 - `ensure-pr` on an isolated DB, which only a checkout's own `uv run` reaches, returns an `error` naming the installed `t3` and writes nothing. `ensure-pr` is in `soft_refusal_commands`, so the error still exits 0 and never blocks the push.
 
 Not covered:
@@ -29,6 +30,8 @@ Not covered:
 - `t3 fast-push` opens its PRs through its own upsert and records no ledger row.
 - prek uses only the first ref of a multi-ref push, so a push that lists a tag first skips the branch.
 - A branch whose `.pre-commit-config.yaml` still carries the `uv run` entry keeps the isolated-DB behaviour until it merges `main`.
+- A push that is not a ship push still waits on the control DB write lock when another process holds it: the obligation write retries for about 150 s, then the push fails. `SKIP=ensure-pr` skips the hook for that push, and `t3 <overlay> pr ensure-pr --repo <abs> --branch <branch>` opens the PR afterwards.
+- The `t3` call has no deadline. `deploy/t3` waits up to `TEATREE_UPDATE_WAIT_SECONDS` (180 s) for a stack mid-update before it exits `75`, and a wedged `docker compose exec` holds the push. The wrapper sets none because macOS has no `timeout`.
 
 ## Prevent
 

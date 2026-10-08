@@ -11,10 +11,16 @@ calls whatever ``t3`` is installed, and only for a branch push: prek leaves
 import os
 import shlex
 import shutil
+import sqlite3
 import subprocess
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from teatree.core.forge_push import SHIP_PUSH_ENV, push_branch
+from tests._git_repo import make_git_repo, run_git
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WRAPPER = _ROOT / "scripts" / "hooks" / "ensure-pr-installed-t3.sh"
@@ -36,14 +42,21 @@ def _fake_t3(directory: Path, *, exit_code: int = 0) -> Path:
 def checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout"
     root.mkdir()
-    subprocess.run([_GIT, "init", "-q", str(root)], check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(root)], check=True)
     return root.resolve()
 
 
 def _push_hook(
-    checkout: Path, installed: Path, *, remote_ref: str | None, extra_path: tuple[Path, ...] = ()
+    checkout: Path,
+    installed: Path,
+    *,
+    remote_ref: str | None,
+    extra_path: tuple[Path, ...] = (),
+    ship_push: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("PRE_COMMIT")}
+    if ship_push:
+        env[SHIP_PUSH_ENV] = "1"
     env["PATH"] = os.pathsep.join([*map(str, extra_path), str(installed), env["PATH"]])
     if remote_ref is not None:
         env["PRE_COMMIT_REMOTE_BRANCH"] = remote_ref
@@ -82,7 +95,7 @@ def test_path_ignores_a_t3_inside_the_checkout_even_when_it_leads(checkout: Path
     assert not venv_calls.exists()
 
 
-@pytest.mark.parametrize("venue_exit", [69, 75, 127])
+@pytest.mark.parametrize("venue_exit", [69, 75, 126, 127, 137])
 def test_exit_of_an_unavailable_venue_warns_and_lets_the_push_through(
     checkout: Path, tmp_path: Path, venue_exit: int
 ) -> None:
@@ -114,3 +127,65 @@ def test_no_installed_t3_exits_127_skip_with_the_warning(checkout: Path, tmp_pat
 
     assert proc.returncode == 0
     assert "pr ensure-pr --repo" in proc.stderr
+
+
+def test_a_ship_push_runs_nothing_because_the_ship_opens_the_pr_itself(checkout: Path, tmp_path: Path) -> None:
+    calls = _fake_t3(tmp_path / "installed", exit_code=1)
+
+    proc = _push_hook(checkout, tmp_path / "installed", remote_ref="refs/heads/feat-x", ship_push=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert not calls.exists()
+
+
+@pytest.fixture
+def held_db_write_lock(tmp_path: Path) -> Iterator[Path]:
+    """The canonical control DB while ``pr create --sync`` holds ``BEGIN IMMEDIATE`` across its own push."""
+    db = tmp_path / "control.sqlite3"
+    holder = sqlite3.connect(db, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    yield db
+    holder.close()
+
+
+def _t3_that_owes_a_pr_in(db: Path, directory: Path) -> None:
+    """A ``t3`` whose obligation write needs the DB write lock, as ``ensure-pr`` does at ``_owe_pr``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    write = "import sqlite3,sys; sqlite3.connect(sys.argv[1], timeout=0.2).execute('BEGIN IMMEDIATE')"
+    argv = shlex.join([sys.executable, "-c", write, str(db)])
+    script = directory / "t3"
+    script.write_text(f"#!/bin/sh\nexec {argv}\n")
+    script.chmod(0o755)
+
+
+@pytest.fixture
+def clone_pushing_through_the_hook(tmp_path: Path, held_db_write_lock: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    remote = make_git_repo(tmp_path / "origin.git", bare=True)
+    clone = make_git_repo(tmp_path / "clone")
+    run_git(clone, "remote", "add", "origin", str(remote))
+    run_git(clone, "checkout", "-q", "-b", "feat-x")
+    run_git(clone, "commit", "-q", "--allow-empty", "-m", "work")
+    hook = clone / ".git" / "hooks" / "pre-push"
+    wrapper = shlex.join([_BASH, str(_WRAPPER)])
+    hook.write_text(f"#!/bin/sh\nPRE_COMMIT_REMOTE_BRANCH=refs/heads/feat-x exec {wrapper}\n")
+    hook.chmod(0o755)
+    _t3_that_owes_a_pr_in(held_db_write_lock, tmp_path / "installed")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "installed"), os.environ["PATH"]]))
+    return clone
+
+
+def test_a_ship_push_goes_through_while_it_holds_the_control_db_write_lock(
+    clone_pushing_through_the_hook: Path,
+) -> None:
+    outcome = push_branch(repo=clone_pushing_through_the_hook, ship_opens_pr=True)
+
+    assert outcome.ok, outcome.detail
+
+
+def test_any_other_push_still_fails_on_a_held_lock_so_the_ship_case_is_not_vacuous(
+    clone_pushing_through_the_hook: Path,
+) -> None:
+    outcome = push_branch(repo=clone_pushing_through_the_hook)
+
+    assert not outcome.ok
+    assert "database is locked" in outcome.detail

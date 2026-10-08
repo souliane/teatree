@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Runs the INSTALLED t3, never the checkout's own: its editable install resolves a per-worktree isolated control DB,
-# so the ledger row and PendingPullRequest it wrote were invisible to the merge gates. Only a real branch push writes.
+# so its rows were invisible to the merge gates. Only a branch push writes; a ship push opens its own PR, so it skips.
 set -euo pipefail
 
 case "${PRE_COMMIT_REMOTE_BRANCH:-}" in refs/heads/*) ;; *) exit 0 ;; esac
+[ -z "${TEATREE_SHIP_PUSH:-}" ] || exit 0
 
 top="$(git rev-parse --show-toplevel)"
 kept=""
@@ -15,8 +16,8 @@ export PATH="$kept"
 
 rc=0
 t3 teatree pr ensure-pr --repo "$top" || rc=$?
-case "$rc" in 69 | 75 | 127)
-  echo "ensure-pr skipped: the installed t3 cannot run here (exit $rc). Open the PR with: t3 <overlay> pr ensure-pr --repo $top --branch ${PRE_COMMIT_REMOTE_BRANCH#refs/heads/}" >&2
+case "$rc" in 69 | 75 | 126 | 127 | 137)
+  echo "ensure-pr skipped: the installed t3 cannot run here (exit $rc). Once it runs, open the PR with: t3 <overlay> pr ensure-pr --repo $top --branch ${PRE_COMMIT_REMOTE_BRANCH#refs/heads/}" >&2
   exit 0
   ;;
 esac
