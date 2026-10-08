@@ -57,6 +57,7 @@ class TestReferenceCarriesTheMechanism:
         text = _REFERENCE.read_text(encoding="utf-8")
         for symbol in (
             "teatree.core.management.commands._ensure_pr._ticket_for_branch",
+            "teatree.core.worktree.branch_owner.ticket_owning_pr_branch",
             "teatree.core.merge.ticket_resolution.resolve_gated_ticket",
             "teatree.core.management.commands._ensure_pr.skip_for_classified",
         ):
@@ -69,6 +70,13 @@ class TestReferenceCarriesTheMechanism:
             must_include="skip_for_classified",
             radius=400,
         ), "the reference must say why re-running `pr ensure-pr` on an open-PR branch is no heal"
+
+
+class TestHealNamesTheReconcilerAdoption:
+    def test_heal_names_the_adoption_who_never_owns_a_pr_and_the_sweep_refusal(self) -> None:
+        heal = _REFERENCE.read_text(encoding="utf-8").split("## Heal", 1)[1]
+        for token in ("manual_pr_reconcile", "ticket_owning_pr_branch", "`auto:`", "closed", "no_owning_ticket"):
+            assert token in heal, f"hook-opened-pr-ledger.md § Heal must name `{token}`"
 
 
 class TestReferenceNamesTheAdoptLease:

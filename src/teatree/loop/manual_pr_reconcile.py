@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from django.utils import timezone
 
 from teatree.core.work_lease import WorkIdentity, register_work_claim, release_work_claim
+from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
 from teatree.loop.pr_ticket_index import _description_from_payload, resolve_author_ticket
 from teatree.utils.close_keywords import parse_closes_ticket
 from teatree.utils.url_slug import pr_ref_from_url
@@ -58,6 +59,7 @@ class _ScannedPr:
     slug: str
     description: str
     merged: bool
+    branch: str
 
 
 def _is_merged(raw: Mapping[str, Any]) -> bool:
@@ -92,6 +94,7 @@ def _scanned_prs(signals: "list[ScanSignal]") -> list[_ScannedPr]:
                 slug=ref.slug if ref else "",
                 description=_description_from_payload(payload),
                 merged=_is_merged(raw_dict),
+                branch=str(raw_dict.get("source_branch") or ""),
             )
         )
     return prs
@@ -103,7 +106,7 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
     Footer first: a ``Closes/Fixes #N`` keyword parsed from the PR body resolves
     against the collision-free ``<slug>#N`` repo-namespaced key so issue #N of one
     repo never binds a PR from another. Falls back to the FK + ``Ticket.extra["prs"]``
-    walk :func:`resolve_author_ticket` already implements for a bare manual MR.
+    walk :func:`resolve_author_ticket` already implements for a bare manual MR, then to the head branch's live ticket.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -111,7 +114,8 @@ def _resolve_ticket(pr: _ScannedPr) -> "Ticket | None":
     if number and pr.slug:
         with suppress(Ticket.DoesNotExist):
             return Ticket.objects.resolve(f"{pr.slug}#{number}")
-    return resolve_author_ticket(slug=pr.slug, pr_id=pr.iid, pr_url=pr.url)
+    ticket = resolve_author_ticket(slug=pr.slug, pr_id=pr.iid, pr_url=pr.url)
+    return ticket or ticket_owning_pr_branch(pr.branch, slug=pr.slug)
 
 
 def _work_identity(row: "PullRequest") -> WorkIdentity:

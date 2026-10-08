@@ -1009,6 +1009,34 @@ class TestWorkspaceOwnerFailsLoudOnCollision(TestCase):
         assert owner.pk == ticket.pk
 
 
+class TestSharedParentCatchAllIsNotAnOwner(TestCase):
+    """An ``auto:`` ticket owning a row under a shared parent must not attract its siblings by folder."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _own_a_row_under_the_parent(self, issue_url: str, *, repo: str) -> Ticket:
+        checkout = self._tmp_path / repo
+        checkout.mkdir()
+        ticket = Ticket.objects.create(issue_url=issue_url)
+        Worktree.objects.create(
+            ticket=ticket, repo_path=repo, branch=f"b-{repo}", extra={"worktree_path": str(checkout)}
+        )
+        return ticket
+
+    def test_shared_parent_catch_all_owner_is_ignored(self) -> None:
+        self._own_a_row_under_the_parent("auto:HEAD", repo="cold-review")
+
+        assert _workspace_owner_ticket((self._tmp_path / "architectural-review").resolve()) is None
+
+    def test_shared_parent_catch_all_beside_a_real_owner_stays_ambiguous(self) -> None:
+        self._own_a_row_under_the_parent("auto:HEAD", repo="cold-review")
+        self._own_a_row_under_the_parent("https://gitlab.com/org/repo/-/issues/1", repo="repo-a")
+
+        assert _workspace_owner_ticket((self._tmp_path / "architectural-review").resolve()) is None
+
+
 class TestTicketByNumberFailsLoudOnCollision(TestCase):
     """A non-unique ``ticket_number`` fails loud, never resolves an arbitrary ticket (#WT-PR-D finding 9)."""
 

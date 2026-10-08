@@ -446,10 +446,10 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
     multi-owner parent yields ``None`` here so those designed fallbacks stay
     reachable. The public :func:`workspace_owner_ticket` keeps failing loud for
     the ``workspace`` command resolver, where an operator explicitly named a
-    workspace dir and an arbitrary pick would be a real mis-attribution.
+    workspace dir and an arbitrary pick would be a real mis-attribution. A lone ``auto:`` owner declines too.
     """
     try:
-        return workspace_owner_ticket(cwd_path.parent)
+        owner = workspace_owner_ticket(cwd_path.parent)
     except WorkspaceOwnerCollisionError:
         logger.debug(
             "Ambiguous workspace parent %s (multiple ticket owners); declining the "
@@ -457,6 +457,7 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
             cwd_path.parent,
         )
         return None
+    return None if owner is not None and owner.issue_url.startswith("auto:") else owner
 
 
 def _is_main_clone(path: str) -> bool:
