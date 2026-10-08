@@ -3,9 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from teatree.provisioning.declared import DeclarationUnreadableError, project_root_for_running_code
+from teatree.provisioning.declared import project_root_for_running_code
 from teatree.skill_support.index import build_skill_index, resolve_skill_md
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError, declared_pin_specs
+from teatree.skill_support.pin_shadow import (
+    SkillPinRefusalError,
+    SkillPinsUnreadableError,
+    SkillShadowsDeclaredPinError,
+    declared_pin_specs,
+)
+from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST, unreadable_running_manifest
 
 
 def _skill(root: Path, name: str) -> Path:
@@ -29,6 +35,7 @@ def test_a_declared_pin_name_in_a_local_skills_folder_refuses_naming_both_sides(
     with pytest.raises(SkillShadowsDeclaredPinError) as excinfo:
         resolve_skill_md("ac-django", [local, Path.home() / ".agents" / "skills"])
 
+    assert isinstance(excinfo.value, SkillPinRefusalError)
     assert _declared_spec("ac-django") in str(excinfo.value)
     assert str(shadow) in str(excinfo.value)
 
@@ -65,11 +72,28 @@ def test_a_missing_manifest_declares_nothing(tmp_path: Path) -> None:
     assert declared_pin_specs(tmp_path / "apm.yml") == {}
 
 
-def test_an_unparsable_manifest_fails_loud(tmp_path: Path) -> None:
-    (tmp_path / "apm.yml").write_text("dependencies: [unclosed", encoding="utf-8")
+@pytest.mark.parametrize(
+    "body",
+    [UNPARSABLE_MANIFEST, b"- just\n- a list\n", b"dependencies:\n  pip: []\n", NOT_UTF8_MANIFEST],
+    ids=["unparsable", "not-a-mapping", "no-apm-list", "not-utf8"],
+)
+def test_an_unreadable_manifest_is_the_pin_refusal_naming_the_file_and_its_restore(tmp_path: Path, body: bytes) -> None:
+    manifest = tmp_path / "apm.yml"
+    manifest.write_bytes(body)
 
-    with pytest.raises(DeclarationUnreadableError):
-        declared_pin_specs(tmp_path / "apm.yml")
+    with pytest.raises(SkillPinsUnreadableError) as excinfo:
+        declared_pin_specs(manifest)
+
+    assert isinstance(excinfo.value, SkillPinRefusalError)
+    assert str(manifest) in str(excinfo.value)
+    assert f"git -C {tmp_path} checkout HEAD -- apm.yml" in str(excinfo.value)
+
+
+def test_the_resolver_refuses_on_an_unreadable_running_manifest(tmp_path: Path) -> None:
+    _skill(tmp_path / "skills", "rules")
+
+    with unreadable_running_manifest(tmp_path), pytest.raises(SkillPinsUnreadableError):
+        resolve_skill_md("rules", [tmp_path / "skills"])
 
 
 def test_the_declared_set_names_single_skill_specs_only(tmp_path: Path) -> None:

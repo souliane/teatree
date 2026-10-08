@@ -29,6 +29,7 @@ from teatree.cli.setup import command as setup_command
 from teatree.cli.setup.statusline_installer import StatuslineInstall
 from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skills_cli import SkillsCliCommandError
+from tests._unreadable_apm_manifest import unreadable_running_manifest
 
 _RUN_SETUP_PROBE = """
 from pathlib import Path
@@ -241,6 +242,21 @@ class TestStrictAgentSkillsSetup:
         assert "souliane/skills/ac-django#" in out
         assert str(local / "ac-django" / "SKILL.md") in out
         assert "missing=ac-django" in receipt.read_text(encoding="utf-8")
+
+    def test_an_unreadable_manifest_is_not_ready_and_names_the_refusal(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        local = tmp_path / "skills"
+        (local / "rules").mkdir(parents=True)
+        (local / "rules" / "SKILL.md").write_text("# rules\n", encoding="utf-8")
+        receipt = tmp_path / "setup-outcome"
+
+        with unreadable_running_manifest(tmp_path) as manifest:
+            ready = setup_command._assess_dispatched_skills(("rules",), [], receipt=receipt, search_dirs=[local])
+
+        assert not ready
+        assert str(manifest) in capsys.readouterr().out
+        assert "missing=rules" in receipt.read_text(encoding="utf-8")
 
     def test_path_qualified_runtime_skill_is_accepted(self, tmp_path: Path) -> None:
         skills = tmp_path / "skills"

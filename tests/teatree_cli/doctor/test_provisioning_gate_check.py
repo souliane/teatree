@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.doctor.checks_provisioning import _check_declared_dependencies_provisioned
 from teatree.utils import git_run
+from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST
 
 _PIN = "d0008a3c1e5f4b2a9d8e7f6a5b4c3d2e1f0a9b8c"
 _DECLARED_SKILLS = (f"souliane/skills/ac-python#{_PIN}", f"souliane/skills/ac-django#{_PIN}")
@@ -176,6 +177,35 @@ class TestSilenceIsNeverAnOutcome:
         assert not ok
         assert "ac-python" in output
         assert "WARN" in output
+
+    def test_an_absent_manifest_stays_a_warn(self, project_root: Path, home: Path) -> None:
+        (project_root / "apm.yml").unlink()
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "WARN  Provisioning gate: apm.yml is not readable" in output
+        assert "FAIL" not in output
+
+
+class TestAManifestThatExistsButCannotBeReadFails:
+    @pytest.mark.parametrize(
+        "body",
+        [UNPARSABLE_MANIFEST, b"- just\n- a list\n", b"dependencies:\n  pip: []\n", NOT_UTF8_MANIFEST],
+        ids=["unparsable", "not-a-mapping", "no-apm-list", "not-utf8"],
+    )
+    def test_it_fails_naming_the_file_and_its_restore_and_is_not_merely_a_warn(
+        self, project_root: Path, home: Path, body: bytes
+    ) -> None:
+        (project_root / "apm.yml").write_bytes(body)
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        refusal = output[output.index("FAIL  ") :]
+        assert str(project_root / "apm.yml") in refusal
+        assert f"git -C {project_root} checkout HEAD -- apm.yml" in refusal
+        assert "WARN  Provisioning gate" not in output
 
 
 def _install(root: Path, name: str) -> Path:

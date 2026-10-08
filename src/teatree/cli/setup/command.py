@@ -38,13 +38,12 @@ from teatree.cli.slack.setup import slack_bot_setup
 from teatree.cli.slack.user_token_setup import slack_user_token_setup
 from teatree.core.skill_sources import demanded_skill_names, install_declared_sources
 from teatree.paths import get_data_dir
-from teatree.provisioning.declared import DeclarationUnreadableError
 from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skill_pin import default_record_path
 from teatree.provisioning.skills_cli import SkillsCli, SkillsCliError, refresh_inventory_receipt
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
 from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.skill_support.pin_shadow import SkillPinRefusalError
 from teatree.utils.django_bootstrap import ensure_django
 
 setup_app = typer.Typer(
@@ -75,7 +74,7 @@ def _assess_dispatched_skills(
             body = resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
             if body is None or not body.read_text(encoding="utf-8").strip():
                 missing.append(name)
-        except SkillShadowsDeclaredPinError as exc:
+        except SkillPinRefusalError as exc:
             typer.echo(f"WARN  {exc}")
             missing.append(name)
         except (OSError, UnicodeError):
@@ -244,7 +243,7 @@ def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str], manifest
 
         try:
             created, fixed = linker.sync(sync_core=False, manifest=manifest)
-        except DeclarationUnreadableError as error:
+        except SkillPinRefusalError as error:
             typer.echo(f"ERROR Skill links were not synced: {error}", err=True)
             return False
         refused.update(linker.refused)
