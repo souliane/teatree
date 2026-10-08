@@ -50,20 +50,34 @@ class TestQuestionMetrics:
         assert metrics.resolved == 1
         assert metrics.declines == 0
 
-    def test_only_an_owner_channel_answer_is_a_human_touchpoint(self) -> None:
+    def test_a_decline_counts_from_any_answer_but_an_agent_surface(self) -> None:
+        for resolved_via in (
+            DeferredQuestion.ResolvedVia.AGENT,
+            DeferredQuestion.ResolvedVia.LOCAL,
+            DeferredQuestion.ResolvedVia.UNRESOLVED,
+            DeferredQuestion.ResolvedVia.SLACK,
+        ):
+            DeferredQuestion.record("q?", options_hash="directive_ratify:9:0").apply_answer(
+                "no", resolved_via=resolved_via
+            )
+        metrics = compute_metrics(DIRECTIVE_ADMIT)
+        assert metrics.interventions == 4
+        assert (metrics.resolved, metrics.declines) == (3, 3)
+
+    def test_an_approval_counts_only_on_an_owner_channel(self) -> None:
         for resolved_via in (
             DeferredQuestion.ResolvedVia.AGENT,
             DeferredQuestion.ResolvedVia.LOCAL,
             DeferredQuestion.ResolvedVia.UNRESOLVED,
         ):
-            DeferredQuestion.record("q?", options_hash="directive_ratify:9:0").apply_answer(
-                "no", resolved_via=resolved_via
+            DeferredQuestion.record("q?", options_hash="directive_ratify:10:0").apply_answer(
+                "approve", resolved_via=resolved_via
             )
-        auto_answer_by_policy(DeferredQuestion.record("q?", options_hash="directive_ratify:10:0"), "approve")
-        _answered("directive_ratify:11:0", "no")
+        auto_answer_by_policy(DeferredQuestion.record("q?", options_hash="directive_ratify:11:0"), "approve")
+        _answered("directive_ratify:12:0", "approve")
         metrics = compute_metrics(DIRECTIVE_ADMIT)
         assert metrics.interventions == 5
-        assert (metrics.resolved, metrics.declines) == (2, 1)
+        assert (metrics.resolved, metrics.declines) == (2, 0)
 
     def test_a_question_of_another_class_is_not_counted(self) -> None:
         _answered("directive_ratify:5:0", "no")
