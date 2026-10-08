@@ -19,7 +19,7 @@ def read_install_refs(home: Path) -> dict[str, tuple[str, str]] | None:
         if record["version"] != _SCHEMA:
             return None
         return {
-            name: (entry.get("source", "").lower(), entry.get("ref", "").lower())
+            name: (entry.get("source", "").lower(), (entry.get("ref") or "").lower())
             for name, entry in record["skills"].items()
         }
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
