@@ -10,7 +10,8 @@ This check enumerates from :mod:`teatree.provisioning.declared` (the manifest,
 the pyproject table, the enabled-plugin settings), so declaring a new mandate is
 enough to have it gated. Silence is not a possible outcome: a gap is a FAIL that
 names the dependency, where it is declared, and the exact remediation; a
-declaration surface that cannot be read is a WARN that says so.
+declaration surface that cannot be read is a WARN that says so, except an
+``apm.yml`` that exists in the wrong shape, which every dispatch parks on: a FAIL.
 """
 
 import os
@@ -31,7 +32,7 @@ from teatree.provisioning.probes import BinaryResolver, unprovisioned
 from teatree.provisioning.skill_source import owner_repo, pinned_commit
 from teatree.provisioning.skills_lock import lock_path, read_install_refs
 from teatree.skill_support.index import harness_skills_dirs, install_roots, locate_skill_md
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.skill_support.pin_shadow import SkillPinsUnreadableError, SkillShadowsDeclaredPinError
 
 
 def _render(gap: DeclaredDependency) -> str:
@@ -123,7 +124,7 @@ def _check_declared_dependencies_provisioned(
     Returns ``True`` when every declared dependency resolves, and when the
     declaration surfaces themselves cannot be read — an unreadable manifest is a
     loud WARN naming the surface, not a gate failure, because a non-source
-    install legitimately has no manifest to read.
+    install legitimately has no manifest to read. A malformed ``apm.yml`` fails.
     """
     root = project_root_for_running_code() if project_root is None else project_root
     if root is None:
@@ -148,7 +149,8 @@ def _check_declared_dependencies_provisioned(
         unpinned = unpinned_apm_entries(root / "apm.yml")
     except DeclarationUnreadableError:
         unpinned = []  # already reported once by the enumeration above
-    findings = [
+    findings = [f"FAIL  {SkillPinsUnreadableError(root / 'apm.yml', reason)}" for reason in enumeration.malformed]
+    findings += [
         f"FAIL  Declared apm entry `{spec}` names no 40-hex commit, so what `t3 setup` installs moves. "
         f"Fix: {skill_bump_remediation(spec.partition('#')[0] + '#<40-hex commit sha>')}."
         for spec in unpinned

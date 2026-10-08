@@ -177,6 +177,35 @@ class TestSilenceIsNeverAnOutcome:
         assert "ac-python" in output
         assert "WARN" in output
 
+    def test_an_absent_manifest_stays_a_warn(self, project_root: Path, home: Path) -> None:
+        (project_root / "apm.yml").unlink()
+
+        ok, output = _run(project_root, home)
+
+        assert ok
+        assert "WARN  Provisioning gate: apm.yml is not readable" in output
+        assert "FAIL" not in output
+
+
+class TestAManifestThatExistsButCannotBeReadFails:
+    @pytest.mark.parametrize(
+        "body",
+        ["dependencies: [unclosed", "- just\n- a list\n", "dependencies:\n  pip: []\n"],
+        ids=["unparsable", "not-a-mapping", "no-apm-list"],
+    )
+    def test_it_fails_naming_the_file_and_its_restore_and_is_not_merely_a_warn(
+        self, project_root: Path, home: Path, body: str
+    ) -> None:
+        (project_root / "apm.yml").write_text(body, encoding="utf-8")
+
+        ok, output = _run(project_root, home)
+
+        assert not ok
+        refusal = output[output.index("FAIL  ") :]
+        assert str(project_root / "apm.yml") in refusal
+        assert f"git -C {project_root} checkout HEAD -- apm.yml" in refusal
+        assert "WARN  Provisioning gate" not in output
+
 
 def _install(root: Path, name: str) -> Path:
     skill = root / name

@@ -11,14 +11,32 @@ that resolves outside the install roots or into a checkout.
 from functools import cache
 from pathlib import Path
 
-from teatree.provisioning.declared import project_root_for_running_code, skills_declared_in_apm_manifest
+from teatree.provisioning.declared import (
+    DeclarationUnreadableError,
+    project_root_for_running_code,
+    skills_declared_in_apm_manifest,
+)
 
 _MANIFEST = "apm.yml"
 
 _parsed: dict[Path, tuple[int, dict[str, str]]] = {}
 
 
-class SkillShadowsDeclaredPinError(ValueError):
+class SkillPinRefusalError(ValueError):
+    """The declared skill pins refuse this resolution; every skill-resolving surface reports it, none dispatches."""
+
+
+class SkillPinsUnreadableError(SkillPinRefusalError):
+    """``apm.yml`` exists but its pins cannot be read, so no resolution can prove a pin is honoured."""
+
+    def __init__(self, manifest: Path, reason: str) -> None:
+        super().__init__(
+            f"{reason}. No skill resolves until the declared pins are readable: fix its YAML, or restore the "
+            f"committed copy with `git -C {manifest.parent} checkout HEAD -- {manifest.name}`."
+        )
+
+
+class SkillShadowsDeclaredPinError(SkillPinRefusalError):
     """A folder no installer manages satisfies a skill name ``apm.yml`` pins."""
 
     def __init__(self, name: str, spec: str, winner: Path) -> None:
@@ -41,8 +59,7 @@ def _running_code_manifest() -> Path | None:
 def declared_pin_specs(manifest: Path | None = None) -> dict[str, str]:
     """``{skill name: spec}`` for every single-skill ``dependencies.apm`` entry.
 
-    No manifest declares nothing; an unparsable one raises
-    :class:`~teatree.provisioning.declared.DeclarationUnreadableError`.
+    No manifest declares nothing; one that exists but cannot be read raises :class:`SkillPinsUnreadableError`.
     """
     path = _running_code_manifest() if manifest is None else manifest
     if path is None:
@@ -54,7 +71,10 @@ def declared_pin_specs(manifest: Path | None = None) -> dict[str, str]:
     cached = _parsed.get(path)
     if cached is not None and cached[0] == mtime:
         return cached[1]
-    specs = {dependency.name: dependency.source for dependency in skills_declared_in_apm_manifest(path)}
+    try:
+        specs = {dependency.name: dependency.source for dependency in skills_declared_in_apm_manifest(path)}
+    except DeclarationUnreadableError as exc:
+        raise SkillPinsUnreadableError(path, str(exc)) from exc
     _parsed[path] = (mtime, specs)
     return specs
 
@@ -66,4 +86,10 @@ def refuse_shadowed_pin(name: str, winner: Path) -> None:
         raise SkillShadowsDeclaredPinError(name, spec, winner)
 
 
-__all__ = ["SkillShadowsDeclaredPinError", "declared_pin_specs", "refuse_shadowed_pin"]
+__all__ = [
+    "SkillPinRefusalError",
+    "SkillPinsUnreadableError",
+    "SkillShadowsDeclaredPinError",
+    "declared_pin_specs",
+    "refuse_shadowed_pin",
+]

@@ -2,6 +2,9 @@
 
 import logging
 from collections.abc import Callable
+from datetime import timedelta
+
+from django.utils import timezone
 
 from teatree.agents.runner_budget import TicketBudget
 from teatree.agents.runner_interruption import _record_failure
@@ -10,12 +13,15 @@ from teatree.agents.skill_bundle import (
     resolve_skill_bundle,
     stage_skills_for_dispatch,
 )
-from teatree.core.models import Task, TaskAttempt
+from teatree.agents.usage_window import record_park
+from teatree.core.models import LIMIT_PARKED_PREFIX, Task, TaskAttempt
 from teatree.core.worktree.clone_paths import dispatch_detection_root
-from teatree.skill_support.pin_shadow import SkillShadowsDeclaredPinError
+from teatree.skill_support.pin_shadow import SkillPinRefusalError, SkillPinsUnreadableError
 from teatree.types import SkillMetadata
 
 logger = logging.getLogger("teatree.agents.runner")
+
+_UNREADABLE_PINS_RECHECK = timedelta(seconds=300)
 
 
 def staged_skills_or_refusal(
@@ -57,18 +63,25 @@ def stage_skills_or_refusal(
     try:
         staged = stage_skills(phase)
         return staged, bundle(staged)
-    except (ArchitecturalReviewSkillMissingError, SkillShadowsDeclaredPinError) as exc:
+    except (ArchitecturalReviewSkillMissingError, SkillPinRefusalError) as exc:
         return _refused(task, exc)
 
 
 def bundle_or_refusal(task: Task, bundle: Callable[[], list[str]]) -> list[str] | TaskAttempt:
-    """*bundle*'s skills, or the recorded refusal a shadowed apm pin earns in every dispatch lane."""
+    """*bundle*'s skills, or the recorded refusal the declared skill pins earn in every dispatch lane."""
     try:
         return bundle()
-    except SkillShadowsDeclaredPinError as exc:
+    except SkillPinRefusalError as exc:
         return _refused(task, exc)
 
 
 def _refused(task: Task, exc: Exception) -> TaskAttempt:
     logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+    if isinstance(exc, SkillPinsUnreadableError):
+        # A manifest a restore or redeploy brings back is a wait, not a failure; the marker keeps it off the budget.
+        return record_park(
+            task,
+            reason=f"{LIMIT_PARKED_PREFIX}pins_unreadable: {exc}",
+            not_before=timezone.now() + _UNREADABLE_PINS_RECHECK,
+        )
     return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched

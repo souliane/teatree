@@ -18,7 +18,7 @@ from teatree.cli.setup import command as setup_command
 from teatree.cli.setup.command import _sync_runtime_skill_links
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker, _ensure_skill_link
 from teatree.config import UserSettings
-from teatree.provisioning.declared import DeclarationUnreadableError
+from teatree.skill_support.pin_shadow import SkillPinsUnreadableError
 
 
 class TestRemoveExcludedSkills:
@@ -610,7 +610,7 @@ class TestDeclaredPinsAreNeverLinkedOver:
         broken = tmp_path / "apm.yml"
         broken.write_text("dependencies: [oh: no\n", encoding="utf-8")
 
-        with pytest.raises(DeclarationUnreadableError):
+        with pytest.raises(SkillPinsUnreadableError):
             self._sync(runtime, tmp_path, [(overlay, "my-skill")], manifest=broken)
 
         assert list(runtime.iterdir()) == []
@@ -660,6 +660,7 @@ class TestSetupLinkStep:
 
         assert not ready
         assert "ERROR" in output
+        assert f"git -C {tmp_path} checkout HEAD -- apm.yml" in output
         assert list((tmp_path / "claude").iterdir()) == []
         assert list((tmp_path / "codex").iterdir()) == []
 
