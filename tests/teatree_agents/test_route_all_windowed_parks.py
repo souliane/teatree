@@ -47,9 +47,11 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
             lane="", cause="subscription_session", resets_at=timezone.now() + timedelta(hours=hours)
         )
 
-    def _dispatch(self, task: Task, *harnesses: str) -> object:
+    def _dispatch(self, task: Task, *harnesses: str) -> TaskAttempt:
         with routed_by(route_config("route-skill", *harnesses)):
-            return _resolve_backend_or_failure(task, phase=_PHASE, skills=["route-skill"])
+            outcome = _resolve_backend_or_failure(task, phase=_PHASE, skills=["route-skill"])
+        assert isinstance(outcome, TaskAttempt)
+        return outcome
 
     def test_a_held_codex_and_a_windowed_claude_park_until_the_hold_lifts(self) -> None:
         task = self._task()
@@ -60,7 +62,6 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         attempt = self._dispatch(task, MANAGED, CLAUDE_LIKE)
 
         task.refresh_from_db()
-        assert isinstance(attempt, TaskAttempt)
         assert task.status == Task.Status.PENDING
         assert before + QUOTA_AUTH_HOLD <= task.not_before <= timezone.now() + QUOTA_AUTH_HOLD
         assert attempt.error.startswith(LIMIT_PARKED_PREFIX)
@@ -103,6 +104,20 @@ class TestRouteCandidatesThatAreOnlyWaiting(TestCase):
         assert second.error.startswith(LIMIT_PARKED_PREFIX)
         assert third.error.startswith("No available harness")
         assert task.status == Task.Status.FAILED
+
+    def test_a_real_run_between_hold_parks_starts_a_new_count(self) -> None:
+        task = self._task()
+        self._hold_codex(task)
+        self._window_claude(3)
+        self._dispatch(task, MANAGED, CLAUDE_LIKE)
+        self._dispatch(task, MANAGED, CLAUDE_LIKE)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="harness_crash")
+
+        attempt = self._dispatch(task, MANAGED, CLAUDE_LIKE)
+
+        task.refresh_from_db()
+        assert attempt.error.startswith(LIMIT_PARKED_PREFIX)
+        assert task.status == Task.Status.PENDING
 
     def test_a_short_probe_answer_is_no_hold_so_a_lone_candidate_still_fails(self) -> None:
         capabilities = HarnessCapabilities(managed_lane=True)

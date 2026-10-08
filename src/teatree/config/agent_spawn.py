@@ -215,14 +215,15 @@ def _phase_harness_from(raw: object) -> dict[str, AgentHarness | None]:
 
 def parse_phase_harness_entry(phase: str, value: object) -> AgentHarness | None:
     """An explicit unpin is ``None``, so it stays distinct from a phase with no entry."""
-    text = value.strip().lower() if isinstance(value, str) else None
-    if text in _INHERIT_SENTINELS:
+    if not isinstance(value, str):
+        message = f"agent_phase_harness[{phase!r}] must be a string"
+        raise InvalidAgentConfigError(message)
+    if value.strip().lower() in _INHERIT_SENTINELS:
         return None
     try:
-        return AgentHarness(text)
+        return AgentHarness.parse(value)
     except ValueError as exc:
-        valid = ", ".join(AgentHarness)
-        message = f"agent_phase_harness[{phase!r}] is {value!r}; valid values: {valid}, or inherit to unpin"
+        message = f"agent_phase_harness[{phase!r}]: {exc}, or inherit to unpin"
         raise InvalidAgentConfigError(message) from exc
 
 
@@ -265,7 +266,7 @@ def _route_candidate(skill: str, index: int, value: object) -> AgentRouteCandida
     )
 
 
-def _skill_models_from(raw: object) -> dict[str, SkillModelPolicy]:
+def parse_skill_models(raw: object) -> dict[str, SkillModelPolicy]:
     """Normalise list-form floor policies or ordered routes.
 
     A non-dict top-level value yields an empty policy map.
@@ -396,7 +397,7 @@ def resolve_agent_config(scope: str = "") -> AgentConfig:
         return cold_reader.overlay_then_global(key, scope) if scope else cold_reader.read_setting(key)
 
     return AgentConfig(
-        skill_models=_skill_models_from(read("agent_skill_models")),
+        skill_models=parse_skill_models(read("agent_skill_models")),
         session_model=_session_model_from(read("agent_session_model")),
         session_effort=_session_effort_from(read("agent_session_effort")),
         session_permission_mode=_session_permission_mode_from(read("agent_session_permission_mode")),

@@ -1,5 +1,6 @@
 """A spent subscription window engages the token-outage preset only when no other lane can take the work."""
 
+import shutil
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -10,11 +11,12 @@ from django.utils import timezone
 
 import teatree.agents.harness_dispatch as harness_dispatch_mod
 from teatree.agents.usage_window import park_task_on_limit
+from teatree.config import get_effective_settings
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate, InvalidAgentConfigError
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, Session, Task, TaskAttempt, UsageWindowState
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from tests.factories import planned_ticket
-from tests.teatree_agents._route_fakes import make_codex_available, routed_by, write_codex_login
+from tests.teatree_agents._route_fakes import CODEX_CATALOG, make_codex_available, routed_by, write_codex_login
 
 _SESSION_LIMIT = LimitMatch(phrase="five_hour", cause=LimitCause.SUBSCRIPTION_SESSION)
 _CODEX_THEN_CLAUDE = AgentConfig(
@@ -76,3 +78,22 @@ class TestTokenOutageIsLaneAware(TestCase):
             park_task_on_limit(self.task, _SESSION_LIMIT, lane=TaskAttempt.Lane.SUBSCRIPTION)
 
         assert ModeOverride.objects.current().preset_name == "token-outage"
+
+
+class TestAConfiguredCodexHarnessCountsAsAnotherLane(TestCase):
+    def setUp(self) -> None:
+        Mode.objects.create(name="token-outage", entries={"inbox": True})
+        ConfigSetting.objects.set_value("agent_harness", "codex_app_server")
+        home = write_codex_login(Path(self.enterContext(tempfile.TemporaryDirectory())))
+        shutil.copy(CODEX_CATALOG, home / "models_cache.json")
+        make_codex_available(self, home)
+        ticket = planned_ticket()
+        self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+    def test_a_configured_codex_harness_with_no_route_keeps_the_factory_running(self) -> None:
+        assert get_effective_settings(None).agent_harness == "codex_app_server"
+
+        with routed_by(AgentConfig()):
+            park_task_on_limit(self.task, _SESSION_LIMIT, lane=TaskAttempt.Lane.SUBSCRIPTION)
+
+        assert ModeOverride.objects.current() is None

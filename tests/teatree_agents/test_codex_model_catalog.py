@@ -7,11 +7,13 @@ from pathlib import Path
 from django.test import TestCase
 
 from teatree.agents.harness_dispatch import DispatchHarness, resolve_dispatch_harness
+from teatree.agents.harness_registry import HarnessBuildContext, select_harness
 from teatree.config.agent_spawn import AgentConfig, AgentRouteCandidate
 from teatree.core.models import Session, Task
 from tests.factories import planned_ticket
 from tests.teatree_agents._route_fakes import (
     CLAUDE_LIKE,
+    CODEX_CATALOG,
     make_codex_available,
     register_stub_harnesses,
     routed_by,
@@ -19,7 +21,6 @@ from tests.teatree_agents._route_fakes import (
 )
 
 _CODEX = "codex_app_server"
-_CATALOG = Path(__file__).resolve().parents[1] / "fixtures" / "codex_app_server" / "0.155.1-models-cache.json"
 
 
 class TestCodexModelCatalog(TestCase):
@@ -36,7 +37,7 @@ class TestCodexModelCatalog(TestCase):
             return resolve_dispatch_harness(self.task, phase="debugging", skills=["route-skill"])
 
     def test_a_model_the_catalog_does_not_list_falls_through_to_the_next_candidate(self) -> None:
-        shutil.copy(_CATALOG, self.home / "models_cache.json")
+        shutil.copy(CODEX_CATALOG, self.home / "models_cache.json")
 
         dispatch = self._resolve("gpt-9-absent")
 
@@ -44,12 +45,12 @@ class TestCodexModelCatalog(TestCase):
         assert "not in the Codex catalog" in dispatch.rejected[0].reason
 
     def test_a_listed_model_keeps_codex(self) -> None:
-        shutil.copy(_CATALOG, self.home / "models_cache.json")
+        shutil.copy(CODEX_CATALOG, self.home / "models_cache.json")
 
         assert self._resolve("gpt-6-sol").route_candidate_index == 0
 
     def test_a_hidden_model_still_counts_as_listed(self) -> None:
-        shutil.copy(_CATALOG, self.home / "models_cache.json")
+        shutil.copy(CODEX_CATALOG, self.home / "models_cache.json")
 
         assert self._resolve("gpt-reserve").route_candidate_index == 0
 
@@ -64,3 +65,10 @@ class TestCodexModelCatalog(TestCase):
 
         assert dispatch.route_candidate_index == 0
         assert "models_cache.json" in logged.output[0]
+
+    def test_a_dispatch_naming_no_model_is_not_checked_against_the_catalog(self) -> None:
+        shutil.copy(CODEX_CATALOG, self.home / "models_cache.json")
+
+        selection = select_harness([_CODEX], HarnessBuildContext(task=self.task, phase="debugging"))
+
+        assert selection.spec.name == _CODEX

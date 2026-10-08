@@ -39,7 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from teatree.config.agent_spawn import _skill_models_from, parse_phase_harness_entry
+from teatree.config.agent_spawn import parse_phase_harness_entry, parse_skill_models
 from teatree.config.setting_parsers import (
     _parse_private_repos,
     _parse_strict_bool,
@@ -63,7 +63,7 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
 
 def _parse_agent_skill_models(raw: object) -> dict[str, list[object]]:
     value = _parse_registry_dict(raw)
-    _skill_models_from(value)
+    parse_skill_models(value)
     return cast("dict[str, list[object]]", value)
 
 

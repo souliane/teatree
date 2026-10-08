@@ -20,11 +20,19 @@ from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core.forge_push_verdict import PUSH_EXIT_CODES, PushFailure
 from teatree.core.overlays.forge_credential_provider import build_and_register
 from teatree.forge_credentials import ROUTED_GH_KEY_ENV, register_forge_credential_provider
+from teatree.utils import secrets
 from teatree.utils.git_run import run_with_status
 from teatree.utils.secrets import read_pass
 from tests._git_repo import make_git_repo, run_git
 
 _TOKEN = "gh" + "p_" + "r" * 36
+_STORE_TOKEN = "gh" + "p_" + "s" * 36
+#: Resolves the store the way ``pass`` does: ``PASSWORD_STORE_DIR``, else ``$HOME/.password-store``.
+_PASS = """#!/bin/sh
+entry="${PASSWORD_STORE_DIR:-$HOME/.password-store}/$2"
+[ -f "$entry" ] || exit 1
+cat "$entry"
+"""
 _GITHUB_KEY = "github/acme/pat"
 _GITLAB_KEY = "gitlab/acme/pat"
 _REFUSED = PUSH_EXIT_CODES[PushFailure.CREDENTIAL]
@@ -86,10 +94,26 @@ class TestCodexRunPush:
         register_forge_credential_provider(previous)
 
     @pytest.fixture(autouse=True)
-    def _dirs(self, tmp_path: Path) -> None:
+    def no_real_pass_store(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Every ``pass`` call runs the stand-in, never the real binary."""
+        stand_in = tmp_path / "pass"
+        stand_in.write_text(_PASS)
+        stand_in.chmod(0o755)
+        real = secrets.run_bounded_group
+
+        def run(argv: list[str], *args: Any, **kwargs: Any) -> Any:
+            return real([str(stand_in), *argv[1:]] if argv[:1] == ["pass"] else argv, *args, **kwargs)
+
+        monkeypatch.setattr(secrets, "run_bounded_group", run)
+
+    @pytest.fixture(autouse=True)
+    def _worker_with_a_store(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
         self.codex_home = tmp_path / "codex-home"
         self.worker_home = tmp_path / "worker-home"
+        entry = self.worker_home / ".password-store" / _GITHUB_KEY
+        entry.parent.mkdir(parents=True)
+        entry.write_text(f"{_STORE_TOKEN}\n")
 
     def _clone(self, origin: str) -> Path:
         clone = make_git_repo(self.tmp_path / "clone")
@@ -104,15 +128,22 @@ class TestCodexRunPush:
         assert env is not None
         return env
 
-    def _child_env(self, dispatch_env: dict[str, str], **ambient: str) -> dict[str, str]:
-        worker_ambient = {
+    def _worker_env(self, **extra: str) -> dict[str, str]:
+        return {
             "PATH": os.environ["PATH"],
             "HOME": str(self.worker_home),
             "PASSWORD_STORE_DIR": str(self.worker_home / ".password-store"),
             "GNUPGHOME": str(self.worker_home / ".gnupg"),
-            **ambient,
+            **extra,
         }
-        return codex_process_env(self.codex_home, dispatch_env, ambient=worker_ambient)
+
+    def _child_env(self, dispatch_env: dict[str, str], **ambient: str) -> dict[str, str]:
+        return codex_process_env(self.codex_home, dispatch_env, ambient=self._worker_env(**ambient))
+
+    @staticmethod
+    def _read_store_in(env: dict[str, str]) -> str:
+        with patch.dict(os.environ, env, clear=True):
+            return read_pass(_GITHUB_KEY)
 
     @staticmethod
     def _push_inside(child: dict[str, str], clone: Path) -> _CodexPush:
@@ -136,9 +167,18 @@ class TestCodexRunPush:
 
         assert not {"PASSWORD_STORE_DIR", "GNUPGHOME"} & child.keys()
         assert child["HOME"] == str(self.codex_home)
+        assert self._read_store_in(self._worker_env()) == _STORE_TOKEN
         assert pushed.store_read == ""
         assert pushed.result.exit_code == 0, pushed.result.output
         assert [env["GH_TOKEN"] for env in pushed.network.pushes] == [_TOKEN]
+
+    def test_a_host_with_a_store_reads_it_before_the_dispatched_token(self) -> None:
+        host = self._worker_env(GH_TOKEN=_TOKEN, **{ROUTED_GH_KEY_ENV: _GITHUB_KEY})
+
+        pushed = self._push_inside(host, self._clone("https://github.com/acme/widget.git"))
+
+        assert pushed.result.exit_code == 0, pushed.result.output
+        assert [env["GH_TOKEN"] for env in pushed.network.pushes] == [_STORE_TOKEN]
 
     def test_a_token_without_the_marker_is_refused(self) -> None:
         child = self._child_env({"GH_TOKEN": _TOKEN})

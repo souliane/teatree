@@ -18,6 +18,7 @@ from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 MANAGED = "codex_like"
 CLAUDE_LIKE = "claude_like"
 CLAUDE_SDK = "claude_sdk"
+CODEX_CATALOG = Path(__file__).resolve().parents[1] / "fixtures" / "codex_app_server" / "0.155.1-models-cache.json"
 
 
 class CrashingSession(FakeHarnessSession):
