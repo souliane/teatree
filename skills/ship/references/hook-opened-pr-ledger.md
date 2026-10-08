@@ -4,12 +4,12 @@ Mechanics for [`../SKILL.md`](../SKILL.md) § 4a1.
 
 ## How one missing row loses the PR
 
-The no-orphan pre-push hook runs `t3 <overlay> pr ensure-pr` with no ticket handle, and `teatree.loop.scanners.pending_pr.PendingPrDrainScanner` re-runs the same path for a deferred first push. Both resolve the owning ticket through `teatree.core.management.commands._ensure_pr._ticket_for_branch` alone: the newest `Worktree` row on the branch. A checkout made by a bare `git worktree add` has no row, so the PR opens and nothing records it:
+The no-orphan pre-push hook runs `t3 <overlay> pr ensure-pr` with no ticket handle, and `teatree.loop.scanners.pending_pr.PendingPrDrainScanner` re-runs the same path for a deferred first push. Both resolve the owning ticket through `teatree.core.management.commands._ensure_pr._ticket_for_branch` alone, which asks `teatree.core.worktree.branch_owner.ticket_owning_pr_branch` for the one live author ticket whose `Worktree` row sits on the branch in the pushed repo. A checkout made by a bare `git worktree add` has no row, so the PR opens and nothing records it:
 
 - No `PullRequest` row is written, so `mcp__teatree__pr_for_ticket` is empty.
 - `teatree.core.models.ticket_introspection.TicketIntrospectionModel.has_shippable_diff` finds no worktree with commits ahead. The review step sets `shipping_skipped` ("no shippable diff") and the ticket is auto-ignored.
 - `teatree.core.merge.ticket_resolution.resolve_gated_ticket` finds no ledger row and no `MergeClear`, so the reviewer's brief carries no rubric and the rubric done-gate never binds the merge.
-- The hook writes its placeholder body before any ticket is known, so it carries no `Tracks <issue>` line. Unless the commit message itself has a closing keyword, `src/teatree/loop/manual_pr_reconcile.py` cannot attach the PR either.
+- The hook writes its placeholder body before any ticket is known, so it carries no `Tracks <issue>` line. Unless the commit message itself has a closing keyword, `src/teatree/loop/manual_pr_reconcile.py` cannot attach the PR through the body; it attaches it through the head branch (see Heal).
 
 That is how PR #4903 (issue #4900) merged with its ticket ignored and its rubric out of the merge gate's reach.
 
@@ -54,6 +54,10 @@ So a loop-dispatched coder or tester reads `mcp__teatree__worktree_status <ticke
 After the push that opens the PR, `mcp__teatree__pr_for_ticket <ticket>` lists its URL. An empty list means nothing was recorded, so heal it before the reviewing phase ends.
 
 ## Heal
+
+The reconciler heals the ledger by itself once a live ticket has a `Worktree` on the PR's head branch: on a later tick `teatree.loop.manual_pr_reconcile` records the row through `ticket_owning_pr_branch`, whatever the PR body says. A catch-all `auto:` ticket, a closed ticket, a reviewer-role ticket, another repo's row or two live tickets on one branch never own a PR. Until a row exists, `pr_sweep` refuses to merge an own PR on a verdict alone and DMs the owner once (`no_owning_ticket`), naming `worktree adopt` and `ticket clear`.
+
+When it has not, heal by hand:
 
 1. Run the `--adopt` command inside the checkout. The next review then sees the worktree's commits and schedules shipping. The adopt also stamps the delivery lease above, so that review waits up to an hour.
 2. Re-running `t3 <overlay> pr ensure-pr` does not heal it. On a branch with an open PR, `teatree.core.management.commands._ensure_pr.skip_for_classified` returns the "open PR exists" skip and records nothing.

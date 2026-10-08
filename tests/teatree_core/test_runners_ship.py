@@ -1677,7 +1677,7 @@ class TestPostPushRefusalLeavesAReconcilableState(TestCase):
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
-            repo_path=str(repo),
+            repo_path=repo.name,
             branch=self.BRANCH,
             extra={"worktree_path": str(repo)},
         )

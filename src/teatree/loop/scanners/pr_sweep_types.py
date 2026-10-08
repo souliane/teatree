@@ -63,6 +63,9 @@ CONTESTED_HOLD_REASON = "contested_hold_at_head"
 # to the owner exactly like the contested case — only the wording differs.
 HOLD_AT_HEAD_REASON = "hold_at_head"
 
+# Owner-audience (``OWNER_ESCALATION_FLAG_REASONS``): no ticket owns the PR, so no ticket-scoped gate binds.
+NO_OWNING_TICKET_REASON = "no_owning_ticket"
+
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:

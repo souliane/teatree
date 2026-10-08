@@ -29,6 +29,7 @@ from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_substrate import solo_overlay_substrate_authorized
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
+from tests._pr_ledger import own_pr
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
@@ -153,6 +154,7 @@ class _FakePinger:
 
 
 def _open_pr() -> PrSummary:
+    own_pr(SLUG, PR_ID)
     return PrSummary(
         slug=SLUG,
         number=PR_ID,
