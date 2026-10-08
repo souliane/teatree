@@ -566,10 +566,10 @@ repos:
       - id: ensure-pr
         name: ensure PR exists (no-orphan invariant)
         language: system
-        # --all-packages: a member-dir `uv run` registers only t3-teatree, so no overlay's bot declaration is visible.
-        entry: scripts/hooks/branch-push-only.sh uv run --all-packages t3 teatree pr ensure-pr
+        entry: scripts/hooks/branch-push-only.sh scripts/hooks/ensure-pr-installed-t3.sh
         pass_filenames: false
         always_run: true
+        verbose: true
         stages: [push]
 
   # Phase 9a - Named regression-detector rules (blocking; zero-findings on main).
