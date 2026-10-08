@@ -11,7 +11,7 @@ from teatree.skill_support.pin_shadow import (
     SkillShadowsDeclaredPinError,
     declared_pin_specs,
 )
-from tests._unreadable_apm_manifest import unreadable_running_manifest
+from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST, unreadable_running_manifest
 
 
 def _skill(root: Path, name: str) -> Path:
@@ -74,12 +74,12 @@ def test_a_missing_manifest_declares_nothing(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "body",
-    ["dependencies: [unclosed", "- just\n- a list\n", "dependencies:\n  pip: []\n"],
-    ids=["unparsable", "not-a-mapping", "no-apm-list"],
+    [UNPARSABLE_MANIFEST, b"- just\n- a list\n", b"dependencies:\n  pip: []\n", NOT_UTF8_MANIFEST],
+    ids=["unparsable", "not-a-mapping", "no-apm-list", "not-utf8"],
 )
-def test_an_unreadable_manifest_is_the_pin_refusal_naming_the_file_and_its_restore(tmp_path: Path, body: str) -> None:
+def test_an_unreadable_manifest_is_the_pin_refusal_naming_the_file_and_its_restore(tmp_path: Path, body: bytes) -> None:
     manifest = tmp_path / "apm.yml"
-    manifest.write_text(body, encoding="utf-8")
+    manifest.write_bytes(body)
 
     with pytest.raises(SkillPinsUnreadableError) as excinfo:
         declared_pin_specs(manifest)

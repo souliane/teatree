@@ -23,7 +23,7 @@ from teatree.loop.drain import set_worker_quiescing
 from teatree.skill_support import index as skill_index
 from tests._loop_principal_env import pinned_loop_principal
 from tests._pr_open_state_stub import mint_open_pr_review
-from tests._unreadable_apm_manifest import unreadable_running_manifest
+from tests._unreadable_apm_manifest import NOT_UTF8_MANIFEST, UNPARSABLE_MANIFEST, unreadable_running_manifest
 from tests.factories import planned_ticket
 
 
@@ -192,7 +192,7 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert "souliane/skills/ac-django#" in error
         assert str(shadow) in error
 
-    def test_an_unreadable_manifest_parks_the_claim_instead_of_dispatching_an_empty_bundle(self) -> None:
+    def _assert_claim_parks_on(self, body: bytes) -> None:
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
             issue_url="https://example.com/pr/1",
@@ -201,7 +201,7 @@ class TestClaimNextPayload(_LoopDispatchTest):
         )
         task = mint_open_pr_review(ticket)
         stdout = StringIO()
-        with tempfile.TemporaryDirectory() as scratch, unreadable_running_manifest(Path(scratch)):
+        with tempfile.TemporaryDirectory() as scratch, unreadable_running_manifest(Path(scratch), body):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
 
         task.refresh_from_db()
@@ -210,6 +210,12 @@ class TestClaimNextPayload(_LoopDispatchTest):
         assert task.not_before is not None
         assert task.not_before > timezone.now()
         assert task.attempts.get().error.startswith("limit_parked: pins_unreadable: ")
+
+    def test_an_unreadable_manifest_parks_the_claim_instead_of_dispatching_an_empty_bundle(self) -> None:
+        self._assert_claim_parks_on(UNPARSABLE_MANIFEST)
+
+    def test_a_manifest_that_is_not_utf8_parks_the_claim_instead_of_dispatching_an_empty_bundle(self) -> None:
+        self._assert_claim_parks_on(NOT_UTF8_MANIFEST)
 
     def test_any_other_bundle_failure_still_dispatches_with_an_empty_bundle(self) -> None:
         self._reviewer_task()

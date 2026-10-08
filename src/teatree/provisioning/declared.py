@@ -140,7 +140,7 @@ def apm_entries(manifest: Path) -> list[str]:
     """
     try:
         data = yaml.safe_load(_read_text(manifest, _APM_MANIFEST))
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, UnicodeError) as exc:
         msg = f"{_APM_MANIFEST} is not parsable at {manifest}: {exc}"
         raise DeclarationMalformedError(msg) from exc
     if not isinstance(data, dict):
