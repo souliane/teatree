@@ -30,7 +30,7 @@ from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
-from teatree.core.models.worktree import Worktree
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.skill_support.index import harness_skills_dirs, resolve_skill_md
 
 if TYPE_CHECKING:
@@ -319,20 +319,13 @@ def _wire_teatree_mcp_server(options: ClaudeAgentOptions, *, phase: str) -> None
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
-    """Determine the working directory for a task from its ticket's worktrees.
+    """The ticket's materialised worktree (``extra['worktree_path']``), else the main-clone fallback.
 
-    A materialised ticket worktree wins. When there is none, a scanner-dispatched
-    repo-work phase (``architectural_review``) falls back to the overlay's main
-    teatree clone (:func:`_main_clone_cwd`) — its synthetic per-overlay ticket
-    carries no worktree, yet the review must start IN a checkout to Read the tree,
-    do ``git`` archaeology, run ``t3 tool verify-gates``, and cold-worktree off it.
-    Every other phase keeps the historical ``None`` (cwd unset) when no ticket
-    worktree exists.
+    ``Worktree.repo_path`` is a repo identifier, never a directory. A scanner-dispatched
+    repo-work phase (``architectural_review``) with no worktree falls back to the overlay's
+    main teatree clone (:func:`_main_clone_cwd`); every other phase keeps ``None`` (cwd unset).
     """
-    worktree = Worktree.objects.for_ticket(task.ticket).order_by("pk").first()
-    if worktree and Path(worktree.repo_path).is_dir():
-        return str(worktree.repo_path)
-    return _main_clone_cwd(task)
+    return dispatch_worktree_path(task.ticket) or _main_clone_cwd(task)
 
 
 #: Scanner-dispatched repo-work phases whose synthetic ticket carries no

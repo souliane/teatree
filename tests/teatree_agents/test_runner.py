@@ -982,7 +982,7 @@ class TestResolveTaskCwd(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
         with tempfile.TemporaryDirectory() as repo_dir:
-            Worktree.objects.create(ticket=ticket, repo_path=repo_dir)
+            Worktree.objects.create(ticket=ticket, repo_path="org/repo", extra={"worktree_path": repo_dir})
             assert _resolve_task_cwd(task) == repo_dir
 
     def test_worktree_with_missing_repo_path_returns_none(self) -> None:
@@ -992,7 +992,7 @@ class TestResolveTaskCwd(TestCase):
         ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
-        Worktree.objects.create(ticket=ticket, repo_path="/nonexistent/repo/path")
+        Worktree.objects.create(ticket=ticket, repo_path="org/repo", extra={"worktree_path": "/nonexistent/repo/path"})
         assert _resolve_task_cwd(task) is None
 
     def test_architectural_review_with_no_worktree_falls_back_to_t3_repo_clone(self) -> None:
