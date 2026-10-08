@@ -294,7 +294,7 @@ def run_visual_qa_gate(ticket: Ticket, worktree: Worktree, *, skip_reason: str =
     ``resolve_and_reconcile_branch`` may have just invalidated — on a multi-repo
     ticket that raised out of the ``manage.py`` subprocess as a bare ``rc=1``.
     """
-    repo_path = worktree.repo_path
+    repo_path = worktree.worktree_path or worktree.repo_path
     base_url = resolve_base_url(worktree)
 
     overlay = get_overlay()

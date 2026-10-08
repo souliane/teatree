@@ -214,6 +214,39 @@ class TestRunVisualQAGate(TestCase):
         # The invoking PR-B repo is scanned — NOT the stale PR-A first() row.
         assert captured["repo"] == "/tmp/repo-pr-b"
 
+    @staticmethod
+    def _repo_given_to_changed_files(ticket: Ticket, worktree: Worktree) -> str:
+        captured: dict[str, str] = {}
+
+        def fake_changed_files(*, repo: str) -> list[str]:
+            captured["repo"] = repo
+            return []
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(visual_qa, "changed_files", side_effect=fake_changed_files),
+        ):
+            assert _run_visual_qa_gate(ticket, worktree) is None
+        return captured["repo"]
+
+    def test_reads_the_diff_from_the_checkout_directory_not_the_repo_slug(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/5145")
+        with tempfile.TemporaryDirectory() as checkout:
+            worktree = Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="souliane/teatree",
+                branch="feat-slug",
+                extra={"worktree_path": checkout},
+            )
+
+            assert self._repo_given_to_changed_files(ticket, worktree) == checkout
+
+    def test_reads_the_diff_from_repo_path_when_no_checkout_directory_is_recorded(self) -> None:
+        ticket, worktree = self._ticket_and_worktree()
+
+        assert self._repo_given_to_changed_files(ticket, worktree) == "/tmp/wt"
+
     def test_skip_reason_propagates(self) -> None:
         ticket, worktree = self._ticket_and_worktree()
         captured: dict[str, str] = {}
