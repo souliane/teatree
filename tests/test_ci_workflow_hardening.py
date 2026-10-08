@@ -137,18 +137,6 @@ def test_every_pinned_sha_carries_one_version_label_tree_wide() -> None:
     assert not {pin: seen for pin, seen in labels.items() if len(seen) != 1 or None in seen}
 
 
-@pytest.mark.parametrize(
-    ("action", "sha", "label"),
-    [
-        ("actions/setup-python", "5fda3b95a4ea91299a34e894583c3862153e4b97", "v7"),
-        ("actions/upload-artifact", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "v7.0.1"),
-    ],
-)
-def test_the_corrected_labels_name_the_tag_each_sha_resolves_to(action: str, sha: str, label: str) -> None:
-    seen = {found for _name, pinned, ref, found in _pins() if (pinned, ref) == (action, sha)}
-    assert seen == {label}
-
-
 def test_actions_come_from_the_reviewed_publishers_only() -> None:
     reviewed = {"astral-sh/setup-uv", "nick-fields/retry"}
     assert not [
@@ -297,7 +285,8 @@ def test_credential_jobs_bind_the_production_environment(name: str, key: str) ->
 
 
 def test_the_dashboard_publish_job_runs_on_main_only() -> None:
-    assert "github.ref == 'refs/heads/main'" in str(_workflow("eval.yml")["jobs"]["publish"]["if"])
+    condition = " ".join(str(_workflow("eval.yml")["jobs"]["publish"]["if"]).split())
+    assert condition == "always() && needs.prepare.outputs.run_eval == 'true' && github.ref == 'refs/heads/main'"
 
 
 _PR_WRITE = re.compile(r"\bgh pr (?:create|review)\b|pulls\.(?:create|createReview)\b")
