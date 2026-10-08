@@ -11,12 +11,19 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.loop.transient_requeue import requeue_transient_failed
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._route_fakes import CLAUDE_LIKE, MANAGED, register_stub_harnesses, route_config, routed_by
+from tests.teatree_agents._route_fakes import (
+    CLAUDE_LIKE,
+    MANAGED,
+    CrashingSession,
+    register_stub_harnesses,
+    route_config,
+    routed_by,
+)
 
 
 class TestRoutedCrashIsRequeuedOntoTheNextCandidate(TestCase):
     def test_the_sweep_reopens_the_task_and_the_next_dispatch_resolves_candidate_one(self) -> None:
-        register_stub_harnesses(self, MANAGED, CLAUDE_LIKE, crashing=(MANAGED,))
+        register_stub_harnesses(self, MANAGED, CLAUDE_LIKE, sessions={MANAGED: CrashingSession})
         ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="debugging")
         config = route_config("route-skill", MANAGED, CLAUDE_LIKE)

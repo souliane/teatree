@@ -57,6 +57,17 @@ _FALLBACK_PATTERNS = (
     re.compile(r"\b(?:spawn|process|could not start|failed to start|enoent)\b", re.IGNORECASE),
 )
 
+_STICKY_PATTERN = re.compile(
+    r"\b(?:401|403|429|auth(?:entication|orization)?|credential|quota|(?:rate|usage).?limit"
+    r"|subscription_(?:session|weekly)|api_credit|provider_budget)\b",
+    re.IGNORECASE,
+)
+
+
+def sticky_reason(text: str) -> bool:
+    """Whether a failure names a quota or credential state that will not clear in a couple of minutes."""
+    return _STICKY_PATTERN.search(text) is not None
+
 
 def runtime_fallback_reason(error: BaseException | str) -> str | None:
     text = str(error).strip()
@@ -82,6 +93,7 @@ _LOCK = RLock()
 # Re-reading durable state on every dispatch would defeat the no-DB-hot-path goal.
 _AVAILABLE_TTL = timedelta(minutes=10)
 _UNAVAILABLE_TTL = timedelta(minutes=2)
+QUOTA_AUTH_HOLD = timedelta(hours=1)
 
 
 def _key(overlay: str, candidate: AgentRouteCandidate, phase: str) -> _AvailabilityKey:

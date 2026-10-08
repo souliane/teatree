@@ -11,12 +11,19 @@ from teatree.core.models import Session, Task, TaskAttempt
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.types import SkillMetadata
 from tests.factories import planned_ticket
-from tests.teatree_agents._route_fakes import CLAUDE_LIKE, MANAGED, register_stub_harnesses, route_config, routed_by
+from tests.teatree_agents._route_fakes import (
+    CLAUDE_LIKE,
+    MANAGED,
+    CrashingSession,
+    register_stub_harnesses,
+    route_config,
+    routed_by,
+)
 
 
 class TestRoutedCrash(TestCase):
     def setUp(self) -> None:
-        register_stub_harnesses(self, MANAGED, CLAUDE_LIKE, crashing=(MANAGED,))
+        register_stub_harnesses(self, MANAGED, CLAUDE_LIKE, sessions={MANAGED: CrashingSession})
         ticket = planned_ticket()
         self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="debugging")
 

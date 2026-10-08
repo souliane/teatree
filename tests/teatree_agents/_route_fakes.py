@@ -39,13 +39,35 @@ class StubHarness:
         yield self.session(success_stream({"summary": "done"}))
 
 
-def register_stub_harnesses(test: TestCase, *names: str, crashing: tuple[str, ...] = ()) -> None:
-    """Register a stub harness per name for the test's lifetime; ``codex_like`` rides the managed lane."""
+def failing_session(error: Exception) -> type[FakeHarnessSession]:
+    class FailingSession(FakeHarnessSession):
+        async def query(self, prompt: str) -> None:
+            del prompt
+            raise error
+
+    return FailingSession
+
+
+def scripted_session(messages: list[object]) -> type[FakeHarnessSession]:
+    class ScriptedSession(FakeHarnessSession):
+        def __init__(self, _ignored: list[object], *, delay: float = 0.0) -> None:
+            super().__init__(messages, delay=delay)
+
+    return ScriptedSession
+
+
+def register_stub_harnesses(
+    test: TestCase, *names: str, sessions: dict[str, type[FakeHarnessSession]] | None = None
+) -> None:
+    """Register a stub harness per name for the test's lifetime; ``codex_like`` rides the managed lane.
+
+    *sessions* swaps the session a named harness opens (default: one that finishes cleanly).
+    """
     clear_route_availability_cache()
     test.addCleanup(clear_route_availability_cache)
     for name in names:
         capabilities = HarnessCapabilities(managed_lane=name == MANAGED)
-        session = CrashingSession if name in crashing else FakeHarnessSession
+        session = (sessions or {}).get(name, FakeHarnessSession)
 
         def build(
             _context: HarnessBuildContext,

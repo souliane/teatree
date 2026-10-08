@@ -20,7 +20,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
-from django.utils import timezone
 
 from teatree.agents._runner_env import (
     DispatchCredential,
@@ -69,6 +68,7 @@ from teatree.agents.runner_route_recording import dispatch_provider_name as _dis
 from teatree.agents.runner_route_recording import fail_routed_crash as _fail_routed_crash
 from teatree.agents.runner_route_recording import fallback_reason_for_outcome as _fallback_reason_for_outcome
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
+from teatree.agents.runner_route_recording import park_after_route_failure as _park_after_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
 from teatree.agents.runner_skill_staging import staged_skills_or_refusal
@@ -141,9 +141,9 @@ class _RouteRetry:
         if record.outcome is not None:
             release_finished_thread(self.task)
             if record.outcome.tool_calls:
-                self.task.park(not_before=timezone.now())
+                _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        _learn_route_failure(self.task, self.dispatch, record.reason, phase=self.phase)
+        _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
         return _run_agent(
             self.task,
             phase=self.phase,
@@ -188,10 +188,11 @@ def _retry_route_exception(
         preflight.skills,
         fallback=fallback,
         agent_session_id=exc.agent_session_id if isinstance(exc, HarnessFallbackError) else "",
+        kind=exc.kind if isinstance(exc, HarnessFallbackError) else None,
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
-        task.park(not_before=timezone.now())
+        _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
     if preflight.dispatch.route_candidate_index is None:
         return None
