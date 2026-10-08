@@ -12,6 +12,8 @@ _DECIDING_MODULES = (
     "core/models/outer_loop_experiment.py",
     "core/models/approval_metrics.py",
     "loop/question_binding.py",
+    "core/management/commands/questions.py",
+    "mcp/write_tools.py",
     *sorted(str(path.relative_to(SRC_DIR)) for path in SRC_DIR.glob("loops/*/ratify.py")),
 )
 _PROCESS_PROBES = frozenset({"environ", "getenv", "isatty", "getppid", "ttyname", "psutil"})
