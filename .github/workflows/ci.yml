@@ -1755,7 +1755,7 @@ jobs:
           uv run t3 tool dependency-audit --report audit-report.json
       - name: Point a red audit at the cooldown escape routine
         if: failure() && steps.audit.outcome == 'failure'
-        run: echo "::error::A fixed release younger than the 7-day dependency cooldown is taken through a dated [tool.uv] exclude-newer-package entry - BLUEPRINT §15 'Taking a security fix inside the window'."
+        run: echo "::error::A fixed release still inside the dependency cooldown hold window is taken through a dated [tool.uv] exclude-newer-package entry - BLUEPRINT §15 'Taking a security fix inside the window'."
       # PyPI is read only while an escape entry exists; an expired one reds the scheduled run alone.
       - name: Cooldown escapes
         if: ${{ !cancelled() }}
