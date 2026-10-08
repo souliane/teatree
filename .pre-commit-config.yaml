@@ -52,7 +52,7 @@ repos:
 
   # Phase 1 - Init
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 5ab6bd930e86ba0e929eedcee2be458f6b8e4936  # 0.8.16
+    rev: a1785f8e81fe9936d828bef574e6db07e8c8c374  # 0.12.23
     hooks:
       - id: uv-lock
       - id: uv-sync

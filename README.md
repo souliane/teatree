@@ -642,7 +642,7 @@ skills carry the rest.
 
 ## Get Started
 
-**Prerequisites:** Python 3.13+, [uv](https://docs.astral.sh/uv/).
+**Prerequisites:** Python 3.13+, [uv](https://docs.astral.sh/uv/) 0.9.17+.
 
 ### For users
 
