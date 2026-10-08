@@ -1753,6 +1753,15 @@ jobs:
           uvx pip-audit@2.10.1 --vulnerability-service osv --disable-pip --format json \
             -r requirements.audit.txt $IGNORE_FLAGS > audit-report.json || true
           uv run t3 tool dependency-audit --report audit-report.json
+      - name: Point a red audit at the cooldown escape routine
+        if: failure() && steps.audit.outcome == 'failure'
+        run: echo "::error::A fixed release still inside the dependency cooldown hold window is taken through a dated [tool.uv] exclude-newer-package entry - BLUEPRINT §15 'Taking a security fix inside the window'."
+      # PyPI is read only while an escape entry exists; an expired one reds the scheduled run alone.
+      - name: Cooldown escapes
+        if: ${{ !cancelled() }}
+        env:
+          FAIL_ON_EXPIRED: ${{ github.event_name == 'schedule' && '--fail-on-expired' || '' }}
+        run: python scripts/ci/cooldown_escapes.py --verify-lock ${FAIL_ON_EXPIRED:+"$FAIL_ON_EXPIRED"}
 
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.

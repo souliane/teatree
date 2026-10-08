@@ -57,11 +57,14 @@ class TestClassify:
             ("6.0.7", "6.0.8", Level.PATCH),
             ("1.2", "1.2.1", Level.PATCH),
             ("2.0.0b1", "2.0.0", Level.PATCH),
-            ("1.2.4", "1.2.3", Level.PATCH),
+            ("1.2.4", "1.2.3", Level.DOWNGRADE),
             ("6.0.7", "6.1", Level.MINOR),
             ("0.9.1", "0.10.0", Level.MINOR),
             ("1.2.3", "2.0.0", Level.MAJOR),
-            ("2.0.0", "1.9.0", Level.MAJOR),
+            ("2.0.0", "1.9.0", Level.DOWNGRADE),
+            pytest.param("1.2.4-custom", "1.2.3-custom", Level.DOWNGRADE, id="non-pep440-falls-back-to-release"),
+            pytest.param("2.0.0a1", "2.0.0.dev1", Level.DOWNGRADE, id="dev-release-sorts-before-alpha"),
+            pytest.param("1!1.0.0", "2.0.0", Level.DOWNGRADE, id="epoch-outranks-release"),
         ],
     )
     def test_boundary_level(self, before: str, after: str, expected: Level) -> None:
@@ -70,6 +73,34 @@ class TestClassify:
     @pytest.mark.parametrize(("before", "after"), [("abc", "1.2.3"), ("1.2.3", ""), ("", "")])
     def test_unparsable_version_is_unknown_not_patch(self, before: str, after: str) -> None:
         assert classify(before, after) is Level.UNKNOWN
+
+
+_COOLDOWN_DOWNGRADES = (("mcp", "2.3.0", "2.2.0"), ("tach", "0.35.2", "0.35.1"))
+
+
+class TestDowngrade:
+    @pytest.mark.parametrize(
+        ("before", "after"), [("1.2.3.20261005", "1.2.3.20260901"), ("1.0.0.post1", "1.0.0"), ("2.0.0", "2.0.0rc1")]
+    )
+    def test_a_downgrade_past_the_third_segment_is_still_a_downgrade(self, before: str, after: str) -> None:
+        assert classify(before, after) is Level.DOWNGRADE
+        assert classify(after, before) is Level.PATCH
+
+    def test_a_downgrade_withholds_auto_merge(self) -> None:
+        before = parse_lock(_lock(*((name, old) for name, old, _ in _COOLDOWN_DOWNGRADES)))
+        after = parse_lock(_lock(*((name, new) for name, _, new in _COOLDOWN_DOWNGRADES)))
+        delta = compute_delta(before, after)
+        assert [move.name for move in delta.blockers] == ["mcp", "tach"]
+        assert auto_merge_safe(delta) is False
+
+    def test_a_downgrade_leads_the_body(self) -> None:
+        before = parse_lock(_lock(("aaa", "1.0.0"), *((name, old) for name, old, _ in _COOLDOWN_DOWNGRADES)))
+        after = parse_lock(_lock(("aaa", "2.0.0"), *((name, new) for name, _, new in _COOLDOWN_DOWNGRADES)))
+        body = render_body(compute_delta(before, after))
+        assert "| --- | --- | --- | --- |\n| `mcp` | 2.3.0 | 2.2.0 | downgrade |\n| `tach`" in body
+        verdict = body.split("### Version moves")[0]
+        assert verdict.index("`mcp` 2.3.0 → 2.2.0") < verdict.index("`tach`") < verdict.index("`aaa`")
+        assert "older release" in verdict
 
 
 class TestComputeDelta:
