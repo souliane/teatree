@@ -32,7 +32,7 @@
     },
     {
       "bom-ref": "requirements-L7",
-      "description": "requirements line 7: anthropic==1.8.0",
+      "description": "requirements line 7: anthropic==1.11.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -41,9 +41,9 @@
         }
       ],
       "name": "anthropic",
-      "purl": "pkg:pypi/anthropic@1.8.0",
+      "purl": "pkg:pypi/anthropic@1.11.0",
       "type": "library",
-      "version": "1.8.0"
+      "version": "1.11.0"
     },
     {
       "bom-ref": "requirements-L9",
@@ -602,7 +602,7 @@
     },
     {
       "bom-ref": "requirements-L130",
-      "description": "requirements line 130: mcp==2.3.0",
+      "description": "requirements line 130: mcp==2.2.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -611,13 +611,13 @@
         }
       ],
       "name": "mcp",
-      "purl": "pkg:pypi/mcp@2.3.0",
+      "purl": "pkg:pypi/mcp@2.2.0",
       "type": "library",
-      "version": "2.3.0"
+      "version": "2.2.0"
     },
     {
       "bom-ref": "requirements-L134",
-      "description": "requirements line 134: mcp-types==2.3.0",
+      "description": "requirements line 134: mcp-types==2.2.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -626,9 +626,9 @@
         }
       ],
       "name": "mcp-types",
-      "purl": "pkg:pypi/mcp-types@2.3.0",
+      "purl": "pkg:pypi/mcp-types@2.2.0",
       "type": "library",
-      "version": "2.3.0"
+      "version": "2.2.0"
     },
     {
       "bom-ref": "requirements-L136",
@@ -872,7 +872,7 @@
     },
     {
       "bom-ref": "requirements-L189",
-      "description": "requirements line 189: pydantic-ai-slim==2.51.0",
+      "description": "requirements line 189: pydantic-ai-slim==2.53.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -881,9 +881,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.51.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.53.0",
       "type": "library",
-      "version": "2.51.0"
+      "version": "2.53.0"
     },
     {
       "bom-ref": "requirements-L191",
@@ -902,7 +902,7 @@
     },
     {
       "bom-ref": "requirements-L193",
-      "description": "requirements line 193: pydantic-graph==2.51.0",
+      "description": "requirements line 193: pydantic-graph==2.53.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -911,9 +911,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.51.0",
+      "purl": "pkg:pypi/pydantic-graph@2.53.0",
       "type": "library",
-      "version": "2.51.0"
+      "version": "2.53.0"
     },
     {
       "bom-ref": "requirements-L195",
