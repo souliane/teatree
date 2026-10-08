@@ -24,6 +24,7 @@ def _ratify_asked() -> Directive:
 
 
 def _reply_on_slack(question: DeferredQuestion, *, author: str) -> None:
+    assert question.mark_mirrored(channel="D-owner", slack_ts="800.0")
     assert PendingChatInjection.record(
         channel="D-owner", slack_ts="900.0", text=f"#{question.pk} approve", context=DmContext(user_id=author)
     )

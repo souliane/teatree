@@ -11,7 +11,8 @@ module, so the reply→question join cannot drift between them.
 The ladder, strongest evidence first:
 
 (a) an explicit ``#<id>`` prefix — the format the backlog digest already
-instructs the owner to reply in, and which until now nothing parsed;
+instructs the owner to reply in, and which until now nothing parsed — naming a
+question mirrored on the reply's own DM;
 (b) the reply's ``thread_ts`` — an exact join onto the question's mirror ts;
 (c) a top-level reply when exactly ONE live question is mirrored on the channel.
 
@@ -50,7 +51,7 @@ class BoundAnswer:
     answer: str
 
 
-def owner_user_id(backend: object) -> str:
+def configured_owner_id(backend: object) -> str:
     return str(getattr(backend, "user_id", "") or "")
 
 
@@ -68,7 +69,7 @@ def bind_reply(
     addressed = _addressed(body)
     if addressed is not None:
         question_id, body = addressed
-        question = _pending_by_id(question_id)
+        question = _pending_by_id(question_id, channel=reply.channel)
     else:
         question = _inferred_question(reply)
     if question is None:
@@ -142,9 +143,10 @@ def _addressed(text: str) -> tuple[int, str] | None:
     return None if match is None else (int(match.group(1)), (match.group(2) or "").strip())
 
 
-def _pending_by_id(question_id: int) -> DeferredQuestion | None:
+def _pending_by_id(question_id: int, *, channel: str) -> DeferredQuestion | None:
     return DeferredQuestion.objects.filter(
         pk=question_id,
+        slack_channel=channel,
         answered_at__isnull=True,
         dismissed_at__isnull=True,
     ).first()
@@ -193,4 +195,4 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
     return options
 
 
-__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "owner_user_id", "resolve_answer"]
+__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "configured_owner_id", "resolve_answer"]

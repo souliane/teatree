@@ -267,7 +267,7 @@ class Command(MachineOutputCommand):
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
-        # The command line cannot prove who is typing, so neither stamp is an owner channel.
+        # A command-line answer is never an owner channel.
         resolved_via = DeferredQuestion.ResolvedVia.AGENT if agent_surface else DeferredQuestion.ResolvedVia.LOCAL
         answered: list[int] = []
         skipped: list[int] = []

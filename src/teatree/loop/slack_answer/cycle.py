@@ -58,7 +58,7 @@ from dataclasses import dataclass, field
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.loop.inbound_reading import InboundIntent, InboundReader, InboundReading, read_inbound
-from teatree.loop.question_binding import apply_bound_answer, bind_reply, owner_user_id
+from teatree.loop.question_binding import apply_bound_answer, bind_reply, configured_owner_id
 from teatree.loop.slack_answer.orchestration import Coverage, WorkOrigin, dispatch_work, find_coverage, work_fingerprint
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
 from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
@@ -450,7 +450,7 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     idempotency boundary, and a lost apply (a concurrent answer won) releases it
     so nothing carries a receipt for a question it did not resolve.
     """
-    bound = bind_reply(unit.lead, reader=reader, owner_user_id=owner_user_id(backend), text=unit.text)
+    bound = bind_reply(unit.lead, reader=reader, owner_user_id=configured_owner_id(backend), text=unit.text)
     if bound is None:
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):

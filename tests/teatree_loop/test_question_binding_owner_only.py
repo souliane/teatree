@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.core.models import DmContext, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.question_binding import bind_reply, owner_user_id
+from teatree.loop.question_binding import bind_reply, configured_owner_id
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from tests._owner_channel import OWNER_SLACK_ID
@@ -82,10 +82,24 @@ class TestOnlyTheOwnersReplyBinds(TestCase):
             _scan(backend)
         self._assert_unbound(question, backend, reply)
 
+    def test_an_id_reply_in_another_dm_binds_nothing(self) -> None:
+        question = _question("Ratify?", slack_ts="100.0")
+        reply = PendingChatInjection.record(
+            channel="D-other-overlay",
+            slack_ts="400.0",
+            text=f"#{question.pk} approve",
+            overlay="other",
+            context=DmContext(user_id="U9"),
+        )
+        assert reply is not None
+        backend = FakeMessaging(user_id="U9")
+        AskUserQuestionReplyScanner(backend=backend, overlay="other", reader=_statement).scan()
+        self._assert_unbound(question, backend, reply)
+
     def test_a_backend_with_no_owner_configured_binds_nothing(self) -> None:
         _question("Ship it?", slack_ts="100.0")
         reply = _reply("yes", author="")
-        assert bind_reply(reply, reader=_statement, owner_user_id=owner_user_id(NoopMessagingBackend())) is None
+        assert bind_reply(reply, reader=_statement, owner_user_id=configured_owner_id(NoopMessagingBackend())) is None
 
     def test_the_owners_reply_binds_and_is_recorded_as_slack(self) -> None:
         question = _question("Ship it?", slack_ts="100.0")
