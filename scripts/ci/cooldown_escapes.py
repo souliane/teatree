@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-type FetchJson = Callable[[str], Mapping[str, Any]]
+type FetchJson = Callable[[str, str], Mapping[str, Any]]
 
 _WINDOW = re.compile(r"^(\d+) days?$")
 _WHOLE_SECOND_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -133,15 +133,14 @@ class LockAudit:
         ]
 
     def _uploads(self, package: str, version: str) -> dict[str, datetime]:
-        url = f"https://pypi.org/pypi/{package}/{version}/json"
         try:
-            files = self._fetch_json(url)["urls"]
+            files = self._fetch_json(package, version)["urls"]
             uploads = {str(file["filename"]): datetime.fromisoformat(file["upload_time_iso_8601"]) for file in files}
         except (OSError, ValueError, KeyError, TypeError) as error:
-            msg = f"could not read {url}: {error!r}"
+            msg = f"could not read PyPI's {package} {version} files: {error!r}"
             raise PypiUnreadableError(msg) from error
         if not uploads:
-            msg = f"{url} lists no files"
+            msg = f"PyPI lists no files for {package} {version}"
             raise PypiUnreadableError(msg)
         return uploads
 
@@ -166,8 +165,8 @@ def _canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _fetch_json(url: str) -> Mapping[str, Any]:
-    with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 — a fixed https://pypi.org URL
+def _fetch_json(package: str, version: str) -> Mapping[str, Any]:
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/{version}/json", timeout=30) as response:
         return json.load(response)
 
 

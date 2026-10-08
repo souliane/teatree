@@ -1,17 +1,20 @@
+import io
 import json
 import re
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable, Mapping
+import urllib.request
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
 
-from scripts.ci.cooldown_escapes import main
+from scripts.ci.cooldown_escapes import FetchJson, main
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "ci" / "cooldown_escapes.py"
@@ -29,8 +32,6 @@ _MCP_WHEEL = "mcp-2.3.0-py3-none-any.whl"
 _MCP_SDIST = "mcp-2.3.0.tar.gz"
 _MCP_FILES = ((_MCP_WHEEL, "2026-10-02T22:06:52.119Z"), (_MCP_SDIST, "2026-10-02T22:06:56.091Z"))
 _ROUNDED_UP = "2026-10-02T22:06:57Z"
-
-type FetchJson = Callable[[str], Mapping[str, Any]]
 
 
 def _hook_pin(config: str) -> tuple[str, str]:
@@ -68,18 +69,20 @@ def _lock(tmp_path: Path, files: tuple[str, ...] = (_MCP_WHEEL, _MCP_SDIST)) -> 
     return path
 
 
-def _pypi(files: tuple[tuple[str, str], ...] = _MCP_FILES) -> FetchJson:
-    payload = json.dumps({"urls": [{"filename": name, "upload_time_iso_8601": at} for name, at in files]})
+def _release_json(files: tuple[tuple[str, str], ...] = _MCP_FILES) -> str:
+    return json.dumps({"urls": [{"filename": name, "upload_time_iso_8601": at} for name, at in files]})
 
-    def fetch(url: str) -> Mapping[str, Any]:
-        assert url == _MCP_JSON_URL
-        return json.loads(payload)
+
+def _pypi(files: tuple[tuple[str, str], ...] = _MCP_FILES) -> FetchJson:
+    def fetch(package: str, version: str) -> Mapping[str, Any]:
+        assert (package, version) == ("mcp", "2.3.0")
+        return json.loads(_release_json(files))
 
     return fetch
 
 
-def _unreachable(url: str) -> Mapping[str, Any]:
-    raise OSError(url)
+def _unreachable(package: str, version: str) -> Mapping[str, Any]:
+    raise OSError(package)
 
 
 def _run(
@@ -204,6 +207,13 @@ class TestEscapeEntries:
 class TestVerifyLock:
     def test_passes_with_the_newest_upload_rounded_up_and_every_file_locked(self, tmp_path: Path) -> None:
         assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi()) == 0
+
+    def test_reads_the_escaped_release_from_the_pypi_json_api(self, tmp_path: Path) -> None:
+        pyproject = _pyproject(tmp_path, f'mcp = "{_ROUNDED_UP}"')
+        argv = ["--pyproject", str(pyproject), "--lock", str(_lock(tmp_path)), "--verify-lock"]
+        with patch.object(urllib.request, "urlopen", return_value=io.BytesIO(_release_json().encode())) as urlopen:
+            assert main(argv, now=_NOW) == 0
+        assert urlopen.call_args.args == (_MCP_JSON_URL,)
 
     def test_fails_on_a_cutoff_equal_to_a_file_upload_time(self, tmp_path: Path) -> None:
         assert _run(tmp_path, 'mcp = "2026-10-02T22:06:56.091Z"', "--verify-lock", fetch_json=_pypi()) == 1
