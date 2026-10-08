@@ -4,8 +4,9 @@ from functools import partial
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.db import transaction
-from django.tasks import task
+from django.tasks import TaskResultStatus, task
 from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
 
 from teatree.config import worktree_root
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
@@ -299,7 +300,7 @@ def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
 
 
 @task()
-def execute_teardown(ticket_id: int) -> TransitionResult:
+def execute_teardown(ticket_id: int, *, fsm_terminal: bool = True) -> TransitionResult:
     """Tear down worktrees for a terminal-state ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -339,7 +340,7 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-    result = WorktreeTeardown(ticket).run()
+    result = WorktreeTeardown(ticket, fsm_terminal=fsm_terminal).run()
     if not result.ok:
         logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
@@ -363,6 +364,10 @@ class TeardownDispatch:
     #: Bound from the real task, so the queue read still finds the rows a test's
     #: patched ``execute_teardown`` stand-in would not know its own path for.
     TASK_PATH = execute_teardown.module_path
+    #: Teardowns one drain queues, however long the backlog; the next pass takes the rest.
+    DRAIN_BATCH_LIMIT = 10
+    #: A teardown that finished is not re-queued by the drain for this long: a refusal rarely clears within hours.
+    RETRY_COOLDOWN = dt.timedelta(hours=6)
 
     @staticmethod
     def outstanding_for(ticket_id: int, *, now: "dt.datetime | None" = None) -> bool:
@@ -391,9 +396,6 @@ class TeardownDispatch:
         rather than raises when it leaves a worktree standing (#706/#707), so
         SUCCESSFUL routinely means "ran, and the worktree is still there".
         """
-        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
-
         rows = DBTaskResult.objects.filter(
             task_path=TeardownDispatch.TASK_PATH,
             status__in=[TaskResultStatus.READY, TaskResultStatus.RUNNING],
@@ -411,7 +413,7 @@ class TeardownDispatch:
         )
 
     @staticmethod
-    def enqueue_once(ticket_id: int, *, executor: "DjangoTask | None" = None) -> bool:
+    def enqueue_once(ticket_id: int, *, executor: "DjangoTask | None" = None, fsm_terminal: bool = True) -> bool:
         """Queue :func:`execute_teardown` for *ticket_id* unless one is already outstanding.
 
         Returns whether this call minted a job.
@@ -419,7 +421,8 @@ class TeardownDispatch:
         *executor* lets a caller that defers the enqueue past its own frame — the FSM's
         ``transaction.on_commit`` receiver — bind ``execute_teardown`` while it is still
         in scope and hand the task in, exactly as that receiver's sibling transition
-        workers do. Omitting it resolves the module attribute now.
+        workers do. Omitting it resolves the module attribute now. ``fsm_terminal=False`` is the
+        drain's: the queued job then keeps the busy-ticket and recent-commit liveness checks.
 
         Deliberately NOT deduplicated against a finished or stranded job (see
         :meth:`outstanding_for`), and suppression logs at INFO rather than DEBUG:
@@ -429,28 +432,47 @@ class TeardownDispatch:
         if TeardownDispatch.outstanding_for(ticket_id):
             logger.info("teardown already outstanding for ticket %s — not queuing another", ticket_id)
             return False
-        (executor if executor is not None else execute_teardown).enqueue(int(ticket_id))
+        kwargs = {} if fsm_terminal else {"fsm_terminal": False}
+        (executor if executor is not None else execute_teardown).enqueue(int(ticket_id), **kwargs)
         return True
 
     @staticmethod
+    def _recently_finished() -> set[int]:
+        since = timezone.now() - TeardownDispatch.RETRY_COOLDOWN
+        rows = DBTaskResult.objects.finished().filter(task_path=TeardownDispatch.TASK_PATH, finished_at__gte=since)
+        return {int(pk) for pk in rows.values_list("args_kwargs__args__0", flat=True) if pk is not None}
+
+    @staticmethod
     def drain_terminal_backlog() -> list[int]:
-        """One-shot drain: queue teardown for every terminal ticket still holding worktrees.
+        """One-shot drain: queue teardown for terminal tickets still holding worktrees, one batch at a time.
 
         The operational catch-up for tickets whose worktrees outlived their terminal
         state. Safe to re-run: ``execute_teardown`` re-checks state, the reaper keeps
         any unsynced work, and the enqueue itself deduplicates against an outstanding
-        job, so repeating the drain does not repeat the queue rows. NOT invoked
-        automatically; an operator calls it explicitly to drain the pile-up.
+        job, so repeating the drain does not repeat the queue rows. The loss-free
+        artifact sweep calls it on its cadence (:mod:`teatree.loop.mechanical_artifacts`).
+
+        A ticket whose teardown finished within :attr:`RETRY_COOLDOWN` is skipped (the reaper
+        keeps what it cannot prove redundant, so it would re-run the whole ladder every pass), and
+        at most :attr:`DRAIN_BATCH_LIMIT` are queued per call; the rest follow on later passes.
 
         Returns the ticket pks this call actually queued — a ticket whose teardown was
         already outstanding is covered but not re-queued, so it is absent.
         """
-        ticket_ids = list(
+        cooling = TeardownDispatch._recently_finished()
+        ticket_ids = (
             Ticket.objects.filter(state__in=_DONE_TICKET_STATES, worktrees__isnull=False)
             .distinct()
+            .order_by("pk")
             .values_list("pk", flat=True)
         )
-        return [int(ticket_id) for ticket_id in ticket_ids if TeardownDispatch.enqueue_once(int(ticket_id))]
+        queued: list[int] = []
+        for ticket_id in ticket_ids:
+            if len(queued) == TeardownDispatch.DRAIN_BATCH_LIMIT:
+                break
+            if ticket_id not in cooling and TeardownDispatch.enqueue_once(int(ticket_id), fsm_terminal=False):
+                queued.append(int(ticket_id))
+        return queued
 
 
 @task()

@@ -40,8 +40,8 @@ from teatree.core.cleanup.orphan_checkouts import (
     orphan_has_unique_work,
     orphan_is_dirty,
 )
+from teatree.core.cleanup.preview import preview_line
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
-from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache
 from teatree.core.worktree.venue_safe_registry import prune_worktrees
 from teatree.utils import git

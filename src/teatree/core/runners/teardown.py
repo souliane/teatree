@@ -33,10 +33,13 @@ class WorktreeTeardown(RunnerBase):
     The teardown funnels through :func:`reap_done_worktree` with ``fsm_terminal=True``
     so the LIVENESS guard does not false-keep a just-merged worktree on the merge's
     own phase session / merge commit — the data-loss safety stays the analyze step.
+    A later sweep passes ``fsm_terminal=False``: days after the merge a live session is
+    a real agent and a fresh commit is real work.
     """
 
-    def __init__(self, ticket: Ticket) -> None:
+    def __init__(self, ticket: Ticket, *, fsm_terminal: bool = True) -> None:
         self.ticket = ticket
+        self.fsm_terminal = fsm_terminal
 
     def run(self) -> RunnerResult:
         worktrees = list(self.ticket.worktrees.all())
@@ -48,7 +51,7 @@ class WorktreeTeardown(RunnerBase):
         stranded: list[str] = []
         step_errors: list[str] = []
         for worktree in worktrees:
-            outcome = reap_done_worktree(worktree, workspace=workspace, dry_run=False, fsm_terminal=True)
+            outcome = reap_done_worktree(worktree, workspace=workspace, dry_run=False, fsm_terminal=self.fsm_terminal)
             if outcome.action == "wiped":
                 wiped.append(outcome.label)
                 for err in outcome.errors:

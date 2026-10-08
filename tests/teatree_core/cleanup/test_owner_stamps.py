@@ -15,9 +15,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree import paths
-from teatree.core.cleanup import checkout_registry
-from teatree.core.management.commands._workspace import owner_stamps
-from teatree.core.management.commands._workspace.owner_stamps import (
+from teatree.core.cleanup import checkout_registry, owner_stamps
+from teatree.core.cleanup.owner_stamps import (
     backfill_owner_stamps,
     read_owner_stamp,
     stamp_discovered_owners,
@@ -64,7 +63,7 @@ class TestAnAbsentOwningCloneProducesNoGap(TestCase):
             observable=venue_can_observe(absent_owner, (self.venue,)),
         )
 
-        assert stamp.proof_of_life is None
+        assert "not proof it is gone" in str(stamp.proof_of_life)
         assert stamp.missing_evidence is not None
         assert "cannot see" in stamp.missing_evidence
 
@@ -119,6 +118,15 @@ class TestReadOwnerStamp(TestCase):
         assert "live checkout" in str(stamp.proof_of_life)
         assert stamp.missing_evidence is None
 
+    def test_an_owner_this_process_cannot_search_for_is_never_called_gone(self) -> None:
+        parent = self.venue / "unsearchable"
+        (parent / "checkout").mkdir(parents=True)
+        parent.chmod(0o200)
+        self.addCleanup(parent.chmod, 0o700)
+        stamp = owner_stamps.OwnerStamp(parent / "checkout", observable=True, recorded_location="x", location_here="x")
+
+        assert "not proof it is gone" in str(stamp.proof_of_life)
+
     def test_a_visibly_absent_owner_leaves_no_proof_and_no_gap(self) -> None:
         # The one shape a deletion may rest on: the venue read the neighbourhood and
         # the checkout is not in it, so neither branch claims the dir.
@@ -128,6 +136,25 @@ class TestReadOwnerStamp(TestCase):
 
         assert stamp.proof_of_life is None
         assert stamp.missing_evidence is None
+
+    def test_a_stamp_without_a_location_is_missing_evidence(self) -> None:
+        # #4923: the container's own home reads a host-only checkout as absent, so a
+        # stamp that cannot say WHERE its owner lived proves nothing by that absence.
+        (self.env_dir / paths.OWNER_STAMP_NAME).write_text(f"{self.venue / 'host-only'}\n", encoding="utf-8")
+
+        stamp = read_owner_stamp(self.env_dir, (self.venue,))
+
+        assert stamp.proof_of_life is None
+        assert "predates the location record" in str(stamp.missing_evidence)
+
+    def test_a_location_this_venue_does_not_share_is_missing_evidence(self) -> None:
+        paths.IsolatedEnvDir(self.env_dir).stamp_owner(self.venue / "host-only")
+        (self.env_dir / paths.OWNER_LOCATION_NAME).write_text("259:2:/srv/host-only\n", encoding="utf-8")
+
+        stamp = read_owner_stamp(self.env_dir, (self.venue,))
+
+        assert "another venue" in str(stamp.missing_evidence)
+        assert stamp.location_here == paths.physical_location(self.venue / "host-only")
 
 
 class TestStampDiscoveredOwners(TestCase):

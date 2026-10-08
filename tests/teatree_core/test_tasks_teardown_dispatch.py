@@ -3,10 +3,13 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.tasks import TaskResultStatus
 from django.test import TestCase, override_settings
+from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
 
 from teatree.core.models import Ticket
-from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, TeardownDispatch
+from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, TeardownDispatch, execute_ship
 from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 IMMEDIATE_BACKEND = {
@@ -114,11 +117,8 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         without also reading the status would call a just-SUCCEEDED job "in flight".
         Leaving ``started_at`` unset here would hide exactly that defect.
         """
-        from django.utils import timezone  # noqa: PLC0415 - deferred: local import
-        from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 - deferred: local import
-
         DBTaskResult.objects.filter(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk]).update(
-            status=status, started_at=timezone.now()
+            status=status, started_at=timezone.now(), finished_at=timezone.now()
         )
 
     @staticmethod
@@ -200,17 +200,93 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
     def test_a_finished_job_never_blocks_the_next_attempt(self) -> None:
         # The failure direction the guard must not swallow: the reaper KEEPS a
         # worktree holding unsynced work and reports the refusal, so the job
-        # finishes SUCCESSFUL with the worktree still standing. The operator's next
-        # drain is a genuine second attempt, not a duplicate.
-        from django.tasks import TaskResultStatus  # noqa: PLC0415 - deferred: local import
-
+        # finishes SUCCESSFUL with the worktree still standing. The seam's next call
+        # (the FSM receiver's, or the drain's once its cool-down passes) is a genuine
+        # second attempt, not a duplicate.
         for finished in (TaskResultStatus.SUCCESSFUL, TaskResultStatus.FAILED):
             ticket = self._terminal_ticket_with_worktree()
             TeardownDispatch.drain_terminal_backlog()
             self._settle(ticket, finished)
 
-            assert ticket.pk in TeardownDispatch.drain_terminal_backlog(), finished
+            assert TeardownDispatch.enqueue_once(ticket.pk), finished
             assert self._queued_rows(ticket) == 2, finished
+
+    @staticmethod
+    def _finish(ticket: Ticket, *, ago: timedelta, task_path: str = TeardownDispatch.TASK_PATH) -> None:
+        DBTaskResult.objects.filter(task_path=task_path, args_kwargs__args=[ticket.pk]).update(
+            status=TaskResultStatus.SUCCESSFUL, started_at=timezone.now() - ago, finished_at=timezone.now() - ago
+        )
+
+    def test_one_drain_queues_at_most_one_batch_and_the_next_takes_the_rest(self) -> None:
+        limit = TeardownDispatch.DRAIN_BATCH_LIMIT
+        tickets = [self._terminal_ticket_with_worktree() for _ in range(limit + 3)]
+
+        first = TeardownDispatch.drain_terminal_backlog()
+        second = TeardownDispatch.drain_terminal_backlog()
+
+        assert len(first) == limit, "a backlog of terminal tickets flooded the shared queue in one pass"
+        assert len(second) == 3, "the tickets already queued ate the next batch instead of making room for the rest"
+        assert sorted(first + second) == sorted(ticket.pk for ticket in tickets)
+
+    def test_a_teardown_that_just_finished_is_not_queued_again_until_the_cooldown_passes(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+        TeardownDispatch.drain_terminal_backlog()
+        self._finish(ticket, ago=timedelta(minutes=5))
+
+        assert TeardownDispatch.drain_terminal_backlog() == [], "a refused teardown was re-run on the very next pass"
+
+        self._finish(ticket, ago=TeardownDispatch.RETRY_COOLDOWN + timedelta(minutes=1))
+
+        assert TeardownDispatch.drain_terminal_backlog() == [ticket.pk], "the cool-down never ended"
+
+    def test_cooling_tickets_do_not_use_up_the_batch(self) -> None:
+        cooling = self._terminal_ticket_with_worktree()
+        TeardownDispatch.drain_terminal_backlog()
+        self._finish(cooling, ago=timedelta(minutes=5))
+        waiting = [self._terminal_ticket_with_worktree() for _ in range(TeardownDispatch.DRAIN_BATCH_LIMIT)]
+
+        queued = TeardownDispatch.drain_terminal_backlog()
+
+        assert sorted(queued) == sorted(ticket.pk for ticket in waiting)
+
+    def test_another_jobs_recent_finish_does_not_cool_the_teardown(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+        execute_ship.enqueue(ticket.pk)
+        self._finish(ticket, ago=timedelta(minutes=5), task_path=execute_ship.module_path)
+
+        assert TeardownDispatch.drain_terminal_backlog() == [ticket.pk]
+
+    @staticmethod
+    def _job_kwargs(ticket: Ticket) -> dict[str, object]:
+        job = DBTaskResult.objects.get(task_path=TeardownDispatch.TASK_PATH, args_kwargs__args=[ticket.pk])
+        return job.args_kwargs["kwargs"]
+
+    def test_the_drain_queues_teardowns_that_keep_the_full_liveness_protection(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+
+        TeardownDispatch.drain_terminal_backlog()
+
+        assert self._job_kwargs(ticket) == {"fsm_terminal": False}
+
+    def test_the_fsm_receivers_teardown_keeps_the_merge_carve_out(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+
+        TeardownDispatch.enqueue_once(ticket.pk)
+
+        assert self._job_kwargs(ticket) == {}
+
+    def test_a_finished_row_that_names_no_ticket_does_not_stop_the_drain(self) -> None:
+        ticket = self._terminal_ticket_with_worktree()
+        DBTaskResult.objects.create(
+            task_path=TeardownDispatch.TASK_PATH,
+            status=TaskResultStatus.SUCCESSFUL,
+            finished_at=timezone.now(),
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            run_after=timezone.now(),
+        )
+
+        assert TeardownDispatch.drain_terminal_backlog() == [ticket.pk]
 
     def test_a_sibling_ticket_is_never_deduped_away(self) -> None:
         mine = self._terminal_ticket_with_worktree()

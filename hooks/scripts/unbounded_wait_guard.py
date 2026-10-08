@@ -12,7 +12,7 @@ This gate refuses to CREATE that shape. It is the prevention half on purpose:
 detecting an already-running loop and killing it would mean deciding from the
 outside that a live process is dead, which is the inference this repo's
 conservative liveness rule (``core/worktree/checkout_liveness``,
-``_workspace.owner_stamps.venue_can_observe``) exists to refuse — a wait whose
+``teatree.core.cleanup.owner_stamps.venue_can_observe``) exists to refuse — a wait whose
 session id no longer resolves is not thereby a wait nobody is reading. A loop that
 was never spawned unbounded needs no such judgement. Nothing here reads process
 state, and nothing here signals a process.
