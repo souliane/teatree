@@ -20,7 +20,7 @@ means.
 """
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +85,11 @@ def read_declared_mcp_servers(path: Path) -> dict[str, dict]:
     return {name: cfg for name, cfg in servers.items() if isinstance(cfg, dict)}
 
 
+def launches_teatree_server(entry: Mapping[str, object]) -> bool:
+    args = entry.get("args")
+    return entry.get("command") == EXPECTED_COMMAND and isinstance(args, list) and tuple(args) == EXPECTED_ARGS
+
+
 def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
     """Verify *repo* ships a well-formed ``teatree`` entry in ``.mcp.json``.
 
@@ -103,13 +108,11 @@ def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
                 "of calling the read-only search tools."
             ),
         )
-    command = entry.get("command")
-    args = tuple(entry.get("args") or ())
-    if command != EXPECTED_COMMAND or args != EXPECTED_ARGS:
+    if not launches_teatree_server(entry):
         return McpRegistrationOutcome(
             ok=False,
             message=(
-                f"{path} declares '{TEATREE_MCP_SERVER_NAME}' as {command!r} {list(args)} — "
+                f"{path} declares '{TEATREE_MCP_SERVER_NAME}' as {entry.get('command')!r} {entry.get('args')!r} — "
                 f"expected {EXPECTED_COMMAND!r} {list(EXPECTED_ARGS)}."
             ),
         )
@@ -130,6 +133,7 @@ __all__ = [
     "READ_ONLY_ARG",
     "TEATREE_MCP_SERVER_NAME",
     "McpRegistrationOutcome",
+    "launches_teatree_server",
     "mcp_json_path",
     "read_declared_mcp_servers",
     "read_only_serve_flags",
