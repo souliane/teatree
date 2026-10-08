@@ -986,6 +986,8 @@ The same resolver reaches two surfaces the markdown walk cannot read. The charte
 | `codespell` | Spell check |
 | `prek` | Runs all above on commit |
 
+**Workflow contract** (`tests/test_ci_workflow_hardening.py`): every workflow defaults its token to read-only and grants write scopes per job; every action is pinned to a full commit SHA with one version label; every checkout states whether it persists credentials; pull requests reuse the content-hash CI image tags while every other event builds its own under `main-` tags and consumes the pushed digest; jobs that deploy or push with a credential bind the `production` environment; a daily workflow reports force pushes to `main`.
+
 **A gate verdict needs executed evidence ([#4929](https://github.com/souliane/teatree/issues/4929)).** `teatree.core.modelkit.gate_verdict.evaluate_gate` collects a gate's evidence, then judges it into `Pass` / `Refuse` / `Unknown`. Any exception on the way (a missing executable, a failed git read, a crashing judge) is `Unknown`, rendered `[gate:<id>] DID NOT RUN: <cause>` and never a pass. Visual QA, the ship and CLEAR mandatory-E2E gate, and debt-delta run through it. Detail: [§17.6.5](docs/blueprint/factory-architecture.md).
 
 Key ruff decisions: ALL rules selected then specific ignores; D1xx disabled (no docstrings — self-documenting code); `from __future__ import annotations` banned (use native 3.13 syntax).
