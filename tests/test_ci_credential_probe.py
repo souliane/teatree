@@ -26,7 +26,11 @@ _WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 _BASH = shutil.which("bash") or "/bin/bash"
 
 #: (workflow file, job key) for every consumer that checks out with the PAT.
-PAT_CONSUMERS = [("ci.yml", "refresh-durations"), ("uv-lock-upgrade.yml", "refresh-lockfile")]
+PAT_CONSUMERS = [
+    ("ci.yml", "refresh-durations"),
+    ("uv-lock-upgrade.yml", "refresh-lockfile"),
+    ("eval.yml", "publish"),
+]
 
 _PROBE_NAME = "Verify TEATREE_GH_TOKEN"
 _BOTH_CASES = "unset or rejected"
@@ -144,11 +148,11 @@ class TestTheProbeVerdicts:
 
 
 class TestTheProbeIsOneGuardNotTwo:
-    def test_both_consumers_carry_a_byte_identical_probe(self) -> None:
+    def test_every_consumer_carries_a_byte_identical_probe(self) -> None:
         scripts = {f"{workflow}:{job}": _probe_script(workflow, job) for workflow, job in PAT_CONSUMERS}
         assert len(set(scripts.values())) == 1, (
-            "the two PAT consumers' probes have drifted apart. One dead credential takes down both "
-            "pipelines, so both must report it identically:\n  " + "\n  ".join(scripts)
+            "the PAT consumers' probes have drifted apart. One dead credential takes down every "
+            "pipeline, so all must report it identically:\n  " + "\n  ".join(scripts)
         )
 
     def test_the_credential_never_reaches_the_process_table(self) -> None:

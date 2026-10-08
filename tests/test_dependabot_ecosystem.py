@@ -162,6 +162,11 @@ class TestHoldsSurviveDependabot:
         )
 
 
+class TestVersionUpdatesWaitForNewReleases:
+    def test_every_ecosystem_holds_a_release_for_seven_days(self) -> None:
+        assert [entry.get("cooldown") for entry in _updates()] == [{"default-days": 7}] * len(_updates())
+
+
 class TestActionsManifestSurvives:
     def test_github_actions_are_still_watched(self) -> None:
         assert "github-actions" in _ecosystems()

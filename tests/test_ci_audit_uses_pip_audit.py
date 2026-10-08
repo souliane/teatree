@@ -17,6 +17,7 @@ These tests pin the workflow + pre-commit hook to ``pip-audit`` so a
 future regression can't silently restore the broken command.
 """
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -68,6 +69,11 @@ class TestCiAuditJob:
         commands = [step.get("run", "") for step in steps if isinstance(step, dict)]
         joined = " ".join(commands)
         assert "pip-audit" in joined, "CI's uv-audit job must invoke 'pip-audit' as the dependency audit tool (#1264)."
+
+    def test_every_audit_invocation_pins_the_pip_audit_version(self) -> None:
+        steps = _load_ci_jobs()["uv-audit"]["steps"]
+        joined = " ".join(step.get("run", "") for step in steps if isinstance(step, dict))
+        assert re.findall(r"uvx pip-audit\S*", joined) == ["uvx pip-audit@2.10.1"] * 2
 
 
 class TestPrecommitAuditHook:

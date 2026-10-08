@@ -54,6 +54,7 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: production
     env:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -64,7 +65,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Download the SBOM CI regenerated
