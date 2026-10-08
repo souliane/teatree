@@ -179,11 +179,21 @@ class TestEscapeEntries:
         assert _run(tmp_path, f"mcp = {value}") == 1
         assert reason in capsys.readouterr().err
 
-    def test_a_non_table_escape_value_is_refused(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    @pytest.mark.parametrize(
+        ("uv_table", "reason"),
+        [
+            ('exclude-newer = "7 days"\nexclude-newer-package = "mcp"\n', "must be a table"),
+            ('exclude-newer = "2026-10-01T00:00:00Z"\n', "must read 'N days'"),
+        ],
+        ids=["escapes-not-a-table", "window-not-n-days"],
+    )
+    def test_a_malformed_uv_table_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], uv_table: str, reason: str
+    ) -> None:
         pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[tool.uv]\nexclude-newer = "7 days"\nexclude-newer-package = "mcp"\n', encoding="utf-8")
+        pyproject.write_text(f"[tool.uv]\n{uv_table}", encoding="utf-8")
         assert main(["--pyproject", str(pyproject), "--lock", str(_lock(tmp_path))], now=_NOW) == 1
-        assert "must be a table" in capsys.readouterr().err
+        assert reason in capsys.readouterr().err
 
     def test_runs_on_stdlib_alone(self, tmp_path: Path) -> None:
         completed = subprocess.run(
@@ -239,6 +249,18 @@ class TestVerifyLock:
         older_python = ("mcp-2.3.0-cp312-cp312-manylinux_2_17_x86_64.whl", "2026-10-02T22:06:50.000Z")
         files = (*_MCP_FILES, older_python)
         assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi(files)) == 0
+
+    @pytest.mark.parametrize(
+        "wheel",
+        ["mcp-2.3.0-cp313-cp313-manylinux_2_17_x86_64.whl", "mcp-2.3.0-cp39-abi3-manylinux_2_17_x86_64.whl"],
+        ids=["cp3xx-at-the-lock-floor", "abi3-below-the-lock-floor"],
+    )
+    def test_a_wheel_the_locked_python_can_run_must_be_locked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], wheel: str
+    ) -> None:
+        files = (*_MCP_FILES, (wheel, "2026-10-02T22:06:50.000Z"))
+        assert _run(tmp_path, f'mcp = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi(files)) == 1
+        assert wheel in capsys.readouterr().err
 
     def test_fails_when_the_escaped_package_is_not_locked(self, tmp_path: Path) -> None:
         assert _run(tmp_path, f'mcp-types = "{_ROUNDED_UP}"', "--verify-lock", fetch_json=_pypi()) == 1
