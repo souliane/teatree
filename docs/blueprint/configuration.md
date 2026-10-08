@@ -608,8 +608,8 @@ query the DB on every request. Cached unavailability also avoids repeating a
 known-dead lane; cached health repeats only the cheap local capability probe so a
 durable observation from a Codex-equipped worker cannot make a Claude-only
 worker select a missing binary. A runtime failure immediately updates the cache. A quota or authentication
-failure holds its candidate unavailable for an hour and parks the task for as long, whether it arrived before
-or after side effects started; other failures keep the two-minute hold.
+failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
+or an outcome made tool calls; other failures keep the two-minute hold.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next

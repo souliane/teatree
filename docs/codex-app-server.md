@@ -38,9 +38,9 @@ this route is neither an Anthropic provider nor a metered API-key provider.
 With this direct harness setting, Teatree omits `model` and lets Codex select its
 own default. An ordered per-skill route can instead pin an explicit Codex model.
 
-A verification phase never routes to Codex. Teatree's shipped guardrail pins `testing`, `reviewing`
-and `requesting_review` to `claude_sdk`, and a route candidate naming another harness for a pinned phase
-is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
+A verification phase never routes to Codex unless an explicit `agent_phase_harness` unpin lets it
+through. Teatree's shipped guardrail pins `testing`, `reviewing` and `requesting_review` to `claude_sdk`,
+and a route candidate naming another harness for a pinned phase is rejected with a reason that names the pin. A Codex candidate is also rejected on every phase that bars
 write tools (`critic_reviewing`, `bughunt`, and the rest of the read-only set), because Codex enforces
 those by sandbox only. `agent_phase_harness` parses only the closed `AgentHarness` values, so it cannot
 name Codex. A route reached through a skill the phase merely loads (reviews load `code`) never captures a
@@ -119,9 +119,9 @@ gap; closing it needs a Codex-side change.
   prints `Codex canary: PASS` or `FAIL: <named reason>` with exit code 1. It waits at most 60 seconds for
   the lease and then fails with "Codex auth cache is held by another run". It never prints the login, and it
   refreshes only what a real turn would.
-- A Codex authentication or quota failure holds the candidate unavailable for an hour and parks the
-  task for as long, whether it arrives before any side effect, after one started, or in an outcome that
-  already made tool calls. Other failures keep the two-minute hold. `t3 codex auth import` clears the
+- A Codex authentication or quota failure holds the candidate unavailable for an hour on every path, and
+  parks the task for as long once a side effect started or an outcome already made tool calls. Other
+  failures keep the two-minute hold. `t3 codex auth import` clears the
   stored Codex holds.
 - `t3 doctor check` prints one Codex line: login present (file modification time) or missing, the last
   long hold, and a warning while a Codex route exists with no active usage window.
