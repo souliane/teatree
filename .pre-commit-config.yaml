@@ -335,7 +335,7 @@ repos:
         # FSM-diagram hook keys on its model modules the same way). The /admin/
         # re-skin adds two HTML-affecting inputs: the base_site.html override
         # (injects the token <link>s the snapshot captures) and admin-theme.css.
-        files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
+        files: ^src/teatree/(core/(admin\.py|factory/dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
       - id: generate-defaults-toml
         name: Render defaults.toml from the settings declarations
         language: system

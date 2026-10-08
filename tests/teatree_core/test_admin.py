@@ -9,11 +9,47 @@ import datetime as dt
 
 import django.http
 import django.test
+from django.apps import apps
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.db import connection, models
+from django.template.loader import get_template
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot, Prompt
+from teatree.core.admin import ReadOnlyAdmin
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    DeferredQuestionAudit,
+    Loop,
+    LoopState,
+    LoopStatus,
+    Mode,
+    ModeOverride,
+    ModeSchedule,
+    ModeScheduleSlot,
+    OnBehalfApproval,
+    OnBehalfAudit,
+    Prompt,
+    SelfImproveFiring,
+    SelfUpdateMarker,
+    SessionTodo,
+    StandingGoal,
+    Task,
+    Ticket,
+    TicketTransition,
+    TrustedIdentity,
+    WorktreeEnvOverride,
+)
+from tests.factories import (
+    MergeAuditFactory,
+    SessionFactory,
+    TaskFactory,
+    TicketFactory,
+    TicketTransitionFactory,
+    WorktreeFactory,
+)
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -400,3 +436,224 @@ class TestShippedRowsRouteDeletionToTheAuditedSeam(django.test.TestCase):
         preset = Mode.objects.create(name="review", entries={}, description="operator-created")  # a LOOP name
 
         assert admin.site._registry[Mode].has_delete_permission(self._request(), preset) is True
+
+
+_SENTINEL = "zz-hidden-sentinel-zz"
+_WRITE_STATEMENTS = ("INSERT", "UPDATE", "DELETE", "BEGIN", "SAVEPOINT")
+
+
+def _read_only_models() -> list[type[models.Model]]:
+    return [
+        model
+        for model in apps.get_app_config("core").get_models()
+        if isinstance(admin.site.get_model_admin(model), ReadOnlyAdmin)
+    ]
+
+
+def _admin_url(model: type[models.Model], view: str, *args: object) -> str:
+    return reverse(f"admin:core_{model._meta.model_name}_{view}", args=args)
+
+
+def _row_snapshot(row: models.Model) -> dict[str, object]:
+    return type(row).objects.filter(pk=row.pk).values().get()
+
+
+def _statements(capture: CaptureQueriesContext, *prefixes: str) -> list[str]:
+    return [query["sql"] for query in capture.captured_queries if query["sql"].lstrip().upper().startswith(prefixes)]
+
+
+class _SuperuserTestCase(django.test.TestCase):
+    def setUp(self) -> None:
+        self.superuser = get_user_model().objects.create_superuser("admin-read-only", "ro@example.com", "pw")
+        self.client.force_login(self.superuser)
+
+
+class TestReadOnlyAdminRefusesWrites(_SuperuserTestCase):
+    """Factory rows, approvals and ledgers are written by their own seams; an admin write forges them."""
+
+    @staticmethod
+    def _guarded_rows() -> list[models.Model]:
+        approval = OnBehalfApproval.objects.create(target="pr:1", action="approve", approver_id="owner")
+        audit = MergeAuditFactory.create()
+        return [
+            approval,
+            TrustedIdentity.objects.create(platform=TrustedIdentity.Platform.GITHUB, handle="owner"),
+            audit.clear,
+            OnBehalfAudit.objects.create(approval=approval, target="pr:1", action="approve", approver_id="owner"),
+            audit,
+            TicketTransitionFactory.create(),
+            TicketFactory.create(),
+            TaskFactory.create(),
+        ]
+
+    def test_add_change_delete_history_and_detail_answer_403(self) -> None:
+        for row in self._guarded_rows():
+            model = type(row)
+            before = _row_snapshot(row)
+            with self.subTest(model=model.__name__):
+                statuses = {
+                    "add": self.client.get(_admin_url(model, "add")).status_code,
+                    "add POST": self.client.post(_admin_url(model, "add"), {}).status_code,
+                    "detail": self.client.get(_admin_url(model, "change", row.pk)).status_code,
+                    "change POST": self.client.post(_admin_url(model, "change", row.pk), {}).status_code,
+                    "delete": self.client.get(_admin_url(model, "delete", row.pk)).status_code,
+                    "delete POST": self.client.post(_admin_url(model, "delete", row.pk), {"post": "yes"}).status_code,
+                    "history": self.client.get(_admin_url(model, "history", row.pk)).status_code,
+                }
+                assert statuses == dict.fromkeys(statuses, 403)
+                assert _row_snapshot(row) == before
+
+    def test_every_read_only_model_refuses_an_add(self) -> None:
+        models_under_test = _read_only_models()
+        assert len(models_under_test) > 90
+        for model in models_under_test:
+            with self.subTest(model=model.__name__):
+                assert self.client.post(_admin_url(model, "add"), {}).status_code == 403
+
+    def test_bulk_delete_action_deletes_nothing(self) -> None:
+        for row in (TicketTransitionFactory(), OnBehalfApproval.objects.create(target="pr:2", approver_id="owner")):
+            model = type(row)
+            with self.subTest(model=model.__name__):
+                self.client.post(
+                    _admin_url(model, "changelist"),
+                    {"action": "delete_selected", "_selected_action": [row.pk], "index": 0, "post": "yes"},
+                )
+                assert model.objects.filter(pk=row.pk).exists()
+
+    def test_a_state_post_leaves_the_state(self) -> None:
+        ticket = TicketFactory(state=Ticket.State.REVIEW_REQUESTED)
+        task = TaskFactory(status=Task.Status.PENDING)
+        for row, field, forged in ((ticket, "state", Ticket.State.MERGED), (task, "status", Task.Status.COMPLETED)):
+            before = getattr(row, field)
+            with self.subTest(model=type(row).__name__):
+                response = self.client.post(_admin_url(type(row), "change", row.pk), {field: forged})
+                row.refresh_from_db()
+                assert (response.status_code, getattr(row, field)) == (403, before)
+
+
+class TestReadOnlyChangelistNeverRendersSensitiveFields(_SuperuserTestCase):
+    def test_sentinels_in_hidden_columns_never_reach_the_html(self) -> None:
+        rows = [
+            SessionTodo.objects.create(session=SessionFactory(), text=_SENTINEL),
+            WorktreeEnvOverride.objects.create(worktree=WorktreeFactory(), key="VISIBLE_KEY", value=_SENTINEL),
+            StandingGoal.objects.create(name="visible-goal", check_command=_SENTINEL),
+            SelfUpdateMarker.objects.create(repo_label="visible-repo", last_reason=_SENTINEL),
+        ]
+        for row in rows:
+            with self.subTest(model=type(row).__name__):
+                response = self.client.get(_admin_url(type(row), "changelist"))
+                assert (response.status_code, response.context["cl"].result_count) == (200, 1)
+                assert _SENTINEL not in response.content.decode()
+
+    def test_a_foreign_key_renders_its_id_not_the_related_text(self) -> None:
+        question = DeferredQuestion.objects.create(question=f"{_SENTINEL} would you merge?")
+        assert _SENTINEL in str(question)
+        DeferredQuestionAudit.objects.create(question=question, action="answered")
+
+        content = self.client.get(_admin_url(DeferredQuestionAudit, "changelist")).content.decode()
+
+        assert f'<td class="field-question_id">{question.pk}</td>' in content
+        assert _SENTINEL not in content
+
+    def test_no_changelist_selects_a_hidden_column(self) -> None:
+        for model in _read_only_models():
+            model_admin = admin.site.get_model_admin(model)
+            request = django.test.RequestFactory().get(_admin_url(model, "changelist"))
+            request.user = self.superuser
+            select_list = str(model_admin.get_changelist_instance(request).queryset.query).split(" FROM ", 1)[0]
+            table = model._meta.db_table
+            with self.subTest(model=model.__name__):
+                assert f'"{table}"."{model._meta.pk.column}"' in select_list
+                selected = [
+                    field.name
+                    for field in model._meta.concrete_fields
+                    if model_admin.is_masked(field) and f'"{table}"."{field.column}"' in select_list
+                ]
+                assert selected == []
+
+
+class TestReadOnlyChangelistLookups(_SuperuserTestCase):
+    def test_a_lookup_on_a_hidden_column_answers_400(self) -> None:
+        WorktreeEnvOverride.objects.create(worktree=WorktreeFactory(), key="KEY", value=_SENTINEL)
+        for model, query in (
+            (WorktreeEnvOverride, {"value__startswith": "x"}),
+            (SessionTodo, {"text__icontains": "x"}),
+            (SelfImproveFiring, {"payload__a": "1"}),
+        ):
+            with self.subTest(model=model.__name__):
+                assert self.client.get(_admin_url(model, "changelist"), query).status_code == 400
+
+    def test_a_lookup_on_a_visible_column_still_filters(self) -> None:
+        worktree = WorktreeFactory()
+        WorktreeEnvOverride.objects.create(worktree=worktree, key="XA_KEY", value="1")
+        WorktreeEnvOverride.objects.create(worktree=worktree, key="YB_KEY", value="2")
+
+        response = self.client.get(_admin_url(WorktreeEnvOverride, "changelist"), {"key__startswith": "XA"})
+
+        assert (response.status_code, response.context["cl"].result_count) == (200, 1)
+        assert "XA_KEY" in response.content.decode()
+        assert "YB_KEY" not in response.content.decode()
+
+
+class TestReadOnlyChangelistCost(_SuperuserTestCase):
+    def _changelist_statements(self, model: type[models.Model]) -> list[str]:
+        with CaptureQueriesContext(connection) as capture:
+            assert self.client.get(_admin_url(model, "changelist")).status_code == 200
+        return [query["sql"] for query in capture.captured_queries]
+
+    def test_one_count_and_no_write_statement(self) -> None:
+        TicketTransitionFactory()
+        with CaptureQueriesContext(connection) as denied:
+            assert self.client.post(_admin_url(TicketTransition, "add"), {}).status_code == 403
+        assert _statements(denied, *_WRITE_STATEMENTS), "the capture must see a denied write's SAVEPOINT"
+
+        with CaptureQueriesContext(connection) as changelist:
+            assert self.client.get(_admin_url(TicketTransition, "changelist")).status_code == 200
+
+        counts = [query["sql"] for query in changelist.captured_queries if "COUNT(" in query["sql"].upper()]
+        assert len(counts) == 1
+        assert _statements(changelist, *_WRITE_STATEMENTS) == []
+
+    def test_statement_count_is_independent_of_row_count(self) -> None:
+        def add_rows(count: int) -> None:
+            for index in range(count):
+                WorktreeEnvOverride.objects.create(worktree=WorktreeFactory(), key=f"KEY_{index}", value="v")
+
+        add_rows(3)
+        self._changelist_statements(WorktreeEnvOverride)
+        at_three = len(self._changelist_statements(WorktreeEnvOverride))
+        add_rows(27)
+
+        assert len(self._changelist_statements(WorktreeEnvOverride)) == at_three
+
+    def test_every_read_only_changelist_renders(self) -> None:
+        for model in _read_only_models():
+            with self.subTest(model=model.__name__):
+                assert self.client.get(_admin_url(model, "changelist")).status_code == 200
+
+
+class TestTicketAutocomplete(_SuperuserTestCase):
+    def test_the_autocomplete_view_serves_the_issue_url_and_never_hidden_text(self) -> None:
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/987654", context=_SENTINEL)
+
+        response = self.client.get(
+            reverse("admin:autocomplete"),
+            {"app_label": "core", "model_name": "session", "field_name": "ticket", "term": "987654"},
+        )
+
+        assert response.status_code == 200
+        assert [result["text"] for result in response.json()["results"]] == [ticket.issue_url]
+        assert _SENTINEL not in response.content.decode()
+
+
+class TestLoopStateAdmin(_SuperuserTestCase):
+    def test_the_dash_break_glass_link_resolves_and_a_hold_can_be_lifted(self) -> None:
+        link = "/admin/core/loopstate/"
+        assert link in get_template("dash/partials/_loops_table.html").template.source
+        hold = LoopState.objects.pause("review")
+
+        assert self.client.get(link).status_code == 200
+        response = self.client.post(f"{link}{hold.pk}/change/", {"name": hold.name, "status": LoopStatus.ENABLED})
+
+        assert response.status_code == 302
+        assert LoopState.objects.is_runnable("review")

@@ -4,8 +4,9 @@ A live "screenshot" of the teatree admin dashboard — the Django admin index li
 every registered `teatree.core` domain model. It is **generated**, not hand-authored:
 `scripts/hooks/generate_dashboard_snapshot.py` renders the page through Django's test
 client and writes [`admin-index.html`](generated/dashboard/admin-index.html). CI
-regenerates it and fails on drift (`git diff --exit-code docs/generated`), so
-registering a new admin model updates this snapshot automatically. Edit
+regenerates it and fails on drift (`git diff --exit-code docs/generated`). Every core
+model appears: `src/teatree/core/admin.py` registers a new model read-only by itself,
+so adding a model updates this snapshot with no admin edit. Edit
 `src/teatree/core/admin.py`, not the HTML.
 
 `/admin/` is re-skinned to match `/dash/`: a `templates/admin/base_site.html`

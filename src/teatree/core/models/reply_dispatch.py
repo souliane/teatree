@@ -41,6 +41,7 @@ class ReplyDispatch(models.Model):
 
     class Meta:
         db_table = "teatree_reply_dispatch"
+        verbose_name_plural = "reply dispatches"
         ordering: ClassVar = ["-dispatched_at"]
         indexes: ClassVar = [
             models.Index(fields=["status", "dispatched_at"]),

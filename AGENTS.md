@@ -192,6 +192,20 @@ queryset inside `except (OperationalError, ProgrammingError): return
 outage still surfaces via `_run_job`. Canonical exemplars:
 `IncomingEventsScanner.scan`, `_reap_stale_task_claims`.
 
+### New model: the admin registers it (Non-Negotiable)
+
+`core/admin.py` ends by registering every core model that has no hand-written
+admin with `ReadOnlyAdmin`: list-only, 403 on add/change/delete/history and on
+the per-row page, Text/JSON/Binary and secret-looking columns never selected,
+filtered or searched. Adding a model therefore needs no admin edit. Customise
+one with a `ReadOnlyAdmin` subclass ABOVE the call that ends `core/admin.py`;
+an overlay customises a core model with `admin.site.unregister(Model)` then
+`register`. A writable admin needs its label and reason in `WRITABLE_ADMINS`
+in `tests/conformance/test_every_model_has_an_admin.py`, which judges an admin
+by calling its permission methods. A model outside `core`, or one with a
+composite primary key (Django refuses to register it; list it in
+`UNREGISTRABLE` there), fails that test until handled.
+
 ### Squashing the core migrations (Non-Negotiable)
 
 Whoever writes up or performs a squash of `src/teatree/core/migrations/`
