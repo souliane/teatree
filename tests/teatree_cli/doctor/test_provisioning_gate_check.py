@@ -452,7 +452,7 @@ class TestTheInstallRecordProvesTheRequestedRef:
 
     @pytest.mark.parametrize("body", [None, "{garbage", json.dumps({"version": 4, "skills": {}})])
     def test_an_absent_unparsable_or_other_schema_record_is_one_unverified_warn(
-        self, project_root: Path, home: Path, body: bytes | None
+        self, project_root: Path, home: Path, body: str | None
     ) -> None:
         _both_installed(home)
         if body is not None:
