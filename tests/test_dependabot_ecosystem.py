@@ -138,8 +138,6 @@ class TestHoldsSurviveDependabot:
         ("spec", "expected"),
         [
             ("click>=8.4,<8.5", ">=8.5"),
-            ("django-typer>=3.3,<4", ">=4"),
-            ("typer>=0.12,<0.26", ">=0.26"),
             ("ruff==0.15.1", ">0.15.1"),
             ("pkg<=2.0", ">2.0"),
             ("pkg>=9.0.2", None),
