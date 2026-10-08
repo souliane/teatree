@@ -2,7 +2,7 @@
 
 TWO paths open a PR for a branch, and only one of them used to record the URL.
 The ship executor does; the pre-push ``ensure-pr`` hook — which fires from inside
-the ship's own ``push_branch`` — did not. So every refusal reachable AFTER that
+a ``push_branch`` that does not carry the ship marker — did not. So every refusal reachable AFTER that
 push (the post-push fleet-claim fence, the no-URL / wrong-slug / 404 returns of
 the PR-open half) left a PR live on the forge that the ticket had no record of.
 The retry then collided with ``already exists`` while the live PR stayed

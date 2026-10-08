@@ -29,6 +29,7 @@ from teatree.core.provision import db_anchor
 from teatree.core.provision.db_anchor import (
     WrongWorktreeDBError,
     _is_worktree_isolated_db,
+    active_db_is_worktree_isolated,
     assert_lifecycle_db_is_canonical,
 )
 from teatree.paths import expected_db_for_repo
@@ -93,6 +94,26 @@ class TestIsWorktreeIsolatedDb:
 
     def test_empty_name_does_not_trip(self, tmp_path: Path) -> None:
         assert _is_worktree_isolated_db("", isolation_root=tmp_path) is False
+
+
+class TestActiveDbIsWorktreeIsolated:
+    """The public predicate ``ensure-pr`` and the lifecycle guard share: the LIVE connection's DB."""
+
+    def test_isolated_when_the_live_connection_sits_under_the_isolation_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        isolated = paths.auto_isolated_worktrees_dir() / "deadbeef1234" / "db.sqlite3"
+        monkeypatch.setattr(db_anchor, "_active_db_path", lambda: str(isolated))
+
+        assert active_db_is_worktree_isolated() is True
+
+    def test_not_isolated_for_the_canonical_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(db_anchor, "_active_db_path", lambda: str(paths.TRUE_CANONICAL_DB))
+
+        assert active_db_is_worktree_isolated() is False
+
+    def test_not_isolated_for_the_in_memory_test_database(self) -> None:
+        assert active_db_is_worktree_isolated() is False
 
 
 class TestAssertLifecycleDbIsCanonical(TestCase):

@@ -345,7 +345,7 @@ class ShipExecutor(RunnerBase):
         if fence is not None:
             return fence
 
-        pushed = push_branch(repo=repo_path, remote="origin", branch=branch)
+        pushed = push_branch(repo=repo_path, remote="origin", branch=branch, ship_opens_pr=True)
         if not pushed.ok:
             return RunnerResult(ok=False, detail=f"push refused ({pushed.failure}): {pushed.detail}")
         # Re-fence immediately after the push, before ANY PR-open work — the push and
@@ -371,9 +371,9 @@ class ShipExecutor(RunnerBase):
         check cannot read refuses as DID NOT RUN.
 
         The ORDERING is the contract, not an optimisation. Run after the push, these
-        refusals answered "refused" for a ship whose PR already existed: the push fires
-        the pre-push ``ensure-pr`` hook, which opens a PR for the branch, so the caller
-        both retried into an "already exists" collision and stopped tracking a live PR.
+        refusals answered "refused" for a branch already on the remote: the ship push skips
+        the ``ensure-pr`` hook, so nothing owes its PR, and a branch on the pre-marker hook
+        config has the hook open it, so the retry collided with "already exists".
 
         Stage 3: ``host`` is the repo's resolved code host, so the budget check sees a
         sibling fleet instance's live forge PR too.
