@@ -28,7 +28,7 @@ _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _PRE_COMMIT = _REPO_ROOT / ".pre-commit-config.yaml"
 
-_HELD = frozenset({canonicalize_name("click"), canonicalize_name("ruff")})
+_HELD = frozenset(canonicalize_name(name) for name in ("click", "django-typer", "ruff", "typer"))
 
 #: The ignore range that begins exactly at each ceiling operator's edge.
 _IGNORE_FROM_CEILING = {"<": ">=", "<=": ">", "==": ">"}
@@ -100,7 +100,7 @@ class TestPythonManifest:
 
 
 class TestHoldsSurviveDependabot:
-    def test_click_and_ruff_are_held_by_an_ignore(self) -> None:
+    def test_every_held_dependency_carries_an_ignore(self) -> None:
         ignored = {canonicalize_name(str(ignore["dependency-name"])) for ignore in _uv_ignores()}
         assert ignored >= _HELD, (
             f"{sorted(_HELD - ignored)} carry a pyproject hold but no Dependabot ignore; the uv updater "
@@ -138,6 +138,8 @@ class TestHoldsSurviveDependabot:
         ("spec", "expected"),
         [
             ("click>=8.4,<8.5", ">=8.5"),
+            ("django-typer>=3.3,<4", ">=4"),
+            ("typer>=0.12,<0.26", ">=0.26"),
             ("ruff==0.15.1", ">0.15.1"),
             ("pkg<=2.0", ">2.0"),
             ("pkg>=9.0.2", None),
