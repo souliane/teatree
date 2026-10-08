@@ -13,6 +13,7 @@ _BLOCKED = {"summary": "Blocked before edits: the fetch failed", "needs_user_inp
 _CODEX = AttemptUsage(selected_harness="codex_app_server", route_candidate_index=0, route_source_skill="code")
 _ROUTED_CLAUDE = AttemptUsage(selected_harness="claude_sdk", route_candidate_index=1, route_source_skill="code")
 _UNROUTED_CLAUDE = AttemptUsage(selected_harness="claude_sdk")
+_UNROUTED_CODEX = AttemptUsage(selected_harness="codex_app_server")
 
 
 class TestBlockedBeforeEdits(TestCase):
@@ -38,7 +39,7 @@ class TestBlockedBeforeEdits(TestCase):
 
     def test_a_routed_or_non_claude_result_with_no_edits_is_refused_and_the_ticket_stays_put(self) -> None:
         for phase in ("coding", "debugging"):
-            for usage in (_CODEX, _ROUTED_CLAUDE):
+            for usage in (_CODEX, _ROUTED_CLAUDE, _UNROUTED_CODEX):
                 with self.subTest(phase=phase, harness=usage.selected_harness, index=usage.route_candidate_index):
                     task = self._claimed(phase)
 
@@ -50,6 +51,19 @@ class TestBlockedBeforeEdits(TestCase):
                     assert (attempt.outcome, attempt.failure_kind) == ("refusal", "landing_unverified")
                     assert task.status == Task.Status.FAILED
                     assert task.ticket.state == Ticket.State.WORK_STARTED
+
+    def _attach_unverifiable_worktree(self, ticket: Ticket) -> None:
+        checkout = self._tmp_path / f"unverifiable-{ticket.pk}"
+        checkout.mkdir()
+        Worktree.objects.create(ticket=ticket, repo_path="org/repo", branch="b", extra={"worktree_path": str(checkout)})
+
+    def test_a_worktree_whose_commit_check_cannot_answer_does_not_get_the_hand_off_refused(self) -> None:
+        task = self._claimed("coding")
+        self._attach_unverifiable_worktree(task.ticket)
+
+        attempt = record_result_envelope(task, dict(_BLOCKED), phase="coding", usage=_CODEX)
+
+        assert attempt.outcome == "success"
 
     def test_the_same_result_from_an_unrouted_claude_dispatch_still_completes(self) -> None:
         task = self._claimed("coding")

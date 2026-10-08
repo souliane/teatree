@@ -112,7 +112,6 @@ def fail_routed_crash(task: Task, dispatch: DispatchHarness, skills: list[str]) 
 
 
 def learn_route_failure(task: Task, dispatch: DispatchHarness, record: RouteFailureRecord, *, phase: str) -> None:
-    kwargs = {"retry_after": record.hold} if record.hold is not None else {}
     record_route_unavailable(
         task.ticket.overlay or "",
         AgentRouteCandidate(
@@ -122,7 +121,7 @@ def learn_route_failure(task: Task, dispatch: DispatchHarness, record: RouteFail
         ),
         record.reason,
         phase=phase,
-        **kwargs,
+        retry_after=record.hold,
     )
 
 

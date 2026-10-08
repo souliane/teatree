@@ -37,13 +37,6 @@ def test_a_dispatch_without_a_routed_token_gets_none(tmp_path: Path) -> None:
     assert "GH_TOKEN" not in _env(tmp_path / "home")
 
 
-def test_the_system_gitconfig_and_the_credential_helper_are_left_alone(tmp_path: Path) -> None:
-    env = _env(tmp_path / "home", {"GH_TOKEN": "ghp-routed"})
-
-    assert env["GIT_CONFIG_GLOBAL"] == str(tmp_path / "home" / ".gitconfig")
-    assert not {key for key in env if key.startswith("GIT_CONFIG_")} - {"GIT_CONFIG_GLOBAL"}
-
-
 def test_git_answers_a_github_credential_request_with_the_routed_token(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

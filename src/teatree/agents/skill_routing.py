@@ -131,7 +131,10 @@ def _persist(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -
 
 
 def _hold_was_cleared(key: _AvailabilityKey, observation: RouteAvailabilityObservation) -> bool:
-    """A long hold outlives its durable row only when an operator cleared it (``t3 codex auth import``)."""
+    """A long hold outlives its durable row only when an operator cleared it (``t3 codex auth import``).
+
+    Read only while a long hold is cached, so the healthy path stays DB-free.
+    """
     long_hold = observation.retry_at - observation.observed_at > _UNAVAILABLE_TTL
     return bool(observation.unavailable_reason) and long_hold and _persistent_observation(key) is None
 
@@ -182,11 +185,11 @@ def record_route_unavailable(
     reason: str,
     *,
     phase: str = "",
-    retry_after: timedelta = _UNAVAILABLE_TTL,
+    retry_after: timedelta | None = None,
 ) -> None:
     key = _key(overlay, candidate, phase)
     now = timezone.now()
-    observation = RouteAvailabilityObservation(reason, now, now + retry_after)
+    observation = RouteAvailabilityObservation(reason, now, now + (retry_after or _UNAVAILABLE_TTL))
     with _LOCK:
         current = _MEMORY.get(key)
         if current is None or current.observed_at <= now:

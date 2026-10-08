@@ -41,7 +41,7 @@ def _forget_codex_holds() -> None:
     ensure_django()
     from teatree.core.models import AgentRouteAvailability  # noqa: PLC0415 — deferred: ORM/app-registry
 
-    AgentRouteAvailability.objects.filter(harness="codex_app_server").delete()
+    AgentRouteAvailability.objects.forget_harness("codex_app_server")
 
 
 @codex_auth_app.command("import")
