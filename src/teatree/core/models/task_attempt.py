@@ -95,11 +95,10 @@ class TaskAttemptQuerySet(models.QuerySet):
         An attempt of an active task, or of a live ticket, is NEVER prunable — deleting
         a referenced/in-flight row is far worse than a bloated DB.
         """
-        finished = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         return self.filter(
             started_at__lt=cutoff,
             task__status__in=Task.Status.terminal(),
-            task__ticket__state__in=finished,
+            task__ticket__state__in=Ticket.finished_states(),
         )
 
     def prunable_parks(self, cutoff: datetime) -> "TaskAttemptQuerySet":
