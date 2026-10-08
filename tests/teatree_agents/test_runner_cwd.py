@@ -33,8 +33,19 @@ class TestTaskCwdComesFromTheWorktreePath(TestCase):
         assert options.cwd == self.checkout
         assert self.checkout in [str(path) for path in options.add_dirs]
 
-    def test_a_repo_identifier_is_never_read_as_a_directory(self) -> None:
+    def test_a_legacy_row_whose_repo_path_is_a_directory_still_resolves(self) -> None:
         self._worktree(repo_path=self.checkout, extra={})
+
+        assert _resolve_task_cwd(self.task) == self.checkout
+
+    def test_the_recorded_worktree_path_wins_over_a_path_valued_repo_path(self) -> None:
+        with tempfile.TemporaryDirectory() as legacy:
+            self._worktree(repo_path=legacy, extra={"worktree_path": self.checkout})
+
+            assert _resolve_task_cwd(self.task) == self.checkout
+
+    def test_an_identifier_that_is_no_directory_leaves_the_cwd_unset(self) -> None:
+        self._worktree(repo_path="org/repo", extra={})
 
         assert _resolve_task_cwd(self.task) is None
 

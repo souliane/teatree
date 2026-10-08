@@ -170,6 +170,7 @@ class TestCodexRunnerModelSelection(TestCase):
             == TIER_MODELS["frontier"]
         )
 
+    @pytest.mark.usefixtures("a_codex_login")
     def test_every_dispatchable_phase_is_translatable_or_rejected_by_the_preflight_probe(self) -> None:
         spec = codex_app_server_spec()
         with patch("teatree.agents.codex_app_server.shutil.which", return_value="/usr/bin/codex"):

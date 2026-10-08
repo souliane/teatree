@@ -86,3 +86,20 @@ class TestCodexLoginDoctorLine(TestCase):
             )
 
             assert "outlived the usage window" not in _run()
+
+    def test_a_short_hold_is_not_a_quota_or_auth_hold(self) -> None:
+        self._login()
+        now = timezone.now()
+        AgentRouteAvailability.objects.create(
+            harness="codex_app_server",
+            model="gpt-6-sol",
+            unavailable_reason="Codex App Server transport failed during request write.",
+            observed_at=now,
+            retry_at=now + timedelta(minutes=2),
+        )
+
+        assert "last hold" not in _run()
+
+    def test_a_crash_inside_the_check_is_a_warning_that_never_reddens_the_run(self) -> None:
+        with patch("teatree.cli.doctor.checks_codex_login._report", side_effect=RuntimeError("boom")):
+            assert "WARN  Codex login check crashed: RuntimeError: boom" in _run()

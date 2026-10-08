@@ -34,8 +34,12 @@ class _World:
         self.home = tmp_path / "home"
         self.cache = FakeCache()
         self.spawned = tmp_path / "spawned.jsonl"
-        self.options = CodexAppServerOptions.from_sdk_options(
-            ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")
+        self.cwd = str(tmp_path)
+        self.options = self.options_with({})
+
+    def options_with(self, env: dict[str, str]) -> CodexAppServerOptions:
+        return CodexAppServerOptions.from_sdk_options(
+            ClaudeAgentOptions(cwd=self.cwd, permission_mode="bypassPermissions", env=env)
         )
 
     def spawned_tokens(self) -> list[str]:
@@ -119,3 +123,19 @@ def test_neither_the_token_nor_its_fingerprint_is_logged(world: _World, caplog: 
 
     visible = " ".join([caplog.text, *refusals])
     assert not [secret for secret in hidden if secret in visible]
+
+
+def test_a_session_opened_on_a_retiring_server_restarts_it_with_its_own_token(world: _World) -> None:
+    async def run() -> None:
+        first = shared_codex_app_server(world.home, _ONE)
+        stale = SharedCodexSession(world.options_with(_ONE), manager=first, resume=None)
+        await stale.start()
+        await stale.close()
+        first._retiring.set()
+        session = SharedCodexSession(world.options_with(_TWO), manager=first, resume=None)
+        await session.start()
+        await session.close()
+
+    asyncio.run(run())
+
+    assert world.spawned_tokens() == ["ghp-one", "ghp-two"]
