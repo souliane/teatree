@@ -38,6 +38,7 @@ from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
     InvalidHarnessProviderError,
+    NoAvailableHarnessError,
     UnknownHarnessError,
 )
 from teatree.agents.model_tiering import resolve_spawn_effort
@@ -82,7 +83,11 @@ from teatree.agents.skill_routing import (
     runtime_fallback_reason,
 )
 from teatree.agents.spawn_payload import AgentSpawnError
-from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
+from teatree.agents.usage_window import (
+    maybe_park_for_active_window,
+    park_on_timed_rejections,
+    park_task_on_all_exhausted,
+)
 from teatree.config import AgentHarnessProvider
 from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
@@ -489,6 +494,9 @@ def _resolve_backend_or_failure(
     """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
     try:
         return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
+    except NoAvailableHarnessError as exc:
+        parked = park_on_timed_rejections(task, exc.rejected)
+        return parked or _record_failure(task, error=str(exc))  # no-usage: no candidate opened, so no turn billed
     except (
         NotImplementedError,
         UnknownHarnessError,

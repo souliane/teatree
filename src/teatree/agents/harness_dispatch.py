@@ -39,7 +39,7 @@ from teatree.skill_support.loading import SkillLoadingPolicy
 if TYPE_CHECKING:
     from teatree.agents.harness import Harness
     from teatree.config import UserSettings
-    from teatree.core.models import Task
+    from teatree.core.models import Task, UsageWindowState
 
 logger = logging.getLogger(__name__)
 
@@ -117,16 +117,33 @@ def _route_lane(capabilities: HarnessCapabilities, provider: AgentHarnessProvide
     return ""
 
 
-def _active_window_reason(capabilities: HarnessCapabilities, provider: AgentHarnessProvider | None) -> str | None:
+def _active_window(lane: str) -> "UsageWindowState | None":
     from django.utils import timezone  # noqa: PLC0415 — deferred Django import
 
     from teatree.core.models import UsageWindowState  # noqa: PLC0415 — deferred Django model import
 
-    lane = _route_lane(capabilities, provider)
     window = UsageWindowState.objects.active_for_lane(lane)
-    if window is None or window.should_clear(timezone.now()):
-        return None
-    return f"{window.cause or 'quota'} window on lane {lane or 'ambient'!r} is active"
+    return None if window is None or window.should_clear(timezone.now()) else window
+
+
+def another_lane_can_dispatch(parked_lane: str) -> bool:
+    """Whether the configured harness or a global route candidate could dispatch on a lane other than *parked_lane*."""
+    settings = get_effective_settings(None)
+    routes = [c for policy in resolve_agent_config().skill_models.values() if isinstance(policy, tuple) for c in policy]
+    candidates = [AgentRouteCandidate(settings.agent_harness, ""), *routes]
+    return any(_dispatchable_off_lane(settings, candidate, parked_lane) for candidate in candidates)
+
+
+def _dispatchable_off_lane(settings: "UserSettings", candidate: AgentRouteCandidate, parked_lane: str) -> bool:
+    try:
+        spec = resolve_harness_spec(candidate.harness)
+    except UnknownHarnessError:
+        return False
+    provider = AgentHarnessProvider.parse(candidate.provider) if candidate.provider else settings.agent_harness_provider
+    lane = _route_lane(spec.capabilities, provider if spec.allows_provider else None)
+    if lane == parked_lane or _active_window(lane) is not None:
+        return False
+    return spec.unavailable_reason(HarnessBuildContext(settings=settings, model=candidate.model)) is None
 
 
 def _registered_route_spec(
@@ -212,8 +229,9 @@ def _eligible_candidate(
         provider = _route_provider(context, candidate, spec)
     except (CredentialError, ValueError) as exc:
         return (HarnessRejection(candidate.harness, str(exc)),)
-    if window_reason := _active_window_reason(spec.capabilities, provider):
-        return (HarnessRejection(candidate.harness, window_reason),)
+    if window := _active_window(_route_lane(spec.capabilities, provider)):
+        reason = f"{window.cause or 'quota'} window on lane {window.lane or 'ambient'!r} is active"
+        return (HarnessRejection(candidate.harness, reason, retry_at=window.resets_at),)
     candidate_context = replace(context, model=candidate.model, provider=_managed_provider_name(spec, provider))
     try:
         return _EligibleCandidate(select_harness([candidate.harness], candidate_context), provider)

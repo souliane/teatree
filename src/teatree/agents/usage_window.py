@@ -19,8 +19,11 @@ the domain model stays llm-free and only persists the resolved instant.
 """
 
 import dataclasses
+import itertools
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -30,6 +33,7 @@ from teatree.agents.credential_policy import (
     EXHAUSTION_CAUSES,
     resolve_credential_provider,
 )
+from teatree.agents.harness_dispatch import another_lane_can_dispatch
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import LIMIT_PARKED_PREFIX, ModeOverride, Task, TaskAttempt, UsageWindowState
@@ -38,6 +42,7 @@ from teatree.llm.anthropic_limits import LimitCause, LimitMatch, window_horizon
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
+    from teatree.agents.harness_registry import HarnessRejection
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +181,7 @@ def park_task_on_limit(
     # #3159 item 6: auto-engage the low-token preset for the parked window's tenure
     # (enabled by default; never overwrites a live user override). Fail-soft — a park
     # must never depend on the preset layer.
-    _auto_engage_token_outage(reset)
+    _auto_engage_token_outage(reset, lane=lane)
     if match.cause is LimitCause.PROVIDER_BUDGET:
         _alert_owner_of_budget_park(window, match, reset=reset)
     not_before = _park_instant(task, lane=lane, cause=match.cause.value, reset=reset, moment=moment)
@@ -320,7 +325,7 @@ def park_task_on_all_exhausted(
     moment = now or timezone.now()
     reset = _future_park_instant(resets_at, moment)
     UsageWindowState.record_limit(lane=lane, cause=ALL_ACCOUNTS_EXHAUSTED_CAUSE, resets_at=reset, now=moment)
-    _auto_engage_token_outage(reset)
+    _auto_engage_token_outage(reset, lane=lane)
     not_before = _park_instant(task, lane=lane, cause=ALL_ACCOUNTS_EXHAUSTED_CAUSE, reset=reset, moment=moment)
     logger.warning(
         "Task %s parked — all %s accounts exhausted; auto-resume at %s",
@@ -332,11 +337,49 @@ def park_task_on_all_exhausted(
     return record_park(task, reason=reason, not_before=not_before, usage=usage)
 
 
-def _auto_engage_token_outage(reset: datetime) -> None:
+def _auto_engage_token_outage(reset: datetime, *, lane: str) -> None:
+    if _another_lane_open(lane):
+        logger.info("Lane %r parked while another lane can still dispatch; token-outage not engaged", lane or "ambient")
+        return
     try:
         ModeOverride.objects.auto_engage_token_outage(resets_at=reset)
     except Exception:
         logger.warning("token-outage auto-engage failed on park — continuing", exc_info=True)
+
+
+def _another_lane_open(lane: str) -> bool:
+    try:
+        return another_lane_can_dispatch(lane)
+    except Exception:
+        logger.warning("could not tell whether another lane can dispatch — engaging token-outage", exc_info=True)
+        return False
+
+
+#: A hold that re-arms on every wake (a sticky Codex auth failure) must not park forever.
+_MAX_CONSECUTIVE_ROUTE_HOLD_PARKS = 2
+_ROUTE_HOLD_PARK = f"{LIMIT_PARKED_PREFIX}route hold"
+_ROUTE_WINDOW_PARK = f"{LIMIT_PARKED_PREFIX}route window"
+
+
+def park_on_timed_rejections(task: Task, rejected: Sequence["HarnessRejection"]) -> TaskAttempt | None:
+    """Park until the earliest rejected route candidate can retry; ``None`` when every rejection is permanent."""
+    timed = [(rejection.retry_at, rejection) for rejection in rejected if rejection.retry_at is not None]
+    if not timed:
+        return None
+    retry_at, first = min(timed, key=itemgetter(0))
+    if first.held and _consecutive_route_hold_parks(task) >= _MAX_CONSECUTIVE_ROUTE_HOLD_PARKS:
+        return None
+    not_before = _future_park_instant(retry_at, timezone.now())
+    kind = _ROUTE_HOLD_PARK if first.held else _ROUTE_WINDOW_PARK
+    reason = f"{kind} until {not_before.isoformat()}; route candidates: " + "; ".join(map(str, rejected))
+    logger.warning("Task %s parked: %s", task.pk, reason)
+    return record_park(task, reason=reason, not_before=not_before)
+
+
+def _consecutive_route_hold_parks(task: Task) -> int:
+    latest_first = task.attempts.order_by("-pk").values_list("error", "park_repeats")
+    holds = itertools.takewhile(lambda row: row[0].startswith(_ROUTE_HOLD_PARK), latest_first)
+    return sum(1 + repeats for _, repeats in holds)
 
 
 def _alert_owner_of_leak_block(task: Task, match: LimitMatch) -> None:

@@ -33,6 +33,7 @@ from teatree.agents.sdk_tool_map import phase_bars_write_tools
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from datetime import datetime
 
     from teatree.agents.harness import Harness
     from teatree.config.settings import UserSettings
@@ -134,6 +135,8 @@ class HarnessSpec:
 class HarnessRejection:
     name: str
     reason: str
+    retry_at: "datetime | None" = None
+    held: bool = False
 
     def __str__(self) -> str:
         return f"{self.name}: {self.reason}"
@@ -266,8 +269,12 @@ def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) ->
         if barred := _barred_reason(spec, context):
             rejected.append(HarnessRejection(name, barred))
             continue
+        hold = None
         if context.model:
-            from teatree.agents.skill_routing import cached_unavailable_reason  # noqa: PLC0415 — avoids registry cycle
+            from teatree.agents.skill_routing import (  # noqa: PLC0415 — avoids registry cycle
+                cached_unavailable_reason,
+                held_until,
+            )
             from teatree.config.agent_spawn import AgentRouteCandidate  # noqa: PLC0415 — avoids registry cycle
 
             candidate = AgentRouteCandidate(name, context.model, context.provider or None)
@@ -277,11 +284,12 @@ def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) ->
                 lambda spec=spec: spec.unavailable_reason(context),
                 phase=context.phase or "",
             )
+            hold = held_until(context.overlay, candidate, phase=context.phase or "")
         else:
             reason = spec.unavailable_reason(context)
         if reason is None:
             return HarnessSelection(spec=spec, rejected=tuple(rejected))
-        rejected.append(HarnessRejection(name, reason))
+        rejected.append(HarnessRejection(name, reason, retry_at=hold, held=hold is not None))
     raise NoAvailableHarnessError(tuple(rejected))
 
 
