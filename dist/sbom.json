@@ -872,7 +872,7 @@
     },
     {
       "bom-ref": "requirements-L189",
-      "description": "requirements line 189: pydantic-ai-slim==2.52.0",
+      "description": "requirements line 189: pydantic-ai-slim==2.53.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -881,9 +881,9 @@
         }
       ],
       "name": "pydantic-ai-slim",
-      "purl": "pkg:pypi/pydantic-ai-slim@2.52.0",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.53.0",
       "type": "library",
-      "version": "2.52.0"
+      "version": "2.53.0"
     },
     {
       "bom-ref": "requirements-L191",
@@ -902,7 +902,7 @@
     },
     {
       "bom-ref": "requirements-L193",
-      "description": "requirements line 193: pydantic-graph==2.52.0",
+      "description": "requirements line 193: pydantic-graph==2.53.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -911,9 +911,9 @@
         }
       ],
       "name": "pydantic-graph",
-      "purl": "pkg:pypi/pydantic-graph@2.52.0",
+      "purl": "pkg:pypi/pydantic-graph@2.53.0",
       "type": "library",
-      "version": "2.52.0"
+      "version": "2.53.0"
     },
     {
       "bom-ref": "requirements-L195",
