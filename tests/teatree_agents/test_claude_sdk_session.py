@@ -1,17 +1,16 @@
 """Operator input joins a dispatch's hook lists after the gates the dispatch already arms."""
 
 import asyncio
-from typing import Any
 
 from claude_agent_sdk import HookMatcher
-from claude_agent_sdk.types import HookJSONOutput, StopHookInput
+from claude_agent_sdk.types import HookEvent, HookJSONOutput, StopHookInput
 
 from teatree.agents.claude_sdk_session import LiveInputQueue
 from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 
 
-def _dispatch_hooks() -> dict[Any, list[HookMatcher]]:
+def _dispatch_hooks() -> dict[HookEvent, list[HookMatcher]]:
     return spawn_ceiling_hooks(SpawnCeiling(limit=3)) | envelope_stop_hooks(EnvelopeStopGate("coding", limit=2))
 
 

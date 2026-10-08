@@ -55,7 +55,10 @@ class TestAReopenedTicketStaysReopened(TestCase):
         ticket = reopened_ticket()
         Ticket.objects.filter(pk=ticket.pk).update(extra={**ticket.extra, "reopened_over_pr_urls": 7})
 
-        self._assert_stays_reopened(ticket, state=Ticket.State.WORK_STARTED)
+        with self.assertLogs("teatree.loop.scanners.board_reconcile_apply", level="ERROR") as logged:
+            self._assert_stays_reopened(ticket, state=Ticket.State.WORK_STARTED)
+
+        assert [f"skipped ticket {ticket.pk} " in line for line in logged.output] == [True]
 
     def test_dry_run_plans_exactly_what_the_pass_applies(self) -> None:
         reopened_ticket()

@@ -238,29 +238,41 @@ class _OperatorSteerableSession(InterruptibleSession):
 
 
 @pytest.mark.parametrize(
-    ("stop", "stopped_by"),
+    ("drain_reason", "renew_lease", "ceilings", "stopped_by"),
     [
-        pytest.param({"drain_reason": _drain_from_beat(1, [])}, "deploy checkpoint:", id="deploy-checkpoint"),
-        pytest.param({"renew_lease": _lease_lost_on_beat(1)}, "lease lost for task", id="lost-lease"),
         pytest.param(
-            {"ceilings": _Ceilings(watchdog=replace(_WATCHDOG, max_turns=1), turns=2)},
+            _drain_from_beat(1, []), _no_lease_renewal, _NO_BREACH, "deploy checkpoint:", id="deploy-checkpoint"
+        ),
+        pytest.param(
+            _drain_from_beat(10**9, []), _lease_lost_on_beat(1), _NO_BREACH, "lease lost for task", id="lost-lease"
+        ),
+        pytest.param(
+            _drain_from_beat(10**9, []),
+            _no_lease_renewal,
+            _Ceilings(watchdog=replace(_WATCHDOG, max_turns=1), turns=2),
             "turns ceiling exceeded",
             id="watchdog-breach",
         ),
         pytest.param(
-            {"ceilings": _Ceilings(watchdog=replace(_WATCHDOG, max_runtime_seconds=0.05), heartbeat_interval=60)},
+            _drain_from_beat(10**9, []),
+            _no_lease_renewal,
+            _Ceilings(watchdog=replace(_WATCHDOG, max_runtime_seconds=0.05), heartbeat_interval=60),
             "runtime ceiling exceeded",
             id="runtime-ceiling",
         ),
     ],
 )
 def test_a_steer_that_lands_as_the_run_is_told_to_stop_is_refused_not_delivered(
-    stop: dict[str, Any], stopped_by: str
+    drain_reason: Callable[[], str], renew_lease: Callable[[Task], None], ceilings: _Ceilings, stopped_by: str
 ) -> None:
     session = _OperatorSteerableSession()
 
     outcome = _drive(
-        session, **{"drain_reason": _drain_from_beat(10**9, []), **stop}, task=Task(pk=_TASK_PK, phase="coding")
+        session,
+        drain_reason=drain_reason,
+        renew_lease=renew_lease,
+        ceilings=ceilings,
+        task=Task(pk=_TASK_PK, phase="coding"),
     )
 
     assert (outcome.stuck_reason or "").startswith(stopped_by)

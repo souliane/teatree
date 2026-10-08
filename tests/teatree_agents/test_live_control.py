@@ -98,9 +98,9 @@ def test_the_state_follows_the_stream_and_a_closed_session_is_not_steerable(
 
 def test_the_facts_age_every_clock_reading_from_one_now() -> None:
     capture = _Capture(tool_calls=4, context_tokens=52_000, last_event_at=111.0, open_tool=("Bash", 110.0))
-    with patch.object(live_control, "monotonic", return_value=100.0):
+    with patch.object(live_control, "monotonic", side_effect=[100.0]):
         controller = _controller(_AcceptingSession(), capture)
-    with patch.object(live_control, "monotonic", return_value=112.5):
+    with patch.object(live_control, "monotonic", side_effect=[112.5]):
         facts = controller.facts()
 
     assert facts == {
