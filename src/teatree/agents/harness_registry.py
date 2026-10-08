@@ -29,7 +29,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from teatree.agents.model_tiering import resolve_phase_harness
 from teatree.agents.sdk_tool_map import phase_bars_write_tools
 
 if TYPE_CHECKING:
@@ -244,11 +243,7 @@ def _barred_reason(spec: HarnessSpec, context: HarnessBuildContext) -> str | Non
         return None
     if context.task is not None and (context.task.ticket.extra or {}).get("claude_only"):
         return "ticket is claude_only"
-    if not context.phase:
-        return None
-    if (pinned := resolve_phase_harness(spec.name, context.phase)) != spec.name:
-        return f"phase {context.phase!r} is pinned to harness {pinned!r}"
-    if spec.capabilities.managed_lane and phase_bars_write_tools(context.phase):
+    if context.phase and spec.capabilities.managed_lane and phase_bars_write_tools(context.phase):
         return f"phase {context.phase!r} bars write tools, which a managed-lane harness cannot enforce"
     return None
 
@@ -256,8 +251,8 @@ def _barred_reason(spec: HarnessSpec, context: HarnessBuildContext) -> str | Non
 def select_harness(candidates: "Sequence[str]", context: HarnessBuildContext) -> HarnessSelection:
     """The first registered, available candidate, with every rejection before it in order.
 
-    A candidate other than claude_sdk is also rejected for a ``claude_only`` ticket, for a phase
-    pinned to another harness, and — when it rides the managed lane — for a phase barring write tools.
+    A candidate other than claude_sdk is also rejected for a ``claude_only`` ticket and — when it
+    rides the managed lane — for a phase barring write tools.
 
     Raises :class:`NoAvailableHarnessError` naming each rejection when none qualifies.
     """

@@ -191,9 +191,11 @@ def _managed_provider_name(spec: HarnessSpec, provider: AgentHarnessProvider | N
     return MANAGED_CHATGPT_PROVIDER if spec.capabilities.managed_lane else ""
 
 
-def _static_rejection(candidate: AgentRouteCandidate, floor_rank: int) -> str | None:
+def _static_rejection(context: HarnessBuildContext, candidate: AgentRouteCandidate, floor_rank: int) -> str | None:
     if reason := _route_effort_unavailable_reason(candidate.effort, candidate.harness):
         return reason
+    if (pinned := resolve_phase_harness(candidate.harness, context.phase)) != candidate.harness:
+        return f"phase {context.phase!r} is pinned to harness {pinned!r}"
     if tier_rank(candidate.tier or candidate.model) < floor_rank:
         return "model is below a loaded skill's scalar floor"
     return None
@@ -240,7 +242,7 @@ def _skill_route_selection(
     rejected: list[HarnessRejection] = []
     retry: SkillRouteSelection | None = None
     for index, candidate in enumerate(candidates):
-        if reason := _static_rejection(candidate, floor_rank):
+        if reason := _static_rejection(context, candidate, floor_rank):
             rejected.append(HarnessRejection(candidate.harness, reason))
             continue
         eligible = _eligible_candidate(context, candidate)
