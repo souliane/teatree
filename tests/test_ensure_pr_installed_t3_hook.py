@@ -9,6 +9,7 @@ calls whatever ``t3`` is installed, and only for a branch push: prek leaves
 """
 
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -129,6 +130,16 @@ def test_no_installed_t3_exits_127_skip_with_the_warning(checkout: Path, tmp_pat
     assert "pr ensure-pr --repo" in proc.stderr
 
 
+def test_the_deploy_readme_names_exactly_the_exits_the_wrapper_skips_on() -> None:
+    skipped = re.search(r'case "\$rc" in ([\d |]+)\)', _WRAPPER.read_text(encoding="utf-8"))
+    readme = (_ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+    documented = re.search(r"skips with a warning on\s+(.+?)\s+and\s+fails the push", readme, re.DOTALL)
+
+    assert skipped is not None
+    assert documented is not None
+    assert set(re.findall(r"\d+", documented.group(1))) == set(re.findall(r"\d+", skipped.group(1)))
+
+
 def test_a_ship_push_runs_nothing_because_the_ship_opens_the_pr_itself(checkout: Path, tmp_path: Path) -> None:
     calls = _fake_t3(tmp_path / "installed", exit_code=1)
 
@@ -136,6 +147,7 @@ def test_a_ship_push_runs_nothing_because_the_ship_opens_the_pr_itself(checkout:
 
     assert proc.returncode == 0, proc.stderr
     assert not calls.exists()
+    assert f"ensure-pr skipped: {SHIP_PUSH_ENV} is set" in proc.stderr
 
 
 @pytest.fixture

@@ -4,7 +4,10 @@
 set -euo pipefail
 
 case "${PRE_COMMIT_REMOTE_BRANCH:-}" in refs/heads/*) ;; *) exit 0 ;; esac
-[ -z "${TEATREE_SHIP_PUSH:-}" ] || exit 0
+if [ -n "${TEATREE_SHIP_PUSH:-}" ]; then
+  echo "ensure-pr skipped: TEATREE_SHIP_PUSH is set, so this push belongs to a ship that opens its own PR" >&2
+  exit 0
+fi
 
 top="$(git rev-parse --show-toplevel)"
 kept=""
