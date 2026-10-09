@@ -98,7 +98,7 @@ def ask_mr_state(
     """
     marker = mr_state_marker(mr_url, head_sha=head_sha)
     owner_ask = owner is not None
-    if head_sha and _answered_at(marker, owner_only=owner_ask) is not None:
+    if head_sha and _answered_at(mr_url, head_sha=head_sha, owner_only=owner_ask) is not None:
         return None
     text = _question_text(mr_url=mr_url, reason=reason, head_sha=head_sha)
     open_owner_questions = DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=_MARKER_PREFIX)
@@ -170,11 +170,14 @@ def retire_head_bound_question(mr_url: str, *, reason: str) -> None:
 
 def owner_answer_at_head(mr_url: str, *, head_sha: str) -> DeferredQuestion | None:
     """The owner's own answer, on an owner channel, to the owner question about *mr_url* at *head_sha*."""
-    return _answered_at(mr_state_marker(mr_url, head_sha=head_sha), owner_only=True)
+    return _answered_at(mr_url, head_sha=head_sha, owner_only=True)
 
 
-def _answered_at(marker: str, *, owner_only: bool) -> DeferredQuestion | None:
-    answered = DeferredQuestion.objects.filter(dedupe_marker=marker, answered_at__isnull=False)
+def _answered_at(mr_url: str, *, head_sha: str, owner_only: bool) -> DeferredQuestion | None:
+    at_head = Q(dedupe_marker=mr_state_marker(mr_url, head_sha=head_sha)) | Q(
+        dedupe_marker=_legacy_marker(mr_url), question__contains=head_tag(head_sha)
+    )
+    answered = DeferredQuestion.objects.filter(at_head, answered_at__isnull=False)
     if owner_only:
         answered = answered.filter(
             audience=DeferredQuestion.Audience.OWNER_QUESTION, resolved_via__in=DeferredQuestion.OWNER_CHANNELS
@@ -186,9 +189,18 @@ def _open_question(mr_url: str) -> DeferredQuestion | None:
     scope = mr_state_marker(mr_url)
     return (
         DeferredQuestion.pending()
-        .filter(Q(dedupe_marker=scope) | Q(dedupe_marker__startswith=f"{scope}{_HEAD_SEPARATOR}"))
+        .filter(
+            Q(dedupe_marker=scope)
+            | Q(dedupe_marker__startswith=f"{scope}{_HEAD_SEPARATOR}")
+            | Q(dedupe_marker=_legacy_marker(mr_url))
+        )
         .first()
     )
+
+
+def _legacy_marker(mr_url: str) -> str:
+    """The url-form marker older rows still carry, read so their open question and owner answer keep counting."""
+    return f"{_MARKER_PREFIX}{canonical_mr_url(mr_url)}"
 
 
 def _is_head_bound(marker: str) -> bool:

@@ -353,6 +353,35 @@ class TestAnOwnerAskIsNeverAbsorbed(TestCase):
         assert not DeferredQuestion.owner_pending().exists()
 
 
+class TestAPreDeployUrlMarkerIsStillRead(TestCase):
+    def _legacy_owner_row(self, *, head_sha: str = "") -> DeferredQuestion:
+        subject = f"{_MR} {head_tag(head_sha)}" if head_sha else _MR
+        return DeferredQuestion.record(
+            f"I cannot determine the state of {subject} — {_REASON} How should I treat it?",
+            dedupe_marker=f"mr-state:{canonical_mr_url(_MR)}",
+            decision=OwnerDecision.PUBLIC_POST,
+            checked=_CHECKED,
+        )
+
+    def test_an_open_legacy_question_is_not_asked_again(self) -> None:
+        legacy = self._legacy_owner_row()
+
+        again = _ask_owner(head_sha=_HEAD)
+
+        assert again is not None
+        assert again.pk == legacy.pk
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [legacy.pk]
+
+    def test_a_legacy_owner_answer_still_authorises_its_head_only(self) -> None:
+        answer_on_slack(self._legacy_owner_row(head_sha=_HEAD), "Post the review request")
+
+        answer = owner_answer_at_head(_MR, head_sha=_HEAD)
+
+        assert answer is not None
+        assert answer.answer_text == "Post the review request"
+        assert owner_answer_at_head(_MR, head_sha=_NEW_HEAD) is None
+
+
 class TestOwnerAnswerAtHead(TestCase):
     def test_the_answer_about_this_head_is_returned(self) -> None:
         row = _ask_owner(head_sha=_HEAD)
