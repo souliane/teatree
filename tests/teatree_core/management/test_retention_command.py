@@ -1,8 +1,9 @@
 """``t3 <overlay> retention prune`` — the operator surface for #3693.
 
 Integration-first via ``call_command`` against the real DB: the default is a dry
-run that deletes nothing and reports the plan; ``--apply`` deletes only the
-terminal-owned rows past the window. ``--json`` round-trips the machine payload.
+run that deletes nothing and reports the plan; ``--apply`` drains every lane with no
+batch budget (the hourly pass is the bounded one). ``--json`` round-trips the machine
+payload, with compacted payloads reported apart from deleted rows.
 
 ``--apply`` also VACUUMs (#3852) — deleting rows on SQLite reclaims no disk on its
 own, so a prune that only drops rows leaves the file exactly as large. The vacuum
@@ -28,8 +29,10 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.cleanup import artifact_eviction, artifact_removal, process_table
-from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
-from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.core.management.commands.retention import Command, RetentionReport
+from teatree.core.models import BotPing, IncomingEvent, Session, Task, TaskAttempt, Ticket
+from teatree.core.retention import prune
+from teatree.core.retention.prune import SCHEDULED_MAX_BATCHES
 from teatree.utils.django_db.vacuum import VacuumOutcome
 from tests._git_repo import make_git_repo
 from tests._process_table_venue import blinded_process_table, this_process_in
@@ -67,6 +70,7 @@ def _old_terminal_attempt() -> TaskAttempt:
     ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.MERGED)
     session = Session.objects.create(ticket=ticket)
     task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
+    Task.objects.filter(pk=task.pk).update(created_at=_OLD)
     attempt = TaskAttempt.objects.create(task=task)
     TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=_OLD)
     return attempt
@@ -86,13 +90,22 @@ class RetentionCommandStructureTestCase(TestCase):
         assert callable(Command.prune)
 
     def test_report_payload_keys(self) -> None:
-        report: RetentionReport = {
-            "applied": False,
-            "total_rows": 0,
-            "tables": [],
-            "vacuum": _vacuum_row(VacuumOutcome(ran=False, reason="dry run")),
-        }
-        assert set(report) == {"applied", "total_rows", "tables", "vacuum"}
+        payload, _ = _prune_json(_RECLAIMED)
+        expected = {"applied", "total_rows", "total_compacted", "tables", "vacuum"}
+        assert set(payload) == set(RetentionReport.__required_keys__) == expected
+
+    def test_json_reports_compacted_payloads_apart_from_deleted_rows(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="old-ping",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT,
+            text="the whole notification",
+            posted_at=_OLD,
+        )
+        payload, _ = _prune_json(_RECLAIMED)
+        ping = next(row for row in payload["tables"] if row["table"] == "BotPing (payload)")
+        assert (payload["total_rows"], payload["total_compacted"]) == (0, 1)
+        assert (ping["rows"], ping["compacted"]) == (0, 1)
 
 
 class RetentionPruneCommandTestCase(TestCase):
@@ -129,9 +142,34 @@ class RetentionPruneCommandTestCase(TestCase):
         payload = json.loads(out.getvalue())
         assert payload["applied"] is False
         assert payload["total_rows"] == 1
-        tables = {row["table"]: row for row in payload["tables"]}
-        assert tables["TaskAttempt"]["rows"] == 1
-        assert tables["TaskAttempt"]["retention_days"] == 30
+        assert [row["table"] for row in payload["tables"]] == [
+            "TaskAttempt (park)",
+            "Task (failed)",
+            "Task (completed)",
+            "BotPing (payload)",
+            "IncomingEvent",
+            "TicketTransition",
+            "DBTaskResult",
+        ]
+        completed = payload["tables"][2]
+        assert (completed["rows"], completed["cascaded"], completed["max_batch_ms"]) == (1, 1, 0)
+        assert completed["retention_days"] == 56
+
+    def test_human_view_names_each_lane_rule_and_the_batches(self) -> None:
+        _old_terminal_attempt()
+        err = StringIO()
+        with patch(f"{_COMMAND}.vacuum_control_db", return_value=_RECLAIMED):
+            call_command("retention", "prune", "--apply", stderr=err)
+        rendered = " ".join(err.getvalue().split())
+        assert "1 (+1 cascaded), quiet finished ticket, >56d, 1 batch(es), longest" in rendered
+
+    def test_apply_drains_past_the_scheduled_budget(self) -> None:
+        for n in range(SCHEDULED_MAX_BATCHES + 2):
+            _old_processed_event(f"k{n}")
+        with patch.object(prune, "BATCH_SIZE", 1):
+            payload, _ = _prune_json(_RECLAIMED, "--apply")
+        assert IncomingEvent.objects.count() == 0
+        assert payload["applied"] is True
 
 
 class RetentionPruneVacuumTestCase(TestCase):
