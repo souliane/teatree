@@ -31,13 +31,17 @@ from tests.factories import planned_ticket
 
 
 class TestRecordDeferredQuestionAudience(TestCase):
-    def _headless_task_with_reason(self, reason: str, *, phase: str = "scanning_news", kind: str = "") -> Task:
+    def _headless_task_with_reason(
+        self, reason: str, *, phase: str = "scanning_news", kind: str = "", checked: tuple[str, ...] = ()
+    ) -> Task:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
         if kind:
             result["user_input_kind"] = kind
+        if checked:
+            result["user_input_checked"] = list(checked)
         TaskAttempt.objects.create(task=task, result=result)
         return task
 
@@ -124,9 +128,20 @@ class TestRecordDeferredQuestionAudience(TestCase):
             "or accept it and file a follow-up ticket? Which do you prefer?",
             phase="reviewing",
             kind="product_scope",
+            checked=("the ticket names neither option",),
         )
         row = record_deferred_question(task)
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+
+    def test_declared_kind_with_checked_records_owner_row(self) -> None:
+        task = self._headless_task_with_reason(
+            "The deploy token expired; mint a new one?",
+            kind="credentials",
+            checked=("the vault holds no deploy token", " "),
+        )
+        row = record_deferred_question(task)
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert row.evidence == {"decision": "credentials", "checked": ["the vault holds no deploy token"]}
 
     def test_an_unknown_kind_names_no_owner_decision(self) -> None:
         task = self._headless_task_with_reason("The gate refused the push.", phase="reviewing", kind="gate_refusal")
@@ -141,7 +156,7 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
         result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
         if kind:
-            result["user_input_kind"] = kind
+            result |= {"user_input_kind": kind, "user_input_checked": ["the vault holds no deploy token"]}
         TaskAttempt.objects.create(task=task, result=result)
         task.complete()
         return task

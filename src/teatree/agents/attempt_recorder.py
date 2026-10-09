@@ -39,7 +39,7 @@ from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
@@ -130,7 +130,7 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
 
 
 def validate_result_keys(result: AgentResultBlob) -> str:
-    """Return an error message if *result* carries keys outside the schema, or an unknown ``user_input_kind``.
+    """An error if *result* carries keys outside the schema, or a ``user_input_kind`` unknown or without facts.
 
     The single validation seam for every agent result — the headless driver and
     ``record-attempt`` both land here. The ``additionalProperties: false`` rule and
@@ -140,10 +140,12 @@ def validate_result_keys(result: AgentResultBlob) -> str:
     unexpected = set(result) - allowed
     if unexpected:
         return f"Agent result contains unexpected keys: {', '.join(sorted(unexpected))}"
-    if "user_input_kind" in result and owner_decision(result["user_input_kind"]) is None:
-        kinds = ", ".join(OwnerDecision)
+    checked = result.get("user_input_checked", [])
+    owner_stop = isinstance(checked, list) and owner_evidence(result.get("user_input_kind"), map(str, checked))
+    if "user_input_kind" in result and not owner_stop:
         return (
-            f"user_input_kind {result['user_input_kind']!r} names no owner decision ({kinds}); omit it for factory work"
+            f"user_input_kind {result['user_input_kind']!r} needs one of {', '.join(OwnerDecision)} and a non-empty "
+            "user_input_checked list of the facts you checked; omit both for factory work"
         )
     return ""
 

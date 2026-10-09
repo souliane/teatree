@@ -58,6 +58,12 @@ class TestEnvelopeContractText(SimpleTestCase):
         for decision in OwnerDecision:
             assert decision.value in text
 
+    def test_an_owner_stop_needs_the_checked_facts_and_everything_else_is_decided(self) -> None:
+        text = "\n".join(envelope_contract_lines(_WORK_PHASE))
+        assert "`user_input_checked`" in text
+        assert "access or permission grant is credentials" in text
+        assert "Decide everything else yourself" in text
+
     def test_final_output_reminder_names_the_phase_evidence_key(self) -> None:
         line = final_output_reminder_line(_WORK_PHASE)
         assert "`files_modified`" in line

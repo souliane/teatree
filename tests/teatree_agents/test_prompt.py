@@ -985,6 +985,17 @@ class TestTheResumeInstructionReachesTheAgentOnlyWhenItIsTrue(TestCase):
         assert "postgres-1" in prompt
 
 
+class TestAnOwnerStopNeedsItsKindAndCheckedFacts(TestCase):
+    def test_the_work_prompt_and_the_system_context_ask_for_both(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        for text in (build_task_prompt(task), build_system_context(task, skills=[])):
+            assert '"user_input_checked": [' in text
+            assert "access or permission grant is credentials" in text
+            assert "Decide everything else yourself" in text
+
+
 class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
     """#2663: the envelope EXAMPLE is what a model copies, so it carries the literal too."""
 

@@ -69,12 +69,19 @@ class TestValidateResultKeys(TestCase):
     def test_rejects_unknown_keys(self) -> None:
         assert "unexpected keys" in validate_result_keys({"bogus": 1})
 
-    def test_accepts_each_owner_decision_kind(self) -> None:
+    def test_accepts_each_owner_decision_kind_with_checked_facts(self) -> None:
         for kind in OwnerDecision:
-            assert validate_result_keys({"summary": "x", "needs_user_input": True, "user_input_kind": kind}) == ""
+            stop = {"summary": "x", "needs_user_input": True, "user_input_kind": kind}
+            assert validate_result_keys(stop | {"user_input_checked": ["the vault holds no token"]}) == ""
 
-    def test_refuses_a_kind_naming_no_owner_decision(self) -> None:
-        error = validate_result_keys({"summary": "x", "needs_user_input": True, "user_input_kind": "gate_refusal"})
+    def test_user_input_kind_without_checked_is_refused(self) -> None:
+        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "credentials"}
+        for checked in ({}, {"user_input_checked": []}, {"user_input_checked": ["  "]}, {"user_input_checked": "a"}):
+            assert "user_input_checked" in validate_result_keys(stop | checked), checked
+
+    def test_unknown_user_input_kind_is_refused(self) -> None:
+        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "gate_refusal"}
+        error = validate_result_keys(stop | {"user_input_checked": ["the gate log"]})
         assert "user_input_kind" in error
         assert "credentials" in error
 

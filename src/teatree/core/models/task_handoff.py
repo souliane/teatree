@@ -95,6 +95,7 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
         dedupe_marker=f"needs-input:{scope}{question_fingerprint(reason)}",
         parked_task=task,
         decision=decision,
+        checked=result.get("user_input_checked", ()),
     )
 
 
