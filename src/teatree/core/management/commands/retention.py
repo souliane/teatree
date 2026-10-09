@@ -10,13 +10,16 @@ The same ``prune`` lanes also run on their own every hour, bounded by a batch bu
 (``teatree.loops.timer_reconciler.prune_task_results``). ``prune`` is the operator's view
 of that pass: a dry run by default, and under ``--apply`` a drain with no budget followed
 by a ``VACUUM``. Plan and apply resolve each lane through the one lane table in
-:mod:`teatree.core.retention.prune`, so a row of a live ticket or task is never a candidate.
+:mod:`teatree.core.retention.prune`, so they cannot disagree. No lane deletes a live
+ticket's tasks; the park lane deletes stale limit-park audit rows whatever their task's
+state, because a park returns its task to PENDING.
 
 The windows are the DB-home ``task_attempt_retention_days`` (default 30, never below the
 56-day factory lookback, ``0`` disables the task-history lanes) and
 ``task_result_retention_days`` (default 1, ``0`` disables that lane) settings. Set them
-with ``t3 <overlay> config_setting set``; the hourly pass reads the global values, not
-per-overlay overrides. The park, ping-payload and ``IncomingEvent``
+with ``t3 <overlay> config_setting set``; this command and the hourly pass both resolve
+them for the active overlay, so an overlay-scoped row beats the global one. The park,
+ping-payload and ``IncomingEvent``
 lanes carry no window setting: they are ``PARK_ATTEMPT_RETENTION_DAYS`` and
 ``POST_MORTEM_RETENTION_DAYS``.
 
@@ -185,8 +188,8 @@ class Command(TyperCommand):
         batch budget; ``--apply`` drains it with no budget.
 
         On ``--apply`` the deleted pages are handed back to the filesystem with a
-        ``VACUUM``, which runs after the prune's transaction has committed because
-        it rebuilds the file and so cannot run inside one.
+        ``VACUUM``, which runs after every batch transaction has committed
+        because it rebuilds the file and so cannot run inside one.
         """
         plan = apply_retention() if apply else plan_retention()
         vacuum = vacuum_control_db() if apply else _NOT_ATTEMPTED

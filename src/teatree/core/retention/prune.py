@@ -2,13 +2,13 @@
 
 One ordered lane table drives both the dry run and the delete, so the plan and the
 apply cannot disagree about a lane's row set. In run order: limit-park ``TaskAttempt``
-rows older than a week (a park returns its task to PENDING, so no ticket-keyed lane can
-reach one); the FAILED, then the COMPLETED ``Task`` rows of quiescent tickets
-(:mod:`teatree.core.retention.ticket_history`) with their attempts by CASCADE, so failed
-history goes before completed history; ``BotPing`` payloads, blanked rather than deleted
-because dedup reads the key and status; settled ``IncomingEvent`` rows; ``TicketTransition``
-rows that record no edge on a finished ticket; ``DBTaskResult`` through ``django_tasks_db``'s
-own prune.
+rows older than a week (a park returns its task to PENDING, so no task-history lane
+reaches it while that task is active); the FAILED, then the COMPLETED ``Task`` rows of
+quiescent tickets (:mod:`teatree.core.retention.ticket_history`) with their attempts by
+CASCADE, so failed history goes before completed history; ``BotPing`` payloads, blanked
+rather than deleted because dedup reads the key and status; settled ``IncomingEvent``
+rows; ``TicketTransition`` rows that record no edge on a finished ticket; ``DBTaskResult``
+through ``django_tasks_db``'s own prune.
 
 Every lane deletes through the ORM, in short committed batches of pks re-filtered through
 its predicate, so a batch holds the write lock briefly and an interrupted pass only leaves

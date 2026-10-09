@@ -119,7 +119,7 @@ def _check_park_spin(now: dt.datetime | None = None) -> ReconciliationFinding:
 def _check_cost_per_delivered_ticket(now: dt.datetime | None = None) -> ReconciliationFinding:
     """ALARM when recorded spend per author-delivered ticket exceeds the floor.
 
-    Query: ``sum(TaskAttempt.cost_usd)`` (lifetime, the whole priced surface) over
+    Query: ``sum(TaskAttempt.cost_usd)`` over every attempt row still stored, over
     the count of author tickets in ``{DELIVERED, MERGED}``. Threshold:
     :data:`MAX_USD_PER_DELIVERED_TICKET`. Spend with zero deliveries is itself an
     alarm (every dollar reached no delivery).

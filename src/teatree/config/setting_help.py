@@ -211,7 +211,7 @@ SETTING_HELP: dict[str, str] = {
     "target_branch": "long-lived integration branch every pull request targets instead of the repo default",
     "task_attempt_retention_days": (
         "days a quiet finished ticket's task history is kept, never below 56; 0 disables, "
-        "and the hourly pass reads the global value"
+        "and the hourly pass reads it for the active overlay like any other setting"
     ),
     "task_result_retention_days": "days a task result row is kept",
     "task_sweep_recheck_interval_hours": "hours between rechecks of a swept task",

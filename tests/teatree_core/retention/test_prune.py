@@ -1,8 +1,9 @@
 """Control-DB retention: the lane table, the quiescence guards, the batch budget.
 
-The load-bearing invariant is the safety guard: retention NEVER deletes a row of a live
-ticket or task, and a ticket's task history goes only once the ticket is finished and has
-been quiet past the window. Each guard test names the mutation that turns it red.
+The load-bearing invariant is the safety guard: a ticket's tasks and real attempts go only
+once the ticket is finished and has been quiet past the window. The one row a live task
+can lose is a stale limit-park audit row (lane 1). Each guard test names the mutation that
+turns it red.
 ``apply_retention`` deletes; ``plan_retention`` reports only.
 """
 
@@ -426,6 +427,15 @@ class TaskHistoryLaneTestCase(TestCase):
         assert _exists(inside)
         assert not _exists(outside)
 
+    def test_a_window_above_the_lookback_is_honoured(self) -> None:
+        inside = _task(created_at=_QUIET)
+        outside = _task(created_at=_NOW - dt.timedelta(days=100))
+
+        apply_retention(settings=UserSettings(task_attempt_retention_days=90))
+
+        assert _exists(inside)
+        assert not _exists(outside)
+
     def test_pruning_a_task_keeps_dispatch_and_question_ledger_rows(self) -> None:
         task = _task()
         review = AutoReviewDispatch.objects.create(slug="acme/widgets", pr_id=1, head_sha="abc", task=task)
@@ -514,7 +524,7 @@ class BotPingPayloadLaneTestCase(TestCase):
 
 
 class ParkLaneReachesWhatTheTaskLanesCannotTestCase(TestCase):
-    """A park RETURNS its task to the queue PENDING, so no ticket-keyed lane can ever reach it."""
+    """While a park's task is back PENDING, no task-history lane reaches the park; the park lane does."""
 
     def test_task_lanes_cannot_reach_a_live_task_park_row(self) -> None:
         park = _park()

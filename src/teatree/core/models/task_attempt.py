@@ -85,10 +85,12 @@ class TaskAttemptQuerySet(models.QuerySet):
         return latest
 
     def prunable_parks(self, cutoff: datetime) -> "TaskAttemptQuerySet":
-        """Park-audit rows safe to delete — rows no ticket-keyed lane can reach.
+        """Park-audit rows safe to delete, whatever their task's state.
 
-        ``usage_window.record_park`` returns the task to the queue PENDING, so a park
-        row's owning task is by construction active and its ticket never quiescent.
+        ``usage_window.record_park`` returns the task to the queue PENDING, so while
+        that task stays active no task-history lane can reach its parks. Once it
+        finishes and its ticket goes quiet, the task lanes delete any park this lane
+        has not already taken, with the task.
 
         This lane asks the park's own three questions instead.
 

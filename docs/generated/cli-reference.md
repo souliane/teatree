@@ -11194,8 +11194,8 @@ Usage: t3 teatree retention prune [OPTIONS]
  batch budget; ``--apply`` drains it with no budget.
 
  On ``--apply`` the deleted pages are handed back to the filesystem with a
- ``VACUUM``, which runs after the prune's transaction has committed because
- it rebuilds the file and so cannot run inside one.
+ ``VACUUM``, which runs after every batch transaction has committed
+ because it rebuilds the file and so cannot run inside one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Actually delete the prunable rows. Without it, this is a    │

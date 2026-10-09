@@ -249,7 +249,7 @@ scratch_retention_days = 0 # int — days of agent scratch the sweep reclaims un
 scratch_sweep_root = "" # str — temp root the scratch sweep reclaims from (blank auto-resolves the host view)
 session_stale_after_hours = 12 # int — hours after which a session with no heartbeat counts as stale
 target_branch = "" # str — long-lived integration branch every pull request targets instead of the repo default
-task_attempt_retention_days = 30 # int — days a quiet finished ticket's task history is kept, never below 56; 0 disables, and the hourly pass reads the global value
+task_attempt_retention_days = 30 # int — days a quiet finished ticket's task history is kept, never below 56; 0 disables, and the hourly pass reads it for the active overlay like any other setting
 task_result_retention_days = 1 # int — days a task result row is kept
 
 [teatree.Infrastructure.Provisioning]
