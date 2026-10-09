@@ -844,10 +844,6 @@
           "name": "dismiss"
         },
         {
-          "help": "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap",
-          "name": "mirror"
-        },
-        {
           "help": "Re-post the pending backlog to the user's Slack DM (away\u2192present drain)",
           "name": "resurface"
         },

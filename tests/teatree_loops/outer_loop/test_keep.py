@@ -48,9 +48,10 @@ def _snapshot() -> FactoryScoreSnapshot:
 class TestKeepFlow(TestCase):
     def test_ask_records_the_keep_question(self) -> None:
         exp = _keep_pending()
-        question = ask_keep(exp)
-        assert exp.keep_question_id == question.pk
-        assert question.is_pending  # the empty #116 dial ASKs — no auto-answer
+        row = DeferredQuestion.objects.get(pk=ask_keep(exp).pk)
+        assert exp.keep_question_id == row.pk
+        assert (row.answer_text, row.resolved_via) == ("kept", DeferredQuestion.ResolvedVia.POLICY)
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert exp.state == OuterLoopExperiment.State.KEEP_PENDING  # ask does not terminate
 
     def test_resolve_reaches_terminal_kept_and_frees_the_slot(self) -> None:

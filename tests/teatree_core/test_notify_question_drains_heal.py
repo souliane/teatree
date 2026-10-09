@@ -83,17 +83,6 @@ class TestTheMirrorDrain(_HealedProvisionQuestion):
         self.question.refresh_from_db()
         assert self.question.is_pending
 
-    def test_the_targeted_kick_withdraws_a_healed_row(self) -> None:
-        self._heal()
-
-        with patch.object(notify_module, "messaging_from_overlay", return_value=_backend()):
-            assert drain_unmirrored_deferred_questions(user_id="U_ME", only_ref=self.question.stable_notify_ref) == (
-                0,
-                0,
-            )
-
-        self._assert_withdrawn()
-
 
 class TestTheResurfaceDrain(_HealedProvisionQuestion):
     def test_a_healed_row_is_neither_posted_nor_counted(self) -> None:

@@ -14009,8 +14009,6 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
 │ dismiss       Dismiss a pending question without answering it.               │
-│ mirror        Deliver ONE un-mirrored question now, bypassing the per-tick   │
-│               batch cap.                                                     │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -14147,31 +14145,6 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree questions mirror`
-
-```
-Usage: t3 teatree questions mirror [OPTIONS]
-
- Deliver ONE un-mirrored question now, bypassing the per-tick batch cap.
-
- Same
- :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions
- `
- egress the tick scanner runs, so there is exactly one Slack chokepoint for
- every deferred question. An unmatched *ref* is not an error: the tick drain
- may have taken the row first, and the durable row remains the fallback.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --ref            TEXT  The row's stable_notify_ref (its tool_use_id, or      │
-│                        '<instance>:<pk>').                                   │
-│ --user-id        TEXT  Slack user id to DM (defaults to the configured       │
-│                        user).                                                │
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay bot     │
-│                        routing).                                             │
-│ --help                 Show this message and exit.                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 ##### `t3 teatree questions resurface`
 
 ```
@@ -14295,7 +14268,7 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
 │ --user-id                TEXT  Slack user id to DM (defaults to the          │
 │                                configured user).                             │
-│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│ --kind                   TEXT  Notification kind: info | answer.             │
 │                                [default: info]                               │
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │
@@ -14329,7 +14302,7 @@ Usage: t3 teatree notify dm [OPTIONS] BODY
 │ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
 │ --user-id                TEXT  Slack user id to DM (defaults to the          │
 │                                configured user).                             │
-│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│ --kind                   TEXT  Notification kind: info | answer.             │
 │                                [default: info]                               │
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │

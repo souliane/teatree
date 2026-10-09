@@ -433,7 +433,6 @@ Persist declared Notion pass-key routes without replacing database overrides.
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending internal questions; an owner question is answered only in its Slack thread |
 | `dismiss` | Dismiss pending questions without answering them |
-| `mirror` | Deliver ONE un-mirrored question now, bypassing the per-tick batch cap |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List pending deferred questions, oldest first |
 

@@ -53,6 +53,7 @@ from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.modelkit.dm_channel_policy import signal_of
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.notify_types import NotifyReason
@@ -169,7 +170,7 @@ class Command(TyperCommand):
         ] = "",
         kind: Annotated[
             str,
-            typer.Option("--kind", help="Notification kind: info | answer | question."),
+            typer.Option("--kind", help="Notification kind: info | answer."),
         ] = NotifyKind.INFO.value,
         overlay: Annotated[
             str,
@@ -205,7 +206,7 @@ class Command(TyperCommand):
         ] = "",
         kind: Annotated[
             str,
-            typer.Option("--kind", help="Notification kind: info | answer | question."),
+            typer.Option("--kind", help="Notification kind: info | answer."),
         ] = NotifyKind.INFO.value,
         overlay: Annotated[
             str,
@@ -238,19 +239,21 @@ class Command(TyperCommand):
                 f"unknown --kind {request.kind!r}; expected one of: {', '.join(k.value for k in NotifyKind)}"
             )
             raise SystemExit(2) from exc
+        if kind_value is NotifyKind.QUESTION:
+            self.stderr.write(OWNER_QUESTION_ROUTE)
+            raise SystemExit(2)
 
         text = sys.stdin.read() if request.body == "-" else request.body
         if not text.strip():
             self.stderr.write("notify body must not be empty")
             raise SystemExit(2)
 
-        audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
         with _overlay_env(request.overlay):
             outcome = notify_user_outcome(
                 text,
                 kind=kind_value,
                 idempotency_key=request.idempotency_key,
-                audience=audience,
+                audience=NotifyAudience.OWNER_DELIVERY,
                 options=NotifyOptions(user_id=request.user_id or None, requested_push=request.requested_push),
             )
 
