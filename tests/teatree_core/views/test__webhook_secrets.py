@@ -207,15 +207,27 @@ def test_a_wedged_read_holds_one_thread_while_the_others_give_up_within_the_wait
     assert reads == [KEY]
 
 
+def test_a_store_error_with_an_empty_message_still_names_the_failure() -> None:
+    error = WebhookSecretUnavailableError.store_failed(KEY, silent_store_error())
+
+    assert KEY in str(error)
+
+
 def test_a_failure_with_an_empty_message_is_remembered_as_a_failure_not_a_secret() -> None:
     reads: list[str] = []
 
     def failing_read(key: str) -> str:
         reads.append(key)
-        raise silent_store_error()
+        raise keyring_down()
+
+    def silent_failure(_key: str, _error: Exception) -> WebhookSecretUnavailableError:
+        return WebhookSecretUnavailableError()
 
     store = WebhookSecrets()
-    with patch.multiple(secrets, read_pass=failing_read, pass_entry_names=lambda _prefix: frozenset({TARGET})):
+    with (
+        patch.multiple(secrets, read_pass=failing_read, pass_entry_names=lambda _prefix: frozenset({TARGET})),
+        patch.object(WebhookSecretUnavailableError, "store_failed", silent_failure),
+    ):
         for _ in range(2):
             with pytest.raises(WebhookSecretUnavailableError):
                 store.secret_for(TARGET)
