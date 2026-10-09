@@ -222,7 +222,8 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(msg)
 
         with transaction.atomic():
-            if dedupe_marker and (held := cls._held(dedupe_marker, clean_question, owner=decision is not None)):
+            marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")
+            if dedupe_marker and (held := cls._held(marked, clean_question, owner=decision is not None)):
                 return held
             row = cls.objects.create(
                 question=clean_question,
@@ -253,14 +254,15 @@ class DeferredQuestion(models.Model):
             return row
 
     @classmethod
-    def _held(cls, marker: str, question: str, *, owner: bool) -> "DeferredQuestion | None":
-        """The row a record under *marker* returns instead of asking; an owner record retires a pending internal row."""
-        rows = cls.objects.select_for_update().filter(dedupe_marker=marker).order_by("-created_at", "-pk")
-        pending = rows.filter(answered_at__isnull=True, dismissed_at__isnull=True)
+    def _held(
+        cls, marked: models.QuerySet["DeferredQuestion"], question: str, *, owner: bool
+    ) -> "DeferredQuestion | None":
+        """Which of *marked* a record returns instead of asking; an owner record retires a pending internal one."""
+        pending = marked.filter(answered_at__isnull=True, dismissed_at__isnull=True)
         if not owner:
             return pending.first()
         fingerprint = question_fingerprint(question)
-        for row in rows.filter(audience=cls.Audience.OWNER_QUESTION):
+        for row in marked.filter(audience=cls.Audience.OWNER_QUESTION):
             if row.dismissed_at is None or question_fingerprint(row.question) == fingerprint:
                 return row
         for internal in pending:
