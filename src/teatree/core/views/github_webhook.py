@@ -135,5 +135,7 @@ def _verified(target: str, body: bytes, signature: str) -> bool:
 
 
 def _signs(secret: str, body: bytes, signature: str) -> bool:
+    if not secret:
+        return False
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(f"sha256={digest}", signature)

@@ -20,6 +20,10 @@ def keyring_down() -> secrets.SecretStoreError:
     return secrets.SecretStoreError("keyring did not answer")
 
 
+def silent_store_error() -> secrets.SecretStoreError:
+    return secrets.SecretStoreError("")
+
+
 class Clock:
     def __init__(self) -> None:
         self.now = 1000.0
@@ -200,4 +204,20 @@ def test_a_wedged_read_holds_one_thread_while_the_others_answer_at_once() -> Non
 
     assert (len(done), len(pending)) == (3, 1)
     assert all(isinstance(future.exception(), WebhookSecretUnavailableError) for future in done)
+    assert reads == [KEY]
+
+
+def test_a_failure_with_an_empty_message_is_remembered_as_a_failure_not_a_secret() -> None:
+    reads: list[str] = []
+
+    def failing_read(key: str) -> str:
+        reads.append(key)
+        raise silent_store_error()
+
+    store = WebhookSecrets()
+    with patch.multiple(secrets, read_pass=failing_read, pass_entry_names=lambda _prefix: frozenset({TARGET})):
+        for _ in range(2):
+            with pytest.raises(WebhookSecretUnavailableError):
+                store.secret_for(TARGET)
+
     assert reads == [KEY]

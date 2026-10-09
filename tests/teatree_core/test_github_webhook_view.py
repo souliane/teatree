@@ -344,6 +344,16 @@ class TestBoundedStoreCost(GitHubWebhookTestCase):
         assert IncomingEvent.objects.count() == 2
 
 
+class EmptySecretStore:
+    @staticmethod
+    def secret_for(_target: str) -> str:
+        return ""
+
+    @staticmethod
+    def refreshed_secret(_target: str) -> str:
+        return ""
+
+
 class TestWarmTargetUnderStoreFaults(GitHubWebhookTestCase):
     def test_a_warm_target_still_verifies_while_the_listing_fails(self) -> None:
         clock = [1000.0]
@@ -378,6 +388,36 @@ class TestWarmTargetUnderStoreFaults(GitHubWebhookTestCase):
             assert refresh.result(timeout=5) == SECRET_A
 
         assert status == 200
+
+
+class TestFailClosed(GitHubWebhookTestCase):
+    def test_a_store_error_with_an_empty_message_never_verifies_the_empty_key(self) -> None:
+        self.store.read_error = secrets.SecretStoreError("")
+
+        statuses = [self.deliver(secret="", headers={"X-GitHub-Delivery": f"d-{n}"}).status_code for n in range(3)]
+
+        assert set(statuses) <= {401, 503}
+        assert not IncomingEvent.objects.exists()
+
+    def test_an_empty_secret_never_signs(self) -> None:
+        self.enterContext(patch.object(github_webhook, "webhook_secrets", EmptySecretStore))
+
+        assert self.deliver(secret="").status_code == 401
+        assert not IncomingEvent.objects.exists()
+
+    def test_a_read_failing_outside_the_store_contract_is_503_and_remembered(self) -> None:
+        failures = [
+            ({}, PermissionError("permission denied")),
+            (TARGET_B, UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
+        ]
+        for target, error in failures:
+            self.store.read_error = error
+            for n in range(5):
+                delivery = {"X-GitHub-Delivery": f"{type(error).__name__}-{n}"}
+                assert self.deliver(secret="forged", headers={**target, **delivery}).status_code == 503
+
+        assert self.store.reads == [KEY_A, KEY_B]
+        assert "0xff" not in self.caplog.text
 
 
 class TestNothingSecretLeaks(GitHubWebhookTestCase):

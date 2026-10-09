@@ -27,8 +27,11 @@ UNKNOWN_TARGET_WARNING_WINDOW_SECONDS = 60.0
 
 class WebhookSecretUnavailableError(RuntimeError):
     @classmethod
-    def store_failed(cls, error: secret_store.SecretStoreError) -> "WebhookSecretUnavailableError":
-        return cls(str(error))
+    def store_failed(cls, key: str, error: Exception) -> "WebhookSecretUnavailableError":
+        # Only the store's own messages are logged verbatim: a decode error would quote bytes of the entry.
+        if isinstance(error, secret_store.SecretStoreError) and str(error):
+            return cls(str(error))
+        return cls(f"reading {key} from the `pass` store failed: {type(error).__name__}")
 
     @classmethod
     def empty(cls, target: str) -> "WebhookSecretUnavailableError":
@@ -43,10 +46,10 @@ class WebhookSecretUnavailableError(RuntimeError):
 class _ReadOutcome:
     at: float
     secret: str = ""
-    failure: str = ""
+    failure: str | None = None
 
     def is_fresh(self, now: float) -> bool:
-        return now - self.at < (SECRET_TTL_SECONDS if self.secret else FAILED_READ_WINDOW_SECONDS)
+        return now - self.at < (SECRET_TTL_SECONDS if self.failure is None else FAILED_READ_WINDOW_SECONDS)
 
 
 class WebhookSecrets:
@@ -54,7 +57,7 @@ class WebhookSecrets:
         self._now = now
         self._lock = threading.Lock()
         self._listed: frozenset[str] = frozenset()
-        self._listing_failure = ""
+        self._listing_failure: str | None = None
         self._listed_at: float | None = None
         self._outcomes: dict[str, _ReadOutcome] = {}
         self._read_locks: dict[str, threading.Lock] = {}
@@ -87,7 +90,7 @@ class WebhookSecrets:
             outcome = self._outcomes.get(target)
             if outcome is None or not outcome.is_fresh(self._now()):
                 return None
-        if outcome.failure:
+        if outcome.failure is not None:
             raise WebhookSecretUnavailableError(outcome.failure)
         return outcome.secret
 
@@ -96,12 +99,12 @@ class WebhookSecrets:
             if self._listed_at is None or self._now() - self._listed_at >= LISTING_TTL_SECONDS:
                 self._listed_at = self._now()
                 try:
-                    self._listed, self._listing_failure = secret_store.pass_entry_names(STORE_PREFIX), ""
+                    self._listed, self._listing_failure = secret_store.pass_entry_names(STORE_PREFIX), None
                 except secret_store.SecretStoreError as exc:
-                    self._listing_failure = str(WebhookSecretUnavailableError.store_failed(exc))
+                    self._listing_failure = str(WebhookSecretUnavailableError.store_failed(STORE_PREFIX, exc))
                     logger.warning("GitHub webhook secrets unavailable: %s", self._listing_failure)
             failure, listed = self._listing_failure, target in self._listed
-        if failure:
+        if failure is not None:
             raise WebhookSecretUnavailableError(failure)
         return listed
 
@@ -117,10 +120,11 @@ class WebhookSecrets:
             read_lock.release()
 
     def _read(self, target: str) -> str:
+        key = f"{STORE_PREFIX}/{target}"
         try:
-            secret = secret_store.read_pass(f"{STORE_PREFIX}/{target}")
-        except secret_store.SecretStoreError as exc:
-            raise self._failed(target, WebhookSecretUnavailableError.store_failed(exc), evict=False) from exc
+            secret = secret_store.read_pass(key)
+        except (secret_store.SecretStoreError, OSError, ValueError) as exc:
+            raise self._failed(target, WebhookSecretUnavailableError.store_failed(key, exc), evict=False) from exc
         if not secret:
             raise self._failed(target, WebhookSecretUnavailableError.empty(target), evict=True)
         with self._lock:
@@ -133,7 +137,7 @@ class WebhookSecrets:
         with self._lock:
             now = self._now()
             current = self._outcomes.get(target)
-            if evict or current is None or not current.secret or not current.is_fresh(now):
+            if evict or current is None or current.failure is not None or not current.is_fresh(now):
                 self._outcomes[target] = _ReadOutcome(at=now, failure=str(error))
         logger.warning("GitHub webhook secret unavailable: %s", error)
         return error
