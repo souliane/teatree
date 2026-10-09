@@ -3417,8 +3417,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 #
-# This handler records the durable row INTERNAL (#5096): a loop-driven question reaches
-# the owner only when the agent re-records it with ``questions record --decision --checked``.
+# The row is INTERNAL: only a ``questions record --decision --checked`` re-record reaches the owner.
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
