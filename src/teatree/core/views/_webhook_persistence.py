@@ -30,6 +30,7 @@ class IngestionRecord:
     payload_json: dict = field(default_factory=dict)
     dead_letter_reason: str = ""
     settled: bool = False
+    event_name: str = ""
 
 
 def persist_incoming_event(record: IngestionRecord) -> bool:
@@ -47,6 +48,7 @@ def persist_incoming_event(record: IngestionRecord) -> bool:
                 body=record.body,
                 payload_json=record.payload_json or {},
                 idempotency_key=record.idempotency_key,
+                event_name=record.event_name,
                 provenance=provenance,
                 last_error=record.dead_letter_reason,
                 dead_lettered_at=timezone.now() if record.dead_letter_reason else None,
