@@ -258,6 +258,6 @@ def deferred_questions(*, overlay_slug: str) -> list:
                 ),
             )
         )
-    if internal := DeferredQuestion.pending().filter(audience=DeferredQuestion.Audience.INTERNAL).count():
+    if internal := DeferredQuestion.internal_pending().count():
         items.append(CheckItem(label=f"{internal} internal escalations: factory work, not questions", url=""))
     return items

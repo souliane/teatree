@@ -490,6 +490,10 @@ class DeferredQuestion(models.Model):
         return cls.pending().filter(audience=cls.Audience.OWNER_QUESTION)
 
     @classmethod
+    def internal_pending(cls) -> models.QuerySet["DeferredQuestion"]:
+        return cls.pending().filter(audience=cls.Audience.INTERNAL)
+
+    @classmethod
     def consume(
         cls,
         question_id: int,

@@ -586,3 +586,73 @@ class PhaseWedgeIncidentTests(TestCase):
         repair = Ticket.objects.get(pk=ticketed[0].firing.ticket_id)
         assert repair.state == Ticket.State.WORK_STARTED
         assert repair.tasks.filter(phase="planning", status=Task.Status.PENDING).count() == 1
+
+
+class InternalEscalationIncidentTests(TestCase):
+    def _aged(self, question: str, *, age: timedelta = timedelta(hours=2), **fields) -> DeferredQuestion:
+        row = DeferredQuestion.record(question, **fields)
+        DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - age)
+        return row
+
+    def _reports(self) -> dict[str, DetectorReport]:
+        return {
+            report.payload["kind"]: report for report in LifecycleIncidentDetector(overlay_name="t3-teatree").detect()
+        }
+
+    def test_internal_escalation_reported_at_ticket_rung(self) -> None:
+        stall = self._aged(
+            "Repair-loop stall on ticket 1: how should it proceed?", dedupe_marker="repair-stall:1:coding"
+        )
+        alerts: list[DetectorReport] = []
+
+        def owner_alert(report: DetectorReport, _existing: SelfImproveFiring | None) -> bool:
+            alerts.append(report)
+            return True
+
+        result = run_tier(
+            Tier.CHEAP,
+            detectors=[LifecycleIncidentDetector(overlay_name="t3-teatree")],
+            budget=BudgetVerdict.allow(),
+            delivery=DeliveryRoutes(overlay_name="t3-teatree", owner_alert=owner_alert),
+        )
+
+        [report] = result.reports
+        assert (report.payload["kind"], report.payload["cause"]) == ("internal_escalation", "operational_question")
+        assert report.payload["ids"] == [stall.pk]
+        assert report.max_rung == ActionRung.TICKET
+        assert report.payload["suggested_action"] == (
+            "investigate from live state; fix, or `questions dismiss <ids> --reason '<evidence>'`; never ask the owner"
+        )
+        assert [action.rung for action in result.actions] == [ActionRung.TICKET]
+        assert alerts == []
+
+    def test_fresh_internal_row_not_reported(self) -> None:
+        old = self._aged("Loop 'a' tick exceeded its deadline", dedupe_marker="loop-tick-timeout loop=a")
+        self._aged(
+            "Loop 'b' tick exceeded its deadline", age=timedelta(minutes=5), dedupe_marker="loop-tick-timeout loop=b"
+        )
+        self._aged("Which option?", **OWNER_DECISION)
+
+        assert self._reports()["internal_escalation"].payload["ids"] == [old.pk]
+
+    def test_fsm_wedge_not_double_reported(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        record_stuck_transition_question(None, phase="retro", ticket=ticket, refusal="FixRecordDodError: no record")
+        DeferredQuestion.objects.update(created_at=timezone.now() - timedelta(hours=2))
+        stall = self._aged(
+            "Repair-loop stall on ticket 1: how should it proceed?", dedupe_marker="repair-stall:1:coding"
+        )
+
+        reports = self._reports()
+
+        assert reports["phase_wedge"].payload["ids"] == [ticket.pk]
+        assert reports["internal_escalation"].payload["ids"] == [stall.pk]
+
+    def test_internal_escalation_names_at_most_100_rows(self) -> None:
+        old = timezone.now() - timedelta(hours=2)
+        DeferredQuestion.objects.bulk_create(
+            DeferredQuestion(question=f"stall {n}", audience=DeferredQuestion.Audience.INTERNAL, created_at=old)
+            for n in range(101)
+        )
+
+        assert self._reports()["internal_escalation"].payload["count"] == 100

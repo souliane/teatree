@@ -25,6 +25,7 @@ _MESSAGE_WAIT = timedelta(hours=1)
 _POST_WAIT = timedelta(minutes=10)
 _CLAIM_WAIT = timedelta(minutes=10)
 _RECURRING_FAILURE = 3
+_PHASE_WEDGE_PREFIX = "fsm-wedge:"
 _WITNESSES = 2
 _OWNER_ALERT_WAIT = timedelta(minutes=30)
 _REPAIR_WAIT = timedelta(hours=2)
@@ -98,6 +99,7 @@ class LifecycleIncidentDetector:
         reports.extend(self._phase_wedges())
         reports.extend(self._inbound_questions(now))
         reports.extend(self._outbound_questions(now))
+        reports.extend(self._internal_escalations(now))
         prefix = self._key("attempt_failure_burst", "")
         return DetectorScan(
             reports,
@@ -321,7 +323,7 @@ class LifecycleIncidentDetector:
         wedges = {
             (int(match["ticket"]), match["phase"])
             for marker in DeferredQuestion.pending()
-            .filter(dedupe_marker__startswith="fsm-wedge:")
+            .filter(dedupe_marker__startswith=_PHASE_WEDGE_PREFIX)
             .values_list("dedupe_marker", flat=True)
             if (match := PHASE_WEDGE_MARKER_RE.match(marker))
         }
@@ -390,7 +392,7 @@ class LifecycleIncidentDetector:
         ]
 
     def _outbound_questions(self, now: datetime) -> list[DetectorReport]:
-        pending = DeferredQuestion.pending().filter(audience=DeferredQuestion.Audience.OWNER_QUESTION)
+        pending = DeferredQuestion.owner_pending()
         unposted = list(pending.filter(slack_ts="", created_at__lt=now - _POST_WAIT).values_list("pk", flat=True)[:100])
         unanswered = list(
             pending.exclude(slack_ts="").filter(created_at__lt=now - _MESSAGE_WAIT).values_list("pk", flat=True)[:100]
@@ -418,6 +420,28 @@ class LifecycleIncidentDetector:
                 )
             )
         return reports
+
+    def _internal_escalations(self, now: datetime) -> list[DetectorReport]:
+        ids = list(
+            DeferredQuestion.internal_pending()
+            .exclude(dedupe_marker__startswith=_PHASE_WEDGE_PREFIX)
+            .filter(created_at__lt=now - _MESSAGE_WAIT)
+            .values_list("pk", flat=True)[:100]
+        )
+        if not ids:
+            return []
+        return [
+            self._report(
+                kind="internal_escalation",
+                cause="operational_question",
+                ids=ids,
+                rung=ActionRung.TICKET,
+                action=(
+                    "investigate from live state; fix, or `questions dismiss <ids> --reason '<evidence>'`; "
+                    "never ask the owner"
+                ),
+            )
+        ]
 
     def scan(self) -> list[ScanSignal]:
         return [report.to_signal() for report in self.detect()]
