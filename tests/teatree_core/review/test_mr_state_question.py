@@ -17,6 +17,7 @@ per merge request (dedupe on the canonical URL), and a hard per-tick cap so a
 backlog of undecidable merge requests cannot arrive as a flood.
 """
 
+import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
@@ -25,11 +26,13 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.gates.review_request_guard import canonical_mr_url
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.core.review import mr_state_question
 from teatree.core.review.mr_state_question import (
+    OwnerAsk,
     ask_mr_state,
     head_tag,
     mr_state_marker,
@@ -37,6 +40,7 @@ from teatree.core.review.mr_state_question import (
     owner_answer_at_head,
 )
 from teatree.on_behalf_gate import OnBehalfVerdict
+from tests._owner_channel import answer_on_slack
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 _MR = "https://git.example.com/acme/app/-/merge_requests/41"
@@ -45,10 +49,17 @@ _THIRD_MR = "https://git.example.com/acme/app/-/merge_requests/43"
 _REASON = "the forge reports no head pipeline and the branch is behind target."
 _HEAD = "a1b2c3d4e5f6" + "0" * 28
 _NEW_HEAD = "f6e5d4c3b2a1" + "0" * 28
+_CHECKED = ("review_request_post refused: no_ticket",)
 
 
 def _open_mr_state_questions() -> list[DeferredQuestion]:
     return list(DeferredQuestion.pending().filter(dedupe_marker__startswith="mr-state:"))
+
+
+def _ask_owner(mr_url: str = _MR, *, reason: str = _REASON, head_sha: str = "") -> DeferredQuestion | None:
+    return ask_mr_state(
+        mr_url=mr_url, reason=reason, head_sha=head_sha, owner=OwnerAsk(OwnerDecision.PUBLIC_POST, _CHECKED)
+    )
 
 
 def _owner_dm_backend(*, ts: str = "1700000000.000000") -> MagicMock:
@@ -88,13 +99,22 @@ class TestOneOpenQuestionPerMergeRequest(TestCase):
         assert second.pk == first.pk
 
     def test_the_marker_is_the_shared_canonical_scope_verbatim(self) -> None:
-        """Provably one string: the marker is the prefix plus the guard's own output.
+        """Provably one string: the marker is the prefix plus a digest of the guard's own output.
 
         Anything the guard does not collapse is not collapsed here either — the
         point is a scope that cannot DRIFT from the review-request guard's, not a
         second, better canonicaliser that would silently disagree with it.
         """
-        assert mr_state_marker(f"{_MR}#note_9") == f"mr-state:{canonical_mr_url(_MR)}"
+        digest = hashlib.sha256(canonical_mr_url(_MR).encode()).hexdigest()[:32]
+        assert mr_state_marker(f"{_MR}#note_9") == f"mr-state:{digest}"
+
+    def test_marker_fits_64_chars_for_long_gitlab_url(self) -> None:
+        long_mr = "https://gitlab.example.com/a-long-group/a-long-subgroup/another-subgroup/the-project/-/merge_requests/123456"
+        row = _ask_owner(long_mr, head_sha=_HEAD)
+
+        assert row is not None
+        assert len(row.dedupe_marker) <= DeferredQuestion._meta.get_field("dedupe_marker").max_length
+        assert row.dedupe_marker == mr_state_marker(long_mr, head_sha=_HEAD)
 
     def test_distinct_merge_requests_get_distinct_rows(self) -> None:
         """The control for dedupe: collapsing every merge request would also pass a same-URL test."""
@@ -126,24 +146,24 @@ class TestOneOpenQuestionPerMergeRequest(TestCase):
 
 class TestPerTickCap(TestCase):
     def test_the_cap_refuses_the_next_distinct_merge_request(self) -> None:
-        assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
-        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
-        assert ask_mr_state(mr_url=_THIRD_MR, reason=_REASON) is None
+        assert _ask_owner(_MR) is not None
+        assert _ask_owner(_OTHER_MR) is not None
+        assert _ask_owner(_THIRD_MR) is None
         assert len(_open_mr_state_questions()) == 2
 
     def test_a_raised_cap_admits_the_merge_request_the_lower_one_refused(self) -> None:
         """The control: without this the cap test would also pass on a reader that always refuses."""
         with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
-            assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
-            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
+            assert _ask_owner(_MR) is not None
+            assert _ask_owner(_OTHER_MR) is None
 
-        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
+        assert _ask_owner(_OTHER_MR) is not None
 
     def test_re_asking_an_already_open_merge_request_is_never_refused_by_the_cap(self) -> None:
         with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
-            first = ask_mr_state(mr_url=_MR, reason=_REASON)
+            first = _ask_owner(_MR)
 
-            second = ask_mr_state(mr_url=_MR, reason=_REASON)
+            second = _ask_owner(_MR)
 
         assert first is not None
         assert second is not None
@@ -151,13 +171,22 @@ class TestPerTickCap(TestCase):
 
     def test_answering_a_question_frees_its_slot(self) -> None:
         with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
-            first = ask_mr_state(mr_url=_MR, reason=_REASON)
+            first = _ask_owner(_MR)
             assert first is not None
-            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
+            assert _ask_owner(_OTHER_MR) is None
 
-            first.apply_answer("treat as ready", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            answer_on_slack(first, "treat as ready")
 
-            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
+            assert _ask_owner(_OTHER_MR) is not None
+
+    def test_internal_mr_state_rows_do_not_fill_owner_cap(self) -> None:
+        assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
+        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
+
+        row = _ask_owner(_THIRD_MR)
+
+        assert row is not None
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
 
 class TestAHeadBoundQuestion(TestCase):
@@ -204,19 +233,29 @@ class TestAHeadBoundQuestion(TestCase):
         assert second is not None
         assert third is not None
         assert third.pk == second.pk
-        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 2
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR, head_sha=_HEAD)).count() == 2
+
+    def test_same_head_not_asked_twice(self) -> None:
+        first = _ask_owner(head_sha=_HEAD)
+        again = _ask_owner(reason="the send was refused.", head_sha=_HEAD)
+
+        assert first is not None
+        assert again is not None
+        assert again.pk == first.pk
+        assert [row.pk for row in _open_mr_state_questions()] == [first.pk]
 
     def test_a_replacement_keeps_its_slot_when_the_cap_is_full(self) -> None:
-        old = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
-        ask_mr_state(mr_url=_OTHER_MR, reason=_REASON)
+        old = _ask_owner(head_sha=_HEAD)
+        _ask_owner(_OTHER_MR)
         assert old is not None
 
         with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
-            new = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD)
+            new = _ask_owner(head_sha=_NEW_HEAD)
 
         assert new is not None
         assert new.pk != old.pk
-        open_for_this_mr = [row.pk for row in _open_mr_state_questions() if row.dedupe_marker == mr_state_marker(_MR)]
+        this_mr = mr_state_marker(_MR)
+        open_for_this_mr = [row.pk for row in _open_mr_state_questions() if row.dedupe_marker.startswith(this_mr)]
         assert open_for_this_mr == [new.pk]
 
     def test_a_replacement_that_fails_leaves_the_old_question_open(self) -> None:
@@ -248,9 +287,9 @@ class TestAHeadBoundQuestion(TestCase):
 
 class TestOwnerAnswerAtHead(TestCase):
     def test_the_answer_about_this_head_is_returned(self) -> None:
-        row = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        row = _ask_owner(head_sha=_HEAD)
         assert row is not None
-        row.apply_answer("It is not ready yet", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(row, "It is not ready yet")
 
         answer = owner_answer_at_head(_MR, head_sha=_HEAD)
 
@@ -258,35 +297,50 @@ class TestOwnerAnswerAtHead(TestCase):
         assert answer.answer_text == "It is not ready yet"
 
     def test_an_answer_about_another_head_is_not_returned(self) -> None:
-        row = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+        row = _ask_owner(head_sha=_HEAD)
         assert row is not None
-        row.apply_answer("It is not ready yet", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(row, "It is not ready yet")
 
         assert owner_answer_at_head(_MR, head_sha=_NEW_HEAD) is None
 
     def test_an_answer_to_an_untagged_question_is_ignored(self) -> None:
-        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+        row = _ask_owner()
         assert row is not None
-        row.apply_answer("Post the review request", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(row, "Post the review request")
 
         assert owner_answer_at_head(_MR, head_sha=_HEAD) is None
 
-    def test_a_head_the_owner_answered_about_is_not_asked_about_again(self) -> None:
-        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
-        assert first is not None
-        first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+    def test_agent_answer_cannot_authorize_post(self) -> None:
+        agent_answered = _ask_owner(head_sha=_HEAD)
+        internal = ask_mr_state(mr_url=_OTHER_MR, reason=_REASON, head_sha=_HEAD)
+        assert agent_answered is not None
+        assert internal is not None
+        agent_answered.apply_answer("Post the review request", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(internal, "Post the review request")
 
-        again = ask_mr_state(mr_url=_MR, reason="the send was refused.", head_sha=_HEAD)
+        assert owner_answer_at_head(_MR, head_sha=_HEAD) is None
+        assert owner_answer_at_head(_OTHER_MR, head_sha=_HEAD) is None
+
+    def test_a_head_the_owner_answered_about_is_not_asked_about_again(self) -> None:
+        first = _ask_owner(head_sha=_HEAD)
+        assert first is not None
+        answer_on_slack(first, "I will ask in person")
+
+        again = _ask_owner(reason="the send was refused.", head_sha=_HEAD)
 
         assert again is None
-        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR)).count() == 1
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_MR, head_sha=_HEAD)).count() == 1
 
-    def test_a_new_head_is_asked_about_after_an_answer_at_the_old_one(self) -> None:
-        first = ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_HEAD)
+    def test_new_head_asks_again_after_answered_head(self) -> None:
+        first = _ask_owner(head_sha=_HEAD)
         assert first is not None
-        first.apply_answer("I will ask in person", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+        answer_on_slack(first, "I will ask in person")
 
-        assert ask_mr_state(mr_url=_MR, reason=_REASON, head_sha=_NEW_HEAD) is not None
+        again = _ask_owner(head_sha=_NEW_HEAD)
+
+        assert again is not None
+        assert again.pk != first.pk
+        assert again.is_pending
 
 
 class TestOwnerQuestionObserver(TestCase):
@@ -321,7 +375,7 @@ class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
         # be disarmed.
         assert resolve_posture_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
-        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+        row = _ask_owner()
         assert row is not None
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=None):
@@ -335,7 +389,14 @@ class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
         assert row.slack_ts == "1700000000.000000"
 
     def test_the_question_is_owner_audience_so_the_drain_never_filters_it_out(self) -> None:
-        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+        row = _ask_owner()
 
         assert row is not None
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert row.evidence == {"decision": "public_post", "checked": list(_CHECKED)}
+
+    def test_an_ask_naming_no_decision_stays_internal(self) -> None:
+        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+
+        assert row is not None
+        assert row.audience == DeferredQuestion.Audience.INTERNAL

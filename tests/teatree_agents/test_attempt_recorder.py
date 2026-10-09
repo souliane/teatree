@@ -453,6 +453,8 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == task.pk
         assert question.is_pending
+        assert question.evidence["decision"] == "product_scope"
+        assert any("2 needs-triage recommendation" in fact for fact in question.evidence["checked"])
 
     def test_summary_only_triage_assessing_is_refused(self) -> None:
         task = self._claimed()
@@ -506,6 +508,8 @@ class TestAnsweringEnvelopeChannel(TestCase):
         assert "Here is the reply." in question.question
         assert "C123/168.9" in question.question
         assert question.is_pending
+        assert question.evidence["decision"] == "public_post"
+        assert any("C123/168.9" in fact for fact in question.evidence["checked"])
 
     def test_summary_only_answering_is_refused(self) -> None:
         task = self._claimed()

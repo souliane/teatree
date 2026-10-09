@@ -189,6 +189,7 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
         parked_task=task,
         dedupe_marker=f"triage-batch-{task.pk}",
         decision=OwnerDecision.PRODUCT_SCOPE,
+        checked=[f"task {task.pk} recorded {recorded} needs-triage recommendation(s) as pending rows"],
     )
 
 
@@ -304,6 +305,7 @@ def _maybe_record_answer_draft(
         question=f"Approve this drafted reply{where}?\n\n{text}",
         parked_task=task,
         decision=OwnerDecision.PUBLIC_POST,
+        checked=[f"task {task.pk} drafted a reply{where}, not delivered in the owner's own DM thread"],
     )
 
 

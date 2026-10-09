@@ -65,7 +65,8 @@ class InertGateQuestionScanner:
         DeferredQuestion.record(
             question,
             dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(settings))}",
-            decision=OwnerDecision.PRODUCT_SCOPE,
+            decision=OwnerDecision.ARCHITECTURE,
+            checked=[f"{finding.label} (feature_inertness: off, no recorded decision)" for finding in undecided],
         )
         return [
             ScanSignal(

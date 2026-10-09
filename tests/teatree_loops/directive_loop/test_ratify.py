@@ -116,6 +116,14 @@ class TestAskRatification(TestCase):
         assert "pr_budget_gate" in question.question
         assert "rejected alternatives" in question.question
 
+    def test_the_ask_is_an_architecture_decision_carrying_the_sketch_it_checked(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        assert directive.sketch is not None
+        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.evidence["decision"] == "architecture"
+        assert any(render_sketch(directive.sketch) in fact for fact in question.evidence["checked"])
+
     def test_the_cli_path_question_is_byte_identical(self) -> None:
         directive = _interpreted_directive()
         question = ask_ratification(directive)
@@ -256,6 +264,7 @@ class TestUndecidableAnswerDefers(TestCase):
         assert directive.ratify_question is not None
         assert directive.ratify_question.pk != first.pk
         assert directive.ratify_question.answered_at is None
+        assert directive.ratify_question.evidence["decision"] == "architecture"
         assert try_admit(directive) == "pending"
 
 

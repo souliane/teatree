@@ -133,7 +133,9 @@ class TestAListingWithNoPipelineFieldStillReadsCi(TestCase):
 
         assert _actions(signals) == [TriageAction.REQUEST_REVIEW]
         assert enricher.urls == [f"{_REPO}/40"]
-        assert [q.dedupe_marker for q in _open_mr_questions()] == [mr_state_marker(f"{_REPO}/40")]
+        assert [q.dedupe_marker for q in _open_mr_questions()] == [
+            mr_state_marker(f"{_REPO}/40", head_sha=f"{40:040d}")
+        ]
 
     def test_no_enricher_leaves_the_same_mr_waiting_on_unknown_ci(self) -> None:
         # The control: the verdict above is the enricher's doing, not the payload's.
@@ -422,11 +424,14 @@ class TestAMissingReviewIsProvedAgainstTheChannel(TestCase):
 
         assert _actions(signals) == [TriageAction.ASK_OWNER]
 
-    def test_the_missing_review_reaches_the_owner_not_only_the_statusline(self) -> None:
+    def test_the_missing_review_is_a_question_not_only_the_statusline(self) -> None:
+        """The surveyor's question is the factory's own (#5096): only the review-request sender asks the owner."""
         with _channel(), _reads():
             MrTriageScanner(allowed_url_prefixes=_SCOPE, host=FakeCodeHost(user="alice", my_prs=[_opened(33)])).scan()
 
-        assert [q.dedupe_marker for q in _open_mr_questions()] == [mr_state_marker(f"{_REPO}/33")]
+        [question] = _open_mr_questions()
+        assert question.dedupe_marker == mr_state_marker(f"{_REPO}/33", head_sha=f"{33:040d}")
+        assert question.audience == DeferredQuestion.Audience.INTERNAL
 
     def test_a_surveyor_whose_verdict_a_sender_acts_on_asks_nothing(self) -> None:
         with _channel(), _reads():
