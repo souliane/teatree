@@ -37,10 +37,7 @@ from django.utils import timezone
 from teatree import answer_handback
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
-    is_tool_lack_selfreport,
-    question_fingerprint,
-)
+from teatree.core.models.question_text import question_fingerprint  # noqa: F401 — public re-export
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:

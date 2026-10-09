@@ -17,6 +17,7 @@ from asgiref.sync import async_to_sync
 from django.test import TestCase
 
 from teatree.cli.review.evidence_gate import FindingEvidence
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE
 from teatree.core.models import (
     ConfigSetting,
     DeferredQuestion,
@@ -31,6 +32,7 @@ from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occu
 from teatree.mcp import review_seam, review_write_tools, write_tools
 from teatree.mcp.review_seam import SeamNote, register_review_post_seam
 from teatree.mcp.server import build_server
+from tests._owner_channel import OWNER_DECISION
 from tests.factories import MergeClearFactory, TaskFactory, TicketFactory
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
@@ -147,6 +149,16 @@ class TestQuestionAnswer(TestCase):
         row.refresh_from_db()
         assert result["ok"] is True
         assert row.answered_at is not None
+
+    def test_mcp_question_answer_on_owner_row_is_refused(self) -> None:
+        row = DeferredQuestion.record("Proceed with the rollout?", **OWNER_DECISION)
+
+        result = _call("question_answer", {"question_id": row.pk, "text": "yes"})
+
+        row.refresh_from_db()
+        assert result["ok"] is False
+        assert OWNER_ANSWER_ROUTE in result["refused"]
+        assert row.is_pending
 
 
 class TestLifecycleTools(TestCase):

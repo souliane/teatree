@@ -34,16 +34,14 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.models.deferred_question import (
     DeferredQuestion,
     DeferredQuestionAudit,
     DeferredQuestionError,
     question_fingerprint,
 )
-from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.question_text import options_digest
-from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.table_output import print_table
 
@@ -279,7 +277,7 @@ class Command(MachineOutputCommand):
         ] = None,
         agent_surface: Annotated[bool, typer.Option("--agent-surface", hidden=True)] = False,
     ) -> str:
-        """Resolve pending questions with a user answer (resumes any parked headless task).
+        """Resolve pending internal questions; an owner question is answered only in its Slack thread.
 
         ``--also`` exists because one decision routinely settles several questions:
         a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -296,11 +294,16 @@ class Command(MachineOutputCommand):
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
+        targets = [question_id, *(also or [])]
+        owner_rows = DeferredQuestion.objects.filter(pk__in=targets, audience=DeferredQuestion.Audience.OWNER_QUESTION)
+        if owner_ids := sorted(owner_rows.values_list("pk", flat=True)):
+            self.stderr.write(f"{', '.join(f'#{pk}' for pk in owner_ids)}: {OWNER_ANSWER_ROUTE}")
+            raise SystemExit(2)
         # A command-line answer is never an owner channel.
         resolved_via = DeferredQuestion.ResolvedVia.AGENT if agent_surface else DeferredQuestion.ResolvedVia.LOCAL
         answered: list[int] = []
         skipped: list[int] = []
-        for target in [question_id, *(also or [])]:
+        for target in targets:
             try:
                 with transaction.atomic():
                     row = DeferredQuestion.consume(target, answer=text)
@@ -315,11 +318,6 @@ class Command(MachineOutputCommand):
                         answer_text=text,
                         resolver_id=resolver_id,
                     )
-                    if row.parked_task is not None:
-                        try:
-                            schedule_resume(row.parked_task, answer=text)
-                        except NoPlanArtifactError as exc:
-                            self.stderr.write(f"answer #{row.pk} kept; its parked task was not resumed: {exc}")
                     answered.append(row.pk)
             except DeferredQuestionError as exc:
                 self.stderr.write(str(exc))

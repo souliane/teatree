@@ -15,12 +15,11 @@ decision (``user_input_kind``) is an owner question (#5096).
 """
 
 import pytest
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_handoff import (
-    FACTORY_WORK_ANSWER,
     RESUME_ANSWER_PREFIX,
     RESUME_CONTINUATION_CLAUSE,
     dispatch_reason,
@@ -150,7 +149,7 @@ class TestRecordDeferredQuestionAudience(TestCase):
 
 
 class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
-    """A kind-less stop is factory work: answered by policy and resumed under the phase budget (#5096)."""
+    """A kind-less stop is recorded internal and resumes nothing; only an owner-channel answer resumes (#5096)."""
 
     def _stopped(self, ticket: Ticket, reason: str, *, kind: str = "") -> Task:
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
@@ -161,24 +160,14 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
         task.complete()
         return task
 
-    def test_a_kindless_stop_is_answered_by_policy_and_resumed_once(self) -> None:
+    def test_kindless_stop_records_internal_and_mints_no_task(self) -> None:
         task = self._stopped(planned_ticket(), "The merge gate refused the push; how should I proceed?")
 
-        resume = task.child_tasks.get()
-        assert FACTORY_WORK_ANSWER in resume.execution_reason
-        row = DeferredQuestion.objects.get()
+        assert not Task.objects.exclude(pk=task.pk).exists()
+        row = DeferredQuestion.objects.get(parked_task=task)
         assert row.audience == DeferredQuestion.Audience.INTERNAL
-        assert row.resolved_via == DeferredQuestion.ResolvedVia.POLICY
-        assert row.answer_text == FACTORY_WORK_ANSWER
-
-    @override_settings(MAX_PHASE_ITERATIONS=1)
-    def test_at_the_phase_iteration_cap_nothing_resumes_and_the_row_stays_pending(self) -> None:
-        task = self._stopped(planned_ticket(), "The merge gate refused the push; how should I proceed?")
-
-        assert not task.child_tasks.exists()
-        stop = DeferredQuestion.objects.get(parked_task=task)
-        assert stop.is_pending
-        assert stop.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.is_pending
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.UNRESOLVED
 
     def test_a_tool_lack_self_report_is_never_resumed(self) -> None:
         task = self._stopped(planned_ticket(), "This session lacks any shell tool (no Bash), so I cannot inspect it.")
@@ -194,16 +183,25 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
         assert row.is_pending
 
-    def test_the_same_owner_question_on_the_same_ticket_is_never_asked_twice(self) -> None:
-        ticket = planned_ticket()
+    def test_sticky_hit_resumes_only_on_owner_channel_answer(self) -> None:
         reason = "The deploy token expired; mint a new one?"
-        first = self._stopped(ticket, reason, kind="credentials")
-        DeferredQuestion.consume(DeferredQuestion.objects.get(parked_task=first).pk, answer="use the vault entry")
+        via = DeferredQuestion.ResolvedVia
+        for channel in (via.SLACK, via.LOCAL, via.AGENT, via.STALE):
+            with self.subTest(channel=channel):
+                ticket = planned_ticket()
+                first = self._stopped(ticket, reason, kind="credentials")
+                row = DeferredQuestion.objects.get(parked_task=first)
+                if channel == via.STALE:
+                    row.mark_stale("the token rotated on its own")
+                else:
+                    row.apply_answer("use the vault entry", resolved_via=channel)
 
-        second = self._stopped(ticket, reason, kind="credentials")
+                second = self._stopped(ticket, reason, kind="credentials")
 
-        assert DeferredQuestion.objects.count() == 1
-        assert "use the vault entry" in second.child_tasks.get().execution_reason
+                assert DeferredQuestion.objects.filter(parked_task__ticket=ticket).count() == 1
+                resumed = [child.execution_reason for child in second.child_tasks.all()]
+                assert resumed == ([f"{RESUME_ANSWER_PREFIX} use the vault entry."] if channel == via.SLACK else [])
+                assert not first.child_tasks.exists()
 
 
 class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):

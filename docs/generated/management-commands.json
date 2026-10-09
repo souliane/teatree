@@ -836,7 +836,7 @@
           "name": "reachability"
         },
         {
-          "help": "Resolve pending questions with a user answer (resumes any parked headless task)",
+          "help": "Resolve pending internal questions; an owner question is answered only in its Slack thread",
           "name": "answer"
         },
         {

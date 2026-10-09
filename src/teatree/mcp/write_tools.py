@@ -32,6 +32,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
@@ -278,14 +279,19 @@ async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
 
 
 async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp") -> dict[str, Any]:
-    """Answer a pending DeferredQuestion (single-use CAS + audit row).
+    """Answer a pending internal DeferredQuestion (single-use CAS + audit row).
 
-    Wraps ``t3 teatree questions answer`` — resumes any parked headless task
-    with the answer, exactly like the CLI.
+    Wraps ``t3 teatree questions answer``, which resumes no task and refuses an owner
+    question; that refusal comes back as ``ok=false`` naming the Slack-thread route.
     """
 
     def _answer() -> dict[str, Any]:
-        run_command("questions", "answer", question_id, text, resolver_id=resolver, agent_surface=True)
+        try:
+            run_command("questions", "answer", question_id, text, resolver_id=resolver, agent_surface=True)
+        except ToolError as exc:
+            if OWNER_ANSWER_ROUTE not in str(exc):
+                raise
+            return {"ok": False, "question_id": question_id, "refused": str(exc)}
         return {"ok": True, "question_id": question_id}
 
     return await sync_to_async(_answer, thread_sensitive=True)()

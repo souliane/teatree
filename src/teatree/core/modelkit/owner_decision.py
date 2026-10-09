@@ -23,6 +23,11 @@ OWNER_QUESTION_ROUTE = (
     "listing every fact you checked first; decide everything else yourself."
 )
 
+OWNER_ANSWER_ROUTE = (
+    "an owner question is answered only by the owner, in its Slack thread; if it no longer applies, "
+    "`t3 <overlay> questions dismiss <id> --reason '<evidence>'`."
+)
+
 
 def owner_decision(value: object) -> OwnerDecision | None:
     """*value* as an :class:`OwnerDecision`, or ``None`` when it names none of the six."""
@@ -41,4 +46,11 @@ def owner_evidence(decision: object, checked: Iterable[str]) -> OwnerEvidence | 
     return {"decision": kind.value, "checked": facts}
 
 
-__all__ = ["OWNER_QUESTION_ROUTE", "OwnerDecision", "OwnerEvidence", "owner_decision", "owner_evidence"]
+__all__ = [
+    "OWNER_ANSWER_ROUTE",
+    "OWNER_QUESTION_ROUTE",
+    "OwnerDecision",
+    "OwnerEvidence",
+    "owner_decision",
+    "owner_evidence",
+]

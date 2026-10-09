@@ -1,116 +1,89 @@
-"""``t3 teatree questions answer`` resumes a parked headless task (#31).
+"""``t3 teatree questions answer`` never resumes a parked task (#5096).
 
-The CLI ``answer`` path is the chat-only operator's parallel of the Slack
-reply scanner (``askuserquestion_reply._apply_one``). The scanner re-queues a
-headless continuation when the resolved ``DeferredQuestion`` carries a
-``parked_task``; the CLI path historically resolved the answer + wrote the
-audit but never scheduled the resume, so a headless run parked via the
-away-mode hook stayed parked forever even though ``_resurface_text`` tells the
-user to answer through this very command.
-
-These tests pin parity with the scanner: a CLI-answered parked question
-re-queues exactly one HEADLESS followup chained on the captured session, a
-question with no ``parked_task`` queues none, and re-answering / a pre-existing
-resume child never double-queues.
+A command-line answer is never an owner channel, so it cannot authorize a resume: an
+owner question is refused with its Slack route and left pending, and an internal one is
+answered without minting a task. Only the owner's own answer to an owner question
+resumes, and only while its subject is still open.
 """
 
 import io
 
 import pytest
 from django.core.management import call_command
+from django.test import TestCase
 
-from teatree.agents.session_lineage import resume_session_id
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE
+from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
-from tests._harness_env import harness_signature
+from tests._owner_channel import OWNER_DECISION, answer_on_slack
 from tests.factories import planned_ticket
 
-# ast-grep-ignore: ac-django-no-pytest-django-db
-pytestmark = pytest.mark.django_db
 
-_RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-
-
-def _parked_task() -> Task:
-    ticket = planned_ticket()
-    session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
-    parked = Task.objects.create(
-        ticket=ticket,
-        session=session,
-        phase="coding",
-    )
-    TaskAttempt.objects.create(task=parked, agent_session_id=_RESUME_UUID)
-    return parked
+def _parked_task(ticket: Ticket) -> Task:
+    return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
 
 
-def _parked_question(parked: Task) -> DeferredQuestion:
-    return DeferredQuestion.record(
-        "Which DB host?",
-        task_session=parked.session,
-        parked_task=parked,
-    )
+def _minted_tasks(parked: Task) -> list[Task]:
+    return list(Task.objects.exclude(pk=parked.pk))
 
 
-class TestAnswerResumesParkedTask:
-    def test_answer_queues_headless_resume_with_answer_and_resume_session(self) -> None:
-        parked = _parked_task()
-        question = _parked_question(parked)
-
-        with harness_signature({}):
-            call_command("questions", "answer", question.pk, "use postgres-1")
-
-        question.refresh_from_db()
-        assert question.answer_text == "use postgres-1"
-        assert question.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
-        resume = parked.child_tasks.get()
-        assert resume.parent_task_id == parked.pk
-        assert "use postgres-1" in resume.execution_reason
-        assert resume_session_id(resume) == _RESUME_UUID
-
-    def test_answer_without_parked_task_queues_no_resume(self) -> None:
-        question = DeferredQuestion.record("Chat-only question?")
-
-        call_command("questions", "answer", question.pk, "yes")
-
-        question.refresh_from_db()
-        assert question.answer_text == "yes"
-        assert not Task.objects.exists()
-
-    def test_re_answer_does_not_double_queue_resume(self) -> None:
-        parked = _parked_task()
-        question = _parked_question(parked)
-
-        call_command("questions", "answer", question.pk, "use postgres-1")
-        with pytest.raises(SystemExit):
-            call_command("questions", "answer", question.pk, "use postgres-2")
-
-        assert parked.child_tasks.count() == 1
-
-    def test_pre_existing_resume_child_is_not_double_queued(self) -> None:
-        parked = _parked_task()
-        question = _parked_question(parked)
-        existing = Task.objects.create(
-            ticket=parked.ticket,
-            session=parked.session,
-            phase=parked.phase,
-            parent_task=parked,
-        )
-
-        call_command("questions", "answer", question.pk, "use postgres-1")
-
-        assert list(parked.child_tasks.values_list("pk", flat=True)) == [existing.pk]
-
-
-class TestAnswerSurvivesARefusedResume:
-    def test_the_answer_is_kept_and_the_plan_missing_refusal_is_named(self) -> None:
-        ticket = Ticket.objects.create()
-        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
-        question = _parked_question(parked)
+class TestACommandLineAnswerResumesNothing(TestCase):
+    def test_cli_answer_on_owner_row_is_refused_and_mints_no_task(self) -> None:
+        parked = _parked_task(planned_ticket())
+        row = DeferredQuestion.record("Rotate the deploy token?", parked_task=parked, **OWNER_DECISION)
         stderr = io.StringIO()
 
-        call_command("questions", "answer", question.pk, "use postgres-1", stderr=stderr)
+        with pytest.raises(SystemExit) as refused:
+            call_command("questions", "answer", row.pk, "rotate it", stderr=stderr)
 
-        question.refresh_from_db()
-        assert question.answer_text == "use postgres-1"
-        assert not parked.child_tasks.exists()
-        assert "plan_missing" in stderr.getvalue()
+        assert refused.value.code == 2
+        assert OWNER_ANSWER_ROUTE in stderr.getvalue()
+        row.refresh_from_db()
+        assert row.is_pending
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.UNRESOLVED
+        assert _minted_tasks(parked) == []
+
+    def test_an_owner_id_among_also_ids_refuses_every_id(self) -> None:
+        parked = _parked_task(planned_ticket())
+        internal = DeferredQuestion.record("Which runner image?", parked_task=parked)
+        owner = DeferredQuestion.record("Rotate the deploy token?", parked_task=parked, **OWNER_DECISION)
+
+        with pytest.raises(SystemExit):
+            call_command("questions", "answer", internal.pk, "the slim one", also=[owner.pk], stderr=io.StringIO())
+
+        assert set(DeferredQuestion.pending().values_list("pk", flat=True)) == {internal.pk, owner.pk}
+
+    def test_answering_internal_parked_question_mints_no_task(self) -> None:
+        parked = _parked_task(planned_ticket())
+        row = DeferredQuestion.record("Ship now, or wait until the review HOLD clears?", parked_task=parked)
+
+        call_command("questions", "answer", row.pk, "ship now")
+
+        row.refresh_from_db()
+        assert row.answer_text == "ship now"
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
+        assert _minted_tasks(parked) == []
+
+    def test_dismissing_parked_question_mints_no_task(self) -> None:
+        parked = _parked_task(planned_ticket())
+        row = DeferredQuestion.record("Ship now, or wait until the review HOLD clears?", parked_task=parked)
+
+        call_command("questions", "dismiss", row.pk, reason="the HOLD was withdrawn")
+
+        row.refresh_from_db()
+        assert row.dismissed_at is not None
+        assert _minted_tasks(parked) == []
+
+
+class TestAnOwnerAnswerAfterTheSubjectFinished(TestCase):
+    def test_owner_answer_on_finished_subject_mints_no_task(self) -> None:
+        ticket = planned_ticket()
+        parked = _parked_task(ticket)
+        row = DeferredQuestion.record("Rotate the deploy token?", parked_task=parked, **OWNER_DECISION)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+
+        answer_on_slack(row, "rotate it")
+
+        row.refresh_from_db()
+        assert row.answered_on_owner_channel
+        assert _minted_tasks(parked) == []

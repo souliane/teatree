@@ -3,29 +3,25 @@
 The model-touching half of the headless ask-loop (souliane/teatree#headless
 question routing): when an agent returns ``needs_user_input`` and STOPS,
 :func:`park_for_user_input` records the question on the lane that can reach the
-user, and :func:`schedule_resume` re-queues a headless continuation
-once the answer lands. Split out of ``task.py`` (which is at its module-health
+user, and :func:`resume_on_answer` re-queues a headless continuation
+once the owner's answer lands. Split out of ``task.py`` (which is at its module-health
 LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 ``Task`` so they stay free of model-class state, mirroring ``task_repair.py``.
 """
 
-from teatree.core.forge_url import is_synthetic_ticket_url
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
-from teatree.core.models.approval_dial import auto_answer_by_policy
-from teatree.core.models.deferred_question import DeferredQuestion, is_tool_lack_selfreport, question_fingerprint
+import logging
+
+from teatree.core.modelkit.owner_decision import owner_decision
+from teatree.core.models.deferred_question import DeferredQuestion, question_fingerprint
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
+from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.repair_loop import RepairLoopError
 
 _DEFAULT_REASON = "Agent needs human input"
 
-#: The standing answer to a stop that names no owner decision (#5096).
-FACTORY_WORK_ANSWER = (
-    "this is factory work, not an owner decision. Decide it yourself under the standing rules and carry on; "
-    "set user_input_kind only for " + ", ".join(OwnerDecision)
-)
+logger = logging.getLogger(__name__)
 
 #: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
@@ -53,25 +49,28 @@ def dispatch_reason(task: Task) -> str:
 def park_for_user_input(task: Task) -> None:
     """Park a ``needs_user_input`` STOP: an owner question only when it names an owner decision.
 
-    A stop naming one of the :class:`OwnerDecision` kinds is recorded for the owner; an
-    answer already given to the same question on this ticket resumes the task at once.
-    Any other stop is factory work (#5096): its row is answered by policy and the task
-    resumes under the repair-loop budget, which leaves the row pending once spent. A
-    tool-lack self-report is a dispatch fault and never resumes.
+    A stop naming no :class:`OwnerDecision` kind is recorded internal and resumes nothing. An owner
+    question this ticket already asked resumes the task at once only through :func:`resume_on_answer`.
     """
     row = record_deferred_question(task)
-    if row.audience == DeferredQuestion.Audience.OWNER_QUESTION:
-        if row.parked_task_id != task.pk and not row.is_pending:
-            schedule_resume(task, answer=row.answer_text or FACTORY_WORK_ANSWER)
-        return
-    if is_tool_lack_selfreport(row.question) or is_synthetic_ticket_url(task.ticket.issue_url):
-        return
+    if row.parked_task_id != task.pk:
+        resume_on_answer(row, task)
+
+
+def resume_on_answer(row: DeferredQuestion, task: Task | None) -> Task | None:
+    """Resume *task* with *row*'s answer iff the owner answered an owner question about an open subject."""
+    if (
+        task is None
+        or row.audience != DeferredQuestion.Audience.OWNER_QUESTION
+        or not row.answered_on_owner_channel
+        or finished_subject_reason(row) is not None
+    ):
+        return None
     try:
-        task.check_requeue_allowed()
-        schedule_resume(task, answer=FACTORY_WORK_ANSWER)
-    except (RepairLoopError, NoPlanArtifactError):
-        return
-    auto_answer_by_policy(row, FACTORY_WORK_ANSWER)
+        return schedule_resume(task, answer=row.answer_text)
+    except NoPlanArtifactError:
+        logger.warning("Answer to question %s kept; task %s was not resumed", row.pk, task.pk)
+        return None
 
 
 def record_deferred_question(task: Task) -> DeferredQuestion:
