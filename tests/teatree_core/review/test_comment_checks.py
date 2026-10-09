@@ -92,6 +92,11 @@ class TestTodoAnchor:
         review = _review("", PrReviewComment(path="b.py", line=12, body="this loop must be bounded"))
         assert review_refusal(review, file_diffs=_diffs) == ""
 
+    def test_a_blocker_on_a_file_whose_patch_the_forge_omitted_is_refused(self) -> None:
+        review = _review("", PrReviewComment(path="big.bin", line=3, body="this loop must be bounded"))
+        reason = review_refusal(review, file_diffs=lambda: {"big.bin": None})
+        assert reason.startswith("the comment on big.bin:3 — TODO anchor unreadable")
+
 
 class TestChainOrder:
     def test_the_prose_cap_is_checked_before_bloat(self) -> None:

@@ -123,6 +123,24 @@ def self_identity_set(issue_url: str, *, host: CodeHostBackend | None = None) ->
     return {name.strip().casefold() for name in names if isinstance(name, str) and name.strip()}
 
 
+def confirmed_self_identity_set(url: str, *, host: CodeHostBackend) -> set[str] | None:
+    """:func:`self_identity_set` for a caller that reads "not us" as a colleague, or ``None`` when it names no owner.
+
+    There a narrower set is the unsafe direction, so the host's own login must read, and a token
+    that is one of our declared bots needs an alias naming the owner beside it.
+    """
+    try:
+        login = host.current_user().strip().casefold()
+    except Exception:
+        logger.warning("self-identity: current_user() failed for %s", url, exc_info=True)
+        return None
+    aliases = {name.strip().casefold() for name in _configured_aliases() if name.strip()}
+    bots = {name.casefold() for name in declared_identities_for_url(url)}
+    if not login or (login in bots and not aliases):
+        return None
+    return aliases | bots | {login}
+
+
 def issue_author_is_self(author: str, identities: Iterable[str]) -> bool:
     """Whether *author* is one of *identities*, comparing case-folded.
 
@@ -171,6 +189,7 @@ __all__ = [
     "NOT_SELF_AUTHORED_REASON",
     "SELF_FORGE_IDENTITIES_SETTING",
     "ExternalIssueRefusedError",
+    "confirmed_self_identity_set",
     "declared_identities_for_url",
     "issue_author_is_self",
     "issue_author_login",

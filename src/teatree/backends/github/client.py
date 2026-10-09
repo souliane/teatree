@@ -193,10 +193,11 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
                 return []
             raise
 
-    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str | None]:
+        files = _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
         return {
-            str(path): str(entry.get("patch") or "")
-            for entry in self.get_pr_diff(repo=repo, pr_iid=pr_iid)
+            str(path): patch if isinstance(patch := entry.get("patch"), str) else None
+            for entry in files
             for path in (entry.get("previous_filename"), entry.get("filename"))
             if path
         }

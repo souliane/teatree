@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from teatree.core.backend_protocols import PrReview
+from teatree.core.backend_protocols import PrReview, PrReviewComment
 
 COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
 COLLEAGUE_PROSE_CAP_WORDS = 200
@@ -224,11 +224,11 @@ def deferred_marker_near(diff_text: str, line: int) -> DeferredMarker | None:
     return None
 
 
-def comment_refusal(body: str, *, general: bool, deferred: DeferredMarker | None = None) -> str:
+def comment_refusal(body: str, *, general: bool, todo_anchor: str = "") -> str:
     """The first check *body* fails as an escape-free colleague comment, or ``""``.
 
     The multi-finding check reads a *general* note only: an inline comment already sits on its line.
-    *deferred* is the author's marker next to a blocker-shaped inline comment.
+    *todo_anchor* is the TODO-anchor refusal of a blocker-shaped inline comment.
     """
     breach = prose_cap_breach(body)
     if breach is not None:
@@ -238,27 +238,37 @@ def comment_refusal(body: str, *, general: bool, deferred: DeferredMarker | None
     count = inline_findings_count(body)
     if general and count >= MIN_DISTINCT_FINDINGS:
         return f"multi-finding general note: {count} file:line findings in one note need one inline comment each"
-    if deferred is not None:
-        return f"TODO-anchored blocker: line {deferred.line} reads {deferred.text!r}, work the author deferred"
+    if todo_anchor:
+        return todo_anchor
     phrase = evidence_claim_phrase(body)
     if phrase:
         return f"unbacked claim: {phrase!r} asserts something is missing or wrong without FindingEvidence receipts"
     return ""
 
 
-def review_refusal(review: PrReview, *, file_diffs: Callable[[], Mapping[str, str]]) -> str:
+def review_refusal(review: PrReview, *, file_diffs: Callable[[], Mapping[str, str | None]]) -> str:
     """The first check any body of *review* fails, prefixed with which body, or ``""``.
 
-    *file_diffs* maps each changed path to its unified diff; it is read only for a blocker-shaped comment.
+    *file_diffs* maps each changed path to its unified diff, ``None`` where the forge withheld it;
+    it is read only for a blocker-shaped comment.
     """
     summary = comment_refusal(review.body, general=True)
     if summary:
         return f"the summary — {summary}"
     for item in review.comments:
-        deferred = (
-            deferred_marker_near(file_diffs().get(item.path, ""), item.line) if looks_like_blocker(item.body) else None
-        )
-        refusal = comment_refusal(item.body, general=False, deferred=deferred)
+        refusal = comment_refusal(item.body, general=False, todo_anchor=_todo_anchor_refusal(item, file_diffs))
         if refusal:
             return f"the comment on {item.path}:{item.line} — {refusal}"
     return ""
+
+
+def _todo_anchor_refusal(item: PrReviewComment, file_diffs: Callable[[], Mapping[str, str | None]]) -> str:
+    if not looks_like_blocker(item.body):
+        return ""
+    diff = file_diffs().get(item.path, "")
+    if diff is None:
+        return f"TODO anchor unreadable: the forge withheld the diff of {item.path}, so a deferral cannot be ruled out"
+    deferred = deferred_marker_near(diff, item.line)
+    if deferred is None:
+        return ""
+    return f"TODO-anchored blocker: line {deferred.line} reads {deferred.text!r}, work the author deferred"

@@ -7,10 +7,14 @@ reason: the failure mode this forecloses is a ``findings_count`` with nothing
 behind it and nothing said about why.
 """
 
+from collections.abc import Mapping
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, PrReviewComment
+from teatree.backends.github.client import GitHubCodeHost
+from teatree.core.backend_protocols import HEAD_SHA_UNREADABLE, PartialReviewPublishError, PrReview, PrReviewComment
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OnBehalfAudit, ReviewVerdict, SendAudit
 from teatree.core.review.verdict_findings import marker_for
 from teatree.core.review.verdict_findings_publish import (
@@ -30,6 +34,7 @@ pytestmark = pytest.mark.django_db
 _SHA = "e" * 40
 _PRIVATE_SLUG = "democorp-engineering/widgets"
 _SELF = "owner-login"
+_BOT = "factory-bot"
 _COLLEAGUE = "carol"
 _LONG_SUMMARY = "word " * 210
 _TODO_DIFF = "@@ -9,0 +10,4 @@\n+def retry():\n+    pass\n+    # TODO: bound the retry loop\n+    return\n"
@@ -59,7 +64,7 @@ class _FakeHost:
         _ = repo, pr_iid
         return any(review.marker == marker for review in self.reviews)
 
-    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> Mapping[str, str | None]:
         _ = repo, pr_iid
         self.diff_reads += 1
         return {"a.py": _TODO_DIFF}
@@ -112,6 +117,25 @@ class _UnreadableAuthorHost(_FakeHost):
     def get_pr_author(self, *, pr_url: str) -> str:
         msg = "forge unreachable"
         raise RuntimeError(msg)
+
+
+class _UnreadableLoginHost(_FakeHost):
+    def current_user(self) -> str:
+        msg = "forge unreachable"
+        raise RuntimeError(msg)
+
+
+class _BotTokenHost(_FakeHost):
+    def current_user(self) -> str:
+        return _BOT
+
+
+class _OmittedPatchHost(_FakeHost):
+    """GitHub answers a file too large or binary to diff with no ``patch``; the real client reads that answer."""
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> Mapping[str, str | None]:
+        with patch("teatree.backends.github.client._gh_api_get_paginated", return_value=[{"filename": "a.py"}]):
+            return GitHubCodeHost(token="t").get_pr_file_diffs(repo=repo, pr_iid=pr_iid)
 
 
 class _PublishBase(TestCase):
@@ -208,6 +232,16 @@ class TestPublishReachesThePr(_PublishBase):
         assert not host.reviews
         assert "head moved" in outcome.blocked_reason
 
+    def test_an_unreadable_head_withholds_the_review_naming_it_unreadable(self) -> None:
+        self._allow_posting()
+        host = _FakeHost(live_head=HEAD_SHA_UNREADABLE)
+
+        outcome = publish_verdict_findings(self._verdict(), host_kind="github", backend=host)
+
+        assert not host.reviews
+        assert "head unreadable" in outcome.blocked_reason
+        assert "\x00" not in outcome.blocked_reason
+
 
 class TestSelfAuthoredPrGetsNothing(_PublishBase):
     @pytest.fixture(autouse=True)
@@ -245,6 +279,33 @@ class TestSelfAuthoredPrGetsNothing(_PublishBase):
             outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
             assert not host.reviews
             assert "could not be read" in outcome.blocked_reason
+        assert not self.dms
+
+    def test_an_own_pr_is_withheld_when_our_own_login_cannot_be_read(self) -> None:
+        self._allow_posting()
+        self.monkeypatch.setattr("teatree.core.self_forge_identities._configured_aliases", tuple)
+        host = _UnreadableLoginHost(author=_SELF)
+
+        outcome = publish_verdict_findings(self._verdict(), host_kind="github", backend=host)
+
+        assert not outcome.published
+        assert "could not be confirmed" in outcome.blocked_reason
+        assert not host.reviews
+        assert not self.dms
+
+    def test_a_bot_token_with_no_owner_alias_cannot_tell_the_owner_from_a_colleague(self) -> None:
+        self._allow_posting()
+        self.monkeypatch.setattr("teatree.core.self_forge_identities._configured_aliases", tuple)
+        self.monkeypatch.setattr("teatree.core.self_forge_identities.declared_identities_for_url", lambda _url: (_BOT,))
+        own, bots = _BotTokenHost(author=_SELF), _BotTokenHost(author=_BOT)
+
+        withheld = publish_verdict_findings(self._verdict(), host_kind="github", backend=own)
+        skipped = publish_verdict_findings(self._verdict(sha="3" * 40), host_kind="github", backend=bots)
+
+        assert "could not be confirmed" in withheld.blocked_reason
+        assert skipped.self_review
+        assert not own.reviews
+        assert not bots.reviews
         assert not self.dms
 
 
@@ -338,6 +399,25 @@ class TestOnBehalfGate(_PublishBase):
 
         assert len(dms) == 1
         assert "unbounded loop" in dms[0]
+
+    def test_a_blocked_review_writes_no_send_audit_for_any_of_its_bodies_on_any_retry(self) -> None:
+        self.monkeypatch.setattr("teatree.core.notify.notify_user", lambda *_a, **_kw: None)
+        seed_forbidding_posture()
+        ConfigSetting.objects.set_value("private_repos", [f"github.com/{_PRIVATE_SLUG}"])
+        verdict = self._verdict(
+            [
+                {"severity": "nit", "summary": "rename x", "file": "a.py", "line": 9},
+                {"severity": "nit", "summary": "rename y", "file": "b.py", "line": 2},
+                {"severity": "minor", "summary": "log the retry", "file": "", "line": 0},
+            ]
+        )
+        host = _FakeHost()
+
+        outcomes = [publish_verdict_findings(verdict, host_kind="github", backend=host) for _ in range(2)]
+
+        assert all(ACTION in outcome.blocked_reason for outcome in outcomes)
+        assert not host.reviews
+        assert not SendAudit.objects.filter(action=ACTION).exists()
 
 
 class TestCommentChecks(_PublishBase):
@@ -460,6 +540,19 @@ class TestTodoAnchor(_PublishBase):
 
         assert not host.reviews
         assert "the comment on a.py:11 — TODO-anchored blocker: line 12" in outcome.blocked_reason
+        assert not self.dms
+
+    def test_a_blocker_on_a_file_whose_patch_the_forge_omitted_is_withheld(self) -> None:
+        self._allow_posting()
+        host = _OmittedPatchHost()
+        verdict = self._verdict(
+            [{"severity": "major", "summary": "this loop must be bounded", "file": "a.py", "line": 11}]
+        )
+
+        outcome = publish_verdict_findings(verdict, host_kind="github", backend=host)
+
+        assert not host.reviews
+        assert "the comment on a.py:11 — TODO anchor unreadable" in outcome.blocked_reason
         assert not self.dms
 
     def test_findings_that_read_as_no_blocker_never_read_the_diff(self) -> None:

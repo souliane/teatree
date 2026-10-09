@@ -17,6 +17,7 @@ from django.test import TestCase
 
 from teatree.core.self_forge_identities import (
     ExternalIssueRefusedError,
+    confirmed_self_identity_set,
     declared_identities_for_url,
     issue_author_is_self,
     issue_author_login,
@@ -46,6 +47,12 @@ class _FakeHost:
 
     def current_user(self) -> str:
         return self._current_user
+
+
+class _UnreadableLoginHost(_FakeHost):
+    def current_user(self) -> str:
+        msg = "no token"
+        raise RuntimeError(msg)
 
 
 def _gitlab_payload(username: str) -> dict[str, object]:
@@ -78,16 +85,11 @@ class TestSelfIdentitySet(TestCase):
         assert resolved == {"alice.example", "declared-bot", "factory-bot"}
 
     def test_a_host_that_cannot_name_itself_narrows_but_never_raises(self) -> None:
-        class _Broken(_FakeHost):
-            def current_user(self) -> str:
-                msg = "no token"
-                raise RuntimeError(msg)
-
         with (
             patch("teatree.core.self_forge_identities._configured_aliases", return_value=("alice.example",)),
             patch("teatree.core.self_forge_identities.declared_identities_for_url", return_value=()),
         ):
-            assert self_identity_set(_GITLAB_ISSUE, host=_Broken({})) == {"alice.example"}
+            assert self_identity_set(_GITLAB_ISSUE, host=_UnreadableLoginHost({})) == {"alice.example"}
 
     def test_trusted_issue_authors_never_widens_the_self_set(self) -> None:
         """A trusted colleague is trusted to REVIEW, never to have their ticket edited.
@@ -107,6 +109,32 @@ class TestSelfIdentitySet(TestCase):
         ):
             resolved = self_identity_set(_GITLAB_ISSUE, host=_FakeHost({}))
         assert resolved == {"alice.example"}
+
+
+class TestConfirmedSelfIdentitySet(TestCase):
+    """For a caller that reads "not us" as a colleague, an unconfirmed self set is ``None``, never a narrower one."""
+
+    @staticmethod
+    def _resolve(host: _FakeHost, *, aliases: tuple[str, ...] = (), bots: tuple[str, ...] = ()) -> set[str] | None:
+        with (
+            patch("teatree.core.self_forge_identities._configured_aliases", return_value=aliases),
+            patch("teatree.core.self_forge_identities.declared_identities_for_url", return_value=bots),
+        ):
+            return confirmed_self_identity_set(_GITHUB_ISSUE, host=host)
+
+    def test_the_hosts_own_login_names_the_owner(self) -> None:
+        resolved = self._resolve(_FakeHost({}, current_user="Owner-Login"), bots=("Factory-Bot",))
+        assert resolved == {"owner-login", "factory-bot"}
+
+    def test_a_declared_bot_token_needs_an_alias_naming_the_owner(self) -> None:
+        bot = _FakeHost({}, current_user="factory-bot")
+        assert self._resolve(bot, bots=("Factory-Bot",)) is None
+        assert self._resolve(bot, aliases=("Owner-Login",), bots=("Factory-Bot",)) == {"owner-login", "factory-bot"}
+
+    def test_an_unreadable_or_blank_login_is_unconfirmed_even_with_an_alias(self) -> None:
+        for host in (_UnreadableLoginHost({}), _FakeHost({}, current_user="  ")):
+            with self.subTest(host=type(host).__name__):
+                assert self._resolve(host, aliases=("owner-login",)) is None
 
 
 class TestDeclaredIdentitiesAreReadOnce(TestCase):

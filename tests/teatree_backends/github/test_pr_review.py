@@ -1,7 +1,10 @@
 from unittest.mock import patch
 
+import pytest
+
 from teatree.backends.github.client import GitHubCodeHost
 from teatree.core.backend_protocols import PrReview, PrReviewComment
+from teatree.utils.run import CommandFailedError
 
 _MARKER = "<!-- m -->"
 
@@ -65,6 +68,15 @@ def test_get_pr_file_diffs_keys_each_patch_by_its_old_and_new_path() -> None:
         "a.py": "@@ -1 +1 @@\n+x",
         "old.py": "@@ -1 +1 @@\n+y",
         "new.py": "@@ -1 +1 @@\n+y",
-        "big.bin": "",
+        "big.bin": None,
     }
     assert get.call_args.args[0] == "repos/o/r/pulls/5/files?per_page=100"
+
+
+def test_get_pr_file_diffs_raises_on_a_pr_it_cannot_find_rather_than_reading_no_diff() -> None:
+    not_found = CommandFailedError(["gh"], 1, "", "gh: Not Found (HTTP 404)")
+    with (
+        patch("teatree.backends.github.client._gh_api_get_paginated", side_effect=not_found),
+        pytest.raises(CommandFailedError),
+    ):
+        GitHubCodeHost(token="t").get_pr_file_diffs(repo="o/r", pr_iid=5)

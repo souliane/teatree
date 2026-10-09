@@ -8,6 +8,7 @@ A single class can satisfy multiple protocols when the platform provides
 multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
@@ -407,8 +408,8 @@ class CodeHostBackend(Protocol):
 
     def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
-    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:  # pragma: no branch
-        """Each changed file's unified diff, keyed by both its old and new path; a failed read raises."""
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> Mapping[str, str | None]:  # pragma: no branch
+        """Each changed file's diff by old and new path, ``None`` where the forge withheld it; a failed read raises."""
         ...
 
     def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
