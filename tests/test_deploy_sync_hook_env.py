@@ -8,6 +8,7 @@ with a stub uv that can drop the missing dist into the fake env's site dir.
 """
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -94,16 +95,16 @@ class _Host:
         return [line for line in lines if line.startswith(prefix)]
 
     @property
-    def fix(self) -> str:
-        return (
-            f"UV_PROJECT_ENVIRONMENT={self.hook_env} uv sync --project {self.checkout.resolve()} "
-            f"--frozen --no-default-groups --inexact --python {self.hook_env}/bin/python"
-        )
+    def fix_argv(self) -> list[str]:
+        return [
+            f"UV_PROJECT_ENVIRONMENT={self.hook_env}",
+            *("uv", "sync", "--project", str(self.checkout.resolve())),
+            *("--frozen", "--no-default-groups", "--inexact", "--python", f"{self.hook_env}/bin/python"),
+        ]
 
 
-@pytest.fixture
-def host(tmp_path: Path) -> _Host:
-    checkout = tmp_path / "checkout"
+def _build_host(root: Path) -> _Host:
+    checkout = root / "checkout"
     (checkout / "scripts" / "hooks" / "lib").mkdir(parents=True)
     shutil.copy2(_RESOLVE_UV, checkout / "scripts" / "hooks" / "lib" / "resolve-uv.sh")
     (checkout / "src").symlink_to(_ROOT / "src")
@@ -111,33 +112,42 @@ def host(tmp_path: Path) -> _Host:
         f'[project]\nname = "teatree"\ndependencies = ["{_FAKE_DEP}>=1"]\n', encoding="utf-8"
     )
 
-    tools = tmp_path / "tools"
+    tools = root / "tools"
     hook_env = tools / "teatree"
     (hook_env / "bin").mkdir(parents=True)
     _write_exec(hook_env / "bin" / "python", _PYTHON_WRAPPER)
-    stub_bin = tmp_path / "stub-bin"
+    stub_bin = root / "stub-bin"
     stub_bin.mkdir()
     _write_exec(stub_bin / "uv", _UV_STUB)
-    (tmp_path / "hook-site").mkdir()
-    (tmp_path / "home").mkdir(exist_ok=True)
+    (root / "hook-site").mkdir()
+    (root / "home").mkdir(exist_ok=True)
 
-    log = tmp_path / "calls.log"
+    log = root / "calls.log"
     env = {
         "PATH": os.environ["PATH"],
-        "HOME": str(tmp_path / "home"),
-        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        "HOME": str(root / "home"),
+        "XDG_CACHE_HOME": str(root / "cache"),
         "UV_TOOL_DIR": str(tools),
         "T3_UV": str(stub_bin / "uv"),
         "STUB_LOG": str(log),
-        "FAKE_SITE": str(tmp_path / "hook-site"),
+        "FAKE_SITE": str(root / "hook-site"),
     }
     owned = _Host(checkout=checkout, hook_env=hook_env, log=log, env=env)
     owned.own(checkout)
     return owned
 
 
+@pytest.fixture
+def host(tmp_path: Path) -> _Host:
+    return _build_host(tmp_path)
+
+
 def _fatal(proc: subprocess.CompletedProcess[str]) -> list[str]:
     return [line for line in proc.stderr.splitlines() if "deploy: FATAL" in line]
+
+
+def _printed_fix(fatal_line: str) -> list[str]:
+    return shlex.split(fatal_line.rpartition("fix: ")[2])
 
 
 class TestAnOwnedStaleEnvIsSyncedThenVerified:
@@ -162,7 +172,7 @@ class TestAnOwnedStaleEnvIsSyncedThenVerified:
         assert len(fatal) == 1, proc.stderr
         assert "still stale" in fatal[0]
         assert f"{_FAKE_DEP} declares '>=1'" in fatal[0]
-        assert host.fix in fatal[0]
+        assert _printed_fix(fatal[0]) == host.fix_argv
 
     def test_a_failed_sync_fails_with_the_fix_and_never_verifies(self, host: _Host) -> None:
         proc = host.run(STUB_UV_EXIT="1")
@@ -170,8 +180,18 @@ class TestAnOwnedStaleEnvIsSyncedThenVerified:
         fatal = _fatal(proc)
         assert proc.returncode == 1
         assert len(fatal) == 1, proc.stderr
-        assert host.fix in fatal[0]
+        assert _printed_fix(fatal[0]) == host.fix_argv
         assert host.calls("python -m ") == []
+
+    def test_the_printed_fix_survives_a_path_with_a_space(self, tmp_path: Path) -> None:
+        spaced = _build_host(tmp_path / "with space")
+
+        proc = spaced.run(STUB_UV_EXIT="1")
+
+        fatal = _fatal(proc)
+        assert proc.returncode == 1
+        assert len(fatal) == 1, proc.stderr
+        assert _printed_fix(fatal[0]) == spaced.fix_argv
 
     def test_a_crashed_verify_is_reported_as_unverified_never_as_stale(self, host: _Host) -> None:
         proc = host.run(STUB_UV_INSTALLS=_FAKE_DIST, FAKE_PY_CRASH="1")

@@ -134,6 +134,8 @@ class TestMainKeepsStaleApartFromCrashed:
             pytest.param(lambda tmp: [str(tmp / "a.toml"), str(tmp / "b.toml")], id="two-arguments"),
             pytest.param(lambda tmp: [str(tmp / "absent.toml")], id="unreadable-pyproject"),
             pytest.param(lambda tmp: [str(_garbled(tmp))], id="invalid-toml"),
+            pytest.param(lambda tmp: [str(_not_utf8(tmp))], id="non-utf8-pyproject"),
+            pytest.param(lambda tmp: [str(_project_not_a_table(tmp))], id="project-not-a-table"),
         ],
     )
     def test_usage_and_read_errors_exit_two_on_stderr_only(
@@ -160,4 +162,16 @@ class TestMainKeepsStaleApartFromCrashed:
 def _garbled(tmp_path: Path) -> Path:
     path = tmp_path / "garbled.toml"
     path.write_text("[project\n", encoding="utf-8")
+    return path
+
+
+def _not_utf8(tmp_path: Path) -> Path:
+    path = tmp_path / "latin1.toml"
+    path.write_bytes(b'[project]\nname = "caf\xe9"\n')
+    return path
+
+
+def _project_not_a_table(tmp_path: Path) -> Path:
+    path = tmp_path / "scalar-project.toml"
+    path.write_text('project = "x"\n', encoding="utf-8")
     return path

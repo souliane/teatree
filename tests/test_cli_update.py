@@ -525,12 +525,15 @@ class TestReinstallAndResetup:
     skip when nothing advanced, and surface the seam's outcome.
     """
 
+    @pytest.fixture(autouse=True)
+    def clean_tool_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(update_mod, "_tool_env_skew", dict)
+
     def test_noop_when_nothing_advanced_and_deps_in_sync(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         called: list[bool] = []
         monkeypatch.setattr(update_mod, "reinstall_running_editable", lambda: called.append(True))
-        monkeypatch.setattr(update_mod, "_tool_env_skew", dict)
 
         _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UP_TO_DATE)])
 
@@ -547,7 +550,7 @@ class TestReinstallAndResetup:
             lambda: ReinstallResult(ok=True, reinstalled=True),
         )
 
-        _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")])
+        assert _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")]) == ""
 
         out = capsys.readouterr().out
         assert "Reinstalled teatree." in out
@@ -561,7 +564,7 @@ class TestReinstallAndResetup:
             lambda: ReinstallResult(ok=True, reinstalled=False),
         )
 
-        _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")])
+        assert _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")]) == ""
 
         assert "uv` not on PATH" in capsys.readouterr().out
 
@@ -575,7 +578,7 @@ class TestReinstallAndResetup:
             lambda: ReinstallResult(ok=False, reinstalled=False, error="setup: boom"),
         )
 
-        _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")])
+        assert _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")]) == ""
 
         assert "reinstall/setup reported a problem: setup: boom" in capsys.readouterr().out
 
@@ -703,6 +706,10 @@ class TestToolEnvResyncedThenVerified:
         [
             pytest.param(ReinstallResult(ok=True, reinstalled=True), id="reinstall-ok"),
             pytest.param(ReinstallResult(ok=False, reinstalled=False, error="reinstall: boom"), id="reinstall-failed"),
+            pytest.param(
+                ReinstallResult(ok=False, reinstalled=False, error="reinstall: boom\n  uv: error: no space left\n"),
+                id="multi-line-error",
+            ),
         ],
     )
     def test_a_resync_that_leaves_the_env_stale_fails_the_run_with_one_line(
@@ -722,7 +729,22 @@ class TestToolEnvResyncedThenVerified:
         assert len(failures) == 1, lines
         assert "t5764-absent-dep" in failures[0]
         assert "fix:" in failures[0]
-        assert result.error in failures[0]
+        assert " ".join(result.error.split()) in failures[0]
+
+    def test_a_setup_failure_on_an_env_clean_afterwards_stays_a_warn(
+        self, tool_env: _ToolEnv, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        tool_env.declare("t5764-fake-dep>=1")
+        failed_setup = ReinstallResult(ok=False, reinstalled=True, error="setup: boom")
+        monkeypatch.setattr(
+            update_mod, "reinstall_running_editable", tool_env.reinstall(failed_setup, installs="t5764_fake_dep")
+        )
+
+        code, lines = _drive_update(capsys)
+
+        assert code == 0, lines
+        assert "WARN  reinstall/setup reported a problem: setup: boom" in lines
+        assert not [line for line in lines if line.startswith("FAIL  ")]
 
     def test_an_env_the_resync_repairs_is_measured_again_and_passes(
         self, tool_env: _ToolEnv, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

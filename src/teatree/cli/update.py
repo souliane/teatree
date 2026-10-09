@@ -497,7 +497,7 @@ def _reinstall_and_resetup(updated: list[RepoUpdate]) -> str:
     residual = _tool_env_skew()
     if not residual:
         return ""
-    cause = f" ({result.error})" if result.error else ""
+    cause = f" ({' '.join(result.error.split())})" if result.error else ""
     fix = remedy(residual) or "reinstall teatree into the running env"
     return f"FAIL  tool env still stale after the re-sync: {'; '.join(residual.values())}{cause} — fix: `{fix}`"
 

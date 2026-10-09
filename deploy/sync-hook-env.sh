@@ -55,7 +55,8 @@ if [ "$uv_rc" -ne 0 ]; then
 fi
 
 # --python reuses the env's interpreter so uv never recreates the dir and drops uv-receipt.toml.
-FIX="UV_PROJECT_ENVIRONMENT=$HOOK_ENV uv sync --project $REPO_REAL --frozen --no-default-groups --inexact --python $HOOK_ENV/bin/python"
+printf -v FIX 'UV_PROJECT_ENVIRONMENT=%q uv sync --project %q --frozen --no-default-groups --inexact --python %q' \
+    "$HOOK_ENV" "$REPO_REAL" "$HOOK_ENV/bin/python"
 echo "deploy: re-syncing the host hook tool env $HOOK_ENV to $REPO_REAL ..."
 if ! UV_PROJECT_ENVIRONMENT="$HOOK_ENV" "$UV" sync --project "$REPO_REAL" --frozen --no-default-groups --inexact --python "$HOOK_ENV/bin/python"; then
     echo "deploy: FATAL — could not re-sync the host hook tool env $HOOK_ENV; fix: $FIX" >&2
@@ -63,7 +64,7 @@ if ! UV_PROJECT_ENVIRONMENT="$HOOK_ENV" "$UV" sync --project "$REPO_REAL" --froz
 fi
 
 verify_rc=0
-stale="$(PYTHONPATH="$REPO_REAL/src" "$HOOK_ENV/bin/python" -m teatree.utils.dep_skew "$REPO_REAL/pyproject.toml")" || verify_rc=$?
+stale="$("$HOOK_ENV/bin/python" -m teatree.utils.dep_skew "$REPO_REAL/pyproject.toml")" || verify_rc=$?
 if [ "$verify_rc" -eq 0 ]; then
     echo "deploy: host hook tool env $HOOK_ENV re-synced to $REPO_REAL."
     exit 0

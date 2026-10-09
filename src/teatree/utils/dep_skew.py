@@ -41,8 +41,11 @@ class VersionSkew:
 
 
 def _requirements(pyproject_path: Path) -> list[Requirement]:
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    specs = data.get("project", {}).get("dependencies", []) or []
+    project = tomllib.loads(pyproject_path.read_text(encoding="utf-8")).get("project", {})
+    if not isinstance(project, dict):
+        msg = f"[project] must be a table, not {type(project).__name__}"
+        raise TypeError(msg)
+    specs = project.get("dependencies", []) or []
     parsed: list[Requirement] = []
     for spec in specs:
         try:
@@ -110,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         skews = find_version_skew(Path(args[0]))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         sys.stderr.write(f"cannot read {args[0]}: {exc}\n")
         return 2
     for skew in skews:

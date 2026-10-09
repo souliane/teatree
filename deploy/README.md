@@ -1276,9 +1276,10 @@ the container through the host bin mount. Override the preferred service with
 the stack converges `deploy/deploy.sh` runs `deploy/sync-hook-env.sh <checkout>`. It re-syncs that env to
 the checkout's lock (`uv sync --frozen --no-default-groups --inexact`, never `uv tool install --reinstall`,
 which would replace the `t3` launcher) and verifies it with `python -m teatree.utils.dep_skew`. No env, or
-one installed from another checkout, is left alone with one line. A failed or unverifiable re-sync, or no
-uv at `~/.local/bin/uv` or on the ssh `PATH`, fails the deploy with `deploy: FATAL` and the exact command to
-run by hand; the stack has already converged by then.
+one installed from another checkout, is left alone with one line. A failed or unverifiable re-sync fails the
+deploy with `deploy: FATAL` and the exact command to run by hand, and an unreadable receipt or no uv at
+`~/.local/bin/uv` or on the ssh `PATH` fails it with a `deploy: FATAL` naming the cause; the stack has already
+converged by then.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 
