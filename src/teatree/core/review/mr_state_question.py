@@ -91,23 +91,22 @@ def ask_mr_state(
     Only an *owner* ask reaches the owner; any other is the factory's own. Returns
     the already-open row when one exists for this merge request, so a re-ask is
     idempotent and can never be refused by the cap — a merge request already being
-    asked about occupies its slot rather than competing for a new one. A *head_sha*
-    ask differs in two ways: a head already answered about is never asked about
-    again, and it replaces its own kind of open row (see :func:`_replaces`),
-    inheriting that row's slot.
+    asked about occupies its slot rather than competing for a new one. An owner ask
+    supersedes the factory's own open row instead. A *head_sha* ask differs in two
+    ways: a head already answered about is never asked about again, and it replaces
+    its own kind of open row (see :func:`_replaces`), inheriting that row's slot.
     """
     marker = mr_state_marker(mr_url, head_sha=head_sha)
-    if head_sha and _answered_at(marker, owner_only=owner is not None) is not None:
+    owner_ask = owner is not None
+    if head_sha and _answered_at(marker, owner_only=owner_ask) is not None:
         return None
     text = _question_text(mr_url=mr_url, reason=reason, head_sha=head_sha)
     open_owner_questions = DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=_MARKER_PREFIX)
     with transaction.atomic():
         already_asked = _open_question(mr_url)
-        if already_asked is not None:
-            if not _replaces(already_asked, marker=marker, text=text):
-                return already_asked
-            already_asked.mark_stale("superseded by a question about the merge request's current head")
-        elif open_owner_questions.count() >= MAX_OPEN_QUESTIONS:
+        if already_asked is not None and not _replaces(already_asked, marker=marker, text=text, owner_ask=owner_ask):
+            return already_asked
+        if _needs_a_slot(already_asked, owner_ask=owner_ask) and open_owner_questions.count() >= MAX_OPEN_QUESTIONS:
             logger.info(
                 "mr-state question for %s deferred — %s open already (cap %s)",
                 mr_url,
@@ -115,6 +114,8 @@ def ask_mr_state(
                 MAX_OPEN_QUESTIONS,
             )
             return None
+        if already_asked is not None:
+            already_asked.mark_stale("superseded by a newer question about the merge request")
         question = DeferredQuestion.record(
             text,
             options_json=_options_json(options),
@@ -122,18 +123,28 @@ def ask_mr_state(
             decision=None if owner is None else owner.decision,
             checked=() if owner is None else owner.checked,
         )
+    if not question.is_pending:
+        return None
     if (observer := _OWNER_QUESTION_OBSERVER.get()) is not None:
         observer(mr_url)
     return question
 
 
-def _replaces(open_row: DeferredQuestion, *, marker: str, text: str) -> bool:
-    """Whether a head-bound ask supersedes *open_row*.
+def _needs_a_slot(open_row: DeferredQuestion | None, *, owner_ask: bool) -> bool:
+    """An ask inherits the slot of the row it replaces, unless it puts the factory's own row to the owner."""
+    return open_row is None or (owner_ask and open_row.audience != DeferredQuestion.Audience.OWNER_QUESTION)
 
-    Only another head-bound row, and at the same head only an internal row with a
+
+def _replaces(open_row: DeferredQuestion, *, marker: str, text: str, owner_ask: bool) -> bool:
+    """Whether the ask supersedes *open_row*.
+
+    An owner ask supersedes any internal row. Otherwise only a head-bound ask over
+    another head-bound row, and at the same head only an internal row with a
     wording that head has not seen, so a blocker that alternates is asked about
     once, not every pass, and the owner is asked once per head.
     """
+    if owner_ask and open_row.audience != DeferredQuestion.Audience.OWNER_QUESTION:
+        return True
     if not _is_head_bound(marker) or not _is_head_bound(open_row.dedupe_marker) or open_row.question == text:
         return False
     if open_row.dedupe_marker != marker:

@@ -172,6 +172,28 @@ class TestAnOwnerQuestionIsNeverReAsked:
         assert again.pk == first.pk
         assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 1
 
+    def test_an_answered_owner_marker_holds_a_differently_worded_question(self) -> None:
+        """Regression pin: the owner's answer settles the marker, whatever the wording."""
+        first = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        DeferredQuestion.consume(first.pk, answer="keep them")
+        again = DeferredQuestion.record(
+            "Reclaim the 4 leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["4 dirs"]
+        )
+        assert again.pk == first.pk
+
+    def test_a_dismissed_owner_marker_does_not_hold_a_different_question(self) -> None:
+        first = DeferredQuestion.record(
+            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
+        other = DeferredQuestion.record(
+            "Fix the title, then post?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["bad title"]
+        )
+        assert other.pk != first.pk
+        assert other.is_pending
+
     def test_a_resolved_internal_row_does_not_mute_an_owner_record(self) -> None:
         internal = DeferredQuestion.record("stall", dedupe_marker="m")
         DeferredQuestion.consume(internal.pk, answer="handled")

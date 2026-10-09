@@ -206,7 +206,7 @@ class DeferredQuestion(models.Model):
 
         Only a known :class:`OwnerDecision` with a non-blank ``checked`` fact makes an owner row (``evidence``),
         stored dismissed when its subject has already finished; no decision is INTERNAL. ``dedupe_marker``
-        collapses repeats onto the PENDING row; a sticky owner marker also returns an answered or dismissed one.
+        collapses repeats onto the PENDING row; an owner marker also returns its answer, or this question dismissed.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -224,7 +224,8 @@ class DeferredQuestion(models.Model):
             if dedupe_marker:
                 held = Q(answered_at__isnull=True, dismissed_at__isnull=True)
                 if decision is not None:
-                    held |= Q(audience=cls.Audience.OWNER_QUESTION)
+                    settled = Q(answered_at__isnull=False) | Q(question=clean_question)
+                    held |= Q(audience=cls.Audience.OWNER_QUESTION) & settled
                 existing = (
                     cls.objects.select_for_update()
                     .filter(held, dedupe_marker=dedupe_marker)

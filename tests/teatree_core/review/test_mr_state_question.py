@@ -38,6 +38,7 @@ from teatree.core.review.mr_state_question import (
     mr_state_marker,
     observe_owner_question_creation,
     owner_answer_at_head,
+    retire_head_bound_question,
 )
 from teatree.on_behalf_gate import OnBehalfVerdict
 from tests._owner_channel import answer_on_slack
@@ -283,6 +284,73 @@ class TestAHeadBoundQuestion(TestCase):
         assert tagged is not None
         assert untagged is not None
         assert untagged.pk == tagged.pk
+
+
+class TestAnOwnerAskIsNeverAbsorbed(TestCase):
+    def _assert_owner_ask_supersedes_internal(self, *, internal_head: str) -> None:
+        internal = ask_mr_state(mr_url=_MR, reason="the work group is oversize.", head_sha=internal_head)
+        assert internal is not None
+
+        owner = _ask_owner(reason="the send was refused.", head_sha=_HEAD)
+
+        assert owner is not None
+        assert owner.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [owner.pk]
+        assert [row.pk for row in _open_mr_state_questions()] == [owner.pk]
+
+    def _assert_internal_ask_absorbed(self, *, internal_head: str) -> None:
+        owner = _ask_owner(head_sha=_HEAD)
+
+        internal = ask_mr_state(mr_url=_MR, reason="the work group is oversize.", head_sha=internal_head)
+
+        assert owner is not None
+        assert internal is not None
+        assert internal.pk == owner.pk
+
+    def test_an_owner_ask_supersedes_an_open_untagged_internal_question(self) -> None:
+        self._assert_owner_ask_supersedes_internal(internal_head="")
+
+    def test_an_owner_ask_supersedes_an_open_internal_question_at_its_head(self) -> None:
+        """Regression pin: a same-head internal row was already replaced."""
+        self._assert_owner_ask_supersedes_internal(internal_head=_HEAD)
+
+    def test_an_untagged_internal_ask_is_absorbed_by_the_open_owner_question(self) -> None:
+        """Regression pin: the factory's own question never displaces the owner's."""
+        self._assert_internal_ask_absorbed(internal_head="")
+
+    def test_an_internal_ask_at_the_head_is_absorbed_by_the_open_owner_question(self) -> None:
+        """Regression pin: the factory's own question never displaces the owner's."""
+        self._assert_internal_ask_absorbed(internal_head=_HEAD)
+
+    def test_an_owner_ask_over_an_internal_question_waits_for_a_free_slot(self) -> None:
+        internal = ask_mr_state(mr_url=_MR, reason="the work group is oversize.")
+        assert _ask_owner(_OTHER_MR) is not None
+        assert _ask_owner(_THIRD_MR) is not None
+
+        assert _ask_owner(head_sha=_HEAD) is None
+        assert internal is not None
+        assert internal.pk in [row.pk for row in _open_mr_state_questions()]
+
+    def test_a_retired_owner_question_does_not_absorb_a_different_one_at_its_head(self) -> None:
+        first = _ask_owner(reason="no independent cold review covers its current head yet.", head_sha=_HEAD)
+        retire_head_bound_question(_MR, reason="a cold review holds this head")
+
+        second = _ask_owner(reason="sending the review request was refused (pr_metadata_invalid).", head_sha=_HEAD)
+
+        assert first is not None
+        assert second is not None
+        assert second.pk != first.pk
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [second.pk]
+
+    def test_a_retired_owner_question_is_not_asked_again_at_its_head(self) -> None:
+        first = _ask_owner(head_sha=_HEAD)
+        retire_head_bound_question(_MR, reason="a cold review holds this head")
+
+        again = _ask_owner(head_sha=_HEAD)
+
+        assert first is not None
+        assert again is None
+        assert not DeferredQuestion.owner_pending().exists()
 
 
 class TestOwnerAnswerAtHead(TestCase):

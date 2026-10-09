@@ -656,7 +656,8 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
         assert old.dismissed_at is not None
         assert head_tag(_NEW_HEAD) in _pending_question().question
 
-    def test_another_callers_open_question_is_kept_and_counts_as_asked(self) -> None:
+    def test_another_callers_internal_question_gives_way_to_the_owner_ask(self) -> None:
+        """The batch gate's question is the factory's own now, so it can no longer stand in for the owner's."""
         batch_gate_row = ask_mr_state(mr_url=_URL, reason="its work group is not ready.")
         assert batch_gate_row is not None
         _ready_ticket(verdict_at=_OLD_HEAD)
@@ -664,8 +665,11 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
         with _world(self.slack, self.forge):
             signals = _followup_pass(self.forge, self.slack)
 
-        assert _pending_question().pk == batch_gate_row.pk
         assert signals[0].payload["asked"] is True
+        (owner_row,) = DeferredQuestion.owner_pending()
+        assert owner_row.pk != batch_gate_row.pk
+        assert owner_row.dedupe_marker == _ASKED_AT_HEAD
+        assert owner_row.evidence["decision"] == "public_post"
 
 
 class TestAnAnswerToTheSurveyorBindsNoSend(_SenderCase):
