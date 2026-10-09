@@ -24,8 +24,6 @@ _SCRIPT = _ROOT / "deploy" / "sync-hook-env.sh"
 _RESOLVE_UV = _ROOT / "scripts" / "hooks" / "lib" / "resolve-uv.sh"
 _BASH = shutil.which("bash") or "bash"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-
 _FAKE_DEP = "t5764-fake-dep"
 _FAKE_DIST = "t5764_fake_dep"
 
