@@ -111,10 +111,9 @@ def _check_version_skew(*, repair: bool) -> bool:
         report_version_skew,
     )
     from teatree.mcp.liveness import skew_finding  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.utils.dep_drift import editable_source_path  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     try:
-        from teatree.utils.dep_skew import find_version_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
+        from teatree.utils.dep_skew import running_env_skew  # noqa: PLC0415 — deferred: keeps CLI startup light
     except ModuleNotFoundError as exc:
         # The skew check is the ONE check that needs a non-stdlib import (``packaging``,
         # for real specifier semantics). The env it measures is the env it runs in, so the
@@ -129,16 +128,13 @@ def _check_version_skew(*, repair: bool) -> bool:
         )
         return True
 
-    source = editable_source_path()
-    if source is None:
+    measured = running_env_skew()
+    if measured is None:
         return True
-    pyproject = source / "pyproject.toml"
-    if not pyproject.is_file():
-        return True
-    skews = find_version_skew(pyproject)
+    source, skews = measured
     if not skews:
         return True
-    typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=pyproject)}")
+    typer.echo(f"FAIL  {skew_finding([skew.summary for skew in skews], source=source / 'pyproject.toml')}")
     if repair:
         return repair_version_skew(source, skews)
     report_version_skew(skews)

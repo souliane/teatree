@@ -33,9 +33,11 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     which short-circuits a feature-branch checkout before the pull is reached).
     The content-gated reconcile itself lives in ``cli/_update_reconcile.py``.
 5. Reinstalls editable installs + runs ``t3 setup`` when a repo advanced this
-    run OR when the tool venv is missing a declared dep — gated on actual
-    dep-closure drift, NOT only a same-run advance, so an out-of-band ff-merge
-    that added a top-level dependency still re-syncs the venv (#2377).
+    run OR when the tool venv does not satisfy a declared dep (missing or
+    installed out of range) — gated on actual dep drift, NOT only a same-run
+    advance, so an out-of-band ff-merge that added or bumped a top-level
+    dependency still re-syncs the venv (#2377). The env is then measured again,
+    and one still stale after the re-sync is a ``FAIL`` line.
 6. Probes the teatree self-DB (``python -m teatree migrate --check`` in the
     *runtime* interpreter) and applies pending migrations non-destructively
     — gated on *migrations actually pending*, NOT on whether a repo advanced
@@ -43,8 +45,9 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     stale self-DB (#929). Running in the runtime process (not ``uv
     --directory <clone>``) guarantees it migrates the DB the runtime ``t3``
     actually resolves, not an auto-isolated sibling DB (#126).
-7. Prints a per-repo summary; exits non-zero on a hard repo failure OR a
-    self-DB left unmigrated (fail-closed, consistent with #870).
+7. Prints a per-repo summary; exits non-zero on a hard repo failure, a
+    self-DB left unmigrated (fail-closed, consistent with #870), OR a tool env
+    still stale after the re-sync.
 
 This module is a top-level Typer group reached through the typer runner
 directly (sibling of ``t3 setup`` / ``t3 doctor``), so it raises
@@ -54,6 +57,7 @@ codes").  Precedent: ``cli/setup/clone.py`` ``validate_repo`` → ``raise typer.
 """
 
 import enum
+import importlib
 import logging
 import shutil
 from dataclasses import dataclass
@@ -61,9 +65,9 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.doctor.skew_repair import remedy
 from teatree.generation import in_place_update_refusal
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
-from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
@@ -436,48 +440,47 @@ def _git_toplevel(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
-def _declared_deps_missing() -> list[str]:
-    """Return declared deps absent from the *running* interpreter's env, or [].
+def _tool_env_skew() -> dict[str, str]:
+    """Each declared dep the *running* env does not satisfy, mapped to its summary — the doctor's own measurement.
 
-    Mirrors :func:`teatree.cli.dep_drift_repair.repair_dep_drift`'s detection:
-    the running ``t3``'s editable source supplies the ``pyproject.toml`` whose
-    ``[project].dependencies`` are compared against the dists installed in the
-    interpreter that actually executes ``t3``. Empty when the install is
-    non-editable (no editable source to diff against) or when nothing is
-    missing.
+    An env that cannot even import the check is stale by definition, so it re-syncs rather than reading as clean.
     """
-    source = editable_source_path()
-    if source is None:
-        return []
-    pyproject = source / "pyproject.toml"
-    if not pyproject.is_file():
-        return []
-    return find_missing_dependencies(pyproject)
+    try:
+        from teatree.utils.dep_skew import running_env_skew  # noqa: PLC0415 — deferred: t3 loads without packaging
+    except ModuleNotFoundError as exc:
+        return {str(exc.name): f"the skew check cannot import {exc.name}"}
+    measured = running_env_skew()
+    if measured is None:
+        return {}
+    return {skew.name: skew.summary for skew in measured[1]}
 
 
-def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
+def _reinstall_and_resetup(updated: list[RepoUpdate]) -> str:
     """Reinstall editable installs, then re-run setup, on advance OR dep drift.
 
     Reinstalling re-anchors the running ``t3`` (and overlay code) on the new
     sources; ``t3 setup`` afterwards re-syncs skill symlinks/config.  Both run
-    through the audited subprocess wrapper; failures are surfaced but do not by
-    themselves fail the run — the per-repo git outcome already did its job.
+    through the audited subprocess wrapper; a reported failure alone is a WARN —
+    only a tool env still stale afterwards fails the run.
 
-    The re-sync runs when a repo advanced this run OR when the tool venv is
-    missing a declared dependency (#2377). An out-of-band ff-merge that added a
-    top-level dep advances the SHA without any repo advancing *during this run*,
-    so the bare advance flag would skip the reinstall and leave the venv stale —
-    the keystone path then crashes with ``ModuleNotFoundError``. The drift probe
-    mirrors the #929 self-DB migrate, which is likewise decoupled from the
-    per-run advance flag and gated on the actual drift it must repair.
+    The re-sync runs when a repo advanced this run OR when the tool venv does
+    not satisfy a declared dependency — missing or installed out of range (#2377).
+    An out-of-band ff-merge that added or bumped a top-level dep advances the SHA
+    without any repo advancing *during this run*, so the bare advance flag would
+    skip the reinstall and leave the venv stale. The drift probe mirrors the #929
+    self-DB migrate, which is likewise decoupled from the per-run advance flag and
+    gated on the actual drift it must repair.
+
+    Returns the one ``FAIL`` line when the env is still stale after the re-sync,
+    measured afresh, else ``""``: a re-sync that did not take must fail the run.
     """
     advanced = any(r.status is UpdateStatus.UPDATED for r in updated)
-    missing = _declared_deps_missing()
-    if not advanced and not missing:
+    skew = _tool_env_skew()
+    if not advanced and not skew:
         typer.echo("No repo advanced and tool deps in sync — skipping reinstall + setup.")
-        return
-    if not advanced and missing:
-        typer.echo(f"No repo advanced, but tool deps drifted ({', '.join(missing)}) — resyncing.")
+        return ""
+    if not advanced:
+        typer.echo(f"No repo advanced, but the tool env is stale ({'; '.join(skew.values())}) — resyncing.")
 
     if not shutil.which("uv"):
         typer.echo("WARN  `uv` not on PATH — skipping editable reinstall.")
@@ -489,6 +492,14 @@ def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
         typer.echo("OK    `t3 setup` complete.")
     else:
         typer.echo(f"WARN  reinstall/setup reported a problem: {result.error}")
+
+    importlib.invalidate_caches()
+    residual = _tool_env_skew()
+    if not residual:
+        return ""
+    cause = f" ({' '.join(result.error.split())})" if result.error else ""
+    fix = remedy(residual) or "reinstall teatree into the running env"
+    return f"FAIL  tool env still stale after the re-sync: {'; '.join(residual.values())}{cause} — fix: `{fix}`"
 
 
 @update_app.callback()
@@ -568,7 +579,7 @@ def _run_update() -> None:
         results.append(result)
         _notify_if_stale(result, repo=path)
 
-    _reinstall_and_resetup(results)
+    stale_tool_env = _reinstall_and_resetup(results)
     # Probe-gated and decoupled from the per-run UPDATED flag (#929): an
     # interrupted prior run or an out-of-band ff-pull leaves the SHA
     # current with a stale self-DB; this still migrates it.
@@ -578,6 +589,8 @@ def _run_update() -> None:
     typer.echo("Summary:")
     for result in results:
         typer.echo(f"  {result.summary_line}")
+    if stale_tool_env:
+        typer.echo(stale_tool_env)
 
-    if self_db_unmigrated or any(result.is_error for result in results):
+    if stale_tool_env or self_db_unmigrated or any(result.is_error for result in results):
         raise typer.Exit(code=1)
