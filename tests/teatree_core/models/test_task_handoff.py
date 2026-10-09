@@ -203,6 +203,27 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
                 assert resumed == ([f"{RESUME_ANSWER_PREFIX} use the vault entry."] if channel == via.SLACK else [])
                 assert not first.child_tasks.exists()
 
+    def test_a_cosmetic_rewording_of_a_dismissed_owner_stop_is_not_asked_again(self) -> None:
+        for variant in ("the deploy token expired; mint a new one?", "The deploy token  expired;\nmint a new one? "):
+            with self.subTest(variant=variant):
+                ticket = planned_ticket()
+                first = self._stopped(ticket, "The deploy token expired; mint a new one?", kind="credentials")
+                DeferredQuestion.objects.get(parked_task=first).mark_stale("withdrawn by the age ladder")
+
+                self._stopped(ticket, variant, kind="credentials")
+
+                assert DeferredQuestion.objects.filter(parked_task__ticket=ticket).count() == 1
+                assert not DeferredQuestion.unmirrored_pending().exists()
+
+    def test_a_different_reason_after_a_dismissed_owner_stop_is_asked(self) -> None:
+        ticket = planned_ticket()
+        first = self._stopped(ticket, "The deploy token expired; mint a new one?", kind="credentials")
+        DeferredQuestion.objects.get(parked_task=first).mark_stale("withdrawn by the age ladder")
+
+        second = self._stopped(ticket, "Which vault holds the signing key?", kind="credentials")
+
+        assert [row.parked_task_id for row in DeferredQuestion.unmirrored_pending()] == [second.pk]
+
 
 class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):
     """The queue holds resumes whose stored reason still has the clause inline — both cases apply.

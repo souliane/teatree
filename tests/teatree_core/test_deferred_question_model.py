@@ -190,6 +190,18 @@ class TestAnOwnerQuestionIsNeverReAsked:
         assert other.pk != first.pk
         assert other.is_pending
 
+    @pytest.mark.parametrize("variant", ["post the review request?", "Post  the review\nrequest? "])
+    def test_a_dismissed_owner_marker_holds_a_cosmetic_rewording(self, variant: str) -> None:
+        first = DeferredQuestion.record(
+            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
+        again = DeferredQuestion.record(
+            variant, dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        assert again.pk == first.pk
+        assert not DeferredQuestion.owner_pending().exists()
+
     def test_a_resolved_internal_row_does_not_mute_an_owner_record(self) -> None:
         internal = DeferredQuestion.record("stall", dedupe_marker="m")
         DeferredQuestion.consume(internal.pk, answer="handled")

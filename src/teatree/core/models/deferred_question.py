@@ -31,12 +31,13 @@ from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max, Q
+from django.db.models import Max
 from django.utils import timezone
 
 from teatree import answer_handback
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
 from teatree.core.models.question_subject import finished_subject_reason
+from teatree.core.models.question_text import question_fingerprint
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
@@ -205,7 +206,8 @@ class DeferredQuestion(models.Model):
 
         Only a known :class:`OwnerDecision` with a non-blank ``checked`` fact makes an owner row (``evidence``),
         stored dismissed when its subject has already finished; no decision is INTERNAL. ``dedupe_marker``
-        collapses repeats onto the PENDING row; an owner marker also returns its answer, or this question dismissed.
+        collapses repeats onto the PENDING row; an owner marker also returns its answer, or this question dismissed
+        (compared by :func:`question_fingerprint`).
         """
         clean_question = question.strip()
         if not clean_question:
@@ -220,19 +222,8 @@ class DeferredQuestion(models.Model):
             raise DeferredQuestionError(msg)
 
         with transaction.atomic():
-            if dedupe_marker:
-                held = Q(answered_at__isnull=True, dismissed_at__isnull=True)
-                if decision is not None:
-                    settled = Q(answered_at__isnull=False) | Q(question=clean_question)
-                    held |= Q(audience=cls.Audience.OWNER_QUESTION) & settled
-                existing = (
-                    cls.objects.select_for_update()
-                    .filter(held, dedupe_marker=dedupe_marker)
-                    .order_by("-created_at", "-pk")
-                    .first()
-                )
-                if existing is not None:
-                    return existing
+            if dedupe_marker and (held := cls._held(dedupe_marker, clean_question, owner=decision is not None)):
+                return held
             row = cls.objects.create(
                 question=clean_question,
                 options_json=options_json or "",
@@ -260,6 +251,19 @@ class DeferredQuestion(models.Model):
             if decision is not None and (reason := finished_subject_reason(row)):
                 row.mark_stale(reason, resolver_id="record_subject_settled")
             return row
+
+    @classmethod
+    def _held(cls, marker: str, question: str, *, owner: bool) -> "DeferredQuestion | None":
+        """The row a record under *marker* returns instead of asking."""
+        rows = cls.objects.select_for_update().filter(dedupe_marker=marker).order_by("-created_at", "-pk")
+        pending = rows.filter(answered_at__isnull=True, dismissed_at__isnull=True)
+        if not owner:
+            return pending.first()
+        fingerprint = question_fingerprint(question)
+        for row in rows.filter(audience=cls.Audience.OWNER_QUESTION):
+            if row.dismissed_at is None or question_fingerprint(row.question) == fingerprint:
+                return row
+        return pending.first()
 
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
