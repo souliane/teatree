@@ -153,8 +153,8 @@ class RoundCeiling:
         reason = (
             f"Round ceiling reached: {breach}. Do not start another round. End this run now with "
             "`needs_user_input: true` and a `user_input_reason` that says where the work stands "
-            "(branch, last pipeline, what is still red) and what the next round should do; the task "
-            "resumes from here."
+            "(branch, last pipeline, what is still red) and what the next round should do; it is "
+            "recorded as factory work and nothing resumes on its own."
         )
         logger.warning("round ceiling refused a new round: %s (refused=%d)", breach, self.refused)
         return {
