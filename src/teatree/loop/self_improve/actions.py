@@ -203,8 +203,7 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> Sel
         existing_ticket = firing.ticket
         if existing_ticket is not None:
             _require_ticket_owner(existing_ticket, overlay_name)
-        settled = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
-        if existing_ticket is not None and existing_ticket.state not in settled:
+        if existing_ticket is not None and existing_ticket.state not in Ticket.finished_states():
             if existing_ticket.state in Ticket.EARLY_STATES and not existing_ticket.tasks.exists():
                 existing_ticket.begin_planning(
                     intent=f"Investigate {report.detector}: {report.summary}; verify the pressure cause"

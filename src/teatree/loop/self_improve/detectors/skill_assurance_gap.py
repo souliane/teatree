@@ -53,7 +53,6 @@ class SkillAssuranceGapDetector:
         )
 
     def _terminal_ticket_times(self) -> dict[str, datetime]:
-        terminal = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         terminal_edge = (
             TicketTransition.objects.filter(ticket_id=OuterRef("ticket_id"), to_state=OuterRef("ticket__state"))
             .exclude(from_state=F("to_state"))
@@ -63,7 +62,7 @@ class SkillAssuranceGapDetector:
         rows = SelfImproveFiring.objects.filter(
             detector=self.name,
             resolved_at__isnull=True,
-            ticket__state__in=terminal,
+            ticket__state__in=Ticket.finished_states(),
         ).annotate(terminal_at=Subquery(terminal_edge))
         if self.dedup_prefix:
             rows = rows.filter(dedup_key__startswith=self.dedup_prefix)

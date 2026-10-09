@@ -1,95 +1,88 @@
-"""Retention pruning for the high-churn control-DB tables (#3693, #3871).
+"""Retention for the high-churn control-DB tables (#3693, #3871).
 
-The control DB has no cleanup path for the tables that grow per dispatch. This is the
-sanctioned prune. Every lane deletes rows whose owning ticket/task is TERMINAL, never a
-live or in-flight row, and each resolves its row set through a single named predicate so
-"safe to delete" is defined in exactly one place per lane.
+One ordered lane table drives both the dry run and the delete, so the plan and the
+apply cannot disagree about a lane's row set. In run order: limit-park ``TaskAttempt``
+rows older than a week (a park returns its task to PENDING, so no task-history lane
+reaches it while that task is active); the FAILED, then the COMPLETED ``Task`` rows of
+quiescent tickets (:mod:`teatree.core.retention.ticket_history`) with their attempts by
+CASCADE, so failed history goes before completed history; ``BotPing`` payloads, blanked
+rather than deleted because dedup reads the key and status; settled ``IncomingEvent``
+rows; ``TicketTransition`` rows that record no edge on a finished ticket; ``DBTaskResult``
+through ``django_tasks_db``'s own prune.
 
-``TaskAttempt`` and ``IncomingEvent`` resolve through their managers' ``prunable``
-querysets, age-based (#3693).
-
-``TaskAttempt`` gets a SECOND lane, because the terminal-owned one can never reach a
-limit-park: a park RETURNS its task to the queue PENDING, so the park row's owning task
-is non-terminal and the guard excludes it forever. A park-bloated table therefore
-reported "would prune 0 row(s)" — the remedy prescribed for the condition being flagged
-could not touch it. The park lane keys on the canonical ``limit_parked:`` marker under
-its own, shorter window, and never deletes a row carrying billed telemetry. See
-:meth:`TaskAttemptQuerySet.prunable_parks` for the three questions it asks.
-
-``TicketTransition`` resolves through :meth:`TicketTransitionQuerySet.prunable`, which
-is keyed on the ticket CLOSING rather than on a row aging, and decides per ROW rather
-than per table: a ``from_state == to_state`` row records no edge, so it is not history
-and a reopened ticket does not need it. Every real state edge survives for as long as
-the ticket does — ~410 rows on the measured box.
-
-``DBTaskResult`` goes through :mod:`teatree.core.retention.task_results`, which delegates
-the delete to ``django_tasks_db``'s OWN shipped ``prune_db_task_results`` command rather
-than teatree writing a second prune over a dependency's table.
-
-Destructive, so the default is planning, not deleting: :func:`plan_retention` reports
-what WOULD be pruned (read-only); :func:`apply_retention` is the only path that deletes.
+Every lane deletes through the ORM, in short committed batches of pks re-filtered through
+its predicate, so a batch holds the write lock briefly and an interrupted pass only leaves
+fewer rows. The scheduled pass (``teatree.loops.timer_reconciler.prune_task_results``)
+runs hourly under a shared batch budget spent in lane order; the operator's
+``t3 <overlay> retention prune --apply`` drains with no budget. :func:`plan_retention`
+reads only; :func:`apply_retention` is the path that deletes.
 """
 
 import dataclasses
 import datetime as dt
+import functools
+import time
+from collections.abc import Callable
 
 from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
 from teatree.config.settings import UserSettings
-from teatree.core.models import IncomingEvent, TaskAttempt
+from teatree.core.factory.factory_signals import FACTORY_LOOKBACK_DAYS
+from teatree.core.models import BotPing, IncomingEvent, IntentClassification, ReplyDispatch, Task, TaskAttempt
 from teatree.core.models.transition import TicketTransition
-from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.retention.task_results import (
     prunable_task_results,
     prune_finished_task_results,
     task_results_are_stored_in_the_db,
 )
+from teatree.core.retention.ticket_history import prunable_tasks
 
-#: Rows deleted per committed statement on the batched lanes. A single ``DELETE`` over
-#: the whole set holds the SQLite write lock for its entire duration — on the measured
-#: residues (330k park rows, 3.2M transition rows) that is long enough to collide with a
-#: converging deploy's migration step. Each batch commits on its own, so the lock is
-#: released between them and an interrupted run simply leaves fewer rows: both lanes are
-#: idempotent and order-independent, and nothing references either row.
-DELETE_BATCH_SIZE = 5_000
+#: Rows per committed batch: small enough that a competing writer waits well under SQLite's busy timeout.
+BATCH_SIZE = 200
+#: A task batch stops before its cascade passes this many attempts; one task alone may exceed it.
+TASK_BATCH_MAX_ATTEMPTS = 1_000
+#: Non-empty batches one scheduled pass may commit across all budgeted lanes.
+SCHEDULED_MAX_BATCHES = 10
 
-#: The finished-event lane's window. What ages out is an event already drained or
-#: dead-lettered, referenced by nothing and carrying no billed telemetry, so 30 days of
-#: post-mortem material is the whole stake — not a per-box policy.
-INCOMING_EVENT_RETENTION_DAYS = 30
-
-#: The PARK lane's own, deliberately shorter window. A park's diagnostic value is "is the
-#: fleet parked NOW", which the 24h park-spin detector and ``park_repeats`` already answer,
-#: so a week is generous for after-the-fact forensics.
+#: Post-mortem material only: settled inbound events and sent notification payloads.
+POST_MORTEM_RETENTION_DAYS = 30
+#: Whether the fleet is parked NOW is what a park tells; a week covers after-the-fact forensics.
 PARK_ATTEMPT_RETENTION_DAYS = 7
 
-#: The labels each lane reports under, so an operator can see which rule acted.
 PARK_TABLE = "TaskAttempt (park)"
+FAILED_TASK_TABLE = "Task (failed)"
+COMPLETED_TASK_TABLE = "Task (completed)"
+PING_PAYLOAD_TABLE = "BotPing (payload)"
+INCOMING_EVENT_TABLE = "IncomingEvent"
 TRANSITION_TABLE = "TicketTransition"
 TASK_RESULT_TABLE = "DBTaskResult"
+
+_NO_RESULT_TABLE = "the default task backend does not store results in the DB"
+
+#: The models deleting an ``IncomingEvent`` cascades into; a test pins this to the model registry.
+EVENT_CASCADE_CHILDREN: tuple[type[models.Model], ...] = (IntentClassification, ReplyDispatch)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class TableRetention:
-    """One table's retention outcome — planned (would-delete) or applied (deleted)."""
+    """One lane's outcome — planned (would act on) or applied (acted on)."""
 
     table: str
     retention_days: int
-    #: Rows the policy acts on: the would-delete count in a plan, the deleted count after apply.
+    #: Rows deleted; a compacting lane deletes none and reports ``compacted`` instead.
     rows: int
-    #: Subset of ``rows`` that is limit-park junk (``TaskAttempt`` only; ``0`` elsewhere).
-    junk: int = 0
-    #: True when this lane is off and nothing was touched — see ``reason``.
+    #: Child rows the delete cascades into; a task lane leaves out the park rows lane 1 owns.
+    cascaded: int = 0
+    compacted: int = 0
     disabled: bool = False
-    #: Why a disabled lane is off, when it is not simply a ``0`` window.
     reason: str = ""
-    #: False for a lane whose rule is redundancy rather than age, so a report does not
-    #: claim its rows were older than a window they were never measured against.
+    #: False for a lane whose rule is redundancy rather than age.
     aged: bool = True
-    #: Committed delete statements this lane took (batched lanes only; ``0`` elsewhere).
     batches: int = 0
+    #: The longest batch's write-lock time.
+    max_batch_ms: int = 0
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -97,96 +90,177 @@ class RetentionPlan:
     now: dt.datetime
     tables: tuple[TableRetention, ...]
     applied: bool = False
+    #: The batch budget ran out while a lane still had rows; the next pass continues.
+    budget_exhausted: bool = False
 
     @property
     def total_rows(self) -> int:
         return sum(table.rows for table in self.tables)
 
+    @property
+    def total_compacted(self) -> int:
+        return sum(table.compacted for table in self.tables)
 
-def _now(now: dt.datetime | None) -> dt.datetime:
-    return now if now is not None else timezone.now()
+    def counts(self) -> dict[str, int]:
+        return {
+            **{table.table: table.rows + table.compacted for table in self.tables},
+            "cascaded": sum(table.cascaded for table in self.tables),
+            "max_batch_ms": max((table.max_batch_ms for table in self.tables), default=0),
+            "budget_exhausted": int(self.budget_exhausted),
+        }
 
 
-def _cutoff(now: dt.datetime, days: int) -> dt.datetime:
-    return now - dt.timedelta(days=days)
+@dataclasses.dataclass(frozen=True, slots=True)
+class Lane:
+    table: str
+    days: int
+    resolve: Callable[[dt.datetime], models.QuerySet]
+    #: Counts, for the dry run, the child rows deleting these rows cascades into.
+    cascade: Callable[[models.QuerySet, dt.datetime], int] | None = None
+    #: Rewrites the rows in place instead of deleting them; returns how many it rewrote.
+    compact: Callable[[models.QuerySet], int] | None = None
+    aged: bool = True
+
+    @property
+    def disabled(self) -> bool:
+        return self.aged and self.days <= 0
+
+    def rows(self, moment: dt.datetime) -> models.QuerySet:
+        return self.resolve(moment - dt.timedelta(days=self.days))
+
+
+def _task_history_days(cfg: UserSettings) -> int:
+    days = int(cfg.task_attempt_retention_days)
+    return max(days, FACTORY_LOOKBACK_DAYS) if days > 0 else 0
+
+
+def _closed_ticket_non_edges(_cutoff: dt.datetime) -> models.QuerySet:
+    return TicketTransition.objects.prunable()
+
+
+def _task_attempts(tasks: models.QuerySet, moment: dt.datetime) -> int:
+    parks = TaskAttempt.objects.prunable_parks(moment - dt.timedelta(days=PARK_ATTEMPT_RETENTION_DAYS))
+    return TaskAttempt.objects.filter(task__in=tasks).exclude(pk__in=parks).count()
+
+
+def _event_children(events: models.QuerySet, _moment: dt.datetime) -> int:
+    return sum(child.objects.filter(event__in=events).count() for child in EVENT_CASCADE_CHILDREN)
+
+
+def _lanes(cfg: UserSettings) -> tuple[Lane, ...]:
+    history_days = _task_history_days(cfg)
+    return (
+        Lane(PARK_TABLE, PARK_ATTEMPT_RETENTION_DAYS, TaskAttempt.objects.prunable_parks),
+        Lane(
+            FAILED_TASK_TABLE,
+            history_days,
+            functools.partial(prunable_tasks, status=Task.Status.FAILED),
+            cascade=_task_attempts,
+        ),
+        Lane(
+            COMPLETED_TASK_TABLE,
+            history_days,
+            functools.partial(prunable_tasks, status=Task.Status.COMPLETED),
+            cascade=_task_attempts,
+        ),
+        Lane(PING_PAYLOAD_TABLE, POST_MORTEM_RETENTION_DAYS, BotPing.compactable, compact=BotPing.compact),
+        Lane(INCOMING_EVENT_TABLE, POST_MORTEM_RETENTION_DAYS, IncomingEvent.objects.prunable, cascade=_event_children),
+        Lane(TRANSITION_TABLE, 0, _closed_ticket_non_edges, aged=False),
+    )
 
 
 def _disabled(table: str, days: int, reason: str = "") -> TableRetention:
     return TableRetention(table, days, 0, disabled=True, reason=reason)
 
 
-#: Reported when the default task backend is not the one that writes ``DBTaskResult``
-#: rows, so there is no result table for this lane to act on.
-_NO_RESULT_TABLE = "the default task backend does not store results in the DB"
-#: The transition lane has no window — it is keyed on ticket closure — so its kill
-#: switch reports its own name rather than a meaningless ``retention_days=0``.
+def _plan_lane(lane: Lane, moment: dt.datetime) -> TableRetention:
+    if lane.disabled:
+        return _disabled(lane.table, lane.days)
+    rows = lane.rows(moment)
+    if lane.compact is not None:
+        return TableRetention(lane.table, lane.days, 0, compacted=rows.count(), aged=lane.aged)
+    cascaded = lane.cascade(rows, moment) if lane.cascade is not None else 0
+    return TableRetention(lane.table, lane.days, rows.count(), cascaded=cascaded, aged=lane.aged)
 
 
-def _junk_count(task_attempt_qs: models.QuerySet) -> int:
-    return task_attempt_qs.filter(error__startswith=LIMIT_PARKED_PREFIX).count()
+def _next_batch(rows: models.QuerySet) -> list[int]:
+    if rows.model is not Task:
+        return list(rows.order_by("pk").values_list("pk", flat=True)[:BATCH_SIZE])
+    batch: list[int] = []
+    attempts = 0
+    sized = rows.annotate(attempt_count=models.Count("attempts")).order_by("pk")
+    for pk, attempt_count in sized.values_list("pk", "attempt_count")[:BATCH_SIZE]:
+        if batch and attempts + attempt_count > TASK_BATCH_MAX_ATTEMPTS:
+            break
+        batch.append(pk)
+        attempts += attempt_count
+    return batch
 
 
-def _delete_in_batches(resolve: "models.QuerySet", *, batch_size: int) -> tuple[int, int]:
-    """Delete *resolve*'s rows in separately-committed batches; return ``(deleted, batches)``.
+@dataclasses.dataclass(slots=True)
+class _ApplyPass:
+    moment: dt.datetime
+    budget: int | None
+    exhausted: bool = False
 
-    Deliberately OUTSIDE the age lanes' single transaction. Their all-or-nothing
-    semantics fit a small set; these are measured in hundreds of thousands, and holding
-    one write lock across them is a real operational hazard on SQLite. Each batch
-    re-resolves the predicate and deletes by the pks just selected, so the slice and the
-    delete describe the same rows even if a writer adds one between them.
-    """
-    deleted = 0
-    batches = 0
-    while True:
-        with transaction.atomic():
-            batch = list(resolve.values_list("pk", flat=True)[:batch_size])
+    def drain(self, lane: Lane) -> TableRetention:
+        if lane.disabled:
+            return _disabled(lane.table, lane.days)
+        acted = cascaded = batches = longest_ms = 0
+        while True:
+            pending = lane.rows(self.moment)
+            if self.budget == 0:
+                self.exhausted = self.exhausted or pending.exists()
+                break
+            batch = _next_batch(pending)
             if not batch:
-                return deleted, batches
-            resolve.filter(pk__in=batch).delete()
+                break
+            with transaction.atomic():
+                locked_at = time.monotonic()
+                batch_acted, batch_cascaded = self._act(lane, pending.filter(pk__in=batch))
+            longest_ms = max(longest_ms, round((time.monotonic() - locked_at) * 1000))
+            acted += batch_acted
+            cascaded += batch_cascaded
             batches += 1
-            deleted += len(batch)
-        if len(batch) < batch_size:
-            return deleted, batches
+            if self.budget is not None:
+                self.budget -= 1
+        compacted = acted if lane.compact is not None else 0
+        return TableRetention(
+            lane.table,
+            lane.days,
+            acted - compacted,
+            cascaded=cascaded,
+            compacted=compacted,
+            aged=lane.aged,
+            batches=batches,
+            max_batch_ms=longest_ms,
+        )
 
-
-def _plan_parks(moment: dt.datetime) -> TableRetention:
-    cutoff = _cutoff(moment, PARK_ATTEMPT_RETENTION_DAYS)
-    rows = TaskAttempt.objects.prunable_parks(cutoff).count()
-    return TableRetention(PARK_TABLE, PARK_ATTEMPT_RETENTION_DAYS, rows, junk=rows)
-
-
-def _apply_parks(moment: dt.datetime, *, batch_size: int) -> TableRetention:
-    resolve = TaskAttempt.objects.prunable_parks(_cutoff(moment, PARK_ATTEMPT_RETENTION_DAYS))
-    rows, batches = _delete_in_batches(resolve, batch_size=batch_size)
-    return TableRetention(PARK_TABLE, PARK_ATTEMPT_RETENTION_DAYS, rows, junk=rows, batches=batches)
-
-
-def _plan_transition_lane() -> TableRetention:
-    return TableRetention(TRANSITION_TABLE, 0, TicketTransition.objects.prunable().count(), aged=False)
-
-
-def _apply_transition_lane(*, batch_size: int) -> TableRetention:
-    rows, batches = _delete_in_batches(TicketTransition.objects.prunable(), batch_size=batch_size)
-    return TableRetention(TRANSITION_TABLE, 0, rows, aged=False, batches=batches)
+    @staticmethod
+    def _act(lane: Lane, batch: models.QuerySet) -> tuple[int, int]:
+        if lane.compact is not None:
+            return lane.compact(batch), 0
+        rows = batch.count()
+        deleted, _ = batch.delete()
+        return rows, deleted - rows
 
 
 def _task_result_lane_days(cfg: UserSettings) -> int | None:
-    """The lane's window, or ``None`` when it must not run."""
     days = int(cfg.task_result_retention_days)
     return days if days > 0 and task_results_are_stored_in_the_db() else None
 
 
 def _task_result_disabled(cfg: UserSettings) -> TableRetention:
     days = int(cfg.task_result_retention_days)
-    reason = "" if days <= 0 else _NO_RESULT_TABLE
-    return _disabled(TASK_RESULT_TABLE, days, reason)
+    return _disabled(TASK_RESULT_TABLE, days, "" if days <= 0 else _NO_RESULT_TABLE)
 
 
 def _plan_task_result_lane(moment: dt.datetime, cfg: UserSettings) -> TableRetention:
     days = _task_result_lane_days(cfg)
     if days is None:
         return _task_result_disabled(cfg)
-    return TableRetention(TASK_RESULT_TABLE, days, prunable_task_results(_cutoff(moment, days)).count())
+    cutoff = moment - dt.timedelta(days=days)
+    return TableRetention(TASK_RESULT_TABLE, days, prunable_task_results(cutoff).count())
 
 
 def _apply_task_result_lane(cfg: UserSettings) -> TableRetention:
@@ -197,26 +271,11 @@ def _apply_task_result_lane(cfg: UserSettings) -> TableRetention:
 
 
 def plan_retention(now: dt.datetime | None = None, *, settings: UserSettings | None = None) -> RetentionPlan:
-    """Report what retention WOULD prune, per lane. Read-only — deletes nothing."""
-    moment = _now(now)
+    """Report what retention WOULD act on, per lane. Read-only."""
+    moment = now or timezone.now()
     cfg = settings or get_effective_settings()
-
-    tables: list[TableRetention] = []
-
-    ta_days = int(cfg.task_attempt_retention_days)
-    if ta_days > 0:
-        qs = TaskAttempt.objects.prunable(_cutoff(moment, ta_days))
-        tables.append(TableRetention("TaskAttempt", ta_days, qs.count(), junk=_junk_count(qs)))
-    else:
-        tables.append(_disabled("TaskAttempt", ta_days))
-
-    tables.append(_plan_parks(moment))
-
-    qs = IncomingEvent.objects.prunable(_cutoff(moment, INCOMING_EVENT_RETENTION_DAYS))
-    tables.append(TableRetention("IncomingEvent", INCOMING_EVENT_RETENTION_DAYS, qs.count()))
-
-    tables.extend((_plan_transition_lane(), _plan_task_result_lane(moment, cfg)))
-
+    tables = [_plan_lane(lane, moment) for lane in _lanes(cfg)]
+    tables.append(_plan_task_result_lane(moment, cfg))
     return RetentionPlan(moment, tuple(tables))
 
 
@@ -224,38 +283,15 @@ def apply_retention(
     now: dt.datetime | None = None,
     *,
     settings: UserSettings | None = None,
-    batch_size: int = DELETE_BATCH_SIZE,
+    max_batches: int | None = None,
 ) -> RetentionPlan:
-    """Delete the prunable rows per lane, returning the applied plan.
+    """Act on every lane in order, spending at most *max_batches* batches; ``None`` drains everything.
 
-    The two age lanes over ``TaskAttempt``/``IncomingEvent`` run inside one transaction
-    (all-or-nothing, matching #3693). The park and transition lanes run after it in
-    separately-committed batches (:func:`_delete_in_batches`), and the ``DBTaskResult``
-    lane last, through the library's own command.
+    The ``DBTaskResult`` lane runs on every pass, outside the budget: it is one library DELETE.
     """
-    moment = _now(now)
+    moment = now or timezone.now()
     cfg = settings or get_effective_settings()
-
-    tables: list[TableRetention] = []
-    with transaction.atomic():
-        ta_days = int(cfg.task_attempt_retention_days)
-        if ta_days > 0:
-            qs = TaskAttempt.objects.prunable(_cutoff(moment, ta_days))
-            junk = _junk_count(qs)
-            # Count inside the transaction, before the delete: nothing else mutates
-            # the row set here, so the count is exactly what delete() removes — and it
-            # avoids depending on the model-label key delete() returns.
-            rows = qs.count()
-            qs.delete()
-            tables.append(TableRetention("TaskAttempt", ta_days, rows, junk=junk))
-        else:
-            tables.append(_disabled("TaskAttempt", ta_days))
-
-        qs = IncomingEvent.objects.prunable(_cutoff(moment, INCOMING_EVENT_RETENTION_DAYS))
-        rows = qs.count()
-        qs.delete()
-        tables.append(TableRetention("IncomingEvent", INCOMING_EVENT_RETENTION_DAYS, rows))
-
-    tables.insert(1, _apply_parks(moment, batch_size=batch_size))
-    tables.extend((_apply_transition_lane(batch_size=batch_size), _apply_task_result_lane(cfg)))
-    return RetentionPlan(moment, tuple(tables), applied=True)
+    run = _ApplyPass(moment, max_batches)
+    tables = [run.drain(lane) for lane in _lanes(cfg)]
+    tables.append(_apply_task_result_lane(cfg))
+    return RetentionPlan(moment, tuple(tables), applied=True, budget_exhausted=run.exhausted)
