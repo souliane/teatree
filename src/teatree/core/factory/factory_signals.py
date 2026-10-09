@@ -100,6 +100,8 @@ __all__ = [
 ]
 
 DEFAULT_WINDOW_DAYS = 28
+#: The default baseline window reaches this far back; a caller passing a longer ``window_days`` is not covered.
+FACTORY_LOOKBACK_DAYS = 2 * DEFAULT_WINDOW_DAYS
 
 # Hard red floors for the three signals that shipped with ``red_when=None`` and so
 # could never trip, letting the exact pathology that hit the factory pass silently

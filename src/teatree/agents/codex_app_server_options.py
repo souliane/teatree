@@ -2,15 +2,14 @@
 
 import json
 import logging
-import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
 from teatree.utils.ports import running_in_container
 
@@ -25,7 +24,6 @@ _CLAUDE_ONLY_TOOLS = frozenset(
     {"AskUserQuestion", "Monitor", "PushNotification", "RemoteTrigger", "SendMessage", "WebFetch", "WebSearch"}
 )
 _CONTAINER_READ_ONLY_UNENFORCEABLE = "read-only inside a container: its sandbox cannot create a user namespace there"
-CONTAINER_IS_SANDBOX_ENV = "TEATREE_CODEX_CONTAINER_IS_SANDBOX"
 _TEATREE_CODEX_PLUGIN_ID = "t3@souliane"
 _SUPPORTED_PERMISSION_MODES = frozenset(
     {None, "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"}
@@ -106,11 +104,6 @@ class CodexAppServerOptions:
 
 def _raise_unsupported(detail: str) -> Never:
     raise CodexAppServerError.unsupported_policy(detail)
-
-
-@cache
-def container_is_the_sandbox() -> bool:
-    return os.environ.get(CONTAINER_IS_SANDBOX_ENV) == "1" and running_in_container()
 
 
 def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> str | None:

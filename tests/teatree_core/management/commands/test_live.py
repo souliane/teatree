@@ -22,6 +22,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents import live_mailbox
+from teatree.agents.live_mailbox import LiveMailboxBroker
 from teatree.core.models import Task
 from tests.factories import SessionFactory, TicketFactory
 
@@ -120,6 +121,38 @@ def test_steer_exit_codes_follow_the_receipt(control_dir: Path) -> None:
     assert lost.returncode == 4
     assert "unknown_delivery" in lost.stderr
     assert "c-lost" in lost.stderr
+
+
+@pytest.mark.usefixtures("worker")
+def test_a_steer_the_worker_refuses_as_malformed_is_rejected_invalid_request(control_dir: Path) -> None:
+    refused = _Cli(control_dir)("steer", "101", "--text", "x", "--wait", "901", "--json")
+
+    assert refused.returncode == 3
+    assert (json.loads(refused.stdout)["outcome"], json.loads(refused.stdout)["code"]) == (
+        "rejected",
+        "invalid_request",
+    )
+    assert "wait must be within" in refused.stderr
+
+
+@pytest.fixture
+def worker_parenting_the_cli(control_dir: Path) -> Iterator[LiveMailboxBroker]:
+    with LiveMailboxBroker(runtime_dir=control_dir / "live") as broker:
+        yield broker
+
+
+@pytest.mark.usefixtures("worker_parenting_the_cli")
+def test_an_agent_of_the_worker_is_refused_every_verb(control_dir: Path) -> None:
+    cli = _Cli(control_dir)
+
+    listed = cli("list")
+    inspected = cli("inspect", "101")
+    steered = cli("steer", "101", "--text", "x", "--json")
+
+    assert (listed.returncode, inspected.returncode, steered.returncode) == (3, 3, 3)
+    assert "rejected (permission_denied)" in listed.stderr
+    assert "rejected (permission_denied)" in inspected.stderr
+    assert json.loads(steered.stdout)["code"] == "permission_denied"
 
 
 def test_a_socket_nobody_listens_on_is_removed_and_others_are_kept(control_dir: Path) -> None:

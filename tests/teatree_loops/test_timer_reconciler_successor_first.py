@@ -57,9 +57,7 @@ class TestSuccessorScheduledBeforeBody(django.test.TestCase):
         assert _ready_successors(timer_reconciler.run_slack_answer.module_path) == 1
 
     def test_prune_task_results_survives_body_exception_and_keeps_the_chain(self) -> None:
-        # The body delegates the delete to the retention seam, so raising there hits only
-        # the body — the pre-body dedup + reschedule still run.
-        with patch("teatree.core.retention.task_results.prune_finished_task_results", _boom):
+        with patch("teatree.core.retention.prune.apply_retention", _boom):
             result = timer_reconciler.prune_task_results.func()
         assert result == {"error": 1}
         assert _ready_successors(timer_reconciler.prune_task_results.module_path) == 1

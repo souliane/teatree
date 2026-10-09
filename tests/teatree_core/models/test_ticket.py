@@ -714,6 +714,17 @@ class TestTicketStateSets(TestCase):
             {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},
         )
 
+    def test_finished_states_membership(self) -> None:
+        assert Ticket.finished_states() == frozenset(
+            {
+                Ticket.State.MERGED,
+                Ticket.State.RETRO_RECORDED,
+                Ticket.State.DELIVERED,
+                Ticket.State.REVIEW_DELIVERED,
+                Ticket.State.IGNORED,
+            },
+        )
+
     def test_in_flight_excluded_states_membership(self) -> None:
         assert Ticket.in_flight_excluded_states() == frozenset(
             {Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},

@@ -15,7 +15,7 @@ def _write(path: Path, body: object) -> None:
     path.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
 
 
-def _record(version: int = 3, **skills: dict[str, str]) -> dict[str, object]:
+def _record(version: int = 3, **skills: dict[str, str | None]) -> dict[str, object]:
     return {"version": version, "skills": skills}
 
 
@@ -36,22 +36,42 @@ def test_xdg_state_home_moves_the_record_exactly_as_the_cli_does(
     assert read_install_refs(tmp_path) == {"fresh": ("x/y", _SHA)}
 
 
-def test_source_and_ref_are_lowercased_and_a_missing_ref_is_empty(
+def test_source_and_ref_are_lowercased_and_missing_or_null_fields_are_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     _write(
         tmp_path / ".agents" / ".skill-lock.json",
-        _record(a={"source": "Souliane/Skills", "ref": _SHA.upper()}, b={"source": "souliane/skills"}),
+        _record(
+            a={"source": "Souliane/Skills", "ref": _SHA.upper()},
+            b={"source": "souliane/skills"},
+            c={"source": "souliane/skills", "ref": None},
+            d={"source": None, "ref": _SHA},
+            e={"ref": _SHA},
+        ),
     )
 
-    assert read_install_refs(tmp_path) == {"a": ("souliane/skills", _SHA), "b": ("souliane/skills", "")}
+    assert read_install_refs(tmp_path) == {
+        "a": ("souliane/skills", _SHA),
+        "b": ("souliane/skills", ""),
+        "c": ("souliane/skills", ""),
+        "d": ("", _SHA),
+        "e": ("", _SHA),
+    }
 
 
 @pytest.mark.parametrize(
     "body",
-    [None, "{not json", "[]", json.dumps(_record(version=4)), json.dumps({"version": 3}), json.dumps(_record(a="x"))],
-    ids=["absent", "garbage", "not-a-mapping", "other-schema", "no-skills", "entry-not-a-mapping"],
+    [
+        None,
+        "{not json",
+        "[]",
+        json.dumps(_record(version=4)),
+        json.dumps({"version": 3}),
+        json.dumps(_record(a="x")),
+        json.dumps(_record(a={"source": 0, "ref": _SHA})),
+    ],
+    ids=["absent", "garbage", "not-a-mapping", "other-schema", "no-skills", "entry-not-a-mapping", "source-not-text"],
 )
 def test_an_absent_unparsable_or_other_schema_record_is_unknown_never_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str | None

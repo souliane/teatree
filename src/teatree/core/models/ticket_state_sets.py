@@ -113,6 +113,14 @@ class TicketStateSetsModel(TicketFacet):
         return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
 
     @classmethod
+    def finished_states(cls) -> frozenset[str]:
+        """``marker_release_states()`` plus RETRO_RECORDED: no PR is open and no further work is expected.
+
+        Not ``Ticket.is_settled``, which also counts PR_OPENED, whose PR may still take review rework.
+        """
+        return cls.marker_release_states().union({cls.State.RETRO_RECORDED})
+
+    @classmethod
     def in_flight_excluded_states(cls) -> frozenset[str]:
         """States that drop a ticket OUT of the in-flight working set.
 

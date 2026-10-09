@@ -18,7 +18,7 @@ from django.utils import timezone
 from django_tasks_db.models import DBTaskResult, get_date_max
 
 from teatree.core.claim_liveness import driving
-from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
+from teatree.core.models import BotPing, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
 from teatree.core.tasks import execute_task
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_runs
@@ -578,7 +578,7 @@ class TestMaintenanceChains(django.test.TestCase):
             finished_at=timezone.now(),
         )
         result = timer_reconciler.prune_task_results.func()
-        assert result["pruned"] == 1
+        assert result["DBTaskResult"] == 1
         assert not DBTaskResult.objects.filter(id=old.id).exists()
         assert DBTaskResult.objects.filter(id=recent.id).exists()
 
@@ -594,7 +594,7 @@ class TestMaintenanceChains(django.test.TestCase):
             run_after=get_date_max(),
             finished_at=timezone.now() - dt.timedelta(days=2),
         )
-        assert timer_reconciler.prune_task_results.func() == {"pruned": 0}
+        assert timer_reconciler.prune_task_results.func()["DBTaskResult"] == 0
         assert DBTaskResult.objects.filter(id=row.id).exists()
 
     def test_prune_reaches_the_loops_queue(self) -> None:
@@ -608,8 +608,49 @@ class TestMaintenanceChains(django.test.TestCase):
             run_after=get_date_max(),
             finished_at=timezone.now() - dt.timedelta(days=2),
         )
-        assert timer_reconciler.prune_task_results.func() == {"pruned": 1}
+        assert timer_reconciler.prune_task_results.func()["DBTaskResult"] == 1
         assert not DBTaskResult.objects.filter(id=row.id).exists()
+
+    def test_prune_chain_runs_the_lanes_under_the_scheduled_budget_hourly(self) -> None:
+        quiet = timezone.now() - dt.timedelta(days=60)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.MERGED)
+        session = Session.objects.create(ticket=ticket)
+        tasks = [
+            Task.objects.create(ticket=ticket, session=session, status=status)
+            for status in (Task.Status.FAILED, Task.Status.COMPLETED)
+        ]
+        Task.objects.filter(pk__in=[task.pk for task in tasks]).update(created_at=quiet)
+        BotPing.objects.create(
+            idempotency_key="old-ping",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT,
+            text="kept until the budget reaches it",
+            posted_at=quiet,
+        )
+        result = DBTaskResult.objects.create(
+            task_path="x.old",
+            args_kwargs={"args": [], "kwargs": {}},
+            backend_name="default",
+            status=TaskResultStatus.SUCCESSFUL,
+            run_after=get_date_max(),
+            finished_at=timezone.now() - dt.timedelta(days=2),
+        )
+
+        with (
+            mock.patch("teatree.core.retention.prune.BATCH_SIZE", 1),
+            mock.patch("teatree.core.retention.prune.SCHEDULED_MAX_BATCHES", 2),
+        ):
+            counts = timer_reconciler.prune_task_results.func()
+
+        assert not Task.objects.filter(pk__in=[task.pk for task in tasks]).exists()
+        assert BotPing.objects.get().text == "kept until the budget reaches it"
+        assert not DBTaskResult.objects.filter(id=result.id).exists()
+        assert counts["budget_exhausted"] == 1
+        assert (counts["Task (failed)"], counts["Task (completed)"], counts["BotPing (payload)"]) == (1, 1, 0)
+        successor = DBTaskResult.objects.get(
+            task_path=timer_reconciler.prune_task_results.module_path, status=TaskResultStatus.READY
+        )
+        assert abs((successor.run_after - timezone.now()).total_seconds() - 3600) < 60
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)

@@ -5,6 +5,7 @@ fixture in ``tests/conftest.py`` (to block real ``gpg``/``pass`` calls), so we
 only exercise ``write_pass`` here, which is what's currently uncovered.
 """
 
+from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
@@ -12,6 +13,9 @@ import pytest
 
 from teatree.utils import secrets
 from teatree.utils.run import CommandFailedError
+
+# conftest patches the module attribute; this binding keeps the real lister.
+from teatree.utils.secrets import pass_entry_names
 
 
 class TestWritePass:
@@ -177,3 +181,39 @@ class TestWritePassWithBackup:
             secrets.write_pass_with_backup("acme/token", "   ", echo=lambda _: None)
 
         assert write.call_count == 0
+
+
+class TestPassEntryNames:
+    def test_lists_gpg_entries_without_decrypting(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        hooks = tmp_path / "teatree" / "github-webhook"
+        (hooks / "integration-7.gpg").mkdir(parents=True)
+        for name in ("repository-1.gpg", "organization-2.gpg", "notes.txt"):
+            (hooks / name).write_text("ciphertext")
+        monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path))
+
+        with patch.object(secrets, "run_bounded_group") as run:
+            names = pass_entry_names("teatree/github-webhook")
+
+        assert names == frozenset({"repository-1", "organization-2"})
+        run.assert_not_called()
+
+    def test_defaults_to_the_home_store(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = tmp_path / ".password-store" / "hooks"
+        store.mkdir(parents=True)
+        (store / "repository-3.gpg").write_text("ciphertext")
+        monkeypatch.delenv("PASSWORD_STORE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert pass_entry_names("hooks") == frozenset({"repository-3"})
+
+    def test_a_missing_directory_lists_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path))
+
+        assert pass_entry_names("teatree/github-webhook") == frozenset()
+
+    def test_an_unreadable_directory_fails_loud(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "teatree").write_text("a file where the directory should be")
+        monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path))
+
+        with pytest.raises(secrets.SecretStoreError, match="teatree/github-webhook"):
+            pass_entry_names("teatree/github-webhook")
