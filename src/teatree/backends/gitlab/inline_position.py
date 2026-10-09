@@ -1,23 +1,10 @@
-"""Unified-diff parsing primitives for inline review anchoring.
+"""GitLab inline-note anchoring: the ``position`` an MR discussion takes, built from one read of the MR's diff."""
 
-Split out of :mod:`teatree.cli.review` to keep that module under the
-module-health LOC ceiling (`scripts/hooks/check_module_health.py`). This
-module owns the *diff-side* of the inline-note workflow — the
-``InlinePosition`` payload shape GitLab expects, and the helper that
-locates a target line inside a unified-diff hunk so the caller can
-refuse anchoring on a context/removed line (a defect surface for
-inline-note posting before this guard existed).
-
-No Django or GitLab-API dependency lives here on purpose: the helpers
-are pure string/regex logic that can be exercised in unit tests
-without spinning up the wider review machinery.
-"""
-
-import re
 from dataclasses import dataclass
 from typing import TypedDict, cast
 
 from teatree.backends.gitlab.api import GitLabAPI
+from teatree.utils.unified_diff import added_lines
 
 # GitLab change-entry dict in an MR /changes response. ``object`` rather
 # than the actual narrow types because the API surface mixes strings
@@ -39,37 +26,13 @@ class InlinePosition(TypedDict):
     new_line: int
 
 
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 _NEARBY_LINE_RANGE = 5
 
 
 def find_added_line(diff_text: str, target_line: int) -> tuple[bool, list[int]]:
-    """Scan a unified-diff hunk text for ``target_line`` in the new file.
-
-    Returns ``(is_added, nearby_added_lines)`` — ``is_added`` is True when the
-    target line corresponds to an added (``+``) line in any hunk; the second
-    element lists added line numbers within ±5 of the target for error hints.
-    """
-    is_added = False
-    nearby: list[int] = []
-    nl: int | None = None
-    for line in diff_text.splitlines():
-        m = _HUNK_HEADER.match(line)
-        if m:
-            nl = int(m.group(1))
-            continue
-        if nl is None:
-            continue
-        sign = line[:1] if line else " "
-        if sign == "-":
-            continue
-        if sign == "+":
-            if nl == target_line:
-                is_added = True
-            if abs(nl - target_line) <= _NEARBY_LINE_RANGE:
-                nearby.append(nl)
-        nl += 1
-    return is_added, sorted(set(nearby))
+    """Whether ``target_line`` is an added (``+``) line, and the added lines within ±5 of it for an error hint."""
+    added = added_lines(diff_text)
+    return target_line in added, sorted(line for line in added if abs(line - target_line) <= _NEARBY_LINE_RANGE)
 
 
 def fetch_diff_refs(api: GitLabAPI, encoded_repo: str, mr: int) -> tuple[dict[str, str] | None, str]:

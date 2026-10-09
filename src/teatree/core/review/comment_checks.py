@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from teatree.core.backend_protocols import PrReview, PrReviewComment
+from teatree.utils.unified_diff import added_lines
 
 COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
 COLLEAGUE_PROSE_CAP_WORDS = 200
@@ -121,8 +122,6 @@ _BLOCKER_BODY_RE = re.compile(
     re.IGNORECASE,
 )
 
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-
 
 @dataclass(frozen=True, slots=True)
 class ProseCapBreach:
@@ -197,26 +196,9 @@ def looks_like_blocker(body: str) -> bool:
     return bool(body) and _BLOCKER_BODY_RE.search(body) is not None
 
 
-def _added_lines(diff_text: str) -> dict[int, str]:
-    """``{new_line_number: text}`` for every ``+``-added line of a unified diff."""
-    added: dict[int, str] = {}
-    number: int | None = None
-    for raw in diff_text.splitlines():
-        hunk = _HUNK_HEADER.match(raw)
-        if hunk:
-            number = int(hunk.group(1))
-            continue
-        if number is None or raw.startswith("-"):
-            continue
-        if raw.startswith("+"):
-            added[number] = raw[1:]
-        number += 1
-    return added
-
-
 def deferred_marker_near(diff_text: str, line: int) -> DeferredMarker | None:
     """The author's TODO or deferral marker on an added line within ``TODO_ANCHOR_WINDOW`` of *line*."""
-    added = _added_lines(diff_text)
+    added = added_lines(diff_text)
     for neighbour in range(line - TODO_ANCHOR_WINDOW, line + TODO_ANCHOR_WINDOW + 1):
         text = added.get(neighbour)
         if text and _TODO_MARKER_RE.search(text):
