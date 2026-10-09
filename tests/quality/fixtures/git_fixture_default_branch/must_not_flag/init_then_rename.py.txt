@@ -1,0 +1,24 @@
+import subprocess
+
+
+def setup(p):
+    # The sanctioned rename idiom: a bare init whose branch is immediately
+    # renamed to ``main`` deterministically. The literal ``main`` ref exists
+    # regardless of the host's ``init.defaultBranch``, so this is safe.
+    subprocess.run(["git", "init", "-q", str(p)], check=True)
+    subprocess.run(["git", "-C", str(p), "branch", "-M", "main"], check=True)
+
+
+def setup_helper(repo):
+    _git(repo, "init", "-q")
+    _git(repo, "branch", "-m", "main")
+
+
+def setup_checkout(repo):
+    _git(repo, "init", "-q")
+    _git(repo, "checkout", "-b", "main")
+
+
+def setup_switch(repo):
+    _git(repo, "init", "-q")
+    _git(repo, "switch", "-c", "main")

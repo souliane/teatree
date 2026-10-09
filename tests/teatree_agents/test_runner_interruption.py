@@ -1,0 +1,242 @@
+"""An interruption must not throw away what the run had already produced (#4464).
+
+Observed on a live reviewing task: the agent emitted its verdict envelope, its row was
+completed out from under it, and the interruption recorder wrote a summary-only attempt over
+the already-COMPLETED row. The verdict was gone, ``review status`` still reported the previous
+head, and from the outside that is indistinguishable from a reviewer that silently declined to
+record — the shape that made souliane/teatree#4308 so hard to pin down. WHICH path completed
+the row is a separate question: the issue's own correction re-attributes those two losses to
+souliane/teatree#4465's orphan sweep (22s from creation to reaped, far inside any lease), not
+to the starved lease this branch also widens. The discard is the same either way, which is why
+it is pinned on its own rather than as a corollary of the lease fix.
+
+The no-op-over-a-completed-row decision itself (#4100) is unchanged and pinned next door in
+``test_runner_lease_loss.py``; what is pinned here is that the produced envelope rides along.
+"""
+
+import json
+
+from django.core.management import call_command
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.agents.attempt_recorder import AttemptUsage
+from teatree.agents.runner import HarnessOutcome, _outcome_failure
+from teatree.agents.runner_interruption import NOOP_OVER_COMPLETED_MARKER, CeilingSalvage, _record_stuck_outcome
+from teatree.agents.runner_usage import DispatchProvenance
+from teatree.agents.session_lineage import resume_session_id
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.task_repair import phase_attempts
+from tests.teatree_agents._sdk_fake import result_message
+
+_REVIEWED_HEAD = "a1b2c3d4" * 5
+_ROW_COMPLETED = "lease lost for task 1: the row is already completed — the attempt has nothing left to hand over"
+
+_VERDICT_ENVELOPE = {
+    "summary": "cold review complete: merge_safe",
+    "review_verdict": {
+        "verdict": "merge_safe",
+        "reviewed_sha": _REVIEWED_HEAD,
+        "reviewer_identity": "cold-reviewer",
+    },
+}
+
+
+def _interrupted(agent_text: str) -> HarnessOutcome:
+    return HarnessOutcome(agent_text=agent_text, result_message=None, stuck_reason=_ROW_COMPLETED, lease_lost=True)
+
+
+class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
+    def _completed_reviewing_task(self) -> Task:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url="https://github.com/o/r/pull/7",
+            extra={"reviewed_sha": _REVIEWED_HEAD},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.CLAIMED)
+        Task.objects.filter(pk=task.pk).update(status=Task.Status.COMPLETED, claimed_by="")
+        return task
+
+    def test_the_verdict_the_run_emitted_is_persisted_not_discarded(self) -> None:
+        task = self._completed_reviewing_task()
+
+        attempt = _outcome_failure(task, _interrupted(json.dumps(_VERDICT_ENVELOPE)), phase="reviewing")
+
+        assert attempt is not None
+        assert attempt.result["review_verdict"] == _VERDICT_ENVELOPE["review_verdict"]
+
+    def test_interruption_does_not_persist_raw_skill_application_text(self) -> None:
+        task = self._completed_reviewing_task()
+        envelope = {
+            **_VERDICT_ENVELOPE,
+            "skill_application": [{"skill": "review", "evidence": "private/secret-path"}],
+        }
+
+        attempt = _outcome_failure(task, _interrupted(json.dumps(envelope)), phase="reviewing")
+
+        assert attempt is not None
+        assert "skill_application" not in attempt.result
+        assert "secret-path" not in str(attempt.result)
+
+    def test_the_interruption_is_named_alongside_the_runs_own_summary(self) -> None:
+        task = self._completed_reviewing_task()
+
+        attempt = _outcome_failure(task, _interrupted(json.dumps(_VERDICT_ENVELOPE)), phase="reviewing")
+
+        assert attempt is not None
+        summary = str(attempt.result["summary"])
+        assert str(_VERDICT_ENVELOPE["summary"]) in summary
+        assert _ROW_COMPLETED in summary
+
+    def test_a_completed_row_is_never_left_with_nothing_persisted(self) -> None:
+        # The blunt form of the acceptance: whatever the interrupted run produced is
+        # readable off the row afterwards, so "completed with nothing behind it" is
+        # unreachable whenever the run produced anything at all.
+        task = self._completed_reviewing_task()
+
+        _outcome_failure(task, _interrupted(json.dumps(_VERDICT_ENVELOPE)), phase="reviewing")
+
+        recorded = TaskAttempt.objects.filter(task=task).values_list("result", flat=True)
+        assert any("review_verdict" in result for result in recorded)
+
+    def test_a_run_that_produced_nothing_records_the_interruption_alone(self) -> None:
+        task = self._completed_reviewing_task()
+
+        attempt = _outcome_failure(task, _interrupted(""), phase="reviewing")
+
+        assert attempt is not None
+        assert str(attempt.result["summary"]) == f"{NOOP_OVER_COMPLETED_MARKER}{_ROW_COMPLETED}"
+
+    def test_the_completed_row_is_still_left_alone(self) -> None:
+        task = self._completed_reviewing_task()
+
+        attempt = _outcome_failure(task, _interrupted(json.dumps(_VERDICT_ENVELOPE)), phase="reviewing")
+
+        task.refresh_from_db()
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert attempt.error == ""
+        assert task.status == Task.Status.COMPLETED
+
+
+class TestACutShortRunKeepsNothingOverACompletedRow(TestCase):
+    def test_a_row_a_rival_completed_is_left_to_the_interruption_recorder(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+        envelope = {"summary": "implemented", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        outcome = HarnessOutcome(agent_text=json.dumps(envelope), result_message=None, stuck_reason="runtime ceiling")
+
+        kept = CeilingSalvage(phase="coding", lane="", provenance=DispatchProvenance()).kept(task, outcome)
+
+        assert kept is None
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+
+class TestALeaseLossAfterAnOperatorCancel(TestCase):
+    def test_lease_loss_after_operator_cancel_keeps_the_cancel(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/o/r/issues/4834")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        stale = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
+        call_command("tasks", "cancel", stale.pk, confirm=True)
+        lease_lost = HarnessOutcome(
+            agent_text="", result_message=None, stuck_reason="lease lost for task", lease_lost=True
+        )
+
+        attempt = _record_stuck_outcome(
+            stale, lease_lost, stuck_reason="lease lost for task", usage=AttemptUsage(input_tokens=42)
+        )
+
+        row = Task.objects.get(pk=stale.pk)
+        assert row.failure_kind == FailureKind.CANCELLED
+        assert attempt.error.startswith("cancelled: ")
+        assert attempt.input_tokens == 42
+
+
+_CHECKPOINTED_SESSION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def _checkpointed() -> HarnessOutcome:
+    return HarnessOutcome(
+        agent_text="half-way through the change",
+        result_message=result_message(
+            session_id=_CHECKPOINTED_SESSION,
+            subtype="error_during_execution",
+            is_error=True,
+            num_turns=12,
+            usage={"input_tokens": 900, "output_tokens": 300},
+        ),
+        stuck_reason="deploy checkpoint: this worker is quiescing for a rolling deploy",
+        checkpointed=True,
+    )
+
+
+class TestADeployCheckpointParksTheRunToResumeIt(TestCase):
+    """A run a deploy drain interrupted re-queues to continue its own conversation (#5089)."""
+
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://github.com/o/r/issues/5089")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        self.task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        self.task.claim(claimed_by="worker-A", lease_seconds=900)
+        self.reclaims = self.task.reclaim_count
+
+    def test_the_task_returns_to_the_queue_holding_its_conversation(self) -> None:
+        _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.claimed_by == ""
+        assert self.task.session_continuation == Task.SessionContinuation.SELF
+        assert resume_session_id(self.task) == _CHECKPOINTED_SESSION
+
+    def test_the_park_attempt_carries_the_session_and_the_spend(self) -> None:
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        assert attempt is not None
+        assert attempt.error.startswith("limit_parked: deploy checkpoint")
+        assert attempt.agent_session_id == _CHECKPOINTED_SESSION
+        assert attempt.input_tokens == 900
+        assert attempt.output_tokens == 300
+
+    def test_the_checkpoint_burns_no_iteration_and_no_reclaim(self) -> None:
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert attempt not in phase_attempts(self.task)
+        assert self.task.reclaim_count == self.reclaims
+
+    def test_a_rivals_claim_is_never_cleared_by_the_park(self) -> None:
+        # The lease lapsed and a rival re-claimed the row before this run's checkpoint was recorded.
+        Task.objects.filter(pk=self.task.pk).update(claimed_by="worker-B", claimed_at=timezone.now())
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        row = Task.objects.get(pk=self.task.pk)
+        assert row.status == Task.Status.CLAIMED
+        assert row.claimed_by == "worker-B"
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert attempt.input_tokens == 900, "the interrupted run's spend is still recorded"
+        assert "deploy checkpoint" in str(attempt.result["summary"])
+
+    def test_a_completed_row_is_still_a_no_op(self) -> None:
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.COMPLETED, claimed_by="")
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        self.task.refresh_from_db()
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert self.task.status == Task.Status.COMPLETED
+
+    def test_a_cancelled_row_keeps_the_cancel(self) -> None:
+        call_command("tasks", "cancel", self.task.pk, confirm=True)
+
+        attempt = _outcome_failure(self.task, _checkpointed(), phase="coding")
+
+        assert attempt is not None
+        assert attempt.error.startswith("cancelled: ")
+        assert Task.objects.get(pk=self.task.pk).failure_kind == FailureKind.CANCELLED

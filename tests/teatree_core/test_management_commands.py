@@ -1,0 +1,1623 @@
+import io
+import json
+import tempfile
+from contextlib import AbstractContextManager
+from pathlib import Path
+from typing import cast
+from unittest import mock
+from unittest.mock import MagicMock, patch
+
+import pytest
+from django.core.management import call_command
+from django.test import TestCase, override_settings
+
+import teatree.agents.runner as runner_mod
+import teatree.core.management.commands.tasks as tasks_cmd
+import teatree.core.management.commands.tasks_session_view as session_view
+import teatree.core.management.commands.worktree as worktree_cmd
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.worktree_provision as worktree_provision_mod
+import teatree.utils.run as utils_run_mod
+from teatree.config.settings import TeaTreeConfig, UserSettings
+from teatree.core.agent_admission import AgentAdmission
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.overlay import (
+    DbImportStrategy,
+    OverlayBase,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+)
+from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
+from tests._ansi import strip_ansi as _strip_ansi
+from tests._pr_open_state_stub import mint_open_pr_review
+from tests.factories import planned_ticket
+from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
+
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+)
+
+
+class _CommandOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["run-backend", worktree.repo_path],
+            "frontend": ["run-frontend", worktree.repo_path],
+        }
+
+
+class CommandOverlay(OverlayBase):
+    runtime = _CommandOverlayRuntime()
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        def remember_setup() -> None:
+            facts = cast("dict[str, str]", worktree.extra or {})
+            facts["setup_hook"] = "ran"
+            worktree.extra = facts
+            worktree.save(update_fields=["extra"])
+
+        return [ProvisionStep(name="remember-setup", callable=remember_setup)]
+
+
+_MOCK_OVERLAY = {"test": CommandOverlay()}
+
+COMMAND_SETTINGS: dict[str, object] = {}
+
+_NO_SESSION_ENV = {"CLAUDE_CODE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}
+
+
+class TestLifecycleCommands(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_create_start_report_and_teardown_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "test-worktree-backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/55", variant="acme")
+            wt = Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
+
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch.object(worktree_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+                patch("teatree.config.load_config", return_value=mock_config),
+                patch(
+                    "teatree.core.gates.local_stack_gate.check_provision_admission",
+                    return_value=ProvisionAdmissionVerdict.allow(),
+                ),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                worktree_id = cast("int", call_command("worktree", "provision"))
+                status = cast("dict[str, str]", call_command("worktree", "status"))
+                # start no-ops with "no compose file" since CommandOverlay has none;
+                # state advances to SERVICES_UP, teardown still works from any state
+                call_command("worktree", "start")
+                call_command("worktree", "teardown")
+
+            assert worktree_id == wt.id
+            assert status["state"] == Worktree.State.PROVISIONED
+            assert status["repo_path"] == "/tmp/backend"
+            # status renders the last provision report.
+            assert status["provision_report"]["success"] is True
+            assert status["provision_report"]["steps"] >= 0
+            # Teardown folds the old `clean` step — the row is deleted, not reset
+            assert not Worktree.objects.filter(pk=worktree_id).exists()
+
+
+class _DbStrategyOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+        return {"kind": "shared", "shared_postgres": True}
+
+
+class DbStrategyOverlay(CommandOverlay):
+    provisioning = _DbStrategyOverlayProvisioning()
+    """A CommandOverlay variant that declares a DB import strategy."""
+
+
+class TestHealMissingProvisionedDb(TestCase):
+    """``worktree start`` re-provisions when a ``provisioned`` worktree's DB is gone (#1038).
+
+    An interrupted provision can leave the FSM at PROVISIONED with ``db_name``
+    set but no Postgres DB created — the start probe then dies with "database
+    does not exist". The start command heals it by re-running the idempotent
+    provision before advancing.
+    """
+
+    def _make_worktree(self, tmp: Path) -> tuple[Ticket, Worktree, str]:
+        wt_path = str(tmp / "wt-backend")
+        Path(wt_path).mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1038")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            db_name="wt_gone_db",
+            extra={"worktree_path": wt_path},
+            state=Worktree.State.PROVISIONED,
+        )
+        return ticket, wt, wt_path
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_reprovisions_when_db_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _ticket, _wt, wt_path = self._make_worktree(tmp_path)
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
+            reprovision = MagicMock()
+            reprovision.run.return_value = MagicMock(ok=True, detail="healed")
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
+                patch.object(
+                    worktree_provision_mod, "WorktreeProvisionRunner", return_value=reprovision
+                ) as mock_runner,
+                patch("teatree.utils.db.db_exists", return_value=False),
+                patch.object(worktree_cmd, "reap_stale_local_stacks"),
+                patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                call_command("worktree", "start")
+            mock_runner.assert_called_once()
+            reprovision.run.assert_called_once()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_does_not_reprovision_when_db_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _ticket, _wt, wt_path = self._make_worktree(tmp_path)
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
+                patch.object(worktree_provision_mod, "WorktreeProvisionRunner") as mock_runner,
+                patch("teatree.utils.db.db_exists", return_value=True),
+                patch.object(worktree_cmd, "reap_stale_local_stacks"),
+                patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                call_command("worktree", "start")
+            mock_runner.assert_not_called()
+
+
+class TestProvisionTicketFlag(TestCase):
+    """``worktree provision --ticket`` pins attribution to a named ticket.
+
+    A manually-added git worktree (``git worktree add``, no ``workspace
+    ticket``) has no Worktree row. Resolution would auto-register and could
+    cross-attach to an unrelated workspace sibling. ``--ticket <number>``
+    overrides the heuristic and binds the worktree to the named ticket.
+    """
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_ticket_flag_pins_attribution_for_manual_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            # A sibling worktree for an unrelated ticket under the same parent.
+            sibling_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/999")
+            sibling_path = tmp_path / "sibling-backend"
+            sibling_path.mkdir()
+            (sibling_path / ".git").write_text("gitdir: /some/.git/worktrees/sibling-backend\n")
+            Worktree.objects.create(
+                ticket=sibling_ticket,
+                overlay="test",
+                repo_path="sibling-backend",
+                branch="999-unrelated",
+                extra={"worktree_path": str(sibling_path)},
+            )
+
+            target_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/321")
+
+            # The manual worktree: a git worktree marker, no Worktree row, on a
+            # branch whose number does not name the target ticket — so only the
+            # explicit --ticket flag can attribute it correctly.
+            manual_path = tmp_path / "manual-backend"
+            manual_path.mkdir()
+            (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
+
+            mock_config = TeaTreeConfig(user=UserSettings(workspace_dir=tmp_path))
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch("teatree.core.intake.resolve.git.current_branch", return_value="no-number-branch"),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                worktree_id = cast("int", call_command("worktree", "provision", "--ticket", "321"))
+
+            wt = Worktree.objects.get(pk=worktree_id)
+            assert wt.ticket_id == target_ticket.pk
+            assert wt.ticket_id != sibling_ticket.pk
+            assert not Ticket.objects.filter(issue_url__startswith="auto:").exists()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_ticket_flag_for_unknown_number_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manual_path = Path(tmp) / "manual-backend"
+            manual_path.mkdir()
+            (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                pytest.raises(SystemExit),
+            ):
+                call_command("worktree", "provision", "--ticket", "404")
+
+            assert not Worktree.objects.exists()
+
+
+class TestTheWorkerClaimOutlivesAStarvedHeartbeat(TestCase):
+    """``work-next``/``claim`` must claim for the heartbeat's renewal window, not 300s (#4464).
+
+    ``_claim_next_task`` served both CLI leaves with ``Task.claim``'s 300s default while the
+    runner's heartbeat only renews from its first ~60s tick. On a saturated box that first
+    renewal slips past 300s, ``reclaim_orphaned_claims`` re-queues the still-running task, and
+    the live attempt aborts having discarded the verdict it had already produced — the
+    mechanism behind souliane/teatree#4308.
+    """
+
+    #: Starvation long enough to lapse the 300s default, short of the 900s renewal window.
+    _STARVED_SECONDS = 600
+
+    def setUp(self) -> None:
+        # The post_save auto-enqueue would run the task to terminal before the explicit claim.
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local import
+
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create(overlay="test")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    def _pending_task(self) -> Task:
+        return Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING)
+
+    def _starve(self, task: Task) -> None:
+        """Age the claim by ``_STARVED_SECONDS`` with no heartbeat, preserving its lease length."""
+        from datetime import timedelta  # noqa: PLC0415 — deferred: local import
+
+        task.refresh_from_db()
+        starved = timedelta(seconds=self._STARVED_SECONDS)
+        Task.objects.filter(pk=task.pk).update(
+            claimed_at=task.claimed_at - starved,
+            heartbeat_at=task.heartbeat_at - starved,
+            lease_expires_at=task.lease_expires_at - starved,
+        )
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_starved_claim_is_not_reclaimed_inside_the_renewal_window(self) -> None:
+        task = self._pending_task()
+
+        call_command("tasks", "claim", claimed_by="worker-1")
+        self._starve(task)
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        task.refresh_from_db()
+        assert reclaimed == 0
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "worker-1"
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_control_a_default_lease_claim_is_reclaimed_at_the_same_instant(self) -> None:
+        # Without this the test above cannot tell "the wider lease held" from "the sweep
+        # withheld for some other reason" (#4164's owner_is_executing, #2009's iteration
+        # budget) — both present as a row that stayed CLAIMED.
+        task = self._pending_task()
+
+        task.claim(claimed_by="worker-1")
+        self._starve(task)
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        task.refresh_from_db()
+        assert reclaimed == 1
+        assert task.status == Task.Status.PENDING
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_the_claim_lease_is_the_one_the_heartbeat_renews_to(self) -> None:
+        from teatree.agents.runner import _LEASE_SECONDS  # noqa: PLC0415 — deferred: local test import
+
+        task = self._pending_task()
+
+        call_command("tasks", "claim", claimed_by="worker-1")
+
+        task.refresh_from_db()
+        held = (task.lease_expires_at - task.claimed_at).total_seconds()
+        assert held == pytest.approx(_LEASE_SECONDS, abs=1)
+
+
+class TestTaskCommands(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_claim_and_complete_work(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        sdk_task = Task.objects.create(ticket=ticket, session=session)
+        sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            fake_sdk(success_stream({"summary": "done"}, session_id="test-session")),
+        ):
+            claimed_task_id = cast(
+                "int",
+                call_command("tasks", "claim", claimed_by="worker-1"),
+            )
+            sdk_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next", claimed_by="worker-1"),
+            )
+            refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
+            reminders = cast("list[int]", call_command("followup", "remind"))
+
+        sdk_task.refresh_from_db()
+        sdk_followup_task.refresh_from_db()
+
+        assert claimed_task_id == sdk_task.id
+        assert "exit_code" in sdk_result
+        assert sdk_task.status == Task.Status.CLAIMED
+        assert sdk_followup_task.status == Task.Status.COMPLETED
+        assert TaskAttempt.objects.count() == 1
+        assert refresh_summary == {"tickets": 1, "tasks": 2, "open_tasks": 1}
+        assert reminders == []
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_return_none_when_no_work_available(self) -> None:
+        assert call_command("tasks", "work-next", claimed_by="worker-1") is None
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_work_next_records_durable_failure_when_runner_raises(self) -> None:
+        # Under the no-fallback SDK cutover, ``work_next`` calls ``run_agent``
+        # which may RAISE on an SDK client startup/query/response error. Without the
+        # same failure-recording the Celery-style wrapper does, the task stays
+        # silently CLAIMED until lease reap, then re-fires forever with NO durable
+        # failed TaskAttempt — a real wedge/retry-loop. The command must record a
+        # FAILED TaskAttempt carrying the error, FAIL the task (not leave it
+        # claimed/cycling), and return a nonzero command result.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        boom = RuntimeError("SDK client failed to start")
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(runner_mod, "run_agent", MagicMock(side_effect=boom)) as run_agent_mock,
+        ):
+            sdk_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next", claimed_by="worker-1"),
+            )
+
+        run_agent_mock.assert_called_once()
+        # Nonzero command result surfaced to the caller.
+        assert sdk_result["exit_code"] == "1"
+
+        task.refresh_from_db()
+        # The task is FAILED — not silently left CLAIMED to cycle on lease reap.
+        assert task.status == Task.Status.FAILED
+
+        # A durable failed TaskAttempt carrying the error was recorded.
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "SDK client failed to start" in attempt.error
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_work_next_declares_the_crash_attempt_s_spend_unknown(self) -> None:
+        # A raise that escaped the drive leaves no result message, so the tokens the
+        # turn already billed are unreadable here. Recording the default ``False`` would
+        # publish "nothing billed" as a measurement, and the metered ledger sums these
+        # rows — an under-read by an amount nobody can bound (#4816).
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(runner_mod, "run_agent", MagicMock(side_effect=RuntimeError("SDK client failed to start"))),
+        ):
+            call_command("tasks", "work-next", claimed_by="worker-1")
+
+        assert TaskAttempt.objects.get(task=task).usage_unknown is True
+
+
+class TestTasksListSession(TestCase):
+    """``t3 <overlay> tasks list --session`` scopes to the current Claude session."""
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_scopes_rows_to_the_active_claude_session(self) -> None:
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            other = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-xyz")
+            my_task = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            Task.objects.create(ticket=ticket, session=other, phase="coding")
+
+            rows = cast("list[dict]", call_command("tasks", "list", "--session"))
+
+        assert [row["task_id"] for row in rows] == [my_task.pk]
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_anonymous_session_lists_nothing(self) -> None:
+        anon_env = {**_NO_SESSION_ENV, "XDG_DATA_HOME": ""}
+        with patch.dict("os.environ", anon_env):
+            ticket = Ticket.objects.create(overlay="test")
+            session = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+            rows = cast("list[dict]", call_command("tasks", "list", "--session"))
+
+        assert rows == []
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_session_view_does_not_read_the_stale_harness_todo_store(self) -> None:
+        # The harness TaskCreate/TaskUpdate list is the agent's LIVE in-memory
+        # list and a CLI subprocess can only read a stale on-disk snapshot
+        # (`~/.claude/tasks/<session>/*.json`) that lags the live session. The
+        # CLI must NOT pretend to show the harness TODO list — it scopes the
+        # teatree DB Task rows only, so `/t3:checking` builds the harness half from
+        # the live TaskList tool instead. The session view must therefore never
+        # feed harness-store rows into the renderer (no `harness_todos`), which
+        # goes RED on the old view that read the stale store and rendered it.
+        with tempfile.TemporaryDirectory() as tasks_dir:
+            session_dir = Path(tasks_dir) / "claude-abc"
+            session_dir.mkdir()
+            (session_dir / "1.json").write_text(
+                json.dumps({"id": "1", "subject": "STALE harness todo on disk", "status": "pending"}),
+                encoding="utf-8",
+            )
+            env = {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": "", "CLAUDE_TASKS_DIR": tasks_dir}
+            captured: dict[str, object] = {}
+
+            def _capture(rows: object, **kwargs: object) -> None:
+                captured["rows"] = rows
+                captured["kwargs"] = kwargs
+
+            with (
+                patch.dict("os.environ", env),
+                patch.object(tasks_cmd, "render_session_view", _capture),
+            ):
+                ticket = Ticket.objects.create(overlay="test")
+                mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+                Task.objects.create(ticket=ticket, session=mine, phase="coding", execution_reason="real db task")
+                call_command("tasks", "list", "--session")
+
+        kwargs = cast("dict[str, object]", captured.get("kwargs", {}))
+        assert "harness_todos" not in kwargs, "the session view must not read/pass the stale harness TODO store"
+
+
+class TestSessionTodoRendering(TestCase):
+    """The session-scoped renderer prints the teatree tasks only, grouped by status.
+
+    The harness TODO list is NOT rendered here — it is the agent's live
+    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:checking``
+    builds that half from the live ``TaskList`` harness tool.
+    """
+
+    @staticmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def _row(  # noqa: PLR0913 — test-data builder mirroring the TaskRow TypedDict fields.
+        task_id: int,
+        *,
+        status: str,
+        ticket_id: int = 1,
+        phase: str = "coding",
+        reason: str = "do it",
+        ticket_title: str = "",
+        failure_kind: str = "",
+        failure_reason: str = "",
+    ) -> session_view.TaskRow:
+        return session_view.TaskRow(
+            task_id=task_id,
+            ticket_id=ticket_id,
+            ticket_title=ticket_title,
+            status=status,
+            phase=phase,
+            execution_reason=reason,
+            claimed_by="",
+            failure_kind=failure_kind,
+            failure_reason=failure_reason,
+            failure_environmental=is_environmental(failure_kind),
+        )
+
+    def test_groups_teatree_tasks_by_status_and_omits_harness_section(self) -> None:
+        out = io.StringIO()
+        rows = [
+            self._row(1, status="pending", reason="write the gate"),
+            self._row(2, status="claimed", reason="run the suite"),
+            self._row(3, status="completed", reason="read the model"),
+        ]
+        session_view.render_session_view(rows, session_id="claude-abc", stream=out)
+        printed = _strip_ansi(out.getvalue())
+        # The harness-TODO section never renders here (the CLI cannot read the
+        # live harness list); only the teatree-tasks section does.
+        assert "harness TODO" not in printed
+        assert "teatree tasks" in printed
+        assert "pending" in printed
+        assert "in_progress" in printed
+        assert "completed" in printed
+        assert "write the gate" in printed
+        assert "run the suite" in printed
+
+    def test_no_active_session_is_explicit(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_view([], session_id="", stream=out)
+        assert "No active harness session" in _strip_ansi(out.getvalue())
+
+    def test_empty_session_says_no_teatree_tasks(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_view([], session_id="claude-abc", stream=out)
+        assert "No teatree tasks for this session" in _strip_ansi(out.getvalue())
+
+    def test_task_id_uses_distinct_prefix_not_bare_hash(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_view(
+            [self._row(7, status="pending", ticket_id=42, reason="do it")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = _strip_ansi(out.getvalue())
+        assert "TODO-7" in printed
+        assert "(ticket #42" in printed
+        assert "task #7" not in printed
+
+    def test_ticket_title_renders_inline(self) -> None:
+        # #2092: the ``ticket #N`` on a todo line must carry the ticket title
+        # inline, never a bare ``#N`` the reader can't interpret.
+        out = io.StringIO()
+        session_view.render_session_view(
+            [self._row(7, status="pending", ticket_id=42, ticket_title="fix the broken widget", reason="do it")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = _strip_ansi(out.getvalue())
+        assert "fix the broken widget" in printed
+        assert "ticket #42 (fix the broken widget)" in printed
+
+    def test_no_ticket_title_renders_plain_id(self) -> None:
+        # A task whose ticket has no title degrades to the plain ``#N`` (no
+        # empty parens), still namespace-qualified.
+        out = io.StringIO()
+        session_view.render_session_view(
+            [self._row(7, status="pending", ticket_id=42, ticket_title="", reason="do it")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = _strip_ansi(out.getvalue())
+        assert "ticket #42 ()" not in printed
+        assert "(ticket #42" in printed
+
+    def test_same_number_task_and_ticket_render_distinctly(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_view(
+            [self._row(5, status="pending", ticket_id=5, reason="collision case")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = _strip_ansi(out.getvalue())
+        assert "TODO-5" in printed
+        assert "ticket #5" in printed
+        assert "task #5" not in printed
+
+
+class TestReconcileChecklist(TestCase):
+    """``tasks reconcile-checklist`` emits the in-session harness-TODO reconcile discipline.
+
+    The harness TODO list lives only in the agent's live, in-memory ``TaskList``
+    state — a CLI subprocess cannot read or write it (the Task tools bypass
+    ``PreToolUse``/``PostToolUse`` hooks). So the deterministic helper a
+    background loop CANNOT be is, instead, a checklist EMITTER: it prints the
+    fixed reconcile/dedupe/complete steps the in-session agent then applies with
+    its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools, plus the open
+    teatree tasks for this session as candidate completion anchors. It writes
+    nothing and transitions nothing.
+    """
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_emits_the_reconcile_discipline_steps(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # The agent must drive the live list with its OWN tools — the checklist
+        # names them explicitly so the discipline is self-contained.
+        assert "TaskList" in printed
+        assert "TaskUpdate" in printed
+        assert "TaskCreate" in printed
+        # The three reconcile actions the maintainer asked for.
+        assert "reconcile" in printed.lower()
+        assert "dedup" in printed.lower() or "duplicate" in printed.lower()
+        assert "completed" in printed.lower()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_lists_open_teatree_tasks_for_this_session_as_completion_anchors(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test", short_description="fix the widget")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            open_task = Task.objects.create(
+                ticket=ticket, session=mine, phase="coding", execution_reason="land the gate"
+            )
+            other_ticket = Ticket.objects.create(overlay="test")
+            other = Session.objects.create(ticket=other_ticket, overlay="test", agent_id="claude-other")
+            Task.objects.create(ticket=other_ticket, session=other, phase="coding", execution_reason="someone else")
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # This session's open teatree task surfaces as a completion candidate…
+        assert f"TODO-{open_task.pk}" in printed
+        assert "land the gate" in printed
+        # …and another session's task does not leak in.
+        assert "someone else" not in printed
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_makes_no_reconciliation_write_on_healthy_tasks(self) -> None:
+        # The emitter makes no reconciliation write: it never creates,
+        # completes, or transitions a HEALTHY task on the agent's behalf. A
+        # pending task and a freshly-claimed (live-lease) task both survive
+        # untouched, and the row count is unchanged.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            pending = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            live = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="live-worker",
+                lease_expires_at=timezone.now() + timedelta(minutes=5),
+            )
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            pending.refresh_from_db()
+            live.refresh_from_db()
+        assert pending.status == Task.Status.PENDING
+        assert live.status == Task.Status.CLAIMED, "a live-lease claim must NOT be reaped"
+        assert Task.objects.count() == 2
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # The command is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere `reconcile-checklist`, bypassing the rescue-before-fail ordering
+        # the boot/tick `run_boot_sweeps` owns. The stale claim stays CLAIMED.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            stale = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="dead-worker",
+                lease_expires_at=timezone.now() - timedelta(minutes=5),
+            )
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            stale.refresh_from_db()
+        assert stale.status == Task.Status.CLAIMED
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_no_session_still_emits_the_discipline(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", _NO_SESSION_ENV):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = _strip_ansi(out.getvalue())
+        # An anonymous caller has no session-scoped teatree tasks, but the
+        # reconcile discipline (the load-bearing half) still prints.
+        assert "TaskList" in printed
+
+
+class _DbOverlayProvisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+        return DbImportStrategy(kind="dslr", source_database="development-acme")
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
+        self,
+        worktree: Worktree,
+        *,
+        force: bool = False,
+        slow_import: bool = False,
+        dslr_snapshot: str = "",
+        dump_path: str = "",
+        approve_remote_dump: bool = False,
+    ) -> bool:
+        self.last_approve_remote_dump = approve_remote_dump
+        return False
+
+
+class DbOverlay(CommandOverlay):
+    provisioning = _DbOverlayProvisioning()
+    """CommandOverlay with a DB import strategy that always fails."""
+
+
+_DB_MOCK_OVERLAY = {"test": DbOverlay()}
+
+
+class TestDbRefreshFreshDumpApproval(TestCase):
+    """`db refresh --fresh-dump` is gated by a per-invocation approval (#777).
+
+    Under `call_command` stdin/stdout are not TTYs — exactly the
+    unattended-agent context the gate must refuse. The fresh-dump path
+    therefore aborts before any overlay import runs, with no credentials
+    or connection string in the message.
+    """
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/777")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": "/tmp/backend"},
+            db_name="wt_777_acme",
+        )
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_fresh_dump_refuses_in_non_interactive_agent_context(self) -> None:
+        worktree = self._make_worktree()
+        overlay = DbOverlay()
+        stderr = io.StringIO()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("db", "refresh", "--fresh-dump", stderr=stderr)
+        # Refusal must be a real non-zero exit (#932), not an exit-0 string.
+        assert exc_info.value.code == 1
+        message = stderr.getvalue()
+        assert "aborted" in message
+        assert "human must" in message
+        # The gate fired BEFORE the overlay import — no remote dump attempted.
+        assert not hasattr(overlay, "last_approve_remote_dump")
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_refusal_message_has_no_credentials(self) -> None:
+        worktree = self._make_worktree()
+        stderr = io.StringIO()
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+            patch("teatree.core.management.commands.db.resolve_worktree", return_value=worktree),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("db", "refresh", "--fresh-dump", stderr=stderr)
+        assert exc_info.value.code == 1
+        message = stderr.getvalue()
+        assert "postgres://" not in message
+        assert "PGPASSWORD" not in message
+        assert "password" not in message.lower()
+
+
+class TestDbImportAutoRepair(TestCase):
+    @override_settings(**COMMAND_SETTINGS)
+    def test_skips_db_import_when_db_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/99")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+                db_name="wt_99_acme",
+            )
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+                patch("teatree.utils.db.db_exists", return_value=True),
+            ):
+                call_command("worktree", "provision")
+
+            # db_import was NOT called — DB already exists
+            wt = Worktree.objects.get(ticket=ticket)
+            assert "db_import_failures" not in (wt.extra or {})
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_aborts_when_db_missing_and_import_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_path = str(tmp_path / "backend")
+            Path(wt_path).mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/100")
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+                db_name="wt_100_acme",
+            )
+
+            # db is missing → db_import is attempted; the mock overlay's import
+            # returns False → #2208 aborts provision with SystemExit(1) rather
+            # than warning and continuing.
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
+                patch("teatree.utils.db.db_exists", return_value=False),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("worktree", "provision")
+
+            assert exc_info.value.code == 1
+
+
+class TestUpdateTicketVariant(TestCase):
+    def test_updates_ticket_variant_and_recomputes_db_name(self) -> None:
+        from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/200",
+            variant="old",
+        )
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            db_name=f"wt_{ticket.pk}_old",
+        )
+
+        _update_ticket_variant(ticket, "new")
+
+        ticket.refresh_from_db()
+        wt.refresh_from_db()
+        assert ticket.variant == "new"
+        assert wt.db_name == f"wt_{ticket.pk}_new"
+
+    def test_skips_save_when_db_name_unchanged(self) -> None:
+        from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/201",
+            variant="",
+        )
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            db_name=f"wt_{ticket.pk}",
+        )
+        original_db_name = wt.db_name
+
+        # Variant "" → "acme" should change the db_name
+        _update_ticket_variant(ticket, "acme")
+
+        wt.refresh_from_db()
+        assert wt.db_name != original_db_name
+        assert wt.db_name == f"wt_{ticket.pk}_acme"
+
+
+class TestFollowupCommands(TestCase):
+    def test_sync_reports_no_repos_from_default_overlay(self) -> None:
+        with patch.object(
+            overlay_loader_mod,
+            "_discover_overlays",
+            return_value=_MOCK_OVERLAY,
+        ):
+            result = cast("dict[str, int | list[str]]", call_command("followup", "sync"))
+
+        errors = result["errors"]
+        assert isinstance(errors, list)
+        assert len(errors) == 1
+        assert "No code host token for" in errors[0]
+
+    def test_sync_renders_summary_table_on_stderr(self) -> None:
+        import io as _io  # noqa: PLC0415
+
+        from tests._ansi import strip_ansi  # noqa: PLC0415
+
+        err = _io.StringIO()
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("followup", "sync", stderr=err)
+        printed = strip_ansi(err.getvalue())
+        # The human view is a table on stderr (stdout stays a JSON channel).
+        assert "followup sync" in printed
+        assert "prs_found" in printed
+
+
+def _refused_transition(ticket_id: int, transition_name: str) -> str:
+    """The stderr of a refused ``ticket transition``, asserting the nonzero exit (#932)."""
+    err = io.StringIO()
+    with pytest.raises(SystemExit) as exc:
+        call_command("ticket", "transition", ticket_id, transition_name, stderr=err)
+    assert exc.value.code == 1
+    return err.getvalue()
+
+
+class TestTicketCommand(TestCase):
+    """Tests for the ticket management command (transition + list)."""
+
+    def test_transition_scopes_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "scope"),
+        )
+        assert result["state"] == Ticket.State.SCOPED
+
+    def test_transition_unknown_exits_nonzero(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        assert "Unknown transition" in _refused_transition(ticket.pk, "nonexistent")
+
+    def test_transition_not_found_exits_nonzero(self) -> None:
+        assert "not found" in _refused_transition(99999, "scope")
+
+    def test_transition_not_allowed_exits_nonzero(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        assert "not allowed" in _refused_transition(ticket.pk, "code")
+
+    def test_transition_dod_refusal_exits_nonzero_not_traceback(self) -> None:
+        # #1652: a ship transition whose body raises DodLocalE2EError
+        # (an InvalidTransitionError, disjoint from TransitionNotAllowed)
+        # surfaces the reason; the FSM stays put.
+        from teatree.core.gates.dod_gate import DodLocalE2EError  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
+        reason = "UI-visible ticket has no local-stack E2E"
+        with patch.object(Ticket, "ship", side_effect=DodLocalE2EError(reason)):
+            refusal = _refused_transition(ticket.pk, "ship")
+        assert "refused" in refusal
+        assert reason in refusal
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+    def test_ignore_and_unignore_are_cli_allowed_and_never_ship(self) -> None:
+        """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives a forge post.
+
+        The two names must be in the CLI allow-list, and neither may name-map to a
+        ``_TICKET_TRANSITION_TASKS`` executor — in particular ``execute_ship`` (the
+        transition side effect that opens/pushes a PR). Their absence from the
+        NAME map is the structural proof that abandoning a mis-adopted ticket never
+        posts to the forge.
+
+        Teardown is now keyed on the TARGET STATE, not the name, so ``ignore``'s
+        IGNORED target DOES purge the ticket's worktrees — a local, non-posting
+        reap guarded by the analyze-before-wipe (#706). ``unignore`` restores a
+        non-terminal state, so it purges nothing.
+        """
+        assert {"ignore", "unignore"} <= ALLOWED_TRANSITIONS
+        assert "ignore" not in _TICKET_TRANSITION_TASKS
+        assert "unignore" not in _TICKET_TRANSITION_TASKS
+        # The forge-posting executor is never name-mapped to either abandon name.
+        assert _TICKET_TRANSITION_TASKS.get("ignore") != "execute_ship"
+        assert _TICKET_TRANSITION_TASKS.get("unignore") != "execute_ship"
+        # ignore lands in a terminal state → local worktree purge (non-posting);
+        # unignore restores a non-terminal state → no purge.
+        assert Ticket.State.IGNORED in _TERMINAL_TARGET_STATES
+
+    def test_transition_ignore_reaches_ignored_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "ignore"),
+        )
+        assert result["state"] == Ticket.State.IGNORED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["ignored_from"] == Ticket.State.WORK_STARTED
+
+    def test_transition_unignore_restores_prior_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
+        call_command("ticket", "transition", ticket.pk, "ignore")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "unignore"),
+        )
+        assert result["state"] == Ticket.State.WORK_STARTED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert "ignored_from" not in (ticket.extra or {})
+
+    def test_transition_mark_review_no_action_closes_reviewer_ticket(self) -> None:
+        """#1077: the no-action disposition is reachable via the CLI transition."""
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab/x/-/merge_requests/1077c",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha1"},
+        )
+        mint_open_pr_review(ticket)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "mark_review_no_action"),
+        )
+        assert result["state"] == Ticket.State.REVIEW_DELIVERED
+        ticket.refresh_from_db()
+        assert ticket.extra["last_review_state"] == "reviewed_no_action"
+
+    def test_list_returns_all_tickets(self) -> None:
+        Ticket.objects.create(overlay="test")
+        Ticket.objects.create(overlay="other")
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list"),
+        )
+        assert len(result) == 2
+
+    def test_list_filters_by_state(self) -> None:
+        Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
+        Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list", state="scoped"),
+        )
+        assert len(result) == 1
+        assert result[0]["state"] == "scoped"
+
+    def test_list_filters_by_overlay(self) -> None:
+        Ticket.objects.create(overlay="alpha")
+        Ticket.objects.create(overlay="beta")
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("ticket", "list", overlay="alpha"),
+        )
+        assert len(result) == 1
+        assert result[0]["overlay"] == "alpha"
+
+
+class TestTasksCreateCommand(TestCase):
+    """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
+
+    def test_create_records_a_free_form_phase_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X."),
+        )
+        assert result["phase"] == "scoping"
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Decide X."
+        assert task.session.ticket_id == ticket.pk
+
+    def test_create_accepts_a_loop_dispatched_phase(self) -> None:
+        ticket = planned_ticket(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert result["phase"] == "coding"
+        assert task.phase == "coding"
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Implement X."
+
+    def test_create_reuses_latest_session(self) -> None:
+        ticket = planned_ticket(overlay="test")
+        existing = Session.objects.create(ticket=ticket, overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="x"),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.session_id == existing.pk
+
+    def test_create_reason_from_file(self) -> None:
+        ticket = planned_ticket(overlay="test")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as fh:
+            fh.write("Long multiline prompt.\nWith details.")
+            reason_path = Path(fh.name)
+        self.addCleanup(reason_path.unlink)
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="coding", reason_file=reason_path),
+        )
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.execution_reason == "Long multiline prompt.\nWith details."
+
+    def test_an_implementing_phase_on_an_unplanned_ticket_is_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        stderr = io.StringIO()
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X.", stderr=stderr)
+        assert exc.value.code == 1
+        assert "plan_missing" in stderr.getvalue()
+        assert not Task.objects.filter(ticket=ticket).exists()
+
+    def test_create_requires_non_blank_reason(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="   ")
+
+    def test_create_requires_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, reason="x")
+
+    def test_create_nonexistent_ticket(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", 99999, phase="coding", reason="x")
+
+    def test_create_kind_fix_records_ticket_kind(self) -> None:
+        # #17: `tasks create --kind fix` classifies the ticket (RED before the
+        # option existed — the ticket stayed FEATURE).
+        ticket = planned_ticket(overlay="test")
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="fix")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_without_kind_leaves_ticket_unchanged(self) -> None:
+        ticket = planned_ticket(overlay="test", kind=Ticket.Kind.FIX)
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_unknown_kind_is_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="bugfix")
+
+
+class TestTasksCancelCommand(TestCase):
+    """Tests for the tasks cancel subcommand."""
+
+    def test_cancel_pending_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        call_command("tasks", "cancel", task.pk)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_cancel_claimed_task_without_confirm(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        task.claim(claimed_by="worker-1")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", task.pk)
+
+    def test_cancel_claimed_task_with_confirm(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        task.claim(claimed_by="worker-1")
+        call_command("tasks", "cancel", task.pk, confirm=True)
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+    def test_cancel_completed_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+        )
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", task.pk)
+
+    def test_cancel_nonexistent_task(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("tasks", "cancel", 99999)
+
+    def test_cancel_with_reason_persists_a_task_attempt(self) -> None:
+        # #2559: a cancellation reason must persist to the DB so the audit trail
+        # records WHY a task was cancelled — mirroring how ``complete --note``
+        # records a TaskAttempt. Before the fix ``cancel`` accepted no --reason.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+
+        call_command("tasks", "cancel", task.pk, reason="superseded by !9122")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        attempt = task.attempts.get()
+        # #3957: the operator's words are kept, under the ``cancelled`` kind prefix that
+        # makes the cause machine-readable on the listing and the card.
+        assert attempt.error == "cancelled: superseded by !9122"
+        assert attempt.result == {"cancel_reason": "cancelled: superseded by !9122"}
+        assert attempt.exit_code == 1  # a cancellation is a non-success terminal
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert task.failure_reason == "cancelled: superseded by !9122"
+
+    def test_cancel_without_reason_still_records_the_cancellation(self) -> None:
+        # #3957: ``--reason`` is optional, recording a cause is not. A bare cancel used
+        # to leave a FAILED row with no attempt at all, which on the board is
+        # indistinguishable from a crash.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+
+        call_command("tasks", "cancel", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert task.attempts.get().error.startswith("cancelled: ")
+
+    def test_cancel_blank_reason_still_records_the_cancellation(self) -> None:
+        # A whitespace-only reason is treated as no reason given — but the cancellation
+        # itself is still named, never left blank (#3957).
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+
+        call_command("tasks", "cancel", task.pk, reason="   ")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.failure_kind == FailureKind.CANCELLED
+        assert "no reason given" in task.failure_reason
+
+    def test_cancel_of_a_live_claim_leaves_the_checkout_occupied_and_blocks_a_rival(self) -> None:
+        """#4872: cancelling a task whose holder is still alive must not evict its checkout.
+
+        Before the fix, ``tasks cancel --confirm`` released the occupancy claim
+        unconditionally, so a rival could immediately take the checkout the
+        cancelled task's own agent might still be writing in (#3952).
+        """
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="souliane/teatree",
+            branch="feat/4872",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+
+        with occupy_ticket_checkout(ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session):
+            call_command("tasks", "cancel", task.pk, confirm=True)
+
+            task.refresh_from_db()
+            assert task.status == Task.Status.FAILED
+
+            with pytest.raises(WorktreeOccupiedError), occupy_ticket_checkout(ticket, holder="task:999999"):
+                pass
+
+
+class TestTasksCompleteCommand(TestCase):
+    """Tests for the tasks complete subcommand (#1031).
+
+    Out-of-band terminal-success transition: a claimed task whose
+    underlying work was driven outside the loop is marked completed so
+    the loop stops re-emitting it.
+    """
+
+    def _claimed_task(self) -> Task:
+        ticket = planned_ticket(overlay="test", state=Ticket.State.PLAN_RECORDED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+        )
+        task.claim(claimed_by="worker-1")
+        return task
+
+    def test_complete_claimed_task_clears_lease(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.claimed_by == ""
+        assert task.lease_expires_at is None
+        assert task.heartbeat_at is None
+
+    def test_complete_advances_ticket(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        task.ticket.refresh_from_db()
+        assert task.ticket.state == Ticket.State.CODED
+
+    def test_complete_records_note_as_attempt(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk, note="work landed via !9122 out-of-band")
+
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert attempt.result == {"complete_note": "work landed via !9122 out-of-band"}
+
+    def test_complete_without_note_records_no_attempt(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_complete_already_completed_is_idempotent(self) -> None:
+        task = self._claimed_task()
+        task.complete()
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+        # No exception, exit 0: idempotent no-op.
+        call_command("tasks", "complete", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_complete_pending_task_rejected(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk)
+        assert exc.value.code == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_complete_failed_task_rejected(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.FAILED,
+        )
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk)
+        assert exc.value.code == 1
+
+    def test_complete_nonexistent_task(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", 99999)
+        assert exc.value.code == 1
+
+
+class TestTasksListCommand(TestCase):
+    """Tests for the tasks list subcommand."""
+
+    def test_json_exposes_admission_score_and_parentage(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        review = Task.objects.create(ticket=ticket, session=session, phase="reviewing", parent_task=task)
+        result = cast("list[dict[str, object]]", call_command("tasks", "list", json_output=True))
+        rows = {item["task_id"]: item for item in result}
+        assert cast("int", rows[task.pk]["admission_score"]) < cast("int", rows[review.pk]["admission_score"])
+        assert rows[task.pk]["parent_task_id"] is None
+
+    def test_list_all_tasks(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        result = cast("list[dict[str, object]]", call_command("tasks", "list"))
+        assert len(result) == 2
+
+    def test_list_filters_by_status(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+        result = cast(
+            "list[dict[str, object]]",
+            call_command("tasks", "list", status="completed"),
+        )
+        assert len(result) == 1
+
+    def test_list_makes_no_write_not_even_reaping_a_stale_claim(self) -> None:
+        # `tasks list` is a PURE READ — it makes no writes of any kind, not even
+        # reaping. A read surface reaping (CLAIMED→FAILED) with no preceding
+        # reclaim would terminally FAIL a recoverable crashed-session task on a
+        # mere listing, bypassing the rescue-before-fail ordering the boot/tick
+        # `run_boot_sweeps` owns. The stale claim stays CLAIMED.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        result = cast("list[dict[str, object]]", call_command("tasks", "list"))
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.CLAIMED
+        statuses = [row["status"] for row in result]
+        assert "claimed" in statuses
+        assert "failed" not in statuses
+
+    def test_render_tasks_table_formats_rows(self) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks_session_view import TaskRow, render_tasks_table  # noqa: PLC0415
+
+        rows: list[TaskRow] = [
+            TaskRow(
+                task_id=7,
+                ticket_id=42,
+                ticket_title="fix the broken widget",
+                status="pending",
+                phase="coding",
+                execution_reason="resume after user input",
+                claimed_by="",
+                failure_kind="",
+                failure_reason="",
+                failure_environmental=False,
+            ),
+        ]
+        buf = StringIO()
+        render_tasks_table(rows, stream=buf)
+        out = buf.getvalue()
+        assert "teatree tasks (1)" in out
+        assert "ID" in out
+        assert "Ticket" in out
+        assert "Phase" in out
+        assert "coding" in out
+        assert "resume after" in out
+        # #2092: the table carries the ticket title, never a bare numeric id alone.
+        assert "Title" in out
+        assert "fix the broken widget" in out
+
+    def test_render_tasks_table_handles_empty(self) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks_session_view import render_tasks_table  # noqa: PLC0415
+
+        buf = StringIO()
+        render_tasks_table([], stream=buf)
+        assert "No tasks" in buf.getvalue()
+
+
+class TestResolveReason:
+    def test_reads_stdin_when_dash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        monkeypatch.setattr("sys.stdin", StringIO("from stdin"))
+        assert _resolve_reason(reason="-", reason_file=None) == "from stdin"
+
+    def test_returns_inline_reason(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="inline", reason_file=None) == "inline"
+
+    def test_reads_from_file_when_provided(self, tmp_path: Path) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        f = tmp_path / "reason.txt"
+        f.write_text("from file")
+        assert _resolve_reason(reason="", reason_file=f) == "from file"
+
+    def test_returns_empty_when_nothing_provided(self) -> None:
+        from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
+
+        assert _resolve_reason(reason="", reason_file=None) == ""
+
+
+class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
+    """Enqueue and claim are two ways to START work, so one verdict has to govern both.
+
+    ``drain_queue_body`` asked the governor per row and refused what it would not admit;
+    ``_claim_next_task`` took the head of the claimable queue whatever the box was doing. So
+    a braked box that stopped ENQUEUEING expensive work kept CLAIMING it, and the reserved
+    cheap lane the drain protects was invisible on the other seam.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local import
+
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create(overlay="test")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    def _pending(self, phase: str) -> Task:
+        return Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING, phase=phase)
+
+    @staticmethod
+    def _verdict(*, expensive: str | None, cheap: str | None) -> AbstractContextManager[object]:
+        return mock.patch(
+            # The binding the command READS: the `tasks` command imports it at module scope,
+            # so patching its source module leaves the command on the real verdict, and the test
+            # then asserts against an admission nobody stubbed.
+            "teatree.core.management.commands.tasks.agent_admission_verdict",
+            return_value=AgentAdmission(expensive_denied=expensive, cheap_denied=cheap),
+        )
+
+    def test_a_healthy_box_claims_the_head_of_the_queue(self) -> None:
+        head = self._pending("coding")
+        with self._verdict(expensive=None, cheap=None):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == head.pk
+
+    def test_a_shed_expensive_lane_is_skipped_so_the_reserved_cheap_row_behind_it_runs(self) -> None:
+        self._pending("coding")
+        review = self._pending("reviewing")
+        with self._verdict(expensive="machine pressure", cheap=None):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == review.pk
+
+    def test_a_halted_box_claims_nothing_and_leaves_the_row_claimable(self) -> None:
+        pending = self._pending("coding")
+        with self._verdict(expensive="machine pressure", cheap="machine pressure"):
+            assert call_command("tasks", "claim", claimed_by="worker-1") is None
+        pending.refresh_from_db()
+        assert pending.status == Task.Status.PENDING

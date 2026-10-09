@@ -1,0 +1,347 @@
+"""GitLab §17.4.3 merge RPC over the httpx client — no binary, no second transport (#4007).
+
+The nine merge-RPC methods :class:`~teatree.backends.gitlab.GitLabCodeHost` exposes
+used to run the ``glab`` BINARY. The deploy image installs ``gh`` only, so on a
+GitLab-hosted overlay every one of them raised ``FileNotFoundError`` in the
+container: the keystone merge and every scanner built on ``fetch_pr_merge_state``
+failed closed, silently. They now speak the same REST endpoints over the
+:class:`~teatree.backends.gitlab.api.GitLabAPI` transport every other GitLab read
+already uses — one transport for the whole forge, and one credential
+(``GITLAB_TOKEN``) instead of an ambient binary login.
+
+Raw I/O only. Every transient / head-moved / policy-refusal verdict stays in
+:mod:`teatree.core.merge.merge_response`, which classifies the
+``(returncode, stdout, stderr)`` triple — so :meth:`GitLabApiMergeRpc.merge_pr_squash_bound`
+renders an HTTP outcome back into that triple (status code AND response body) and
+the byte-for-byte error parity the keystone tests pin is unchanged.
+"""
+
+import json
+import logging
+from typing import NotRequired, TypedDict, cast
+
+import httpx
+
+from teatree.backends.gitlab.api import GitLabAPI
+from teatree.core.backend_protocols import (
+    CHANGED_PATHS_UNAVAILABLE,
+    HEAD_SHA_UNREADABLE,
+    ROLLUP_QUERY_FAILED,
+    BackendResolutionError,
+    ForgeMergeResult,
+    MergeConflictState,
+    PrMergeState,
+    PrMessage,
+)
+from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+# Every way the transport can fail to hand back a parsed body: a non-2xx status
+# (``get_json`` raise_for_status-es), a transport-level failure, an unresolved
+# credential, or an unparsable payload (``json.JSONDecodeError`` is a ``ValueError``).
+# The reads below catch this union and degrade to their fail-closed sentinel — the
+# same verdict the pre-port non-zero ``glab`` exit produced.
+_READ_FAILURES = (httpx.HTTPError, BackendResolutionError, ValueError)
+
+# ``core.merge.merge_response`` classifies a merge failure from the lower-cased
+# stdout+stderr. A transport-level failure means the forge issued NO verdict, so it
+# must classify TRANSIENT (core re-probes whether the merge actually landed before
+# each retry) — this prefix is that classifier's own vocabulary for it, carried
+# alongside the real exception so the log still names the concrete failure.
+_TRANSPORT_FAILURE_PREFIX = "temporary failure reaching the GitLab API"
+
+# GitLab merge methods that land a merge commit when ``squash`` is false; ``ff`` fast-forwards instead.
+_MERGE_COMMIT_METHODS = frozenset({"merge", "rebase_merge"})
+
+
+class _MergePayload(TypedDict):
+    sha: str
+    squash: bool
+    merge_commit_message: str
+    squash_commit_message: NotRequired[str]
+
+
+def _mr_endpoint(slug: str, pr_id: int) -> str:
+    """The MR's REST path, with the project identifier URL-encoded.
+
+    GitLab's REST API takes the project identifier ``group/repo`` (or
+    ``group/subgroup/repo``) URL-encoded — the slashes become ``%2F``. One
+    function builds it for every endpoint below, so no read can address a
+    differently-spelled project.
+    """
+    return f"projects/{slug.replace('/', '%2F')}/merge_requests/{pr_id}"
+
+
+def _conflict_state(mr: RawAPIDict) -> MergeConflictState:
+    """Map GitLab's current conflict fields onto the conflict axis.
+
+    ``has_conflicts`` is the direct answer and is computed independently of why else a
+    merge request may be unmergeable, so a draft or an unapproved merge request still
+    reports its real conflict state. ``detailed_merge_status`` supplies the *was it computed*
+    half: GitLab reports ``checking``/``unchecked`` while the background job runs,
+    during which ``has_conflicts`` is a default rather than a finding. Only
+    ``mergeable`` alongside a false ``has_conflicts`` is clean.
+
+    Lives here, beside its one caller. It sat unused in
+    :mod:`teatree.backends.forge_merge_rpc` — written for the ``glab``-binary RPC that
+    #4007 replaced with this module, and never re-wired — where nothing imported it and
+    nothing could see that GitLab's conflict axis had gone dark.
+    """
+    conflicts = mr.get("has_conflicts")
+    detailed_status = str(mr.get("detailed_merge_status") or "").lower()
+    if conflicts is True or detailed_status == "conflict":
+        return MergeConflictState.CONFLICTED
+    if conflicts is False and detailed_status == "mergeable":
+        return MergeConflictState.CLEAN
+    return MergeConflictState.UNKNOWN
+
+
+class GitLabApiMergeRpc:
+    """The §17.4.3 GitLab merge surface — MR reads plus the SHA-bound squash merge."""
+
+    def __init__(self, client: GitLabAPI) -> None:
+        self._client = client
+
+    def _fetch_mr(self, *, slug: str, pr_id: int) -> RawAPIDict | None:
+        """The ``merge_requests/{iid}`` object, or ``None`` when it could not be read.
+
+        The head-SHA, merge-state, draft-flag, author and provenance reads all pull
+        the same MR object; centralising the request plus the failure/shape guard
+        leaves each reader as just its field extraction.
+        """
+        data = self._read(_mr_endpoint(slug, pr_id))
+        return cast("RawAPIDict", data) if isinstance(data, dict) else None
+
+    def _merge_commit_refusal(self, slug: str) -> str:
+        """Why a no-squash merge would land no merge commit on *slug*, else ``""`` — unreadable refuses."""
+        project = self._read(f"projects/{slug.replace('/', '%2F')}")
+        method = project.get("merge_method") if isinstance(project, dict) else None
+        return "" if method in _MERGE_COMMIT_METHODS else _merge_commit_refusal_message(slug, method)
+
+    def _read(self, endpoint: str) -> object:
+        """A GET whose every failure mode degrades to ``None``, logged not swallowed."""
+        try:
+            return self._client.get_json(endpoint)
+        except _READ_FAILURES as exc:
+            logger.warning("GitLab merge-RPC read of %s failed (%s) — failing closed", endpoint, exc)
+            return None
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        """The MR's head sha, or :data:`HEAD_SHA_UNREADABLE` when the MR could not be read.
+
+        The twin of the ``gh`` path, and for the same reason: an unreadable MR
+        payload is the forge declining to answer, and a caller told ``""`` cannot
+        distinguish that from "the head moved" — so it reports a re-review nobody
+        needs. A READABLE MR carrying no ``sha`` still yields ``""``.
+        """
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        return str(mr.get("sha") or "") if mr is not None else HEAD_SHA_UNREADABLE
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        """State + merge commit + the CONFLICT axis, in parity with the ``gh`` twin.
+
+        ``conflict`` defaults to ``UNKNOWN``, and leaving it there is not free: the
+        conflict scanner treats every non-``CLEAN`` verdict as a signal, so an
+        unpopulated axis manufactures one "MR merge state unreadable" signal per open
+        GitLab MR, on every sweep, forever — noise that is indistinguishable from the
+        genuine "the forge is still computing mergeability" case it exists to report.
+        The MR payload already carries the answer, so it is read here via
+        :func:`_conflict_state` rather than left blank.
+        """
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return PrMergeState(state="", merge_commit_oid="")
+        state = str(mr.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
+        oid = str(mr.get("merge_commit_sha") or mr.get("squash_commit_sha") or "")
+        if state == "MERGED" and not oid:
+            oid = str(mr.get("sha") or "")
+        return PrMergeState(state=state, merge_commit_oid=oid, conflict=_conflict_state(mr))
+
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        """The MR author ``username`` — the §17.4.3 author-gate input (#1773).
+
+        Returns ``""`` on any error; the empty author is fail-closed at the
+        keystone (an author that cannot be proved trusted does not auto-merge
+        on a public repo).
+        """
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return ""
+        author = mr.get("author")
+        if not isinstance(author, dict):
+            return ""
+        return str(cast("RawAPIDict", author).get("username") or "")
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
+
+        A same-repo MR has ``source_project_id == target_project_id``; a fork MR
+        crosses projects. Any forge error or a non-integer project id returns
+        ``None`` so the provenance gate fails closed to the identity+visibility
+        author check. This is what makes GitLab overlay MRs cross the same gate.
+        """
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return None
+        source = mr.get("source_project_id")
+        target = mr.get("target_project_id")
+        if not isinstance(source, int) or not isinstance(target, int):
+            return None
+        return source == target
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        pipelines = self._read(f"{_mr_endpoint(slug, pr_id)}/pipelines")
+        if not isinstance(pipelines, list):
+            return [ROLLUP_QUERY_FAILED]
+        entries = cast("list[object]", pipelines)
+        rollup = [cast("RawAPIDict", entry) for entry in entries if isinstance(entry, dict)]
+        if not any(str(entry.get("status") or "").lower() == "skipped" for entry in rollup):
+            return rollup
+        allowed = self._allows_merge_on_skipped_pipeline(slug)
+        return [{**entry, "allow_merge_on_skipped_pipeline": allowed} for entry in rollup]
+
+    def _allows_merge_on_skipped_pipeline(self, slug: str) -> bool | None:
+        """The project's "skipped pipelines are considered successful" setting; ``None`` when unreadable."""
+        try:
+            project = self._client.resolve_project(slug)
+        except _READ_FAILURES as exc:
+            logger.warning("GitLab project read of %s failed (%s) — its skipped-pipeline setting is unknown", slug, exc)
+            return None
+        return project.allow_merge_on_skipped_pipeline if project is not None else None
+
+    @staticmethod
+    def fetch_required_status_check_contexts(*, slug: str, pr_id: int) -> list[RawAPIDict]:
+        """GitLab has no branch-protection-required-status-checks gate on this path.
+
+        The GitLab §17.4.3 verdict is the head pipeline's overall status (see
+        :func:`core.merge.gitlab_pipeline.classify_gitlab_pipeline`), which already
+        aggregates the required jobs server-side. Core never calls this on the
+        GitLab path; the method exists only to satisfy the ``CodeHostBackend``
+        Protocol surface. Returns ``[]`` (no separate required-context gate).
+        """
+        del slug, pr_id
+        return []
+
+    @staticmethod
+    def fetch_workflow_runs_at_head(*, slug: str, head_sha: str) -> list[RawAPIDict]:
+        """GitLab has no Actions-API-equivalent gate on this path.
+
+        The GitHub-Free plan-restriction fallback is GitHub-Free-specific; GitLab
+        gates on the head pipeline's overall status instead (see
+        :func:`core.merge.gitlab_pipeline.classify_gitlab_pipeline`). Core never calls this
+        on the GitLab path; the method exists only to satisfy the
+        ``CodeHostBackend`` Protocol surface. Returns ``[]``.
+        """
+        del slug, head_sha
+        return []
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        """Every changed path on the MR — PAGINATED (§17.4.3, substrate detector).
+
+        The ``merge_requests/<iid>/diffs`` endpoint is paginated; a single
+        un-paginated call truncated a large MR's diff and a substrate change past
+        the first page went undetected. Any read failure returns the
+        ``CHANGED_PATHS_UNAVAILABLE`` sentinel so the caller fails CLOSED (holds
+        the merge) rather than judging a partial list. The transport walks at most
+        100 pages of 100, and warns if it ever reaches that bound — several times
+        GitLab's own cap on the files it will report for one MR, so the walk ends
+        on an empty page, not on the bound.
+        """
+        endpoint = f"{_mr_endpoint(slug, pr_id)}/diffs?per_page=100"
+        try:
+            diffs = self._client.get_json_paginated(endpoint)
+        except _READ_FAILURES as exc:
+            logger.warning("GitLab MR diff read of %s failed (%s) — failing closed", endpoint, exc)
+            return [CHANGED_PATHS_UNAVAILABLE]
+        paths = [entry.get("new_path") or entry.get("old_path") for entry in diffs]
+        return [path.strip() for path in paths if isinstance(path, str) and path.strip()]
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        """The MR title and description, or ``None`` when the MR could not be read with a title."""
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return None
+        title, description = mr.get("title"), mr.get("description") or ""
+        if not isinstance(title, str) or not title.strip() or not isinstance(description, str):
+            return None
+        return PrMessage(title=title, body=description)
+
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
+    ) -> ForgeMergeResult:
+        """``PUT merge_requests/<iid>/merge`` bound to *expected_head_oid*, squashed unless ``squash=False``.
+
+        Every landed commit carries only *message*: the squash commit its title, the merge
+        commit (a squash on a merge-method project lands one too) its title and body.
+
+        Issued NON-idempotently: a merge that reached GitLab and only lost its
+        response must not be blindly replayed by the retry transport (the replay
+        would 405 and brick the keystone). Core owns the merge retry —
+        :func:`core.merge.execution.execute_bound_merge` re-probes whether the
+        merge actually landed before each one.
+        """
+        endpoint = f"{_mr_endpoint(slug, pr_id)}/merge"
+        if not squash and (refusal := self._merge_commit_refusal(slug)):
+            return ForgeMergeResult(returncode=1, stdout="", stderr=refusal, merged_sha="")
+        payload: _MergePayload = {"sha": expected_head_oid, "squash": squash, "merge_commit_message": message.as_text()}
+        if squash:
+            payload["squash_commit_message"] = message.title
+        try:
+            response = self._client.put_response(endpoint, payload, idempotent=False)
+        except httpx.RequestError as exc:
+            return _transport_failure(exc)
+        except BackendResolutionError as exc:
+            return ForgeMergeResult(returncode=1, stdout="", stderr=str(exc), merged_sha="")
+        return _merge_result(response)
+
+
+def _merge_commit_refusal_message(slug: str, method: object) -> str:
+    return (
+        f"refusing a --no-squash merge of {slug}: its GitLab merge method is {method or 'unreadable'!s}, "
+        f"which does not land a merge commit — the second parent a no-squash merge exists to keep would be lost"
+    )
+
+
+def _transport_failure(exc: httpx.RequestError) -> ForgeMergeResult:
+    """A merge whose request never got an answer — rendered so core retries it."""
+    logger.warning("GitLab bound merge failed at the transport (%s: %s)", type(exc).__name__, exc)
+    stderr = f"{_TRANSPORT_FAILURE_PREFIX}: {type(exc).__name__}: {exc}"
+    return ForgeMergeResult(returncode=1, stdout="", stderr=stderr, merged_sha="")
+
+
+def _merge_result(response: httpx.Response) -> ForgeMergeResult:
+    """Render the merge response into the triple ``core.merge.merge_response`` reads.
+
+    The status code AND the body go into stderr because both carry classification
+    signal: GitLab answers a moved head with ``409`` plus ``SHA does not match HEAD
+    of source branch`` (head-moved), a re-merge with ``405`` and an unmergeable MR
+    with ``422`` (policy refusals, never retried), and an outage with ``502``/``503``/
+    ``504`` (transient) — the exact markers the classifier matches on.
+    """
+    body = response.text
+    if not response.is_success:
+        logger.warning("GitLab bound merge refused with HTTP %s: %s", response.status_code, body.strip())
+        return ForgeMergeResult(
+            returncode=1,
+            stdout=body,
+            stderr=f"HTTP {response.status_code}: {body.strip()}",
+            merged_sha="",
+        )
+    return ForgeMergeResult(returncode=0, stdout=body, stderr="", merged_sha=_merged_sha(body))
+
+
+def _merged_sha(body: str) -> str:
+    """The landed commit from a successful merge body; ``""`` when unreadable.
+
+    An empty ``merged_sha`` is not a failure — the caller falls back to the bound
+    head OID, so a truncated success body still records the right landing.
+    """
+    try:
+        merged = json.loads(body) if body.strip() else {}
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(merged, dict):
+        return ""
+    payload = cast("RawAPIDict", merged)
+    return str(payload.get("merge_commit_sha") or payload.get("sha") or "")

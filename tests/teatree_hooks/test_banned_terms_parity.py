@@ -1,0 +1,304 @@
+"""Parity meta-test: every banned-terms entry point agrees on a golden corpus.
+
+The #1839 whole-token migration claimed ``term_match`` was "shared by
+``check-banned-terms.sh``", but the shell hook actually carried its OWN
+bash-inlined copy of the tokenizer/matcher — a second source of truth that
+could drift from :mod:`teatree.hooks.term_match` without anything noticing.
+The fix routes the shell hook through ``teatree.hooks.banned_terms_cli``
+(which uses ``term_match``), so all three entry points now run ONE matcher:
+
+1. the shell pre-commit hook ``scripts/hooks/check-banned-terms.sh``;
+2. the in-process posting gate ``teatree.hooks.banned_terms_scanner``;
+3. the core-leak gate's matcher ``teatree.hooks.term_match.matched_term``
+(consumed by ``scripts/hooks/check_no_overlay_leak.py``).
+
+This test PINS them to identical verdicts on a shared golden corpus so they
+cannot diverge again. The corpus carries an email address on both sides
+because the entry points silently disagreed about one for as long as it held
+none: four blanked every address before matching and three did not. It carries
+allow-listed identifiers for the same reason — the tree scan took no allowlist
+at all, so the documented escape hatch did not exist there, and a corpus with no
+allow-listed row could not tell.
+
+The ``MUST_NOT_FLAG`` set is the regression guard: it
+goes RED the moment any entry point reverts to substring matching, because
+innocent words that merely *contain* a banned substring (``cooperative``,
+``operation``, ``operator``, ``desperate``) would then be flagged.
+
+All terms here are SYNTHETIC. ``acme`` stands in for a real single-token
+customer term; ``green-gizmo`` for a glued multiword term. No real
+customer/overlay value appears, so this public test leaks nothing.
+"""
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+
+from teatree.core import banned_terms_tree
+from teatree.core.push.fast_push import LeakGateScan
+from teatree.hooks import banned_terms_scanner
+from teatree.hooks.term_match import matched_term
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+
+
+@contextmanager
+def _config_db(db: Path) -> Iterator[None]:
+    """Point the cold config reader at *db* for the duration of the block."""
+    previous = os.environ.get("T3_CONFIG_DB")
+    os.environ["T3_CONFIG_DB"] = str(db)
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["T3_CONFIG_DB"]
+        else:
+            os.environ["T3_CONFIG_DB"] = previous
+
+
+# Anchor the script under test to THIS repo (the one carrying the test), not
+# ``find_project_root`` — that helper resolves a worktree back to its primary
+# clone, which would invoke the OTHER clone's (possibly older) shell hook.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Synthetic term list shared by every entry point under test.
+#   - ``acme``          single-token term.
+#   - ``green-gizmo`` glued multiword term.
+_TERMS: tuple[str, ...] = ("acme", "green-gizmo")
+
+# Synthetic company-identifier carve-out. Each entry embeds the bare ``acme``
+# term, so a corpus row carrying one flags under the terms alone and is exempt
+# only when the entry point actually honours the allowlist.
+_ALLOWLIST: tuple[str, ...] = ("acme-engineering", "acme-product")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop any ambient term/brand env so the seeded DB is the only source."""
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+
+
+def _seed_db(tmp_path: Path) -> Path:
+    """Build a ``teatree_config_setting`` DB carrying the shared terms and allowlist.
+
+    ``banned_brands`` carries the same list as ``banned_terms`` because the tree
+    backstop reads the brand key while the other entry points read the term key;
+    seeding both is what lets one corpus row reach all seven.
+    """
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    registry = {"leak": list(_TERMS), "prose_collider": list(_TERMS), "allow": list(_ALLOWLIST)}
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps(registry),),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+# Strings that MUST flag under whole-token matching.
+_MUST_FLAG: tuple[str, ...] = (
+    "acme",  # bare token
+    "AcmeConfig",  # camelCase -> [acme, config]
+    "class AcmeProvisionTests:",  # camelCase inside a class name
+    "xx-acme-zz",  # kebab-delimited token
+    "green gizmo",  # glued multiword, space-separated
+    "green_gizmo",  # glued multiword, snake_case
+    "greengizmo",  # glued multiword, no separator
+    'title="green gizmo",',  # multiword inside a Python kwarg
+    "contact@acme.example",  # term in an address domain
+    "Author: someone <acme@mail.example>",  # term in an address local part
+)
+
+# Strings that MUST NOT flag — the substring-matching regression guard. Each
+# embeds a banned-term substring but has no banned term as a WHOLE token.
+_MUST_NOT_FLAG: tuple[str, ...] = (
+    "cooperative",  # one unbroken run -> no whole-token "acme"
+    "operation",
+    "operator",
+    "desperate",
+    "acmecorp",  # one unbroken lowercase run -> NOT the bare token "acme"
+    "acmeology",
+    "a clean unrelated sentence about widgets and margins separately",
+    "margin widget",  # reversed order -> not the contiguous run
+    "contact@example.org",  # an address carrying no configured term
+    "",  # empty line
+    # The allowlist carve-out: each row embeds the bare ``acme`` term inside an
+    # allow-listed company identifier, so it flags under the terms alone and is
+    # exempt only where the entry point honours ``banned_terms_allowlist``. The
+    # ``acme``/``contact@acme.example`` rows in _MUST_FLAG are the paired guard
+    # that the carve-out exempts the compound identifier, not the bare token.
+    "acme-engineering",  # allow-listed identifier, bare
+    "contact@acme-engineering.example",  # allow-listed identifier inside an address
+    "https://git.example.com/acme-product/repo",  # allow-listed identifier in a URL path
+)
+
+
+def _shell_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether ``check-banned-terms.sh`` flags *text* (exit 1)."""
+    db = _seed_db(tmp_path)
+    sample = tmp_path / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    script = _REPO_ROOT / "scripts" / "hooks" / "check-banned-terms.sh"
+    result = subprocess.run(
+        [str(script), str(sample)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
+    )
+    assert result.returncode in {0, 1}, f"shell hook crashed: {result.returncode}\n{result.stderr}"
+    return result.returncode == 1
+
+
+def _cli_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the ``banned_terms_cli`` module flags *text* (exit 1)."""
+    db = _seed_db(tmp_path)
+    sample = tmp_path / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "teatree.hooks.banned_terms_cli", str(sample)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
+    )
+    assert result.returncode in {0, 1}, f"cli crashed: {result.returncode}\n{result.stderr}"
+    return result.returncode == 1
+
+
+def _scanner_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the posting gate ``banned_terms_scanner`` flags *text*."""
+    db = _seed_db(tmp_path)
+    return banned_terms_scanner.scan_text(text, config_path=db) is not None
+
+
+def _term_match_verdict(_tmp_path: Path, text: str) -> bool:
+    """Whether the shared matcher (consumed by the overlay-leak gate) flags *text*."""
+    return matched_term(text, _TERMS, _ALLOWLIST) is not None
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        },
+    )
+
+
+def _tree_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the full-tree brand backstop flags *text*.
+
+    The tree scan's brand pass MUST share ``term_match`` with the other
+    entry points (fix #1) — this verdict pins it to the same golden corpus
+    so the fourth entry point cannot drift to a private regex matcher.
+
+    Routed through the ``scan_committed_tree`` COORDINATOR rather than
+    ``scan_tree`` directly, because the coordinator is what production calls and
+    is the layer that resolves terms and the allowlist from the store: a verdict
+    handed its config by the test would pin the matcher while leaving that
+    resolution — the layer that shipped without an allowlist — unexercised.
+    """
+    db = _seed_db(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    if not (repo / ".git").exists():
+        _git(repo, "init", "-b", "main")
+    sample = repo / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "corpus")
+    findings = banned_terms_tree.scan_committed_tree(repo, config_path=db).findings
+    # Only the brand pass is under parity test; the always-on terminology gate
+    # never fires on the synthetic corpus, so any finding here is a brand hit.
+    return any(f.path == "sample.txt" for f in findings)
+
+
+def _privacy_scan_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the pre-push backstop ``scripts/privacy_scan.py`` flags *text*.
+
+    The posting gate downgrades a local commit to a warning on the theory that
+    this scan is the real backstop, so a term this misses is a term that
+    reaches a public remote unblocked.
+    """
+    db = _seed_db(tmp_path)
+    sample = tmp_path / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    script = _REPO_ROOT / "scripts" / "privacy_scan.py"
+    result = subprocess.run(
+        [sys.executable, str(script), str(sample), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
+    )
+    assert result.returncode in {0, PRIVACY_FINDINGS_EXIT_CODE}, (
+        f"privacy scan crashed: {result.returncode}\n{result.stderr}"
+    )
+    return any(f["category"] == "banned_term" for f in json.loads(result.stdout))
+
+
+def _fast_push_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the fast-push in-process gate flags *text*.
+
+    ``t3 fast-push`` bypasses the whole hook chain, so its own banned-terms
+    pass is the only thing standing between a fast-pushed commit and a leak.
+    """
+    db = _seed_db(tmp_path)
+    with _config_db(db):
+        return bool(LeakGateScan._banned_terms({"sample.txt": [text]}))
+
+
+_ENTRY_POINTS = {
+    "shell-hook": _shell_verdict,
+    "banned_terms_cli": _cli_verdict,
+    "posting-gate": _scanner_verdict,
+    "overlay-leak-matcher": _term_match_verdict,
+    "tree-scan": _tree_verdict,
+    "privacy-scan": _privacy_scan_verdict,
+    "fast-push": _fast_push_verdict,
+}
+
+
+def _dir(base: Path, name: str) -> Path:
+    """Per-entry-point scratch dir so the temp config/sample files do not collide."""
+    sub = base / name
+    sub.mkdir(exist_ok=True)
+    return sub
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("text", _MUST_FLAG)
+def test_all_entry_points_flag_whole_token_hits(text: str, tmp_path: Path) -> None:
+    verdicts = {name: fn(_dir(tmp_path, name), text) for name, fn in _ENTRY_POINTS.items()}
+    assert all(verdicts.values()), f"a whole-token hit was not flagged everywhere: {text!r} -> {verdicts}"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("text", _MUST_NOT_FLAG)
+def test_no_entry_point_flags_innocent_substrings(text: str, tmp_path: Path) -> None:
+    verdicts = {name: fn(_dir(tmp_path, name), text) for name, fn in _ENTRY_POINTS.items()}
+    assert not any(verdicts.values()), f"an innocent substring was flagged (substring match?): {text!r} -> {verdicts}"

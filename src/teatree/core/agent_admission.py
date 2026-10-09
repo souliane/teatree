@@ -1,0 +1,482 @@
+"""Governor-gated admission for the agent lane (#3644 / F9, #4098).
+
+The adaptive admission governor (:mod:`teatree.core.admission_governor`) was
+consulted ONLY by the interactive ``/loop`` claim budget
+(:func:`teatree.loop.admission.governor_verdict`), yet the measured congestion
+collapse — 7,785 attempts at a 2.9% success rate — was on the agent lane.
+This wires the SAME pure :func:`~teatree.core.admission_governor.decide_admission`
+into the headless admission chokepoints — the post_save auto-enqueue, the drain
+safety net, and issue intake — so a DENY verdict (weekly quota spent, 5h window
+spent, machine load over the watermark, or the coding lane at the governor's
+ceiling) refuses a NEW headless admission with a VISIBLE log.
+
+**The verdict is per phase COST CLASS, never one answer for the whole queue
+(#4098).** A single verdict refused a 3-minute ``reviewing`` task on
+exactly the brake a 272-turn ``coding`` agent had caused. The starvation order is
+the point: reviewing and shipping are what DRAIN the box — a merged PR retires a
+worktree and its agent — so refusing them alongside the expensive class removed
+the only work that would have relieved the pressure and the brake held itself on
+(measured 2026-08-03: 3h22m of denied admissions, zero review verdicts, no
+merges). :func:`agent_admission_verdict` therefore probes ONCE and resolves
+that probe per :class:`~teatree.core.modelkit.phases.PhaseCost`, so a drain costs
+one probe however many rows it walks.
+
+**The review lane sits outside the coding ceiling (#5051).** Reviewing must never be
+queued behind coding: the governor's ceiling bounds the EXPENSIVE lane alone, and the
+CHEAP (review) lane is ``cheap_phase_admission_ceiling`` wide beside it, so a full coding
+lane still admits that many reviews.
+
+It lives in ``teatree.core`` (not ``teatree.loop``) so the core chokepoints can
+consult it without a backwards dependency edge; the loop-side ``governor_verdict``
+is the richer interactive variant carrying the brake-hysteresis sidecar. Both
+route through the one pure decision function, so the two lanes can never diverge
+on the quota/machine/ceiling verdict.
+
+
+Fail-OPEN by construction: any signal-read failure admits BOTH classes — a governor that cannot read its
+own signals must never wedge the factory. A claim-admission refusal (the ``off`` posture,
+a quiescing worker, schema skew) is not a governor signal, so it denies both classes before
+the governor is read. A refusal is never silent: this is the
+only seam that returns a DENY reason, and every caller logs it at WARNING.
+"""
+
+import logging
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, TypedDict
+
+from teatree.core.admission.dispatch_lane import configured_dispatch_lane
+from teatree.core.admission_governor import (
+    AdmissionCeiling,
+    MachineBrake,
+    SupplementalAdmissionSignals,
+    admission_ceiling,
+    decide_admission,
+    pressure_for,
+    read_machine_signal,
+    read_metered_signal,
+    read_quota_signal,
+)
+from teatree.core.admission_pressure import (
+    UNREAD_QUOTA,
+    AdmissionPressure,
+    MachineSignal,
+    MeteredSignal,
+    PressureBand,
+    QuotaSignal,
+)
+from teatree.core.managers_task_claim import claim_admission_block_reason
+from teatree.core.modelkit.phases import PhaseCost, phase_cost
+from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.telemetry.admission import record_admission_decision
+from teatree.request_cache import request_scope
+
+if TYPE_CHECKING:
+    from teatree.core.models import Task
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LaneBound:
+    """One cost class's lane width, and what a single pass has already spent of it.
+
+    ``headroom`` is the ceiling minus the lane's occupancy at probe time — what keeps a
+    class from becoming an unbounded lane. Callers book every admission through
+    :meth:`AgentAdmission.admit`, which BOTH takes the row's durable seat
+    (``Task.admitted_at``, so the next probe's occupancy read sees it) and decrements this
+    local headroom (so a caller mid-pass need not re-probe to stay bounded). Separate
+    passes and processes share only the durable seat; the local headroom covers the span
+    of a single pass, between the probe that computed it and the seats it is taking.
+    ``None`` is UNBOUNDED, reached
+    only where the governor has no opinion at all: the kill-switch and the fail-open path.
+
+    ``ceiling`` is the same bound the probe measured against, carried so the seat write can
+    re-check it (#4125). Headroom alone is a number computed BEFORE the write and private
+    to one process, which is exactly why it could not stop two of them.
+    """
+
+    ceiling: int | None = None
+    headroom: int | None = None
+    admitted: int = 0
+
+    def spent(self) -> bool:
+        return self.headroom is not None and self.admitted >= self.headroom
+
+
+@dataclass(frozen=True)
+class _LaneOccupancy:
+    expensive: int
+    cheap: int
+
+
+@dataclass
+class AgentAdmission:
+    """One governor probe, resolved per phase cost class (#4098).
+
+    Plain fields rather than a per-phase callable: the verdict is a value a caller holds
+    across a whole drain, asking it once per row, which is what makes the classification
+    affordable at all — nothing changes between iterations of that loop, so re-probing
+    per row would return the same answer N times at N times the cost.
+
+    Each class carries its own :class:`LaneBound`: the cheap one is the review lane width,
+    the expensive one is the governor's ceiling.
+    """
+
+    expensive_denied: str | None
+    cheap_denied: str | None
+    cheap_lane: LaneBound = field(default_factory=LaneBound)
+    expensive_lane: LaneBound = field(default_factory=LaneBound)
+    seats_released: int = 0
+    _announced: set[str] = field(default_factory=set)
+
+    def lane_for(self, cost: PhaseCost) -> LaneBound:
+        """The bound governing *cost*'s lane — the one seam both the check and the seat read."""
+        return self.cheap_lane if cost is PhaseCost.CHEAP else self.expensive_lane
+
+    def denied_for(self, cost: PhaseCost) -> str | None:
+        """The reason to refuse one more admission of *cost*, or ``None`` to admit."""
+        denied = self.cheap_denied if cost is PhaseCost.CHEAP else self.expensive_denied
+        if denied is not None:
+            return denied
+        lane = self.lane_for(cost)
+        if lane.spent():
+            return f"{cost} headroom spent this pass ({lane.admitted} admitted, lane ceiling reached)"
+        return None
+
+    def denied_reason(self, phase: str = "") -> str | None:
+        """The reason to refuse one more admission of *phase*, or ``None`` to admit.
+
+        A blank or unregistered phase classifies EXPENSIVE, so a caller that cannot
+        name its phase gets the braked answer rather than the exemption.
+        """
+        return self.denied_for(phase_cost(phase))
+
+    def admit(self, task_pk: int, phase: str, *, at: str) -> bool:
+        """True when *task_pk* now holds a seat and may be dispatched — else refuse, at *at*.
+
+        The single seam every chokepoint routes its admission through, so no caller can
+        dispatch a row it never booked: a chokepoint that enqueued without the durable
+        seat would leave its own admission invisible to every later probe, which is
+        exactly how a one-row-at-a-time burst outran the ceiling. The seat is therefore
+        taken BEFORE the dispatch, and a dispatch that then fails costs at most one
+        :data:`~teatree.core.managers_admission.ADMITTED_INFLIGHT_WINDOW` of under-admission — the
+        direction that is safe, and what that window already exists to recover.
+
+        Deciding, booking and announcing are ONE call so a chokepoint cannot skip a row
+        quietly. A reason already announced this pass — by :meth:`log_denials` or for an
+        earlier row — drops to DEBUG rather than repeating per held row: on the measured
+        shape (18 rows, one braked drain) that repetition was 19 lines every cadence saying
+        one thing.
+        """
+        denied = self.denied_reason(phase) or self._book(task_pk, phase)
+        if denied is None:
+            return True
+        level = logging.DEBUG if denied in self._announced else logging.WARNING
+        self._announced.add(denied)
+        logger.log(level, "Governor DENIED %s of task %s: %s (staying PENDING)", at, task_pk, denied)
+        return False
+
+    def _book(self, task_pk: int, phase: str) -> str | None:
+        """Take *task_pk*'s durable seat — ``None`` when granted, else why it was refused.
+
+        Each class hands its own width to the write, which re-checks that lane's occupancy
+        there rather than trusting this verdict's probe (#4125).
+        """
+        cost = phase_cost(phase)
+        lane = self.lane_for(cost)
+        if not _task_model().objects.record_admission(
+            task_pk, cheap=cost is PhaseCost.CHEAP, lane_ceiling=lane.ceiling
+        ):
+            if lane.ceiling is None:
+                return "already dispatched this window"
+            return f"no {cost}-phase seat: already dispatched this window, or a racer took the last one"
+        lane.admitted += 1
+        return None
+
+    def log_denials(self) -> None:
+        """Announce every class this verdict refuses, one WARNING line each.
+
+        Lives on the verdict rather than at each chokepoint so a refusal is worded
+        identically wherever it is taken, and so a class added to :class:`PhaseCost`
+        cannot acquire a caller that forgets to report it. What is announced here is
+        remembered, so :meth:`admit` can hold a row against it without saying it again.
+
+        A released seat is announced alongside: it is the state in which the ceiling is
+        SOFT, and it arrives with no refusal of its own to carry it.
+        """
+        for cost in PhaseCost:
+            denied = self.denied_for(cost)
+            if denied is not None:
+                self._announced.add(denied)
+                logger.warning("Governor DENIED headless admission of %s work: %s (rows stay queued)", cost, denied)
+        if self.seats_released:
+            logger.warning(
+                "Review lane released %s unclaimed seat(s) — the runner backlog outran the seat window, "
+                "so the ceiling is soft until it drains",
+                self.seats_released,
+            )
+
+
+def _task_model() -> "type[Task]":
+    """The ``Task`` model, resolved at call time — the module's ONE intra-core edge.
+
+    Both the occupancy probe and the admission stamp need it, so the deferred import
+    lives here once rather than being restated in each: one function-scoped edge hidden
+    from tach's acyclic guard, not two.
+    """
+    from teatree.core.models import Task  # noqa: PLC0415 — deferred: Django app-registry read at call time
+
+    return Task
+
+
+def _admit_all() -> AgentAdmission:
+    """Admit everything, unbounded — the kill-switch answer and the fail-open answer alike."""
+    return AgentAdmission(expensive_denied=None, cheap_denied=None)
+
+
+def review_lane_width() -> int:
+    """How many review-lane agents run at once — the admission bound and the worker's review runner count.
+
+    The exemption must never become a second unbounded lane — that is exactly what
+    over-admitting the expensive class cost (#4097). Only the WIDTH is data: the
+    taxonomy is harness-owned, so no config row can move ``coding`` into the exempt
+    class. Floored at one, because a zero width would queue every review behind coding.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
+
+    return max(1, int(get_effective_settings().cheap_phase_admission_ceiling))
+
+
+def _shed_denial(pressure: AdmissionPressure) -> str | None:
+    """The reason to stop starting EXPENSIVE work short of a halt, or ``None`` (#4508).
+
+    The band between "healthy" and "refuse everything" had no expression before the
+    scalar, so the box kept starting open-ended coding agents against a budget that was
+    nearly gone. Shedding here is the cheap/expensive asymmetry #4098 already established
+    — the lanes that RETIRE work keep draining, which is what makes the pressure fall.
+    """
+    if pressure.band is not PressureBand.SHED:
+        return None
+    return f"pressure {pressure.value:.2f} in the shed band — {pressure.reason}"
+
+
+def _ceiling_denial(ceiling: int, occupied: int, *, lane: str) -> str | None:
+    if occupied < ceiling:
+        return None
+    return f"{lane} lane occupancy {occupied} at/over the {lane} ceiling {ceiling}"
+
+
+def _lane_budget() -> tuple[QuotaSignal, MeteredSignal]:
+    """The budget this box's CONFIGURED lane would actually spend, and only that one.
+
+    ``BRAKE_PRECEDENCE`` leads with ``accounts-exhausted``, so before #4816 an exhausted
+    OAuth fleet HALTed metered dispatches that would never have touched it — 307 tasks
+    refused against a budget they did not draw on.
+    """
+    if configured_dispatch_lane() == TaskAttempt.Lane.METERED:
+        return UNREAD_QUOTA, read_metered_signal()
+    return read_quota_signal(), MeteredSignal(fresh=False)
+
+
+@dataclass(frozen=True)
+class LaneWidths:
+    """Coding fills the ceiling and reviews sit beside it; the worker runs one executor per seat."""
+
+    ceiling: AdmissionCeiling
+    cheap: int
+
+    @property
+    def expensive(self) -> int:
+        return self.ceiling.value
+
+
+def _lane_widths(quota: QuotaSignal, machine: MachineSignal) -> LaneWidths:
+    return LaneWidths(ceiling=admission_ceiling(quota, machine), cheap=review_lane_width())
+
+
+class HeadlessAdmissionJson(TypedDict):
+    ceiling: int
+    cores: int
+    per_core: float
+    machine_ceiling: int
+    weekly_pace: float | None
+    expensive_lane: int
+    cheap_lane: int
+    expensive_occupied: int
+    cheap_occupied: int
+    pressure: float
+    band: str
+    expensive_denied: str | None
+    cheap_denied: str | None
+
+
+@dataclass(frozen=True)
+class HeadlessAdmissionStatus:
+    """Every input the headless verdict is decided on, read once; the verdict and ``t3 worker status`` resolve it."""
+
+    widths: LaneWidths
+    pressure: AdmissionPressure
+    exempt: AdmissionPressure
+    occupied: _LaneOccupancy
+    seats_released: int
+    blocked: str = ""
+
+    def verdict(self) -> AgentAdmission:
+        if self.blocked:
+            return AgentAdmission(expensive_denied=self.blocked, cheap_denied=self.blocked)
+        widths, occupied = self.widths, self.occupied
+        expensive = (
+            self.pressure.reason
+            if self.pressure.band is PressureBand.HALT
+            else _shed_denial(self.pressure) or _ceiling_denial(widths.expensive, occupied.expensive, lane="expensive")
+        )
+        cheap = (
+            self.exempt.reason
+            if self.exempt.band is PressureBand.HALT
+            else _ceiling_denial(widths.cheap, occupied.cheap, lane="review")
+        )
+        return AgentAdmission(
+            expensive_denied=expensive,
+            cheap_denied=cheap,
+            cheap_lane=LaneBound(ceiling=widths.cheap, headroom=max(0, widths.cheap - occupied.cheap)),
+            expensive_lane=LaneBound(ceiling=widths.expensive, headroom=max(0, widths.expensive - occupied.expensive)),
+            seats_released=self.seats_released,
+        )
+
+    def line(self) -> str:
+        ceiling, widths, verdict = self.widths.ceiling, self.widths, self.verdict()
+        if ceiling.pace is None:
+            pace = "weekly pace unread (unscaled)"
+        else:
+            pace = f"weekly pace {ceiling.pace:.2f}" + (" (scaling capped at 1)" if ceiling.pace > 1 else "")
+        denied = ((PhaseCost.EXPENSIVE, verdict.expensive_denied), (PhaseCost.CHEAP, verdict.cheap_denied))
+        denials = "".join(f"; {cost} denied: {reason}" for cost, reason in denied if reason is not None)
+        return (
+            f"agent admission: ceiling {ceiling.value} = {ceiling.cores} cores x {ceiling.per_core:g} per core "
+            f"({ceiling.machine}) x {pace}; lanes {widths.expensive} expensive + {widths.cheap} cheap "
+            f"(review lane outside the ceiling); occupied {self.occupied.expensive} expensive + "
+            f"{self.occupied.cheap} cheap; pressure {self.pressure.value:.2f} {self.pressure.band}{denials}"
+        )
+
+    def as_json(self) -> HeadlessAdmissionJson:
+        ceiling, verdict = self.widths.ceiling, self.verdict()
+        return HeadlessAdmissionJson(
+            ceiling=ceiling.value,
+            cores=ceiling.cores,
+            per_core=ceiling.per_core,
+            machine_ceiling=ceiling.machine,
+            weekly_pace=ceiling.pace,
+            expensive_lane=self.widths.expensive,
+            cheap_lane=self.widths.cheap,
+            expensive_occupied=self.occupied.expensive,
+            cheap_occupied=self.occupied.cheap,
+            pressure=self.pressure.value,
+            band=str(self.pressure.band),
+            expensive_denied=verdict.expensive_denied,
+            cheap_denied=verdict.cheap_denied,
+        )
+
+
+def _read_admission(
+    quota: QuotaSignal, machine: MachineSignal, metered: MeteredSignal, *, blocked: str = ""
+) -> HeadlessAdmissionStatus:
+    task_model = _task_model()
+    return HeadlessAdmissionStatus(
+        widths=_lane_widths(quota, machine),
+        pressure=pressure_for(quota=quota, machine=machine, metered=metered),
+        exempt=pressure_for(quota=quota, machine=machine, metered=metered, load_brake=MachineBrake(applies=False)),
+        occupied=_LaneOccupancy(
+            expensive=task_model.objects.expensive_lane_occupancy(),
+            cheap=task_model.objects.cheap_lane_occupancy(),
+        ),
+        seats_released=task_model.objects.cheap_lane_seats_released(),
+        blocked=blocked,
+    )
+
+
+@request_scope()  # every Task creation runs a verdict, so each settings re-read is paid per row
+def agent_admission_verdict() -> AgentAdmission:
+    """Probe the governor ONCE and resolve the verdict for both phase cost classes.
+
+    The EXPENSIVE (coding) class is the pure decision over the live quota + machine
+    signals, then the expensive lane's OCCUPANCY against the governor's ceiling — never
+    the whole live population, which would refuse coding work because reviews are running.
+
+    The CHEAP (review) class re-runs the SAME pure decision with the machine brake lifted —
+    the token brakes still refuse it, because a review burns quota like anything else —
+    bounded by :func:`review_lane_width` over the lane's OCCUPANCY: the running cheap agents
+    plus the cheap rows already handed to the runner. Counting the latter is what lets a
+    chokepoint see admissions it (or the other chokepoint) just made, so the bound is one
+    number in the database rather than per-caller state. The two lanes do not share the
+    governor's ceiling: a review is never queued behind coding (#5051).
+
+    Between the two sits the SHED band (#4508): the expensive class is refused while the
+    cheap drain runs on, because :func:`decide_admission` is class-BLIND and can only
+    speak at HALT. Cheap is deliberately never shed — shedding the lanes that retire work
+    is the self-holding brake #4098 records.
+
+    ``static_ceiling=None`` says the operator has configured no cap for THIS lane,
+    which is not the same as no cap at all: the governor always derives one from the
+    signals it has, so a stale quota cache — the steady state, since healthy health
+    rows expire in minutes and are written only reactively — bounds the lane at the
+    machine-derived ceiling rather than leaving it unbounded (#4097).
+    """
+    if blocked := claim_admission_block_reason():
+        return AgentAdmission(expensive_denied=blocked, cheap_denied=blocked)
+    try:
+        quota, metered = _lane_budget()
+        machine = read_machine_signal()
+        decision = decide_admission(
+            quota=quota,
+            machine=machine,
+            signals=SupplementalAdmissionSignals(metered=metered),
+            static_ceiling=None,
+        )
+        status = _read_admission(quota, machine, metered)
+        verdict = status.verdict()
+    except Exception:
+        logger.exception("headless admission governor probe failed — admitting (fail-open)")
+        return _admit_all()
+    try:
+        record_admission_decision(decision=decision, pressure=status.pressure, lane="headless")
+    except Exception:
+        logger.exception("headless admission telemetry failed; retaining the computed verdict")
+    return verdict
+
+
+@request_scope()
+def headless_admission_status() -> HeadlessAdmissionStatus:
+    """The verdict's own read, including a claim-admission block, without booking a seat or recording a span."""
+    quota, metered = _lane_budget()
+    return _read_admission(quota, read_machine_signal(), metered, blocked=claim_admission_block_reason())
+
+
+@request_scope()
+def headless_lane_widths() -> LaneWidths:
+    """The lane widths the verdict admits up to, read without counting occupancy — what the worker sizes to."""
+    quota, _metered = _lane_budget()
+    return _lane_widths(quota, read_machine_signal())
+
+
+def agent_admission_denied_reason(phase: str = "") -> str | None:
+    """The governor's reason to DENY one more headless admission of *phase*, or ``None``.
+
+    The single-shot wrapper for a caller admitting ONE unit of work: it probes and
+    resolves in one call. A caller walking a queue holds a
+    :func:`agent_admission_verdict` instead, so N rows still cost one probe.
+    ``phase`` omitted is the EXPENSIVE class — the pre-#4098 verdict verbatim.
+    """
+    return agent_admission_verdict().denied_reason(phase)
+
+
+__all__ = [
+    "AgentAdmission",
+    "HeadlessAdmissionStatus",
+    "LaneBound",
+    "LaneWidths",
+    "agent_admission_denied_reason",
+    "agent_admission_verdict",
+    "headless_admission_status",
+    "headless_lane_widths",
+    "review_lane_width",
+]

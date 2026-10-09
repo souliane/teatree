@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-todos_built_dynamically_from_live_tasklist_not_stale_cli-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "TaskList", "input": {"status": "in_progress"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

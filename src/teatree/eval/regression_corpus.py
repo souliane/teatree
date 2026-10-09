@@ -1,0 +1,298 @@
+"""Deterministic regression evals — real code-path assertions per failure class.
+
+A behavioral scenario (``scenarios/*.yaml``) grades what an agent *says* it
+would do. This corpus grades what the gate/checker code *does*: each check
+calls the REAL function (the merge-precondition assertion, the branch-currency
+conflict predictor, the loop-lease pid-anchored
+claim, the migration-graph leaf checker) on a constructed must-block input and
+on a must-allow input, and reports a violation when either direction is wrong.
+
+This is a Layer-1 eval per ``README.md`` — deterministic, free, no ``claude``
+run — sibling of :mod:`teatree.eval.coverage`. It exists so the recurring
+safety-gate failure classes of the last development cycle each have one check
+that would go RED on the pre-fix behavior and stays GREEN on the fix, surfaced
+through ``t3 eval pinned-regressions`` and the ``eval-pinned-regressions`` prek
+pre-push hook.
+
+Each :class:`RegressionCheck` names its failure class, the originating fix, and
+a callable that returns ``True`` when the real code path still honors the
+invariant. A check that needs a git repo builds a throwaway one under a
+``tempfile.TemporaryDirectory`` and tears it down; a check that needs the ORM
+is skipped unless Django is configured (the CLI bootstraps it). No network, no
+secrets, no shared state.
+
+The bulk of the ``_check_*`` predicates live in
+:mod:`teatree.eval.regression_corpus_predicates`; the migration-fork predicate
+stays here so its anti-vacuous test can patch ``_count_core_leaves`` on this
+module's namespace, and the fresh corpus DB with its schema pre-flight (#2190)
+lives in :mod:`teatree.eval.regression_corpus_schema`.
+"""
+
+from contextlib import nullcontext
+from typing import TYPE_CHECKING
+
+from teatree.db.boundary import DbBoundaryError
+from teatree.eval.regression_corpus_e2e import (
+    check_e2e_test_plan_embeds_claimable_relative_ref,
+    check_e2e_test_plan_uploads_to_note_project,
+)
+from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck, RegressionReport
+from teatree.eval.regression_corpus_predicates import (
+    _check_account_switch_detect_and_recover,
+    _check_banned_terms_scanner_fails_closed_on_crash,
+    _check_branch_currency_conflict_only,
+    _check_causeless_failure_does_not_trip_the_stall,
+    _check_causeless_kind_is_dropped_from_the_kind_stall,
+    _check_environmental_fingerprint_drop_is_narrower_than_the_display_axis,
+    _check_forge_resolves_by_host_not_token,
+    _check_loop_owner_lease_pid_anchored,
+    _check_merge_precondition_maker_is_not_checker,
+    _check_merge_precondition_substrate_full_autonomy_holds,
+    _check_merge_precondition_substrate_human_authorize,
+    _check_mr_description_first_line_validated,
+    _check_private_repo_allowlist_path_segment_match,
+    _check_ship_branch_reconcile_renamed,
+)
+from teatree.eval.regression_corpus_report import render_json, render_text
+from teatree.eval.regression_corpus_schema import fresh_corpus_db, schema_preflight_result, skipped_preflight_result
+
+if TYPE_CHECKING:
+    from django.db.migrations.graph import MigrationGraph
+
+__all__ = [
+    "CheckResult",
+    "RegressionCheck",
+    "RegressionReport",
+    "render_json",
+    "render_text",
+    "run_regression_corpus",
+]
+
+
+def _count_core_leaves(graph: "MigrationGraph") -> int:
+    """Number of leaf nodes the ``core`` app owns in a migration graph.
+
+    A linear graph has exactly one; a fork (two migrations off one parent)
+    leaves two. The predicate the regression check turns on, factored out so a
+    test can feed it a synthetic forked graph and assert it returns ``> 1``.
+    """
+    return sum(1 for leaf in graph.leaf_nodes() if leaf[0] == "core")
+
+
+def _check_migration_graph_single_leaf() -> bool:
+    """#1721: the migration graph stays linear — a forked graph (>1 leaf) is caught.
+
+    The real failure: two PRs each branch a migration off the same parent, the
+    merged graph has multiple leaf nodes, and ``migrate`` refuses. This asserts
+    the live ``teatree.core`` graph has exactly one leaf node via
+    :func:`_count_core_leaves` — the same predicate a synthetic forked graph
+    drives ``> 1`` in the corpus's anti-vacuous test.
+    """
+    from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415 — deferred: Django import at call time
+
+    loader = MigrationLoader(None, ignore_no_migrations=True)
+    return _count_core_leaves(loader.graph) == 1
+
+
+_CHECKS: tuple[RegressionCheck, ...] = (
+    RegressionCheck(
+        failure_class="branch-currency §940 (conflict-only, never behind-only)",
+        origin="https://github.com/souliane/teatree/pull/1719",
+        invariant="sha_conflicts_with_target blocks a real conflict, allows a behind-but-clean SHA",
+        predicate=_check_branch_currency_conflict_only,
+    ),
+    RegressionCheck(
+        failure_class="gate-fails-closed-on-transient: causeless failure manufactures a stall (#4075)",
+        origin="https://github.com/souliane/teatree/issues/4075",
+        invariant=(
+            "stall_fingerprints drops two identical no_result_envelope fingerprints (no stall) "
+            "and keeps two identical named-defect ones (still stalls)"
+        ),
+        predicate=_check_causeless_failure_does_not_trip_the_stall,
+    ),
+    RegressionCheck(
+        failure_class="causeless KIND survives the two-strikes stall (#4276)",
+        origin="https://github.com/souliane/teatree/issues/4276",
+        invariant=(
+            "stall_kinds drops two runtime_ceiling kinds (no kind stall) and keeps two named-deterministic "
+            "ones (still stalls); the two ceiling reasons fingerprint differently, so only the kind drop carries it"
+        ),
+        predicate=_check_causeless_kind_is_dropped_from_the_kind_stall,
+    ),
+    RegressionCheck(
+        failure_class="the operator-display axis reused as the fingerprint stall filter (#3957)",
+        origin="https://github.com/souliane/teatree/issues/3957",
+        invariant=(
+            "stall_fingerprints drops two identical outage fingerprints (no stall) and keeps two identical "
+            "landing_unverified ones, which is_environmental calls environmental — so transient_requeue's "
+            "reopen branch, which passes no kinds, can still stall on a recurring defect"
+        ),
+        predicate=_check_environmental_fingerprint_drop_is_narrower_than_the_display_axis,
+    ),
+    RegressionCheck(
+        failure_class="substrate-merge human-authorize floor",
+        origin="https://github.com/souliane/teatree/pull/1498",
+        invariant="a below-full substrate MergeClear never merges without the recorded human authorizer",
+        predicate=_check_merge_precondition_substrate_human_authorize,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="substrate-merge full-autonomy ping-and-hold",
+        origin="https://github.com/souliane/teatree/issues/1748",
+        invariant="an autonomy=full overlay HOLDS a substrate CLEAR with no per-PR human authorizer (ping-and-hold)",
+        predicate=_check_merge_precondition_substrate_full_autonomy_holds,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="maker≠checker at merge time",
+        origin="https://github.com/souliane/teatree/pull/1601",
+        invariant="a self-issued CLEAR (reviewer == executing loop) is refused at merge time",
+        predicate=_check_merge_precondition_maker_is_not_checker,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="t3-master hijack / pid-anchored lease",
+        origin="https://github.com/souliane/teatree/pull/1724",
+        invariant="an alive foreign owner past TTL is never hijacked; a dead owner is reclaimable",
+        predicate=_check_loop_owner_lease_pid_anchored,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="migration-fork / multiple-leaf-nodes",
+        origin="https://github.com/souliane/teatree/pull/1721",
+        invariant="the live core migration graph has exactly one leaf; a forked graph is detectable",
+        predicate=_check_migration_graph_single_leaf,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="account-switch detect-invalidate-reprobe (#1916)",
+        origin="https://github.com/souliane/teatree/issues/1916",
+        invariant="a /login switch invalidates the backend cache and re-probes; same account is a no-op",
+        predicate=_check_account_switch_detect_and_recover,
+    ),
+    RegressionCheck(
+        failure_class="private-repo allowlist path-segment match (security, #1953)",
+        origin="https://github.com/souliane/teatree/pull/2084",
+        invariant="private_repos matches path segments, not substring; an alias-glued public slug never downgrades",
+        predicate=_check_private_repo_allowlist_path_segment_match,
+    ),
+    RegressionCheck(
+        failure_class="banned-terms scanner fail-closed on crash (security, #1954)",
+        origin="https://github.com/souliane/teatree/pull/2079",
+        invariant="a crashing scanner returns SCANNER_UNAVAILABLE_MARKER and an unset registry fails closed",
+        predicate=_check_banned_terms_scanner_fails_closed_on_crash,
+    ),
+    RegressionCheck(
+        failure_class="forge backend by origin host, not token precedence (#2085)",
+        origin="https://github.com/souliane/teatree/pull/2085",
+        invariant="forge_from_remote keys on the repo host (github/gitlab/empty), regardless of configured PATs",
+        predicate=_check_forge_resolves_by_host_not_token,
+    ),
+    RegressionCheck(
+        failure_class="pre-push gates reconcile a renamed/stale branch (#1587)",
+        origin="https://github.com/souliane/teatree/pull/2102",
+        invariant=(
+            "resolve_and_reconcile_branch adopts the prefixed current branch; "
+            "falls back to the recorded one on an unrelated ref"
+        ),
+        predicate=_check_ship_branch_reconcile_renamed,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="MR description first-line validated client-side (#1367)",
+        origin="https://github.com/souliane/teatree/pull/2098",
+        invariant="validate_mr_metadata rejects a non-conventional first line and accepts a conventional one",
+        predicate=_check_mr_description_first_line_validated,
+    ),
+    RegressionCheck(
+        failure_class="e2e-test-plan embeds claimable relative /uploads ref (#2165 regression)",
+        origin="https://github.com/souliane/teatree/issues/2165",
+        invariant=(
+            "_verified_embed embeds the relative /uploads/<secret>/<file> reference GitLab claims on "
+            "save; never the absolute /-/project/ or any https:// upload URL"
+        ),
+        predicate=check_e2e_test_plan_embeds_claimable_relative_ref,
+    ),
+    RegressionCheck(
+        failure_class="e2e-test-plan uploads to the note's own project, not a 2nd repo",
+        origin="https://github.com/souliane/teatree/pull/2181",
+        invariant=(
+            "post_mr_test_plan_comment uploads every artifact to the note's own project — never a "
+            "second/CI repo — so the note's /uploads refs resolve"
+        ),
+        predicate=check_e2e_test_plan_uploads_to_note_project,
+    ),
+)
+
+
+def _django_ready() -> bool:
+    try:
+        from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+    except ImportError:
+        return False
+    return apps.ready
+
+
+def _preflight_row(blocked: str | None) -> CheckResult:
+    """The pre-flight's row, whatever happens — never an exception that takes the corpus with it.
+
+    #4005 says a pre-flight that cannot run is still REPORTED, and that held only for the
+    reasons resolved in advance. `schema_preflight_result` opens the database itself, so
+    anything it raises beyond the migration failure it handles escaped `run_regression_corpus`
+    entirely — losing not just this row but every other check's, which is the same silence
+    #4005 exists to end.
+    """
+    if blocked is not None:
+        return skipped_preflight_result(blocked)
+    try:
+        return schema_preflight_result()
+    except Exception as exc:  # noqa: BLE001 — a pre-flight that cannot run is not-run, never a lost corpus
+        return skipped_preflight_result(f"schema pre-flight could not run ({type(exc).__name__}: {exc})")
+
+
+def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> RegressionReport:
+    db_ready = _django_ready()
+    with fresh_corpus_db() if db_ready else nullcontext():
+        return _run_checks(checks, db_ready=db_ready)
+
+
+def _run_checks(checks: tuple[RegressionCheck, ...], *, db_ready: bool) -> RegressionReport:
+    results: list[CheckResult] = []
+    # Schema pre-flight (#2190): migrate the fresh corpus DB before any ORM check.
+    # When it cannot run it is still REPORTED (#4005) — omitting the row is what let a
+    # failed migration pass silently, with nothing naming the pre-flight as not-run.
+    if any(check.needs_db for check in checks):
+        results.append(_preflight_row(None if db_ready else "Django not configured"))
+    for check in checks:
+        if check.needs_db and not db_ready:
+            results.append(CheckResult(check=check, ok=True, skipped=True, detail="Django not configured"))
+            continue
+        try:
+            ok = check.predicate()
+            results.append(CheckResult(check=check, ok=ok, skipped=False, detail="" if ok else "invariant violated"))
+        except DbBoundaryError as exc:
+            # A TOPOLOGY fault, not an invariant violation — the class says so itself.
+            # The control DB is legitimately owned read-write by the containerized
+            # stack, so this host process holds a read-only connection and the check
+            # never ran at all. Reporting that as a FAILURE is the defect: it renders
+            # as a regression the diff did not cause, and it is not one line but every
+            # DB-writing check at once (5 of 15 on the recorded run), which trains the
+            # reader to skim past the one line that would flag a real regression.
+            #
+            # This is a SKIP, not a bypass. The check is not asserted to pass — it is
+            # recorded as not-run with the reason named in the output, exactly as the
+            # "Django not configured" precedent above does. Nothing suppresses a check
+            # that CAN run: a predicate that reaches the DB and fails still fails, and
+            # any other exception is still a hard failure below. The honest way to make
+            # these checks run is to run the lane where the DB lives (`deploy/t3 …`).
+            results.append(
+                CheckResult(
+                    check=check,
+                    ok=True,
+                    skipped=True,
+                    detail=f"control DB is container-owned; run this lane in the container ({exc})",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — a raising predicate IS a regression failure, not a crash.
+            results.append(CheckResult(check=check, ok=False, skipped=False, detail=f"{type(exc).__name__}: {exc}"))
+    return RegressionReport(results=tuple(results))

@@ -1,0 +1,405 @@
+"""The one new read selector the dashboard adds: tickets grouped by FSM state (#3162).
+
+The board axis is ``Ticket.state`` — the lifecycle position — never the task/queue
+axis the pre-#541 dashboard centred on (tasks appear only as card badges). Every
+other panel reads through the existing ``teatree.core.selectors`` /
+``operational_health`` / ``loops.live`` readers unchanged; this module adds
+``build_kanban_columns`` beside them and nothing else queries ticket state for the
+board. The column set is a module constant a conformance test pins against the FSM
+enum, so a future ``Ticket.State`` value cannot silently drop off the board.
+"""
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+from django.db.models import Max
+from django.utils import timezone
+
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
+from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.session import Session
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.ticket import Ticket
+from teatree.core.models.transition import TicketTransition
+from teatree.core.selectors import _humanize_duration
+from teatree.dash.issue_link import issue_link
+from teatree.dash.task_actions import EnqueueButton, board_enqueue_buttons, pending_phase_tasks_by_ticket
+
+State = Ticket.State
+
+# The four visual groupings (lifecycle order). The union of every grouped state
+# plus the toggle-hidden set equals ``Ticket.State`` exactly — pinned by
+# ``test_kanban_conformance``. A card keeps its own state sub-column within a
+# group; the grouping is purely visual.
+COLUMN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Backlog", (State.NOT_STARTED, State.SCOPED)),
+    ("Building", (State.WORK_STARTED, State.PLAN_RECORDED, State.CODED, State.TESTED)),
+    ("Reviewing", (State.SELF_REVIEWED, State.PR_OPENED, State.REVIEW_REQUESTED)),
+    ("Landed", (State.MERGED, State.RETRO_RECORDED, State.DELIVERED)),
+)
+# Terminal, non-actionable states hidden by default behind the board's toggle:
+# IGNORED (abandoned) and REVIEW_DELIVERED (reviewer finished cold-reviewing a PR).
+HIDDEN_STATES: tuple[str, ...] = (State.IGNORED, State.REVIEW_DELIVERED)
+
+# How long a task failure stays CURRENT STATE for card-rendering purposes (#3841).
+# Cards were rendering tracebacks whose file paths no longer exist on this box —
+# a failure from a prior deployment presented as if it were live. The attempt row
+# itself is never touched (it is audit); only the board stops showing it.
+STALE_ERROR_AFTER = timedelta(days=2)
+
+# Every column the board renders, in lifecycle order (excludes HIDDEN_STATES).
+BOARD_COLUMNS: tuple[str, ...] = tuple(state for _group, states in COLUMN_GROUPS for state in states)
+
+# state -> group slug (backlog/building/reviewing/landed/ignored), the ONE mapping
+# behind the FSM-rail hue language: column tops, the rail, and the drawer's
+# transition-history + current-state chip all colour by it, so board, diagram and
+# history speak one hue set. Derived from COLUMN_GROUPS so it cannot drift.
+_GROUP_SLUG_BY_STATE: dict[str, str] = {state: name.lower() for name, states in COLUMN_GROUPS for state in states}
+
+
+def group_slug(state: str) -> str:
+    """The FSM-rail group slug a state belongs to (IGNORED / unknown -> ``ignored``)."""
+    return _GROUP_SLUG_BY_STATE.get(str(state), "ignored")
+
+
+@dataclass(frozen=True, slots=True)
+class PrChip:
+    """One PR on a card or in the drawer: where it is, and what state it is in.
+
+    ``state`` is the raw FSM value, carried so the template can key styling on it —
+    an open, a merged and a closed PR must not render as three identical chips.
+    ``label`` is what a reader sees: the model's own human label, because the raw
+    value is an underscored slug (``review_requested``) that reads as debug output.
+    """
+
+    url: str
+    repo: str
+    iid: str
+    state: str
+    label: str = ""
+
+
+def pr_chip(pr: PullRequest) -> PrChip:
+    """The chip for one ``PullRequest`` row — the single builder both surfaces use.
+
+    The label falls back to the raw value for a state the choices no longer name,
+    so a row written by an older schema renders as itself rather than as blank.
+    """
+    return PrChip(
+        url=pr.url,
+        repo=pr.repo,
+        iid=pr.iid,
+        state=str(pr.state),
+        label=PullRequest.State(pr.state).label if pr.state in PullRequest.State.values else str(pr.state),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanCard:
+    ticket_id: int
+    number: str
+    short_description: str
+    issue_url: str
+    issue_href: str
+    issue_ref: str
+    overlay: str
+    role: str
+    kind: str
+    expedited: bool
+    remote_missing: bool
+    active: bool
+    active_phase: str
+    claimed_by: str
+    last_error: str
+    dwell: str
+    # #3957: the NAMED cause behind ``last_error``. A card used to render a cause-less
+    # error chip, so a genuine review defect and a lost lease looked identical;
+    # ``failure_environmental`` is what lets the chip say which of the two it is.
+    failure_kind: str = ""
+    failure_kind_label: str = ""
+    failure_environmental: bool = False
+    pr_chips: tuple[PrChip, ...] = ()
+    enqueue_buttons: tuple[EnqueueButton, ...] = ()
+
+
+#: What each lifecycle state MEANS, surfaced as the column's tooltip. The labels
+#: alone do not say what a state represents or why it sits where it does — and the
+#: two places the order surprises a reader (work starts BEFORE the plan is
+#: recorded; the author's own review comes BEFORE shipping, peer review after) are
+#: exactly the ones that need saying out loud.
+STATE_MEANINGS: dict[str, str] = {
+    State.NOT_STARTED: "Admitted to the board. Nothing claimed it yet.",
+    State.SCOPED: "Scope agreed — what is in and out is settled.",
+    State.WORK_STARTED: (
+        "Someone picked it up and a worktree exists. Comes BEFORE the plan: "
+        "the plan is recorded from the work, not ahead of it."
+    ),
+    State.PLAN_RECORDED: "A PlanArtifact is recorded. The plan() transition refuses without one.",
+    State.CODED: "The change is written and committed on its branch.",
+    State.TESTED: "Its tests pass — the broader CI/QA run, not just the author's own.",
+    State.SELF_REVIEWED: (
+        "The AUTHOR's own pre-ship review is done. This is not peer review; that is 'In peer review', after shipping."
+    ),
+    State.PR_OPENED: "A pull/merge request exists on the target branch.",
+    State.REVIEW_REQUESTED: "Review was REQUESTED from someone else and is outstanding.",
+    State.MERGED: "The PR is merged into its target branch.",
+    State.RETRO_RECORDED: "A retro extracted the lessons and turned them into enforcement.",
+    State.DELIVERED: "Done and confirmed on the surface that matters.",
+    State.REVIEW_DELIVERED: (
+        "A review this factory performed on someone else's PR has been posted. Terminal for a reviewer ticket."
+    ),
+    State.IGNORED: "Abandoned on purpose. Kept for the audit trail, never worked.",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanColumn:
+    state: str
+    label: str
+    cards: tuple[KanbanCard, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.cards)
+
+    @property
+    def meaning(self) -> str:
+        return STATE_MEANINGS.get(self.state, "")
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanGroup:
+    name: str
+    columns: tuple[KanbanColumn, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class KanbanBoard:
+    groups: tuple[KanbanGroup, ...]
+    include_ignored: bool
+    hidden: tuple[KanbanColumn, ...] = ()
+
+    @property
+    def total(self) -> int:
+        shown = sum(column.count for group in self.groups for column in group.columns)
+        return shown + sum(column.count for column in self.hidden)
+
+
+@dataclass(frozen=True, slots=True)
+class BoardFilters:
+    overlay: str = ""
+    role: str = ""
+    kind: str = ""
+    text: str = ""
+    include_ignored: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CardContext:
+    """The bulk-fetched per-ticket signals a card renders, keyed by ticket id."""
+
+    active_ticket_ids: set[int] = field(default_factory=set)
+    active_phase: dict[int, str] = field(default_factory=dict)
+    claimed_by: dict[int, str] = field(default_factory=dict)
+    last_error: dict[int, str] = field(default_factory=dict)
+    failure_kind: dict[int, str] = field(default_factory=dict)
+    latest_transition_at: dict[int, datetime] = field(default_factory=dict)
+    pr_chips: dict[int, tuple[PrChip, ...]] = field(default_factory=dict)
+    queued_phases: dict[int, dict[str, int]] = field(default_factory=dict)
+
+
+def build_kanban_columns(filters: BoardFilters | None = None) -> KanbanBoard:
+    """Group the ticket set into FSM-state columns with per-card badge signals.
+
+    Read-only: it issues ORM reads only and never touches the FSM. Every
+    per-ticket badge (active-work dot, active phase / claimed-by, last task
+    error, dwell-in-column, PR chips) is bulk-fetched once for the whole board
+    rather than per card, so the render is a small fixed number of queries.
+    """
+    active = filters or BoardFilters()
+    tickets = _filtered_tickets(active)
+    ticket_ids = [t.pk for t in tickets]
+    context = _card_context(ticket_ids)
+
+    by_state: dict[str, list[KanbanCard]] = {state: [] for state in (*BOARD_COLUMNS, *HIDDEN_STATES)}
+    for ticket in tickets:
+        by_state.setdefault(str(ticket.state), []).append(_card(ticket, context))
+
+    groups = tuple(
+        KanbanGroup(
+            name=name,
+            columns=tuple(
+                KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in states
+            ),
+        )
+        for name, states in COLUMN_GROUPS
+    )
+    hidden = (
+        tuple(KanbanColumn(state=state, label=_label(state), cards=tuple(by_state[state])) for state in HIDDEN_STATES)
+        if active.include_ignored
+        else ()
+    )
+    return KanbanBoard(groups=groups, include_ignored=active.include_ignored, hidden=hidden)
+
+
+def _filtered_tickets(filters: BoardFilters) -> list[Ticket]:
+    columns = (*BOARD_COLUMNS, *HIDDEN_STATES) if filters.include_ignored else BOARD_COLUMNS
+    qs = Ticket.objects.filter(state__in=columns)
+    if filters.overlay:
+        qs = qs.filter(overlay=filters.overlay)
+    if filters.role:
+        qs = qs.filter(role=filters.role)
+    if filters.kind:
+        qs = qs.filter(kind=filters.kind)
+    if filters.text:
+        qs = qs.filter(short_description__icontains=filters.text) | qs.filter(issue_url__icontains=filters.text)
+    return list(qs.order_by("-id"))
+
+
+def _card_context(ticket_ids: list[int]) -> _CardContext:
+    if not ticket_ids:
+        return _CardContext()
+    # One fetch feeds both maps so the chip's TEXT and its NAMED KIND can never
+    # disagree about which attempt they describe.
+    failures = _last_failure_by_ticket(ticket_ids)
+    return _CardContext(
+        active_ticket_ids=_active_ticket_ids(ticket_ids),
+        active_phase=_active_phase(ticket_ids),
+        claimed_by=_claimed_by(ticket_ids),
+        last_error={ticket_id: error for ticket_id, (error, _) in failures.items()},
+        failure_kind={ticket_id: kind for ticket_id, (_, kind) in failures.items()},
+        latest_transition_at=_latest_transition_at(ticket_ids),
+        pr_chips=_pr_chips_by_ticket(ticket_ids),
+        queued_phases=pending_phase_tasks_by_ticket(ticket_ids),
+    )
+
+
+def _active_ticket_ids(ticket_ids: list[int]) -> set[int]:
+    # Query Session / Task directly, not `Ticket.filter(sessions__ended_at__isnull=True)`:
+    # a reverse-relation `isnull=True` filter promotes to a LEFT JOIN, so a ticket
+    # with NO sessions would spuriously match (the null-row's `ended_at` IS NULL).
+    with_open_session = set(
+        Session.objects.filter(ticket_id__in=ticket_ids, ended_at__isnull=True).values_list("ticket_id", flat=True),
+    )
+    with_active_task = set(
+        Task.objects.filter(ticket_id__in=ticket_ids, status__in=Task.Status.active()).values_list(
+            "ticket_id",
+            flat=True,
+        ),
+    )
+    return with_open_session | with_active_task
+
+
+def _active_phase(ticket_ids: list[int]) -> dict[int, str]:
+    rows = (
+        Task.objects.filter(ticket_id__in=ticket_ids, status__in=Task.Status.active())
+        .order_by("ticket_id", "-pk")
+        .values_list("ticket_id", "phase")
+    )
+    phases: dict[int, str] = {}
+    for ticket_id, phase in rows:
+        phases.setdefault(ticket_id, phase)
+    return phases
+
+
+def _claimed_by(ticket_ids: list[int]) -> dict[int, str]:
+    rows = (
+        Task.objects.filter(ticket_id__in=ticket_ids, status=Task.Status.CLAIMED)
+        .exclude(claimed_by="")
+        .order_by("ticket_id", "-pk")
+        .values_list("ticket_id", "claimed_by")
+    )
+    claimed: dict[int, str] = {}
+    for ticket_id, actor in rows:
+        claimed.setdefault(ticket_id, actor)
+    return claimed
+
+
+def _last_failure_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[str, str]]:
+    """Per ticket, the latest attempt's ``(error, failure_kind)`` — empty when it did not fail.
+
+    The NAMED kind travels with the error text (#3957) so the card can say what KIND of
+    failure it is showing, rather than rendering a cause-less error chip an operator
+    cannot tell apart from a genuine review defect.
+
+    Take the LATEST attempt per ticket (regardless of error), then keep its error only if
+    that most-recent attempt carries one. Filtering to ``error__gt=""`` first would surface
+    a stale error from an old failed attempt even after a later attempt succeeded — a
+    recovered/shipped ticket still rendered red on the board (#3313).
+    """
+    latest_pks = (
+        TaskAttempt.objects.filter(task__ticket_id__in=ticket_ids)
+        .values("task__ticket_id")
+        .annotate(latest_pk=Max("pk"))
+        .values_list("latest_pk", flat=True)
+    )
+    attempts = TaskAttempt.objects.filter(
+        pk__in=list(latest_pks),
+        started_at__gte=timezone.now() - STALE_ERROR_AFTER,
+    ).select_related("task")
+    return {attempt.task.ticket_id: (attempt.error, attempt.failure_kind) for attempt in attempts if attempt.error}
+
+
+def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
+    rows = (
+        TicketTransition.objects.filter(ticket_id__in=ticket_ids)
+        .values("ticket_id")
+        .annotate(latest=Max("created_at"))
+        .values_list("ticket_id", "latest")
+    )
+    return dict(rows)
+
+
+def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
+    chips: dict[int, list[PrChip]] = {}
+    for pr in PullRequest.objects.filter(ticket_id__in=ticket_ids).order_by("ticket_id", "pk"):
+        chips.setdefault(pr.ticket_id, []).append(pr_chip(pr))
+    return {ticket_id: tuple(prs) for ticket_id, prs in chips.items()}
+
+
+def _card(ticket: Ticket, context: _CardContext) -> KanbanCard:
+    issue_href, issue_ref = issue_link(ticket.issue_url)
+    return KanbanCard(
+        ticket_id=ticket.pk,
+        number=ticket.ticket_number,
+        short_description=ticket.short_description,
+        issue_url=ticket.issue_url,
+        issue_href=issue_href,
+        issue_ref=issue_ref,
+        overlay=ticket.overlay,
+        role=ticket.role,
+        kind=ticket.kind,
+        expedited=ticket.expedited,
+        remote_missing=ticket.remote_missing,
+        active=ticket.pk in context.active_ticket_ids,
+        active_phase=context.active_phase.get(ticket.pk, ""),
+        claimed_by=context.claimed_by.get(ticket.pk, ""),
+        last_error=context.last_error.get(ticket.pk, ""),
+        failure_kind=(kind := context.failure_kind.get(ticket.pk, "")),
+        failure_kind_label=FailureKind(kind).label if kind else "",
+        failure_environmental=is_environmental(kind),
+        dwell=_dwell(context.latest_transition_at.get(ticket.pk)),
+        pr_chips=context.pr_chips.get(ticket.pk, ()),
+        enqueue_buttons=board_enqueue_buttons(context.queued_phases.get(ticket.pk, {})),
+    )
+
+
+def _dwell(latest_transition_at: datetime | None) -> str:
+    if latest_transition_at is None:
+        return ""
+    return _humanize_duration((timezone.now() - latest_transition_at).total_seconds())
+
+
+def _label(state: str) -> str:
+    return State(state).label
+
+
+def all_column_states() -> Iterable[str]:
+    """Every state the board can render — the four groups plus the hidden set.
+
+    The conformance test asserts this equals ``Ticket.State`` so no FSM state
+    can silently vanish from the board.
+    """
+    return (*BOARD_COLUMNS, *HIDDEN_STATES)

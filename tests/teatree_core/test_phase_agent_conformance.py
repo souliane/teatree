@@ -1,0 +1,310 @@
+"""Golden phase→agent conformance for the per-phase loop dispatch.
+
+The anti-regression guard for the per-phase FSM dispatch that #559/#633
+shadowed: every author lifecycle phase must route to its OWN phase agent,
+never to a single chaining orchestrator. The table is the contract — adding
+``planning → t3:planner`` later is a one-line edit here and in
+``SUBAGENT_BY_PHASE``.
+"""
+
+import ast
+import importlib.util
+import json
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
+
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.core.management.commands import loop_dispatch as loop_dispatch_cmd
+from teatree.core.modelkit.phases import (
+    _FANOUT_N_BOUNDS,
+    CHAINING_ORCHESTRATOR,
+    FANOUT_BY_PHASE,
+    SUBAGENT_BY_PHASE,
+    fanout_for_phase,
+    subagent_for_phase,
+)
+from teatree.core.models import Session, Task, Ticket
+from teatree.loop.dispatch import dispatch
+from teatree.loop.scanners.base import ScanSignal
+
+#: The golden table: every author lifecycle phase → its dedicated agent.
+#: A new lifecycle phase is added with one row (e.g. ``"planning": "t3:planner"``).
+EXPECTED_AUTHOR_AGENT: dict[str, str] = {
+    "coding": "t3:coder",
+    "testing": "t3:tester",
+    "reviewing": "t3:reviewer",
+    "shipping": "t3:shipper",
+}
+
+#: Repo-root ``agents/`` directory — the canonical sub-agent definitions the
+#: ``Agent`` tool resolves a ``t3:<name>`` value against. ``plugins/t3/agents``
+#: is the same directory reached through the ``plugins/t3 -> ..`` setup symlink.
+AGENTS_DIR: Path = Path(__file__).resolve().parents[2] / "agents"
+
+
+def _agent_name(subagent: str) -> str:
+    """Strip the ``t3:`` namespace prefix from a ``SUBAGENT_BY_PHASE`` value.
+
+    Every value is namespaced (asserted by
+    ``test_every_mapped_subagent_uses_the_t3_namespace``); ``removeprefix``
+    is a no-op for any future un-namespaced value rather than raising.
+    """
+    return subagent.removeprefix("t3:")
+
+
+#: Slash-command agents are resolved by the ``t3 codex`` CLI / ``/codex:*``
+#: slash command, NOT the Agent tool against ``agents/<name>.md``. They are a
+#: distinct spawn mechanism, so they are exempt from the ``t3:``-namespace and
+#: agents-file checks below — but they stay in this KNOWN allowlist so an
+#: arbitrary non-``t3:`` value still fails loud (the checks are not weakened for
+#: any other namespace).
+_SLASH_COMMAND_AGENTS: frozenset[str] = frozenset({"codex:review", "codex:adversarial-review"})
+
+
+def _is_slash_command_agent(subagent: str) -> bool:
+    return subagent in _SLASH_COMMAND_AGENTS
+
+
+class TestSubagentForPhaseConformance(TestCase):
+    """The canonical ``subagent_for_phase`` map — the single source of truth."""
+
+    def test_every_author_phase_routes_to_its_own_agent(self) -> None:
+        for phase, expected in EXPECTED_AUTHOR_AGENT.items():
+            assert subagent_for_phase(Ticket.Role.AUTHOR, phase) == expected, (
+                f"author phase {phase!r} routed to {subagent_for_phase(Ticket.Role.AUTHOR, phase)!r}, "
+                f"expected {expected!r}"
+            )
+
+    def test_no_author_phase_routes_to_chaining_orchestrator(self) -> None:
+        offenders = {
+            phase: agent
+            for (role, phase), agent in SUBAGENT_BY_PHASE.items()
+            if role == Ticket.Role.AUTHOR and agent == CHAINING_ORCHESTRATOR
+        }
+        assert offenders == {}, f"author phases must not chain through the orchestrator: {offenders}"
+
+    def test_reviewer_role_reviewing_still_routes_to_reviewer(self) -> None:
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "reviewing") == "t3:reviewer"
+
+    def test_short_verb_spelling_resolves_same_as_canonical(self) -> None:
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "code") == "t3:coder"
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "ship") == "t3:shipper"
+
+    def test_review_loop_e2e_phases_route_to_their_agents(self) -> None:
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "e2e") == "t3:e2e"
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "e2e_reviewing") == "t3:e2e-review"
+        assert (AGENTS_DIR / "e2e-review.md").is_file(), (
+            "the reviewer leg of the EXTERNAL review loop dispatches t3:e2e-review; "
+            "agents/e2e-review.md must exist so the Agent tool resolves it"
+        )
+
+    def test_requesting_review_phase_has_a_spawnable_agent(self) -> None:
+        # PR-12: requesting_review carried an FSM transition + a lifecycle skill
+        # but no dispatchable agent, so the loop resolved "" (operator triage)
+        # and the phase could never run headless. Short-verb spelling resolves
+        # the same as the canonical token.
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "requesting_review") == "t3:review-request"
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "request_review") == "t3:review-request"
+        assert (AGENTS_DIR / "review-request.md").is_file(), (
+            "the requesting_review phase dispatches t3:review-request; "
+            "agents/review-request.md must exist so the Agent tool resolves it"
+        )
+
+
+class TestLoopDispatchCommandConformance(TestCase):
+    """The command's ``_subagent_for`` resolver mirrors ``SUBAGENT_BY_PHASE`` — no drift copy."""
+
+    def test_command_resolver_mirrors_the_canonical_map(self) -> None:
+        for (role, phase), agent in SUBAGENT_BY_PHASE.items():
+            task = SimpleNamespace(ticket=SimpleNamespace(role=role), phase=phase)
+            assert loop_dispatch_cmd._subagent_for(task) == agent
+
+    def test_every_author_phase_has_a_non_orchestrator_subagent(self) -> None:
+        for phase, expected in EXPECTED_AUTHOR_AGENT.items():
+            ticket = Ticket.objects.create(
+                overlay="acme",
+                issue_url=f"https://example.com/issues/{phase}",
+                role=Ticket.Role.AUTHOR,
+            )
+            session = Session.objects.create(ticket=ticket, agent_id=phase)
+            task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+            stdout = StringIO()
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+            (entry,) = json.loads(stdout.getvalue())
+            assert entry["phase"] == phase
+            assert entry["subagent"] == expected
+            assert entry["subagent"] != CHAINING_ORCHESTRATOR
+            task.delete()
+
+
+class TestPendingTaskSignalConformance(TestCase):
+    """``loop.dispatch`` routes a ``pending_task`` signal phase-aware.
+
+    The ``PendingTasksScanner`` emits one ``pending_task`` per pending row;
+    the dispatcher must route it to the phase's own agent, never a single
+    chaining orchestrator.
+    """
+
+    def _signal(self, phase: str, *, role: str = Ticket.Role.AUTHOR) -> ScanSignal:
+        return ScanSignal(
+            kind="pending_task",
+            summary=f"Task ({phase}) pending",
+            payload={"task_id": 1, "phase": phase, "ticket_id": 1, "ticket_role": role},
+        )
+
+    def test_every_author_phase_dispatches_to_its_own_agent(self) -> None:
+        for phase, expected in EXPECTED_AUTHOR_AGENT.items():
+            actions = dispatch([self._signal(phase)])
+            agent_actions = [a for a in actions if a.kind == "agent"]
+            assert len(agent_actions) == 1, f"phase {phase!r}: expected one agent action, got {agent_actions}"
+            assert agent_actions[0].zone == expected, (
+                f"phase {phase!r} dispatched to {agent_actions[0].zone!r}, expected {expected!r}"
+            )
+
+    def test_no_author_phase_dispatches_to_chaining_orchestrator(self) -> None:
+        for phase in EXPECTED_AUTHOR_AGENT:
+            actions = dispatch([self._signal(phase)])
+            zones = {a.zone for a in actions if a.kind == "agent"}
+            assert CHAINING_ORCHESTRATOR not in zones, (
+                f"author phase {phase!r} must not route to the chaining orchestrator (zones={zones})"
+            )
+
+
+class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
+    """Every ``SUBAGENT_BY_PHASE`` value must resolve to a real agent file.
+
+    The loop dispatches a phase by passing its ``t3:<name>`` value as the
+    ``Agent`` tool's ``subagent_type``; the tool resolves that against an
+    ``agents/<name>.md`` definition. A phase mapped to a value with no
+    matching file errors at spawn time (``Agent type 't3:<name>' not
+    found``), so the work unit can never run. This scans the *whole* map —
+    not just the four FSM phases — so a phase added to ``SUBAGENT_BY_PHASE``
+    without its agent definition fails here, at conformance time.
+    """
+
+    def test_agents_dir_exists(self) -> None:
+        assert AGENTS_DIR.is_dir(), f"agents directory not found at {AGENTS_DIR}"
+
+    def test_every_mapped_subagent_has_an_agent_definition(self) -> None:
+        missing = {
+            (role, phase): subagent
+            for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
+            if not _is_slash_command_agent(subagent) and not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
+        }
+        assert missing == {}, (
+            f"phases mapped to a sub-agent with no agents/<name>.md definition: {missing}. "
+            f"Spawning these via the Agent tool errors \"Agent type '<value>' not found\"."
+        )
+
+    def test_every_mapped_subagent_uses_the_t3_namespace(self) -> None:
+        offenders = {
+            (role, phase): subagent
+            for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
+            if not subagent.startswith("t3:") and not _is_slash_command_agent(subagent)
+        }
+        assert offenders == {}, (
+            f"sub-agent values must be namespaced 't3:<name>' (or a known slash-command agent): {offenders}"
+        )
+
+    def test_agent_definition_name_matches_its_filename(self) -> None:
+        for (role, phase), subagent in SUBAGENT_BY_PHASE.items():
+            if _is_slash_command_agent(subagent):
+                continue  # resolved via the codex CLI / slash command, not agents/<name>.md
+            name = _agent_name(subagent)
+            agent_file = AGENTS_DIR / f"{name}.md"
+            text = agent_file.read_text(encoding="utf-8")
+            assert f"name: {name}\n" in text, (
+                f"{agent_file} frontmatter 'name:' must equal {name!r} so the Agent tool "
+                f"resolves {subagent!r} dispatched for ({role}, {phase})"
+            )
+
+    def test_codex_review_phases_resolve_to_slash_command_agents(self) -> None:
+        # The #1 blocker revived codex auto-review by encoding the variant in the
+        # PHASE so the /loop slot resolves the matching /codex:* agent directly.
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "codex_reviewing") == "codex:review"
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "codex_adversarial_reviewing") == "codex:adversarial-review"
+
+    def test_debugging_phase_resolves_to_debugger_agent(self) -> None:
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "debugging") == "t3:debugger"
+
+
+class TestFanoutRegistryConformance(TestCase):
+    """``FANOUT_BY_PHASE`` parallels ``SUBAGENT_BY_PHASE`` (teatree#2229).
+
+    A fan-out can only apply to a ``(role, phase)`` pair the loop actually
+    dispatches, so every fan-out key MUST also be a dispatched key — the same
+    no-route conformance shape the orchestrator/subagent maps carry. This
+    forbids an undispatched key: a fan-out can only apply to a ``(role, phase)``
+    pair the loop actually dispatches.
+    """
+
+    def test_every_fanout_key_is_a_dispatched_pair(self) -> None:
+        orphan = set(FANOUT_BY_PHASE) - set(SUBAGENT_BY_PHASE)
+        assert orphan == set(), (
+            f"FANOUT_BY_PHASE keys must each be a SUBAGENT_BY_PHASE key (a fan-out can "
+            f"only apply to a dispatched (role, phase) pair); orphans: {orphan}"
+        )
+
+    def test_bughunt_phase_is_registered_and_dispatchable(self) -> None:
+        # PR-13: bughunt's deferral is over — it is now a registered orthogonal phase.
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "bughunt") == "t3:bughunter"
+
+    def test_bughunt_carries_a_find_then_verify_fanout(self) -> None:
+        spec = fanout_for_phase(Ticket.Role.AUTHOR, "bughunt")
+        assert spec is not None, "bughunt must carry a fan-out spec once registered"
+        assert spec.pattern == "find-then-verify"
+
+    def test_default_fanout_n_is_within_bounds(self) -> None:
+        low, high = _FANOUT_N_BOUNDS
+        for key, spec in FANOUT_BY_PHASE.items():
+            assert low <= spec.fanout_n <= high, (
+                f"FANOUT_BY_PHASE[{key}].fanout_n={spec.fanout_n} outside bounds {_FANOUT_N_BOUNDS}"
+            )
+
+    def test_directive_template_substitutes_n(self) -> None:
+        # Every template must consume the registered width, rather than hard-code it.
+        for key, spec in FANOUT_BY_PHASE.items():
+            rendered = spec.directive_template.format(n=4)
+            assert "N=4" in rendered or " 4 " in rendered or "4 " in rendered, (
+                f"FANOUT_BY_PHASE[{key}].directive_template must substitute {{n}}; "
+                f"rendered with n=4 it does not surface 4: {rendered!r}"
+            )
+
+    def test_fanout_for_phase_normalizes_short_verb_spelling(self) -> None:
+        # A task stored with the short verb resolves the same as the canonical
+        # gerund (mirrors subagent_for_phase normalization).
+        assert fanout_for_phase("author", "review") is FANOUT_BY_PHASE["author", "reviewing"]
+        assert fanout_for_phase("author", "plan") is FANOUT_BY_PHASE["author", "planning"]
+        assert fanout_for_phase("reviewer", "REVIEWING ") is FANOUT_BY_PHASE["reviewer", "reviewing"]
+
+    def test_fanout_for_phase_returns_none_for_unregistered_pair(self) -> None:
+        assert fanout_for_phase("author", "coding") is None
+        assert fanout_for_phase("author", "shipping") is None
+
+
+class TestCorePhasesImportIsolation(TestCase):
+    """``core.phases`` keeps NO runtime import of ``config.agent_spawn`` (teatree#2229).
+
+    The fan-out resolver reads the registry directly, so the domain ``core``
+    layer has no reason to import the platform ``config.agent_spawn`` module.
+    """
+
+    def test_core_phases_has_no_runtime_config_agent_import(self) -> None:
+        target = "teatree.config.agent_spawn"
+        spec = importlib.util.find_spec("teatree.core.modelkit.phases")
+        assert spec is not None
+        assert spec.origin is not None
+        tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
+        offenders: list[int] = []
+        for stmt in tree.body:
+            if isinstance(stmt, ast.ImportFrom) and (stmt.module or "").startswith(target):
+                offenders.append(stmt.lineno)
+            if isinstance(stmt, ast.Import):
+                offenders.extend(s.lineno for s in [stmt] for alias in stmt.names if alias.name.startswith(target))
+        assert offenders == [], (
+            f"core.phases must not import {target} at runtime "
+            f"(domain must not depend on platform here); top-level import lines: {offenders}"
+        )

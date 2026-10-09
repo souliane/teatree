@@ -1,0 +1,458 @@
+"""Orphan-branch PR creation with the #792 pre-push-deadlock deferral.
+
+Split out of ``pr.py`` (same sibling-module pattern as ``_ship.fsm``) so
+``pr.py`` stays within the module-health LOC budget and the "create the PR
+for an orphan branch, or defer when the remote ref is not yet current"
+concern is named by its own file.
+
+#792: ``ensure-pr`` runs inside the git PRE-push hook. When the remote
+branch ref already exists at an older base (``classify_branch`` ⇒
+PUSHED_ORPHAN, not UNPUSHED_ORPHAN), ``gh pr create`` fails "No commits
+between main and <branch>" because THIS push has not updated the remote
+yet. Hard-failing there aborts the very push that would make the PR
+creatable — a permanent deadlock. That specific failure is therefore
+deferred exactly like the documented first-push UNPUSHED_ORPHAN case.
+
+Both deferrals are an OBLIGATION, not a skip: git has no client-side
+post-push hook, so a deferral that merely exits 0 is never re-run and the
+branch ships with no PR. Each one owes a
+:class:`~teatree.core.models.pending_pull_request.PendingPullRequest` row
+that the dispatch loop drains and ``t3 doctor check`` ages into a FAIL. Any
+other create failure is a real error and surfaces.
+"""
+
+import logging
+from collections.abc import Callable
+from dataclasses import asdict
+from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict, cast
+
+from django.db import DatabaseError
+
+from teatree.core.authoring_credential import unapprovable_author_refusal, unresolvable_author_refusal
+from teatree.core.backend_factory import code_host_for_repo_from_overlay
+from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
+from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
+from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
+from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.merge.pr_assignee import resolve_pr_assignee
+from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
+from teatree.core.models.pending_pull_request import settles_obligation
+from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
+from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    pr_reviewers_for_remote,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
+from teatree.core.worktree.branch_owner import ticket_owning_pr_branch
+from teatree.core.worktree.target_branch import resolve_pr_target_branch
+from teatree.quality.gate_receipt import append_gate_notice
+from teatree.utils import git, git_remote
+from teatree.utils.disposable_checkout import is_disposable_checkout
+from teatree.utils.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
+    from teatree.core.models.pending_pull_request import PendingPullRequestManager, SerializedPrSpec
+    from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+
+class EnsurePrResult(TypedDict, total=False):
+    skipped: str
+    branch: str
+    url: str
+    hint: str
+    error: str
+    #: The skip left a PR owed. Read by the drain instead of matching skip prose,
+    #: so a deferral stays distinguishable from the skips that discharge the obligation.
+    owed: bool
+
+
+class DischargeResult(TypedDict, total=False):
+    """Outcome of the operator dropping an obligation the drain can never satisfy."""
+
+    discharged: bool
+    branch: str
+    repo_path: str
+    error: str
+
+
+#: Not a deferral: nothing is owed, so it discharges rather than renewing the obligation.
+EMPTY_DELTA_SKIP = "branch carries no changes over the default branch — its pull request would be empty"
+#: Also not a deferral: a scratch clone is deleted when its review ends, so an obligation
+#: against it could only ever retry until someone discharged it by hand (#4577).
+DISPOSABLE_CHECKOUT_SKIP = "checkout is disposable (under a temp root) — its pull request could never be opened"
+UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
+PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
+PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
+REMOTE_UNKNOWN_DEFERRAL = "origin could not be read to tell whether the branch is on it — re-run once it answers"
+#: The hook's venue may see no credential the dispatch loop's venue does, so the refusal is owed, not dropped.
+AUTHOR_UNRESOLVABLE_DEFERRAL = "declared author does not resolve here — retry where it does"
+
+
+def _write_obligation_ledger(write: "Callable[[PendingPullRequestManager], object]", branch_name: str) -> None:
+    """A busy control DB is not a reason to drop the write.
+
+    SQLite reports lock contention as ``OperationalError`` exactly like a missing
+    table, so the write is retried and a lock that never clears SURFACES rather
+    than shipping a branch with no PR and no record of one. Only a pre-migration
+    missing relation degrades to a logged warning: this runs inside the pre-push
+    hook, and refusing the push over an unmigrated control DB would wedge every
+    commit on the machine. The schema guard in ``t3 doctor check`` surfaces that state.
+    """
+    from teatree.core.modelkit.db_retry import (  # noqa: PLC0415 — deferred: ORM-adjacent import at call time
+        is_missing_table_error,
+        retry_on_locked,
+    )
+    from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
+
+    try:
+        retry_on_locked(lambda: write(PendingPullRequest.objects))
+    except DatabaseError as exc:
+        if not is_missing_table_error(exc):
+            raise
+        logger.warning("ensure-pr could not update the obligation for %s — run `t3 doctor check`", branch_name)
+
+
+def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
+    """Persist the deferred PR as a durable obligation and return the deferral result.
+
+    The path is resolved to an ABSOLUTE one first: the hook defers with the
+    default ``"."`` in the worktree's cwd, and the drain and the doctor read the
+    stored value from the dispatch loop's cwd, where ``"."`` is a different
+    checkout entirely.
+    """
+    resolved_path = str(Path(repo_path).resolve())
+    if is_disposable_checkout(resolved_path):
+        logger.info("ensure-pr owes nothing for %s: %s is disposable", branch_name, resolved_path)
+        return EnsurePrResult(skipped=DISPOSABLE_CHECKOUT_SKIP, branch=branch_name, owed=False)
+    _write_obligation_ledger(
+        lambda ledger: ledger.owe(
+            repo_path=resolved_path,
+            branch=branch_name,
+            reason=reason,
+            spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
+        ),
+        branch_name,
+    )
+    return EnsurePrResult(
+        skipped=reason,
+        branch=branch_name,
+        hint=f"t3 <overlay> pr ensure-pr --repo {resolved_path} --branch {branch_name}",
+        owed=True,
+    )
+
+
+def discharge_if_settled(repo_path: str, branch_name: str, result: EnsurePrResult) -> EnsurePrResult:
+    """Retire an earlier deferral once a run settles its branch."""
+    if not settles_obligation(result):
+        return result
+    resolved_path = str(Path(repo_path).resolve())
+    try:
+        _write_obligation_ledger(
+            lambda ledger: ledger.discharge(repo_path=resolved_path, branch=branch_name),
+            branch_name,
+        )
+    except DatabaseError:
+        logger.warning("ensure-pr settled %s but could not retire its obligation — the drain will", branch_name)
+    return result
+
+
+def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for a branch git has not put on the remote yet (the FIRST push)."""
+    return _owe_pr(repo_path, branch_name, reason=UNPUSHED_DEFERRAL)
+
+
+def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for a branch whose open-PR state the forge would not report (#4116).
+
+    Creating on a can't-tell probe is what refused the SECOND push to a branch
+    whose PR already existed: ``gh pr create`` answered ``already exists`` and the
+    hook aborted the very push that was addressing review findings. Deferring
+    keeps the push moving, and the obligation — not a bare exit 0 — is what stops
+    the branch from shipping with no PR when the forge really was silent.
+    """
+    return _owe_pr(repo_path, branch_name, reason=PR_UNKNOWN_DEFERRAL)
+
+
+def defer_unreadable_remote(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for an orphan whose ``origin`` would not say whether it holds the branch.
+
+    Not an error: a push can still land through a distinct ``pushurl`` or past a
+    transient refusal, and an error owes nothing, so the branch would ship with no PR.
+    """
+    return _owe_pr(repo_path, branch_name, reason=REMOTE_UNKNOWN_DEFERRAL)
+
+
+_DEFERRALS: dict[BranchStatus, Callable[[str, str], EnsurePrResult]] = {
+    BranchStatus.UNPUSHED_ORPHAN: defer_unpushed_pr,
+    BranchStatus.PR_UNKNOWN: defer_unreadable_pr_state,
+    BranchStatus.REMOTE_UNKNOWN: defer_unreadable_remote,
+}
+
+
+def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
+    """The answer a classification already carries, or ``None`` when a PR must be created.
+
+    A pure mapping over the classification — every branch state but
+    ``PUSHED_ORPHAN`` carries its own answer, and only that one is work.
+    """
+    if report.status is BranchStatus.SYNCED:
+        return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
+    if report.status in {BranchStatus.EMPTY_DELTA, BranchStatus.BRANCH_MISSING}:
+        reason = (
+            EMPTY_DELTA_SKIP if report.status is BranchStatus.EMPTY_DELTA else f"branch ref {branch_name!r} is missing"
+        )
+        return EnsurePrResult(skipped=reason, branch=branch_name)
+    if report.status is BranchStatus.OPEN_PR:
+        return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
+    defer = _DEFERRALS.get(report.status)
+    return defer(repo_path, branch_name) if defer is not None else None
+
+
+def _ticket_for_branch(branch_name: str, repo_path: str = ".") -> "Ticket | None":
+    """Return the owning ``Ticket`` for an orphan-branch PR, via the branch's ``Worktree`` row.
+
+    The orphan path runs inside the git pre-push hook with no ticket handle;
+    the live ticket owning *branch_name* in *repo_path*'s repo names it
+    (:func:`ticket_owning_pr_branch`). A genuinely orphan branch yields ``None``.
+    """
+    return ticket_owning_pr_branch(branch_name, slug=git_remote.slug_from_remote(git.remote_url(repo=repo_path)))
+
+
+def _ticket_extra_for_branch(branch_name: str, repo_path: str = ".") -> dict | None:
+    """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
+
+    Resolving the ``extra`` via the branch's ``Worktree`` row lets
+    ``should_close_ticket`` honor an explicit ``more_prs_coming`` opt-out
+    even on this fallback. A genuinely orphan branch (no row) yields
+    ``None`` — ``should_close_ticket`` then applies the close-on-merge
+    default driven solely by the overlay setting.
+    """
+    ticket = _ticket_for_branch(branch_name, repo_path)
+    if ticket is None:
+        return None
+    return ticket.extra if isinstance(ticket.extra, dict) else None
+
+
+def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, str]:
+    """Return ``(subject, body)`` of the branch's OWN first (oldest) commit.
+
+    #1534: the PR title/body must describe the work being shipped — the
+    branch's own commit — never the default branch's head. Reading
+    ``HEAD`` (the former behaviour) could pick up an unrelated, already-
+    merged commit when the wrong ref was checked out or ``--repo`` was a
+    slug, opening a PR titled after a stale default-branch commit. Sourcing
+    explicitly from ``origin/<default>..<branch>`` makes the title
+    independent of the working tree and matches the squash-PR-title
+    convention (the branch's first own commit). The oldest unique commit is
+    the canonical title when the branch has several. No unique commit yields
+    ``("", "")`` so the caller keeps its safe ``WIP:`` fallback rather than
+    mislabelling the PR after the default-branch head.
+    """
+    try:
+        default = git.default_branch(repo=repo_path)
+    except (CommandFailedError, RuntimeError, ValueError):
+        default = "main"
+    return git.first_commit_message(repo=repo_path, range_spec=f"origin/{default}..{branch_name}")
+
+
+def _owning_ticket_pre_create_gate(
+    owning_ticket: "Ticket | None",
+    repo_slug: str,
+    repo_path: str,
+    branch_name: str,
+    host: CodeHostBackend,
+) -> EnsurePrResult | None:
+    """Refuse the orphan-branch PR-create when the owning ticket's gates say so.
+
+    The per-(repo, ticket) open-PR budget (north-star PR-2), the net-new tech-debt
+    check (north-star PR-3), and the fleet-safety Stage 2 fence (B3 — the create is
+    an outward write, so refuse it when the claim was stolen or is unconfirmable).
+    All inert at their neutral/DARK/kill-switch-off defaults; a genuinely orphan
+    branch (no owning ticket) has no scope, so every check is skipped.
+    """
+    if owning_ticket is None:
+        return None
+    try:
+        # Stage 3: `host` is the repo's resolved code host, so the budget
+        # check sees a sibling fleet instance's live forge PR too.
+        check_pr_budget(owning_ticket, repo_slug, host=host)
+    except PrBudgetExceededError as exc:
+        return EnsurePrResult(branch=branch_name, error=str(exc))
+    debt_error = evaluate_debt_delta(owning_ticket, repo_path)
+    if debt_error is not None:
+        return EnsurePrResult(branch=branch_name, error=debt_error)
+    from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+
+    if wire.ticket_claim_is_lost(owning_ticket, repo_path):
+        return EnsurePrResult(
+            branch=branch_name,
+            error=(
+                f"fleet claim for {owning_ticket.issue_url or branch_name} is no longer held by this instance "
+                f"— refusing to open a PR (stolen by another instance, or the ref infra is unreachable)"
+            ),
+        )
+    return None
+
+
+def _named_author_refusal(repo_path: str, branch_name: str) -> str:
+    """The named declared-author cause behind a forge host that would not build, or ``""``.
+
+    The overlay is resolved from the branch's ticket so a repo a NON-ambient overlay declares
+    still reports its own declared author rather than the ambient overlay's.
+
+    Never raises: this runs inside the git pre-push hook, where an exception aborts the push
+    itself, so an unreadable ticket or overlay registry degrades to ``""``.
+    """
+    try:
+        owning_ticket = _ticket_for_branch(branch_name, repo_path)
+        overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
+    except Exception:  # noqa: BLE001 — a pre-push hook must never raise; degrade to the generic message.
+        logger.warning("could not resolve the overlay owning %s — leaving the generic no-host message", branch_name)
+        return ""
+    return unresolvable_author_refusal(repo_path, overlay_config=overlay.config)
+
+
+def _no_host_error(repo_path: str, branch_name: str) -> str:
+    return _named_author_refusal(repo_path, branch_name) or "no code host configured"
+
+
+def _unresolved_host_result(repo_path: str, branch_name: str, *, generic: str) -> EnsurePrResult:
+    refusal = _named_author_refusal(repo_path, branch_name)
+    if not refusal:
+        return EnsurePrResult(error=generic)
+    owed = _owe_pr(repo_path, branch_name, reason=AUTHOR_UNRESOLVABLE_DEFERRAL)
+    owed["error"] = refusal
+    return owed
+
+
+def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Build the PR spec from the branch's own commit and create it, or defer (#792).
+
+    The "no commits between" create failure is the pre-push stale-remote
+    race (the remote ref still lags this in-flight push); deferring it lets
+    the push proceed so the post-push ``ensure-pr`` opens the PR. Every
+    other create failure is real and re-raised.
+    """
+    # #2025: resolve the forge from the branch's repo origin host, not by
+    # token-presence precedence — opening a PR on a GitLab-hosted repo with
+    # a GitHub-first overlay ran ``gh`` against a GitLab remote.
+    try:
+        host = code_host_for_repo_from_overlay(repo_path)
+    except BackendResolutionError as exc:
+        return _unresolved_host_result(repo_path, branch_name, generic=str(exc))
+    if host is None:
+        return EnsurePrResult(error=_no_host_error(repo_path, branch_name))
+    # An MR its own author cannot approve is refused before it exists: afterwards the only remedy
+    # is to close it and open another under the right identity.
+    if refusal := unapprovable_author_refusal(host, git.remote_url(repo=repo_path)):
+        return EnsurePrResult(error=refusal)
+
+    commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
+    title = commit_subject or f"WIP: {branch_name}"
+    # A genuinely orphan branch has no owning ticket to scope the overlay by, so
+    # it keeps the ambient default; a branch that HAS one is shipped under it.
+    owning_ticket = _ticket_for_branch(branch_name, repo_path)
+    overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
+    close_ticket = should_close_ticket(
+        _ticket_extra_for_branch(branch_name, repo_path),
+        setting_enabled=overlay.config.mr_close_ticket,
+    )
+    description = sanitize_close_keywords(
+        auto_created_description(
+            title,
+            commit_body,
+            branch=branch_name,
+            issue_url=(owning_ticket.issue_url or "") if owning_ticket is not None else "",
+        ),
+        close_ticket=close_ticket,
+    )
+    description = ensure_standard_body(
+        description,
+        required_sections=overlay.metadata.get_required_description_sections(),
+        section_defaults=overlay.metadata.get_description_section_defaults(),
+    )
+    description = append_gate_notice(description, repo_path)
+    warn_if_open_questions_missing(description)
+    warn_if_owner_ratification_unbacked(description)
+    warn_if_precheck_incomplete(description)
+
+    remote = git.remote_url(repo=repo_path)
+    repo_slug = git_remote.slug_from_remote(remote)
+    assignee = resolve_pr_assignee(host, repo=repo_slug)
+
+    # North-star PR-2/PR-3: refuse before opening when the ticket is already at its
+    # per-repo open-PR budget, or when the branch introduces unwaived net-new tech
+    # debt. Both inert at their DARK/neutral defaults; a genuinely orphan branch (no
+    # owning ticket) has no budget/plan scope, so the checks are skipped.
+    gate_error = _owning_ticket_pre_create_gate(owning_ticket, repo_slug, repo_path, branch_name, host)
+    if gate_error is not None:
+        return gate_error
+
+    spec = PullRequestSpec(
+        repo=repo_slug,
+        branch=branch_name,
+        title=title,
+        description=description,
+        target_branch=resolve_pr_target_branch(owning_ticket, repo_slug=repo_slug, branch=branch_name),
+        labels=overlay_pr_labels(overlay),
+        assignee=assignee,
+        reviewers=pr_reviewers_for_remote(overlay, remote),
+        draft=False,
+    )
+    try:
+        raw = host.create_pr(spec)
+    except CommandFailedError as exc:
+        if "no commits between" in (exc.stderr or str(exc)).lower():
+            return _owe_pr(repo_path, branch_name, reason=PRE_PUSH_RACE_DEFERRAL, spec=spec)
+        raise
+    result = _verified_pr_result(host, raw, branch_name)
+    _record_verified_url(owning_ticket, result, branch_name)
+    return result
+
+
+def _record_verified_url(ticket: "Ticket | None", result: EnsurePrResult, branch_name: str) -> None:
+    """Put a hook-opened PR on the ticket's record, so a post-push refusal reconciles (#4305).
+
+    This runs inside the git PRE-push hook, so by the time a ship's own post-push
+    refusal fires — the fleet-claim fence, or its PR-open half's no-URL /
+    wrong-slug / 404 returns — this PR is already live on the forge. Recorded, the
+    next attempt adopts it (``_recorded_url_for_branch``) rather than retrying
+    into ``already exists``. A genuinely orphan branch has no ticket to record on.
+    """
+    url = result.get("url") or ""
+    if ticket is None or not url:
+        return
+    record_pr_url(ticket, url, branch_name)
+
+
+def _verified_pr_result(host: CodeHostBackend, raw: "RawAPIDict", branch_name: str) -> EnsurePrResult:
+    """Turn a ``create_pr`` payload into a result, verifying the URL is a live PR.
+
+    #1222 / #1226: ``web_url`` is the cross-host canonical key (GitLab API
+    native; GitHub backend was aligned to it); ``html_url`` is kept for raw
+    GitHub payloads. An empty / non-URL payload surfaces as ``error`` so the
+    orphan-branch path never silently advances with no PR. #1194: a well-formed
+    URL is not proof — re-read it; a 404 means the create silently no-op'd.
+    """
+    url = str(raw.get("web_url") or raw.get("html_url") or "")
+    if not url.startswith(("http://", "https://")):
+        return EnsurePrResult(
+            branch=branch_name,
+            error=f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(raw.keys())!r})",
+        )
+    verified = verify_pr_exists(host, url)
+    if not verified.confirmed:
+        return EnsurePrResult(
+            branch=branch_name,
+            error=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
+        )
+    return EnsurePrResult(branch=branch_name, url=url)

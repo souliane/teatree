@@ -1,0 +1,6 @@
+from unittest.mock import patch
+
+
+def test_create_true_declares_intent():
+    with patch("teatree.config.attr_created_at_runtime", create=True, return_value=1):
+        pass

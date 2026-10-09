@@ -1,0 +1,492 @@
+"""Pure parser for ``claude -p --output-format stream-json`` output.
+
+The CLI emits one JSON object per line. Event ``type`` values seen in the
+wild: ``system`` (with ``subtype`` ``init``), ``assistant`` / ``user``
+(turn messages containing content blocks), ``result`` (with ``subtype``
+``success`` / ``error_max_turns`` / ``error_*``), and ``rate_limit_event``.
+
+Tool-use extraction walks ``assistant.message.content[*]`` and keeps the
+items whose ``type`` is ``tool_use`` — those carry ``name`` and ``input``
+as the agent issued them. ``turn`` is 1-indexed over the order of
+``assistant`` events in the stream.
+"""
+
+import dataclasses
+import json
+import re
+from typing import Any
+
+from teatree.agents.model_aliases import family_alias_models
+from teatree.core.billed_model import dominant_model
+from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
+
+#: Cap on the captured ``output`` snippet of a hook_response event — enough to
+#: read the block reason, bounded so a verbose hook payload never bloats the run.
+_GATE_OUTPUT_SNIPPET_CAP = 500
+
+#: Cap on the user-visible assistant text captured immediately before a governed
+#: tool. It is diagnostic evidence, not grading input, and must stay bounded.
+_GATE_ASSISTANT_TEXT_CAP = 4000
+
+#: The four ``ResultMessage.usage`` keys the API bills on, mapped onto the
+#: :class:`TokenUsage` fields. The mapping is the single place a future SDK
+#: rename would have to be reflected; the conformance test pins these keys so a
+#: silent drop fails loud rather than zeroing cost observability.
+_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "input"),
+    ("cache_creation_input_tokens", "cache_creation"),
+    ("cache_read_input_tokens", "cache_read"),
+    ("output_tokens", "output"),
+)
+
+#: A per-model ``model_usage`` entry uses the CLI's camelCase keys (distinct from
+#: the top-level ``usage`` snake_case above). The per-model ``costUSD`` is the key
+#: fact that makes the main-vs-auxiliary cost split possible.
+_MODEL_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
+    ("inputTokens", "input"),
+    ("cacheCreationInputTokens", "cache_creation"),
+    ("cacheReadInputTokens", "cache_read"),
+    ("outputTokens", "output"),
+)
+_MODEL_COST_KEY = "costUSD"
+
+#: A model id may carry a trailing ``-YYYYMMDD`` date suffix (``model_usage`` keys
+#: are dated, the requested tag usually is not) and a ``[1m]`` long-context suffix
+#: (the same model, a wider window). The base id is the comparison key for fallback
+#: detection and the cost split.
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+_LONG_CONTEXT_SUFFIX = "[1m]"
+
+
+def _base_model_id(model: str) -> str:
+    """Normalize a model id to its base form: short alias, ``@effort``, ``[1m]``, and ``-YYYYMMDD`` suffixes.
+
+    The requested tag is ``model[@effort]`` (effort is not a model) and may be a
+    documented short FAMILY alias (``opus``/``sonnet``/``haiku``); a ``model_usage``
+    key is the dated full model id, optionally ``[1m]``-suffixed. Both sides
+    normalize through here — aliases mapped UP to the concrete id, the date and
+    long-context suffixes stripped — so a short-alias / dated / long-context
+    request matches the ``model_usage`` key.
+
+    The alias map is DERIVED from the tier catalog
+    (:func:`teatree.agents.model_aliases.family_alias_models`) rather than pinned
+    here: a stale copy would make ``--models opus`` REQUEST the previous
+    generation while the transcript REPORTS the current one, silently zeroing
+    :func:`extract_model_cost_split`'s MAIN bucket and reporting a phantom
+    fallback out of :func:`requested_model_present`.
+    """
+    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0].removesuffix(_LONG_CONTEXT_SUFFIX))
+    return family_alias_models().get(base, base)
+
+
+@dataclasses.dataclass(frozen=True)
+class StreamJsonEvent:
+    line_no: int
+    type: str
+    subtype: str | None
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_obj(cls, line_no: int, obj: dict[str, Any]) -> "StreamJsonEvent | None":
+        """Fold one already-parsed event dict into a :class:`StreamJsonEvent`.
+
+        The shared alternative constructor both the on-disk transcript parser
+        (:func:`parse_stream_json`) and the typed-message mapper
+        (:mod:`teatree.eval.message_mapping`) fold through, so a synthesized fresh-run
+        stream and a replayed transcript reach the extractors as the identical event
+        shape — the typed lane skips the JSON string round-trip it used to pay
+        (serialize each event only to re-parse it). Returns ``None`` for a dict with no
+        string ``type``.
+        """
+        event_type = obj.get("type")
+        if not isinstance(event_type, str):
+            return None
+        subtype_value = obj.get("subtype")
+        subtype = subtype_value if isinstance(subtype_value, str) else None
+        return cls(line_no=line_no, type=event_type, subtype=subtype, raw=obj)
+
+
+def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
+    events: list[StreamJsonEvent] = []
+    for line_no, raw_line in enumerate(stdout.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        event = StreamJsonEvent.from_obj(line_no, obj)
+        if event is not None:
+            events.append(event)
+    return events
+
+
+def _is_subagent_event(event: StreamJsonEvent) -> bool:
+    """True when *event* is a SUB-AGENT (tool-use sidechain) turn, not the main agent's.
+
+    The SDK marks every TOP-LEVEL (main-agent) conversation message with
+    ``parent_tool_use_id == None`` and every sub-agent SIDECHAIN message (the turns a
+    dispatched ``Agent``/``Task`` produces, streamed inline into the SAME ``query``
+    output) with the parent ``Agent``/``Task`` tool_use id. A non-``None``
+    ``parent_tool_use_id`` is therefore the unambiguous sub-agent signal. The key is
+    ABSENT on every replay/subscription fixture and on a real top-level turn, so an
+    absent or ``None`` value is top-level (main agent) — the backward-compatible
+    default that keeps the existing fixtures byte-identically graded.
+    """
+    return event.raw.get("parent_tool_use_id") is not None
+
+
+def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
+    """Tool calls the MAIN agent issued — sub-agent sidechain calls are excluded.
+
+    A scenario grades the MAIN agent's behaviour; a tool call emitted by a
+    dispatched sub-agent (its worktree ``.py`` edits, its ``pytest``/``git`` runs)
+    is the sub-agent's, not the main agent's, and must not be attributed to it.
+    ``_is_subagent_event`` filters those sidechain turns out via
+    ``parent_tool_use_id`` so a correct delegate-then-stop main agent is not failed
+    by a negative ``Edit/Write .py`` matcher firing on the SUB-agent's legitimate
+    edits (#2596). ``turn`` stays 1-indexed over the MAIN-agent assistant events.
+    """
+    tool_calls: list[EvalToolCall] = []
+    results = _tool_results_by_id(events)
+    turn = 0
+    for event_index, event in enumerate(events):
+        if event.type != "assistant":
+            continue
+        if _is_subagent_event(event):
+            continue
+        turn += 1
+        message = event.raw.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        tool_calls.extend(_calls_in_content(content, turn=turn, event_index=event_index, results=results))
+    return tool_calls
+
+
+def _calls_in_content(
+    content: list[Any], *, turn: int, event_index: int, results: dict[str, tuple[dict[str, Any], int]]
+) -> list[EvalToolCall]:
+    calls: list[EvalToolCall] = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "tool_use":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+        tool_input = item.get("input")
+        call_id = item.get("id")
+        call_id = call_id if isinstance(call_id, str) and call_id else None
+        result_entry = results.get(call_id) if call_id is not None else None
+        if result_entry is not None and result_entry[1] < event_index:
+            result_entry = None
+        result, result_event_index = result_entry if result_entry is not None else (None, None)
+        excerpt = _result_text(result)[:4096] if result is not None else ""
+        exit_code = _shell_exit_code(excerpt) if name == "Bash" else None
+        raw_error = result.get("is_error") if result is not None else None
+        is_error = raw_error if isinstance(raw_error, bool) else None
+        if exit_code is not None:
+            is_error = (is_error is True) or exit_code != 0
+        calls.append(
+            EvalToolCall(
+                name=name,
+                input=dict(tool_input) if isinstance(tool_input, dict) else {},
+                turn=turn,
+                call_id=call_id,
+                is_error=is_error,
+                exit_code=exit_code,
+                result_excerpt=excerpt,
+                event_index=event_index,
+                result_event_index=result_event_index,
+            ),
+        )
+    return calls
+
+
+def _tool_results_by_id(events: list[StreamJsonEvent]) -> dict[str, tuple[dict[str, Any], int]]:
+    results: dict[str, tuple[dict[str, Any], int]] = {}
+    ambiguous: set[str] = set()
+    for event_index, event in enumerate(events):
+        if event.type not in {"user", "assistant"} or _is_subagent_event(event):
+            continue
+        message = event.raw.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            call_id = block.get("tool_use_id")
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            if call_id in results:
+                ambiguous.add(call_id)
+            results[call_id] = (block, event_index)
+    for call_id in ambiguous:
+        del results[call_id]
+    return results
+
+
+def _result_text(result: dict[str, Any]) -> str:
+    content = result.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") for block in content if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _shell_exit_code(text: str) -> int | None:
+    for pattern in (r"\Aexit=(-?\d+)(?:\n|\Z)", r"(?m)^Exit code: (-?\d+)\b", r"(?m)^\(exit (-?\d+)\)\s*$"):
+        match = re.search(pattern, text)
+        if match is not None:
+            return int(match.group(1))
+    return None
+
+
+def extract_gate_events(events: list[StreamJsonEvent]) -> list[GateEvent]:
+    """Production-hook lifecycle events the runner synthesized into the stream.
+
+    Only ``hook_response`` system events (a hook that COMPLETED) carry
+    outcome/output; ``hook_started`` is dropped upstream by the message mapper.
+    Returns one :class:`~teatree.eval.models.GateEvent` per response so the report
+    can annotate a gate-assisted pass and the fail-loud / canary checks can confirm
+    the shipped hooks fired under the eval wiring. A recorded-transcript replay
+    carries no such events, so this returns ``[]`` there — the additive default.
+    """
+    gate_events: list[GateEvent] = []
+    for event in events:
+        if event.type != "system" or event.subtype != "hook_response":
+            continue
+        raw = event.raw
+        name = raw.get("hook_event") or raw.get("hook_event_name") or ""
+        gate_events.append(
+            GateEvent(
+                hook_event_name=str(name),
+                outcome=_stringify(raw.get("outcome")),
+                output_snippet=_stringify(raw.get("output"))[:_GATE_OUTPUT_SNIPPET_CAP],
+                sequence=_optional_int(raw.get("sequence")),
+                tool_name=_stringify(raw.get("tool_name")),
+                tool_use_id=_stringify(raw.get("tool_use_id")),
+                gate_id=_stringify(raw.get("gate_id")),
+                reason=_stringify(raw.get("reason"))[:_GATE_OUTPUT_SNIPPET_CAP],
+                assistant_text=_stringify(raw.get("assistant_text"))[:_GATE_ASSISTANT_TEXT_CAP],
+            )
+        )
+    return gate_events
+
+
+def _optional_int(value: object) -> int | None:
+    """Return an integer audit sequence, rejecting booleans and malformed values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return None
+
+
+def _stringify(value: object) -> str:
+    """A hook ``outcome``/``output`` may arrive as a str, dict, or None — render it flat."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
+
+
+def extract_text_blocks(events: list[StreamJsonEvent]) -> list[str]:
+    text_blocks: list[str] = []
+    for event in events:
+        if event.type != "assistant":
+            continue
+        message = event.raw.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "text":
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                text_blocks.append(text)
+    return text_blocks
+
+
+def extract_terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
+    """Return ``(terminal_reason, is_error)`` from the final ``result`` event.
+
+    When no ``result`` event is present (e.g. the CLI aborted before
+    finishing), returns ``("aborted", True)`` per the spec.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        subtype = event.subtype or "unknown"
+        is_error_field = event.raw.get("is_error")
+        is_error = bool(is_error_field) if is_error_field is not None else not subtype.startswith("success")
+        return subtype, is_error
+    return "aborted", True
+
+
+def reported_cost_usd(events: list[StreamJsonEvent]) -> float | None:
+    """The transport's OWN ``total_cost_usd`` from the final ``result`` event, else ``None``.
+
+    ``None`` means the transport reported nothing — a subscription/offline CLI run, or
+    any ``PydanticAiRunner`` lane, whose ``total_cost_usd`` is ``None`` for every provider
+    that surfaces no cost key (always the case for Anthropic). It is NOT ``$0``, and the
+    two must stay distinguishable: :func:`~teatree.eval.cost_observation.observe_cost`
+    prices a silently-billing transport's run from its own token usage instead of
+    floor-reporting zero, and reports *unknown* for the ``api`` transport, whose silence
+    is itself the authority that it billed nothing.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        raw_cost = event.raw.get("total_cost_usd")
+        return float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool) else None
+    return None
+
+
+def extract_usage(events: list[StreamJsonEvent]) -> TokenUsage:
+    """Return the ``usage`` token split from the final ``result`` event, all-zero when absent.
+
+    Mirrors :func:`reported_cost_usd` defensively: a subscription / offline /
+    capped run omits ``usage`` (and a metered run that drops a key, or carries a
+    non-int value, must not crash cost observability) — every missing or
+    non-int key defaults to ``0``, so the worst case is an all-zero
+    :class:`TokenUsage`, never a raise.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        usage = event.raw.get("usage")
+        if not isinstance(usage, dict):
+            return TokenUsage()
+        return TokenUsage(**_token_fields(usage))
+    return TokenUsage()
+
+
+def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
+    """Return the model that actually ran — the dominant ``model_usage`` key — or ``None``.
+
+    ``model_usage`` is a per-model usage map; the model that billed the most
+    tokens is the one that ran (it differs from the requested model when
+    ``fallback_model`` kicked in). Returns ``None`` when no ``result`` event, no
+    ``model_usage``, or a malformed (non-dict / empty) map — the caller treats
+    ``None`` as "not observable", never as a fallback signal.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        return dominant_model(event.raw.get("model_usage"))
+    return None
+
+
+def requested_model_present(events: list[StreamJsonEvent], requested: str) -> bool | None:
+    """Return whether the REQUESTED main model is present in ``model_usage`` — the fallback signal.
+
+    Claude Code ALWAYS runs a cheap Haiku auxiliary model alongside the requested
+    main model, so an auxiliary key in ``model_usage`` is
+    NORMAL — it is not a fallback. A fallback is the requested main model being
+    SUBSTITUTED away: present here means absent from the ``model_usage`` keys.
+
+    Comparison is on the base model id (effort tag stripped from *requested*, a
+    ``-YYYYMMDD`` date suffix stripped from each ``model_usage`` key). Returns
+    ``True`` when the requested model is present (NOT a fallback), ``False`` when
+    it was substituted (a fallback), and ``None`` when ``model_usage`` is
+    unobservable (no ``result`` event / absent / malformed map) — the caller
+    treats ``None`` as "not observable", never as a fallback signal.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        model_usage = event.raw.get("model_usage")
+        if not isinstance(model_usage, dict) or not model_usage:
+            return None
+        base_keys = {_base_model_id(key) for key in model_usage if isinstance(key, str)}
+        return _base_model_id(requested) in base_keys
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelCostSplit:
+    """The metered cost + token usage of one run, split into MAIN vs AUXILIARY model.
+
+    The MAIN model is the requested base model (the comparison number the
+    benchmark cares about); AUXILIARY is the sum of every other ``model_usage``
+    entry (Claude Code's background Haiku model). Both default to zero,
+    so a non-metered / unobservable run yields an all-zero split, never a raise.
+    """
+
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
+    main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+
+
+def extract_model_cost_split(events: list[StreamJsonEvent], requested: str) -> ModelCostSplit:
+    """Split the final ``result`` event's per-model cost/usage into MAIN vs AUXILIARY.
+
+    Each ``model_usage`` entry carries a per-model ``costUSD`` and camelCase token
+    counts. The requested base model's entry is the MAIN split; every other entry
+    sums into the AUXILIARY split (the background Haiku model). A missing
+    or malformed map yields an all-zero split — never a raise.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        model_usage = event.raw.get("model_usage")
+        if not isinstance(model_usage, dict):
+            return ModelCostSplit()
+        return _split_model_usage(model_usage, requested)
+    return ModelCostSplit()
+
+
+def _split_model_usage(model_usage: dict[Any, Any], requested: str) -> ModelCostSplit:
+    requested_base = _base_model_id(requested)
+    main_cost = aux_cost = 0.0
+    main_usage = aux_usage = TokenUsage()
+    for key, entry in model_usage.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        cost = _model_cost(entry)
+        usage = TokenUsage(**_model_token_fields(entry))
+        if _base_model_id(key) == requested_base:
+            main_cost += cost
+            main_usage += usage
+        else:
+            aux_cost += cost
+            aux_usage += usage
+    return ModelCostSplit(main_cost_usd=main_cost, aux_cost_usd=aux_cost, main_usage=main_usage, aux_usage=aux_usage)
+
+
+def _model_cost(entry: dict[Any, Any]) -> float:
+    raw = entry.get(_MODEL_COST_KEY)
+    return float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0.0
+
+
+def _model_token_fields(entry: dict[Any, Any]) -> dict[str, int]:
+    """Map one ``model_usage`` entry's camelCase token keys onto :class:`TokenUsage` field ints."""
+    return {field: _int_or_zero(entry.get(key)) for key, field in _MODEL_USAGE_KEY_TO_FIELD}
+
+
+def _int_or_zero(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _token_fields(raw: dict[Any, Any]) -> dict[str, int]:
+    """Map the four wire keys of a ``usage``/``model_usage`` entry onto field ints."""
+    return {field: _int_or_zero(raw.get(key)) for key, field in _USAGE_KEY_TO_FIELD}

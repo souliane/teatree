@@ -1,0 +1,551 @@
+"""The headless stack externalizes only deliberate shared state onto host binds.
+
+The factory's DB, worktrees, and workspaces live on the HOST (not in Docker
+named volumes), so the container and the host converge on ONE db.sqlite3. The
+credential plane (the host pass store + its GPG home) is a further dedicated
+bind mount, decoupled from the data dir so a data-dir change can never orphan
+the provisioned credential store again (the #3262 regression).
+
+Each mount's TARGET is fixed at the canonical container path under
+``HOME=/home/teatree`` — what ``teatree.paths`` resolves inside the container
+(``deploy/Dockerfile`` sets no ``XDG_DATA_HOME``). The SOURCE is that same path
+rebased onto ``${TEATREE_HOST_HOME:-/home/teatree}``, the host home carrying the
+state tree: on the box the deploy user's home IS ``/home/teatree``, so source ==
+target and path identity holds; off-box (an operator laptop whose home is not
+``/home/teatree``) the sources follow the real host home, which is what makes
+the stack mountable there at all — dockerd refuses a source path the host does
+not have.
+
+The source tree the container executes is the same knob in mount form:
+``${TEATREE_SOURCE_MOUNT:-teatree_src}`` defaults to the box's self-updating
+named volume and takes a host directory to run a working tree instead.
+
+Structure is parsed from the YAML directly (the source of truth); golden
+`docker compose config` assertions render both the default and the overridden
+host home when a usable docker is present.
+
+``deploy/t3`` carries a hand-written second copy of the same host roots — it
+pre-creates each source (dockerd would otherwise create a missing one root-owned)
+and answers "can the container see this path?" from them. Nothing links the two
+files, so the last class here evaluates the wrapper's arrays and pins them against
+this file's bind sources.
+"""
+
+import json
+import os
+import pwd
+import re
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+COMPOSE_FILE = Path(__file__).resolve().parents[1] / "deploy" / "docker-compose.yml"
+WRAPPER = COMPOSE_FILE.parent / "t3"
+
+# HOME inside the container — every mount TARGET is anchored here.
+CONTAINER_HOME = "/home/teatree"
+# The host-side root of every bind SOURCE, and its on-box default.
+HOST_HOME_PLACEHOLDER = "${TEATREE_HOST_HOME:-/home/teatree}"
+DEFAULT_HOST_HOME = CONTAINER_HOME
+# The source-tree mount: the box's self-updating clone volume by default.
+SOURCE_MOUNT_PLACEHOLDER = "${TEATREE_SOURCE_MOUNT:-teatree_src}"
+DEFAULT_SOURCE_VOLUME = "teatree_src"
+CONTAINER_SOURCE_DIR = f"{CONTAINER_HOME}/teatree"
+
+# The host's PATH bin dir, mounted so the CONTAINER can write the host `t3`
+# launcher. The ONE bind deliberately NOT at path identity: `/home/teatree/.local/bin`
+# is on the container's own PATH, and the file landing there execs `docker compose`,
+# so mounting at identity would make the host launcher resolvable inside.
+HOST_BIN_SOURCE = f"{HOST_HOME_PLACEHOLDER}/.local/bin"
+HOST_BIN_TARGET = "/var/lib/teatree/host-bin"
+
+# The three externalized state mounts, by canonical container target.
+EXTERNALIZED = {
+    f"{CONTAINER_HOME}/.local/share/teatree",
+    f"{CONTAINER_HOME}/.local/share/teatree-worktrees",
+    f"{CONTAINER_HOME}/workspace/t3-workspaces",
+}
+# The credential plane: the host pass store + its GPG home, DEDICATED bind mounts
+# decoupled from the data dir so a data-dir change can never orphan the
+# provisioned credential store again (#3262 regression).
+CREDENTIAL_PLANE = {
+    f"{CONTAINER_HOME}/.password-store",
+    f"{CONTAINER_HOME}/.gnupg",
+}
+# Agent homes are container-owned.  They persist and are shared between init and
+# runtime roles, but can never import settings, skills, or credentials from the
+# operator's host installations.
+AGENT_HOME_VOLUMES = {
+    "teatree_claude_home": f"{CONTAINER_HOME}/.claude",
+    "teatree_codex_home": f"{CONTAINER_HOME}/.codex",
+    "teatree_agents_home": f"{CONTAINER_HOME}/.agents",
+}
+# The mounts whose SOURCE is their TARGET rebased on the host home.
+PATH_IDENTICAL = EXTERNALIZED | CREDENTIAL_PLANE
+# The HOST namespace the agent-scratch retention sweep reads and reclaims (#4165).
+# A PAIR by construction: the open-file guard is read from a process table, so the
+# temp root and the table describing its holders must name the same namespace.
+HOST_SCRATCH_TARGET = "/host-tmp"
+HOST_PROC_TARGET = "/host-proc"
+HOST_NAMESPACE = {HOST_SCRATCH_TARGET, HOST_PROC_TARGET}
+# Every host bind mount the shared list must carry, by canonical container target.
+# The host-namespace pair is listed separately: it is not a container path rebased
+# onto the host home, so the state-plane source rule below does not apply to it.
+ALL_BIND_TARGETS = PATH_IDENTICAL | {HOST_BIN_TARGET}
+# The deploy checkout: the clone `workspace ticket` cuts worktrees from (#4120).
+# A different KIND of bind from the state planes above — it is not a container
+# path rebased onto the host home but the SAME path on both sides, so the
+# absolute `gitdir:` a worktree records resolves in either venue.
+DEPLOY_CHECKOUT_PLACEHOLDER = (
+    "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}"  # privacy-scan:allow — public deploy home
+)
+# The interpreter plane: the ONE uv python root both venues name identically
+# (#4642). A pyvenv.cfg records an ABSOLUTE interpreter path, so a venv under the
+# path-identical worktree bind is valid in both venues only where its interpreter
+# root is path-identical too — otherwise each venue deletes and rebuilds the
+# other's environment, ~1 GB a flip. The TOOL plane stays on `teatree_uv`.
+#
+# The SAME kind as the deploy checkout above, not a rebased state dir: uv writes
+# its `cpython-<minor>` aliases into this root as ABSOLUTE symlinks and has no
+# relative mode, so whatever the CONTAINER calls the directory is what the HOST
+# reads back. While the target was pinned to the container coordinate, every boot
+# off-box rewrote the host's alias set to point inside the container.
+INTERPRETER_PLANE_PLACEHOLDER = f"{HOST_HOME_PLACEHOLDER}/.local/share/uv/python"
+# The mounts whose source and target are ONE string — the host's own path, named
+# identically in both venues rather than rebased between them.
+IDENTITY_PLACEHOLDERS = {DEPLOY_CHECKOUT_PLACEHOLDER, INTERPRETER_PLANE_PLACEHOLDER}
+# The mounts that stay Docker-managed named volumes by default.
+#: ``teatree_control_db`` holds the control database itself — a named volume so the
+#: file has no host path for a host process to open (teatree.db.write_domain).
+#: ``teatree_clones`` is the container's own CLONE root. Deliberately NOT a bind of
+#: the host's ``~/workspace``: a git worktree records an absolute ``gitdir`` pointer
+#: into its source clone, so a clone is shareable only where both venues name it
+#: identically — which the host home variable cannot guarantee for a whole root.
+#: Sharing is done per-clone instead, by a discovery symlink into the deploy
+#: checkout bound at path identity (#4120). A volume rather than the image layer so
+#: the clones survive container recreation.
+CLONE_ROOT_VOLUME = "teatree_clones"
+CLONE_ROOT_TARGET = f"{CONTAINER_HOME}/workspace"
+KEPT_NAMED_VOLUMES = {
+    DEFAULT_SOURCE_VOLUME,
+    "teatree_uv",
+    "teatree_control_db",
+    CLONE_ROOT_VOLUME,
+    "teatree_claude_projects",
+    *AGENT_HOME_VOLUMES,
+}
+REMOVED_NAMED_VOLUMES = {"teatree_data", "teatree_worktrees", "teatree_workspaces"}
+# The daemon control channel.
+DOCKER_SOCKET = "/var/run/docker.sock"
+#: Every worker bind whose source is NOT under the host home, enumerated so a new
+#: root elsewhere reds instead of widening the host-home parity silently: the daemon
+#: socket, the host process table and temp root the retention sweep reads, and the
+#: deploy checkout bound at path identity. `/proc` appears twice because the shared
+#: volume list declares it in both compose syntaxes.
+NON_HOST_HOME_WORKER_BINDS = {
+    DOCKER_SOCKET,
+    "/proc",
+    "/proc:/host-proc",
+    "${TEATREE_HOST_TMP:-/tmp}",
+    "${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}",
+}
+
+BASH = shutil.which("bash") or "/bin/bash"
+#: The wrapper's two mount-source arrays, from the first declaration to the close of
+#: the second — stopping before the `install -d` that would create the dirs for real.
+WRAPPER_MOUNT_ARRAYS = re.compile(
+    r"^CREDENTIAL_MOUNT_SOURCES=\(.*?^DATA_MOUNT_SOURCES=\(.*?^\)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def _compose() -> dict:
+    return yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+
+
+def _common_volumes() -> list:
+    """The shared mount list every service inherits via `*teatree-common`."""
+    return _compose()["x-teatree-common"]["volumes"]
+
+
+def _render(work_dir: Path, env_overrides: dict[str, str]) -> dict:
+    """`docker compose config` for an isolated copy, under a controlled env."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("docker not available for the golden config render")
+    # Isolated copy with a stub env_file so the real box secrets are never read;
+    # `config` neither builds nor starts anything.
+    compose_copy = work_dir / "docker-compose.yml"
+    compose_copy.write_text(COMPOSE_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    (work_dir / "teatree.env").write_text("T3_DEBUG=0\n", encoding="utf-8")
+    # The interpolation knobs come ONLY from env_overrides — a developer shell
+    # that already exports them must not change what this golden renders.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"TEATREE_HOST_HOME", "TEATREE_SOURCE_MOUNT", "TEATREE_TRANSCRIPT_SOURCE"}
+    }
+    env.update(env_overrides)
+    # `compose` is a CLI PLUGIN the docker binary loads from the config dir, which
+    # defaults to $HOME/.docker — and conftest redirects HOME to a throwaway
+    # sandbox, so the plugin would be unfindable and every golden here would
+    # degrade to a skip. Resolve the config dir from the passwd database (immune
+    # to the HOME redirect) when the caller has not pinned one.
+    env.setdefault("DOCKER_CONFIG", str(Path(pwd.getpwuid(os.getuid()).pw_dir) / ".docker"))
+    proc = subprocess.run(
+        [docker, "compose", "-f", str(compose_copy), "config", "--format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"docker compose config unusable here: {proc.stderr.strip()[:200]}")
+    return json.loads(proc.stdout)
+
+
+def _rendered_mounts(rendered: dict) -> dict:
+    return {m["target"]: m for svc in rendered["services"].values() for m in svc.get("volumes", [])}
+
+
+def _short_syntax_sources() -> set[str]:
+    """Named-volume sources of the `SOURCE:TARGET` short-syntax mounts.
+
+    Split on the LAST colon: a source may itself carry one (compose's
+    `${VAR:-default}` interpolation), while the target is an absolute container
+    path that cannot.
+
+    An ABSOLUTE source is a bind by compose's own short-syntax rule, not a named
+    volume — the docker socket the worker drives the daemon through is one — so it
+    is excluded here rather than counted as a volume this file forgot to declare.
+    """
+    return {
+        source
+        for source in (entry.rsplit(":", 1)[0] for entry in _common_volumes() if isinstance(entry, str))
+        if not source.startswith("/")
+    }
+
+
+def _worker_bind_sources() -> set[str]:
+    """Every host path bound into teatree-worker, in either compose syntax.
+
+    An ABSOLUTE short-syntax source is a bind by compose's own rule (the docker
+    socket is one); a relative or `${...}`-defaulted one names a volume.
+    """
+    sources = set()
+    for entry in _compose()["services"]["teatree-worker"]["volumes"]:
+        if isinstance(entry, dict):
+            if entry.get("type") == "bind":
+                sources.add(entry["source"])
+        elif (source := entry.rsplit(":", 1)[0]).startswith("/"):
+            sources.add(source)
+    return sources
+
+
+def _wrapper_mount_sources() -> set[str]:
+    """The wrapper's arrays as bash expands them, not as a regex reads them.
+
+    The compose PLACEHOLDER is fed in as the host home, so each expansion comes back
+    in the same spelling as the bind sources above and the two compare directly.
+    """
+    block = WRAPPER_MOUNT_ARRAYS.search(WRAPPER.read_text(encoding="utf-8"))
+    assert block is not None, f"{WRAPPER} no longer declares its mount-source arrays"
+    script = (
+        f"set -eu\nTEATREE_HOST_HOME={shlex.quote(HOST_HOME_PLACEHOLDER)}\n{block.group(0)}\n"
+        'printf "%s\\n" "${CREDENTIAL_MOUNT_SOURCES[@]}" "${DATA_MOUNT_SOURCES[@]}"'
+    )
+    completed = subprocess.run([BASH, "-c", script], capture_output=True, text=True, check=True, timeout=30)
+    return set(completed.stdout.splitlines())
+
+
+def _host_identity_worker_bind_sources() -> set[str]:
+    """The off-box overlay's worker bind sources, rendered onto the shared placeholder.
+
+    The overlay interpolates a bare ``${TEATREE_HOST_HOME}`` (it is only ever
+    added on a host that exports one), so rendering it onto the same placeholder
+    the base file defaults to lets the wrapper-parity set union the two files.
+    """
+    identity_file = COMPOSE_FILE.parent / "docker-compose.host-identity.yml"
+    services = yaml.safe_load(identity_file.read_text(encoding="utf-8"))["services"]
+    return {
+        m["source"].replace("${TEATREE_HOST_HOME}", HOST_HOME_PLACEHOLDER)
+        for m in services["teatree-worker"]["volumes"]
+        if isinstance(m, dict) and m.get("type") == "bind"
+    }
+
+
+def _resolve_default(source: str) -> str:
+    """The value a `${VAR:-default}` source renders to when VAR is unset."""
+    if source.startswith("${") and ":-" in source:
+        return source.rpartition(":-")[2].removesuffix("}")
+    return source
+
+
+class TestExternalizedBindMounts:
+    def _bind_mounts(self) -> dict:
+        return {
+            entry["target"]: entry
+            for entry in _common_volumes()
+            if isinstance(entry, dict) and entry.get("type") == "bind"
+        }
+
+    def test_state_dirs_are_bind_mounts_at_canonical_container_targets(self) -> None:
+        binds = self._bind_mounts()
+        assert set(binds) == ALL_BIND_TARGETS | HOST_NAMESPACE | IDENTITY_PLACEHOLDERS, (
+            "every state + credential dir must be a host bind mount, plus the two "
+            "identity mounts and the host-namespace pair the scratch sweep reads"
+        )
+
+    def test_every_state_bind_source_is_the_target_rebased_on_the_host_home(self) -> None:
+        # The target is fixed (it is what `teatree.paths` resolves inside the
+        # container); only the host-side root varies, through ONE variable whose
+        # default keeps source == target on the box.
+        binds = self._bind_mounts()
+        for target in ALL_BIND_TARGETS:
+            if target == HOST_BIN_TARGET:
+                continue
+            suffix = target.removeprefix(CONTAINER_HOME)
+            assert binds[target]["source"] == f"{HOST_HOME_PLACEHOLDER}{suffix}", (
+                f"{target}: source must be the target rebased on {HOST_HOME_PLACEHOLDER}"
+            )
+
+    @pytest.mark.parametrize("placeholder", sorted(IDENTITY_PLACEHOLDERS))
+    def test_the_identity_mounts_name_one_string_on_both_sides_and_are_writable(self, placeholder: str) -> None:
+        # Both carry an ABSOLUTE path written by one venue and read by the other:
+        # `git worktree add` bakes a `gitdir:` into its source clone, and `uv
+        # python install` writes absolute alias symlinks into the interpreter
+        # root. Only source == target makes either resolve in both venues.
+        #
+        # Asserted WITHOUT substituting the host home away — that substitution is
+        # what let the interpreter plane ship with the container's coordinate as
+        # its target and corrupt the host's alias set on every off-box boot.
+        # Writable because both venues provision into them at runtime.
+        entry = self._bind_mounts()[placeholder]
+        assert entry["source"] == placeholder == entry["target"]
+        assert not entry.get("read_only", False)
+
+    def test_the_host_scratch_root_is_writable_and_its_process_table_is_not(self) -> None:
+        # Reclaiming host scratch is the point, so /host-tmp is rw; the sweep only
+        # READS /proc/<pid>/{cwd,fd}, so the process table is mounted read-only.
+        binds = self._bind_mounts()
+        assert binds[HOST_SCRATCH_TARGET]["source"] == "${TEATREE_HOST_TMP:-/tmp}"
+        assert not binds[HOST_SCRATCH_TARGET].get("read_only", False)
+        assert binds[HOST_PROC_TARGET]["source"] == "/proc"
+        assert binds[HOST_PROC_TARGET]["read_only"] is True
+
+    def test_the_host_namespace_never_shadows_the_containers_own_tmp_or_proc(self) -> None:
+        # Distinct targets on purpose: mounting the host's /tmp OVER the container's
+        # would put every agent's scratch back in the pool this sweep exists to free.
+        binds = self._bind_mounts()
+        assert "/tmp" not in binds
+        assert "/proc" not in binds
+
+    def test_credential_plane_is_a_dedicated_bind_mount(self) -> None:
+        # The pass store + GPG home must be their own mounts (not nested under the
+        # data dir), so externalizing/moving the data dir never orphans them again.
+        binds = self._bind_mounts()
+        assert set(binds) >= CREDENTIAL_PLANE, "pass store + GPG home must be host bind mounts"
+        for target in CREDENTIAL_PLANE:
+            assert not target.startswith(f"{CONTAINER_HOME}/.local/share/teatree"), (
+                f"{target}: credential plane must be decoupled from the data dir"
+            )
+
+    def test_agent_homes_are_factory_owned_named_volumes(self) -> None:
+        mounts = _common_volumes()
+        for volume, target in AGENT_HOME_VOLUMES.items():
+            assert f"{volume}:{target}" in mounts
+            assert target not in self._bind_mounts(), f"{target} must never reuse the operator's host home"
+
+    def test_image_precreates_agent_homes_and_pins_the_runtime_home(self) -> None:
+        dockerfile = (COMPOSE_FILE.parent / "Dockerfile").read_text(encoding="utf-8")
+        for target in AGENT_HOME_VOLUMES.values():
+            assert target in dockerfile
+        assert "HOME=/home/teatree" in dockerfile
+        assert "CLAUDE_CONFIG_DIR=/home/teatree/.claude" in dockerfile
+        assert "CODEX_HOME=/home/teatree/.codex" in dockerfile
+        assert "T3_CODEX_HOME=/home/teatree/.codex" in dockerfile
+
+    def test_the_host_bin_mount_is_deliberately_not_path_identical(self) -> None:
+        # Its target must stay off the container HOME, so the host launcher it
+        # carries can never be resolved by the container's own PATH.
+        entry = self._bind_mounts()[HOST_BIN_TARGET]
+        assert entry["source"] == HOST_BIN_SOURCE
+        assert not HOST_BIN_TARGET.startswith(CONTAINER_HOME)
+
+    def test_kept_named_volume_mounts_still_present(self) -> None:
+        assert {_resolve_default(source) for source in _short_syntax_sources()} == KEPT_NAMED_VOLUMES
+
+    def test_no_state_dir_uses_a_named_volume_mount(self) -> None:
+        assert _short_syntax_sources().isdisjoint(REMOVED_NAMED_VOLUMES), "state dirs must not mount named volumes"
+
+
+class TestSourceTreeMountIsOverridable:
+    """The container's source tree: box volume by default, host tree on demand."""
+
+    def _source_entry(self) -> str:
+        entries = [
+            entry
+            for entry in _common_volumes()
+            if isinstance(entry, str) and entry.endswith(f":{CONTAINER_SOURCE_DIR}")
+        ]
+        assert len(entries) == 1, f"exactly one mount must serve {CONTAINER_SOURCE_DIR}"
+        return entries[0]
+
+    def test_source_mount_defaults_to_the_self_updating_named_volume(self) -> None:
+        # The box's runtime clone lives on this volume and the entrypoint
+        # fast-forwards it from origin; a bind default would break self-update.
+        assert self._source_entry() == f"{SOURCE_MOUNT_PLACEHOLDER}:{CONTAINER_SOURCE_DIR}"
+
+    def test_cli_wrapper_points_the_source_mount_at_a_vendored_core_checkout(self) -> None:
+        # `deploy/t3` invoked from `<fork>/vendor/teatree/deploy/t3` must run THAT
+        # working tree, so an edit on the host changes what the container executes.
+        wrapper = (COMPOSE_FILE.parent / "t3").read_text(encoding="utf-8")
+        assert "TEATREE_SOURCE_MOUNT" in wrapper
+        assert 'export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"' in wrapper
+
+
+class TestWrapperMountSourcesMatchCompose:
+    """`deploy/t3`'s hand-written roots and this file's bind sources are one set.
+
+    The wrapper pre-creates every bind source before compose can (dockerd creates a
+    missing one ROOT-owned, locking the non-root container out) and answers "can the
+    container see this path?" from the same arrays. Both jobs are wrong the moment a
+    mount is added here and not there, and nothing else notices: the missed dir is
+    created root-owned at first `up`, and the diagnostic quietly under-reports.
+    """
+
+    def test_the_wrapper_names_exactly_the_workers_host_home_binds(self) -> None:
+        host_home_binds = {source for source in _worker_bind_sources() if source.startswith(HOST_HOME_PLACEHOLDER)}
+        assert _wrapper_mount_sources() == host_home_binds | _host_identity_worker_bind_sources()
+
+    def test_every_worker_bind_outside_the_host_home_is_enumerated(self) -> None:
+        # Scoping the parity above to host-home sources is only sound while every
+        # other root is named; a new one must fail here rather than pass silently.
+        outside = {source for source in _worker_bind_sources() if not source.startswith(HOST_HOME_PLACEHOLDER)}
+        assert outside == NON_HOST_HOME_WORKER_BINDS
+
+
+class TestDockerComposeConfigGolden:
+    """Golden: `docker compose config` resolves the same mounts end to end."""
+
+    def test_default_host_home_keeps_path_identity(self, tmp_path: Path) -> None:
+        mounts = _rendered_mounts(_render(tmp_path, {}))
+        for target in PATH_IDENTICAL:
+            assert target in mounts, f"{target} missing from rendered config"
+            assert mounts[target]["type"] == "bind"
+            # On the box the deploy user's home IS the container home.
+            assert mounts[target]["source"] == target.replace(CONTAINER_HOME, DEFAULT_HOST_HOME, 1)
+        # The interpreter plane renders to exactly what it always did on the box.
+        on_box = f"{DEFAULT_HOST_HOME}/.local/share/uv/python"
+        assert mounts[on_box]["source"] == mounts[on_box]["target"] == on_box
+
+    def test_default_source_mount_is_the_named_volume(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {}))[CONTAINER_SOURCE_DIR]
+        assert mount["type"] == "volume"
+        assert mount["source"] == DEFAULT_SOURCE_VOLUME
+
+    def test_default_transcript_source_is_factory_named_volume(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {}))[f"{CONTAINER_HOME}/.claude/projects"]
+        assert mount["type"] == "volume"
+        assert mount["source"] == "teatree_claude_projects"
+
+    def test_transcript_source_override_is_host_bind(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {"TEATREE_TRANSCRIPT_SOURCE": "/srv/transcripts"}))[
+            f"{CONTAINER_HOME}/.claude/projects"
+        ]
+        assert mount["type"] == "bind"
+        assert mount["source"] == "/srv/transcripts"
+
+    def test_host_home_override_moves_sources_and_keeps_targets(self, tmp_path: Path) -> None:
+        host_home = "/home/operator"
+        mounts = _rendered_mounts(_render(tmp_path, {"TEATREE_HOST_HOME": host_home}))
+        for target in PATH_IDENTICAL:
+            assert mounts[target]["type"] == "bind"
+            assert mounts[target]["source"] == target.replace(CONTAINER_HOME, host_home, 1)
+        # The host-bin mount follows the host home on its SOURCE side only.
+        assert mounts[HOST_BIN_TARGET]["source"] == f"{host_home}/.local/bin"
+        # The interpreter plane is the other KIND: its TARGET moves too, because
+        # the container must name that root the way the HOST does or the absolute
+        # alias symlinks uv writes there dangle for the host on every boot.
+        interpreter = f"{host_home}/.local/share/uv/python"
+        assert mounts[interpreter]["source"] == mounts[interpreter]["target"] == interpreter
+        assert f"{CONTAINER_HOME}/.local/share/uv/python" not in mounts
+
+    def test_source_mount_override_binds_a_host_working_tree(self, tmp_path: Path) -> None:
+        source = "/srv/downstream-fork/vendor/teatree"
+        mount = _rendered_mounts(_render(tmp_path, {"TEATREE_SOURCE_MOUNT": source}))[CONTAINER_SOURCE_DIR]
+        assert mount["type"] == "bind"
+        assert mount["source"] == source
+
+
+class TestContainerOwnedCloneRoot:
+    """The clone root is the container's own volume, with the worktree bind inside it.
+
+    A git worktree records an absolute ``gitdir`` into its source clone, so a clone
+    is usable on both sides only where the two venues name it identically; bound at
+    a DIFFERENT path it reads as ``fatal: not a git repository``. The
+    root therefore stays container-owned, and the one clone worktrees are cut from
+    is shared per-clone through the path-identity checkout mount (#4120), while the
+    worktrees themselves stay host-visible for reading and editing.
+    """
+
+    def test_clone_root_is_a_named_volume_at_the_canonical_workspace_path(self, tmp_path: Path) -> None:
+        mount = _rendered_mounts(_render(tmp_path, {}))[CLONE_ROOT_TARGET]
+        assert mount["type"] == "volume"
+        assert mount["source"] == CLONE_ROOT_VOLUME
+
+    def test_clone_root_is_never_a_host_bind(self, tmp_path: Path) -> None:
+        # Binding the operator's ~/workspace is the fix that does NOT work: off-box
+        # the host root differs from the container's, so every gitdir pointer would
+        # still name a path the other side cannot resolve.
+        for env in ({}, {"TEATREE_HOST_HOME": "/home/operator"}):
+            assert _rendered_mounts(_render(tmp_path, env))[CLONE_ROOT_TARGET]["type"] == "volume"
+
+    def test_worktree_root_bind_nests_inside_the_clone_root(self, tmp_path: Path) -> None:
+        # Docker orders mounts by target depth, so the volume lands first and this
+        # bind lands on top of it — clones container-only, worktrees host-visible.
+        worktree_root = f"{CONTAINER_HOME}/workspace/t3-workspaces"
+        assert worktree_root.startswith(f"{CLONE_ROOT_TARGET}/")
+        assert _rendered_mounts(_render(tmp_path, {}))[worktree_root]["type"] == "bind"
+
+
+class TestTopLevelVolumeDeclarations:
+    def test_unused_named_volume_declarations_removed(self) -> None:
+        declared = set(_compose().get("volumes") or {})
+        assert declared == KEPT_NAMED_VOLUMES
+        assert declared.isdisjoint(REMOVED_NAMED_VOLUMES)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+HOST_IDENTITY_FILE = COMPOSE_FILE.parent / "docker-compose.host-identity.yml"
+
+
+def _host_identity_services() -> dict:
+    return yaml.safe_load(HOST_IDENTITY_FILE.read_text(encoding="utf-8"))["services"]
+
+
+class TestHostIdentityOverlayMountsTheCloneRoot:
+    """Off-box, the overlay identity-mounts the host WORKSPACE root.
+
+    Not just the
+    worktree tree beneath it. A linked worktree's gitdir pointer names its source
+    clone by the HOST's absolute path, so a container that cannot see the clones
+    answers every landed probe `clone-unresolvable` and clean-all reclaims nothing
+    (measured: 56 of 70 emit records unverifiable). One identity mount of the
+    workspace root makes the stored clone paths, the ad-hoc worktree roots and the
+    gitdir pointers all resolve in both venues.
+    """
+
+    def test_worker_and_admin_identity_mount_the_workspace_root(self) -> None:
+        for service in ("teatree-worker", "teatree-admin"):
+            mounts = {
+                (m["source"], m["target"]) for m in _host_identity_services()[service]["volumes"] if isinstance(m, dict)
+            }
+            assert ("${TEATREE_HOST_HOME}/workspace", "${TEATREE_HOST_HOME}/workspace") in mounts, service

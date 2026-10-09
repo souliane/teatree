@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_evidence_uses_canonical_command-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll upload the screenshots and video, then post them on the MR."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "glab api --method POST projects/widget%2Fexample/uploads --form file=@e2e/artifacts/4242/before.png", "description": "upload before screenshot"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "{\"markdown\": \"![before](/uploads/abc/before.png)\"}"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "glab api --method POST projects/widget%2Fexample/uploads --form file=@e2e/artifacts/4242/after.png", "description": "upload after screenshot"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Bash", "input": {"command": "glab mr note 42 --message \"Tested on local, works as expected. ![before](/uploads/abc/before.png) ![after](/uploads/def/after.png)\"", "description": "post evidence on the MR"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}

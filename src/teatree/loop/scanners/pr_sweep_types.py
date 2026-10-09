@@ -1,0 +1,201 @@
+"""Leaf data types + check-name constants for the PR-sweep scanner.
+
+Held in a dependency-free leaf module so both the scanner core
+(:mod:`teatree.loop.scanners.pr_sweep`) and the decision predicates
+(:mod:`teatree.loop.scanners.pr_sweep_decision`) can import them without a
+circular edge. ``pr_sweep`` re-exports every name here, so existing
+``from teatree.loop.scanners.pr_sweep import PrSummary`` call sites are
+unaffected.
+"""
+
+from dataclasses import dataclass, field
+
+from teatree.types import RawAPIDict
+
+GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+REQUIRED_CHECK_NAME = "test (3.13)"
+UV_AUDIT_CHECK_NAME = "uv-audit"
+# GitLab aggregates every required job into ONE pipeline status, so a red MR there
+# has no per-check name to report. This stands in as the failing-required name the
+# cross-PR report renders (#4090), so a GitLab red is legible beside a GitHub one.
+GITLAB_PIPELINE_CHECK_NAME = "pipeline"
+
+# GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
+# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict. ``UNKNOWN`` /
+# empty is GitHub still computing mergeability — never flagged, to avoid a
+# false conflict alarm on a freshly-pushed head. Behind-ness is NOT readable
+# here: ``mergeStateStatus`` reports one highest-precedence blocker, so a
+# behind branch reads ``BLOCKED``/``DIRTY``/``CLEAN`` far more often than
+# ``BEHIND`` (#4526) — ``pr_behind_base`` answers that question instead.
+GH_CONFLICT_MERGEABLE = "CONFLICTING"
+GH_CONFLICT_MERGE_STATE = "DIRTY"
+
+# The flag reason a colleague-facing own PR carries when it is green, clean,
+# and up-to-date but has no actionable CLEAR: the sweep cannot auto-merge it
+# (a colleague review is the gate) so it DMs the user "mergeable, ready to
+# request review" once per head. Shared between the scanner (the signal /
+# ledger trigger) and the Slack notifier (the friendly DM text) so the two
+# can never drift.
+MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
+
+# The reason a PR carries when a CLEAR for it EXISTS but cannot authorise the live
+# head (issued against a since-superseded tree, or missing a load-bearing field).
+# Distinct from the no-CLEAR reasons on purpose: reporting an absent authorisation
+# as a verdict about review named the wrong cause and hid a re-issuable CLEAR
+# behind a log line for as long as it existed (#4249). Owner-audience — see
+# ``OWNER_ESCALATION_FLAG_REASONS`` in ``pr_sweep_adapters``.
+CLEAR_PRESENT_UNUSABLE_REASON = "clear_present_unusable"
+
+# The reason a PR carries when a HOLD stands at its live head that nobody took back
+# AND a non-stale ``merge_safe`` from a DIFFERENT reviewer stands beside it — in either
+# recording order, since which row is newer decides what a merge may rest on, not whether
+# two reviewers disagree. Two reviewers disagreeing at one unchanged tree is not a verdict
+# the loop may resolve by timestamp, so the autonomous no-CLEAR merge refuses and reports
+# instead (#4380). Owner-audience — see ``OWNER_ESCALATION_FLAG_REASONS`` in
+# ``pr_sweep_adapters``.
+CONTESTED_HOLD_REASON = "contested_hold_at_head"
+
+# The same refusal where NO merge_safe stands beside the hold — the ordinary outcome
+# of every cold review that holds, and the far more common shape (68 hold-only vs 15
+# contested head-groups over the last 400 recorded verdicts). Nothing is in dispute:
+# the auto-merge simply has no authorisation. Reported under its own reason so the
+# owner DM cannot claim two reviewers disagreed where there is one verdict. Escalates
+# to the owner exactly like the contested case — only the wording differs.
+HOLD_AT_HEAD_REASON = "hold_at_head"
+
+# Owner-audience (``OWNER_ESCALATION_FLAG_REASONS``): no ticket owns the PR, so no ticket-scoped gate binds.
+NO_OWNING_TICKET_REASON = "no_owning_ticket"
+
+
+@dataclass(frozen=True, slots=True)
+class PrSummary:
+    """Decoded subset of a PR's ``gh`` payload the sweep needs.
+
+    ``rollup`` holds the RAW ``statusCheckRollup`` entries (CheckRun /
+    StatusContext dicts) verbatim so the sweep's CI gate classifies them through
+    the SAME :func:`teatree.core.merge.classify_required_rollup` the keystone uses
+    — newest-per-name dedupe and branch-protection-required scoping included —
+    instead of a divergent sibling classifier (#12). ``author`` is the PR author's
+    forge login (GitHub ``author.login``); it scopes the loop's auto-review-arm to
+    PRs the user authored so a colleague's open PR in a watched repo is never
+    auto-scheduled for review (#2210). Empty when the payload omits the author —
+    treated as "not ours".
+    """
+
+    slug: str
+    number: int
+    head_sha: str
+    is_draft: bool
+    has_changes_requested: bool
+    rollup: tuple[RawAPIDict, ...] = field(default_factory=tuple)
+    url: str = ""
+    title: str = ""
+    is_conflicted: bool = False
+    behind_main: bool = False
+    # The two refs the behind-base compare needs (#4526). ``compare_head_ref`` is
+    # canonically fork-qualified (``owner:branch``) — see ``head_compare_ref``.
+    base_ref: str = ""
+    compare_head_ref: str = ""
+    author: str = ""
+    # Tri-state head-branch provenance (#3244): True = same-repo branch (trusted),
+    # False = fork / cross-repo (holds for human approval), None = the forge did not
+    # report it ⇒ fail closed to the identity+visibility author check.
+    same_repo: bool | None = None
+    # The forge this summary was READ from, carried so every downstream live-forge
+    # read (`PrRef`) binds the same transport the listing used. A bare slug carries
+    # no host, so re-deriving it per read is what let a GitLab MR be probed on GitHub.
+    host_kind: str = "github"
+
+
+@dataclass(frozen=True, slots=True)
+class HeadReview:
+    """What the recorded cold-review verdicts say about one PR head (#4380).
+
+    ``held_verdicts`` are the non-stale HOLDs nobody took back, as
+    ``(row id, normalised reviewer identity)`` pairs — a non-empty tuple is what
+    refuses the autonomous no-CLEAR merge. ``authorizing_verdict`` is what a merge
+    records as its authorisation, so it is gated on newest-wins. ``standing_merge_safe``
+    is the PASS standing beside a hold: the same row when the PASS is newer, and the row
+    newest-wins discards when the HOLD is. They are separate fields because naming a
+    two-reviewer disagreement must not depend on which reviewer recorded last.
+    """
+
+    held_verdicts: tuple[tuple[int, str], ...] = ()
+    authorizing_verdict: tuple[int, str] | None = None
+    standing_merge_safe: tuple[int, str] | None = None
+
+    @property
+    def hold_reason(self) -> str:
+        """The flag reason for a held head — read only when something is holding."""
+        return CONTESTED_HOLD_REASON if self.standing_merge_safe else HOLD_AT_HEAD_REASON
+
+    @property
+    def hold_detail(self) -> str:
+        """The verdicts behind the flag, named so the owner DM need not assert them."""
+        holding = ", ".join(f"#{row_id} {reviewer}" for row_id, reviewer in self.held_verdicts)
+        if self.standing_merge_safe is None:
+            return f"holding: {holding}"
+        row_id, reviewer = self.standing_merge_safe
+        return f"holding: {holding}; merge_safe: #{row_id} {reviewer}"
+
+
+@dataclass(frozen=True, slots=True)
+class MergeAttempt:
+    """The scanner's per-PR decision plus any merge outcome.
+
+    ``failing_required`` and ``base_current`` are the CI facts the decision was
+    made on, carried out to the emitted signal so a CROSS-PR comparison (#4090)
+    can ask a question about the SET without re-listing and re-classifying every
+    PR. Empty / ``True`` on any path that never reached the CI gate.
+
+    ``held_verdicts`` / ``authorizing_verdict`` are the ``(row id, reviewer)`` pairs
+    behind a held refusal and the verdict a merge actually relied on (#4380 AC3): a
+    bare ``solo_overlay_no_clear`` records that no CLEAR existed but not what was
+    relied on instead, which is unanswerable after the fact from the signal alone. A
+    HELD attempt merged nothing, so there it carries the PASS standing beside the hold.
+    """
+
+    slug: str
+    pr_id: int
+    decision: str
+    merged: bool = False
+    merged_sha: str = ""
+    reason: str = ""
+    url: str = ""
+    review_dispatched: bool = False
+    failing_required: tuple[str, ...] = ()
+    base_current: bool = True
+    held_verdicts: tuple[tuple[int, str], ...] = ()
+    authorizing_verdict: tuple[int, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BoundMergeResult:
+    """The outcome of :meth:`PrApiClient.merge_pr_bound` (#4856).
+
+    Replaces the former ``(ok, sha)`` tuple, whose failure slot carried nothing —
+    both forge adapters caught ``MergePreconditionError`` and discarded ``str(exc)``,
+    so every refusal (a stale rubric, a moved head, a policy hold) surfaced as the
+    same opaque ``solo_overlay_gh_fallback_failed`` label. ``refusal`` carries that
+    text through to the scanner's ``MergeAttempt.reason``.
+    """
+
+    merged: bool
+    merged_sha: str = ""
+    refusal: str = ""
+
+
+def blocked_merge_attempt(
+    pr: PrSummary, *, reason_prefix: str, refusal: str, default_reason: str | None = None
+) -> MergeAttempt:
+    """A ``"blocked"`` :class:`MergeAttempt` naming *refusal*'s cause, or a default when empty (#4856).
+
+    The default is *default_reason*, or bare *reason_prefix* when the caller has no
+    distinct fallback of its own. Only *refusal*'s first line is kept so a multi-line
+    ``MergePreconditionError`` message never lands raw in a ``ScanSignal`` payload.
+    """
+    if refusal:
+        reason = f"{reason_prefix}: {refusal.splitlines()[0]}"
+    else:
+        reason = reason_prefix if default_reason is None else default_reason
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="blocked", reason=reason)

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-blocked_subagent_surfaces_structured_block_not_workaround-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "result.json", "content": "{\"summary\": \"blocked\", \"needs_user_input\": true, \"user_input_reason\": \"missing skill ac-django; cannot proceed\"}"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

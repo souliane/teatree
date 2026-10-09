@@ -1,0 +1,149 @@
+"""The headless worker runs non-agentic phases deterministically, not as an agent spawn.
+
+``short_describe`` is a fixed text transformation over the ``Ticket`` row, so it is
+routed to its own runner rather than handed a ticket-work brief its empty toolset
+cannot satisfy. Every other phase resolves to ``None`` (dispatches agentically).
+"""
+
+from typing import cast
+from unittest.mock import patch
+
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.core.agent_admission import AgentAdmission
+from teatree.core.deterministic_phases import deterministic_phase_runner, register_phase_runner, run_deterministic_phase
+from teatree.core.models import Session, Task, Ticket
+
+_SUMMARIZE = "teatree.agents.ticket_short_description._summarize"
+_RUNNERS = "teatree.core.deterministic_phases._RUNNERS"
+
+
+def _short_describe_task(title: str = "add dark mode toggle") -> Task:
+    ticket = Ticket.objects.create(overlay="t3-teatree", extra={"issue_title": title})
+    session = Session.objects.create(ticket=ticket, agent_id="short-describe")
+    return Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+
+
+class TestRegisterPhaseRunner(TestCase):
+    def test_registering_a_runner_makes_it_resolvable_by_phase(self) -> None:
+        def _runner(_task: Task) -> str:
+            return "ran"
+
+        # Isolate the registry so the test never leaks a phase into the real dispatch table.
+        with patch(_RUNNERS, {}):
+            assert deterministic_phase_runner("my_phase") is None
+            register_phase_runner("my_phase", _runner)
+            assert deterministic_phase_runner("my_phase") is _runner
+
+
+class TestDeterministicPhaseRunner(TestCase):
+    def test_short_describe_resolves_to_a_runner(self) -> None:
+        assert deterministic_phase_runner("short_describe") is not None
+
+    def test_an_agentic_phase_resolves_to_none(self) -> None:
+        assert deterministic_phase_runner("coding") is None
+
+    def test_short_describe_runner_writes_the_summary(self) -> None:
+        task = _short_describe_task()
+        runner = deterministic_phase_runner(task.phase)
+        assert runner is not None
+
+        with patch(_SUMMARIZE, return_value="dark mode toggle"):
+            outcome = runner(task)
+
+        task.ticket.refresh_from_db()
+        assert task.ticket.short_description == "dark mode toggle"
+        assert str(task.ticket.pk) in outcome
+
+
+class TestRunDeterministicPhase(TestCase):
+    def test_agentic_phase_returns_none(self) -> None:
+        task = _short_describe_task()
+        task.phase = "coding"
+
+        assert run_deterministic_phase(task) is None
+
+    def test_success_records_a_completed_attempt(self) -> None:
+        task = _short_describe_task()
+
+        with patch(_SUMMARIZE, return_value="dark mode toggle"):
+            result = run_deterministic_phase(task)
+
+        assert result is not None
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_a_raising_runner_records_a_failed_attempt_and_does_not_escape(self) -> None:
+        task = _short_describe_task()
+
+        def _boom(_task: Task) -> str:
+            message = "kaboom"
+            raise RuntimeError(message)
+
+        with patch(_RUNNERS, {"short_describe": _boom}):
+            result = run_deterministic_phase(task)
+
+        assert result is not None
+        assert result["exit_code"] == "1"
+        assert "kaboom" in result["phase_error"]
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+
+class TestBothHeadlessEntryPointsShortCircuit(TestCase):
+    """The registry is consulted on BOTH lanes, or the parity it promises is prose.
+
+    ``short_describe`` is scheduled as a ``Task`` row only so a scanner need not run
+    an LLM inline. Reaching the agentic runner from either entry point burns a
+    metered agent run on a generic ticket-work brief its least-privilege toolset
+    cannot satisfy, and leaves ``Ticket.short_description`` blank — the one thing
+    the phase exists to write.
+    """
+
+    def _pending_headless_task(self) -> Task:
+        ticket = Ticket.objects.create(extra={"issue_title": "add dark mode toggle"})
+        session = Session.objects.create(ticket=ticket, agent_id="short-describe")
+        return Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+
+    def test_the_worker_lane_never_reaches_the_agentic_runner(self) -> None:
+        from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: Django task registry
+
+        task = self._pending_headless_task()
+
+        with (
+            patch(_SUMMARIZE, return_value="dark mode toggle"),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
+        ):
+            result = execute_task.func(task.pk, task.phase)
+
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.ticket.short_description == "dark mode toggle"
+
+    def test_the_cli_lane_never_reaches_the_agentic_runner(self) -> None:
+        task = self._pending_headless_task()
+
+        with (
+            patch(_SUMMARIZE, return_value="dark mode toggle"),
+            patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
+            # The claim seam asks the governor before claiming, so a shed box claims nothing
+            # and this lane never runs. The precondition was always "the box admits work" —
+            # it is stated here rather than inherited from whatever the host happens to be.
+            patch(
+                "teatree.core.agent_admission.agent_admission_verdict",
+                return_value=AgentAdmission(expensive_denied=None, cheap_denied=None),
+            ),
+        ):
+            # ``call_command`` is annotated as returning None upstream; this command
+            # returns its result mapping, so the boundary is stated rather than assumed.
+            result = cast("dict[str, str]", call_command("tasks", "work-next", claimed_by="worker-1"))
+
+        assert result["exit_code"] == "0"
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.ticket.short_description == "dark mode toggle"

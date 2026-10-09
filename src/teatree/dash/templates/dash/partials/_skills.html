@@ -1,0 +1,12 @@
+{% comment %}
+  One task's resolved skill bundle (#3886). Takes `skills` (the recorded name list)
+  and `skills_fault` (an empty bundle on a dispatch that should have resolved one).
+
+  An empty bundle rendered as blank is indistinguishable from "nothing to say", which
+  is exactly the case worth seeing: the bundle is assembled from sources that can each
+  silently contribute nothing, and the dispatch still looks entirely normal.
+
+  Emitted WITHOUT surrounding whitespace on purpose. The ticket drawer includes this
+  once per attempt across every task it lists, and that payload is bounded by a test —
+  indentation and a `title` attribute are per-row costs the drawer cannot afford.
+{% endcomment %}{% if skills %}<span class="attempt-skills">{% for skill in skills %}<span class="chip mono small">{{ skill }}</span>{% endfor %}</span>{% elif skills_fault %}<span class="chip small skills-fault">no skills recorded</span>{% else %}<span class="muted small">—</span>{% endif %}

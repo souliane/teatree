@@ -1,0 +1,220 @@
+"""Commit-msg hook: detect quality gate relaxations in staged changes.
+
+Flags additions to lint ignore lists, coverage omit patterns, new ``# noqa`` /
+``# pragma: no cover`` annotations, and ``fail_under`` decreases. Exits non-zero
+when relaxations are found — there is no bypass. Refactor instead.
+
+Suppressions that are renamed-in-place (same marker added and removed within
+the same file) net to zero and are not flagged.
+
+Scope is the operator's OWN work, against a base this hook names rather than
+inherits: :func:`teatree.quality.diff_base.authored_findings`. A bare
+``git diff --cached`` is right for an ordinary commit and wrong mid-merge, where
+the index holds the merged result and every line the incoming side brought in
+reads as an addition by whoever is resolving. That made this gate — which has no
+escape hatch, by design (#525) — refuse any merge of a branch older than the
+most recent relaxation on the incoming side, over code its author never wrote
+(#3899).
+
+See: souliane/teatree#17, souliane/teatree#3899
+"""
+
+import re
+from collections import Counter
+from operator import itemgetter
+
+from teatree.quality import diff_base
+
+# Patterns in pyproject.toml that indicate structural config relaxation.
+_PYPROJECT_KEYWORD_PATTERNS: list[str] = [
+    "per-file-ignores",
+    "lint.ignore",
+    "lint.unfixable",
+    "fail_under",
+    "omit",
+    "--no-cov",
+    "--no-verify",
+]
+
+# Inline suppressions in source files. The "no-qa" marker is intentionally
+# omitted — narrow, well-targeted "no-qa: <RULE>" comments are the right
+# escape valve when a lint rule disagrees with a deliberate design choice
+# (e.g. an inline import next to "<RULE> = PLC0415" to keep an optional
+# dep out of the top-level import chain). Use sparingly — bare "no-qa"
+# is still bad form, but that's a review-time concern, not a hook-time one.
+_CODE_RELAXATION_PATTERNS: list[str] = [
+    "# type: ignore",
+    "# pragma: no cover",
+]
+
+# A line like '  "S603",' or '  "E501",' — a ruff rule code being added to a list.
+_RULE_CODE_RE = re.compile(r'^\s*"[A-Z]+\d+[A-Z]?\d*"')
+
+
+# The scan's shape, held in one place so the two bases are compared like for like.
+# The prefixes are pinned because ``_added_lines`` strips a literal "b/": a repo
+# with ``diff.mnemonicPrefix`` or ``diff.noPrefix`` set would otherwise hand it
+# paths it cannot normalise, and every violation would name the wrong file.
+_DIFF_ARGS: tuple[str, ...] = ("--diff-filter=ACMR", "-U0", "--src-prefix=a/", "--dst-prefix=b/")
+
+
+def _staged_diff(path_filter: str = "", base: diff_base.DiffBase | None = None) -> str | None:
+    """The staged diff against *base*, defaulting to the branch tip ("ours").
+
+    The single place this hook talks to git, so both sides of a merge are
+    rendered by the same command and differ only in the base.
+    """
+    path_args = ("--", path_filter) if path_filter else ()
+    return diff_base.staged_diff(base or diff_base.branch_tip(), *_DIFF_ARGS, *path_args)
+
+
+def _authored_added_lines(path_filter: str = "") -> list[tuple[str, int, str]]:
+    """Added lines THIS commit's author wrote, excluding a merge's incoming side.
+
+    Keyed on ``(filename, text)`` rather than the whole tuple: the same authored
+    line lands at different offsets in the two diffs, so the line number cannot
+    take part in the comparison.
+    """
+    return diff_base.authored_findings(
+        _added_lines,
+        lambda base: _staged_diff(path_filter, base),
+        key=itemgetter(0, 2),
+    )
+
+
+def _added_lines(diff: str) -> list[tuple[str, int, str]]:
+    """Extract added lines from unified diff output.
+
+    Returns list of (filename, line_number, line_text) tuples.
+    """
+    findings: list[tuple[str, int, str]] = []
+    current_file = ""
+    line_num = 0
+
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("+++ "):
+            # Handle both "+++ b/path" (default) and "+++ path" (no-prefix) formats
+            path = raw_line[4:]
+            current_file = path.removeprefix("b/")
+        elif raw_line.startswith("@@ "):
+            parts = raw_line.split()
+            for part in parts:
+                if part.startswith("+") and "," in part:
+                    line_num = int(part.split(",")[0][1:])
+                    break
+                if part.startswith("+") and part[1:].isdigit():
+                    line_num = int(part[1:])
+                    break
+        elif raw_line.startswith("+") and not raw_line.startswith("+++"):
+            findings.append((current_file, line_num, raw_line[1:]))
+            line_num += 1
+
+    return findings
+
+
+def _removed_lines(diff: str) -> list[tuple[str, str]]:
+    """Extract removed lines from unified diff output.
+
+    Returns list of (filename, line_text) tuples. The filename is the new
+    (post-rename) path so callers can compare against added lines in the
+    same file scope.
+    """
+    findings: list[tuple[str, str]] = []
+    current_file = ""
+
+    for raw_line in diff.splitlines():
+        if raw_line.startswith("+++ "):
+            path = raw_line[4:]
+            current_file = path.removeprefix("b/")
+        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+            findings.append((current_file, raw_line[1:]))
+
+    return findings
+
+
+def _suppression_marker(line: str) -> str | None:
+    """Return the suppression marker (with rule code) found in `line`, or None."""
+    for pattern in _CODE_RELAXATION_PATTERNS:
+        idx = line.find(pattern)
+        if idx >= 0:
+            return line[idx:].rstrip()
+    return None
+
+
+def _is_pyproject_relaxation(line: str) -> bool:
+    """Return True if the added line looks like a quality gate relaxation."""
+    lower = line.lower()
+    for pattern in _PYPROJECT_KEYWORD_PATTERNS:
+        if pattern.lower() in lower:
+            return True
+    return bool(_RULE_CODE_RE.match(line))
+
+
+def main() -> int:
+    violations: list[str] = []
+
+    for filename, line_num, line in _authored_added_lines("pyproject.toml"):
+        if _is_pyproject_relaxation(line):
+            violations.append(f"  {filename}:{line_num}: {line.strip()}")
+
+    code_diff = _staged_diff()
+    if code_diff:
+        # Renamed-in-place suppressions (same marker removed and re-added in
+        # the same file) cancel out. Build a counter of removed markers per
+        # file, then decrement as we encounter matching adds.
+        # Removals are read against the branch tip only. Mid-merge that set also
+        # holds removals the incoming side made, so a marker it dropped can
+        # cancel an identical one the operator added while resolving. That is a
+        # narrow FALSE-NEGATIVE window, not a "safe" simplification — named
+        # plainly here because this gate has no escape hatch and a reader
+        # deserves to know where it under-reports. The additions themselves are
+        # correctly scoped to this author.
+        removed_markers: Counter[tuple[str, str]] = Counter()
+        for filename, line in _removed_lines(code_diff):
+            marker = _suppression_marker(line)
+            if marker is not None:
+                removed_markers[filename, marker] += 1
+
+        skip_prefixes = ("tests/", "scripts/hooks/", "e2e/", "skills/", "docs/")
+        for filename, line_num, line in _authored_added_lines():
+            if filename == "pyproject.toml" or filename.startswith(skip_prefixes):
+                continue
+            marker = _suppression_marker(line)
+            if marker is None:
+                continue
+            key = (filename, marker)
+            if removed_markers[key] > 0:
+                removed_markers[key] -= 1
+                continue
+            violations.append(f"  {filename}:{line_num}: {line.strip()}")
+
+    if not violations:
+        return 0
+
+    is_code_suppression = all(any(p in v for p in _CODE_RELAXATION_PATTERNS) for v in violations)
+
+    if is_code_suppression:
+        print("WARNING: inline type/coverage suppression detected (allowed when necessary):")
+    else:
+        print("Quality gate relaxation detected:")
+    print()
+    for v in violations:
+        print(v)
+    print()
+
+    if is_code_suppression:
+        print("Inline suppressions are allowed when genuinely necessary.")
+        print("Review at PR time — bare `# noqa` without a rule code is bad form.")
+        return 0
+
+    print(
+        "Remove the suppression and fix the underlying issue. If the\n"
+        "suppression is genuinely required (e.g., trusted subprocess in a\n"
+        "test fixture), move the affected code into a directory the hook\n"
+        "already exempts (tests/, scripts/hooks/, e2e/, skills/, docs/)."
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

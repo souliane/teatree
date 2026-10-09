@@ -1,0 +1,191 @@
+"""Preset/mode observability rendering — the summary and the statusline handles (#3159).
+
+The per-loop effective verdict itself is NOT here: it lives in the one seam every
+membership and admission site shares, :mod:`teatree.loops.enable_verdict`. This module
+renders what that seam decides — the active-preset summary and the ``schedule:`` /
+``mode:`` / ``forced ON/OFF:`` loop-line handles.
+
+Fails open: a resolver error degrades to the base config verdict (no preset), so a
+broken schedule can never blank these read-only surfaces.
+"""
+
+import datetime as dt
+from dataclasses import dataclass
+
+from django.utils import timezone
+
+from teatree.loop.preset_resolution import resolve_active_preset
+from teatree.loop.statusline_loops import PresetLineHandles
+
+
+@dataclass(frozen=True, slots=True)
+class PresetSummary:
+    """The active preset plus the human 'why' the WHY-line and statusline render."""
+
+    name: str
+    layer: str  # "override" | "schedule"
+    reason: str
+    until: dt.datetime | None
+
+
+def active_summary(now: dt.datetime | None = None) -> PresetSummary | None:
+    """The active preset summary, or ``None`` when no preset governs."""
+    active = resolve_active_preset(now)
+    if active is None:
+        return None
+    return PresetSummary(
+        name=active.preset.name,
+        layer=active.layer,
+        reason=active.reason,
+        until=active.until,
+    )
+
+
+def statusline_chunk(now: dt.datetime | None = None) -> str:
+    """The one-chunk merged ``mode:`` segment (#3494, #61).
+
+    Collapses the old ``preset:`` + ``availability:`` handles into ONE ``mode:``
+    handle — the mode name is the whole answer (``present`` / ``away`` /
+    ``maintenance`` / ``low-token`` / ``off``), so the separate availability segment
+    is gone. Spelled out for the loop line: a MANUAL override
+    renders ``mode: manual`` (the operator's cue that the active schedule is NOT
+    governing); a schedule-driven or default mode renders ``mode: <name>``. A
+    boundary is appended when the mode expires at a known time (``mode: manual
+    →21:00``). Sourced from the SAME resolver every consumer reads
+    (:func:`teatree.core.mode_resolution.resolve_active_mode`), so nothing drifts.
+    """
+    from teatree.core.mode_resolution import resolve_active_mode  # noqa: PLC0415 — deferred: cycle-safe
+
+    resolved = resolve_active_mode(now)
+    boundary = _boundary_hhmm(resolved.until)
+    if resolved.source == "override":
+        return f"mode: manual{boundary}"
+    return f"mode: {resolved.name}{boundary}"
+
+
+def schedule_chunk() -> str:
+    """The active-schedule segment, always spelled out (#3494).
+
+    ``schedule: <name>`` when a weekly schedule is active, else ``schedule: none
+    active`` — the schedule handle is always shown so the operator reads the
+    schedule state at a glance even when none governs. Fails open to ``schedule:
+    none active`` on a broken read.
+    """
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+    from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING  # noqa: PLC0415 — deferred: cycle-safe
+
+    try:
+        raw = ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING)
+    except Exception:  # noqa: BLE001 — rendering is best-effort; a broken read degrades to "none active"
+        return "schedule: none active"
+    name = raw.strip() if isinstance(raw, str) else ""
+    return f"schedule: {name}" if name else "schedule: none active"
+
+
+def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, bool]]:
+    """Per-loop manual FORCED overrides that DIVERGE from the mode/base verdict (#3248).
+
+    Returns ``(loop_name, forced_on)`` for every loop whose live FORCED value
+    differs from what the active mode's mask would decide - the
+    ``forced ON:`` / ``forced OFF:`` statusline section. A force that
+    agrees with the underlying verdict is not surfaced (it changes nothing). The
+    mask comes from :class:`~teatree.loops.enable_verdict.EnablePlanes`, the same
+    seam the tick gates on, so "diverges" means diverges from what actually runs.
+    Sorted by name; fails open to ``[]``.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
+
+    planes = EnablePlanes.resolve(now)
+    entries: list[tuple[str, bool]] = []
+    for loop in Loop.objects.all():
+        value = planes.manual.get(loop.name)
+        if value is None:
+            continue
+        if value != planes.resolved.state_for(loop.name):
+            entries.append((loop.name, value))
+    return sorted(entries)
+
+
+def manual_override_chunk(now: dt.datetime | None = None) -> str:
+    """The spelled-out per-loop manual-override segment, or ``""`` when none diverge (#3494).
+
+    Splits the diverging forces into ``forced ON: <names>`` and ``forced OFF:
+    <names>`` (each a comma-separated, name-sorted list), joined with the loop
+    line's mid-dot when both are present — e.g. ``forced ON: triage_assessor``.
+    """
+    entries = manual_override_entries(now)
+    if not entries:
+        return ""
+    on = [name for name, forced_on in entries if forced_on]
+    off = [name for name, forced_on in entries if not forced_on]
+    parts = []
+    if on:
+        parts.append("forced ON: " + ", ".join(on))
+    if off:
+        parts.append("forced OFF: " + ", ".join(off))
+    return " · ".join(parts)
+
+
+def overridden_loop_names(now: dt.datetime | None = None) -> set[str]:
+    """The bare names of every loop manually overridden away from the preset/base verdict (#3248).
+
+    The statusline per-loop-lease collapse
+    (:func:`teatree.loop.statusline_loops.live_loops_anchor`) keeps a
+    ``loop:<name>`` chunk only for a manually-overridden loop; this is the
+    injected selector it reads. Sharing :func:`manual_override_entries`'
+    divergence logic keeps the surfaced lease chunks and the ``forced ON:`` /
+    ``forced OFF:`` segment from ever disagreeing about which loops diverge from
+    the handle.
+    """
+    return {name for name, _ in manual_override_entries(now)}
+
+
+def preset_line_handles(now: dt.datetime | None = None) -> PresetLineHandles:
+    """The three ordered loop-line handles (#3494, #61): schedule, mode, per-loop overrides.
+
+    The injected reader the statusline loop line renders (installed by the
+    ``loops_tick`` per-loop command). Sourced from the SAME resolvers as
+    ``preset show`` / ``loops list``, so the observability surfaces never
+    disagree. The renderer places the schedule and merged ``mode:`` handles ahead
+    of the loop chunks and the ``forced ON:`` / ``forced OFF:`` overrides after
+    them — the separate ``availability:`` segment is gone (folded into ``mode:``).
+    """
+    return PresetLineHandles(
+        schedule=schedule_chunk(),
+        mode=statusline_chunk(now),
+        override=manual_override_chunk(now),
+    )
+
+
+def preset_line_chunk(now: dt.datetime | None = None) -> str:
+    """The composed schedule/mode/override statusline segment (#3248, #3494, #61).
+
+    Joins the non-empty ``schedule:``, merged ``mode:``, and ``forced ON:`` /
+    ``forced OFF:`` sub-segments with the mid-dot — the single-string bundled
+    view of :func:`preset_line_handles` for surfaces that want one flat segment.
+    Always at least ``schedule: none active · mode: <default>`` (both handles are
+    always shown).
+    """
+    handles = preset_line_handles(now)
+    parts = [chunk for chunk in (handles.schedule, handles.mode, handles.override) if chunk]
+    return " · ".join(parts)
+
+
+def _boundary_hhmm(until: dt.datetime | None) -> str:
+    if until is None:
+        return ""
+    return " →" + timezone.localtime(until).strftime("%H:%M")
+
+
+__all__ = [
+    "PresetSummary",
+    "active_summary",
+    "manual_override_chunk",
+    "manual_override_entries",
+    "overridden_loop_names",
+    "preset_line_chunk",
+    "preset_line_handles",
+    "schedule_chunk",
+    "statusline_chunk",
+]

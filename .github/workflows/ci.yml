@@ -1,0 +1,1836 @@
+# ============================================================
+# CI WORKFLOW LEGEND — read before editing
+# ============================================================
+#
+# GATE vs ADVISORY
+#   Gate:     exits non-zero on failure → PR cannot merge.
+#   Advisory: always exits 0 → shows up as a warning/annotation but
+#             never blocks. Look for `|| true` or the job comment
+#             saying "advisory" to identify advisory jobs.
+#
+# LOAD-BEARING NAMES (do NOT rename without a coordinated change)
+#   `test (3.13)` — The REQUIRED check context. Produced by the `test`
+#       COMBINER job (matrix python-version="3.13"), which aggregates the
+#       12-way `test-shard` matrix: it fails if any shard failed, asserts the
+#       shards partition the suite exactly once
+#       (scripts/ci/check_shard_completeness.py), then combines their coverage
+#       and enforces the 93% branch floor ONCE over the whole tree. The job KEY
+#       and matrix are unchanged, so the emitted context stays byte-for-byte
+#       `test (3.13)`; branch protection lists this string by name. The
+#       `test-shim` job reproduces the same context on docs-only PRs (see below).
+#       Hardcoded as REQUIRED_CHECK_NAME in
+#       src/teatree/loop/scanners/pr_sweep_types.py.
+#   `uv-audit`  — The job key used as UV_AUDIT_CHECK_NAME in
+#       src/teatree/loop/scanners/pr_sweep_types.py for the PR-sweep
+#       scanner's fallback escape hatch.  Rename breaks the scanner.
+#
+# CONCURRENCY — supersede-cancel on PRs, never on main
+#   A re-push to a PR cancels its own superseded in-progress wave
+#   (group `ci-pr-<number>`, cancel-in-progress) instead of stacking a new
+#   one behind it. push-to-main and the schedule get a UNIQUE never-cancelled
+#   group (`ci-<run_id>`) so the full-tree banned-terms / overlay-leak
+#   backstops always run to completion — a superseding event must never kill
+#   a main-branch tree scan mid-run.
+#   A job that must override an upstream skip says `!cancelled()`; `always()`
+#   never goes on a job a pull request can reach, because GitHub keeps an
+#   `always()` job running through the cancel.
+#
+# SCHEDULE — slim daily, full weekly
+#   Mon-Sat (`17 6 * * 1-6`): only banned-terms-tree, overlay-leak-tree,
+#   term-source-drift, uv-audit and test-shuffle. Every other job that would
+#   run on a schedule says `github.event.schedule != '17 6 * * 1-6'`.
+#   Sunday (`17 6 * * 0`): the full pipeline, plus the `--store-durations`
+#   shard run, refresh-durations and scheduled-maintenance-report.
+#
+# THE `preflight` JOB — diff-scoped lane classifier
+#   Reads the PR's file diff and exports two booleans:
+#     run_heavy_python — true unless the diff is PROVABLY pure docs/markdown.
+#     all              — always-run lane flag (currently unused by downstream).
+#   Only runs on pull_request events (no base to diff on push/schedule).
+#   The only sanctioned skip driven by preflight is the HEAVY `test` +
+#   `mutation-diff` lanes on a provably pure-docs PR.  Every security,
+#   quality, and docs gate ignores preflight and runs unconditionally.
+#   Unknown/ambiguous paths always force run_heavy_python=true
+#   (fail-safe-unknown, souliane/teatree#132).
+#
+# THE `test-shim` PATTERN
+#   Branch protection requires `test (3.13)` on every PR.  When preflight
+#   decides run_heavy_python=false (pure-docs diff), the real `test` job is
+#   skipped and never emits that context — leaving the PR permanently pending.
+#   `test-shim` fires in exactly that scenario: it sets `name: test` + the
+#   same matrix so GitHub sees an identical `test (3.13)` context from a
+#   no-op step.  The two jobs have mutually exclusive `if:` conditions so
+#   they can never both report in the same run.
+#
+# JOB GROUPS (in order of appearance below)
+#   1. Lane routing          — preflight
+#   2. Fast static checks    — lint (runs prek INSIDE the prebuilt `-lint`
+#                              Docker image built by `build-image` in group 5
+#                              below — `needs: build-image`, UNCONDITIONAL, so
+#                              lint runs even on pure-docs PRs), blueprint-cross-pr,
+#                              tracked-ignored-files
+#   3. Docs integrity        — doc-update-gate, module-health-gate,
+#                              comment-density-warning, docs-drift
+#   4. Signal & ratchet      — test-shape (advisory),
+#                              test-path-mirror (ratchet gate)
+#   5. Test suite            — build-image (builds/pushes BOTH the `-test` and
+#                              `-lint` tags; unconditional, feeds group 2's
+#                              `lint` job as well as this group), test-shard
+#                              (12-way coverage matrix), jscpd-scan (the
+#                              whole-tree duplication scan, relocated off the
+#                              shard lane by #4672 and gating through the
+#                              combiner's `needs`),
+#                              test (combiner = required `test (3.13)`),
+#                              test-shim
+#   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
+#                              banned-terms-tree, overlay-leak-tree,
+#                              term-source-drift
+#                              (the two tree gates run on push, both crons AND PR
+#                              so a leak is caught before merge — #44;
+#                              term-source-drift proves those two are scanning
+#                              the list the operator actually configured)
+#   7. Security & supply chain — uv-audit, sbom, uv-audit-advisory
+#
+# THE METERED AI EVAL DOES NOT RUN HERE
+#   The metered behavioral-eval suite (`t3 eval run --backend api`, which shells
+#   out to `claude -p` — cost, network, model variance) is NOT part of this PR
+#   pipeline. It lives in a standalone workflow, `.github/workflows/eval.yml`,
+#   on a weekly schedule + manual `workflow_dispatch`. A PR run neither runs nor
+#   displays a metered-eval check. The FREE deterministic eval lane
+#   (eval-pinned-regressions) still gates every push via
+#   prek and the regression corpus is asserted every PR via pytest.
+# ============================================================
+
+# TRIGGER: primarily pull_request (the PR merge pipeline — hence the `CI ·`
+# name). ALSO runs on push to main and on two crons as full-tree backstops
+# (see the CONCURRENCY and SCHEDULE notes above); those secondary triggers are declared below.
+name: CI · Lint, test & quality gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Full-tree banned-brand backstop (#1570). The diff-only gate cannot see a
+    # brand name already committed; this catches a pre-existing leak even when no
+    # new diff touches it. Daily Mon-Sat is slim; Sunday is the full run (SCHEDULE above).
+    - cron: "17 6 * * 1-6"
+    - cron: "17 6 * * 0"
+  # The weekly cron's durations-refresh path, reachable on demand (#4048). It had
+  # never produced a PR, and one scheduled attempt is no way to establish that it can:
+  # every downstream fix waits on the refreshed file. Opt-in, so a dispatch run for
+  # any other reason still records nothing and force-pushes no branch.
+  workflow_dispatch:
+    inputs:
+      refresh_durations:
+        description: >-
+          Record fresh per-test durations across the shard lane and open/update the
+          ci/test-durations-refresh PR.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
+# push-to-main or scheduled run (unique run_id group) so the full-tree
+# banned-terms / overlay-leak backstops always finish. See the CONCURRENCY
+# note in the legend above.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+
+  # ── 1. Lane routing ────────────────────────────────────────────────────────
+
+  # GATE (PR-only): classifies the diff into heavy vs docs-only lanes; exports
+  # run_heavy_python so downstream jobs can skip safely on pure-docs PRs.
+  preflight:
+    # Diff-scoped lane classifier with FAIL-SAFE-UNKNOWN routing
+    # (souliane/teatree#132). Classifies the PR diff into lanes and
+    # exports booleans the heavy downstream jobs gate on. The ONLY
+    # sanctioned skip is a provably pure-docs/markdown diff, which may
+    # skip the HEAVY ``test`` + ``mutation-diff`` lanes. Any unrecognised
+    # path, any python change, or any config/CI/semgrep change forces
+    # ``run_heavy_python=true`` (run everything) — uncertainty never
+    # skips. Security/quality gates (semgrep, sbom, uv-audit, the advisory
+    # uv-audit-advisory) and the docs gates are NOT gated here; they always run.
+    #
+    # On push-to-main and on the schedule there is no base to diff, so
+    # this job is PR-only and the downstream ``if:`` conditions run the
+    # heavy lanes unconditionally on non-PR events.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    outputs:
+      run_heavy_python: ${{ steps.classify.outputs.run_heavy_python }}
+      all: ${{ steps.classify.outputs.all }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # fetch-depth: 0 so the PR-vs-base ``git diff`` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - name: Classify the PR diff into CI lanes
+        id: classify
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          # Fail-safe: if the diff command errors, feed an empty list,
+          # which the classifier maps to all=true (run everything).
+          git diff --name-only "origin/$BASE_REF...HEAD" > changed_paths.txt || true
+          uv run python scripts/ci/changed_lanes.py < changed_paths.txt
+
+  # ── 2. Fast static checks ──────────────────────────────────────────────────
+
+  # GATE: ruff/prek lint + migration-graph linearity; runs on every push and PR,
+  # INCLUDING pure-docs PRs (prek covers markdownlint/codespell/doc generators —
+  # its whole point). Runs INSIDE the prebuilt `-lint` image (`needs:
+  # build-image`) so prek's hook environments are already baked instead of
+  # cold-installed at run time — CI lint/Docker convergence (souliane/teatree
+  # CI-speedup). SAME hooks, SAME SKIP list as before: this is a venue-only
+  # change, `check_gate_relaxation.py`/`check_quality_gates.py` semantics are
+  # untouched. Obtain-image step matches the `test-shard` pattern: pull for a
+  # same-repo run, in-job local build for a fork PR (`mode=local`).
+  # `!cancelled()` plus the guard step: a skipped required check passes branch
+  # protection, so a failed image build must red lint rather than skip it.
+  lint:
+    needs: build-image
+    if: >
+      !cancelled() &&
+      github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Require the lint image build to have passed
+        env:
+          BUILD_IMAGE: ${{ needs.build-image.result }}
+        run: |
+          if [ "$BUILD_IMAGE" != "success" ]; then
+            echo "::error::build-image result was '$BUILD_IMAGE' — lint has no image to run in, so the required lint check fails."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Obtain the prebuilt lint image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image_lint }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test --target lint -t "$IMAGE" .
+          fi
+      # Run prek from the image's locked venv (`uv run`) so the prek RUNNER
+      # version is exactly the one the lockfile pins (prek==0.4.14) — identical
+      # to the documented local gate, which also runs `uv run prek`
+      # (dev/ci-parity.sh). This closes the runner-version gap that let a hook
+      # pass locally and fail here (or the reverse); a lockfile bump moves local
+      # and CI together in one step (#3236). Chained with the migration-graph
+      # linearity check in ONE `docker run` (a second invocation would just
+      # re-start the container for no benefit): two PRs branching a migration
+      # off the same parent each pass locally and pass their own CI, then merge
+      # into a forked graph with multiple leaf nodes that ``migrate`` refuses to
+      # run. ``makemigrations --check`` raises ``Conflicting migrations
+      # detected`` (exit 1) on a forked graph, failing the PR before it lands.
+      - name: prek (all hooks, all files) + makemigrations --check — locked runner, in Docker
+        env:
+          SKIP: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pytest,uv-audit,cyclonedx-sbom,banned-terms,no-overlay-leak' || 'pytest,uv-audit,cyclonedx-sbom' }}
+          # The classed registry is the sole term source for the leak hooks.
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e SKIP
+          -e TEATREE_TERM_REGISTRY
+          ${{ needs.build-image.outputs.image_lint }}
+          bash -c "uv run prek run --all-files && uv run python manage.py makemigrations --check --dry-run"
+      - name: Term scans unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
+
+  # GATE (PR-only): catches two concurrent PRs both adding the same §17.N
+  # invariant number — local pre-commit can't see sibling PRs.
+  blueprint-cross-pr:
+    # Cross-PR §17.1 invariant-numbering gate (souliane/teatree#1288).
+    # The pre-commit hook is tree-local; two concurrent PRs each adding
+    # the same §17.N pass locally and pass each PR's CI. This step reads
+    # BLUEPRINT.md at base (origin/main) and at HEAD and fails when the
+    # PR introduces a number the base also added since the merge-base.
+    # Only runs on pull_request events because push-to-main has nothing
+    # to diff against and the underlying hook covers the merge result.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # fetch-depth: 0 so `git merge-base origin/main HEAD` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Check for BLUEPRINT.md change in this PR
+        id: blueprint_diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qx 'BLUEPRINT.md'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: §17.1 invariant-numbering cross-PR check
+        if: steps.blueprint_diff.outputs.changed == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref="origin/${BASE_REF}"
+
+  # GATE: fails when a tracked file matches a .gitignore rule — a force-add or a
+  # merge gets past .gitignore; an intended file is carved out with a `!` negation.
+  tracked-ignored-files:
+    if: github.event.schedule != '17 6 * * 1-6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/hooks/refuse-tracked-ignored-files.sh
+
+  # ── 3. Docs integrity ──────────────────────────────────────────────────────
+
+  # GATE (PR-only): re-runs the doc-update pre-push hook on the PR diff so an
+  # agent that bypasses prek still trips the gate.
+  doc-update-gate:
+    # Deterministic doc-update gate (souliane/teatree#1461). The
+    # pre-push hook runs against staged changes; CI re-runs the same
+    # check on the PR diff so an agent that bypasses prek still trips
+    # the gate. Reads the PR-vs-base diff into the git index so the
+    # hook's ``git diff --cached`` query sees the PR contents.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_doc_update.py
+
+  # GATE (PR-only): re-runs the E2E no-skip pre-push hook on the PR diff so an
+  # agent that bypasses prek still trips the gate.
+  e2e-no-skip-gate:
+    # Deterministic E2E no-skip gate. The pre-push hook scans staged spec files;
+    # CI re-runs the SAME check on the PR-vs-base diff so an agent that bypasses
+    # prek still trips the gate. Reads the PR diff into the git index (and the
+    # PR's HEAD spec files onto disk) so the hook's ``git diff --cached`` query
+    # sees the PR contents and the scan reads the PR's spec bodies.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_e2e_no_skip.py
+
+  # GATE (PR-only): the behavioral e2e for teatree's OWN /dash/ dashboard (#3162
+  # redesign). It lives OUTSIDE ``testpaths=[tests]``, so the ``test`` lane never
+  # collects it and it never touches the 93% floor; this dedicated job installs
+  # chromium and drives a ``live_server`` with the production-derived
+  # ``e2e.dash.settings``. Behavioral assertions only (htmx swap stability, drawer
+  # flows, mermaid render, loop round-trips, theme toggle) — never pixel snapshots.
+  dash-e2e:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run playwright install --with-deps chromium
+      - name: Real-browser `t3 browser` lane (headless keeper, CDP re-attach)
+        run: uv run pytest e2e/browser -n0 -p no:randomly -p no:cacheprovider
+      - name: Provide ttyd + a stub claude for the terminal-launch e2e
+        # The header terminal button spawns `ttyd --once <claude>` on a loopback
+        # port; the spec asserts the launch URL renders (it never connects, and
+        # the launcher's reaper bounds the unconnected ttyd). ttyd must exist and
+        # `shutil.which("claude")` must resolve — the stub is never executed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ttyd
+          printf '#!/bin/sh\nexec sleep 3600\n' | sudo tee /usr/local/bin/claude >/dev/null
+          sudo chmod +x /usr/local/bin/claude
+      - name: Behavioral dashboard e2e (live_server + chromium)
+        run: uv run pytest e2e/dash --ds=e2e.dash.settings -n0 -p no:randomly -p no:cacheprovider
+
+  # GATE (PR-only): re-runs the module-health LOC/function ratchet on the PR's
+  # full base..head diff so a prek-bypassing or merge-routed module growth still
+  # trips the gate.
+  module-health-gate:
+    # Deterministic module-health ratchet twin (souliane/teatree#2010). The
+    # prek commit hook runs check_module_health.py per-commit against staged
+    # files; CI re-runs the SAME ratchet on the PR's WHOLE base..head range so
+    # an agent that bypasses prek (or routes growth through a merge) still trips
+    # the gate. Computed once over the range (NOT per-commit), so the
+    # merge-commit false-positive the staged-mode exemption guards against never
+    # arises here. PR-only: push/schedule have no base to diff against, and the
+    # prek hook covers the per-commit case.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # fetch-depth: 0 so `origin/<base>...HEAD` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Module-health ratchet over the PR diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          uv run python scripts/hooks/check_module_health.py --from-ref "origin/${BASE_REF}"
+
+  # ADVISORY (PR-only): warns about comment-dense files; always exits 0 so it
+  # never blocks a PR — signal only.
+  comment-density-warning:
+    # Near-zero-comments check (souliane/teatree#1369). Advisory: the script
+    # prints any comment-dense file as a warning and exits 0, so the job
+    # never fails the pipeline. The pre-push hook surfaces the same warning
+    # against staged changes; CI re-runs the SAME check on the PR diff so the
+    # signal is visible on every PR. Stages the PR-vs-base diff into the index
+    # so the hook's ``git diff --cached`` query sees the PR contents —
+    # identical code path to prek and to ``t3 tool comment-density --staged``.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_comment_density.py
+
+  # GATE: regenerates all generated docs and runs mkdocs --strict; fails if
+  # committed output is stale or if any link/nav target is broken.
+  docs-drift:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync --group docs
+      # Regenerate every generated reference page and the CLI reference;
+      # fail if the committed output is stale so the docs site never
+      # drifts from the code. See souliane/teatree#890.
+      - run: uv run python manage.py generate_all_docs
+      # Check the CLI reference is in sync with the command tree BEFORE
+      # regenerating it. The sync check re-renders in memory and compares against
+      # the COMMITTED (git-index) doc, so a stale committed reference fails the
+      # gate independent of the `git diff` step's git-add ordering — a generator
+      # that later repairs the working tree cannot mask the drift (the
+      # generate-before-check vacuousness). See souliane/teatree#2599.
+      - run: uv run python scripts/hooks/check_cli_reference_sync.py
+      # Regenerate the CLI reference. CLI_REFERENCE_NO_STAGE stops the generator
+      # from git-add-ing its output — a staged rewrite would match the index and
+      # hide the drift from `git diff` below (no --cached). The render is
+      # byte-deterministic across environments (pinned width, no tty/COLUMNS,
+      # home dir folded to `~`) so the gate catches genuine drift, not env skew.
+      # See souliane/teatree#2599.
+      - run: uv run python scripts/hooks/generate_cli_reference.py
+        env:
+          CLI_REFERENCE_NO_STAGE: "1"
+      # Regenerate the antipattern catalog from antipatterns.yaml so the
+      # docs/generated diff gate below can catch any skew. ANTIPATTERN_CATALOG_NO_STAGE
+      # stops the generator from git-add-ing its output — a staged rewrite would
+      # match the index and hide the drift from `git diff` (no --cached).
+      - run: uv run python scripts/hooks/generate_antipattern_catalog.py
+        env:
+          ANTIPATTERN_CATALOG_NO_STAGE: "1"
+      # Check every FSM lifecycle diagram is in sync with its model BEFORE
+      # regenerating it. The sync check reads the COMMITTED consumers, so it
+      # catches drift in README + SKILL.md (which the docs/generated diff
+      # below does NOT cover). It must run first: the generator REWRITES those
+      # files on disk (FSM_DIAGRAMS_NO_STAGE only skips git-add), so a check run
+      # after the generator would see freshly-repaired files and pass vacuously.
+      - run: uv run python scripts/hooks/check_fsm_diagrams_sync.py
+      # Belt-and-suspenders: regenerate (NO_STAGE) so the docs/generated diff
+      # below also catches a stale committed canonical diagram.
+      - run: uv run python scripts/hooks/generate_fsm_diagrams.py
+        env:
+          FSM_DIAGRAMS_NO_STAGE: "1"
+      # Regenerate the admin-dashboard HTML snapshot (NO_STAGE, same reason as
+      # above) so the docs/generated diff gate catches a stale committed snapshot.
+      # The generator stands up its own throwaway sqlite test DB, so this step
+      # needs no postgres service. See souliane/teatree#12.
+      - run: uv run python scripts/hooks/generate_dashboard_snapshot.py
+        env:
+          DASHBOARD_SNAPSHOT_NO_STAGE: "1"
+      # Regenerate the representative CLI-output fixture (NO_STAGE, same reason)
+      # so the docs/generated diff gate catches a stale committed fixture. A pure
+      # command-tree render — no DB needed. See souliane/teatree#12.
+      - run: uv run python scripts/hooks/generate_cli_output_snapshot.py
+        env:
+          CLI_OUTPUT_SNAPSHOT_NO_STAGE: "1"
+      - run: git diff --exit-code docs/generated
+      # A strict build is the second half of the gate: a broken link or
+      # missing nav target fails CI instead of shipping a broken site.
+      - run: uv run mkdocs build --strict
+
+  # ── 4. Signal & ratchet checks (mix of advisory + ratchet gate) ────────────
+
+  # NOTE: the former ``semgrep-regressions`` advisory job was removed (#2128).
+  # The named regression-detector layer is fully BLOCKING and was migrated off
+  # semgrep to ast-grep in souliane/teatree#87: all rules live in
+  # ``.ast-grep/blocking/`` (the ``.semgrep`` tree no longer exists), and the
+  # blocking set is enforced on every push/PR via the prek ``regression-rules``
+  # hook in the ``lint`` job (``.pre-commit-config.yaml`` ->
+  # ``scripts/hooks/check_regression_rules.py``, the pinned ast-grep engine over
+  # ``.ast-grep/blocking``, exit non-zero on a finding). The deleted advisory job
+  # scanned the now-absent ``.semgrep/warn`` (semgrep exits 0 on a missing config,
+  # and the trailing ``|| true`` swallowed any non-zero), so it was a no-op
+  # fake-green gate — deleting it lost no coverage.
+
+  # ADVISORY: reports near-duplicate test functions and test-to-source ratio;
+  # default mode exits 0 (warn-only); flip to "block" in pyproject.toml to gate.
+  test-shape:
+    # Conservative, report-first test-shape check (near-duplicate test
+    # functions + test:source ratio regression vs the committed baseline in
+    # [tool.teatree.test_shape]). Default mode is "warn" — the command exits
+    # 0 and the job is advisory. Flipping mode to "block" in pyproject.toml
+    # makes the same command exit non-zero, promoting this job to a gate
+    # without any workflow change. Never a PreToolUse gate; it can never lock
+    # the agent's tools.
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Test-shape report
+        run: uv run t3 tool test-shape --root .
+
+  # GATE: ratchet that fails (exits non-zero) only when a NEW mis-pathed test
+  # file appears — live count exceeds the committed baseline; never blocks on
+  # pre-existing violations; baseline trends toward 0 as the sweep proceeds.
+  test-path-mirror:
+    # Forward-guard: every test file mirrors its src/teatree/<pkg>/... module
+    # path as tests/teatree_<pkg>/... ([tool.teatree.test_path_mirror]). The
+    # verdict is a baseline ratchet — RED only when the live mis-pathed count
+    # EXCEEDS the committed baseline, so a NEW mis-pathed file fails CI while the
+    # documented floor (files predating the convention) never does. The baseline
+    # ratchets toward 0 as the relocation sweep proceeds. Never a PreToolUse
+    # gate; it can never lock the agent's tools.
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Test-path-mirror ratchet
+        run: uv run t3 tool test-path-mirror --root .
+
+  # ── 5. Test suite ──────────────────────────────────────────────────────────
+
+  # Build the shared test image ONCE per (dev/Dockerfile.test + uv.lock) hash and
+  # push it to ghcr, so the 12 `test-shard` jobs PULL one prebuilt, deps-baked
+  # image instead of each rebuilding the image AND cold-resolving the whole
+  # dependency set from PyPI at `docker run` time — that per-shard cold work
+  # (6x every run) was the bulk of the ~485s test-shard critical path. Also
+  # builds and pushes a second `-lint:${KEY_LINT}` tag from the Dockerfile's
+  # `lint` stage (`FROM base`, bakes prek's hook environments) so the `lint`
+  # job below can pull a ready image instead of cold-installing every hook env
+  # at `prek run` time — CI lint/Docker convergence (souliane/teatree
+  # CI-speedup). On a pull request both builds are SKIPPED entirely when their
+  # tag already exists, so steady-state cost is two manifest checks. Every other
+  # event (push, schedule, dispatch) rebuilds both, publishes only `main-` tags and
+  # hands consumers the pushed digest, so it never rewrites a tag a PR reuses. Fork PRs cannot push
+  # to ghcr (read-only token, no secrets), so they set `mode=local` and each
+  # downstream job (test-shard, lint) builds the image IT needs in-job — the
+  # packages can stay PRIVATE (same-repo runs pull them with the job's
+  # `packages: read` token; forks never touch them).
+  # UNCONDITIONAL on every push and PR — no preflight gating, no `needs: preflight`
+  # (only the slim daily cron skips it). The `lint` job below always needs an
+  # image (lint must run on pure-docs PRs too: markdownlint/codespell/doc
+  # generators are its whole point), and steady-state
+  # cost here is a manifest check either way.
+  build-image:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.test_image.outputs.digest || steps.meta.outputs.image }}
+      image_lint: ${{ steps.lint_image.outputs.digest || steps.meta.outputs.image_lint }}
+      mode: ${{ steps.meta.outputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the image refs (tag = hash of inputs) and push mode
+        id: meta
+        env:
+          # Empty on push/schedule and same-repo PRs; 'true' only for a fork PR.
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          KEY: ${{ hashFiles('dev/Dockerfile.test', 'uv.lock') }}
+          # Widened key (adds .pre-commit-config.yaml): a hook-rev bump alone
+          # must mint a fresh lint tag so baked hook envs can never silently go
+          # stale. A tag MISS degrades gracefully — prek just cold-installs
+          # whichever repo changed.
+          KEY_LINT: ${{ hashFiles('dev/Dockerfile.test', 'uv.lock', '.pre-commit-config.yaml') }}
+        run: |
+          REPO_LC="$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # Pull requests share the bare content-hash tags; every other event publishes its own `main-` tags.
+          if [ "$EVENT_NAME" = "pull_request" ]; then TAG_PREFIX=""; else TAG_PREFIX="main-"; fi
+          echo "image=ghcr.io/${REPO_LC}-test:${TAG_PREFIX}${KEY}" >> "$GITHUB_OUTPUT"
+          echo "image_lint=ghcr.io/${REPO_LC}-lint:${TAG_PREFIX}${KEY_LINT}" >> "$GITHUB_OUTPUT"
+          if [ "$IS_FORK" = "true" ]; then
+            echo "mode=local" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=registry" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Log in to ghcr
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push the test image (a pull request skips it when the tag already exists)
+        id: test_image
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "Image $IMAGE already exists — skipping build (Dockerfile + uv.lock unchanged)."
+            exit 0
+          fi
+          docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          docker push "$IMAGE"
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push the lint image (a pull request skips it when the tag already exists)
+        id: lint_image
+        if: steps.meta.outputs.mode == 'registry'
+        env:
+          IMAGE_LINT: ${{ steps.meta.outputs.image_lint }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && docker manifest inspect "$IMAGE_LINT" >/dev/null 2>&1; then
+            echo "Image $IMAGE_LINT already exists — skipping build (Dockerfile + uv.lock + pre-commit config unchanged)."
+            exit 0
+          fi
+          docker build -f dev/Dockerfile.test --target lint -t "$IMAGE_LINT" .
+          docker push "$IMAGE_LINT"
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE_LINT")"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          fi
+
+  # GATE (heavy lane): one of the 12 coverage SHARDS. Each shard runs a
+  # duration-balanced twelfth of the suite (pytest-split `--splits 12 --group N`)
+  # in Docker WITH `--cov --cov-branch --doctest-modules` but NO floor and NO
+  # report — partial coverage data must never be floor-judged. The `test`
+  # combiner below aggregates all twelve and enforces the 93% floor once over the
+  # combined data. About half of a shard's pytest step is whole-suite collection (every
+  # xdist worker collects every test, then pytest-split keeps a twelfth), so more shards
+  # do not shrink it. Runners are 4 vCPU, and their CPU models run up to ~1.8x apart:
+  # compare shard timings only within one model (the hardware line below). A paired probe
+  # found no `-n` value or tmpfs `/tmp` worth adopting over `-n auto` (#5103).
+  # Skipped ONLY on a provably pure-docs PR diff
+  # (run_heavy_python=false); always runs on push-to-main, the weekly cron, and
+  # any non-pure-docs PR — same heavy-lane gating as the old monolithic `test` job.
+  # NOT a required context: `test-shard (3.13, N)` is aggregated by the combiner.
+  test-shard:
+    # Heavy lane. Skipped ONLY on a provably pure-docs/markdown PR diff
+    # (preflight ``run_heavy_python=false``). On push-to-main and on the
+    # weekly cron (no PR diff to classify) and on any non-pure-docs PR it
+    # runs unconditionally — fail-safe-unknown. (#132) It follows `build-image`,
+    # so the slim daily cron skips it.
+    needs: [preflight, build-image]
+    if: >
+      !cancelled() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    # Stopgap headroom for the 2.3x shard imbalance; #4603 rebalances the split.
+    timeout-minutes: 35
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # Pull the prebuilt, deps-baked image that `build-image` produced (one
+      # manifest fetch + layer pull), instead of rebuilding + cold-syncing it in
+      # every shard. Fork PRs (mode=local) build it in-job — the ghcr package can
+      # stay private since forks never pull it.
+      - name: Obtain the prebuilt test image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            docker pull "$IMAGE"
+          else
+            # --target base: the Dockerfile is multi-stage (a `lint` stage now
+            # follows `base`), so the target must be pinned explicitly — an
+            # untargeted build would silently produce the LAST stage instead.
+            docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          fi
+      # Cache the ONE migrated-sqlite template `tests/conftest.py::django_db_setup`
+      # builds (see tests/_db_template.py): keyed on the migration graph +
+      # lockfile + settings, so an unrelated change never touches it, and an
+      # exact-key-only restore (no restore-keys) means a hash miss just falls
+      # back to a fresh in-job build — never a stale/wrong-schema template. All
+      # twelve shards share the same key; whichever runs first each day/push
+      # populates it for the rest. `.cache/` is under the bind-mounted `/app`
+      # checkout so the container sees exactly what the runner cached.
+      - name: Cache the migrated test-DB template
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/django-test-template
+          key: django-test-template-${{ hashFiles('src/**/migrations/*.py', 'uv.lock', 'tests/django_settings.py') }}
+      - name: Ensure the template cache dir exists (fresh on a cache miss)
+        run: mkdir -p .cache/django-test-template
+      # Hosted runners come in hardware classes; a shard's timing is only comparable within one.
+      - name: Record the runner's hardware
+        run: |
+          echo "nproc=$(nproc) mem_mib=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) cpu=$(lscpu | sed -n 's/^Model name: *//p')"
+      # Shard N/12: pytest-split slices collection by `dev/.test_durations`;
+      # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
+      # measure exactly what the old monolithic lane did, but `--cov-report=`
+      # (empty) suppresses any report and `--cov-fail-under=0` NEUTRALISES the
+      # `[tool.coverage.report] fail_under=93` config floor — a shard measures
+      # only a TWELFTH of the tree, so floor-judging its partial data would fail
+      # every shard; the combiner owns the real floor over the combined data.
+      # The `shard_stats_plugin` records the collected-vs-selected counts so the
+      # combiner can prove the shards partition the suite exactly once
+      # (`--group shard` installs pytest-split; PYTHONPATH=/app makes the
+      # `-p scripts.ci.shard_stats_plugin` import resolve at plugin-load time).
+      # `--splitting-algorithm least_duration` bin-packs the recorded durations
+      # tighter than the default chunk split (#3160). `leak_sentinel_plugin` runs
+      # WARN-ONLY here so a process-global env/cwd polluter is NAMED suite-wide
+      # (across the twelve shards) without ever failing the required context —
+      # the #3160 rollout mode. On the weekly cron (or a refresh dispatch) only,
+      # `--store-durations --clean-durations` records THIS shard's fresh, tests-that-ran
+      # durations (each group's clean slice) for the `refresh-durations` merge job below;
+      # PR/push runs never pay the store write.
+      #
+      # `-o timeout=180` is the lane's OWN ceiling, not a global raise (#4048).
+      # Twelve shards each at `-n auto` on one runner cost a test roughly 3x what it
+      # costs alone — #4035 measured 20.15s on an idle tree against a 60s ceiling the
+      # same test then exceeded under this matrix, twice, on a PR whose diff could not
+      # touch it. 60s x that measured factor is 180s: the same real-time budget the
+      # tight ceiling expresses, translated through the contention this lane actually
+      # pays. Raising `[tool.pytest.ini_options] timeout` instead would buy the same
+      # thing here and lose the fast hang signal in `dev/ci-parity-fast.sh`,
+      # `dev/ci-shard.sh` and every bare `uv run pytest`, which inherit it. A
+      # `@pytest.mark.timeout` still wins over this (`pytest_timeout._get_item_settings`),
+      # so a test with its own stated ceiling is unaffected either way. What the raise
+      # must not do is hide a test drifting toward the new ceiling: the shard-stats
+      # plugin records each test's seconds against the ceiling that applied to it, and
+      # `scripts/ci/report_timeout_headroom.py` prints the suite-wide worst to the run
+      # summary below. `tests/test_ci_timeout_ceilings.py` pins the raise to this job.
+      #
+      # `--durations-path dev/.test_durations` is RELATIVE deliberately, unlike the
+      # absolute `--shard-stats-out` below: the image is `dev/Dockerfile.test --target
+      # base` (WORKDIR `/app`) and `-v "$PWD":/app` makes that cwd the runner workspace,
+      # so the recording lands on the runner and outlives `--rm`. `dev/ci-shard.sh`
+      # mirrors the same relative arg on the host, where `/app` does not exist — do not
+      # make it absolute to match. Swapping the image (`deploy/Dockerfile`'s own WORKDIR
+      # sits outside the mount), retargeting the build stage, moving the mount or a `-w`
+      # each redirects the recording into the container's own layer for `--rm` to
+      # destroy, while the upload step still finds the COMMITTED file on the runner and
+      # republishes month-old timings as freshly measured — green at every step. #4483
+      # reported that coupling backwards as the live cause; it was not (the real one was
+      # the dotfile drop, #4584). `tests/test_ci_shard_durations_path_contract.py` pins it.
+      #
+      # `-p no:tach`: tach's pytest plugin arms itself whenever `main` resolves — a push or
+      # cron checkout, never a pull request's detached merge ref — and then runs its impact
+      # analysis on every collected item with no `--tach` to act on the answer.
+      - name: Test shard ${{ matrix.group }}/12 (coverage, no floor — partial data)
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e COVERAGE_FILE=/app/coverage.shard${{ matrix.group }}
+          -e PYTHONPATH=/app
+          -e TEATREE_TEST_DB_TEMPLATE_DIR=/app/.cache/django-test-template
+          ${{ needs.build-image.outputs.image }}
+          uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
+          -p no:tach
+          -o cache_dir=/tmp/.pytest_cache
+          -o timeout=180
+          --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
+          --splits 12 --group ${{ matrix.group }} --durations-path dev/.test_durations
+          --splitting-algorithm least_duration
+          -p scripts.ci.shard_stats_plugin
+          --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
+          -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
+          ${{ (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations)) && '--store-durations --clean-durations' || '' }}
+      # A failed leg still hands its data to the combiner; a superseded, cancelled wave uploads nothing.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: shard-artifacts-${{ matrix.group }}
+          path: |
+            coverage.shard${{ matrix.group }}
+            shard-stats.${{ matrix.group }}.json
+      # Refresh runs only: the fresh durations this shard just recorded, so the
+      # `refresh-durations` job can merge the twelve groups into one balanced file.
+      # Same gate as the recording above — an upload that opens without it would
+      # publish the committed file back as if it were freshly measured.
+      #
+      # `always()` because a leg that FAILED still measured everything it ran, and a step
+      # whose `if` names no status function inherits `success()` — so the legs worth
+      # hearing from most were the exact ones that uploaded nothing (#4603). A leg that
+      # died before pytest rewrote the file uploads the committed one verbatim; the merge
+      # job recognises that shape and drops it rather than merging month-old timings back.
+      - name: Upload this shard's recorded durations (refresh source)
+        if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: durations-shard-${{ matrix.group }}
+          path: dev/.test_durations
+          # A DOTFILE, and upload-artifact v4.4+ drops hidden files unless told otherwise:
+          # without this the step matched nothing, published no artifact and still reported
+          # success, for a month, while `refresh-durations` died on the absent files (#4584).
+          include-hidden-files: true
+          # `dev/.test_durations` is committed, so zero matches can only mean the upload broke.
+          if-no-files-found: error
+
+  # MAINTENANCE (weekly cron, or an explicit dispatch): keep `dev/.test_durations`
+  # from rotting (#3160).
+  # The twelve shards on a refresh run each recorded their group's fresh, clean
+  # durations (`--store-durations --clean-durations` above, including the
+  # previously-unrecorded `tests/quality` + doctest items). This job unions them
+  # back into one complete file and, ONLY when the drift gate fires (test set
+  # changed, or aggregate per-test time moved past the threshold — never on pure
+  # jitter), opens/updates ONE single refresh PR a human reviews and merges.
+  # The refresh branch name is STABLE (`ci/test-durations-refresh`), so an unmerged
+  # refresh is UPDATED in place instead of stacking a new dated PR every run (which
+  # piled up conflicting PRs — #3160 residual CI-3). It is REBUILT only while it carries
+  # nothing but the generated file; once it carries anything else, the base is merged
+  # under those commits instead, because rebuilding the ref byte-erased the review fixes
+  # pushed onto it and left the PR unfixable in place (#4717).
+  # Never gates a PR; a merge failure or empty diff is a no-op.
+  #
+  # `always()` is LOAD-BEARING, not decoration (#4048). `preflight` is skipped on
+  # `schedule`, `test-shard` runs anyway because its own `if` says `!cancelled()`, and
+  # GitHub then propagates that upstream skip THROUGH it to every dependent whose
+  # `if` does not name a status function itself — an explicit condition is evaluated in
+  # addition to the inherited status gate, not instead of it. Without it this job
+  # was skipped on every scheduled run while all twelve shards were green and had
+  # uploaded their durations, so no refresh PR was ever opened and
+  # `dev/.test_durations` decayed to 11% of the test files while pytest-split kept
+  # splitting the matrix from it. The two conditions after it still gate the job.
+  #
+  # `github.ref` is part of the gate because this job force-pushes a branch and opens
+  # a PR against `main`. A cron always runs on the default branch, so it is a no-op
+  # there; a dispatch can name any ref, and one launched from a feature branch would
+  # push that branch's commits over the real refresh branch. The gate is byte-identical
+  # at all three sites on this path (the two `test-shard` steps above and here) —
+  # `tests/test_ci_durations_refresh_gate.py` pins that, because a shard that records
+  # nothing and a merge job that runs anyway is a refresh that reads as a clean no-op.
+  #
+  # It does NOT require the shard lane to have PASSED (#4603). Recording is a measurement,
+  # not a verdict: a leg that timed out still timed everything it ran. Requiring `success`
+  # made the durations self-blocking — stale durations bin-pack the unrecorded tests at the
+  # average, whichever leg draws the slow ones exceeds the ceiling, and that one leg then
+  # vetoed the job whose whole purpose is to un-stale the durations. Measured: no refresh
+  # PR since 2026-07-25, and every scheduled run since 2026-08-18 red or cancelled. The
+  # merge step layers fresh timings over the committed file, so a leg that delivered
+  # nothing costs its slice's freshness and never removes a test from the split.
+  refresh-durations:
+    needs: test-shard
+    if: always() && (github.ref == 'refs/heads/main' && (github.event.schedule == '17 6 * * 0' || inputs.refresh_durations))
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # #4262: FIRST, because the checkout below is what consumes the credential. A rejected
+      # PAT makes checkout die in `could not read Username for 'https://github.com'` — the
+      # same bytes an unset secret produces — and this job's own guard sat in its last step,
+      # unreachable. Inline rather than a `scripts/` file: nothing is checked out yet.
+      - name: Verify TEATREE_GH_TOKEN before the checkout consumes it
+        env:
+          TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="${GITHUB_API_URL:-https://api.github.com}"
+          if [ -z "${TEATREE_GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset or rejected — it is UNSET on ${GITHUB_REPOSITORY}. Set or rotate the secret: the checkout below persists it as the git credential, and git with no usable one falls back to an interactive prompt and dies as 'could not read Username for https://github.com', naming nothing." >&2
+            exit 1
+          fi
+          # A heredoc into curl's config keeps the credential out of argv and the process table.
+          cfg="$(mktemp)"
+          trap 'rm -f "$cfg"' EXIT
+          cat > "$cfg" <<CURLRC
+          header = "Authorization: Bearer ${TEATREE_GH_TOKEN}"
+          CURLRC
+          status="$(curl -sS --config "$cfg" -o /dev/null -w '%{http_code}' --max-time 30 --retry 2 -H 'Accept: application/vnd.github+json' "${API}/repos/${GITHUB_REPOSITORY}" || true)"
+          case "${status:-000}" in
+            200)
+              echo "TEATREE_GH_TOKEN accepted for ${GITHUB_REPOSITORY}."
+              ;;
+            401|403|404)
+              echo "::error::TEATREE_GH_TOKEN is unset or rejected — the forge answered HTTP ${status} for ${GITHUB_REPOSITORY}. The secret IS set, so presence is not the failure: rotate the credential. The checkout below would otherwise die as 'could not read Username for https://github.com', naming nothing." >&2
+              exit 1
+              ;;
+            *)
+              echo "::warning::TEATREE_GH_TOKEN is UNVERIFIED — the probe could not reach ${API} (HTTP ${status:-000}). Continuing: read a checkout failure below as unexplained, not as a rejected credential." >&2
+              ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+          # CI-2: persist the PAT (not the default GITHUB_TOKEN) as the git credential
+          # so the `git push` to the refresh branch is attributed to a real identity and
+          # TRIGGERS the required `test (3.13)` check. A push authenticated with
+          # GITHUB_TOKEN never fires downstream workflows (GitHub's recursion guard), so
+          # the refresh PR would sit forever without its required check and could never
+          # merge. The probe step above has already proved this credential usable.
+          token: ${{ secrets.TEATREE_GH_TOKEN }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: durations-shard-*
+          path: /tmp/durations-shards
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - name: Merge shard durations and decide whether to refresh
+        id: merge
+        run: >
+          uv run -p 3.13 python scripts/ci/durations_refresh.py
+          dev/.test_durations
+          /tmp/durations-shards/durations-shard-1/.test_durations
+          /tmp/durations-shards/durations-shard-2/.test_durations
+          /tmp/durations-shards/durations-shard-3/.test_durations
+          /tmp/durations-shards/durations-shard-4/.test_durations
+          /tmp/durations-shards/durations-shard-5/.test_durations
+          /tmp/durations-shards/durations-shard-6/.test_durations
+          /tmp/durations-shards/durations-shard-7/.test_durations
+          /tmp/durations-shards/durations-shard-8/.test_durations
+          /tmp/durations-shards/durations-shard-9/.test_durations
+          /tmp/durations-shards/durations-shard-10/.test_durations
+          /tmp/durations-shards/durations-shard-11/.test_durations
+          /tmp/durations-shards/durations-shard-12/.test_durations
+      - name: Open or update the durations-refresh PR
+        if: steps.merge.outputs.refresh == 'true' && !cancelled()
+        env:
+          # CI-2: a PAT (TEATREE_GH_TOKEN), NOT the default GITHUB_TOKEN. A PR opened /
+          # a branch pushed with GITHUB_TOKEN never triggers the required `test (3.13)`
+          # check (GitHub suppresses workflow-triggered workflows), so such a refresh PR
+          # can never merge unaided. `gh pr create`/`gh pr view` read GH_TOKEN; the
+          # checkout above persists the same token for the `git push`.
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fail LOUD, never silently open an un-mergeable PR: without a CI-triggering
+          # token the required check never fires and the refresh stalls forever.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset. The durations-refresh PR must be opened with a PAT that triggers the required 'test (3.13)' check — the default GITHUB_TOKEN does not, so the PR could never merge. Set the TEATREE_GH_TOKEN secret." >&2
+            exit 1
+          fi
+          if git diff --quiet dev/.test_durations; then
+            echo "No net change to dev/.test_durations — nothing to open."
+            exit 0
+          fi
+          # STABLE branch (CI-3): reused so there is at most ONE open refresh PR, updated
+          # in place — never a new dated branch/PR each unmerged day. The script UPDATES it
+          # rather than rebuilding the ref: `git checkout -B` here discarded every commit
+          # already on the branch, which is how #4655's review fixes were destroyed, and a
+          # refresh is precisely what creates the collateral those fixes address (#4717). It
+          # refuses, pushing nothing, on a conflict outside the generated file. The lease
+          # still guards a concurrent push, and the rebuild path still rewrites the ref.
+          BRANCH="ci/test-durations-refresh"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          uv run -p 3.13 python scripts/ci/durations_refresh_branch.py --branch "$BRANCH"
+          git push --force-with-lease origin "$BRANCH"
+          # `gh pr view <branch>` also answers a MERGED PR, which is how the first merge silenced every later refresh.
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' 2>/dev/null)" ]; then
+            gh pr create \
+              --title "chore(ci): refresh test shard durations" \
+              --body "Automated refresh of \`dev/.test_durations\`, recorded from the CI shard lane on the weekly scheduled run (with \`--doctest-modules\`, so \`tests/quality\` and doctest items are now measured). Rebalances the pytest-split shards; the combiner's exact-partition assertion and 93% floor are unchanged. Review and merge when green. Fixes that this refresh's own review requires (raised timeout ceilings, markers, source edits) belong on this branch: the next refresh merges the base under them and preserves every path other than \`dev/.test_durations\`, or refuses and says why (#4717)." \
+              --base main
+            # `--label` on `gh pr create` exits 1 on a label this repo does not carry, under
+            # `set -e`, AFTER the branch is force-pushed — stranding the refreshed commit with
+            # no PR (#4483). The PR is the deliverable; the label is decoration, never a gate.
+            gh pr edit "$BRANCH" --add-label infra || true
+          fi
+
+  # MAINTENANCE HONESTY (#4262): "the scheduled run passed" and "the maintenance job ran"
+  # are different claims, and only the first was ever checked. `refresh-durations` was
+  # skipped on every scheduled run for two weeks — skipped does not red a run — so the lane
+  # reported success while `dev/.test_durations` decayed to 10.8% of the test files. This
+  # job is where the second claim is made, so a job that did not run says so.
+  # `always()` is load-bearing for the same reason it is on `refresh-durations`: both of its
+  # dependencies override an upstream skip, and GitHub propagates that skip through to
+  # anything that does not override it too — the very bug being reported here.
+  scheduled-maintenance-report:
+    needs: [test-shard, refresh-durations]
+    if: always() && github.event.schedule == '17 6 * * 0'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report whether the scheduled maintenance job actually ran
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+          REFRESH: ${{ needs.refresh-durations.result }}
+        run: |
+          set -euo pipefail
+          echo "test-shard: ${SHARDS}"
+          echo "refresh-durations: ${REFRESH}"
+          case "${REFRESH}" in
+            success)
+              echo "refresh-durations ran and passed."
+              ;;
+            failure)
+              echo "::notice::refresh-durations ran and FAILED — this run is already red, which is an honest report."
+              ;;
+            *)
+              echo "::error::refresh-durations was '${REFRESH}' on this scheduled run (test-shard: '${SHARDS}'). Since #4603 it no longer waits for a green lane — recording is a measurement, not a verdict — so a red lane no longer excuses it, and anything but a run means the gate drifted back to requiring success. A job that did not run does not red a run, so the lane would otherwise report green while dev/.test_durations goes unrefreshed (#4262)." >&2
+              exit 1
+              ;;
+          esac
+
+  # The whole-tree jscpd scan, relocated OFF the twelve-way shard lane (#4672).
+  # Measured 314s standalone on an idle 8-core box (1829 sources, 2.1M tokens)
+  # against the 300s ceiling it ran under, so every shard that drew it was one
+  # contention spike from a timeout that reds the required rollup — #2995 had
+  # already raised that ceiling 60s->300s for the same symptom. Here it runs ONCE,
+  # unsharded and serial, on the jscpd baked into the image, and still gates
+  # `test (3.13)` through the combiner's `needs` below. Relocation is by env-gated
+  # skipif, never `-m`: `shard_stats_plugin` records `selected` AFTER
+  # collection_modifyitems, so a marker filter would make sum(selected) < total and
+  # fail `check_shard_completeness.py`. `-s` keeps the elapsed/scale line the ledger
+  # prints on the PASS path in this log, which is what makes a future slowdown
+  # legible without downloading an artifact.
+  jscpd-scan:
+    needs: [preflight, build-image]
+    if: >
+      !cancelled() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Obtain the prebuilt test image
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+          MODE: ${{ needs.build-image.outputs.mode }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$MODE" = "registry" ]; then
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            docker pull "$IMAGE"
+          else
+            docker build -f dev/Dockerfile.test --target base -t "$IMAGE" .
+          fi
+      - name: Whole-tree jscpd scan coverage (unsharded, pinned engine)
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e PYTHONPATH=/app
+          -e TEATREE_JSCPD_SCAN=1
+          ${{ needs.build-image.outputs.image }}
+          uv run -p 3.13 pytest --no-header -q -s -n0
+          -o cache_dir=/tmp/.pytest_cache
+          tests/quality/test_jscpd_duplication.py
+
+  # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
+  # required `test (3.13)` check context (unchanged from the old monolithic job).
+  # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
+  # exactly once (no dropped/duplicated tests), then (3) combines the twelve
+  # shards' coverage and enforces the 93% branch floor + per-module floors ONCE
+  # over the whole tree — identical floor semantics to the old single-process
+  # lane, just computed over combined shards.
+  # The combine/partition/floor steps run on the HOST runner (uv), not inside the
+  # test docker image: coverage data is stored relative (`[tool.coverage.run]
+  # relative_files=true`) so the shard-produced `.coverage` files remap cleanly to
+  # the host checkout, and skipping the ~1-min image build/cache-load here shaves
+  # the combiner's critical path (#3160 item 5).
+  # LOAD-BEARING: the job key `test` + matrix python-version "3.13" produce
+  # `test (3.13)` — do NOT rename without updating branch protection.
+  test:
+    needs: [preflight, test-shard, jscpd-scan]
+    if: >
+      !cancelled() &&
+      github.event.schedule != '17 6 * * 1-6' &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      # A FAILED shard (real test failure) must red the required context. The
+      # shards only ran a TWELFTH of the suite each, so a green combiner without
+      # this guard could pass on combined coverage while a test failed in a shard.
+      - name: Require every test shard to have passed
+        run: |
+          result='${{ needs.test-shard.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::test-shard result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
+            exit 1
+          fi
+      # The relocated whole-tree jscpd scan (#4672) reaches merge protection only
+      # through this context, so its result is checked exactly like a shard's: a
+      # `needs:` alone still passes under `!cancelled()` when the needed job failed.
+      - name: Require the relocated jscpd scan to have passed
+        run: |
+          result='${{ needs.jscpd-scan.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::jscpd-scan result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: shard-artifacts-*
+          merge-multiple: true
+      # Anti-vacuity: prove every test ran in exactly one shard BEFORE trusting
+      # the combined coverage number. A silently-dropped shard (sum<total) or a
+      # duplicated group (sum>total) fails LOUD here, not by riding a green floor.
+      - name: Assert the shards partition the suite exactly once
+        run: >
+          uv run -p ${{ matrix.python-version }} python scripts/ci/check_shard_completeness.py
+          shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
+          shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
+          shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+      # What the shard lane's raised `-o timeout=180` bought, on every run (#4048).
+      # The raise stops contention from reddening a PR whose diff cannot have caused
+      # it; left unmeasured it would only move the cliff, so the same shard-stats
+      # artifacts carry each test's seconds against the ceiling that applied to it and
+      # this names whatever is running out of room, into the run summary. Deliberately
+      # NOT a gate — it exits 0 on an over-run too, because the required context
+      # reddening for a slow test nobody caused is the failure being fixed.
+      - name: Report per-test timeout headroom (report only, never gates)
+        run: >
+          uv run -p ${{ matrix.python-version }} python scripts/ci/report_timeout_headroom.py
+          shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
+          shard-stats.5.json shard-stats.6.json shard-stats.7.json shard-stats.8.json
+          shard-stats.9.json shard-stats.10.json shard-stats.11.json shard-stats.12.json
+          >> "$GITHUB_STEP_SUMMARY"
+      # Combine the twelve shards' data and enforce the whole-tree 93% branch floor
+      # ONCE — same data, same floor as the old single-process lane. `coverage
+      # report --fail-under=93` is the explicit invocation-site floor
+      # (tests/test_coverage_floor_guard.py locks it here + in dev/test-cov.sh).
+      # relative_files=true makes the shard-produced (in-docker) data portable to
+      # this host checkout, so the combine runs on the runner without the image.
+      - name: Combine shard coverage and enforce the 93% floor
+        env:
+          COVERAGE_FILE: .coverage
+        run: >
+          uv run -p ${{ matrix.python-version }} coverage combine
+          coverage.shard1 coverage.shard2 coverage.shard3 coverage.shard4 coverage.shard5 coverage.shard6
+          coverage.shard7 coverage.shard8 coverage.shard9 coverage.shard10 coverage.shard11 coverage.shard12
+          && uv run -p ${{ matrix.python-version }} coverage report --fail-under=93
+          && uv run -p ${{ matrix.python-version }} coverage xml -o coverage.xml
+      - name: Enforce per-module coverage floors
+        env:
+          COVERAGE_FILE: .coverage
+        run: uv run -p ${{ matrix.python-version }} t3 ci coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+
+  # GATE (shim): emits the load-bearing `test (3.13)` required context on
+  # pure-docs PRs where the `test` combiner (and its shards) are path-skipped;
+  # a no-op step only — never runs tests. Mutually exclusive with the `test`
+  # combiner above.
+  test-shim:
+    # Required-context shim for pure-docs PRs (souliane/teatree#1942).
+    # Branch protection requires the context `test (3.13)`. The heavy lane
+    # (`test-shard` + the `test` combiner) is path-skipped on a provably
+    # pure-docs diff (preflight run_heavy_python == 'false'), so it NEVER
+    # reports that context — and a never-reported required context leaves the
+    # PR permanently pending / BLOCKED. This job reports a passing `test (3.13)`
+    # ONLY in that exact skip case, so a docs-only PR can merge without running
+    # the shards.
+    #
+    # It must never mask a real failure: it runs ONLY when the heavy lane was
+    # path-skipped (run_heavy_python == 'false') AND only on pull_request
+    # events. On push-to-main, on the weekly cron, and on any non-pure-docs PR
+    # the `test` combiner runs and owns the `test (3.13)` context; this
+    # shim is skipped (its `if` is false), so the two can never both report.
+    # The slim daily cron runs neither.
+    #
+    # The `name: test` + matrix `python-version: ["3.13"]` makes the produced
+    # check context the exact string `test (3.13)` the branch protection
+    # requires — verify with `gh pr checks` after this lands.
+    name: test
+    needs: preflight
+    if: >
+      github.event_name == 'pull_request' &&
+      needs.preflight.outputs.run_heavy_python == 'false'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - name: Report the required test context for a path-skipped docs-only PR
+        run: >
+          echo "Pure-docs PR: the heavy test lane was path-skipped
+          (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
+          so the required status context is satisfied without re-running the suite."
+
+  # SCHEDULED (nightly cron + manual dispatch, never a PR check): order-dependence
+  # audit. Runs a curated, order-safe slice of
+  # the suite under a SHUFFLED collection order (pytest-randomly) so a test that
+  # leaks shared global state — a stray env var, an unreset singleton, a
+  # module-level cache — and the victim it breaks cannot silently return
+  # (souliane/teatree#2359 Class B). The heavy `test (3.13)` lane runs the suite
+  # in its committed file order and so never exercises the polluter→victim
+  # adjacency; this lane does.
+  test-shuffle:
+    # WHY a CURATED SET, not the whole suite (widened #3160 residual CI-4): the
+    # Class B flakes this lane was built for live in ``tests/teatree_loop/`` (#2359),
+    # but the audit only has value over the tests it shuffles. The lane is widened to
+    # every ADDITIONAL directory empirically verified order-safe under ALL four
+    # matrixed seeds — both standalone AND shuffled TOGETHER in one ``-n0`` process
+    # (cross-directory polluter→victim adjacency): ``config``, ``teatree_config``,
+    # ``teatree_utils``, ``utils``, ``teatree_quality``, ``messaging``, ``cli_doctor``,
+    # ``conformance``, ``teatree_hooks`` (high-value — hooks mutate process-global
+    # env/cwd most often). ~15-22 min serial per seed, under the 30-min cap.
+    #
+    # STILL SCOPED-OUT (measured, not silent): ``teatree_core``, ``teatree_cli``,
+    # ``teatree_loops``, ``teatree_backends``, ``teatree_agents``, ``eval_replay``,
+    # ``integration``, ``django_db``, … are NOT yet in the lane — not verified
+    # order-safe under shuffle. Widening them needs the plan's step 1 (audit/fix the
+    # import-time DB seeding in the concurrency/timeout tests), a larger separate
+    # effort; add a dir here only after it passes shuffled (all four seeds) TOGETHER
+    # with this set.
+    #
+    # Four ~25-min serial seeds cost too much per push; nightly and on demand instead.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+        seed: [7, 1, 13, 100]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
+      # ``dev`` would shuffle every ``uv run pytest`` and the heavy coverage lane,
+      # destabilising them; the plugin is isolated to this lane.
+      - run: uv sync --group shuffle
+      # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/`` tests
+      # on the pre-fix code); the others widen order coverage. The seed -> order map
+      # belongs to pytest-randomly, so these four are only meaningful under the ``<5``
+      # pin in ``[dependency-groups].shuffle`` — 5.0.0 shuffles ahead of pytest-django's
+      # grouping and remaps every seed, so re-record all four when that pin lifts.
+      # ``-n0`` is serial so a single in-process collection order runs end to end
+      # (xdist would isolate the polluter from the victim across workers). The four
+      # seeds are MATRIXED so each runs as its own ~15-22-min parallel job over the
+      # curated set (#3160).
+      # ``leak_sentinel_plugin`` runs WARN-ONLY: a process-global env/cwd polluter is
+      # NAMED (not just its downstream victim) without failing the lane.
+      - name: Run the curated order-safe set under shuffled collection (seed ${{ matrix.seed }})
+        run: >
+          uv run -p ${{ matrix.python-version }} pytest -n0 -q -p randomly
+          --randomly-seed=${{ matrix.seed }}
+          -p scripts.ci.leak_sentinel_plugin --leak-sentinel=warn
+          tests/teatree_loop/
+          tests/config/
+          tests/teatree_config/
+          tests/teatree_utils/
+          tests/utils/
+          tests/teatree_quality/
+          tests/messaging/
+          tests/cli_doctor/
+          tests/conformance/
+          tests/teatree_hooks/
+
+  # ── 6. Architecture / quality fitness gates ────────────────────────────────
+
+  # GATE (heavy lane, PR-only): diff-scoped mutation testing on safety modules;
+  # skipped on pure-docs PRs; most PRs touch no safety module and pass instantly.
+  mutation-diff:
+    # Scoped (narrow) mutation testing, PR-only (souliane/teatree#131).
+    # ``t3 mutation run`` diffs the PR vs base, intersects with
+    # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
+    # touched safety modules — a no-op (fast pass) when the PR touches none, so
+    # most PRs pay nothing. Programmatic ratchet: the command fails when the
+    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total
+    # (the count may only ever shrink) — survivors at-or-below baseline still
+    # pass. ``mode`` is validated but inert: "warn" and "block" resolve to that
+    # same verdict, so this job's behaviour does not depend on it.
+    # ``t3 mutation run --all --update-baseline`` tightens the recorded counts.
+    # The 10-min cap bounds a pathological run.
+    #
+    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
+    # (preflight ``run_heavy_python=false``). Any non-pure-docs PR runs
+    # it — fail-safe-unknown. (#132)
+    needs: preflight
+    if: >
+      github.event_name == 'pull_request' &&
+      needs.preflight.outputs.run_heavy_python == 'true'
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Diff-scoped mutation run (warn-first; 10-min cap)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          timeout 600 uv run t3 mutation run --target "origin/$BASE_REF"
+
+  # GATE (weekly cadence, PR-only): full-registry mutation run on the first PR
+  # of each ISO week; a no-op (skipped) on every subsequent PR that week.
+  mutation-full:
+    # Weekly full-scope mutation run over the whole registry (not just the
+    # diff). Like the eval suite, it is metered (slow), so it runs once a week
+    # on the FIRST PR opened that ISO week — ``scripts/eval/first_pr_of_week.py``
+    # makes that decision (order-independent, re-run safe). Warn-first as above;
+    # mutates every declared safety module by passing each registry path as the
+    # changed set.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Decide whether this is the first PR of the ISO week
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # FAIL-SAFE: if the PR list cannot be fetched (gh outage, rate-limit,
+          # network), default to RUNNING the mutation suite — never silently
+          # skip. The old empty-list fallback made a fetch failure look like
+          # "not the first PR of the week" and skipped the run, exiting 0 even
+          # when it should have run (fake-green).
+          if ! gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
+              --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json; then
+            echo "WARNING: could not fetch the PR list — running mutation (run-when-uncertain)." >&2
+            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
+          elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_mutation=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Full-scope mutation run (warn-first)
+        if: steps.gate.outputs.run_mutation == 'true'
+        run: uv run t3 mutation run --all
+
+  # GATE (push + schedule + PR): full-tree scan for committed customer brand
+  # names. Runs daily, on push-to-main, AND on every PR so a brand committed by
+  # a PR is caught BEFORE merge instead of turning main RED on landing (#44).
+  banned-terms-tree:
+    # Full-tree banned-brand backstop (souliane/teatree#1570, #44). The
+    # diff/payload banned-terms gate only ever sees a *change*; a brand
+    # name ALREADY committed never appears in a post-landing diff. This
+    # job scans every git-tracked file's content for the high-confidence
+    # brand list on push-to-main, on a daily schedule, and on PRs, failing
+    # CI if a brand is present. The public repo ships with no brands; the
+    # list is supplied from the TEATREE_TERM_REGISTRY secret so no tenant
+    # name is ever committed.
+    #
+    # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          python-version: "3.13"
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv sync
+      - name: Full-tree banned-brand scan (push/schedule)
+        if: github.event_name != 'pull_request'
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run t3 banned-terms scan-tree --repo-root .
+      - name: Full-tree banned-brand + terminology scan (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run t3 banned-terms scan-tree --repo-root .
+
+  # GATE (push + schedule + PR): full-tree overlay-leak scan. The pre-commit
+  # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a
+  # real-shaped Slack/forge opaque id ALREADY committed never appears in a
+  # staged diff. This job walks every scanned root (src/teatree, docs, skills,
+  # agents, tests, scripts + top-level README/BLUEPRINT/AGENTS) for the
+  # configured term list AND the always-on opaque-ID pass. It runs on every PR
+  # too (#44) so a leak introduced by a PR is caught BEFORE merge instead of
+  # turning main RED on landing.
+  #
+  # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
+  overlay-leak-tree:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          python-version: "3.13"
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        run: uv sync
+      - name: Full-tree overlay-leak scan (push/schedule)
+        if: github.event_name != 'pull_request'
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run python scripts/hooks/check_no_overlay_leak.py
+      - name: Full-tree overlay-leak scan (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: uv run python scripts/hooks/check_no_overlay_leak.py
+
+  # GATE (push + schedule + PR): the two tree gates above scan whatever list
+  # their secret happens to hold, and a secret is a point-in-time copy — nothing
+  # re-reads the operator's DB, so a term added locally silently never reaches
+  # CI and the backstop keeps running an older, shorter list. This job closes
+  # that: it fingerprints the CI-visible list (count + a domain-separated digest
+  # over the whole sorted list) and compares it to the committed, term-free
+  # `.github/term-source-fingerprint.json`. A stale, shrunk or diverged secret
+  # reds CI with COUNTS ONLY — no term value is ever read, logged or committed.
+  #
+  # No `uv sync`: `check-ci` reads only the env vars and the fingerprint file, so
+  # it runs on the stdlib and stays a seconds-long job.
+  #
+  # Pushes and same-repo PRs require the classed registry; fork PRs cannot read secrets.
+  term-source-drift:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Term scan unavailable to fork pull requests
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "skipped: the term registry secret is not available to pull requests from forks"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          python-version: "3.13"
+      - name: Term-source drift (push/schedule — require the secrets)
+        if: github.event_name != 'pull_request'
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: python scripts/term_source_drift.py check-ci
+      - name: Term-source drift (PR)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          TEATREE_TERM_REGISTRY: ${{ secrets.TEATREE_TERM_REGISTRY }}
+        run: python scripts/term_source_drift.py check-ci
+
+  # GATE (PR-only, NON-required): ground-truth anti-vacuity audit for the
+  # incremental push gate (souliane/teatree#122). Runs the WHOLE-TREE ast-grep scan
+  # + WHOLE-TREE doctest sweep, then asserts every finding/failure is INSIDE the
+  # SCOPED set the push gate would have run for this diff. A whole-tree
+  # finding/failure the scoped gate would have SKIPPED is a measured false negative
+  # -> the job fails LOUD and files a tracking issue. The required `test (3.13)`
+  # whole-tree lane is the hard backstop; this audit measures scoped coverage.
+  selection-audit:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # fetch-depth: 0 so `git merge-base origin/<base> HEAD` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Audit the scoped push gate against whole-tree ground truth
+        id: audit
+        env:
+          BASE_REF_NAME: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF_NAME"
+          BASE_REF="origin/$BASE_REF_NAME" uv run python scripts/ci/push_gate_selection_audit.py
+      - name: File a tracking issue on a measured selection miss
+        if: failure() && steps.audit.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        # Through the #162 hygiene facade, never a bare `gh issue create`: the facade
+        # judges the open backlog first, so a miss recurring on ten PRs extends ONE
+        # ticket instead of filing ten. `migrate` is load-bearing — the leak gate
+        # fails CLOSED on an unreadable banned-terms source, which an unmigrated DB is.
+        run: |
+          uv run python manage.py migrate --noinput
+          uv run python scripts/ci/file_selection_audit_issue.py
+
+  # ── 7. Security & supply chain ─────────────────────────────────────────────
+
+  # GATE: dependency vulnerability audit via pip-audit (OSV backend). Job key
+  # `uv-audit` is LOAD-BEARING — hardcoded as UV_AUDIT_CHECK_NAME in
+  # src/teatree/loop/scanners/pr_sweep.py. The inner tool is pip-audit, not
+  # `uv audit`, because `uv audit` has a known OSV parser regression (#19492).
+  uv-audit:
+    # Job name preserved for compatibility with the PR-sweep scanner's
+    # ``--fallback-uv-audit`` escape hatch (see
+    # ``src/teatree/loop/scanners/pr_sweep.py`` ``UV_AUDIT_CHECK_NAME``).
+    # The inner command is ``pip-audit`` because ``uv audit`` is still
+    # a preview feature and astral-sh/uv#19492 (OSV parser regression)
+    # turned every PR red. ``pip-audit`` uses the same OSV backend and
+    # is production-stable. See souliane/teatree#1264.
+    #
+    # AUDITED SURFACE: ``--no-default-groups --all-extras`` exports the SHIPPED
+    # runtime surface (all optional extras, no dev tooling). Previously ``uv sync``
+    # included dev group packages that never ship to users, inflating the CVE
+    # surface with development tools. Optional extras (markdown, notion, slack) ARE
+    # shipped to users and must be audited.
+    #
+    # ALLOWLIST: add unfixable transitive CVEs to ``requirements.audit.ignore`` —
+    # one ``VULN-ID  # package==version: justification`` entry per line. See that
+    # file for the format. Keep the list as short as possible; every entry is a
+    # conscious decision to ship with a known vulnerability.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      # A green audit is only evidence if the audit can still SEE. Nothing reds
+      # when the surface reports NOTHING, and an empty OSV response, a parser
+      # regression or a renamed flag all look exactly like "no findings" —
+      # souliane/teatree#4346. The canary feeds the same tool a pin with known
+      # advisories and demands at least one back.
+      - name: Canary — prove the audit surface can see a known advisory
+        run: python scripts/ci/audit_canary.py
+      - name: Export shipped runtime surface for audit
+        run: uv export --no-default-groups --all-extras --format requirements-txt --no-emit-workspace --no-header --quiet > requirements.audit.txt
+      - name: Read CVE allowlist
+        id: ignore
+        run: |
+          if [ -s requirements.audit.ignore ]; then
+            grep -v '^\s*#' requirements.audit.ignore | grep -v '^\s*$' \
+              | awk '{print "--ignore-vuln", $1}' | tr '\n' ' ' > /tmp/ignore_flags.txt
+            echo "flags=$(cat /tmp/ignore_flags.txt)" >> "$GITHUB_OUTPUT"
+          else
+            echo "flags=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: pip-audit (OSV backend; strict; allowlist applied)
+        id: audit
+        env:
+          IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
+        # shellcheck disable=SC2086 — word-splitting on IGNORE_FLAGS is intentional:
+        # it expands to zero or more ``--ignore-vuln GHSA-xxxx`` pairs from the
+        # committed requirements.audit.ignore allowlist (never user-supplied input).
+        run: uvx pip-audit@2.10.1 --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
+      # A raw CVE list makes the reader re-derive the question that decides what
+      # to do. Django 6.0.8's High-severity raster CVE could not be reached from
+      # src/ while its Moderate admin one could, so the severity column ranked
+      # them the wrong way round (souliane/teatree#4346). Failure-only: the
+      # blocking verdict is the step above, this just annotates its findings.
+      - name: Reachability assessment for the advisories found
+        if: failure() && steps.audit.outcome == 'failure'
+        env:
+          IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
+        # shellcheck disable=SC2086 — same intentional word-splitting as above.
+        run: |
+          uvx pip-audit@2.10.1 --vulnerability-service osv --disable-pip --format json \
+            -r requirements.audit.txt $IGNORE_FLAGS > audit-report.json || true
+          uv run t3 tool dependency-audit --report audit-report.json
+      - name: Point a red audit at the cooldown escape routine
+        if: failure() && steps.audit.outcome == 'failure'
+        run: echo "::error::A fixed release still inside the dependency cooldown hold window is taken through a dated [tool.uv] exclude-newer-package entry - BLUEPRINT §15 'Taking a security fix inside the window'."
+      # PyPI is read only while an escape entry exists; an expired one reds the scheduled run alone.
+      - name: Cooldown escapes
+        if: ${{ !cancelled() }}
+        env:
+          FAIL_ON_EXPIRED: ${{ github.event_name == 'schedule' && '--fail-on-expired' || '' }}
+        run: python scripts/ci/cooldown_escapes.py --verify-lock ${FAIL_ON_EXPIRED:+"$FAIL_ON_EXPIRED"}
+
+  # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
+  # also uploads the SBOM as a workflow artifact for supply-chain visibility.
+  sbom:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: scripts/hooks/generate_sbom.sh
+      - run: git diff --exit-code dist/sbom.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: always()
+        with:
+          name: sbom
+          path: dist/sbom.json
+
+  # ADVISORY (never blocks): uv-native, uv.lock-accurate, OSV-backed vulnerability
+  # scan via `uv audit` (https://astral.sh/blog/uv-audit). Runs ALONGSIDE — never
+  # replaces — the blocking `uv-audit` (pip-audit) gate and the `sbom` SBOM-diff
+  # gate above. Kept advisory because `uv audit` is still a PREVIEW feature with
+  # possible breaking changes (the same astral-sh/uv#19492 OSV-parser regression
+  # that moved the blocking gate to pip-audit, souliane/teatree#1264). The uv
+  # version is PINNED so preview flag churn can't break this lane out from under
+  # us; promote to a gate (drop continue-on-error, un-pin) once `uv audit` is
+  # stable. Allowlist of accepted advisories: `[tool.teatree.uv_audit].ignore`
+  # in pyproject.toml.
+  #
+  # Job key `uv-audit-advisory` is DELIBERATELY distinct from the load-bearing
+  # `uv-audit` (UV_AUDIT_CHECK_NAME in src/teatree/loop/scanners/pr_sweep.py) so
+  # the two never collide.
+  uv-audit-advisory:
+    if: github.event.schedule != '17 6 * * 1-6'
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: true
+          # PIN the uv version: `uv audit` is preview, so a floating `latest`
+          # could change flags out from under this lane. Bump deliberately.
+          version: "0.11.15"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+      # `--frozen` audits the locked `uv.lock` resolution without re-locking;
+      # `--no-default-groups` audits the SHIPPED runtime surface (mirrors the
+      # blocking gate's `--no-default-groups`, excluding dev-only tooling).
+      # `|| true` plus `continue-on-error: true` are the two independent
+      # guards keeping this lane non-blocking: a finding, a preview crash, or
+      # an offline/network hiccup is reported but never reds the build.
+      - name: uv audit (advisory; OSV; never blocks)
+        continue-on-error: true
+        run: uv audit --frozen --no-default-groups --output-format text || true
+
+  # The metered behavioral-eval suite (`t3 eval run --backend api`, `claude -p`)
+  # is NOT a job here. It runs in the standalone `.github/workflows/eval.yml`
+  # (weekly schedule + manual workflow_dispatch) so a PR pipeline neither runs
+  # nor displays a metered-eval check. See that workflow for the install +
+  # `--require-executed` enforcement.

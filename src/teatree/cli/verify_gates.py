@@ -1,0 +1,395 @@
+"""t3 tool verify-gates -- the one CI-parity local gate command.
+
+Registers onto the shared tool_app (side-effect import from cli/__init__,
+mirroring comment_density_tools / test_shape_tools).
+
+A plain ``prek run --all-files`` only fires the commit-stage hooks. The
+push-stage gates (refuse-public-push-with-leak, doc-update-gate,
+comment-density, ensure-pr) carry ``stages: [push]`` and are STRUCTURALLY
+skipped -- yet CI re-runs them on the PR-vs-base diff. So a builder reporting
+"local prek is green" can be honest about the commit-stage hooks while blind
+to the exact push-stage gate CI fails on. The same holds for the
+``stages: [manual]`` hooks CI runs as their own jobs (test-path-mirror,
+test-shape): no commit or push run fires them.
+
+This command runs the commit and push stages against the changed files where
+filename-aware hooks allow it, then whichever of those manual-stage CI-job hooks
+the config prek itself loads declares -- a readable config declaring none skips
+that stage; a missing or unreadable one selects them all, so it cannot pass as
+"none declared". ``always_run`` hooks still examine the whole tree. A config
+change or an unresolvable diff falls back to ``--all-files``. Each stage has a
+hard wall-clock deadline and a resource preflight, so refusal is visible rather
+than a host-level OOM.
+
+Note the stage name: prek's ``--hook-stage`` accepts the canonical
+``pre-push`` value (the config's ``stages: [push]`` is the legacy alias prek
+maps onto ``pre-push``). The literal ``--hook-stage push`` is rejected by prek.
+
+It also DISCLOSES the tree it graded (#4720). The command takes no positional
+target, so run from a main clone it measures the default branch rather than the
+branch under review and still exits 0 -- a reviewer handing back that exit code
+reports a green for a tree nobody asked about. So every run names the checkout,
+sha and branch it measured, an explicit ``--expect-sha`` is a hard target check,
+a clean main clone on its default branch is refused, and a green run names the
+CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
+"""
+
+import shutil
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+import typer
+import yaml
+
+from teatree.core.invocation_cwd import invocation_cwd
+from teatree.quality.changed_set import ChangedSetError, changed_paths
+from teatree.quality.gate_receipt import write_gate_receipt
+from teatree.utils.git_branch import current_branch, head_sha
+from teatree.utils.git_remote_ops import config_value
+from teatree.utils.git_run import run, run_strict
+from teatree.utils.install_headroom import free_bytes
+from teatree.utils.ram_scope import read_ram_headroom
+from teatree.utils.run import CommandFailedError, run_streamed
+
+# The same key ``refuse-main-clone-commit.sh`` reads, so one declaration serves both.
+_TARGET_BRANCH_CONFIG_KEY = "teatree.targetBranch"
+
+# prek's ``--hook-stage`` flag expects the canonical stage name. The config's
+# ``stages: [push]`` alias resolves to this; passing ``push`` verbatim errors.
+_PUSH_STAGE = "pre-push"
+_MANUAL_STAGE = "manual"
+_MIN_DISK_MIB = 4096
+_MIN_MEMORY_MIB = 2048
+_BYTES_PER_MIB = 1024 * 1024
+_STAGE_DEADLINE_SECONDS = 600
+_MAX_SCOPED_FILES = 500
+# prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
+_PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
+_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", *_PREK_CONFIG_NAMES, "tach.toml"})
+
+
+def _resource_refusal(repo: Path) -> str:
+    """Return the measured shortfall before a potentially expensive local gate run."""
+    disk_free = free_bytes(repo)
+    if disk_free is not None and disk_free // _BYTES_PER_MIB < _MIN_DISK_MIB:
+        free_mib = disk_free // _BYTES_PER_MIB
+        return f"disk: {free_mib} MiB free below {_MIN_DISK_MIB} MiB floor"
+    memory_free = read_ram_headroom().available_mib
+    if memory_free is not None and memory_free < _MIN_MEMORY_MIB:
+        return f"memory: {memory_free} MiB available below {_MIN_MEMORY_MIB} MiB floor"
+    return ""
+
+
+_EXPECT_SHA_ENV = "T3_VERIFY_GATES_EXPECT_SHA"
+
+# Distinct from 1 (a gate failed) so a caller can tell "this tree is red" from
+# "nothing was measured" -- the two produce opposite next actions.
+_WRONG_TREE_EXIT = 2
+
+#: CI jobs that NO commit- or push-stage hook runs, so a green here says nothing
+#: about them. Pinned against ``.github/workflows/ci.yml`` by the test suite.
+UNCOVERED_CI_JOBS = (
+    "test-shard",
+    "test",
+    "test-shuffle",
+    "mutation-diff",
+    "jscpd-scan",
+    "selection-audit",
+    "refresh-durations",
+    "uv-audit",
+    "sbom",
+)
+
+#: Hermetic ``stages: [manual]`` hooks CI runs as a job of the same name.
+#: uv-audit (network) and cyclonedx-sbom (rewrites dist/) stay in UNCOVERED_CI_JOBS.
+CI_JOB_MANUAL_HOOKS = ("test-path-mirror", "test-shape")
+
+
+@dataclass(frozen=True, slots=True)
+class MeasuredTree:
+    """The checkout a verify-gates run actually graded."""
+
+    toplevel: Path
+    head_sha: str
+    branch: str
+    is_primary_clone: bool
+    default_branch: str
+    target_branch: str
+    dirty: bool
+
+    @property
+    def on_integration_branch(self) -> bool:
+        """Is HEAD the branch this clone exists to HOLD rather than develop on?
+
+        A fork whose work lands on a long-lived integration branch declares it in
+        git config under ``_TARGET_BRANCH_CONFIG_KEY``, and its clone sits there the
+        way ours sits on the default — same structural non-target, same refusal.
+        """
+        return bool(self.branch) and self.branch in {self.default_branch, self.target_branch}
+
+    @property
+    def venue(self) -> str:
+        return "main clone" if self.is_primary_clone else "worktree"
+
+    def describe(self) -> str:
+        dirty = ", dirty" if self.dirty else ""
+        return f"{self.toplevel} @ {self.head_sha} ({self.branch}{dirty}, {self.venue})"
+
+
+def read_measured_tree(repo: str = ".") -> MeasuredTree | None:
+    """The checkout at *repo*, or ``None`` when it is not a git tree."""
+    try:
+        toplevel = Path(run_strict(repo=repo, args=["rev-parse", "--show-toplevel"]))
+        sha = head_sha(repo=repo)
+        git_dir = Path(run_strict(repo=repo, args=["rev-parse", "--absolute-git-dir"]))
+    except (CommandFailedError, OSError):
+        return None
+    return MeasuredTree(
+        toplevel=toplevel,
+        head_sha=sha,
+        branch=current_branch(repo=repo),
+        # A linked worktree's ``.git`` is a FILE pointing into the clone's admin
+        # dir, so only the primary checkout's git dir IS ``<toplevel>/.git``.
+        is_primary_clone=git_dir == toplevel / ".git",
+        default_branch=_default_branch(repo),
+        target_branch=config_value(repo, _TARGET_BRANCH_CONFIG_KEY).strip(),
+        # Untracked-insensitive: ``prek run --all-files`` grades TRACKED files, so a
+        # scratch file nobody added changes nothing about what was measured.
+        dirty=bool(run(repo=repo, args=["status", "--porcelain", "--untracked-files=no"])),
+    )
+
+
+def _default_branch(repo: str) -> str:
+    """The remote's default branch, or ``main`` when ``origin/HEAD`` is unset."""
+    ref = run(repo=repo, args=["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    return ref.removeprefix("origin/") or "main"
+
+
+def wrong_tree_refusal(tree: MeasuredTree, *, expected: str, allow_main_clone: bool) -> str:
+    """Why *tree* must not be graded, or ``""`` when it may be."""
+    if expected:
+        # Naming the sha IS saying which tree you meant, so the main-clone
+        # refusal below has nothing left to add.
+        # git emits lowercase; a sha pasted from a forge UI may not be.
+        if tree.head_sha.lower().startswith(expected.lower()):
+            return ""
+        return (
+            f"verify-gates: this tree is at {tree.head_sha}, NOT the target {expected} — nothing "
+            "measured. cd into the ticket worktree, or "
+            "`t3 review checkout <pr-url> --sha <head>`."
+        )
+    if allow_main_clone or tree.dirty or not (tree.is_primary_clone and tree.on_integration_branch):
+        return ""
+    return (
+        f"verify-gates: refusing to grade the main clone on {tree.branch} @ {tree.head_sha} — that "
+        "measures the default branch, not a PR, and its exit 0 is not a green-proof for anything "
+        "under review. Grade the ticket worktree, pass --expect-sha <head>, or --allow-main-clone."
+    )
+
+
+def _prek_available() -> bool:
+    return shutil.which("prek") is not None
+
+
+def _timeout_available() -> bool:
+    return shutil.which("timeout") is not None
+
+
+def _scope_args(repo: Path) -> tuple[list[str], str]:
+    """Use the branch/working-tree diff for filename hooks; uncertainty means FULL."""
+    try:
+        changed = changed_paths(cwd=repo)
+    except ChangedSetError as exc:
+        return ["--all-files"], f"diff unavailable ({exc}); full tree"
+    paths = sorted(
+        {
+            entry.path
+            for entry in changed.entries
+            if entry.status not in {"D", "R", "C", "T"} and (repo / entry.path).is_file()
+        }
+    )
+    if not paths or len(paths) > _MAX_SCOPED_FILES:
+        return ["--all-files"], "empty/oversize diff; full tree"
+    if any(Path(path).name in _CONFIG_NAMES or path.endswith((".toml", ".lock", ".cfg", ".ini")) for path in paths):
+        return ["--all-files"], "toolchain/config changed; full tree"
+    if any(entry.status in {"D", "R", "C", "T"} for entry in changed.entries):
+        return ["--all-files"], "delete/rename/type-change; full tree"
+    return ["--files", *paths], f"{len(paths)} changed file(s); always-run hooks remain whole-tree"
+
+
+def _record(repo: Path, state: str, reason: str) -> None:
+    try:
+        write_gate_receipt(repo, state=state, reason=reason)
+    except OSError:
+        # No receipt is itself an INCOMPLETE PR verdict. Keep the gate result
+        # visible even on a read-only or malformed git admin directory.
+        typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
+
+
+def _prek_config(repo: Path, toplevel: Path) -> Path | None:
+    """The config prek loads when run from *repo*: the nearest at or above it, never above *toplevel*."""
+    start, checkout = repo.resolve(), toplevel.resolve()
+    for directory in (start, *start.parents):
+        if not directory.is_relative_to(checkout):
+            return None
+        for name in _PREK_CONFIG_NAMES:
+            if (directory / name).is_file():
+                return directory / name
+    return None
+
+
+def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
+    """The CI_JOB_MANUAL_HOOKS *config* runs at the manual stage; all of them when it cannot be read."""
+    try:
+        text = config.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text) if config.suffix == ".toml" else yaml.safe_load(text)
+        default_stages = parsed.get("default_stages") or [_MANUAL_STAGE]
+        hooks = [hook for entry in parsed["repos"] for hook in entry.get("hooks") or []]
+        declared = {hook["id"] for hook in hooks if _MANUAL_STAGE in (hook.get("stages") or default_stages)}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, tomllib.TOMLDecodeError, AttributeError, KeyError, TypeError):
+        return CI_JOB_MANUAL_HOOKS
+    return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
+
+
+def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
+    deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
+    stages = [
+        ("commit", [*deadline, "prek", "run", *scope_args]),
+        ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+    ]
+    config = _prek_config(repo, toplevel)
+    # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
+    manual_hooks = _declared_manual_hooks(config) if config else CI_JOB_MANUAL_HOOKS
+    # prek exits 1 on a selector no declared hook matches, and runs EVERY manual hook when given none.
+    if not manual_hooks:
+        typer.echo(
+            f"verify-gates: manual (CI-job hooks) skipped — {config} declares none of "
+            f"{', '.join(CI_JOB_MANUAL_HOOKS)} at that stage.",
+            err=True,
+        )
+        return stages
+    manual = [*deadline, "prek", "run", *manual_hooks, *scope_args, "--hook-stage", _MANUAL_STAGE]
+    return [*stages, ("manual (CI-job hooks)", manual)]
+
+
+def _run_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
+    failed: list[str] = []
+    incomplete: list[str] = []
+    for label, cmd in stages:
+        typer.echo(f"== verify-gates: {label} ==", err=True)
+        # ``check=False`` inherits stdio and lets us collect both stage results.
+        result = run_streamed(cmd, check=False, cwd=repo)
+        if result in {124, 137}:
+            incomplete.append(label)
+        elif result != 0:
+            failed.append(label)
+    return failed, incomplete
+
+
+def verify_gates(
+    expect_sha: str = typer.Option(
+        "",
+        "--expect-sha",
+        envvar=_EXPECT_SHA_ENV,
+        help="Full or abbreviated SHA this tree must be at; any other tree is refused.",
+    ),
+    *,
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
+    allow_main_clone: bool = typer.Option(
+        False,
+        "--allow-main-clone",
+        help="Grade a clean main clone on its default branch (refused by default).",
+    ),
+) -> None:
+    """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
+
+    Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+    stage fails. The push-stage run is
+    what catches the gates CI fails on but a bare ``prek run --all-files``
+    cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
+    gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
+    declared by the prek config prek itself loads (``prek.toml`` or
+    ``.pre-commit-config.yaml``, nearest at or above ``--repo``). It is skipped
+    only when a readable config declares none; a missing or unreadable config
+    selects every one. The full test suite is NOT a push gate -- push -> CI
+    runs it.
+
+    ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
+    ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
+    cwd is the image WORKDIR, not the worktree the operator stood in, so measuring
+    ``Path.cwd()`` graded whatever checkout happened to be mounted at WORKDIR instead
+    of refusing or measuring the invoking worktree.
+
+    Report the measured SHA it prints TOGETHER WITH its exit code as the
+    green-proof — an exit code alone does not say which tree earned it. Exits 2
+    without grading anything when the tree is not a git checkout, is not the
+    ``--expect-sha`` target, or is a clean main clone on its default branch.
+    """
+    tree = read_measured_tree(repo=str(repo))
+    if tree is None:
+        typer.echo(f"verify-gates: {repo} is not a git tree — nothing measured.", err=True)
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+    refusal = wrong_tree_refusal(tree, expected=expect_sha.strip(), allow_main_clone=allow_main_clone)
+    if refusal:
+        typer.echo(refusal, err=True)
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+
+    typer.echo(f"verify-gates: measuring {tree.describe()}", err=True)
+    _record(repo, "incomplete", "run started but did not finish")
+    if not _prek_available():
+        _record(repo, "incomplete", "prek unavailable")
+        typer.echo(
+            "verify-gates: prek not found on PATH. Install prek (the pre-commit "
+            "runner) so the local gate set matches CI.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not _timeout_available():
+        _record(repo, "incomplete", "GNU timeout unavailable")
+        typer.echo("verify-gates: INCOMPLETE — GNU `timeout` is required for a bounded run.", err=True)
+        raise typer.Exit(code=1)
+
+    refusal = _resource_refusal(repo)
+    if refusal:
+        _record(repo, "incomplete", refusal)
+        typer.echo(f"verify-gates: INCOMPLETE — refusing to start: {refusal}. Reclaim resources and retry.", err=True)
+        raise typer.Exit(code=1)
+
+    scope_args, scope_reason = _scope_args(repo)
+    typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
+    stages = _stage_commands(scope_args, repo, tree.toplevel)
+    failed, incomplete = _run_stages(stages, repo)
+
+    finished_tree = read_measured_tree(repo=str(repo))
+    if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
+        _record(repo, "incomplete", "checkout changed during verification")
+        typer.echo(
+            f"verify-gates: INCOMPLETE — checkout changed while grading {tree.head_sha}; rerun on the final tree.",
+            err=True,
+        )
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+
+    if failed or incomplete:
+        _record(repo, "incomplete", f"failed={','.join(failed)}; timed_out={','.join(incomplete)}")
+        if incomplete:
+            typer.echo(f"verify-gates: INCOMPLETE — timed out stage(s): {', '.join(incomplete)}", err=True)
+        if failed:
+            typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.", err=True)
+        raise typer.Exit(code=1)
+    _record(repo, "green", "all gate stages passed")
+    typer.echo(
+        f"verify-gates: all gate stages green ({' + '.join(label for label, _ in stages)}) — measured {tree.head_sha}.",
+        err=True,
+    )
+    typer.echo(
+        f"verify-gates: NOT covered by any local hook: {', '.join(UNCOVERED_CI_JOBS)} — CI at the "
+        "pushed SHA is the authority.",
+        err=True,
+    )
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("verify-gates")(verify_gates)

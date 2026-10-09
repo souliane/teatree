@@ -1,0 +1,596 @@
+import logging
+import re
+from pathlib import Path
+from typing import TypedDict, cast
+from urllib.parse import urlparse
+
+from teatree.backends.gitlab import api as _gitlab_api
+from teatree.backends.gitlab import issue_notes as _issue_notes
+from teatree.backends.gitlab import issue_ops as _issue_ops
+from teatree.backends.gitlab import merge_rpc as _gitlab_merge_rpc
+from teatree.backends.gitlab import pr_reads as _pr_reads
+from teatree.backends.gitlab import subissues as _subissues
+from teatree.backends.gitlab import uploads as _uploads
+from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab.discussions import _count_unresolved_resolvable_threads, _read_int
+from teatree.backends.gitlab.pr_notes import GitLabMrNotes
+from teatree.core.backend_protocols import (
+    ApprovalState,
+    DraftState,
+    ForgeMergeResult,
+    PrMergeState,
+    PrMessage,
+    PrOpenState,
+    PrReview,
+    PullRequestSpec,
+    ReviewState,
+    UploadVerification,
+)
+from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
+from teatree.types import RawAPIDict
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
+
+_ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
+_MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
+
+
+_GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
+    "opened": PrOpenState.OPEN,
+    "merged": PrOpenState.MERGED,
+    "closed": PrOpenState.CLOSED,
+    "locked": PrOpenState.CLOSED,
+}
+
+
+class _GitLabUser(TypedDict, total=False):
+    """Subset of the GitLab user payload that teatree reads."""
+
+    username: str
+
+
+class _GitLabMergeRequestSummary(TypedDict, total=False):
+    """Subset of the GitLab MR response read for the review/open-state/draft lookup."""
+
+    reviewers: list[_GitLabUser]
+    state: str
+    author: _GitLabUser
+    draft: bool
+
+
+def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
+    """Build a ``GitLabAPI`` from explicit credentials.
+
+    When *token* is empty the ``GitLabAPI`` default (env-var fallback) is used.
+    Resolves ``GitLabAPI`` through the module attribute so test patches that
+    rebind ``teatree.backends.gitlab.api.GitLabAPI`` apply here too.
+    """
+    return _gitlab_api.GitLabAPI(
+        token=token,
+        base_url=base_url or "https://gitlab.com/api/v4",
+    )
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
+    def __init__(
+        self,
+        *,
+        client: GitLabAPI | None = None,
+        token: str = "",
+        base_url: str = "",
+    ) -> None:
+        self._client = client or get_client(token=token, base_url=base_url)
+        self._notes = GitLabMrNotes(self._client, self._resolve_project)
+
+    @property
+    def client(self) -> GitLabAPI:
+        """Underlying ``GitLabAPI``.
+
+        Exposed for ``GitLabSyncBackend`` and other GitLab-specific consumers
+        that need calls outside the cross-host Protocol surface (pipeline
+        status, approvals, discussions, draft notes count, terminal-state PR
+        scans). Cross-host code paths must keep using the Protocol methods.
+        """
+        return self._client
+
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+        project = self._resolve_project(spec.repo)
+        if project is None:
+            return {"error": f"Could not resolve project: {spec.repo}"}
+
+        payload: RawAPIDict = {
+            "source_branch": spec.branch,
+            "target_branch": spec.target_branch or project.default_branch,
+            "title": spec.title,
+            "description": spec.description,
+        }
+        if spec.labels:
+            payload["labels"] = ",".join(spec.labels)
+        if spec.assignee:
+            payload["assignee_username"] = spec.assignee
+        # GitLab takes ``reviewer_ids`` on the create POST, so the reviewer is atomic
+        # with the MR — no second call, and no window where it exists unreviewed.
+        if reviewer_ids := self._resolve_reviewer_ids(spec.reviewers):
+            payload["reviewer_ids"] = reviewer_ids
+        if spec.draft and not spec.title.startswith("Draft:"):
+            payload["title"] = f"Draft: {spec.title}"
+
+        return self._client.post_json(f"projects/{project.project_id}/merge_requests", payload) or {}
+
+    def _resolve_reviewer_ids(self, usernames: list[str]) -> list[int]:
+        """Numeric ids for *usernames*, dropping — LOUDLY — any that do not resolve.
+
+        A configured reviewer who no longer exists must not fail the create — the
+        MR matters more than the assignment, mirroring ``resolve_pr_assignee``. But
+        ``resolve_user_id_by_username`` returns ``0`` precisely "so callers can
+        detect and report the failure": swallowing it makes one typo in
+        ``pr_auto_reviewers`` open every MR unreviewed with no signal at all, which
+        is indistinguishable from the policy working. The drop is degraded
+        behaviour, so it is reported at ``warning`` every time it happens.
+        """
+        resolved = {name: self._client.resolve_user_id_by_username(name) for name in usernames}
+        reviewer_ids = [user_id for user_id in resolved.values() if user_id]
+        if unresolved := [name for name, user_id in resolved.items() if not user_id]:
+            logger.warning(
+                "pr_auto_reviewers: %s did not resolve to a GitLab user — opening the MR with "
+                "%d of %d configured reviewer(s). Fix the username in the overlay's "
+                "pr_auto_reviewers, then run `t3 <overlay> review apply-reviewer-policy`.",
+                ", ".join(repr(name) for name in unresolved),
+                len(reviewer_ids),
+                len(resolved),
+            )
+        return reviewer_ids
+
+    def current_user(self) -> str:
+        """Return the authenticated GitLab username."""
+        return self._client.current_username()
+
+    def is_assignable(self, *, repo: str, login: str) -> bool:  # noqa: PLR6301 — CodeHostBackend Protocol surface.
+        """GitLab's MR create tolerates a non-member assignee, so no probe (#3100)."""
+        del repo, login
+        return True
+
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
+        listed = self._client.list_all_open_mrs(author, updated_after=updated_after)
+        if not enrich:
+            return listed
+        return [_pr_reads.enrich_mr_pipeline(self._client, mr) for mr in listed]
+
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        return self._client.list_recently_merged_mrs(author, updated_after=updated_after)
+
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]:
+        return self._client.list_open_mrs_as_reviewer(reviewer, updated_after=updated_after)
+
+    def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues assigned to *assignee*, scoped to *repo_slugs* when supplied."""
+        if repo_slugs:
+            return self._client.list_open_issues_for_assignee(assignee, project_slugs=repo_slugs)
+        return self._client.list_open_issues_for_assignee(assignee)
+
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues *author* FILED, scoped to *repo_slugs* (empty = global) — intake query (#3235)."""
+        return self._client.list_open_issues_for_author(author, project_slugs=repo_slugs)
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label*, scoped to *repo_slugs* (empty = global) — #3634."""
+        return self._client.list_open_issues_for_label(label, project_slugs=repo_slugs)
+
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
+        return _pr_reads.list_project_prs(self._client, self._resolve_project(repo), state=state, author=author)
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """MRs on *repo* merged at or after ISO-8601 *since* — raises rather than degrading."""
+        return _pr_reads.list_project_merged_prs_since(
+            self._client,
+            self._resolve_project(repo),
+            repo=repo,
+            since=since,
+        )
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.project_pr_diff(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str]:
+        project = self._resolve_project(repo)
+        if project is None:
+            msg = f"Could not resolve project: {repo}"
+            raise ValueError(msg)
+        return _pr_reads.project_pr_file_diffs(self._client, project, pr_iid=pr_iid)
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return _pr_reads.list_project_pr_commits(self._client, self._resolve_project(repo), pr_iid=pr_iid)
+
+    def get_repo(self, *, repo: str) -> RawAPIDict:
+        return _pr_reads.repo_metadata(self._resolve_project(repo), repo=repo)
+
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict:
+        """Open a GitLab issue on *repo* and return the created payload."""
+        spec = _issue_ops.NewIssue(repo=repo, title=title, body=body, labels=labels or [])
+        return _issue_ops.create_issue(self._client, self._resolve_project(repo), spec)
+
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> RawAPIDict:
+        """Create a child work item under the parent at *parent_url*.
+
+        The three-hop create/convert/nest dance lives in ``subissues`` with the
+        GraphQL helpers it drives; ``create_issue`` is handed in so the child's
+        first hop reuses this host's leak-scrubbed create path. A colleague's
+        ticket is refused before any hop runs (#162 rule 5) — nesting a child
+        under it is a mutation of that ticket's hierarchy same as an edit.
+        """
+        try:
+            require_self_authored_issue(host=self, issue_url=parent_url)
+        except ExternalIssueRefusedError as exc:
+            return {"error": str(exc)}
+        spec = _subissues.ChildSpec(parent_url=parent_url, title=title, body=body, labels=labels, child_type=child_type)
+        return _subissues.create_child(self._client, self.create_issue, spec)
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
+        """Return open issues on *repo* whose title/description match *query*."""
+        return _issue_ops.search_open_issues(self._client, self._resolve_project(repo), query=query)
+
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
+        """Every open issue on *repo*, all pages — the #162 create-dedupe landscape."""
+        return _issue_ops.list_repo_open_issues(self._client, self._resolve_project(repo))
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
+        return self._notes.post_comment(repo=repo, pr_iid=pr_iid, body=body)
+
+    def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
+        return self._notes.update_comment(repo=repo, pr_iid=pr_iid, comment_id=comment_id, body=body)
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
+
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
+        return self._notes.submit_review(repo=repo, pr_iid=pr_iid, review=review)
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return thread-structured, author-carrying discussion threads for an MR (#3340).
+
+        Unlike :meth:`list_pr_comments` (a flat note list), this preserves the
+        thread grouping AND each note's authorship — what
+        :func:`thread_opened_solely_by` needs to tell a stale bot thread apart
+        from one a human replied to. Keyed like its neighbours (``repo`` +
+        ``pr_iid``) so a caller selects threads through the backend without
+        dropping to the forge-specific ``project_id``-keyed API client.
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        return self._client.get_mr_discussions(project.project_id, pr_iid)
+
+    def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
+        return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification:
+        """Existence-check an upload; the embed is the relative claimable ref (#2165).
+
+        Delegates to :func:`teatree.backends.gitlab.uploads.verify_upload` (which
+        cross-checks the project id and returns the relative ``/uploads/...``
+        reference GitLab claims on save), keeping this host on the Protocol surface.
+        """
+        return _uploads.verify_upload(self._client, project=self._resolve_project(repo), upload=upload)
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        """Return *reviewer*'s current review state on the MR at *pr_url*.
+
+        GitLab does not expose a per-reviewer review timeline, so we infer
+        state from the MR's approval list and reviewer assignment. When the
+        reviewer's username is in ``approved_by``, they are ``APPROVED``;
+        when they are still a requested reviewer but not in ``approved_by``
+        they are ``PENDING`` (a fresh re-request, or an approval that the
+        forge dropped on force-push). Unparsable URLs yield ``NONE``.
+        """
+        path = urlparse(pr_url).path
+        match = _MR_URL_RE.match(path)
+        if match is None or not reviewer:
+            return ReviewState.NONE
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return ReviewState.NONE
+
+        approvals = self._client.get_mr_approvals(project.project_id, int(match["iid"]))
+        approved_by = approvals.get("approved_by")
+        if isinstance(approved_by, list) and reviewer in approved_by:
+            return ReviewState.APPROVED
+
+        mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        if isinstance(mr, dict):
+            reviewers = cast("_GitLabMergeRequestSummary", mr).get("reviewers")
+            if isinstance(reviewers, list):
+                for entry in reviewers:
+                    if isinstance(entry, dict) and entry.get("username") == reviewer:
+                        return ReviewState.PENDING
+        return ReviewState.NONE
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        """Return whether the MR at *pr_url* is genuinely open/merged/closed (#1074).
+
+        Fetches the MR's real ``state`` field. ``opened`` → OPEN, ``merged``
+        → MERGED, ``closed``/``locked`` → CLOSED. Any exception, unresolvable
+        project, unparsable URL, or non-dict / unrecognised payload →
+        ``UNKNOWN`` so the orphan sweep fails open (never reaps on doubt).
+        GitHub's implementation maps the same ambiguity to ``UNKNOWN``.
+        """
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return PrOpenState.UNKNOWN
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return PrOpenState.UNKNOWN
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
+            return PrOpenState.UNKNOWN
+        if not isinstance(mr, dict):
+            return PrOpenState.UNKNOWN
+        state = cast("_GitLabMergeRequestSummary", mr).get("state")
+        if not isinstance(state, str):
+            return PrOpenState.UNKNOWN
+        return _GITLAB_MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        """Return the MR author's GitLab username, or ``""`` when it can't be resolved.
+
+        Fetches the MR payload and reads ``author.username``. Any exception,
+        unresolvable project, unparsable URL, or non-dict / author-less
+        payload returns ``""`` — the reaction scanners treat an unresolved
+        author as "not provably self" and skip the reaction, so a transient
+        lookup failure can never cause a reaction on the user's own MR.
+        """
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return ""
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return ""
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        except Exception:  # noqa: BLE001 — fail safe: an unresolved author must skip the reaction.
+            return ""
+        if not isinstance(mr, dict):
+            return ""
+        author = cast("_GitLabMergeRequestSummary", mr).get("author")
+        if isinstance(author, dict):
+            username = author.get("username")
+            if isinstance(username, str):
+                return username
+        return ""
+
+    def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
+        """Append *username* as a reviewer on the MR at *pr_url* (#1295 cap B).
+
+        Resolves the project from the URL path, looks up *username* via the
+        GitLab ``/users`` endpoint, then calls
+        :meth:`gitlab_api.GitLabAPI.assign_reviewer` which preserves the
+        existing reviewer list. Returns ``False`` on any failure (URL
+        parse, project lookup, username lookup, PUT failure) so callers
+        can surface the failure to the user instead of silently swallowing
+        it.
+        """
+        if not pr_url or not username:
+            return False
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return False
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return False
+            user_id = self._client.resolve_user_id_by_username(username)
+            if user_id <= 0:
+                return False
+            return self._client.assign_reviewer(project.project_id, int(match["iid"]), user_id)
+        except Exception:  # noqa: BLE001 — fail closed: callers must see False on lookup errors.
+            return False
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        """Fetch a GitLab issue from its full URL.
+
+        Propagates :class:`IssueNotFoundError` from the delegate on HTTP 404 (the
+        issue was permanently deleted); every other error propagates as-is so the
+        scanner keeps retrying it.
+        """
+        return _issue_ops.get_issue(self._client, issue_url)
+
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+        """Close a GitLab issue, optionally leaving an audit-trail note first.
+
+        The note is posted here (not in the delegate) so the delegate stays a
+        single-purpose state transition; an unparsable URL still short-circuits
+        there, before any write.
+        """
+        if comment:
+            self.post_issue_comment(issue_url=issue_url, body=comment)
+        return _issue_ops.close_issue(self._client, issue_url)
+
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Replace a GitLab issue's description in place."""
+        return _issue_ops.update_issue(self._client, issue_url, body=body)
+
+    def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+        """Return the project slug that OWNS *issue_url* (the note's own project).
+
+        The evidence command uploads artifacts to this slug so they land in the
+        same project's ``/uploads`` namespace the note is created on — a note
+        renders only the uploads claimed by its OWN project (a different repo's
+        upload 404s). Returns ``""`` for a non-issue URL. See
+        :mod:`teatree.backends.gitlab.issue_notes`.
+        """
+        return _issue_notes.repo_for_issue_url(issue_url)
+
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Post a note on a GitLab issue / work item (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.post_issue_comment(self._client, issue_url=issue_url, body=body)
+
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+        """List the notes on a GitLab issue / work item (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.list_issue_comments(self._client, issue_url=issue_url)
+
+    def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+        """Edit a note in place to keep ONE evidence note per ticket (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.update_issue_comment(self._client, issue_url=issue_url, comment_id=comment_id, body=body)
+
+    def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
+        return _issue_notes.delete_issue_comment(self._client, issue_url=issue_url, comment_id=comment_id)
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+        """Return the approval state for an MR — used by ``GitLabApprovalsScanner`` (#936).
+
+        ``approvals_left`` is computed from the same ``/merge_requests/<iid>/approvals``
+        endpoint that :py:meth:`get_review_state` already consults — the upstream
+        ``approvals_left`` field is canonical; falling back to ``required - count``
+        when the field is absent. ``unresolved_resolvable`` counts open
+        ``resolvable`` discussion threads from ``/merge_requests/<iid>/discussions``
+        (system notes and non-resolvable comments are excluded — they cannot block a
+        merge under the "must resolve" policy).
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            # MERGE-AUTHORISING read: an unresolvable project must NOT degrade to
+            # ``approvals_left=0`` (which reads as "approved, safe to merge").
+            # Fail closed — one outstanding approval, no approvers — so an
+            # unresolvable slug can never authorise an auto-merge. Mirrors the
+            # GitHub sibling's fail-closed ``approvals_left=1``.
+            warn_throttled(
+                logger,
+                f"gitlab-approvals-unresolved:{repo}",
+                "GitLab approvals read could not resolve project %r — failing closed (approvals_left=1)",
+                repo,
+            )
+            return ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0)
+
+        raw = self._client.get_mr_approvals(project.project_id, pr_iid)
+        approved_by_raw = raw.get("approved_by", [])
+        approved_by = (
+            [name for name in approved_by_raw if isinstance(name, str)] if isinstance(approved_by_raw, list) else []
+        )
+        approvals_left = _read_int(raw, "approvals_left")
+        if approvals_left < 0:
+            required = _read_int(raw, "required")
+            count = _read_int(raw, "count")
+            approvals_left = max(required - count, 0)
+
+        discussions = self._client.get_mr_discussions(project.project_id, pr_iid)
+        unresolved_resolvable = _count_unresolved_resolvable_threads(discussions)
+        return ApprovalState(
+            approvals_left=approvals_left,
+            approved_by=approved_by,
+            unresolved_resolvable=unresolved_resolvable,
+        )
+
+    def _resolve_project(self, repo: str) -> ProjectInfo | None:
+        """Resolve a GitLab project from a local path, ``namespace/repo`` slug, or bare name.
+
+        Bare repo names (no slash, no matching path) fall back to the CWD's
+        git remote — ``Worktree.repo_path`` stores a bare name, and callers
+        that hand it straight to the code host would otherwise 404.
+        """
+        if Path(repo).exists():
+            return self._client.resolve_project_from_remote(repo)
+        if "/" in repo:
+            return self._client.resolve_project(repo)
+        return self._client.resolve_project_from_remote(".")
+
+    def _merge_rpc(self) -> _gitlab_merge_rpc.GitLabApiMergeRpc:
+        return _gitlab_merge_rpc.GitLabApiMergeRpc(self._client)
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        """Tri-state draft flag, read over the token-authenticated HTTP API.
+
+        Deliberately NOT on the ``glab`` merge-RPC transport its merge-path
+        siblings use: the review-request draft gate calls this from the headless
+        deploy image, which ships no ``glab`` binary, so every probe there raised
+        ``FileNotFoundError`` and the gate reported "not a draft" for every MR.
+        The HTTP client needs only ``GITLAB_TOKEN``, which that image already has.
+
+        ``draft`` is the GitLab draft flag.
+        An unresolvable project, a transport error, or a non-dict payload yields
+        ``UNKNOWN`` so no consumer mistakes an unanswered probe for a live MR.
+        """
+        try:
+            project = self._resolve_project(slug)
+            if project is None:
+                return DraftState.UNKNOWN
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{pr_id}")
+        except Exception as exc:  # noqa: BLE001 — fail closed: an unread probe must never read as NOT_DRAFT.
+            warn_throttled(
+                logger,
+                f"gitlab-draft-probe:{slug}!{pr_id}",
+                "GitLab draft probe failed for %s!%s — reporting UNKNOWN: %s",
+                slug,
+                pr_id,
+                exc,
+            )
+            return DraftState.UNKNOWN
+        if not isinstance(mr, dict):
+            return DraftState.UNKNOWN
+        summary = cast("_GitLabMergeRequestSummary", mr)
+        if summary.get("draft"):
+            return DraftState.DRAFT
+        return DraftState.NOT_DRAFT
+
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:
+        """The OPEN MR sourced from *branch*: the url, ``""`` for none, ``None`` for unknown."""
+        return _pr_reads.open_mr_url_for_branch(self._client, self._resolve_project, repo=repo, branch=branch)
+
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        return self._merge_rpc().fetch_pr_same_repo(slug=slug, pr_id=pr_id)
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+
+    def fetch_workflow_runs_at_head(self, *, slug: str, head_sha: str) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
+
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
+    ) -> ForgeMergeResult:
+        return self._merge_rpc().merge_pr_squash_bound(
+            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, message=message, squash=squash
+        )

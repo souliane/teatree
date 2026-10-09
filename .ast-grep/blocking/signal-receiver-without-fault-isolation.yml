@@ -1,0 +1,25 @@
+id: signal-receiver-without-fault-isolation
+language: python
+severity: warning
+message: >-
+  FSM signal receiver writes to the DB with no try/except. A DatabaseError
+  raised here breaks EVERY Ticket FSM transition (violates the never-block
+  contract). Wrap the body and logger.exception, like every sibling
+  receiver in signals.py. See signals.py:16.
+files:
+  - "src/teatree/core/signals.py"
+rule:
+  kind: call
+  pattern: $MODEL.objects.create($$$A)
+  inside:
+    kind: function_definition
+    has:
+      field: parameters
+      has:
+        pattern: instance
+        stopBy: end
+    stopBy: end
+  not:
+    inside:
+      kind: try_statement
+      stopBy: end

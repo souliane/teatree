@@ -1,0 +1,176 @@
+"""Colleague-MR review-shape gate (souliane/teatree#1114, loosened in #1159).
+
+The binding rule from the review skill is one terse inline comment on
+the motivating file:line: an unlabelled finding plus one concrete
+pointer, targeting ~300 characters. A bare ``Nit:`` is reserved for a
+genuinely trivial item, and a real finding is never relabelled as a nit
+to get past the cap. The previous safety-net was a memory entry (a
+guideline an agent could forget). This module is the coarser structural
+enforcement: every ``ReviewService`` publishing method
+that takes a body routes through :func:`check_review_shape` before the
+GitLab API call. When the gate refuses, the API call is never attempted
+and no receipt DM (``notify_user_on_behalf_post``) fires for a blocked
+post — short-circuited by the same ``(message, 1)`` return shape the
+on-behalf gate uses.
+
+Shape rules (post-#1159):
+
+* **Own MR** (``mr.author == current_username``) — exempt. Own-MR
+    reviews can be long-form (self-review summary, evidence block).
+* **Colleague MR**, inline or MR-level — guarded by a **paragraph +
+    word count** combination rather than a sentence count. Reject when
+    the body has more than :data:`~teatree.core.review.comment_checks.COLLEAGUE_PROSE_CAP_PARAGRAPHS`
+    paragraphs (blank-line separated) or more than
+    :data:`~teatree.core.review.comment_checks.COLLEAGUE_PROSE_CAP_WORDS` words. The sentence-count
+    heuristic (#1114) over-rejected legitimate ≤2-sentence findings
+    that contained clauses split by semicolons or dashes, while the
+    paragraph + word combination still catches the multi-section
+    Problem/Fix/Verification abuse shape the previous gate was added
+    to prevent.
+
+The signature ``(api, encoded_repo, mr, body, inline)`` is
+forge-neutral — future GitHub PR support is a single-method extension
+(swap the GitLab GET for a GitHub one).
+"""
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, cast
+
+from teatree.core.modelkit.gate_verdict import guarded_read
+from teatree.core.review.comment_checks import prose_cap_breach
+
+if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabHTTPClient
+
+_TTL_MR_AUTHOR = 300  # 5 minutes — mirrors `_TTL_USERNAME` shape
+
+
+def fetch_mr_author(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> str:
+    """Return the MR author's username, cached for 5 minutes per ``(repo, mr)``.
+
+    Reuses the :class:`~teatree.backends.gitlab.api.GitLabHTTPClient`
+    response-cache machinery (``_set_cached`` / ``_get_cached``) so a
+    second post on the same MR within the TTL skips the GitLab GET.
+    The cache lookup is best-effort: a non-canonical API stub without
+    the cache helpers degrades gracefully to an un-cached GET (the gate
+    is still correct, just one extra GET per call).
+
+    A FAILED author read still returns ``""`` — failing closed here would break
+    every on-behalf review post and every existing test stub — but it goes through
+    :func:`~teatree.core.modelkit.gate_verdict.guarded_read`, so the failure is logged
+    rather than silently reading as "not a colleague MR" (#3509).
+    """
+    cache_key = f"mr_author:{encoded_repo}:{mr}"
+    get_cached = getattr(api, "_get_cached", None)
+    if callable(get_cached):
+        cached = get_cached(cache_key, _TTL_MR_AUTHOR)
+        if cached is not None:
+            return str(cached)
+    outcome = guarded_read(
+        f"the author of MR !{mr}", lambda: api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}"), neutral=None
+    )
+    if outcome.failed:
+        return ""
+    data = outcome.value
+    author = ""
+    if isinstance(data, dict):
+        raw_author: object = data.get("author")
+        if isinstance(raw_author, Mapping):
+            raw_username = cast("Mapping[str, object]", raw_author).get("username", "")
+            author = str(raw_username) if raw_username is not None else ""
+    set_cached = getattr(api, "_set_cached", None)
+    if callable(set_cached):
+        set_cached(cache_key, author)
+    return author
+
+
+def is_colleague_mr(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> bool:
+    """Whether the MR was authored by someone other than the current identity.
+
+    Empty MR author or missing/empty current_username (both indicate a
+    fetch failure, e.g. missing token, or a test stub) returns
+    ``False`` — fail-open on the shape gate, because failing closed on
+    an inability to read identity would silently break every on-behalf
+    review post and break every existing test stub.
+    """
+    author = fetch_mr_author(api, encoded_repo, mr)
+    if not author:
+        return False
+    current_username = getattr(api, "current_username", None)
+    if not callable(current_username):
+        return False
+    me = current_username()
+    if not me:
+        return False
+    return author != me
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + inline flag + the #126 override).
+    *,
+    api: "GitLabHTTPClient",
+    encoded_repo: str,
+    mr: int,
+    body: str,
+    inline: bool,
+    allow_long_review: bool = False,
+) -> str:
+    """Return a non-empty steering error when the colleague-MR shape rule is breached.
+
+    Returns ``""`` (proceed) when:
+
+    * ``allow_long_review`` is set — the documented escape for a
+        legitimately long-form colleague-MR review (the CLI surfaces this
+        as ``--allow-long-review``, consistent with the sibling override
+        pattern), OR
+    * the MR is the current identity's own MR (carve-out), OR
+    * the body fits the colleague prose cap
+        (:func:`~teatree.core.review.comment_checks.prose_cap_breach`).
+
+    The steering error names the concrete breach (paragraph count or
+    word count) so the agent knows exactly what to tighten, and points
+    at the terse unlabelled inline form that satisfies the rule.
+    """
+    if allow_long_review:
+        return ""
+    if not body:
+        return ""
+    if not is_colleague_mr(api, encoded_repo, mr):
+        return ""
+
+    breach = prose_cap_breach(body)
+    if breach is None:
+        return ""
+    return _steering_error(inline=inline, breach=breach.breach, cap=breach.cap)
+
+
+def _steering_error(*, inline: bool, breach: str, cap: str) -> str:
+    """Build the actionable refusal message.
+
+    ``breach`` describes what triggered the refusal ("4-paragraph",
+    "250-word"); ``cap`` names the cap that was exceeded
+    ("3-paragraph cap", "200-word cap"). The ``inline`` flag picks the
+    "inline note" vs "MR-level prose" surface name. Both forms point
+    at the canonical ``t3 review post-comment ... --file ... --line ...``
+    invocation, since that is the satisfying shape in either case.
+
+    The remediation instructs one terse inline comment on the exact
+    file:line: an unlabelled finding plus one concrete pointer, targeting
+    ~300 characters. A bare ``Nit:`` is reserved for a genuinely trivial
+    item; a real finding must not be relabelled as a nit to evade the
+    coarse cap. Full evidence belongs in owner chat, not the review thread.
+    The gate was introduced in souliane/teatree#1114 and its structural
+    cap was loosened in #1159.
+    """
+    surface = "inline note" if inline else "MR-level prose"
+    return (
+        f"Refusing colleague-MR on-behalf post: {breach} {surface} exceeds the "
+        f"{cap}. Re-post as a terse inline comment on the exact file:line that "
+        "contains the finding plus one concrete pointer, targeting ~300 characters, "
+        "with no severity label. Reserve `Nit:` for a genuinely trivial item; do not "
+        "relabel a real finding as `Nit:` to get past the cap. Send the full evidence "
+        'chain to the owner in chat, not the review thread (see skills/review § "Single '
+        'terse inline finding"):\n'
+        '  t3 review post-comment <repo> <mr> "<finding> — <pointer>" --file <path> --line <N>\n'
+        "Or, if approving, run `t3 review approve <repo> <mr>` (no body needed)."
+    )

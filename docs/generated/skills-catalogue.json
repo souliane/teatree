@@ -1,0 +1,157 @@
+{
+  "skills": [
+    {
+      "name": "answerer",
+      "summary": "Draft a reply to an inbound question, DM the user for approval, post on confirmation"
+    },
+    {
+      "name": "architectural-review",
+      "summary": "Periodic holistic architectural review \u2014 the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `architectural-review`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence \u2014 not user-invoked"
+    },
+    {
+      "name": "architecture-design",
+      "summary": "Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass \u2014 BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability \u2014 BEFORE any code is written"
+    },
+    {
+      "name": "checking",
+      "summary": "The check-in surface \u2014 a SHORT \"what did I miss\" report, the session task/TODO lists, the pending deferred questions, and the daily follow-up routine (new tickets, ticket statuses, PR reminders)"
+    },
+    {
+      "name": "code",
+      "summary": "Writing code with TDD methodology"
+    },
+    {
+      "name": "contribute",
+      "summary": "Push retro improvements to a branch, open a PR, and optionally create upstream issues"
+    },
+    {
+      "name": "debug",
+      "summary": "Troubleshooting and fixing \u2014 something is broken, find and fix it"
+    },
+    {
+      "name": "directive",
+      "summary": "Submit a plain-English directive about how teatree itself should behave \u2014 captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline"
+    },
+    {
+      "name": "dogfooding",
+      "summary": "Dogfooding teatree's own CLI, loop, and statusline \u2014 two modes sharing one mechanics section for reading a tick and the rendered statusline. \"Verify a change\" is the run-it-yourself checklist applied after modifying CLI/loop/statusline code, before declaring it done. \"Hunt for bugs\" is proactive self-QA \u2014 dogfood the deployed loop, find/dedupe/confirm real bugs, file them, then fix them in worktrees"
+    },
+    {
+      "name": "dreaming",
+      "summary": "Runs the idle-time \"dreaming\" memory-consolidation pipeline end to end with one command \u2014 replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the \u00a74 acceptance gates, triage each row into keep-as-memory vs core-gap \u2192 drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates"
+    },
+    {
+      "name": "e2e",
+      "summary": "End-to-end testing with Playwright \u2014 writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate"
+    },
+    {
+      "name": "e2e-review",
+      "summary": "Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices \u2014 user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence \u2014 and tells the implementer what to fix before approval"
+    },
+    {
+      "name": "handover",
+      "summary": "Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
+    },
+    {
+      "name": "health",
+      "summary": "Read and act on the global operational-health chip \u2014 the green/yellow/red factory-health verdict and its known-issues registry"
+    },
+    {
+      "name": "interactive",
+      "summary": "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, interactive output stays human-readable, and the session watches the factory and handles BLOCKING abnormalities first. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, when deciding what to do with uncommitted, unpushed, untracked or unmerged work, or when checking the factory for abnormalities such as agents run without their skills, missing skills or failing tasks. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`"
+    },
+    {
+      "name": "internals",
+      "summary": "How teatree is BUILT and how to change it safely \u2014 architecture, lifecycle phases, key models, the overlay API, the `t3` CLI reference, and the management-command rules whose violation fails SILENTLY (a `typer.Exit` under `call_command` exits 0, so CI reports green on a real failure). Load it when writing or reviewing teatree's own code, or when building an overlay on it. Carries no Claude Code harness wiring \u2014 that is `/t3:interactive` \u2014 and no dogfooding procedure \u2014 that is `/t3:dogfooding`"
+    },
+    {
+      "name": "mode",
+      "summary": "The operating mode \u2014 one of five named presets (present / afk / maintenance / token-outage / off) deciding which loops run"
+    },
+    {
+      "name": "next",
+      "summary": "Wrap up the current session \u2014 retro, structured result, pipeline handoff"
+    },
+    {
+      "name": "platforms",
+      "summary": "Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms"
+    },
+    {
+      "name": "prompts",
+      "summary": "Trigger and manage reusable prompts \u2014 list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history"
+    },
+    {
+      "name": "retro",
+      "summary": "Conversation retrospective and skill improvement"
+    },
+    {
+      "name": "review",
+      "summary": "Code review \u2014 self-review before finalization, giving review, receiving review feedback"
+    },
+    {
+      "name": "review-request",
+      "summary": "Batch review requests \u2014 discover open PRs, validate metadata, check for duplicates, post to review channels"
+    },
+    {
+      "name": "rules",
+      "summary": "Cross-cutting agent safety rules \u2014 the always-embedded core carrying every non-negotiable's trigger and verdict, each naming the skills/rules/references/ file with its full text. Auto-loaded as a dependency by other skills"
+    },
+    {
+      "name": "running-evals",
+      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 model-free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
+    },
+    {
+      "name": "scanning-news",
+      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, and hands each concrete t3-improvement candidate back through the result envelope's article_suggestions field. The loop queues each behind the ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and DMs the batch to the user"
+    },
+    {
+      "name": "setup",
+      "summary": "Bootstrap and validate teatree for local use \u2014 prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding"
+    },
+    {
+      "name": "ship",
+      "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
+    },
+    {
+      "name": "slack-formatting",
+      "summary": "Rendering tables and formatting messages for Slack \u2014 the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack"
+    },
+    {
+      "name": "sweeping-prs",
+      "summary": "Maintenance sweep across all your open PRs/PRs \u2014 merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases"
+    },
+    {
+      "name": "sweeping-tickets",
+      "summary": "Evidence-gated ticket/issue grouping \u2014 classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism \u2014 a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging \u2014 never assumes a number. Dry-run first; retire a row only on user approval, recording the reason in the description first. Posts zero comments, and touches only tickets the owner or factory bot filed"
+    },
+    {
+      "name": "sweeping-worktrees",
+      "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
+    },
+    {
+      "name": "test",
+      "summary": "Testing, QA, and CI \u2014 running tests, analyzing failures, quality checks, CI interaction, test plans, and posting testing evidence"
+    },
+    {
+      "name": "ticket",
+      "summary": "Ticket intake and kickoff \u2014 from zero to ready-to-code"
+    },
+    {
+      "name": "triaging-issues",
+      "summary": "Review and act on the needs-triage assessor's queued recommendations \u2014 list PENDING PendingTriageRecommendation rows, approve or reject each, and on approval record the rationale in the issue description and run `gh issue close/edit` then stamp the row"
+    },
+    {
+      "name": "update",
+      "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
+    },
+    {
+      "name": "wip",
+      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost \u2014 plus the WRITE-parallel / MERGE-serial phase split and the per-ticket unattended delivery cycle. `boost` keeps `boost_concurrency = N` workers live; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
+    },
+    {
+      "name": "workspace",
+      "summary": "Environment and workspace lifecycle \u2014 worktree creation, setup, DB provisioning, dev servers, cleanup"
+    }
+  ],
+  "skills_root": "skills"
+}

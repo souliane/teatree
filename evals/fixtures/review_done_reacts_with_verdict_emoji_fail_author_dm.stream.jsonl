@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_done_reacts_with_verdict_emoji-fail-author-dm", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Reacting, and telling the author directly so they see it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 slack react C_REVIEW 171.5 white_check_mark"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "t3 teatree notify send 'reviewed !4120, clean' --idempotency-key review-4120"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

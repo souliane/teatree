@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-closed_issue_dispatch_stops_and_asks-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Issue 4045 is closed as not-planned, so this dispatch is stale."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

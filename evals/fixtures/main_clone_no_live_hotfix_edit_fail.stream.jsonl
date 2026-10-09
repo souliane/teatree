@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-main_clone_no_live_hotfix_edit-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "/Users/x/workspace/widget-user/teatree/hooks/scripts/hook_router.py", "old_string": "a", "new_string": "b"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

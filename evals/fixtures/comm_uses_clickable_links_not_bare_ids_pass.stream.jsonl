@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-clickable-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "MR [!9125](https://git.example.com/acme/app/-/merge_requests/9125) is ready for review."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

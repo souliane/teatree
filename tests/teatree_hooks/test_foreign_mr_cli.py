@@ -1,0 +1,368 @@
+"""The host-routed foreign-open-MR resolver behind the pre-push guard.
+
+The guard resolved the backing MR with ``gh`` alone and gave up when ``gh`` was
+absent, so on a GitLab remote it could never fire: the one forge it knew how to
+ask was the one the branch does not live on, and a guard that cannot fire is
+indistinguishable from one that found nothing.
+
+Integration in the spirit of the Test-Writing Doctrine: real forge CLIs are
+faked as executables on ``PATH`` (the unstoppable network), everything else runs
+for real. Each shim answers in its tool's OWN idiom — ``gh`` honours ``--jq``,
+``glab api`` has no such flag and returns JSON.
+"""
+
+import json
+import os
+import sqlite3
+import stat
+from io import StringIO
+from pathlib import Path
+from typing import ClassVar
+
+import pytest
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.config.secret_settings import PERSONAL_IDENTIFIERS
+from teatree.core.models.config_setting import ConfigSetting
+from teatree.hooks.foreign_mr_cli import (
+    ALIAS_UNRESOLVED_VERDICT,
+    NONE_VERDICT,
+    PROBE_NO_LOGIN,
+    REMOTE_EMPTY_VERDICT,
+    UNKNOWN_VERDICT,
+    foreign_mr_verdict,
+)
+
+_GITLAB_REMOTE = "https://gitlab.com/acme-eng/widget.git"
+_GITHUB_REMOTE = "https://github.com/acme/widget.git"
+
+
+def _write_shim(bin_dir: Path, name: str, body: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / name
+    shim.write_text(f"#!/usr/bin/env python3\nimport json, sys\nargs = sys.argv[1:]\n{body}\nsys.exit(1)\n", "utf-8")
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _glab_shim(bin_dir: Path, *, username: str, merge_requests: list[dict[str, object]]) -> None:
+    _write_shim(
+        bin_dir,
+        "glab",
+        "if args[:2] == ['api', 'user']:\n"
+        f"    print(json.dumps({{'username': {username!r}}}))\n"
+        "    sys.exit(0)\n"
+        "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+        f"    rows = json.loads({json.dumps(merge_requests)!r})\n"
+        "    branch = args[1].split('source_branch=')[1].split('&')[0]\n"
+        "    print(json.dumps([r for r in rows if r['source_branch'] == branch]))\n"
+        "    sys.exit(0)\n",
+    )
+
+
+def _gh_shim(bin_dir: Path, *, login: str, prs: list[dict[str, object]]) -> None:
+    _write_shim(
+        bin_dir,
+        "gh",
+        "if args[:2] == ['api', 'user']:\n"
+        f"    print({login!r})\n"
+        "    sys.exit(0)\n"
+        "if args[:2] == ['pr', 'list']:\n"
+        f"    rows = json.loads({json.dumps(prs)!r})\n"
+        "    head = args[args.index('--head') + 1]\n"
+        "    print(json.dumps([pr for pr in rows if pr['headRefName'] == head]))\n"
+        "    sys.exit(0)\n",
+    )
+
+
+@pytest.fixture
+def forge_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty dir prepended to PATH, so only the shims a test writes resolve."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return bin_dir
+
+
+def _mr(branch: str, author: str, iid: int = 77) -> dict[str, object]:
+    return {"iid": iid, "source_branch": branch, "author": {"username": author}}
+
+
+class TestGitLabRemotesAreResolved:
+    def test_a_foreign_open_mr_on_a_gitlab_remote_is_reported(self, forge_bin: Path) -> None:
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "teammate")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 teammate me"
+
+    def test_our_own_open_mr_is_reported_as_ours(self, forge_bin: Path) -> None:
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "Me")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    def test_who_we_are_is_asked_of_the_remote_s_own_host(self, forge_bin: Path) -> None:
+        _write_shim(
+            forge_bin,
+            "glab",
+            "if args == ['api', 'user', '--hostname', 'gitlab.com']:\n"
+            "    print(json.dumps({'username': 'teammate'}))\n"
+            "    sys.exit(0)\n"
+            "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+            f"    print(json.dumps([{json.dumps(_mr('feature-x', 'teammate'))}]))\n"
+            "    sys.exit(0)\n",
+        )
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    @pytest.mark.parametrize("order", ["ours-first", "teammate-first"])
+    def test_a_teammate_mr_on_the_branch_is_foreign_whatever_the_listing_order(
+        self, forge_bin: Path, order: str
+    ) -> None:
+        ours, theirs = _mr("feature-x", "me"), _mr("feature-x", "teammate", iid=78)
+        _glab_shim(
+            forge_bin, username="me", merge_requests=[theirs, ours] if order == "teammate-first" else [ours, theirs]
+        )
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 78 teammate me"
+
+    def test_a_teammate_mr_from_a_fork_does_not_decide_whose_branch_this_is(self, forge_bin: Path) -> None:
+        fork = {**_mr("feature-x", "teammate", iid=78), "source_project_id": 2, "target_project_id": 1}
+        _glab_shim(forge_bin, username="me", merge_requests=[fork, _mr("feature-x", "me")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    def test_the_open_mrs_are_listed_on_the_remote_s_own_host(self, forge_bin: Path) -> None:
+        _write_shim(
+            forge_bin,
+            "glab",
+            "if args[:2] == ['api', 'user']:\n"
+            "    print(json.dumps({'username': 'me'}))\n"
+            "    sys.exit(0)\n"
+            "if args[0] == 'api' and 'merge_requests' in args[1] and args[2:] == ['--hostname', 'gitlab.com']:\n"
+            f"    print(json.dumps([{json.dumps(_mr('feature-x', 'teammate'))}]))\n"
+            "    sys.exit(0)\n",
+        )
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 teammate me"
+
+    def test_a_branch_with_no_open_mr_is_none(self, forge_bin: Path) -> None:
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("other-branch", "teammate")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == NONE_VERDICT
+
+    def test_a_gitlab_remote_is_never_routed_to_gh(self, forge_bin: Path) -> None:
+        # Only `gh` is installed. Routing a GitLab remote to it is exactly the
+        # defect: it would answer about a repo on the wrong forge, or not at all.
+        _gh_shim(forge_bin, login="me", prs=[{"number": 5, "headRefName": "feature-x", "author": {"login": "them"}}])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == NONE_VERDICT
+
+
+class TestGitHubRemotesKeepWorking:
+    def test_a_foreign_open_pr_on_a_github_remote_is_reported(self, forge_bin: Path) -> None:
+        _gh_shim(forge_bin, login="me", prs=[{"number": 42, "headRefName": "feature-x", "author": {"login": "them"}}])
+        assert foreign_mr_verdict(_GITHUB_REMOTE, "feature-x") == "FOREIGN 42 them me"
+
+    @pytest.mark.parametrize("order", ["authorless-first", "teammate-first"])
+    def test_a_readable_teammate_pr_beside_an_authorless_one_is_foreign(self, forge_bin: Path, order: str) -> None:
+        authorless = {"number": 5, "headRefName": "feature-x", "author": {"login": ""}}
+        teammate = {"number": 42, "headRefName": "feature-x", "author": {"login": "them"}}
+        prs = [authorless, teammate] if order == "authorless-first" else [teammate, authorless]
+        _gh_shim(forge_bin, login="me", prs=prs)
+        assert foreign_mr_verdict(_GITHUB_REMOTE, "feature-x") == "FOREIGN 42 them me"
+
+    def test_the_open_prs_are_listed_on_the_remote_s_own_host(self, forge_bin: Path) -> None:
+        _write_shim(
+            forge_bin,
+            "gh",
+            "if args[:2] == ['api', 'user']:\n"
+            "    print('me')\n"
+            "    sys.exit(0)\n"
+            "if args[:2] == ['pr', 'list'] and args[args.index('--repo') + 1] == 'github.com/acme/widget':\n"
+            "    print(json.dumps([{'number': 42, 'author': {'login': 'them'}}]))\n"
+            "    sys.exit(0)\n",
+        )
+        assert foreign_mr_verdict(_GITHUB_REMOTE, "feature-x") == "FOREIGN 42 them me"
+
+
+class TestEveryUnresolvableStepFailsOpen:
+    @pytest.mark.parametrize(
+        ("remote", "branch"),
+        [
+            ("https://example.invalid/acme/widget.git", "feature-x"),  # host routes nowhere
+            (_GITLAB_REMOTE, ""),  # no branch to ask about
+        ],
+    )
+    def test_an_unaskable_question_is_none(self, remote: str, branch: str, forge_bin: Path) -> None:
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "teammate")])
+        assert foreign_mr_verdict(remote, branch) == NONE_VERDICT
+
+    def test_unresolvable_ssh_alias_refuses_with_hostname_hint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        (ssh_dir / "config").write_text("", encoding="utf-8")
+        monkeypatch.setattr("teatree.hooks._ssh_alias.Path.home", lambda: tmp_path)
+        verdict = foreign_mr_verdict("git@missing-alias:acme/widget.git", "feature-x")
+        assert verdict == f"{ALIAS_UNRESOLVED_VERDICT} missing-alias"
+
+    def test_empty_remote_has_its_own_verdict(self) -> None:
+        # No MR was looked up, so the verdict carries no MR number and no author to render.
+        assert foreign_mr_verdict("", "feature-x") == REMOTE_EMPTY_VERDICT
+        assert foreign_mr_verdict("  ", "feature-x") == REMOTE_EMPTY_VERDICT
+
+    def test_no_forge_cli_on_path_is_none(self, forge_bin: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", str(forge_bin))
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == NONE_VERDICT
+
+
+def _mr_but_no_identity(forge_bin: Path, author: str = "teammate") -> None:
+    """A ``glab`` that resolves the open MR but 401s on ``api user`` (the container venue)."""
+    _write_shim(
+        forge_bin,
+        "glab",
+        "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+        f"    print(json.dumps([{json.dumps(_mr('feature-x', author))}]))\n"
+        "    sys.exit(0)\n",
+    )
+
+
+class TestAnUnresolvableIdentityFailsClosed:
+    """An open MR whose OWN-vs-FOREIGN question no identity can settle is UNKNOWN.
+
+    Answering NONE made the guard's protection venue-dependent: the same push was
+    refused on the host and permitted in the container, and the container route
+    minted none of the audit token the documented escape exists to create.
+    """
+
+    def test_an_unresolvable_login_is_unknown(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert (
+            foreign_mr_verdict(_GITLAB_REMOTE, "feature-x")
+            == f"{UNKNOWN_VERDICT} 77 teammate glab exit 1 with no stderr"
+        )
+
+    def test_the_unknown_verdict_is_not_none(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") != NONE_VERDICT
+
+    def test_the_unknown_verdict_names_the_probe_that_did_not_answer(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[3] == "glab"
+
+    def test_the_unknown_verdict_names_the_author_it_could_not_attribute(self, forge_bin: Path) -> None:
+        """Field 3 is the MR author on BOTH blocking verdicts — withholding it hides whose MR is at stake."""
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[2] == "teammate"
+
+    def test_the_unknown_verdict_names_the_cause_the_probe_actually_produced(self, forge_bin: Path) -> None:
+        """A 401 and a timeout are different observations; the refusal must not assert one for the other."""
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split(maxsplit=4)[4] == "exit 1 with no stderr"
+
+    def test_a_probe_that_answers_without_a_login_is_named_as_such(self, forge_bin: Path) -> None:
+        _write_shim(
+            forge_bin,
+            "glab",
+            "if args[:2] == ['api', 'user']:\n"
+            "    print(json.dumps({'name': 'no username key here'}))\n"
+            "    sys.exit(0)\n"
+            "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+            f"    print(json.dumps([{json.dumps(_mr('feature-x', 'teammate'))}]))\n"
+            "    sys.exit(0)\n",
+        )
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split(maxsplit=4)[4] == PROBE_NO_LOGIN
+
+
+def _seed_self_identities(db: Path, identities: dict[str, object]) -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'self_forge_identities', ?)",
+        (json.dumps(identities),),
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The cold-read config DB the guard resolves its own identities from."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    return db
+
+
+class TestOurOwnBotIsNotATeammate:
+    """A factory bot authors our MRs so we stay eligible to approve them.
+
+    The guard asks ONE forge CLI who we are, so a bot-authored MR of our own
+    reads exactly like a teammate's and every push to it is refused. The
+    operator declares the identities it also acts as, per host; nothing else
+    becomes ours.
+    """
+
+    def test_an_mr_authored_by_a_declared_self_identity_is_ours(self, forge_bin: Path, config_db: Path) -> None:
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "acme-factory-bot")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    def test_a_teammate_is_still_foreign_while_a_self_identity_is_declared(
+        self, forge_bin: Path, config_db: Path
+    ) -> None:
+        # The load-bearing half: declaring our bot must not make everyone ours.
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "teammate")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 teammate me"
+
+    def test_an_identity_declared_for_another_host_does_not_apply(self, forge_bin: Path, config_db: Path) -> None:
+        _seed_self_identities(config_db, {"github.com": ["acme-factory-bot"]})
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "acme-factory-bot")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 acme-factory-bot me"
+
+    def test_declaring_nothing_leaves_the_verdict_unchanged(self, forge_bin: Path, config_db: Path) -> None:
+        _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "acme-factory-bot")])
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 acme-factory-bot me"
+
+    def test_a_declared_identity_answers_without_the_probe(self, forge_bin: Path, config_db: Path) -> None:
+        """The declaration is a cold config read, so a venue whose probe 401s still pushes to its own MRs."""
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _mr_but_no_identity(forge_bin, author="acme-factory-bot")
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    def test_an_undeclared_author_is_still_unknown_when_the_probe_cannot_answer(
+        self, forge_bin: Path, config_db: Path
+    ) -> None:
+        # The load-bearing half: consulting the declaration first must not blanket-allow.
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _mr_but_no_identity(forge_bin, author="teammate")
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[0] == UNKNOWN_VERDICT
+
+
+class TestTheDocumentedEnablementPathWorks(TestCase):
+    """``config_setting set self_forge_identities`` is the ONLY sanctioned way to declare one.
+
+    The command refuses any key outside the known-key set, so an unregistered
+    setting leaves a raw sqlite INSERT as the only way in — which never
+    republishes the host projection the pre-push hook reads, and renders the row
+    as ``[unknown — not a declared setting]`` beside a destructive clear remedy.
+    A feature reachable only that way is not reachable.
+    """
+
+    SETTING = "self_forge_identities"
+    VALUE: ClassVar[dict[str, list[str]]] = {"gitlab.com": ["acme-factory-bot"]}
+
+    def test_the_setting_is_accepted_and_round_trips(self) -> None:
+        call_command("config_setting", "set", self.SETTING, json.dumps(self.VALUE), stdout=StringIO())
+
+        stored = ConfigSetting.objects.get_effective(self.SETTING, scope="")
+
+        assert stored == self.VALUE
+
+    def test_a_non_table_value_is_refused_before_it_is_stored(self) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            call_command("config_setting", "set", self.SETTING, '["acme-factory-bot"]', stderr=StringIO())
+
+        assert exc_info.value.code == 2
+        assert ConfigSetting.objects.get_effective(self.SETTING, scope="") is None
+
+    def test_the_operators_own_logins_never_reach_a_shared_export(self) -> None:
+        # A host-keyed login list is exactly the personal-identifier class: no brand term
+        # for the content scan to catch, and no credential suffix for the rule to match.
+        assert self.SETTING in PERSONAL_IDENTIFIERS

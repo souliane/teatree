@@ -1,0 +1,65 @@
+"""Pure path classifier for customer-display impact (#1967).
+
+``classify_paths`` decides whether a changed-file set could impact what is
+displayed to the customer, given an overlay's non-impacting glob rules. The
+defining property is FAIL-CLOSED: a path matching no non-impacting rule resolves to
+``True`` — an unanticipated path is presumed display-impacting so the
+mandatory-E2E gate cannot be silently skipped by a path the rules did not
+anticipate. Only a set whose every path is explicitly non-impacting, or a verified
+empty diff, resolves to ``False``; a diff that could not be read never reaches the
+classifier (#4929).
+"""
+
+from teatree.core.evidence.customer_display_impact import classify_paths, is_non_impacting_path
+
+_NON_IMPACTING = ("*/test_*.py", "*/tests/*", "test_*.py", "*/migrations/*.py", "*.md", "tooling/*")
+
+
+def test_customer_display_impact_helpers_are_public_downstream_api() -> None:
+    assert is_non_impacting_path("app/tests/test_views.py", _NON_IMPACTING)
+    assert classify_paths(["app/tests/test_views.py"], _NON_IMPACTING) is False
+    assert classify_paths(["app/views.py"], _NON_IMPACTING) is True
+
+
+class TestImpactingPaths:
+    def test_serializer_change_impacts(self) -> None:
+        assert classify_paths(["app/api/serializers.py"], _NON_IMPACTING) is True
+
+    def test_view_change_impacts(self) -> None:
+        assert classify_paths(["app/views.py"], _NON_IMPACTING) is True
+
+    def test_frontend_component_impacts(self) -> None:
+        assert classify_paths(["web/src/app/widget.component.ts"], _NON_IMPACTING) is True
+
+    def test_template_impacts(self) -> None:
+        assert classify_paths(["app/templates/email.html"], _NON_IMPACTING) is True
+
+
+class TestNonImpactingPaths:
+    def test_test_only_change_does_not_impact(self) -> None:
+        assert classify_paths(["app/tests/test_views.py"], _NON_IMPACTING) is False
+
+    def test_migration_only_change_does_not_impact(self) -> None:
+        assert classify_paths(["app/migrations/0002_add_field.py"], _NON_IMPACTING) is False
+
+    def test_docs_only_change_does_not_impact(self) -> None:
+        assert classify_paths(["README.md", "docs/guide.md"], _NON_IMPACTING) is False
+
+    def test_tooling_only_change_does_not_impact(self) -> None:
+        assert classify_paths(["tooling/lint.py"], _NON_IMPACTING) is False
+
+
+class TestFailClosed:
+    def test_unknown_path_presumed_impacting(self) -> None:
+        # Matches no non-impacting glob → fail closed to True.
+        assert classify_paths(["app/business/pricing.py"], _NON_IMPACTING) is True
+
+    def test_mixed_impacting_and_non_impacting_is_impacting(self) -> None:
+        assert classify_paths(["app/tests/test_x.py", "app/views.py"], _NON_IMPACTING) is True
+
+    def test_mixed_unknown_and_non_impacting_is_impacting(self) -> None:
+        # One non-impacting + one unknown → the unknown forces fail-closed True.
+        assert classify_paths(["README.md", "app/business/pricing.py"], _NON_IMPACTING) is True
+
+    def test_a_verified_empty_diff_is_not_impacting(self) -> None:
+        assert classify_paths([], _NON_IMPACTING) is False

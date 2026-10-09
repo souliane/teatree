@@ -1,0 +1,6 @@
+import subprocess
+
+
+def setup(p):
+    subprocess.run(["git", "init", "-q", str(p)], check=True)
+    subprocess.run(["git", "-C", str(p), "worktree", "add", str(p / "wt"), "main"], check=True)

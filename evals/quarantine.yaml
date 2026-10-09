@@ -1,0 +1,22 @@
+# Known-red QUARANTINE — scenarios the bounded selective-PR lane does not select (#4173).
+#
+# Selection is section-scoped, so while a scenario is red every PR touching the doctrine
+# section it grades reds its eval lane. An entry here drops that scenario from the PR
+# lane only. It is NOT a verdict allowance: a quarantined scenario that runs still reds
+# its run, and the weekly/heal lane keeps grading and reporting it
+# (`t3 eval quarantine audit <merged-summary.json>`).
+#
+# Each entry is required to carry all three fields:
+#
+#   scenarios:
+#     <scenario_name>:
+#       issue: https://github.com/souliane/teatree/issues/<n>   # what will fix it
+#       until: 2026-09-04                                       # ISO date; past it the entry stops suppressing
+#       reason: one line on why it is red
+#
+# Past `until` the scenario re-arms and blocks again exactly as before quarantine — so the
+# list can never rot into a permanent skip. Delete an entry the moment its scenario passes
+# (`t3 eval quarantine audit` reds on one that has); inspect the file with
+# `t3 eval quarantine list` and validate it with `t3 eval quarantine check`.
+
+scenarios: {}

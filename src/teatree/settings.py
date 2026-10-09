@@ -1,0 +1,246 @@
+"""Default Django settings for teatree.
+
+Used when teatree is the Django project (the standard case).
+Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
+"""
+
+import os
+from pathlib import Path
+
+from teatree.config import default_logging
+from teatree.config.db_router import CONFIG_DB_ALIAS, pinned_config_db
+from teatree.config.setting_parsers import _parse_env_bool_default_on
+from teatree.paths import CANONICAL_DB, CODE_REPO_ROOT, DATA_DIR, DATA_DIR_AUTO_ISOLATED, IsolatedEnvDir
+from teatree.timeouts import CORE_DEFAULTS
+
+_DATA_DIR = DATA_DIR
+if DATA_DIR_AUTO_ISOLATED:
+    IsolatedEnvDir(_DATA_DIR).open_for(CODE_REPO_ROOT)
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# The stale-DB notice is an operational nudge surfaced by ``t3 doctor check``
+# (_check_single_db), not a Python warning at settings import: every pytest
+# collection imports settings under ``filterwarnings=error``, so emitting it
+# here turned a benign legacy db.sqlite3 into a hard collection error.
+
+
+def _discover_overlay_apps() -> list[str]:
+    """Scan ``teatree.overlays`` entry points for overlays that declare a Django app."""
+    from importlib.metadata import entry_points  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    apps: list[str] = []
+    for ep in entry_points(group="teatree.overlays"):
+        try:
+            obj = ep.load()
+            app_label = getattr(obj, "django_app", None)
+            if app_label:
+                apps.append(app_label)
+        except Exception:  # noqa: BLE001, S112 — an app that fails to load is skipped
+            continue
+    return apps
+
+
+SECRET_KEY = "teatree-dev-insecure"  # noqa: S105 — local-dev CLI, never deployed
+
+
+def _debug_enabled() -> bool:
+    """Whether ``DEBUG`` is on — env-gated so it can differ per service.
+
+    Default on preserves local-dev convenience (rich error pages). Nothing
+    functional depends on it: ``/admin/`` mounts unconditionally and the
+    admin auto-login is gated on the loopback source address, not ``DEBUG``.
+    A long-running Django process with DEBUG on grows
+    ``connection.queries`` unboundedly, so every long-running service (the
+    worker AND the admin) sets ``T3_DEBUG=0`` to run with DEBUG off.
+    """
+    return _parse_env_bool_default_on(os.environ.get("T3_DEBUG", ""))
+
+
+DEBUG = _debug_enabled()
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
+INTERNAL_IPS = ["127.0.0.1"]
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    # First app listed wins a duplicated command: this one shadows `makemigrations` with db-free checks.
+    "teatree.core",
+    "django_linear_migrations",
+    "django_rich",
+    "django_tasks_db",
+    "teatree.agents",
+    "teatree.backends",
+    "teatree.dash",
+    *_discover_overlay_apps(),
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    # Serve STATIC_ROOT from WSGI so /static/ works under gunicorn with DEBUG off
+    # (Django's staticfiles app serves nothing without runserver). Placed directly
+    # after SecurityMiddleware per WhiteNoise's documented ordering.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Collapse the repeated config / preset / loop reads one dashboard render issues
+    # into one each. Ahead of the auto-login below so that middleware's own settings
+    # read shares the memo with the view's.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
+    # Auto-login the single-operator admin as the superuser — gated on the
+    # loopback source (never DEBUG),
+    # so a non-loopback request is never auto-logged-in.
+    "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+ROOT_URLCONF = "teatree.urls"
+
+# Project-level templates dir, searched before any app's — where the /admin/
+# re-skin lives (``admin/base_site.html``). A DIRS entry (not an app-dir override)
+# is the robust way to win over ``django.contrib.admin``'s own base_site, which is
+# listed earlier in INSTALLED_APPS. Mirrored in ``tests/django_settings.py`` so the
+# admin snapshot renders identically under pytest and the generator hook.
+_PROJECT_TEMPLATES = Path(__file__).resolve().parent / "templates"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [str(_PROJECT_TEMPLATES)],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+# SQLite write serialization for the production engine.
+#
+# Django's SQLite backend silently ignores ``select_for_update()`` — it is a
+# documented no-op (SQLite has no row-level locks).  The shared-state
+# read-modify-write sites (``Session.visit_phase``, ``Task.claim`` and ~12
+# siblings) wrap their RMW in ``transaction.atomic()`` + ``select_for_update()``
+# expecting mutual exclusion.  Without connection-level serialization two
+# concurrent workers both ``BEGIN DEFERRED``, both read the row, both mutate
+# and both commit — the exact lost-update those locks are written to prevent.
+#
+# ``transaction_mode="IMMEDIATE"`` (Django 5.1+) makes every ``atomic()`` block
+# open with ``BEGIN IMMEDIATE``, so the first writer takes SQLite's reserved
+# write lock at transaction start and concurrent writers block instead of
+# racing — restoring the invariant the ``select_for_update()`` calls assume.
+#
+# ``journal_mode=TRUNCATE`` — rollback journal, not WAL. WAL coordinates its
+# writers through an mmap'd ``-shm`` sidecar; a process that maps it
+# shared-writable on Docker Desktop's ``fakeowner`` filesystem is killed by
+# SIGBUS (measured: the worker and its ``loops_tick`` children restarting twice
+# a minute, ``RestartCount`` 8 -> 131 in one session), and the same incoherence
+# cross-linked pages in ``teatree_outbound_claim``. Rollback-journal mode maps
+# nothing, so there is nothing to go incoherent.
+#
+# The control DB now lives in a named volume — a real Linux filesystem with no
+# VM boundary — which removes that constraint, so restoring WAL for its reader
+# concurrency is available. It is deliberately NOT taken here: it is a separate,
+# measurable change, and nothing in this module may assume the sidecars are
+# absent (the volume is the DB's DIRECTORY precisely so they have somewhere to
+# live). Writer serialization does not depend on the choice either way — it
+# comes from ``transaction_mode`` and ``timeout`` below.
+#
+# ``timeout`` maps to SQLite's ``busy_timeout``: a blocked writer waits this
+# long for the reserved lock before raising ``database is locked`` instead of
+# failing immediately.  30s comfortably exceeds the longest single locked RMW
+# (the claim / visit_phase ops are sub-second) plus headroom for a backlog of
+# contending workers, while still failing loudly rather than hanging forever.
+#
+# Exposed as a named constant so the concurrency regression test can import
+# the exact production value; reverting this to ``{}`` is the single hunk that
+# flips that test RED.
+SQLITE_WRITE_SERIALIZATION_OPTIONS = {
+    "timeout": 30,
+    "init_command": "PRAGMA journal_mode=TRUNCATE;",
+    "transaction_mode": "IMMEDIATE",
+}
+
+# ``teatree.db.sqlite3_boundary`` is Django's SQLite backend plus ONE guarantee:
+# a database the containerized stack owns can only be opened read-only from the
+# host. Two writers on opposite sides of Docker Desktop's shared-folder layer
+# have already cross-linked pages in this install's ``teatree_outbound_claim``.
+# Dropping WAL (above) removes the mmap'd ``-shm`` that carried that particular
+# incoherence, but SQLite's remaining cross-process locking is POSIX advisory
+# locking over the same layer, so the boundary stands on its own. Serializing
+# writers is correct WITHIN one coherence domain and does nothing across two —
+# see teatree/db/boundary.py.
+SQLITE_BOUNDARY_ENGINE = "teatree.db.sqlite3_boundary"
+
+DATABASES = {
+    "default": {
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
+        "NAME": str(CANONICAL_DB),
+        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+    },
+}
+
+# Config is install-wide operator intent, so it lives in ONE place even when the
+# rest of the control DB is auto-isolated onto a per-worktree copy. From a
+# worktree ``pinned_config_db`` returns the primary ``~/.local/share/teatree``
+# DB — the same file the Django-free cold reader already targets — and
+# ``ConfigSettingRouter`` sends every ConfigSetting read/write there. From a
+# primary clone it returns None, no second connection is registered, and the
+# router is a no-op. See teatree/config/db_router.py.
+_PINNED_CONFIG_DB = pinned_config_db(default_db=CANONICAL_DB)
+if _PINNED_CONFIG_DB is not None:
+    DATABASES[CONFIG_DB_ALIAS] = {
+        # Same guarded engine: from a worktree this alias points AT the primary
+        # canonical DB, so it is the same file and the same boundary.
+        "ENGINE": SQLITE_BOUNDARY_ENGINE,
+        "NAME": str(_PINNED_CONFIG_DB),
+        "OPTIONS": SQLITE_WRITE_SERIALIZATION_OPTIONS,
+    }
+
+DATABASE_ROUTERS = ["teatree.config.db_router.ConfigSettingRouter"]
+
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
+USE_I18N = True
+USE_TZ = True
+STATIC_URL = "static/"
+# collectstatic target — WhiteNoise serves the collected tree from here under
+# gunicorn (DEBUG off). Kept beside the canonical DB so a headless deploy writes
+# to the same operator-owned data dir it already provisions.
+STATIC_ROOT = str(_DATA_DIR / "staticfiles")
+
+LOGGING = default_logging("teatree")
+
+# Operation timeouts (seconds).  0 = no timeout.
+# Sourced from the canonical CORE_DEFAULTS registry in teatree.timeouts so the
+# two surfaces cannot drift; tests/test_timeouts.py::TestTimeoutRegistryParity
+# pins the binding. Override per-overlay via OverlayBase.get_timeouts() or
+# per-user via the DB-home timeouts setting.
+TEATREE_TIMEOUTS = dict(CORE_DEFAULTS)
+TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 — fixed agent-controlled path, not user input
+
+TASKS = {
+    "default": {
+        "BACKEND": "django_tasks_db.DatabaseBackend",
+        # "default" carries coding/headless tasks, "cheap" carries review/draining
+        # phases, and "loops" carries the timer/control chains (#1796). Dedicated
+        # executors keep review and reactive timers off the heavy coding queue.
+        "QUEUES": ["default", "loops", "cheap"],
+    },
+}
+
+# Repair-loop per-phase iteration budget (#2009). A ticket-phase may re-queue at
+# most this many attempts before the re-queue chokepoint
+# (``reclaim_orphaned_claims``) refuses with ``MaxIterationsExceeded`` — a
+# visible budget replacing the time-only 24h stale-task expiry. Floored at 1.
+MAX_PHASE_ITERATIONS = 5

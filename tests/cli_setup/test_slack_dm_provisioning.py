@@ -1,0 +1,309 @@
+"""Tests for ``teatree.cli.slack.dm_provisioning`` — first-run IM provisioning (#1342).
+
+The per-overlay bot needs an IM channel id cached in the DB ``overlays`` registry
+so that DMs route through the overlay's own bot rather than silently falling
+back to whichever bot already has an IM open with the user. The provisioner
+is invoked by ``t3 setup`` and surfaces clean errors at setup time rather
+than at first DM attempt mid-run.
+"""
+
+from typing import Any, cast
+from unittest.mock import MagicMock, patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.cli.slack import dm_provisioning
+from teatree.cli.slack.dm_provisioning import ProvisionResult, provision_overlay_dm_channel, resolve_user_slack_id
+from teatree.core.models import ConfigSetting
+
+
+class TestResolveUserSlackId:
+    def test_returns_pass_value_when_available(self) -> None:
+        with patch("teatree.cli.slack.dm_provisioning.read_pass", return_value="U_FROM_PASS"):
+            assert resolve_user_slack_id() == "U_FROM_PASS"
+
+    def test_returns_empty_without_auth_test_fallback(self) -> None:
+        # The bot's own auth.test id must NEVER be used as the owner id — a DM to
+        # it makes the bot message itself and misroutes notifications. An empty
+        # pass entry yields "" so the caller records SKIPPED_NO_USER_ID.
+        backend = MagicMock(spec=SlackBotBackend)
+        with (
+            patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            assert resolve_user_slack_id() == ""
+        backend.auth_test.assert_not_called()
+
+
+class TestProvisionOverlayDmChannel(TestCase):
+    def _seed_overlay(self, fields: dict) -> None:
+        ConfigSetting.objects.set_value("overlays", {"teatree": fields})
+
+    def test_skips_overlay_without_slack_bot(self) -> None:
+        self._seed_overlay({"path": "/repo"})
+        result = provision_overlay_dm_channel(overlay_name="teatree")
+        assert result.status == ProvisionResult.SKIPPED_NO_BOT
+
+    def test_skips_when_already_provisioned(self) -> None:
+        self._seed_overlay(
+            {
+                "messaging_backend": "slack",
+                "slack_token_ref": "teatree/teatree/slack",
+                "slack_user_id": "U01ABCD1234",
+                "slack_dm_channel_id": "D0CACHED",
+            }
+        )
+        result = provision_overlay_dm_channel(overlay_name="teatree")
+        assert result.status == ProvisionResult.SKIPPED_ALREADY_PROVISIONED
+        assert result.channel_id == "D0CACHED"
+
+    def test_opens_dm_and_persists_channel_id(self) -> None:
+        self._seed_overlay(
+            {
+                "messaging_backend": "slack",
+                "slack_token_ref": "teatree/teatree/slack",
+                "slack_user_id": "U01ABCD1234",
+            }
+        )
+
+        backend = MagicMock(spec=SlackBotBackend)
+        backend.open_dm.return_value = "D0DEMOCLNT1"
+
+        with (
+            patch(
+                "teatree.cli.slack.dm_provisioning.read_pass",
+                side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
+            ),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+
+        backend.open_dm.assert_called_once_with("U01ABCD1234")
+        assert result.status == ProvisionResult.PROVISIONED
+        assert result.channel_id == "D0DEMOCLNT1"
+
+        registry = cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays"))
+        assert registry["teatree"]["slack_dm_channel_id"] == "D0DEMOCLNT1"
+
+    def test_fails_when_conversations_open_returns_empty(self) -> None:
+        self._seed_overlay(
+            {
+                "messaging_backend": "slack",
+                "slack_token_ref": "teatree/teatree/slack",
+                "slack_user_id": "U01ABCD1234",
+            }
+        )
+
+        backend = MagicMock(spec=SlackBotBackend)
+        backend.open_dm.return_value = ""
+
+        with (
+            patch(
+                "teatree.cli.slack.dm_provisioning.read_pass",
+                side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
+            ),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+
+        assert result.status == ProvisionResult.FAILED_OPEN_DM
+        registry = cast("dict[str, Any]", ConfigSetting.objects.get_effective("overlays"))
+        assert "slack_dm_channel_id" not in registry["teatree"]
+
+    def test_skips_when_no_bot_token_in_pass(self) -> None:
+        self._seed_overlay(
+            {
+                "messaging_backend": "slack",
+                "slack_token_ref": "teatree/teatree/slack",
+                "slack_user_id": "U01ABCD1234",
+            }
+        )
+
+        with patch("teatree.cli.slack.dm_provisioning.read_pass", return_value=""):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+
+        assert result.status == ProvisionResult.SKIPPED_NO_BOT_TOKEN
+
+    def test_skips_when_no_user_id_anywhere_and_never_dms_the_bot(self) -> None:
+        # No overlay slack_user_id and empty `pass slack/user-id` must SKIP — the
+        # dropped auth.test fallback would have DMed the bot's own id (#3313).
+        self._seed_overlay({"messaging_backend": "slack", "slack_token_ref": "teatree/teatree/slack"})
+        backend = MagicMock(spec=SlackBotBackend)
+        with (
+            patch(
+                "teatree.cli.slack.dm_provisioning.read_pass",
+                side_effect=lambda key: "xoxb-tok" if key.endswith("-bot") else "",
+            ),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+        assert result.status == ProvisionResult.SKIPPED_NO_USER_ID
+        backend.open_dm.assert_not_called()
+        backend.auth_test.assert_not_called()
+
+    def test_uses_pass_slack_user_id_when_overlay_has_none(self) -> None:
+        """Setup falls back to ``pass slack/user-id`` when the overlay has no ``slack_user_id`` yet."""
+        self._seed_overlay({"messaging_backend": "slack", "slack_token_ref": "teatree/teatree/slack"})
+
+        backend = MagicMock(spec=SlackBotBackend)
+        backend.open_dm.return_value = "D0DEMOCLNT1"
+
+        def fake_read_pass(key: str) -> str:
+            if key.endswith("-bot"):
+                return "xoxb-tok"
+            if key == dm_provisioning.SLACK_USER_ID_PASS_KEY:
+                return "U_FROM_PASS"
+            return ""
+
+        with (
+            patch("teatree.cli.slack.dm_provisioning.read_pass", side_effect=fake_read_pass),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            result = provision_overlay_dm_channel(overlay_name="teatree")
+
+        backend.open_dm.assert_called_once_with("U_FROM_PASS")
+        assert result.status == ProvisionResult.PROVISIONED
+        assert result.channel_id == "D0DEMOCLNT1"
+
+
+class TestPersistedChannelKey:
+    """The cached channel id MUST live under the overlay's ``slack_dm_channel_id`` field."""
+
+    def test_canonical_channel_key_name(self) -> None:
+        assert dm_provisioning.SLACK_DM_CHANNEL_KEY == "slack_dm_channel_id"
+
+    def test_canonical_pass_user_id_key(self) -> None:
+        assert dm_provisioning.SLACK_USER_ID_PASS_KEY == "slack/user-id"
+
+
+class TestSlackBackendUsesCachedChannel:
+    """``SlackBotBackend`` must short-circuit ``open_dm`` when a cached channel id is set.
+
+    This is the consumer side of #1342: even when the per-overlay bot has
+    been freshly created and never had an IM with the user, every DM-sending
+    path (``notify_user``, ``review_nag``) reads the cached
+    channel id without re-calling ``conversations.open``.
+    """
+
+    def test_open_dm_returns_cached_channel_id_for_configured_user(self) -> None:
+        backend = SlackBotBackend(
+            bot_token="xoxb-test",
+            user_id="U01ABCD1234",
+            dm_channel_id="D0DEMOCLNT1",
+        )
+        # Reading the cached channel must not perform any HTTP request.
+        with patch.object(backend, "_post") as post:
+            channel = backend.open_dm("U01ABCD1234")
+        post.assert_not_called()
+        assert channel == "D0DEMOCLNT1"
+
+    def test_open_dm_falls_back_to_live_call_for_unconfigured_user(self) -> None:
+        backend = SlackBotBackend(
+            bot_token="xoxb-test",
+            user_id="U01ABCD1234",
+            dm_channel_id="D0CACHED",
+        )
+        with patch.object(
+            backend,
+            "_post",
+            return_value={"ok": True, "channel": {"id": "D_OTHER"}},
+        ) as post:
+            channel = backend.open_dm("U_DIFFERENT")
+        post.assert_called_once()
+        assert channel == "D_OTHER"
+
+    def test_open_dm_falls_back_when_no_cache_configured(self) -> None:
+        """Pre-#1342 callers without a cache still hit ``conversations.open``."""
+        backend = SlackBotBackend(bot_token="xoxb-test", user_id="U01ABCD1234")
+        with patch.object(
+            backend,
+            "_post",
+            return_value={"ok": True, "channel": {"id": "D_LIVE"}},
+        ) as post:
+            channel = backend.open_dm("U01ABCD1234")
+        post.assert_called_once()
+        assert channel == "D_LIVE"
+
+
+class TestMessagingFromTomlThreadsCachedChannel:
+    """The TOML-only fallback must read ``slack_dm_channel_id`` and thread it into the backend.
+
+    Pre-fix: ``messaging_from_overlay('teatree')`` returns a ``SlackBotBackend``
+    that has never opened an IM with the user. The first DM through it
+    re-derives the channel via ``conversations.open``, which fails for a
+    fresh per-overlay bot. The fix threads the cached channel into the
+    backend so the DM lands on the right bot's IM.
+    """
+
+    def test_messaging_from_toml_threads_dm_channel_id_into_backend(self) -> None:
+        from teatree.core import backend_factory  # noqa: PLC0415
+
+        cfg = {
+            "messaging_backend": "slack",
+            "slack_token_ref": "teatree/teatree/slack",
+            "slack_user_id": "U01ABCD1234",
+            "slack_dm_channel_id": "D0DEMOCLNT1",
+        }
+        pass_lookups = {
+            "teatree/teatree/slack-bot": "xoxb-bot-tok",
+            "teatree/teatree/slack-app": "xapp-app-tok",
+        }
+        with patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookups.get(k, "")):
+            backend = backend_factory._messaging_from_toml(cfg)
+        assert isinstance(backend, SlackBotBackend)
+        with patch.object(backend, "_post") as post:
+            assert backend.open_dm("U01ABCD1234") == "D0DEMOCLNT1"
+        post.assert_not_called()
+
+
+class TestProvisionAllOverlayDmChannels(TestCase):
+    """Setup-time iterator over every Slack-bot overlay block in the DB ``overlays`` registry."""
+
+    def test_iterates_every_slack_overlay_and_skips_non_slack(self) -> None:
+        ConfigSetting.objects.set_value(
+            "overlays",
+            {
+                "teatree": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/teatree/slack",
+                    "slack_user_id": "U01ABCD1234",
+                },
+                "acme": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/acme/slack",
+                    "slack_user_id": "U01ABCD1234",
+                    "slack_dm_channel_id": "D0CACHED",
+                },
+                "other": {"path": "/repo"},
+            },
+        )
+
+        backend = MagicMock(spec=SlackBotBackend)
+        backend.open_dm.return_value = "D0NEW"
+
+        echo_lines: list[str] = []
+
+        def fake_read_pass(key: str) -> str:
+            if key.endswith("-bot"):
+                return "xoxb-tok"
+            return ""
+
+        with (
+            patch("teatree.cli.slack.dm_provisioning.read_pass", side_effect=fake_read_pass),
+            patch("teatree.cli.slack.dm_provisioning.SlackBotBackend", return_value=backend),
+        ):
+            results = dm_provisioning.provision_all_overlay_dm_channels(echo=echo_lines.append)
+
+        statuses = {r.overlay_name: r.status for r in results}
+        assert statuses == {
+            "teatree": ProvisionResult.PROVISIONED,
+            "acme": ProvisionResult.SKIPPED_ALREADY_PROVISIONED,
+        }
+        assert any("Provisioned Slack IM for overlay `teatree`" in line for line in echo_lines)
+        assert any("already provisioned" in line for line in echo_lines)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-x", "-q"])

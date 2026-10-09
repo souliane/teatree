@@ -1,0 +1,2331 @@
+<!DOCTYPE html>
+
+<html lang="en-us" dir="ltr">
+<head>
+<title>Domain models | TeaTree dashboard</title>
+<meta name="color-scheme" content="light dark" />
+<link rel="stylesheet" href="/static/admin/css/base.css" >
+
+  <link rel="stylesheet" href="/static/admin/css/dark_mode.css" >
+  <script src="/static/admin/js/theme.js" ></script>
+
+
+  <link rel="stylesheet" href="/static/admin/css/nav_sidebar.css" >
+  <script src="/static/admin/js/nav_sidebar.js" defer ></script>
+
+
+  <link rel="stylesheet" href="/static/dash/css/tokens.css">
+  <link rel="stylesheet" href="/static/dash/css/admin-theme.css">
+<link rel="stylesheet" href="/static/admin/css/dashboard.css" >
+
+
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/static/admin/css/responsive.css" >
+
+
+<meta name="robots" content="NONE,NOARCHIVE">
+</head>
+
+<body class=" dashboard"
+  data-admin-utc-offset="0"
+  data-admin-server-timezone="UTC">
+<a href="#content-start" class="skip-to-content-link">Skip to main content</a>
+<!-- Container -->
+<div id="container">
+
+
+    <!-- Header -->
+
+      <header id="header">
+        <div id="branding">
+
+<div id="site-name"><a href="/">TeaTree</a></div>
+
+
+        </div>
+
+
+        <div id="user-tools">
+
+                Welcome,
+                <strong>teatree</strong>.
+
+
+
+                    <a href="/">View site</a> /
+
+
+
+
+
+
+                <a href="/password_change/">Change password</a> /
+
+                <form id="logout-form" method="post" action="/logout/">
+                    <input type="hidden" name="csrfmiddlewaretoken" value="CSRF">
+                    <button type="submit">Log out</button>
+                </form>
+
+<button class="theme-toggle">
+  <span class="visually-hidden theme-label-when-auto">Toggle theme (current theme: auto)</span>
+  <span class="visually-hidden theme-label-when-light">Toggle theme (current theme: light)</span>
+  <span class="visually-hidden theme-label-when-dark">Toggle theme (current theme: dark)</span>
+  <svg aria-hidden="true" class="theme-icon-when-auto">
+    <use xlink:href="#icon-auto" />
+  </svg>
+  <svg aria-hidden="true" class="theme-icon-when-dark">
+    <use xlink:href="#icon-moon" />
+  </svg>
+  <svg aria-hidden="true" class="theme-icon-when-light">
+    <use xlink:href="#icon-sun" />
+  </svg>
+</button>
+
+
+        </div>
+
+
+
+      </header>
+
+    <!-- END Header -->
+
+
+
+    <div class="main" id="main">
+
+
+
+      <main id="content-start" class="content" tabindex="-1">
+
+
+
+        <!-- Content -->
+        <div id="content" class="colMS">
+          <div class="titles-and-tools">
+            <div class="titles">
+
+              <h1>Domain models</h1>
+
+            </div>
+
+          </div>
+
+<div id="content-main" class="app-list">
+
+
+
+
+    <div class="app-core module">
+      <table>
+        <caption>
+          <a href="/core/" class="section">TeaTree Core</a>
+        </caption>
+        <thead class="visually-hidden">
+          <tr>
+            <th scope="col">Model name</th>
+            <th scope="col">Add link</th>
+            <th scope="col">Change or view list link</th>
+          </tr>
+        </thead>
+
+
+            <tr class="model-agentrouteavailability">
+              <th scope="row" id="core-agentrouteavailability">
+
+                  <a href="/core/agentrouteavailability/">Agent route availabilities</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/agentrouteavailability/" class="viewlink" aria-describedby="core-agentrouteavailability">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-anthropicactivepick">
+              <th scope="row" id="core-anthropicactivepick">
+
+                  <a href="/core/anthropicactivepick/">Anthropic active picks</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/anthropicactivepick/" class="viewlink" aria-describedby="core-anthropicactivepick">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-anthropictokenusage">
+              <th scope="row" id="core-anthropictokenusage">
+
+                  <a href="/core/anthropictokenusage/">Anthropic token usages</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/anthropictokenusage/" class="viewlink" aria-describedby="core-anthropictokenusage">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-assessfinding">
+              <th scope="row" id="core-assessfinding">
+
+                  <a href="/core/assessfinding/">Assess findings</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/assessfinding/" class="viewlink" aria-describedby="core-assessfinding">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-assesssweeprun">
+              <th scope="row" id="core-assesssweeprun">
+
+                  <a href="/core/assesssweeprun/">Assess sweep runs</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/assesssweeprun/" class="viewlink" aria-describedby="core-assesssweeprun">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-attachmentmanifest">
+              <th scope="row" id="core-attachmentmanifest">
+
+                  <a href="/core/attachmentmanifest/">Attachment manifests</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/attachmentmanifest/" class="viewlink" aria-describedby="core-attachmentmanifest">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-autoreviewdispatch">
+              <th scope="row" id="core-autoreviewdispatch">
+
+                  <a href="/core/autoreviewdispatch/">Auto review dispatches</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/autoreviewdispatch/" class="viewlink" aria-describedby="core-autoreviewdispatch">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-botping">
+              <th scope="row" id="core-botping">
+
+                  <a href="/core/botping/">Bot pings</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/botping/" class="viewlink" aria-describedby="core-botping">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-branchupdateattempt">
+              <th scope="row" id="core-branchupdateattempt">
+
+                  <a href="/core/branchupdateattempt/">Branch update attempts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/branchupdateattempt/" class="viewlink" aria-describedby="core-branchupdateattempt">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-cievalhealsession">
+              <th scope="row" id="core-cievalhealsession">
+
+                  <a href="/core/cievalhealsession/">Ci eval heal sessions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/cievalhealsession/" class="viewlink" aria-describedby="core-cievalhealsession">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-codexreviewmarker">
+              <th scope="row" id="core-codexreviewmarker">
+
+                  <a href="/core/codexreviewmarker/">Codex review markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/codexreviewmarker/" class="viewlink" aria-describedby="core-codexreviewmarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-configsetting">
+              <th scope="row" id="core-configsetting">
+
+                  <a href="/core/configsetting/">Config settings</a>
+
+              </th>
+
+
+                <td><a href="/core/configsetting/add/" class="addlink" aria-describedby="core-configsetting">Add</a></td>
+
+
+
+
+                  <td><a href="/core/configsetting/" class="changelink" aria-describedby="core-configsetting">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-consolidatedmemory">
+              <th scope="row" id="core-consolidatedmemory">
+
+                  <a href="/core/consolidatedmemory/">Consolidated memories</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/consolidatedmemory/" class="viewlink" aria-describedby="core-consolidatedmemory">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-criticdispatch">
+              <th scope="row" id="core-criticdispatch">
+
+                  <a href="/core/criticdispatch/">Critic dispatches</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/criticdispatch/" class="viewlink" aria-describedby="core-criticdispatch">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-criticfinding">
+              <th scope="row" id="core-criticfinding">
+
+                  <a href="/core/criticfinding/">Critic findings</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/criticfinding/" class="viewlink" aria-describedby="core-criticfinding">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-criticverdict">
+              <th scope="row" id="core-criticverdict">
+
+                  <a href="/core/criticverdict/">Critic verdicts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/criticverdict/" class="viewlink" aria-describedby="core-criticverdict">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-dbapproval">
+              <th scope="row" id="core-dbapproval">
+
+                  <a href="/core/dbapproval/">Db approvals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/dbapproval/" class="viewlink" aria-describedby="core-dbapproval">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-dbaudit">
+              <th scope="row" id="core-dbaudit">
+
+                  <a href="/core/dbaudit/">Db audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/dbaudit/" class="viewlink" aria-describedby="core-dbaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-deferredquestionaudit">
+              <th scope="row" id="core-deferredquestionaudit">
+
+                  <a href="/core/deferredquestionaudit/">Deferred question audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/deferredquestionaudit/" class="viewlink" aria-describedby="core-deferredquestionaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-deferredquestion">
+              <th scope="row" id="core-deferredquestion">
+
+                  <a href="/core/deferredquestion/">Deferred questions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/deferredquestion/" class="viewlink" aria-describedby="core-deferredquestion">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-directivedispatch">
+              <th scope="row" id="core-directivedispatch">
+
+                  <a href="/core/directivedispatch/">Directive dispatches</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/directivedispatch/" class="viewlink" aria-describedby="core-directivedispatch">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-directive">
+              <th scope="row" id="core-directive">
+
+                  <a href="/core/directive/">Directives</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/directive/" class="viewlink" aria-describedby="core-directive">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-dreamqaprobe">
+              <th scope="row" id="core-dreamqaprobe">
+
+                  <a href="/core/dreamqaprobe/">Dream qa probes</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/dreamqaprobe/" class="viewlink" aria-describedby="core-dreamqaprobe">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-dreamrunmarker">
+              <th scope="row" id="core-dreamrunmarker">
+
+                  <a href="/core/dreamrunmarker/">Dream run markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/dreamrunmarker/" class="viewlink" aria-describedby="core-dreamrunmarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-e2ebypassapproval">
+              <th scope="row" id="core-e2ebypassapproval">
+
+                  <a href="/core/e2ebypassapproval/">E2e bypass approvals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/e2ebypassapproval/" class="viewlink" aria-describedby="core-e2ebypassapproval">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-e2ebypassaudit">
+              <th scope="row" id="core-e2ebypassaudit">
+
+                  <a href="/core/e2ebypassaudit/">E2e bypass audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/e2ebypassaudit/" class="viewlink" aria-describedby="core-e2ebypassaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-e2emandatoryrun">
+              <th scope="row" id="core-e2emandatoryrun">
+
+                  <a href="/core/e2emandatoryrun/">E2e mandatory runs</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/e2emandatoryrun/" class="viewlink" aria-describedby="core-e2emandatoryrun">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-evalrunrecord">
+              <th scope="row" id="core-evalrunrecord">
+
+                  <a href="/core/evalrunrecord/">Eval run records</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/evalrunrecord/" class="viewlink" aria-describedby="core-evalrunrecord">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-evalscenarioresult">
+              <th scope="row" id="core-evalscenarioresult">
+
+                  <a href="/core/evalscenarioresult/">Eval scenario results</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/evalscenarioresult/" class="viewlink" aria-describedby="core-evalscenarioresult">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-externaloutcomesnapshot">
+              <th scope="row" id="core-externaloutcomesnapshot">
+
+                  <a href="/core/externaloutcomesnapshot/">External outcome snapshots</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/externaloutcomesnapshot/" class="viewlink" aria-describedby="core-externaloutcomesnapshot">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-factoryscoresnapshot">
+              <th scope="row" id="core-factoryscoresnapshot">
+
+                  <a href="/core/factoryscoresnapshot/">Factory score snapshots</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/factoryscoresnapshot/" class="viewlink" aria-describedby="core-factoryscoresnapshot">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-honestyescalation">
+              <th scope="row" id="core-honestyescalation">
+
+                  <a href="/core/honestyescalation/">Honesty escalations</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/honestyescalation/" class="viewlink" aria-describedby="core-honestyescalation">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-implementedissuemarker">
+              <th scope="row" id="core-implementedissuemarker">
+
+                  <a href="/core/implementedissuemarker/">Implemented issue markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/implementedissuemarker/" class="viewlink" aria-describedby="core-implementedissuemarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-incomingevent">
+              <th scope="row" id="core-incomingevent">
+
+                  <a href="/core/incomingevent/">Incoming events</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/incomingevent/" class="viewlink" aria-describedby="core-incomingevent">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-instructioncompliancerecord">
+              <th scope="row" id="core-instructioncompliancerecord">
+
+                  <a href="/core/instructioncompliancerecord/">Instruction compliance records</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/instructioncompliancerecord/" class="viewlink" aria-describedby="core-instructioncompliancerecord">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-instructioncompliancesnapshot">
+              <th scope="row" id="core-instructioncompliancesnapshot">
+
+                  <a href="/core/instructioncompliancesnapshot/">Instruction compliance snapshots</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/instructioncompliancesnapshot/" class="viewlink" aria-describedby="core-instructioncompliancesnapshot">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-intakescancursor">
+              <th scope="row" id="core-intakescancursor">
+
+                  <a href="/core/intakescancursor/">Intake scan cursors</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/intakescancursor/" class="viewlink" aria-describedby="core-intakescancursor">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-intentclassification">
+              <th scope="row" id="core-intentclassification">
+
+                  <a href="/core/intentclassification/">Intent classifications</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/intentclassification/" class="viewlink" aria-describedby="core-intentclassification">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-interactivedispatch">
+              <th scope="row" id="core-interactivedispatch">
+
+                  <a href="/core/interactivedispatch/">Interactive dispatches</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/interactivedispatch/" class="viewlink" aria-describedby="core-interactivedispatch">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-knownissue">
+              <th scope="row" id="core-knownissue">
+
+                  <a href="/core/knownissue/">Known issues</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/knownissue/" class="viewlink" aria-describedby="core-knownissue">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-landscapeartifact">
+              <th scope="row" id="core-landscapeartifact">
+
+                  <a href="/core/landscapeartifact/">Landscape artifacts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/landscapeartifact/" class="viewlink" aria-describedby="core-landscapeartifact">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-livepostapproval">
+              <th scope="row" id="core-livepostapproval">
+
+                  <a href="/core/livepostapproval/">Live post approvals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/livepostapproval/" class="viewlink" aria-describedby="core-livepostapproval">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-localstackqueueitem">
+              <th scope="row" id="core-localstackqueueitem">
+
+                  <a href="/core/localstackqueueitem/">Local stack queue items</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/localstackqueueitem/" class="viewlink" aria-describedby="core-localstackqueueitem">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-localstackreapermarker">
+              <th scope="row" id="core-localstackreapermarker">
+
+                  <a href="/core/localstackreapermarker/">Local stack reaper markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/localstackreapermarker/" class="viewlink" aria-describedby="core-localstackreapermarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-looplease">
+              <th scope="row" id="core-looplease">
+
+                  <a href="/core/looplease/">Loop leases</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/looplease/" class="viewlink" aria-describedby="core-looplease">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-loopstate">
+              <th scope="row" id="core-loopstate">
+
+                  <a href="/core/loopstate/">Loop states</a>
+
+              </th>
+
+
+                <td><a href="/core/loopstate/add/" class="addlink" aria-describedby="core-loopstate">Add</a></td>
+
+
+
+
+                  <td><a href="/core/loopstate/" class="changelink" aria-describedby="core-loopstate">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-loop">
+              <th scope="row" id="core-loop">
+
+                  <a href="/core/loop/">Loops</a>
+
+              </th>
+
+
+                <td><a href="/core/loop/add/" class="addlink" aria-describedby="core-loop">Add</a></td>
+
+
+
+
+                  <td><a href="/core/loop/" class="changelink" aria-describedby="core-loop">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-mergeaudit">
+              <th scope="row" id="core-mergeaudit">
+
+                  <a href="/core/mergeaudit/">Merge audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/mergeaudit/" class="viewlink" aria-describedby="core-mergeaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-mergeclear">
+              <th scope="row" id="core-mergeclear">
+
+                  <a href="/core/mergeclear/">Merge clears</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/mergeclear/" class="viewlink" aria-describedby="core-mergeclear">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-mergeablenotified">
+              <th scope="row" id="core-mergeablenotified">
+
+                  <a href="/core/mergeablenotified/">Mergeable notifieds</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/mergeablenotified/" class="viewlink" aria-describedby="core-mergeablenotified">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-modeoverride">
+              <th scope="row" id="core-modeoverride">
+
+                  <a href="/core/modeoverride/">Mode overrides</a>
+
+              </th>
+
+
+                <td><a href="/core/modeoverride/add/" class="addlink" aria-describedby="core-modeoverride">Add</a></td>
+
+
+
+
+                  <td><a href="/core/modeoverride/" class="changelink" aria-describedby="core-modeoverride">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-modescheduleslot">
+              <th scope="row" id="core-modescheduleslot">
+
+                  <a href="/core/modescheduleslot/">Mode schedule slots</a>
+
+              </th>
+
+
+                <td><a href="/core/modescheduleslot/add/" class="addlink" aria-describedby="core-modescheduleslot">Add</a></td>
+
+
+
+
+                  <td><a href="/core/modescheduleslot/" class="changelink" aria-describedby="core-modescheduleslot">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-modeschedule">
+              <th scope="row" id="core-modeschedule">
+
+                  <a href="/core/modeschedule/">Mode schedules</a>
+
+              </th>
+
+
+                <td><a href="/core/modeschedule/add/" class="addlink" aria-describedby="core-modeschedule">Add</a></td>
+
+
+
+
+                  <td><a href="/core/modeschedule/" class="changelink" aria-describedby="core-modeschedule">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-mode">
+              <th scope="row" id="core-mode">
+
+                  <a href="/core/mode/">Modes</a>
+
+              </th>
+
+
+                <td><a href="/core/mode/add/" class="addlink" aria-describedby="core-mode">Add</a></td>
+
+
+
+
+                  <td><a href="/core/mode/" class="changelink" aria-describedby="core-mode">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-mrreviewlock">
+              <th scope="row" id="core-mrreviewlock">
+
+                  <a href="/core/mrreviewlock/">Mr review locks</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/mrreviewlock/" class="viewlink" aria-describedby="core-mrreviewlock">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-onbehalfapproval">
+              <th scope="row" id="core-onbehalfapproval">
+
+                  <a href="/core/onbehalfapproval/">On behalf approvals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/onbehalfapproval/" class="viewlink" aria-describedby="core-onbehalfapproval">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-onbehalfaudit">
+              <th scope="row" id="core-onbehalfaudit">
+
+                  <a href="/core/onbehalfaudit/">On behalf audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/onbehalfaudit/" class="viewlink" aria-describedby="core-onbehalfaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-outboundclaim">
+              <th scope="row" id="core-outboundclaim">
+
+                  <a href="/core/outboundclaim/">Outbound claims</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/outboundclaim/" class="viewlink" aria-describedby="core-outboundclaim">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-outerloopexperiment">
+              <th scope="row" id="core-outerloopexperiment">
+
+                  <a href="/core/outerloopexperiment/">Outer loop experiments</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/outerloopexperiment/" class="viewlink" aria-describedby="core-outerloopexperiment">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pendingarticlesuggestion">
+              <th scope="row" id="core-pendingarticlesuggestion">
+
+                  <a href="/core/pendingarticlesuggestion/">Pending article suggestions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pendingarticlesuggestion/" class="viewlink" aria-describedby="core-pendingarticlesuggestion">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pendingchatinjection">
+              <th scope="row" id="core-pendingchatinjection">
+
+                  <a href="/core/pendingchatinjection/">Pending chat injections</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pendingchatinjection/" class="viewlink" aria-describedby="core-pendingchatinjection">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pendingpullrequest">
+              <th scope="row" id="core-pendingpullrequest">
+
+                  <a href="/core/pendingpullrequest/">Pending pull requests</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pendingpullrequest/" class="viewlink" aria-describedby="core-pendingpullrequest">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pendingreinstall">
+              <th scope="row" id="core-pendingreinstall">
+
+                  <a href="/core/pendingreinstall/">Pending reinstalls</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pendingreinstall/" class="viewlink" aria-describedby="core-pendingreinstall">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pendingtriagerecommendation">
+              <th scope="row" id="core-pendingtriagerecommendation">
+
+                  <a href="/core/pendingtriagerecommendation/">Pending triage recommendations</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pendingtriagerecommendation/" class="viewlink" aria-describedby="core-pendingtriagerecommendation">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-planartifact">
+              <th scope="row" id="core-planartifact">
+
+                  <a href="/core/planartifact/">Plan artifacts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/planartifact/" class="viewlink" aria-describedby="core-planartifact">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-projectlearning">
+              <th scope="row" id="core-projectlearning">
+
+                  <a href="/core/projectlearning/">Project learnings</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/projectlearning/" class="viewlink" aria-describedby="core-projectlearning">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-promptversion">
+              <th scope="row" id="core-promptversion">
+
+                  <a href="/core/promptversion/">Prompt versions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/promptversion/" class="viewlink" aria-describedby="core-promptversion">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-prompt">
+              <th scope="row" id="core-prompt">
+
+                  <a href="/core/prompt/">Prompts</a>
+
+              </th>
+
+
+                <td><a href="/core/prompt/add/" class="addlink" aria-describedby="core-prompt">Add</a></td>
+
+
+
+
+                  <td><a href="/core/prompt/" class="changelink" aria-describedby="core-prompt">Change</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pullmainclonemarker">
+              <th scope="row" id="core-pullmainclonemarker">
+
+                  <a href="/core/pullmainclonemarker/">Pull main clone markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pullmainclonemarker/" class="viewlink" aria-describedby="core-pullmainclonemarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-pullrequest">
+              <th scope="row" id="core-pullrequest">
+
+                  <a href="/core/pullrequest/">Pull requests</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/pullrequest/" class="viewlink" aria-describedby="core-pullrequest">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-redcardsignal">
+              <th scope="row" id="core-redcardsignal">
+
+                  <a href="/core/redcardsignal/">Red card signals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/redcardsignal/" class="viewlink" aria-describedby="core-redcardsignal">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-redmrfixattempt">
+              <th scope="row" id="core-redmrfixattempt">
+
+                  <a href="/core/redmrfixattempt/">Red mr fix attempts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/redmrfixattempt/" class="viewlink" aria-describedby="core-redmrfixattempt">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-replydispatch">
+              <th scope="row" id="core-replydispatch">
+
+                  <a href="/core/replydispatch/">Reply dispatches</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/replydispatch/" class="viewlink" aria-describedby="core-replydispatch">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reproevidence">
+              <th scope="row" id="core-reproevidence">
+
+                  <a href="/core/reproevidence/">Repro evidences</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reproevidence/" class="viewlink" aria-describedby="core-reproevidence">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reprowaiver">
+              <th scope="row" id="core-reprowaiver">
+
+                  <a href="/core/reprowaiver/">Repro waivers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reprowaiver/" class="viewlink" aria-describedby="core-reprowaiver">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-resourcepressuremarker">
+              <th scope="row" id="core-resourcepressuremarker">
+
+                  <a href="/core/resourcepressuremarker/">Resource pressure markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/resourcepressuremarker/" class="viewlink" aria-describedby="core-resourcepressuremarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reviewassignment">
+              <th scope="row" id="core-reviewassignment">
+
+                  <a href="/core/reviewassignment/">Review assignments</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reviewassignment/" class="viewlink" aria-describedby="core-reviewassignment">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reviewbackendcooldown">
+              <th scope="row" id="core-reviewbackendcooldown">
+
+                  <a href="/core/reviewbackendcooldown/">Review backend cooldowns</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reviewbackendcooldown/" class="viewlink" aria-describedby="core-reviewbackendcooldown">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reviewevidence">
+              <th scope="row" id="core-reviewevidence">
+
+                  <a href="/core/reviewevidence/">Review evidences</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reviewevidence/" class="viewlink" aria-describedby="core-reviewevidence">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reviewrequestpost">
+              <th scope="row" id="core-reviewrequestpost">
+
+                  <a href="/core/reviewrequestpost/">Review request posts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reviewrequestpost/" class="viewlink" aria-describedby="core-reviewrequestpost">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-reviewverdict">
+              <th scope="row" id="core-reviewverdict">
+
+                  <a href="/core/reviewverdict/">Review verdicts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/reviewverdict/" class="viewlink" aria-describedby="core-reviewverdict">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-rubriccriterion">
+              <th scope="row" id="core-rubriccriterion">
+
+                  <a href="/core/rubriccriterion/">Rubric criterions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/rubriccriterion/" class="viewlink" aria-describedby="core-rubriccriterion">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-rubric">
+              <th scope="row" id="core-rubric">
+
+                  <a href="/core/rubric/">Rubrics</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/rubric/" class="viewlink" aria-describedby="core-rubric">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-scannedbroadcast">
+              <th scope="row" id="core-scannedbroadcast">
+
+                  <a href="/core/scannedbroadcast/">Scanned broadcasts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/scannedbroadcast/" class="viewlink" aria-describedby="core-scannedbroadcast">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-scannedfailede2e">
+              <th scope="row" id="core-scannedfailede2e">
+
+                  <a href="/core/scannedfailede2e/">Scanned failed e2es</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/scannedfailede2e/" class="viewlink" aria-describedby="core-scannedfailede2e">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-selfimprovefiring">
+              <th scope="row" id="core-selfimprovefiring">
+
+                  <a href="/core/selfimprovefiring/">Self improve firings</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/selfimprovefiring/" class="viewlink" aria-describedby="core-selfimprovefiring">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-selfupdatemarker">
+              <th scope="row" id="core-selfupdatemarker">
+
+                  <a href="/core/selfupdatemarker/">Self update markers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/selfupdatemarker/" class="viewlink" aria-describedby="core-selfupdatemarker">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-sendaudit">
+              <th scope="row" id="core-sendaudit">
+
+                  <a href="/core/sendaudit/">Send audits</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/sendaudit/" class="viewlink" aria-describedby="core-sendaudit">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-sessionauditrecord">
+              <th scope="row" id="core-sessionauditrecord">
+
+                  <a href="/core/sessionauditrecord/">Session audit records</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/sessionauditrecord/" class="viewlink" aria-describedby="core-sessionauditrecord">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-sessionhandover">
+              <th scope="row" id="core-sessionhandover">
+
+                  <a href="/core/sessionhandover/">Session handovers</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/sessionhandover/" class="viewlink" aria-describedby="core-sessionhandover">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-sessiontodo">
+              <th scope="row" id="core-sessiontodo">
+
+                  <a href="/core/sessiontodo/">Session todos</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/sessiontodo/" class="viewlink" aria-describedby="core-sessiontodo">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-session">
+              <th scope="row" id="core-session">
+
+                  <a href="/core/session/">Sessions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/session/" class="viewlink" aria-describedby="core-session">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-slackselfackreaction">
+              <th scope="row" id="core-slackselfackreaction">
+
+                  <a href="/core/slackselfackreaction/">Slack self ack reactions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/slackselfackreaction/" class="viewlink" aria-describedby="core-slackselfackreaction">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-standinggoal">
+              <th scope="row" id="core-standinggoal">
+
+                  <a href="/core/standinggoal/">Standing goals</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/standinggoal/" class="viewlink" aria-describedby="core-standinggoal">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-sweepskipstreak">
+              <th scope="row" id="core-sweepskipstreak">
+
+                  <a href="/core/sweepskipstreak/">Sweep skip streaks</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/sweepskipstreak/" class="viewlink" aria-describedby="core-sweepskipstreak">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-taskattempt">
+              <th scope="row" id="core-taskattempt">
+
+                  <a href="/core/taskattempt/">Task attempts</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/taskattempt/" class="viewlink" aria-describedby="core-taskattempt">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-task">
+              <th scope="row" id="core-task">
+
+                  <a href="/core/task/">Tasks</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/task/" class="viewlink" aria-describedby="core-task">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-ticketsweeprun">
+              <th scope="row" id="core-ticketsweeprun">
+
+                  <a href="/core/ticketsweeprun/">Ticket sweep runs</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/ticketsweeprun/" class="viewlink" aria-describedby="core-ticketsweeprun">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-tickettransition">
+              <th scope="row" id="core-tickettransition">
+
+                  <a href="/core/tickettransition/">Ticket transitions</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/tickettransition/" class="viewlink" aria-describedby="core-tickettransition">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-ticket">
+              <th scope="row" id="core-ticket">
+
+                  <a href="/core/ticket/">Tickets</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/ticket/" class="viewlink" aria-describedby="core-ticket">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-trustedidentity">
+              <th scope="row" id="core-trustedidentity">
+
+                  <a href="/core/trustedidentity/">Trusted identities</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/trustedidentity/" class="viewlink" aria-describedby="core-trustedidentity">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-unclaimedintakecandidate">
+              <th scope="row" id="core-unclaimedintakecandidate">
+
+                  <a href="/core/unclaimedintakecandidate/">Unclaimed intake candidates</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/unclaimedintakecandidate/" class="viewlink" aria-describedby="core-unclaimedintakecandidate">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-unshippedworkrecord">
+              <th scope="row" id="core-unshippedworkrecord">
+
+                  <a href="/core/unshippedworkrecord/">Unshipped work records</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/unshippedworkrecord/" class="viewlink" aria-describedby="core-unshippedworkrecord">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-usagewindowstate">
+              <th scope="row" id="core-usagewindowstate">
+
+                  <a href="/core/usagewindowstate/">Usage window states</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/usagewindowstate/" class="viewlink" aria-describedby="core-usagewindowstate">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-waitingitem">
+              <th scope="row" id="core-waitingitem">
+
+                  <a href="/core/waitingitem/">Waiting items</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/waitingitem/" class="viewlink" aria-describedby="core-waitingitem">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-workergeneration">
+              <th scope="row" id="core-workergeneration">
+
+                  <a href="/core/workergeneration/">Worker generations</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/workergeneration/" class="viewlink" aria-describedby="core-workergeneration">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-worktreeenvoverride">
+              <th scope="row" id="core-worktreeenvoverride">
+
+                  <a href="/core/worktreeenvoverride/">Worktree env overrides</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/worktreeenvoverride/" class="viewlink" aria-describedby="core-worktreeenvoverride">View</a></td>
+
+
+            </tr>
+
+
+
+            <tr class="model-worktree">
+              <th scope="row" id="core-worktree">
+
+                  <a href="/core/worktree/">Worktrees</a>
+
+              </th>
+
+
+                <td></td>
+
+
+
+
+                  <td><a href="/core/worktree/" class="viewlink" aria-describedby="core-worktree">View</a></td>
+
+
+            </tr>
+
+
+      </table>
+    </div>
+
+
+
+</div>
+
+
+<div id="content-related">
+    <div class="module" id="recent-actions-module">
+        <h2>Recent actions</h2>
+        <h3>My actions</h3>
+
+
+
+            <p>None available</p>
+
+    </div>
+</div>
+
+          <br class="clear">
+        </div>
+        <!-- END Content -->
+      </main>
+    </div>
+    <footer id="footer"></footer>
+</div>
+<!-- END Container -->
+
+<!-- SVGs -->
+<svg xmlns="http://www.w3.org/2000/svg" class="base-svgs">
+  <symbol viewBox="0 0 24 24" id="icon-auto"><path d="M0 0h24v24H0z" fill="currentColor"/><path d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm0-2V4a8 8 0 1 0 0 16z"/></symbol>
+  <symbol viewBox="0 0 24 24" id="icon-moon"><path d="M0 0h24v24H0z" fill="currentColor"/><path d="M10 7a7 7 0 0 0 12 4.9v.1c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2h.1A6.979 6.979 0 0 0 10 7zm-6 5a8 8 0 0 0 15.062 3.762A9 9 0 0 1 8.238 4.938 7.999 7.999 0 0 0 4 12z"/></symbol>
+  <symbol viewBox="0 0 24 24" id="icon-sun"><path d="M0 0h24v24H0z" fill="currentColor"/><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM11 1h2v3h-2V1zm0 19h2v3h-2v-3zM3.515 4.929l1.414-1.414L7.05 5.636 5.636 7.05 3.515 4.93zM16.95 18.364l1.414-1.414 2.121 2.121-1.414 1.414-2.121-2.121zm2.121-14.85l1.414 1.415-2.121 2.121-1.414-1.414 2.121-2.121zM5.636 16.95l1.414 1.414-2.121 2.121-1.414-1.414 2.121-2.121zM23 11v2h-3v-2h3zM4 11v2H1v-2h3z"/></symbol>
+</svg>
+<!-- END SVGs -->
+
+</body>
+</html>

@@ -1,0 +1,27 @@
+"""News mini-loop — daily ``scanning_news`` cadence anchor."""
+
+from typing import TYPE_CHECKING
+
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.loop.job_identity import _ScannerJob
+
+
+def _build_jobs(**_: object) -> "list[_ScannerJob]":
+    from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415 — tick-time import
+    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    scanner = _scanning_news_scanner()
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay="")]
+
+
+MINI_LOOP = MiniLoop(
+    name="news",
+    default_cadence_seconds=3600,  # inert: the live cadence is the shipped daily row, not this
+    build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.INGRESS}),
+    determinism=LoopDeterminism.AI,
+)

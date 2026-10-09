@@ -1,0 +1,87 @@
+# TeaTree — Agent Instructions
+
+## Code Quality Standard (applies to all reviews and implementations)
+
+Every code change — implementation, refactor, or review fix — must meet this bar:
+
+- **Full typing.** All functions and methods have modern type annotations (`list[str]`, `str | None`). No `Any` unless interfacing with untyped third-party code.
+- **Composition over mixins.** Split large classes using composition (`OverlayConfig`, `OverlayMetadata` as attributes on `OverlayBase`). Avoid mixin inheritance — use composed classes instead. Module-level functions only when a class adds no value.
+- **Self-documenting hierarchy.** File names, module names, and class names tell the reader what they contain. No comments needed for structure — the structure IS the documentation.
+- **Comments as code — one line, or none.** Names, types and structure carry the meaning. A comment exists only for the non-obvious *why* the code cannot say, and it says it in ONE line. A multi-line block is a refactor signal (rename or split), legitimate only when one line genuinely cannot carry the why — a threat model, a protocol quirk, a measured constant. Rationale, tickets and history go in the commit message, never inline. Compress only what your change adds; leave pre-existing comments alone. This is a bar you hold yourself to, **not a gate** — the `comment-density` check is advisory and never blocks. Full rule: `skills/code/SKILL.md` § "Comments Are Code".
+- **Django conventions.** Follow Django's own code style: managers for QuerySet logic, model methods for instance behavior, views for coordination only. Don't fight the framework — if Django has a pattern for it, use that pattern. Comment when intentionally diverging.
+- **Tests mirror production code.** Test files mirror the `src/` module path. Test classes and methods describe behavior, not implementation. **New tests lean integration / E2E / functional** — Django test client, `call_command`, real `git` under `tmp_path`. Unit tests are reserved for pure logic (parsers, formatters, branch-name builders). Mock only unstoppable externals (network, clock, third-party subprocesses). See `AGENTS.md` § "Test-Writing Doctrine" for the full rule and review gate.
+- **Over-cap modules may only shrink — extract first.** A module already over the module-health cap is grandfathered and ratcheted: the commit is refused for ANY net growth, including the two lines a new gate's registration needs. Move a cohesive, in-concern helper out to a sibling in the SAME change so the file nets smaller — never delete unrelated lines to make room. Full rule + mechanics: [`docs/module-health.md`](docs/module-health.md).
+- **No tech debt without explicit approval.** Never suppress lint rules (`# noqa`, `per-file-ignores`), lower coverage thresholds, or introduce workarounds without asking. Fix the architecture instead. If fixing requires significant refactoring, present options and ask.
+- **Documentation alignment.** Every code change must leave docs, skills, BLUEPRINT.md, and generated docs consistent with the code. Mermaid diagrams must reflect current architecture. Procedures must reference current CLI commands and APIs. Repo docs, skills, comments, and BLUEPRINT.md describe the CURRENT state only — no historical narration, ADRs, or "previously/used to" prose; one-shot design docs/plans are not committed without explicit owner approval; existing historical files are cleanup candidates.
+- **No stale references.** Renamed settings, removed CLI commands, changed entry point formats — all consumers must be updated in the same change. Grep across all repos in scope.
+
+## Architecture (issue #61 — teatree as Django project)
+
+Teatree IS the Django project. Overlays are lightweight Python packages:
+
+- Overlays register via `teatree.overlays` entry points (value = overlay class path)
+- Overlay-specific config lives on `OverlayBase` methods (not Django settings)
+- `OverlayBase` uses composition: `overlay.config` is an `OverlayConfig` instance (credentials, URLs, labels)
+- Multi-overlay support: `overlay` CharField on Ticket, Worktree, Session
+- Installed from a local clone via `uv tool install --editable . --overrides uv-overrides.txt` then `t3 setup`
+  (the flag is required — `uv tool install` does not read `[tool.uv] override-dependencies`)
+- CLI: `t3 startoverlay` (not `startproject`) creates lightweight overlay packages
+
+## Running things
+
+```bash
+bash dev/test-affected.sh        # the diff-scoped lane — the local default (`--full` opts into the whole suite)
+bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
+bash dev/ci-parity-fast.sh       # inner-loop: scoped prek + makemigrations + affected tests + push gate, NO floor
+bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (see below)
+uv run ruff check                # lint
+uv run ruff format               # format
+t3 tool push-gate                # inspect the incremental push-gate plan for the current diff (#122)
+t3 --help                        # CLI (installed via `uv tool install --editable . --overrides uv-overrides.txt`)
+```
+
+**Before pushing a src-touching PR, run `bash dev/ci-parity-fast.sh`** — scoped prek,
+`makemigrations --check`, the affected-tests lane, and the incremental push gate. It is
+the necessary-and-sufficient local check: CI's required, sharded `test (3.13)` lane is
+the authority on the whole-tree 93% branch floor, and running its byte-equivalent
+duplicate locally buys nothing but wall-clock.
+
+A change to a `dev/` lane runner (`push-gate.sh`, `test-shuffle.sh`, …) now SCOPES rather
+than escalating to the whole tree ([#3817](https://github.com/souliane/teatree/issues/3817)) —
+nothing imports a shell/compose asset, so it is mapped to the tests that NAME it. A change
+to the lane's own selection machinery (`SELECTION_DEFINING_PATHS` in
+`teatree.quality.affected_tests`) still forces FULL, because a selection cannot validate
+its own change; bound `PYTEST_XDIST_AUTO_NUM_WORKERS` on a memory-tight host rather than
+skip the run.
+
+**`bash dev/ci-parity.sh` is the opt-in deep lane**, not the pre-push mandate: reach for
+it to reproduce a red CI locally, or when a PR is coverage-sensitive (deleting tests,
+adding a low-coverage module). It chains the exact blocking CI predicate, cheapest-first so a
+failure surfaces in seconds rather than after the coverage lane (`makemigrations --check`,
+`t3 tool test-path-mirror`, `check_module_health.py --from-ref`, prek all-files, `dev/test-cov.sh`, `t3 ci coverage`).
+The step SET and every predicate are unchanged — only the order is.
+Neither script is ever a push hook — the 93% whole-tree coverage floor is a whole-tree
+property no diff-scoped push subset can prove, and the full suite must never gate a push
+(`tests/test_no_full_suite_on_pre_push.py`). The push-stage `ci-critical-parity` hook
+runs `dev/push-gate.sh` — the never-lockout safety contract, the `tests/conformance`
+lane, plus the incremental push gate (scoped doctest + ast-grep, FULL on any
+uncertainty; the CI whole-tree backstop is untouched). The broad
+`tests/quality` dir is CI-only (it ran ~420s locally — the `test (3.13)` shard covers it
+whole-tree); `tests/conformance` is NOT, because a conformance assertion's input is the
+whole tree, so no diff-scoped lane can prove it unaffected (measured 34s at `-n auto`).
+
+**The order-dependence (shuffle) lane has a local runner: `bash dev/test-shuffle.sh`.**
+`pytest-randomly` is out of the default `dev` group on purpose, so a hand-rolled
+`uv run pytest -p randomly … | tail` on a plain env raises a plugin ImportError while the
+PIPELINE exits 0 — a lane that collected nothing reading green. The runner installs the
+group, preflights the import, passes `-o required_plugins=pytest-randomly`, and never
+pipes pytest; `tests/test_ci_shuffle_lane_scope.py` pins those guards and the byte-level
+directory parity with CI's `test-shuffle` job.
+
+**CI's `lint` job runs prek inside a prebuilt Docker image** (`dev/Dockerfile.test`'s
+`lint` stage, `FROM base`, bakes prek's per-hook environments — same hooks, same
+`SKIP` list as before, a venue-only change). `bash dev/ci-parity.sh`'s prek step stays
+host-native (`uv run prek run --all-files`) by default; set `LINT_DOCKER=1` to run
+that step inside a locally-built `lint` image instead, for an exact CI-lint
+reproduction (catches an environment-only lint difference the host-native run
+cannot see).

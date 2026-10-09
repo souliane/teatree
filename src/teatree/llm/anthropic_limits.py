@@ -1,0 +1,392 @@
+"""Classify an Anthropic exhaustion signal into its distinct, non-interchangeable cause.
+
+A terminal run can halt for several distinct exhaustion reasons that demand
+DIFFERENT remediations — conflating them sends the operator to the wrong fix.
+The seven causes (see :class:`LimitCause`):
+
+- API-key CREDIT exhaustion — the billed ``ANTHROPIC_API_KEY`` has a $0 balance;
+    a real ``/v1/messages`` call returns HTTP 400 (credit balance too low). Fix:
+    add credits at console.anthropic.com. This is NOT a subscription limit and
+    must never be reported as one — the metered-eval path rides this key.
+- subscription SESSION limit — the ~5h rolling limit; resets the same day, so
+    re-dispatching later works.
+- subscription WEEKLY limit — the 7-day window; hard, resets weekly.
+- transient API rate limit — HTTP 429; retry shortly.
+- metered PROVIDER BUDGET — an OpenAI-compatible router refusing on a spend cap (the key's
+    cycle or lifetime limit, the wallet, a member budget); the lane parks until the reset the
+    router states, else it is re-probed after :data:`WINDOW_HORIZON`.
+- LEAK BLOCKED — a request refused for its content, by the router's guardrail (``400
+    guardrail_blocked``) or by teatree's own egress scanner (:class:`EgressBlockedError`); terminal, because
+    re-sending the same context blocks again.
+- provider ACCESS DENIED — HTTP 401/403, the metered lane's own refusal (a router key
+    at its cycle spend limit, a revoked key). No Anthropic phrase names it, so it is
+    classified from the HTTP status alone.
+
+Three inputs classify a signal, preferred in this order:
+
+- The HTTP STATUS on the terminal message — a hard 401/403 is a refusal whatever the
+    body says, and on a non-Anthropic provider the body is not this module's vocabulary
+    at all. Read by :func:`~teatree.agents.runner_failure_taxonomy.limit_match`, which
+    owns the message; this module supplies the cause it maps to.
+
+- The SDK's TYPED window — ``claude_agent_sdk.types.RateLimitInfo.rate_limit_type``
+    (``five_hour`` / ``seven_day`` / ``seven_day_opus`` / ``seven_day_sonnet`` /
+    ``overage``). This is unambiguous structured data, so when it is available
+    (a ``RateLimitEvent`` in the message stream) :func:`classify_rate_limit_type`
+    maps it directly — no prose-grep, no chance of mislabeling a 7-day window as a
+    5-hour one.
+- The raw error TEXT — phrase-matched by :func:`classify_limit` as the fallback
+    for an error string that carries no typed field (e.g. an HTTP 400 ``result``
+    string surfaced by the SDK).
+
+Phrase provenance (finding-4 honesty — the phrases are NOT all verbatim static
+strings, so this does not claim they are). Most are grepped from the bundled
+``claude`` CLI binary, with occurrence counts where confirmed: ``out_of_credits``
+(x16, the structured error code), ``out of usage credits`` (x12), ``credit
+balance (?:is )?too low`` (x7), ``weekly limit`` (x13), ``7-day limit`` (x1),
+``Opus limit`` / ``Sonnet limit`` (x8 each, the per-model 7-day caps), ``session
+limit`` (x12), ``usage limit`` (x31), ``rate limit`` (x81). The remaining entries
+are DEFENSIVE human-readable renderings of the same windows that the CLI composes
+dynamically (e.g. the statusline labels "5-hour and 7-day limits"): ``out of
+credits``, ``seven-day limit``, ``5-hour limit``, ``five-hour limit``. One entry
+is mapped on API semantics rather than a literal match: ``quota exceeded`` — in
+the binary the literal string is only the libc "Disk quota exceeded" error, so it
+is mapped to the transient :data:`LimitCause.RATE_LIMIT` (the API's rate-quota
+wording, keeping pre-PR parity), never to a subscription or credit cause. A
+credit-empty condition is never laundered into a subscription-quota report.
+
+Two entries are neither CLI-grepped nor human renderings: ``rate_limit_error`` and
+``overloaded_error`` are the Messages-API error-TYPE literals a raw ``/v1/messages``
+error body carries (HTTP 429 and HTTP 529 respectively, per the documented error
+format — the same two codes :mod:`teatree.eval.api_errors` reads for its transient
+markers). A lane talking to the API directly rather than through the bundled CLI sees
+only that body, and neither literal contains the space-separated ``rate limit`` prose,
+so without these a provider-reported throttle classified as no limit at all.
+"""
+
+import dataclasses
+import re
+from datetime import UTC, datetime, timedelta
+from enum import Enum
+
+from claude_agent_sdk.types import RateLimitType
+
+
+class LimitCause(Enum):
+    """The distinct exhaustion cause a terminal limit signal carries.
+
+    The ``value`` doubles as the machine marker prefixed onto a recorded failure
+    reason, so a downstream reader can branch on the cause without re-parsing the
+    human message.
+    """
+
+    API_CREDIT = "api_credit"
+    SUBSCRIPTION_SESSION = "subscription_session"
+    SUBSCRIPTION_WEEKLY = "subscription_weekly"
+    RATE_LIMIT = "rate_limit"
+    PROVIDER_BUDGET = "provider_budget"
+    LEAK_BLOCKED = "leak_blocked"
+    PROVIDER_ACCESS_DENIED = "provider_access_denied"
+
+
+EGRESS_BLOCKED_MARKER = "egress_blocked"
+
+
+#: Phrase -> cause, ordered MOST-SPECIFIC first. Credit phrases precede every
+#: subscription phrase (their remediation is unrelated to any plan); the weekly
+#: phrases (incl. the per-model Opus/Sonnet 7-day caps) precede the generic
+#: session ``usage limit`` so a 7-day message is never mislabeled a 5-hour one;
+#: ``rate limit`` / ``quota exceeded`` are last (the lowest-priority transient
+#: bucket). See the module docstring for each phrase's provenance and counts.
+_SIGNATURES: tuple[tuple[str, LimitCause], ...] = (
+    # A content block outranks every limit: its context must never be re-sent.
+    ("guardrail_blocked", LimitCause.LEAK_BLOCKED),
+    (EGRESS_BLOCKED_MARKER, LimitCause.LEAK_BLOCKED),
+    # OrcaRouter's documented spend-stop 403s: key cycle cap, key lifetime quota, wallet, member budget.
+    ("token cycle spend limit reached", LimitCause.PROVIDER_BUDGET),
+    ("pre_consume_token_quota_failed", LimitCause.PROVIDER_BUDGET),
+    ("token quota is not enough", LimitCause.PROVIDER_BUDGET),
+    ("insufficient_user_quota", LimitCause.PROVIDER_BUDGET),
+    ("monthly budget reached", LimitCause.PROVIDER_BUDGET),
+    # API-key CREDIT / metered usage-based-billing exhaustion (a $0 balance).
+    ("credit balance too low", LimitCause.API_CREDIT),  # CLI x3
+    ("credit balance is too low", LimitCause.API_CREDIT),  # CLI x4
+    ("out of usage credits", LimitCause.API_CREDIT),  # CLI x12
+    ("out_of_credits", LimitCause.API_CREDIT),  # CLI x16 (the structured error code)
+    ("out of credits", LimitCause.API_CREDIT),  # human-readable rendering
+    # Subscription WEEKLY (7-day) windows — the plan-wide cap and the per-model
+    # Opus/Sonnet 7-day caps (the SDK's seven_day_opus / seven_day_sonnet).
+    ("weekly limit", LimitCause.SUBSCRIPTION_WEEKLY),  # CLI x13
+    ("7-day limit", LimitCause.SUBSCRIPTION_WEEKLY),  # CLI x1 (the statusline window label)
+    ("seven-day limit", LimitCause.SUBSCRIPTION_WEEKLY),  # human-readable rendering
+    ("opus limit", LimitCause.SUBSCRIPTION_WEEKLY),  # CLI x8 (the seven_day_opus prose label)
+    ("sonnet limit", LimitCause.SUBSCRIPTION_WEEKLY),  # CLI x8 (the seven_day_sonnet prose label)
+    # Subscription SESSION (~5h rolling) window.
+    ("5-hour limit", LimitCause.SUBSCRIPTION_SESSION),  # the five_hour window rendered in prose
+    ("five-hour limit", LimitCause.SUBSCRIPTION_SESSION),  # human-readable rendering
+    ("session limit", LimitCause.SUBSCRIPTION_SESSION),  # CLI x12
+    ("usage limit", LimitCause.SUBSCRIPTION_SESSION),  # CLI x31
+    # Transient API rate / quota limit (HTTP 429) and server overload (HTTP 529).
+    # The two ``*_error`` codes are the Messages-API error-type LITERALS and precede
+    # the CLI prose phrases: they are the more specific signal, and an error BODY is
+    # the only form a direct-API lane ever sees.
+    ("rate_limit_error", LimitCause.RATE_LIMIT),  # the API error type of an HTTP 429 body
+    ("overloaded_error", LimitCause.RATE_LIMIT),  # the API error type of an HTTP 529 body
+    ("rate limit", LimitCause.RATE_LIMIT),  # CLI x81
+    ("quota exceeded", LimitCause.RATE_LIMIT),  # API rate-quota wording (see docstring)
+)
+
+#: The SDK's TYPED rate-limit window -> cause. This is the unambiguous,
+#: structured-data path (``RateLimitInfo.rate_limit_type``), preferred over
+#: prose-grep whenever a ``RateLimitEvent`` is available: the five-hour window is
+#: the rolling SESSION limit, every seven-day window (plan-wide + the per-model
+#: Opus/Sonnet caps) is the WEEKLY limit, and an ``overage`` window is the
+#: usage-based-billing credit cause (its remediation is to add credits, never to
+#: wait out a plan reset).
+_RATE_LIMIT_TYPE_CAUSES: dict[RateLimitType, LimitCause] = {
+    "five_hour": LimitCause.SUBSCRIPTION_SESSION,
+    "seven_day": LimitCause.SUBSCRIPTION_WEEKLY,
+    "seven_day_opus": LimitCause.SUBSCRIPTION_WEEKLY,
+    "seven_day_sonnet": LimitCause.SUBSCRIPTION_WEEKLY,
+    "overage": LimitCause.API_CREDIT,
+}
+
+#: A hard refusal carries no window teatree can read, and the API_CREDIT shape (``None``)
+#: would wedge the lane until an operator noticed — so a transient 403 re-probes hourly
+#: instead, against the 224/hour the unclassified shape burned. Named rather than inlined
+#: below because it is also the unit the believable band is measured in.
+PROVIDER_ACCESS_DENIED_HORIZON = timedelta(hours=1)
+
+#: The known length of each subscription window, used as the re-arm horizon when a
+#: limit signal carries no structured ``resets_at`` (Directive #3 idle auto-recovery).
+#: A ``five_hour`` session window recovers ~5h after it was hit, the seven-day windows
+#: ~7 days; a transient rate limit clears within minutes. API-credit exhaustion has NO
+#: time-based recovery (``None``) — nothing re-arms until the operator adds credits, so a
+#: metered credit-empty lane is never auto-cleared on a timer.
+WINDOW_HORIZON: dict[LimitCause, timedelta | None] = {
+    LimitCause.SUBSCRIPTION_SESSION: timedelta(hours=5),
+    LimitCause.SUBSCRIPTION_WEEKLY: timedelta(days=7),
+    LimitCause.RATE_LIMIT: timedelta(minutes=5),
+    LimitCause.API_CREDIT: None,
+    # Only a re-probe cadence: a budget stop that states its reset is parked until that instant.
+    LimitCause.PROVIDER_BUDGET: timedelta(hours=6),
+    LimitCause.LEAK_BLOCKED: None,
+    LimitCause.PROVIDER_ACCESS_DENIED: PROVIDER_ACCESS_DENIED_HORIZON,
+}
+
+#: The soonest a believed refusal reset may land. Nothing downstream raises a park's
+#: lower end past this: ``_future_park_instant`` clamps an ELAPSED instant to five minutes
+#: ahead, which is 12 re-probes an hour — and the body scan takes the FIRST ISO-8601
+#: instant it finds, which on a refusal body is as often the request's own ``created``
+#: stamp as the window's reset.
+REFUSAL_RESET_FLOOR = timedelta(minutes=5)
+
+#: The latest a believed refusal reset may land. Nothing downstream clamps a park's UPPER
+#: end at all — ``effective_resets_at`` returns the reported instant verbatim — so a body
+#: carrying a key's ``expires_at`` or an account's ``valid_until`` parked the metered lane
+#: for YEARS, with the low-power preset engaged for that whole tenure. A provider spend
+#: cycle is quoted in hours or days; past a day the number is a key lifetime, not a window.
+REFUSAL_RESET_CEILING = 24 * PROVIDER_ACCESS_DENIED_HORIZON
+
+
+def believable_refusal_reset(resets_at: float, *, now: float) -> int | None:
+    """*resets_at* as a Unix timestamp if it lands inside the believable band, else ``None``.
+
+    ``None`` is the SAFE answer: :func:`window_horizon` then supplies
+    :data:`PROVIDER_ACCESS_DENIED_HORIZON`, so an unbelievable figure costs one hour of
+    park and an hourly re-probe — the cheap direction to be wrong in, against a park of
+    years or a re-probe every five minutes.
+    """
+    ahead = resets_at - now
+    if REFUSAL_RESET_FLOOR.total_seconds() <= ahead <= REFUSAL_RESET_CEILING.total_seconds():
+        return int(resets_at)
+    return None
+
+
+def window_horizon(cause: LimitCause) -> timedelta | None:
+    """The re-arm horizon for *cause* — how long after detection its window resets.
+
+    ``None`` for :data:`LimitCause.API_CREDIT`: credit exhaustion has no time-based
+    recovery, so the caller stores no ``resets_at`` and the recovery chain never
+    auto-clears it (the operator must add credits).
+    """
+    return WINDOW_HORIZON[cause]
+
+
+#: The exhaustion causes whose window RESETS on a timer — the ones an idle auto-requeue
+#: (#3407) may reopen once the horizon elapses. :data:`LimitCause.API_CREDIT` is excluded:
+#: a $0 balance has no timed reset, so a credit-killed task is never auto-requeued.
+RECOVERABLE_EXHAUSTION_CAUSES: frozenset[LimitCause] = frozenset(
+    {
+        LimitCause.SUBSCRIPTION_SESSION,
+        LimitCause.SUBSCRIPTION_WEEKLY,
+        LimitCause.RATE_LIMIT,
+        LimitCause.PROVIDER_ACCESS_DENIED,
+    },
+)
+
+#: The stable signature substring an all-accounts-exhausted failure carries, SHARED by the
+#: selector that BUILDS the message (``teatree.credential_config``'s ``AllTokensExhaustedError``)
+#: and the recoverable-cause reader HERE, so the two can never drift. A task that landed FAILED
+#: with EVERY configured account drained (auto-recovery on but not parked — e.g. the flag flipped
+#: mid-run, or a non-parking lane) is window-recoverable, NOT a defect: it is auto-requeued once
+#: capacity returns rather than escalated to a human as a failure.
+ALL_TOKENS_EXHAUSTED_SIGNATURE = "accounts are exhausted"
+
+
+def recoverable_exhaustion_cause(error: str) -> LimitCause | None:
+    """The time-recoverable exhaustion cause a FAILED attempt's *error* names, or ``None``.
+
+    A limit-killed attempt records its reason as ``"<cause>: <phrase> — <remediation>"``
+    (:meth:`LimitMatch.as_reason`), so the token before the first ``:`` is the machine
+    cause marker. This maps that marker back to its :class:`LimitCause`, but ONLY for a
+    cause with a time-based window reset (session / weekly / transient rate limit /
+    provider refusal) — the signal the idle auto-requeue (#3407) keys on. An all-accounts-exhausted failure
+    (:data:`ALL_TOKENS_EXHAUSTED_SIGNATURE`) is treated as the WEEKLY cause — the safe upper
+    bound on when an account frees up — so a drained-lane task auto-requeues instead of
+    escalating. Returns ``None`` for any non-limit error AND for API-credit exhaustion (no
+    timed recovery), so only a genuinely window-recoverable failure is ever auto-requeued;
+    the rest stay on their existing path.
+    """
+    if not error:
+        return None
+    if ALL_TOKENS_EXHAUSTED_SIGNATURE in error.casefold():
+        return LimitCause.SUBSCRIPTION_WEEKLY
+    if ":" not in error:
+        return None
+    marker = error.split(":", 1)[0].strip().casefold()
+    for cause in RECOVERABLE_EXHAUSTION_CAUSES:
+        if marker == cause.value:
+            return cause
+    return None
+
+
+#: Operator-facing remediation per cause. The API-credit message names the
+#: console explicitly and never says "subscription"; the two subscription
+#: messages name their own reset cadence so session and weekly read distinctly.
+_REMEDIATION: dict[LimitCause, str] = {
+    LimitCause.API_CREDIT: (
+        "API credits exhausted — the billed ANTHROPIC_API_KEY has no balance; add credits at console.anthropic.com"
+    ),
+    LimitCause.SUBSCRIPTION_SESSION: (
+        "subscription session limit reached (the ~5h rolling limit) — retry after it resets (same day)"
+    ),
+    LimitCause.SUBSCRIPTION_WEEKLY: ("subscription weekly limit reached — retry after the weekly reset"),
+    LimitCause.RATE_LIMIT: ("Anthropic API rate limit hit (transient) — retry shortly"),
+    LimitCause.PROVIDER_BUDGET: (
+        "metered provider spend limit reached (key cap, key quota, wallet or member budget) — "
+        "the metered lane is parked until the stated reset; raise the cap or fund the wallet to resume sooner"
+    ),
+    LimitCause.LEAK_BLOCKED: (
+        "request refused for its content before the model saw it (router guardrail or teatree egress scan) — "
+        "never re-sent; remove what put that content into the context, or adjust the policy"
+    ),
+    LimitCause.PROVIDER_ACCESS_DENIED: (
+        "the provider REFUSED the key (HTTP 401/403) — check its spend limit, cycle budget and "
+        "permissions in the provider console; the lane is parked and re-probes in an hour"
+    ),
+}
+
+_STATED_RESET = re.compile(
+    r"resets at\s+(?P<stamp>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)",
+    re.IGNORECASE,
+)
+
+
+def parse_stated_reset(text: str) -> datetime | None:
+    """The ISO-8601 instant a ``resets at <stamp>`` clause names, as aware UTC; a naive stamp is UTC."""
+    found = _STATED_RESET.search(text)
+    if found is None:
+        return None
+    try:
+        stamp = datetime.fromisoformat(found["stamp"])
+    except ValueError:
+        return None
+    return stamp.astimezone(UTC) if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+
+@dataclasses.dataclass(frozen=True)
+class LimitMatch:
+    """A matched exhaustion signal: the phrase that fired, its classified cause, and any reset it stated."""
+
+    phrase: str
+    cause: LimitCause
+    stated_reset: datetime | None = None
+
+    @property
+    def remediation(self) -> str:
+        """The operator-facing remediation message for this match's cause."""
+        return _REMEDIATION[self.cause]
+
+    def as_reason(self) -> str:
+        """The recorded failure reason: ``<cause>: <phrase> — <remediation>``.
+
+        The leading ``<cause>`` marker lets a downstream reader branch on the
+        cause without re-parsing prose; the phrase preserves the actual signal
+        the CLI emitted; the remediation tells the operator exactly what to do.
+        """
+        return f"{self.cause.value}: {self.phrase} — {self.remediation}"
+
+
+def classify_limit(text: str) -> LimitMatch | None:
+    """Return the :class:`LimitMatch` *text* signals, or ``None`` when it names no known limit.
+
+    Case-insensitive substring match against :data:`_SIGNATURES` in order, so the
+    most-specific phrase wins. The caller is responsible for gating on whatever
+    "this is an error" signal its transport carries (``ResultMessage.is_error``
+    for the agent path, a raised SDK exception for the eval path) before
+    handing the text here — this function only classifies the text.
+    """
+    haystack = text.casefold()
+    for phrase, cause in _SIGNATURES:
+        if phrase in haystack:
+            return (
+                provider_budget_match(phrase, text)
+                if cause is LimitCause.PROVIDER_BUDGET
+                else LimitMatch(phrase, cause)
+            )
+    return None
+
+
+def provider_budget_match(phrase: str, text: str) -> LimitMatch:
+    """A :data:`LimitCause.PROVIDER_BUDGET` match carrying the reset *text* states, if any."""
+    return LimitMatch(phrase=phrase, cause=LimitCause.PROVIDER_BUDGET, stated_reset=parse_stated_reset(text))
+
+
+def classify_rate_limit_type(rate_limit_type: RateLimitType | None) -> LimitMatch | None:
+    """Classify the SDK's TYPED :attr:`RateLimitInfo.rate_limit_type` window into its cause.
+
+    This is the unambiguous, structured-data path — preferred over
+    :func:`classify_limit`'s prose-grep whenever a ``RateLimitEvent`` is available
+    (it cannot mislabel a 7-day window as a 5-hour one). ``None`` (no typed field)
+    or an unrecognized window value falls through to ``None`` so the caller can
+    drop back to phrase-matching the raw error text. The match's ``phrase`` is the
+    window token itself, so :meth:`LimitMatch.as_reason` records ``seven_day_opus``
+    et al. verbatim.
+    """
+    if rate_limit_type is None:
+        return None
+    cause = _RATE_LIMIT_TYPE_CAUSES.get(rate_limit_type)
+    return LimitMatch(phrase=rate_limit_type, cause=cause) if cause is not None else None
+
+
+class CreditExhaustedError(RuntimeError):
+    """The billed ``ANTHROPIC_API_KEY`` has a $0 balance (an :data:`LimitCause.API_CREDIT`).
+
+    A real ``/v1/messages`` call on a credit-empty key returns HTTP 400 (credit
+    balance too low). That is NOT a per-scenario cap and NOT a generic crash —
+    nothing more can execute until credits are added — so the metered-eval lane
+    raises this distinct, actionable error (carrying the console remediation)
+    rather than redding every remaining scenario behind an opaque error result.
+    """
+
+
+class EgressBlockedError(RuntimeError):
+    """An outbound model request was refused before sending, for content that must not leave the box.
+
+    The message leads with :data:`EGRESS_BLOCKED_MARKER`, so any reason that keeps only the text still
+    classifies as :data:`LimitCause.LEAK_BLOCKED`.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{EGRESS_BLOCKED_MARKER}: {detail}")

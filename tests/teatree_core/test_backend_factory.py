@@ -1,0 +1,784 @@
+"""Tests for the overlay-aware backend factory bridge."""
+
+import os
+import shutil
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from mcp.server.mcpserver.exceptions import ToolError
+
+import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.backends.github import GitHubCodeHost
+from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab.ci import GitLabCIService
+from teatree.backends.notion import NotionClient
+from teatree.backends.notion import write_guard as notion_write_guard
+from teatree.backends.sentry import SentryClient
+from teatree.backends.sharepoint import SharePointClient
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.types import Service
+from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
+from teatree.core import backend_factory
+from teatree.core.backend_factory import (
+    OwnerMessagingTransport,
+    ci_service_from_overlay,
+    code_host_for_repo_from_overlay,
+    code_host_from_overlay,
+    configured_messaging_from_overlay,
+    messaging_from_overlay,
+    notion_client_from_overlay,
+    reset_backend_caches,
+    sentry_client_from_overlay,
+    sharepoint_client_from_overlay,
+)
+from teatree.core.backend_protocols import BackendResolutionError, MessagingBackend
+from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+
+
+@pytest.fixture(autouse=True)
+def _reset_caches() -> Iterator[None]:
+    reset_backend_caches()
+    yield
+    reset_backend_caches()
+
+
+class _TokenConfig(OverlayConfig):
+    def get_gitlab_token(self) -> str:
+        return "gl-test-token"
+
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = "test/gitlab" if name == "gitlab_token" else ""
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
+
+class _TokenOverlay(OverlayBase):
+    config = _TokenConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _NoTokenOverlay(OverlayBase):
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+@contextmanager
+def _patch_overlay(overlay_cls):
+    with (
+        patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay_cls()}),
+        patch(
+            "teatree.core.overlays.forge_credential_provider.read_pass",
+            side_effect=lambda entry: {"test/github": "gh-test-token", "test/gitlab": "gl-test-token"}.get(entry, ""),
+        ),
+    ):
+        yield
+
+
+def test_code_host_from_overlay_returns_none_when_no_token() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert code_host_from_overlay() is None
+
+
+def test_code_host_from_overlay_returns_gitlab_when_token_present() -> None:
+    with _patch_overlay(_TokenOverlay):
+        result = code_host_from_overlay()
+        assert isinstance(result, GitLabCodeHost)
+
+
+def test_ci_service_from_overlay_returns_none_when_no_token() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert ci_service_from_overlay() is None
+
+
+def test_ci_service_from_overlay_returns_gitlab_when_token_present() -> None:
+    with _patch_overlay(_TokenOverlay):
+        result = ci_service_from_overlay()
+        assert isinstance(result, GitLabCIService)
+
+
+def test_code_host_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
+        return_value={},
+    ):
+        assert code_host_from_overlay() is None
+
+
+def test_ci_service_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
+        return_value={},
+    ):
+        assert ci_service_from_overlay() is None
+
+
+def test_messaging_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(
+        overlay_loader_mod,
+        "_discover_overlays",
+        return_value={},
+    ):
+        assert messaging_from_overlay() is None
+
+
+class _NotionConfig(OverlayConfig):
+    def get_notion_token(self) -> str:
+        return "ntn_secret"
+
+
+class _NotionOverlay(OverlayBase):
+    config = _NotionConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_notion_client_from_overlay_returns_none_when_no_token() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
+    with _patch_overlay(_NotionOverlay):
+        assert isinstance(notion_client_from_overlay(), NotionClient)
+
+
+def test_the_notion_client_guards_writes_with_its_own_overlays_roots() -> None:
+    asked: list[str | None] = []
+
+    def roots(overlay: str | None) -> tuple[list[str], list[str]]:
+        asked.append(overlay)
+        return [], []
+
+    with _patch_overlay(_NotionOverlay), patch.object(notion_write_guard, "notion_write_roots", roots):
+        client = notion_client_from_overlay("test")
+        assert isinstance(client, NotionClient)
+        client._write_guard._scope()
+
+    assert asked == ["test"]
+
+
+class _SentryOverlay(OverlayBase):
+    config = OverlayConfig(sentry_org="acme", sentry_url="https://sentry.example.com")
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_sentry_client_from_overlay_returns_none_when_no_org() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert sentry_client_from_overlay() is None
+
+
+def test_sentry_client_from_overlay_builds_client_through_provider_when_org_present() -> None:
+    with _patch_overlay(_SentryOverlay):
+        client = sentry_client_from_overlay()
+
+    assert isinstance(client, SentryClient)
+    assert client.org == "acme"
+    assert client.base_url == "https://sentry.example.com"
+
+
+_SHAREPOINT_ENV = {
+    "TEATREE_SHAREPOINT_REMOTE": "sp:",
+    "TEATREE_SHAREPOINT_ROOT": "Shared Documents",
+    "TEATREE_SHAREPOINT_CONFIG": "/enc/rclone.conf",
+    "TEATREE_SHAREPOINT_PASSWORD_COMMAND": "pass rclone-config",
+    "TEATREE_SHAREPOINT_SITE_URL": "https://tenant.sharepoint.com/sites/Team",
+}
+
+
+def test_sharepoint_client_from_overlay_returns_none_when_remote_env_unset() -> None:
+    with patch.dict(os.environ, {"TEATREE_SHAREPOINT_REMOTE": ""}, clear=False):
+        assert sharepoint_client_from_overlay() is None
+
+
+def test_sharepoint_client_from_overlay_builds_client_through_provider_from_env() -> None:
+    with patch.dict(os.environ, _SHAREPOINT_ENV, clear=False):
+        client = sharepoint_client_from_overlay()
+
+    assert isinstance(client, SharePointClient)
+    assert client.remote == "sp:"
+    assert client.root == "Shared Documents"
+    assert client.config_path == "/enc/rclone.conf"
+    assert client.password_command == "pass rclone-config"
+    assert client.site_url == "https://tenant.sharepoint.com/sites/Team"
+
+
+def test_messaging_from_overlay_delegates_to_loader() -> None:
+    with (
+        _patch_overlay(_NoTokenOverlay),
+        patch("teatree.backends.loader.get_messaging", return_value="sentinel") as get_messaging_mock,
+    ):
+        result = messaging_from_overlay()
+
+    assert result == "sentinel"
+    get_messaging_mock.assert_called_once()
+
+
+class _SlackOverlay(OverlayBase):
+    config = OverlayConfig(messaging_backend="slack", required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _NoopSlackOverlay(OverlayBase):
+    """Declares Service.SLACK but defaults ``messaging_backend`` to noop (#3299)."""
+
+    config = OverlayConfig(required_third_party_services=frozenset({Service.SLACK}))
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestConfiguredMessagingFromOverlay:
+    """`configured_messaging_from_overlay` honours the MCP resolver contract (#3299).
+
+    ``messaging_from_overlay`` returns a truthy ``NoopMessagingBackend`` for a
+    noop overlay, which the declaring-overlay resolver wrongly accepts; the
+    configured seam returns ``None`` there so the resolver keeps searching.
+    """
+
+    def test_returns_none_when_overlay_messaging_is_noop(self) -> None:
+        with _patch_overlay(_NoopSlackOverlay):
+            assert configured_messaging_from_overlay("test") is None
+
+    def test_returns_backend_when_overlay_declares_slack(self) -> None:
+        with (
+            _patch_overlay(_SlackOverlay),
+            patch("teatree.backends.loader.get_messaging", return_value="sentinel"),
+        ):
+            assert configured_messaging_from_overlay("test") == "sentinel"
+
+    def test_resolver_reaches_second_overlay_past_a_noop_slack_declarer(self) -> None:
+        overlays = {"noop-first": _NoopSlackOverlay(), "real-second": _SlackOverlay()}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays),
+            patch("teatree.backends.loader.get_messaging", return_value="real-slack"),
+        ):
+            client = resolve_declaring_overlay_client(
+                Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+            )
+        assert client == "real-slack"
+
+
+class TestCredentiallessSlackOverlayCarriesNoTransport:
+    """A declared-``slack`` overlay whose credential reads back empty is NOT configured.
+
+    ``backends.loader.get_messaging`` degrades an empty bot token to a noop on
+    purpose — a Slack credential fault must never wedge merges or CI. Deciding
+    "configured" from the declared ``messaging_backend`` string alone then
+    counted that noop as a real transport, and both consumers acted on it: the
+    owner-DM egress took it as the sole credentialed overlay and handed it to
+    the delivery path, where ``open_dm`` returned ``""`` and the DM was recorded
+    FAILED under a fabricated ``conversations.open ok:false`` for a call that
+    never reached Slack; and the MCP resolver stopped its search on it.
+    """
+
+    def test_seam_returns_none_when_the_slack_credential_reads_back_empty(self) -> None:
+        with _patch_overlay(_SlackOverlay):
+            assert configured_messaging_from_overlay("test") is None
+
+    def test_owner_dm_transport_excludes_the_degraded_noop(self) -> None:
+        with _patch_overlay(_SlackOverlay):
+            assert OwnerMessagingTransport.sole() is None
+
+    def test_resolver_refuses_loudly_instead_of_handing_back_the_degraded_noop(self) -> None:
+        with (
+            _patch_overlay(_SlackOverlay),
+            pytest.raises(ToolError, match="No registered overlay declares a configured Slack messaging backend"),
+        ):
+            resolve_declaring_overlay_client(
+                Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+            )
+
+
+def test_reset_backend_caches_clears_all_caches() -> None:
+    with _patch_overlay(_TokenOverlay):
+        first = code_host_from_overlay()
+    reset_backend_caches()
+    with _patch_overlay(_NoTokenOverlay):
+        second = code_host_from_overlay()
+    assert first is not second
+
+
+def _toml_only_config(overlays: dict) -> object:
+    return type("Cfg", (), {"raw": {"overlays": overlays}})()
+
+
+class TestMessagingFromOverlayTomlFallback:
+    """A path-only TOML overlay (no ``class:`` key) still resolves a backend.
+
+    Regression: a wrapper script that sets ``T3_OVERLAY_NAME`` and calls
+    ``django.setup()`` would get ``None`` because ``_discover_overlays``
+    skips path-only TOML entries — the messaging factory then never
+    consulted the TOML fallback that ``iter_overlay_backends`` uses,
+    silently routing DMs to the wrong overlay's bot.
+    """
+
+    def test_falls_back_to_toml_when_overlay_class_missing(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                    "slack_user_id": "U1",
+                },
+            },
+        )
+        seen: list[str] = []
+
+        def fake_read(key: str) -> str:
+            seen.append(key)
+            return {
+                "teatree/private-x/slack-bot": "xoxb-bot-tok",
+                "teatree/private-x/slack-app": "xapp-app-tok",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            backend = messaging_from_overlay(overlay_name="private-x")
+
+        assert isinstance(backend, SlackBotBackend)
+        assert "teatree/private-x/slack-bot" in seen
+        assert "teatree/private-x/slack-app" in seen
+
+    def test_explicit_overlay_name_wins_over_env_var(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                },
+                "teatree": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/teatree/slack",
+                },
+            },
+        )
+        seen: list[str] = []
+
+        def fake_read(key: str) -> str:
+            seen.append(key)
+            return {
+                "teatree/private-x/slack-bot": "xoxb-x-bot",
+                "teatree/private-x/slack-app": "xapp-x-app",
+                "teatree/teatree/slack-bot": "xoxb-teatree-bot",
+                "teatree/teatree/slack-app": "xapp-teatree-app",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "teatree"}, clear=False),
+        ):
+            backend = messaging_from_overlay(overlay_name="private-x")
+
+        assert isinstance(backend, SlackBotBackend)
+        # Read keys must come from private-x, not teatree.
+        assert any(k.startswith("teatree/private-x/") for k in seen)
+        assert not any(k.startswith("teatree/teatree/") for k in seen)
+
+    def test_reads_env_var_when_overlay_name_not_passed(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                },
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return "xoxb-x-bot" if key == "teatree/private-x/slack-bot" else ""
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "private-x"}, clear=False),
+        ):
+            backend = messaging_from_overlay()
+
+        assert isinstance(backend, SlackBotBackend)
+
+    def test_returns_none_when_named_overlay_absent_from_toml(self) -> None:
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert messaging_from_overlay(overlay_name="ghost") is None
+
+    def test_caches_separately_per_overlay_name(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {"messaging_backend": "slack", "slack_token_ref": "ref-x"},
+                "teatree": {"messaging_backend": "slack", "slack_token_ref": "ref-tt"},
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return {
+                "ref-x-bot": "xoxb-x-bot",
+                "ref-tt-bot": "xoxb-tt-bot",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            x = messaging_from_overlay(overlay_name="private-x")
+            tt = messaging_from_overlay(overlay_name="teatree")
+
+        assert isinstance(x, SlackBotBackend)
+        assert isinstance(tt, SlackBotBackend)
+        assert x is not tt
+
+
+class TestCodeHostFromOverlayTomlFallback:
+    def test_falls_back_to_toml_host_when_overlay_class_missing(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "github_token_ref": "github/private-x/pat",
+                },
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return "ghp-test" if key == "github/private-x/pat" else ""
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            host = code_host_from_overlay(overlay_name="private-x")
+
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_returns_none_when_named_overlay_absent_from_toml(self) -> None:
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert code_host_from_overlay(overlay_name="ghost") is None
+
+
+class _BothTokenConfig(OverlayConfig):
+    def get_github_token(self) -> str:
+        return "gh-test-token"
+
+    def get_gitlab_token(self) -> str:
+        return "gl-test-token"
+
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = {"github_token": "test/github", "gitlab_token": "test/gitlab"}.get(name, "")
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
+
+class _BothTokenOverlay(OverlayBase):
+    config = _BothTokenConfig()
+
+    def get_repos(self):
+        return ["souliane/teatree"]
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+_GIT = shutil.which("git") or "git"
+
+
+def _git_origin(path: Path, origin_url: str) -> str:
+    subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
+    subprocess.run([_GIT, "-C", str(path), "remote", "add", "origin", origin_url], check=True, capture_output=True)
+    return str(path)
+
+
+class TestCodeHostForRepoFromOverlay:
+    """#2025: the factory resolves the forge from the repo's origin host."""
+
+    def test_resolves_gitlab_for_gitlab_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitLabCodeHost)
+
+    def test_resolves_github_for_github_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:souliane/teatree.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitHubCodeHost)
+
+    def test_falls_back_to_toml_when_overlay_class_missing(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch(
+                "teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if k == "github/private-x/pat" else ""
+            ),
+        ):
+            host = code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_toml_only_overlay_resolves_gitlab_for_gitlab_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        """#2025: the TOML-only path must NOT regress to token precedence.
+
+        A path-only TOML overlay carrying both PATs ships a GitLab repo —
+        the host must be the GitLab backend, not the GitHub-first
+        ``_host_from_toml`` default.
+        """
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "github_token_ref": "github/private-x/pat",
+                    "gitlab_token_ref": "gitlab/private-x/pat",
+                },
+            },
+        )
+        tokens = {"github/private-x/pat": "ghp", "gitlab/private-x/pat": "glp"}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: tokens.get(k, "")),
+        ):
+            host = code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+        assert isinstance(host, GitLabCodeHost)
+
+    def test_toml_only_overlay_raises_when_repo_forge_has_no_token(self, tmp_path: Path) -> None:
+        """A GitLab repo on a TOML overlay with only a GitHub token surfaces the structured error."""
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if "github" in k else ""),
+            pytest.raises(BackendResolutionError, match="gitlab"),
+        ):
+            code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+
+    def test_toml_only_github_repo_raises_when_token_ref_resolves_empty(self, tmp_path: Path) -> None:
+        """A GitHub repo whose configured token ref resolves to nothing surfaces the error."""
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda _k: ""),
+            pytest.raises(BackendResolutionError, match="github"),
+        ):
+            code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+
+    def test_toml_only_no_origin_repo_falls_back_to_overlay_default(self, tmp_path: Path) -> None:
+        """A TOML overlay + a repo with no origin remote → the GitHub-first default."""
+        path = tmp_path / "no-origin"
+        path.mkdir()
+        subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if "github" in k else ""),
+        ):
+            host = code_host_for_repo_from_overlay(str(path), overlay_name="private-x")
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_toml_only_returns_none_when_overlay_name_absent(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert code_host_for_repo_from_overlay(repo, overlay_name="ghost") is None
+
+    def test_toml_only_returns_none_when_no_overlay_name(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            assert code_host_for_repo_from_overlay(repo, overlay_name="") is None
+
+
+class TestActiveOverlayName:
+    def test_explicit_name_overrides_env(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "env-name"}, clear=False):
+            assert backend_factory._active_overlay_name("explicit") == "explicit"
+
+    def test_falls_back_to_env_when_not_provided(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "env-name"}, clear=False):
+            assert backend_factory._active_overlay_name(None) == "env-name"
+
+    def test_empty_string_when_neither_set(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with patch.dict(os.environ, env, clear=True):
+            assert backend_factory._active_overlay_name(None) == ""
+
+
+# --- F4.5: a transient None must not be cached for the process lifetime -------
+
+
+def test_transient_none_code_host_is_not_cached_permanently(monkeypatch) -> None:
+    # A one-tick None (credentials momentarily unresolved) must not disable the
+    # code host until restart — the next call past the short TTL re-resolves.
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, real]) as build:
+        assert code_host_from_overlay("x") is None
+        assert code_host_from_overlay("x") is real
+    assert build.call_count == 2
+
+
+def test_none_code_host_is_served_from_the_short_ttl_window() -> None:
+    # Within the TTL the None is reused — the factory does not rebuild every call.
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None]) as build:
+        assert code_host_from_overlay("y") is None
+        assert code_host_from_overlay("y") is None
+    assert build.call_count == 1
+
+
+def test_resolved_code_host_is_cached_for_the_process_life() -> None:
+    real = GitHubCodeHost(token="tok")
+    with patch.object(backend_factory, "_build_code_host", side_effect=[real]) as build:
+        assert code_host_from_overlay("z") is real
+        assert code_host_from_overlay("z") is real
+    assert build.call_count == 1
+
+
+def test_transient_none_messaging_is_not_cached_permanently(monkeypatch) -> None:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.core.backend_protocols import MessagingBackend  # noqa: PLC0415
+
+    monkeypatch.setattr(backend_factory, "_ERROR_NONE_TTL_SECONDS", 0.0)
+    real = MagicMock(spec=MessagingBackend)
+    with patch.object(backend_factory, "_build_messaging", side_effect=[None, real]) as build:
+        assert messaging_from_overlay("mx") is None
+        assert messaging_from_overlay("mx") is real
+    assert build.call_count == 2
+
+
+def test_reset_clears_the_none_ttl_maps() -> None:
+    with patch.object(backend_factory, "_build_code_host", side_effect=[None, GitHubCodeHost(token="t")]):
+        assert code_host_from_overlay("r") is None
+        reset_backend_caches()
+        # After a reset the stale-None window is gone — the next call rebuilds.
+        assert code_host_from_overlay("r") is not None
+
+
+# --- Account-switch self-heal: a /login switch must reset the caches ----------
+
+
+class TestAccountSwitchSelfHeal:
+    """A Claude ``/login`` switch self-resets the caches in long-lived processes.
+
+    The MCP server and loop worker never re-run the SessionStart switch detector,
+    so before this guard they kept serving the backend resolved under the *old*
+    account and dropped every owner DM silently. The cache-read path now
+    re-resolves the moment the live account fingerprint diverges from the one the
+    cache was populated under — no restart needed.
+    """
+
+    def test_messaging_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = MagicMock(spec=MessagingBackend)
+        second = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[first, second]) as build,
+        ):
+            assert messaging_from_overlay("acct") is first
+            assert messaging_from_overlay("acct") is first  # same account → served from cache, no rebuild
+            fingerprint["value"] = "acct-B"
+            assert messaging_from_overlay("acct") is second  # switch → cache reset → re-resolved
+        assert build.call_count == 2
+
+    def test_code_host_re_resolves_after_account_switch(self) -> None:
+        fingerprint = {"value": "acct-A"}
+        first = GitHubCodeHost(token="tok-A")
+        second = GitHubCodeHost(token="tok-B")
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_code_host", side_effect=[first, second]) as build,
+        ):
+            assert code_host_from_overlay("acct") is first
+            fingerprint["value"] = "acct-B"
+            assert code_host_from_overlay("acct") is second
+        assert build.call_count == 2
+
+    def test_unreadable_fingerprint_never_wipes_a_healthy_cache(self) -> None:
+        # An empty fingerprint means "cannot tell" (unreadable ~/.claude.json) and
+        # must never reset a working cache — otherwise a transient read failure
+        # would rebuild the backend on every call.
+        fingerprint = {"value": "acct-A"}
+        real = MagicMock(spec=MessagingBackend)
+        with (
+            patch.object(backend_factory, "current_account_fingerprint", lambda: fingerprint["value"]),
+            patch.object(backend_factory, "_build_messaging", side_effect=[real]) as build,
+        ):
+            assert messaging_from_overlay("acct") is real
+            fingerprint["value"] = ""  # cannot tell
+            assert messaging_from_overlay("acct") is real  # cache held, not rebuilt
+        assert build.call_count == 1

@@ -1,0 +1,361 @@
+"""The machine-readable capability registry (PR-30, front-end-seam keystone).
+
+A front-end (Pi, a CI runner, another agent) drives teatree by shelling to
+``t3 … --json``. Rather than scrape ``--help`` to discover which commands emit
+JSON and how they exit, it reads ``t3 capabilities --json`` — this registry.
+
+The registry is curated (not auto-derived from the live command tree: a
+command's ``--json`` support and exit-code contract cannot be introspected
+across the overlay subprocess bridge), and the ``teatree.cli.capabilities``
+guard test keeps it honest against the commands PR-30 converts. Pure data — no
+Django import — so ``t3 capabilities`` needs no DB bootstrap.
+"""
+
+import dataclasses
+from typing import NotRequired, TypedDict
+
+# The global exit-code contract every machine-drivable `t3` command honours.
+# Subcommands raise `SystemExit(N)`; the overlay bridge propagates the child
+# code faithfully (no traceback). A verdict command additionally maps a negative
+# verdict onto a non-zero code so a driver can branch on `$?` alone.
+EXIT_CODE_CONTRACT: dict[str, str] = {
+    "0": "success",
+    "1": "failure (runtime error, or a negative verdict on a verdict command)",
+    "2": "usage / validation error (bad option, invalid argument)",
+}
+
+CAPABILITIES_VERSION = 1
+
+
+@dataclasses.dataclass(frozen=True)
+class Capability:
+    """One machine-drivable command's JSON + exit-code contract."""
+
+    command: str
+    json_output: bool
+    exit_codes: tuple[str, ...]
+    note: str = ""
+
+
+# The machine-driven lifecycle surface. `json_output` = the command emits a
+# parseable JSON document on stdout (via `--json`, or always for a handoff
+# command); the human view then goes to stderr. Ordered by group for readability.
+CAPABILITIES: tuple[Capability, ...] = (
+    # PR-30-converted lifecycle leaves (--json on stdout, human on stderr).
+    Capability("teatree queue status", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree retention prune",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-table retention plan; dry-run unless --apply (#3693)",
+    ),
+    Capability(
+        "teatree retention artifacts",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the checkout pool's dormant build artifacts with a per-entry "
+        "EVICT/STOPPED/KEEP/DEFER verdict, plus `refused` when the process table could not "
+        "be read; dry-run unless --apply, and a refusal exits 1 on the dry run too (#4244)",
+    ),
+    Capability(
+        "teatree retention scratch",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the size-ranked agent-scratch sweep with a per-entry "
+        "verdict, plus `refused` when the open-file probe could not see the "
+        "process table; dry-run unless --apply, and --apply on a refusal exits 1 (#4165)",
+    ),
+    Capability(
+        "teatree identities bootstrap",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the derived owner handles plus the resulting user_identity_aliases; "
+        "exits 1 when every resolvable forge login is one this deployment also acts as",
+    ),
+    Capability("teatree tasks list", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree tasks create",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="machine handoff: record JSON on stdout, human confirmation on stderr",
+    ),
+    Capability("teatree followup sync", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree dream gap-coverage",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits each dream gap's ownership report; exits 1 on an orphan, a duplicate owner, a bad "
+        "fold link, a retired owner, a stranded memory row, or (with --ticket) an undispositioned gap",
+    ),
+    Capability(
+        "teatree worktree adopt",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="1 when the checkout is not adoptable or a row already records it",
+    ),
+    Capability("teatree worktree status", json_output=True, exit_codes=("0",)),
+    Capability("teatree worktree diagnose", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree worktree ready",
+        json_output=False,
+        exit_codes=("0", "1"),
+        note="exit code IS the contract: 0 iff every readiness probe passes",
+    ),
+    Capability("loop preset show", json_output=True, exit_codes=("0",)),
+    Capability("teatree questions list", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree questions reachability",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits each pending question's automated-resolver coverage; empty resolvers = human-only (#4178)",
+    ),
+    Capability(
+        "teatree live list",
+        json_output=True,
+        exit_codes=("0", "3", "5"),
+        note="--json emits every live session on this host's workers; passive; 3 refused, 5 no worker answered (#5063)",
+    ),
+    Capability(
+        "teatree live inspect",
+        json_output=True,
+        exit_codes=("0", "3", "5"),
+        note="--json emits one live session's facts; passive, the agent is not contacted; 3 refused, 5 offline",
+    ),
+    Capability(
+        "teatree live steer",
+        json_output=True,
+        exit_codes=("0", "2", "3", "4", "5"),
+        note="--json emits the steer receipt; active: 0 accepted_current_turn, 3 rejected, 4 unknown_delivery, "
+        "5 offline",
+    ),
+    Capability("teatree signals", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree settings_compare",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the settings comparison; 1 when fewer than two instances answered",
+    ),
+    Capability(
+        "teatree workspace emit",
+        json_output=True,
+        exit_codes=("0",),
+        note="always JSON: the machine-readable clean-all handoff",
+    ),
+    Capability(
+        "teatree workspace branch-verdict",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-branch landed-ness verdict, forge_merged beside the post-merge delta; read-only (#4070)",
+    ),
+    Capability(
+        "teatree workspace list-orphans",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: orphan branches (ahead of origin/main, no open PR) as a list, [] when none; read-only",
+    ),
+    Capability(
+        "teatree workspace stamp-owners",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-venue env-dir stamping report; deletes nothing (#3872)",
+    ),
+    Capability(
+        "teatree workspace release-dead-rows",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-row disposition for the dead-checkout rows; dry run unless --apply",
+    ),
+    Capability(
+        "teatree workspace repair-branch-upstreams",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json: per-branch outcome for branches tracking someone else's ref (#4225)",
+    ),
+    Capability(
+        "teatree do",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="golden-path lifecycle walk: 0 = progress/pending/done, 1 = a gate blocked or ignored",
+    ),
+    Capability(
+        "teatree pr discharge-pending",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json reports whether the deferred-PR obligation was found and dropped",
+    ),
+    Capability(
+        "teatree ticket dead-rows",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits every non-terminal ticket intake can never find, with the request text "
+        "it is the only surviving record of; read-only (#4527)",
+    ),
+    Capability(
+        "teatree review apply-reviewer-policy",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the per-MR rows; 1 when an assignment it undertook did not land",
+    ),
+    Capability(
+        "teatree ticket backfill-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the per-CLEAR recovery rows; dry run unless --no-dry-run",
+    ),
+    Capability(
+        "teatree ticket list-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits every unconsumed CLEAR tagged live/superseded/incomplete; read-only",
+    ),
+    Capability(
+        "teatree ticket reconcile-clears",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the CLEARs consumed because their PR already settled; --dry-run to preview",
+    ),
+    Capability(
+        "teatree ticket sweep-begin",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the opened ticket-hygiene sweep run id; 1 when --source is not interactive/loop (#162)",
+    ),
+    Capability(
+        "teatree ticket sweep-finish",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the closed run with its measured changed-ticket count; 1 on an unknown or finished run",
+    ),
+    Capability(
+        "teatree ticket sweep-trend",
+        json_output=True,
+        exit_codes=("0",),
+        note="--json emits the recent changed-ticket counts, the zero streak and unfinished runs; read-only",
+    ),
+    Capability(
+        "teatree ticket set-target-branch",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
+    ),
+    Capability(
+        "teatree ticket rework-hold",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the held review and its rework task; 1 when the ticket holds no HOLD to rework",
+    ),
+    Capability(
+        "teatree review record",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the recorded verdict plus whether its findings reached the PR (#4476)",
+    ),
+    Capability(
+        "teatree review record-evidence",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the recorded review-evidence artifact",
+    ),
+    Capability(
+        "teatree review status",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the full status record INCLUDING the verdict's findings (#4476)",
+    ),
+    Capability(
+        "teatree review findings",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits a verdict's findings; --sha pins one reviewed tree. An unrenderable payload exits non-zero",
+    ),
+    Capability(
+        "teatree review publish-findings",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json reports whether the findings were posted, skipped as already-present, or withheld by the gate",
+    ),
+    # Pre-existing JSON commands (already machine-drivable before PR-30).
+    Capability("teatree checking show", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree e2e lanes", json_output=True, exit_codes=("0",), note="--json emits the {lane: [spec]} CI matrix"
+    ),
+    Capability(
+        "teatree e2e write-test-plan",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the written plan's {path, envs, action}",
+    ),
+    Capability(
+        "teatree e2e write-plan-from-seams",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the written plan's {path, envs, action}",
+    ),
+    Capability("teatree env show", json_output=True, exit_codes=("0", "1"), note="--format json"),
+    Capability("teatree db query", json_output=True, exit_codes=("0", "1")),
+    Capability(
+        "teatree workspace salvage",
+        json_output=False,
+        exit_codes=("0", "1"),
+        note="human outcome line (salvaged/deleted/branch/pr), not a JSON document",
+    ),
+    Capability(
+        "doctor check",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json for the watchdog; --slack-roundtrip adds the deep live Slack round-trip probe (#3411)",
+    ),
+    Capability("cost", json_output=True, exit_codes=("0",)),
+    Capability("tokens", json_output=True, exit_codes=("0",)),
+    Capability(
+        "push",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="the supported push path from a container (#3927); --json emits the PushOutcome, 1 on a refusal",
+    ),
+    Capability("config show", json_output=True, exit_codes=("0",)),
+    Capability("info artifacts", json_output=True, exit_codes=("0",), note="--format json"),
+)
+
+
+class CommandCapability(TypedDict):
+    command: str
+    json: bool
+    exit_codes: list[str]
+    note: NotRequired[str]
+
+
+class CapabilitiesReport(TypedDict):
+    version: int
+    exit_code_contract: dict[str, str]
+    commands: list[CommandCapability]
+
+
+def capabilities_report() -> CapabilitiesReport:
+    """The full registry as a JSON-serializable object for ``t3 capabilities --json``."""
+    commands: list[CommandCapability] = []
+    for cap in CAPABILITIES:
+        entry: CommandCapability = {
+            "command": cap.command,
+            "json": cap.json_output,
+            "exit_codes": list(cap.exit_codes),
+        }
+        if cap.note:
+            entry["note"] = cap.note
+        commands.append(entry)
+    return {
+        "version": CAPABILITIES_VERSION,
+        "exit_code_contract": EXIT_CODE_CONTRACT,
+        "commands": commands,
+    }
+
+
+__all__ = [
+    "CAPABILITIES",
+    "CAPABILITIES_VERSION",
+    "EXIT_CODE_CONTRACT",
+    "CapabilitiesReport",
+    "Capability",
+    "CommandCapability",
+    "capabilities_report",
+]

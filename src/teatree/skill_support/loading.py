@@ -1,0 +1,438 @@
+"""Centralised skill selection policy for all TeaTree entry points.
+
+Two callers route through ``SkillLoadingPolicy``:
+
+* ``t3 agent`` CLI (interactive launch)
+* ``scripts/lib/skill_loader.py`` (SessionStart hook)
+
+Skill selection is fully explicit — slash commands, phase mapping, ticket
+status, the requires-dependency chain, and cwd/overlay context. There is no
+free-text keyword scan of the task/prompt text; a launch with neither a phase,
+a skill, nor a ticket status asks the user which lifecycle to run.
+"""
+
+import logging
+import re
+from dataclasses import dataclass
+from fnmatch import fnmatch
+from pathlib import Path
+
+from teatree.skill_support.deps import SkillIndex, companion_suggestions, resolve_requires
+from teatree.skill_support.index import build_skill_index, harness_skills_dirs, resolve_skill_md
+from teatree.types import SkillMetadata
+from teatree.utils import git
+
+logger = logging.getLogger(__name__)
+
+
+_STATUS_TO_SKILL: dict[str, str] = {
+    "not_started": "ticket",
+    "scoped": "ticket",
+    "work_started": "code",
+    "coded": "test",
+    "tested": "review",
+    "self_reviewed": "ship",
+    "pr_opened": "debug",
+    "review_requested": "debug",
+    "merged": "debug",
+    "delivered": "debug",
+}
+
+_PHASE_TO_SKILL: dict[str, str] = {
+    "ticket-intake": "ticket",
+    "scoping": "ticket",
+    "planning": "architecture-design",
+    "coding": "code",
+    "testing": "test",
+    "e2e": "e2e",
+    "reviewing": "review",
+    "shipping": "ship",
+    "debugging": "debug",
+    "requesting_review": "review-request",
+    "retrospecting": "retro",
+    "answering": "answerer",
+    "bughunt": "debug",
+    "critic_reviewing": "review",
+    "directive_interpreting": "architecture-design",
+    "e2e_reviewing": "e2e-review",
+    "scanning_news": "scanning-news",
+    "triage_assessing": "triaging-issues",
+}
+
+_PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")
+_DJANGO_DEPENDENCY_RE = re.compile(r'["\']django[>=<]', re.IGNORECASE)
+_FASTAPI_DEPENDENCY_RE = re.compile(r'(?:^|["\'])fastapi[>=<~\[]', re.IGNORECASE | re.MULTILINE)
+
+# Every skill name ``detect_framework_skills`` can emit. The dispatch-prompt
+# builder classifies a resolved bundle against this set to force the stack's
+# coding skill to load explicitly rather than be demoted to an ignorable
+# summary (#1368).
+FRAMEWORK_SKILL_NAMES = frozenset({"ac-django", "ac-python", "fastapi"})
+
+#: Teatree's own architecture + management-command rules. Keyed on the CHECKOUT
+#: rather than declared per agent: those rules matter on a teatree ticket and
+#: are noise on a customer ticket, and a dispatched worker runs in its ticket's
+#: worktree — so the checkout is what separates the two. Declaring it on
+#: ``agents/*.md`` instead would put it in every customer dispatch as well.
+INTERNALS_SKILL_NAME = "internals"
+
+#: The marker a teatree checkout is identified by. Present in the source tree
+#: and in any worktree of it, absent from a repo that merely depends on teatree.
+_INTERNALS_MARKER = Path("src") / "teatree" / "__init__.py"
+
+_SKILL_FILE = "SKILL.md"
+
+
+#: Named both, so the bundle never leans on ``ac-django``'s ``requires`` resolving against a skill index.
+_DJANGO_SKILLS = ("ac-django", "ac-python")
+
+
+def _framework_skills_for_content(content: str) -> list[str]:
+    if _DJANGO_DEPENDENCY_RE.search(content):
+        return list(_DJANGO_SKILLS)
+    if _FASTAPI_DEPENDENCY_RE.search(content):
+        return ["ac-python", "fastapi"]
+    return ["ac-python"]
+
+
+def _framework_skills_for_directory(directory: Path) -> list[str] | None:
+    if (directory / "manage.py").is_file():
+        return list(_DJANGO_SKILLS)
+    for candidate in _PYTHON_FILE_HINTS:
+        path = directory / candidate
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return [] if candidate == "pyproject.toml" else ["ac-python"]
+        return _framework_skills_for_content(content)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class SkillSelectionResult:
+    skills: list[str]
+    lifecycle_skill: str = ""
+    ask_user: bool = False
+    #: SOFT companion suggestions of the resolved skills — surfaced, never loaded
+    #: as a hard dependency (that is what ``requires`` → ``skills`` is for).
+    companion_suggestions: tuple[str, ...] = ()
+
+
+type OverlaySkillMetadata = SkillMetadata | dict[str, object]
+
+
+class SkillLoadingPolicy:
+    """Single source of truth for skill selection decisions."""
+
+    @staticmethod
+    def _resolve_requires_chain(
+        skills: list[str],
+        skill_index: SkillIndex | None,
+    ) -> list[str]:
+        """Resolve the transitive ``requires`` chain, warning on members no root holds a SKILL.md for.
+
+        *skill_index* ``None`` means the live index over every skill root. The
+        warning reads the filesystem, not the index, so it names exactly the
+        members whose body cannot reach the agent; they still pass through.
+        """
+        roots = harness_skills_dirs()
+        resolved = resolve_requires(skills, _index_or_live(skill_index))
+        for skill in resolved:
+            if not _resolves_on_disk(skill, roots):
+                logger.warning(
+                    "Required skill %r resolves to no SKILL.md in %s — continuing", skill, [str(r) for r in roots]
+                )
+        return resolved
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def select_for_agent_launch(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
+        self,
+        *,
+        cwd: Path,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        ticket_status: str,
+        explicit_phase: str,
+        explicit_skills: list[str],
+        overlay_active: bool,
+        skill_index: SkillIndex | None = None,
+        companion_skills: list[str] | None = None,
+    ) -> SkillSelectionResult:
+        if explicit_phase and explicit_skills:
+            msg = "--phase and --skill cannot be used together"
+            raise ValueError(msg)
+
+        lifecycle_skill = ""
+        ask_user = False
+        if explicit_phase:
+            lifecycle_skill = self.lifecycle_for_phase(explicit_phase)
+            if not lifecycle_skill:
+                msg = f"Unknown phase: {explicit_phase}"
+                raise ValueError(msg)
+        elif explicit_skills:
+            lifecycle_skill = ""
+        elif ticket_status:
+            lifecycle_skill = self.lifecycle_for_status(ticket_status)
+        else:
+            ask_user = True
+
+        if not lifecycle_skill and not explicit_skills and not ask_user:
+            ask_user = True
+
+        ordered = self._base_detected_skills(
+            cwd=cwd,
+            overlay_skill_metadata=overlay_skill_metadata,
+            overlay_active=overlay_active,
+            companion_skills=companion_skills,
+        )
+        if explicit_skills:
+            ordered.extend(explicit_skills)
+        elif lifecycle_skill:
+            ordered.append(lifecycle_skill)
+
+        resolved = self._resolve_requires_chain(ordered, skill_index)
+        return SkillSelectionResult(
+            skills=_dedupe(resolved),
+            lifecycle_skill=lifecycle_skill,
+            ask_user=ask_user,
+        )
+
+    def select_for_session_start(
+        self,
+        *,
+        cwd: Path,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        loaded_skills: set[str],
+        skill_index: SkillIndex | None = None,
+        companion_skills: list[str] | None = None,
+    ) -> SkillSelectionResult:
+        """Framework + overlay + cwd context skills for a starting session, no prose scan.
+
+        Surfaces the cwd/overlay-detected skills (``ac-django`` for a Django
+        cwd, the overlay's own skill + companion skills for an overlay repo).
+        """
+        hard = self._base_detected_skills(
+            cwd=cwd,
+            overlay_skill_metadata=overlay_skill_metadata,
+            overlay_active=False,
+            companion_skills=companion_skills,
+        )
+        index = _index_or_live(skill_index)
+        resolved = _dedupe(self._resolve_requires_chain(hard, index))
+        companions = tuple(skill for skill in companion_suggestions(resolved, index) if skill not in loaded_skills)
+        return SkillSelectionResult(
+            skills=[skill for skill in resolved if skill not in loaded_skills],
+            companion_suggestions=companions,
+        )
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def select_for_runtime_phase(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
+        self,
+        *,
+        cwd: Path,
+        phase: str,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        skill_index: SkillIndex | None = None,
+        companion_skills: list[str] | None = None,
+        pr_review_companion: str = "",
+        review_skills: list[str] | None = None,
+        stage_skills: list[str] | None = None,
+        agent_declared_skills: list[str] | None = None,
+    ) -> SkillSelectionResult:
+        """Resolve a dispatched phase's bundle.
+
+        *agent_declared_skills* is the phase's ``agents/<name>.md`` frontmatter
+        declaration (#3667) — authoritative when present, so headless loads the
+        same set interactive does. :data:`_PHASE_TO_SKILL` remains the fallback
+        for a phase with no agent file, and still resolves ``lifecycle_skill``
+        (which drives the review-companion branch below and the returned result).
+        """
+        lifecycle_skill = self.lifecycle_for_phase(phase)
+        ordered = self._base_detected_skills(
+            cwd=cwd,
+            overlay_skill_metadata=overlay_skill_metadata,
+            overlay_active=True,
+            companion_skills=companion_skills,
+        )
+        if agent_declared_skills:
+            ordered.extend(s for s in agent_declared_skills if isinstance(s, str) and s)
+        elif lifecycle_skill:
+            ordered.append(lifecycle_skill)
+        # #1135: a reviewer sub-agent dispatch (phase resolving to the
+        # ``review`` lifecycle skill) also loads the project's review skills.
+        # Sub-agents do not auto-load skills, so the caller (``run_agent``
+        # via ``resolve_skill_bundle``) inlines those SKILL.md bodies into the
+        # dispatched prompt via ``_read_skill_contents_scoped``. ``review_skills``
+        # (the overlay's full deduped review set) supersedes the single
+        # ``pr_review_companion`` when supplied.
+        if lifecycle_skill == "review":
+            if review_skills:
+                ordered.extend(review_skills)
+            elif pr_review_companion:
+                ordered.append(pr_review_companion)
+        # Per-stage overlay skills (``OverlayConfig.stage_skills``) are ADDITIVE:
+        # appended LAST — after the base/overlay/review skills, before the
+        # requires-chain resolution — so a stage skill's own ``requires:`` chain
+        # resolves AND the first-wins dedupe keeps the base authoritative when a
+        # stage skill repeats one already in the bundle.
+        if stage_skills:
+            ordered.extend(s for s in stage_skills if isinstance(s, str) and s)
+        resolved = self._resolve_requires_chain(ordered, skill_index)
+        return SkillSelectionResult(
+            skills=_dedupe(resolved),
+            lifecycle_skill=lifecycle_skill,
+        )
+
+    @staticmethod
+    def lifecycle_for_status(status: str) -> str:
+        return _STATUS_TO_SKILL.get(status, "")
+
+    @staticmethod
+    def lifecycle_for_phase(phase: str) -> str:
+        return _PHASE_TO_SKILL.get(phase, "")
+
+    def _base_detected_skills(
+        self,
+        *,
+        cwd: Path,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        overlay_active: bool,
+        companion_skills: list[str] | None = None,
+    ) -> list[str]:
+        ordered: list[str] = []
+        overlay_in_scope = self._overlay_in_scope(
+            cwd=cwd,
+            overlay_skill_metadata=overlay_skill_metadata,
+            overlay_active=overlay_active,
+        )
+        if overlay_in_scope:
+            skill_path = _overlay_skill_reference(str(overlay_skill_metadata.get("skill_path", "")).strip())
+            if skill_path:
+                ordered.append(skill_path)
+        ordered.extend(self.detect_internals_skill(cwd))
+        ordered.extend(self.detect_framework_skills(cwd))
+        if overlay_in_scope and companion_skills:
+            ordered.extend(s for s in companion_skills if isinstance(s, str) and s)
+        return ordered
+
+    @staticmethod
+    def _overlay_in_scope(
+        *,
+        cwd: Path,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        overlay_active: bool,
+    ) -> bool:
+        """Whether an overlay repo is actually in scope for this task.
+
+        The overlay companion skills (and the overlay's own skill) are
+        required ONLY for overlay work — when the resolved overlay is active
+        for the session, or the cwd's git remote matches one of the overlay's
+        ``remote_patterns``. Teatree-core-only work (no overlay-active, no
+        matching remote) is NOT overlay work, so its companion-skill load
+        gate must not fire.
+
+        Scope is deliberately independent of the caller's lifecycle skill:
+        the SessionStart suggester resolves no lifecycle skill at all, so
+        gating on one would make the remote-match branch dead there (BLUEPRINT
+        § 11.5).
+        """
+        if overlay_active:
+            return True
+        patterns_object = overlay_skill_metadata.get("remote_patterns", [])
+        if not isinstance(patterns_object, list):
+            return False
+        patterns = [pattern for pattern in patterns_object if isinstance(pattern, str) and pattern]
+        if not patterns:
+            return False
+        return _matches_any_remote(cwd, patterns)
+
+    @staticmethod
+    def detect_internals_skill(cwd: Path) -> list[str]:
+        """``["internals"]`` when *cwd* sits in a teatree checkout, else ``[]``.
+
+        Scoped by the checkout so a customer ticket — whose worktree is the
+        customer's repo — never carries teatree's own architecture and
+        management-command rules, while a teatree ticket does, in the headless
+        lane as much as the interactive one.
+        """
+        for directory in [cwd, *cwd.parents]:
+            if (directory / _INTERNALS_MARKER).is_file():
+                return [INTERNALS_SKILL_NAME]
+        return []
+
+    @staticmethod
+    def detect_framework_skills(cwd: Path) -> list[str]:
+        for directory in [cwd, *cwd.parents]:
+            skills = _framework_skills_for_directory(directory)
+            if skills is not None:
+                return skills
+        return []
+
+
+def _overlay_skill_reference(raw: str) -> str:
+    """*raw* when it names a skill or a ``<skill>/SKILL.md`` file, else ``""`` with a warning.
+
+    A relative ``SKILL.md`` path is kept unresolved: it is relative to the overlay repo, not to cwd.
+    """
+    if not raw or "/" not in raw:
+        return raw
+    path = Path(raw)
+    if path.name == _SKILL_FILE and (not path.is_absolute() or path.is_file()):
+        return raw
+    problem = "names a SKILL.md that does not exist" if path.name == _SKILL_FILE else "is not a <skill>/SKILL.md file"
+    logger.warning(
+        "Overlay skill_path %r %s — the overlay skill is NOT loaded; fix get_skill_metadata()['skill_path']",
+        raw,
+        problem,
+    )
+    return ""
+
+
+def _index_or_live(skill_index: SkillIndex | None) -> SkillIndex:
+    return build_skill_index(harness_skills_dirs()) if skill_index is None else skill_index
+
+
+def _resolves_on_disk(skill: str, roots: list[Path]) -> bool:
+    if skill.endswith(f"/{_SKILL_FILE}") and Path(skill).is_absolute() and Path(skill).is_file():
+        return True
+    return resolve_skill_md(skill, roots) is not None
+
+
+def _skill_identity(skill: str) -> str:
+    """A ``<dir>/SKILL.md`` path is the skill named by its directory; any other reference is itself."""
+    suffix = f"/{_SKILL_FILE}"
+    return skill.removesuffix(suffix).rsplit("/", 1)[-1] if skill.endswith(suffix) else skill
+
+
+def _dedupe(skills: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for skill in skills:
+        identity = _skill_identity(skill)
+        if identity not in seen:
+            seen.add(identity)
+            result.append(skill)
+    return result
+
+
+def _matches_any_remote(cwd: Path, patterns: list[str]) -> bool:
+    urls = _git_remote_urls(cwd)
+    return any(any(fnmatch(url, pattern) for pattern in patterns) for url in urls)
+
+
+def _git_remote_urls(cwd: Path) -> list[str]:
+    origin_url = git.remote_url(repo=str(cwd), remote="origin")
+    if origin_url:
+        return [origin_url]
+    raw = git.run(repo=str(cwd), args=["remote", "-v"])
+    if not raw:
+        return []
+    seen: set[str] = set()
+    urls: list[str] = []
+    for raw_line in raw.splitlines():
+        parts = raw_line.split()
+        if len(parts) >= 2 and parts[1] not in seen:  # noqa: PLR2004 — self-documenting literal in this context
+            seen.add(parts[1])
+            urls.append(parts[1])
+    return urls

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-bg-ci-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll watch the pipeline now and wait for it to finish."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "glab ci status --watch", "description": "watch pipeline until done"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "pipeline running..."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,247 @@
+"""Forward a ``t3 eval run`` invocation into the CI image for the metered lane.
+
+Split out of :mod:`teatree.cli.eval.app` so the command module stays under the
+module-health LOC cap. The metered ``api`` lane runs in-container, never on the
+host; the container is ephemeral (``--rm``), so the durable-history flags
+(``--baseline`` / ``--gate-regressions``) are unsupported and the in-container run
+is forced ``--no-persist``.
+
+The container — and the agent under test running inside it — gets a fresh, empty
+staging directory as its only writable mount, never the reports' own directory:
+on CI that is ``$RUNNER_TEMP``, which also holds the uploaded run log and the
+checkout's credentials. Only the reports the run asked for leave the staging
+directory, each redacted on the way out; anything else written there is discarded.
+"""
+
+import dataclasses
+import tempfile
+from pathlib import Path
+
+import typer
+
+from teatree.cli.eval.docker import ARTIFACTS_MOUNT, DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.metered_routing import should_route_to_docker
+from teatree.eval.artifact_redaction import write_artifact
+from teatree.eval.backends import TRANSCRIPT_BACKEND
+from teatree.eval.parallel import DEFAULT_PARALLEL
+
+#: ``--judge-budget``'s default, shared with the ``t3 eval run`` option so the
+#: forwarded flag pair and the host default cannot drift.
+DEFAULT_JUDGE_BUDGET = 20
+
+
+@dataclasses.dataclass(frozen=True)
+class RunDockerArgs:
+    """The ``t3 eval run`` flags forwarded into the CI image by ``--docker``."""
+
+    name: str | None
+    lane: str | None
+    surface: str | None
+    shard: str | None
+    output_format: str
+    max_turns: int | None
+    max_budget_usd: float
+    effort: str
+    trials: int
+    require: str
+    models: str | None
+    backend: str
+    require_executed: bool
+    parallel: int
+    transcript_html: Path | None = None
+    summary_md: Path | None = None
+    summary_json: Path | None = None
+    benchmark: bool = False
+    model: str | None = None
+    preset: str | None = None
+    escalate_on_fail: bool = False
+    escalate_trials: int = 3
+    judge: bool = False
+    judge_budget: int = DEFAULT_JUDGE_BUDGET
+    transcript_dir: Path | None = None
+
+    def _container_transcript_path(self) -> str:
+        """The in-container path the transcript artifact is written to.
+
+        A fresh staging directory beside the host ``--transcript-html`` path is
+        bind-mounted writable at :data:`ARTIFACTS_MOUNT`, so the in-container run
+        writes to ``/artifacts/<filename>`` and :meth:`dispatch` copies the file back
+        to the host path, redacted. ``""`` when no artifact was requested.
+        """
+        if self.transcript_html is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.transcript_html.name}"
+
+    def _container_summary_path(self) -> str:
+        """The in-container path the sanitized summary markdown is written to.
+
+        Like the transcript artifact, the host ``--summary-md`` file is written to the
+        single writable staging mount, redirected to ``/artifacts/<filename>``
+        in-container, and copied back to the host. The staging dir sits in the shared
+        parent of the transcript and summary (the workflows put both in
+        ``$RUNNER_TEMP``), so the one bind-mount carries both.
+        """
+        if self.summary_md is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.summary_md.name}"
+
+    def _container_summary_json_path(self) -> str:
+        """The in-container path the publish-safe per-scenario JSON is written to.
+
+        Redirected to ``/artifacts/<filename>`` like the summary/transcript, so the
+        host ``--summary-json`` file is copied back from the writable staging mount.
+        ``""`` when no JSON was requested.
+        """
+        if self.summary_json is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.summary_json.name}"
+
+    def _requested_reports(self) -> list[Path]:
+        return [p for p in (self.transcript_html, self.summary_md, self.summary_json) if p is not None]
+
+    def _artifacts_dir(self) -> Path | None:
+        """The host directory the reports land in, which hosts the one staging mount.
+
+        One mount can only serve one host directory, so reports requested under
+        DIFFERENT parents are rejected upfront rather than silently all landing
+        under the first one.
+        """
+        parents = [report.parent for report in self._requested_reports()]
+        if not parents:
+            return None
+        distinct = {p.resolve() for p in parents}
+        if len(distinct) > 1:
+            listed = ", ".join(sorted(str(p) for p in distinct))
+            typer.echo(
+                "--docker writes every report through ONE writable bind-mount, so "
+                f"--transcript-html/--summary-md/--summary-json must share a parent directory (got: {listed}).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        return parents[0]
+
+    def _leading_optionals(self) -> list[list[str]]:
+        """Non-default flag groups that precede the always-present budget/effort flags."""
+        return [
+            [self.name] if self.name is not None else [],
+            ["--lane", self.lane] if self.lane is not None else [],
+            # --surface slices the catalog exactly like --lane/--shard. Dropping it
+            # here would silently run the FULL catalog in-container — no error, and
+            # the whole point of the slice (metered spend) lost (#3855).
+            ["--surface", self.surface] if self.surface is not None else [],
+            ["--shard", self.shard] if self.shard is not None else [],
+            ["--benchmark"] if self.benchmark else [],
+            ["--model", self.model] if self.model is not None else [],
+            ["--preset", self.preset] if self.preset is not None else [],
+            ["--format", self.output_format] if self.output_format != "text" else [],
+            ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
+        ]
+
+    def _trailing_optionals(self) -> list[list[str]]:
+        """Non-default flag groups that follow the always-present budget/effort flags."""
+        return [
+            ["--trials", str(self.trials), "--require", self.require] if self.trials != 1 else [],
+            ["--models", self.models] if self.models is not None else [],
+            ["--backend", self.backend] if self.backend != TRANSCRIPT_BACKEND else [],
+            ["--require-executed"] if self.require_executed else [],
+            ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
+            ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
+            ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
+            ["--summary-json", self._container_summary_json_path()] if self.summary_json is not None else [],
+            ["--escalate-on-fail", "--escalate-trials", str(self.escalate_trials)] if self.escalate_on_fail else [],
+            # Dropping these ran the container with matcher-only grading while the
+            # host reported the requested LLM-judge run (#judge-passthrough).
+            ["--judge", "--judge-budget", str(self.judge_budget)] if self.judge else [],
+        ]
+
+    def passthrough(self) -> list[str]:
+        # --max-budget-usd / --effort are ALWAYS passed so the in-container run is
+        # deterministic regardless of the container's env (the host resolved the
+        # defaults); they sit between the leading and trailing optional groups.
+        always = ["--max-budget-usd", str(self.max_budget_usd), "--effort", self.effort]
+        groups = [*self._leading_optionals(), always, *self._trailing_optionals()]
+        return ["run", *(arg for group in groups for arg in group), "--no-persist"]
+
+    def dispatch(self) -> None:
+        reports_dir = self._artifacts_dir()
+        if reports_dir is None:
+            raise typer.Exit(code=self._run_in_image(None))
+        with tempfile.TemporaryDirectory(prefix=".eval-staging-", dir=reports_dir) as staging:
+            code = self._run_in_image(Path(staging))
+            self._copy_reports_out(Path(staging))
+        raise typer.Exit(code=code)
+
+    def _run_in_image(self, artifacts_dir: Path | None) -> int:
+        try:
+            return run_eval_in_docker(self.passthrough(), artifacts_dir=artifacts_dir)
+        except DockerUnavailableError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+
+    def _copy_reports_out(self, staging: Path) -> None:
+        """Copy each requested report the run wrote back to its host path, redacted.
+
+        A symlink is never followed: it would let the agent point a report at a host
+        file outside the staging mount and have this copy publish it.
+        """
+        for report in self._requested_reports():
+            staged = staging / report.name
+            if staged.is_file() and not staged.is_symlink():
+                write_artifact(report, staged.read_text(encoding="utf-8", errors="replace"))
+
+
+def run_in_docker_or_exit(
+    args: RunDockerArgs,
+    *,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
+) -> None:
+    if baseline or gate_regressions or gate_cost_regression or gate_cost_bounds:
+        typer.echo(
+            "--docker runs in an ephemeral container, so it cannot update or read the durable "
+            "run-history the gates consume; drop --baseline/--gate-regressions/"
+            "--gate-cost-regression/--gate-cost-bounds or run on the host.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if args.transcript_dir is not None:
+        typer.echo(
+            "--docker mounts only the repo (read-only), so a host --transcript-dir is unreachable "
+            "in-container and the run would grade the container's own cwd instead; pass --local to "
+            "grade the host transcripts, or drop --transcript-dir.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    args.dispatch()
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-history flag forwarded with the run args.
+    args: RunDockerArgs,
+    *,
+    docker: bool,
+    local: bool,
+    metered: bool,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
+) -> None:
+    """Forward the run into the CI image when the metered lane (or ``--docker``) requires it.
+
+    A no-op on the host path. When routing, the durable-history flags are
+    rejected first (:func:`run_in_docker_or_exit`) because the in-container run is
+    ``--no-persist``, then the run is dispatched into the container (which exits
+    the process).
+    """
+    if not (docker or should_route_to_docker(metered=metered, local=local)):
+        return
+    run_in_docker_or_exit(
+        args,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )

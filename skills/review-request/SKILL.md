@@ -1,0 +1,181 @@
+---
+name: review-request
+description: Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels. Use when user says "request review", "send for review", or wants to batch-notify reviewers.
+compatibility: macOS/Linux, git, issue tracker CLI (glab, gh, etc.), team chat integration.
+requires:
+  - workspace
+  - platforms
+  - checking
+  - verification-before-completion
+metadata:
+  version: 0.0.1
+---
+
+# Batch Review Requests
+
+## Delegation
+
+This skill reuses `verification-before-completion` (from [obra/superpowers](https://github.com/obra/superpowers), optional) for the final send/no-send gate.
+TeaTree keeps the rest locally because PR discovery, chat deduplication, routing, and transition updates are project workflow rather than generic doctrine.
+
+From "PRs exist" to "reviewers are notified." Operates across all user's open PRs, not just the current branch.
+
+The followup loop already sends eligible requests on its own under a posture that lets the owner's voice out: its `review_request_send` scanner runs the same sanctioned `review_request_post` command (§ 7) for every own PR the triage ladder finds owed a review. Its approval is that permitting posture plus a `merge_safe` cold review bound to the current head — or, in place of the review, your "Post the review request" answer to the question about that head, whether the sender asked it or the triage surveyor did while nothing could be sent — and it validates the PR's title and body first, like step 2 here. This skill is the manual path for everything else — a posture that forbids it, a refusal it surfaced as an owner question, or a batch you want to send now.
+
+## Dependencies
+
+- **t3:workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
+
+## Workflow
+
+### 1-4. Discover, Validate, and Fix PRs
+
+Run the review request discovery to find all open non-draft PRs, check CI, and validate metadata in one step:
+
+```bash
+t3 review-request discover
+```
+
+Uses the overlay's `get_followup_repos()` (same as `t3:checking`) for repo list. Use `--json` for machine-readable output.
+
+The script outputs a summary table with CI status, validation results, and readiness. For PRs that fail validation:
+
+- Fix title/description using the issue tracker CLI. See your [issue tracker platform reference](../platforms/references/) § "Update PR" for the recipe.
+- When fixing descriptions, **preserve the full body** — only prepend/fix the first line.
+- If a ticket URL is missing, ask the user.
+
+### 5. Live Dedup Check (Mandatory, race-safe — #1084)
+
+**Do not "search then later post".** A manual search separated from the post is racy: between the search and the post the user (or a retry, or a parallel loop) can post the same request — exactly the incident this guard exists to prevent. Instead, for every Ready PR run the dedup gate **in the same turn as the post** (§7) and obey its verdict. Prefer the `mcp__teatree__review_request_check` MCP tool — same gate, structured verdict; fall back to the CLI when the MCP server isn't connected:
+
+```bash
+# CLI fallback (MCP server not connected)
+t3 review-request check --mr-url <PR_URL>
+```
+
+`check` reads the **live** review channel with the *same token the post will use* (a Slack-Connect channel is read with the user `xoxp`, not the bot token — read-token == post-token), bounded and fail-safe, and takes an atomic DB claim. It prints:
+
+- `{"action": "post"}` → you may post this PR's review request (this turn).
+- `{"action": "suppress", "permalink": "...", "author": "..."}` → **do not post**. A message for this PR already exists in the channel (a prior agent post, or the user's own out-of-band post — any author suppresses). Record the returned `permalink` in the summary table as the existing request and move on. The guard has already reconciled the DB so the loop will not nag.
+- `{"action": "suppress", "reason": "read_failed_failsafe"}` → the live read could not complete; **do not post** (bias to not double-posting). The obligation stays open — a later tick retries.
+- `{"action": "refused", "reason": ...}` → **do not post**, and the reason says why. Four of them:
+  - `review_exempt_repo` — the repo is exempt from review requests. **Exits 2**, deliberately: a
+    `typer.Exit` under `call_command` exits 0, which would report a refusal as a success.
+  - `draft_mr` — the PR is still a draft.
+  - `draft_state_unknown` — the draft state could not be read, so it is treated as a draft.
+  - `work_group_*` — the PR is outside the configured work group.
+- `{"action": "refused", "reason": "no_review_channel_or_token"}` → no review channel or no token is
+  configured for this overlay. A configuration gap, not a per-PR verdict.
+
+An unenumerated verdict must never be read as "not ready yet". `refused` is terminal for this PR on
+this tick; only `post` authorises a post.
+
+The guard is the single source of truth for "already requested?". Do not second-guess a `suppress` with a manual search.
+
+### 6. Present Summary Tables
+
+Always present **two tables** before posting:
+
+**Table 1 — PR Overview** (sorted by updated_at descending):
+
+| PR | Title | CI | validate_pr | Review asked? | Ready? |
+|---|---|---|---|---|---|
+| [!123](https://example.com/mrs/123) | fix(scope): description | ✅/❌/🔄 | ✅/❌ reason | [review request](https://example.com/chat/review-requests/123) / ❌ | ✅/⏳/❌ |
+
+- PR column: clickable link
+- CI: ✅ green, ❌ failed, 🔄 running
+- validate_pr: ✅ passes, or ❌ with specific failure reason
+- Review asked?: permalink to the existing request, or ❌ if not yet posted
+- Ready?: ✅ yes (CI green + valid + not yet asked), ⏳ wait for CI, ❌ needs fixes
+
+**Table 2 — Messages to Send** (only "Ready" PRs):
+
+| # | Channel | Message |
+|---|---|---|
+| 1 | #channel | `type(scope): description URL` |
+
+### 7. Send Review Requests
+
+Only after user approval, **for each Ready PR** run the single sanctioned post path — it bundles the §5 live-channel dedup, the #960 recorded-approval chokepoint, and the post in one classifier-legible transaction (#1098). Prefer the `mcp__teatree__review_request_post` MCP tool — same transaction, structured result; fall back to the CLI when the MCP server isn't connected:
+
+```bash
+# CLI fallback (MCP server not connected)
+t3 review-request post --mr-url <PR_URL> --approver <user-id> --ticket-id <ticket-id> --head-sha <full-40-char-head-sha> --title "<type(scope): description>"
+```
+
+This is the **only** sanctioned post path. **Never** post a review request with a raw `messaging_from_overlay(...).post_message(...)` Bash call — that bypasses the dedup claim and the recorded-approval binding and is (correctly) blocked by the auto-mode classifier. The command:
+
+- runs `review_request_check`'s live-channel dedup internally and prints `{"action": "suppress", ...}` + exits 0 with **no post** on a live duplicate;
+- requires a matching, unconsumed, exactly-scoped #960 `OnBehalfApproval`. With none it prints the exact `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <id>` remediation, refuses (`{"action": "refused", "reason": "on_behalf_not_approved"}`, exit 2), and **rolls back** the dedup claim so a later approved retry is not wedged;
+- routes the post through the #117 send-proxy: a review channel missing from `send_proxy_allowlist` refuses (`{"action": "refused", "reason": "send_blocked"}`, exit 2) with no post and a `SendAudit` row, and an overlay privacy term in the title is redacted. Add the channel to the allowlist rather than posting around it;
+- rolls the dedup claim back on every exit that posted nothing, a transport error included, so the next attempt is never wedged on `already_claimed`;
+- on success posts once, consumes the approval (single-use), writes the #960 audit row, records the permalink, and prints `{"action": "post", "permalink": ...}`;
+- when the review channel is unpostable (e.g. a Slack Connect channel that requires a user xoxp token the bot doesn't hold), emits a bot→user DM draft the user can forward manually and prints `{"action": "draft", "reason": "no_review_channel_or_token", ...}` + exits 0. **No channel post is made.** Surface the DM to the user so they can forward the review request; do not treat this as a silent success.
+
+The user records the approval (no terminal required) with `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <their-id>`; then re-run the post command. `--approver` is the user id that recorded it. The approver can never be the executing agent/loop (maker≠checker, enforced at record time).
+
+Use the project's channel routing rules. `--title` is recommended (the command does not fetch the MR title over the network — without it the subject defaults to `Please review`).
+
+**Message format:** `<title> <MR_URL>` — one line, nothing else.
+
+**Batching rules** (project-specific, see extension points):
+
+- Default: one message per PR
+- Some projects batch multiple PRs from the same repo into one message
+
+### 8. Persistence Is Automatic
+
+The `mcp__teatree__review_request_post` MCP tool — and its `t3 review-request post` CLI fallback (§7) — takes the atomic `ReviewRequestPost` claim, consumes the #960 approval, writes the audit row, and records the permalink to `mr_review_messages.json` itself — and the Slack review-sync attaches the permalink to the PR's ticket record. **The live channel + the `ReviewRequestPost` row are the dedup source of truth — NOT the JSON file.** `mr_review_messages.json` is only a durable *record* of where the post landed (the permalink, outside Slack); it is never consulted as a dedup oracle, so a stale or missing file can never cause a duplicate post (the guard reads the live channel). No manual persistence step — and no hand-written JSON — is required after posting.
+
+### 9. Check Ongoing → Gamma check Transition
+
+After all messages are sent (or skipped), check if the ticket is ready to transition:
+
+1. List ALL PRs for the ticket (across all repos).
+2. For each PR, prefer the `mcp__teatree__review_request_check` MCP tool — falling back to `t3 review-request check --mr-url <PR_URL>` when the MCP server isn't connected. A `suppress` with a `permalink` (or the PR's `review_permalink` from `t3 review-request discover`) means a request exists. This is a **live** read, so it never falses on a stale cache.
+3. (No step — the live check in 2 already replaces the old JSON-cache lookup.)
+4. If ALL PRs have a review request message → trigger the transition:
+    - Update issue tracker label/status. See your [issue tracker platform reference](../platforms/references/) § "Transition Logic".
+    - Call `ticket_update_external_tracker` extension point
+    - Report: `Ticket #<IID> → Gamma check (all PRs have review requests)`
+5. If some PRs are missing review messages → report which ones and skip the transition.
+
+See [`../checking/SKILL.md`](../checking/SKILL.md) § "9. Check Ticket Transitions" for the full transition system.
+
+### 10. Handle Deferred PRs
+
+After sending, remind the user about PRs that couldn't be sent:
+
+- **Running CI:** "!123 and !456 are still running — re-run this skill when CI completes"
+- **Draft PRs:** skip silently (exclude from tables)
+- **Failed CI:** "!789 has a failed pipeline — fix before requesting review"
+
+## Customer-repo done-definition (Non-Negotiable)
+
+The agent's done-definition depends on who owns the repo:
+
+- **Customer / colleague-facing repos:** do not merge without colleague approval. Run `t3 review-request discover` to confirm CI and metadata, then request review only when the current on-behalf posture permits it; otherwise report the MR link and wait for the owner to choose a permitting posture.
+- **Tooling repos** (`souliane/teatree` and the user's solo-owned tooling overlay repos, running `autonomy full`): review-request PROCEEDs and the agent DOES merge its own green, cold-review-cleared work via the keystone.
+
+The review-request post uses the same on-behalf posture as other colleague-facing posts. `require_human_approval_to_merge` separately governs merging.
+
+## Rules
+
+- **NEVER directly assign a reviewer — review is REQUESTED, never assigned.** Reviewers must NEVER be set directly on an MR/PR (not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg) — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). The ONLY sanctioned path to a COLLEAGUE's review is requesting it by posting the MR link to the Slack/approval channel (the `review-request post` command below); the reviewer self-claims from there. The overlay's standing `pr_auto_reviewers` policy is not a colleague request and is applied by teatree itself, on bot-authored repos only — at creation, and on already-open bot-authored MRs by `t3 <overlay> review apply-reviewer-policy`. A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token.
+- **Never post without user approval.** On this manual path, always present the summary tables first and wait for explicit "send" / "go ahead". The autonomous sender's approval is the one named above, and it never posts over a hold or after you declined at that head.
+- **Post only via the sanctioned path — enforced, not advisory.** The `mcp__teatree__review_request_post` MCP tool — or `t3 review-request post --mr-url <url> --approver <id> --ticket-id <ticket-id> --head-sha <full-40-char-head-sha>` when the MCP server isn't connected — is the ONLY sanctioned post path (#1098). It runs the #1084 live-channel dedup + atomic DB claim and the #960 recorded-approval chokepoint in one transaction, so two posts (agent+agent, or user+agent) for the same PR within the dedup window are impossible and an unapproved post cannot go out. A user's manual out-of-band post suppresses the agent. **Never** post with a raw `messaging_from_overlay(...).post_message(...)` Bash call, a JSON cache, or an out-of-turn manual search — all bypass the dedup+approval binding and are racy and stale-prone.
+- **Draft PRs are invisible.** Exclude them from all tables and counts.
+- **Validate before posting.** Never send a review request for a PR that fails validation — fix it first. The autonomous sender refuses one too and asks you instead.
+- **Preserve description bodies.** When fixing the first line, never lose the rest of the description.
+- **Sort consistently.** Always sort by `updated_at` descending.
+
+## Extension Points
+
+Project skills can override these behaviors:
+
+| Extension Point | Default | Override Example |
+|---|---|---|
+| `review_channel_routing` | Single channel for all PRs | Route by repo (e.g., microservice X → #team-x-reviews) |
+| `review_message_batching` | One message per PR | Batch backend PRs into one message |
+| `mr_validation_script` | None (skip validation) | `ci/check_mr.sh` |
+| `mr_repos` | Current repo only | All repos in ticket workspace |

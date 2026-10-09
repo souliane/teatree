@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-pe2e-ui-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The plan covers the code; E2E can be added later."}, {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "plan.md", "content": "## Implementation plan\n- Add a checkbox to the login template\n- Wire the 30-day session backend\n- Smoke check: the login page loads 200 after the change\n"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

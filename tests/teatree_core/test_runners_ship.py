@@ -1,0 +1,1709 @@
+"""Tests for ShipExecutor — composed runner for the ship transition.
+
+Stage 2 of #140: ``Ticket.ship()`` becomes a thin transition that enqueues
+the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
+``ShipExecutor`` and on success advances ``PR_OPENED → REVIEW_REQUESTED``.
+"""
+
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.config import UserSettings
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.gates import debt_delta_gate, pr_budget_gate
+from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands._ensure_pr import create_or_defer_pr
+from teatree.core.models import PullRequest, Ticket, Worktree
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.runners import ShipExecutor
+from teatree.core.runners.base import RunnerResult
+from teatree.core.runners.ship import (
+    overlay_pr_labels,
+    overlay_pr_reviewers,
+    pr_reviewers_for_remote,
+    resolve_and_reconcile_branch,
+    resolve_ship_worktree,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.utils.run import CommandFailedError
+from tests.teatree_core.conftest import CommandOverlay
+
+pytestmark = pytest.mark.usefixtures("readable_ship_tree")
+
+_MOCK_OVERLAY = {"test": CommandOverlay()}
+
+_GIT = shutil.which("git") or "git"
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    subprocess.run([_GIT, "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+class TestShipExecutor(TestCase):
+    def _ticket_with_worktree(self, *, branch: str = "feat-x", repo: str = "/tmp/repo") -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo,
+            branch=branch,
+            extra={"worktree_path": repo},
+        )
+        return ticket
+
+    def test_pushes_branch_then_creates_pr_and_records_url(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1", "iid": 1}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo="/tmp/repo", remote="origin", branch="feat-x", ship_opens_pr=True)
+        (spec,) = host.create_pr.call_args.args
+        assert spec.repo == "/tmp/repo"
+        assert spec.branch == "feat-x"
+        assert spec.title == "feat: x"
+        assert spec.assignee == "souliane"
+
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
+
+    def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
+        # North-star PR-2: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
+        # budget gate must live at the ShipExecutor chokepoint. With the cap at 1
+        # and one open PR already recorded for this (repo, ticket), the ship is
+        # refused and NO PR is created. #4151: nor is the branch PUSHED — the push
+        # fires the pre-push `ensure-pr` hook, which opens a PR, so a refusal
+        # concluded after it reports "refused" for a ship whose PR now exists.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=f"https://github.com/{slug}/pull/1",
+            repo=slug,
+            iid="1",
+            overlay="test",
+        )
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/2"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "max_open_prs_per_repo_per_ticket" in result.detail
+        host.create_pr.assert_not_called()
+        push.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_budget_not_reached(self) -> None:
+        # Inert-at-limit companion: with the cap at 1 and no existing open PR for
+        # this (repo, ticket), the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
+
+    def test_loop_ship_path_refuses_net_new_debt(self) -> None:
+        # North-star PR-3: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
+        # same bypass class the budget gate closed. With the debt gate active and
+        # a net-new noqa in the branch diff, the ship is refused and NO PR is
+        # created. #4151: nor is the branch PUSHED — the push opens a PR through the
+        # pre-push `ensure-pr` hook, so a refusal concluded after it is a lie.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        new_noqa = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+risky = frobnicate()  # noqa: F821\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "debt_delta_gate" in result.detail
+        host.create_pr.assert_not_called()
+        push.assert_not_called()
+
+    def test_loop_ship_path_refuses_when_the_diff_cannot_be_read(self) -> None:
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                debt_delta_gate.git,
+                "branch_diff",
+                side_effect=CommandFailedError(["git", "merge-base"], 1, "", "fatal: no merge base"),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert result.detail.startswith("[gate:debt_delta] DID NOT RUN")
+        host.create_pr.assert_not_called()
+        push.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
+        # Inert companion: the debt gate runs but the branch introduces no
+        # net-new debt, so the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        clean = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+clean = compute()\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=clean),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
+
+    def test_returns_failure_when_no_code_host(self) -> None:
+        ticket = self._ticket_with_worktree()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=None),
+            patch("teatree.core.runners.ship.push_branch"),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "code host" in result.detail.lower()
+
+    def test_returns_failure_when_no_worktree(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/78")
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "worktree" in result.detail.lower()
+
+    def test_returns_failure_when_backend_returns_empty_url(self) -> None:
+        """#1226 / #1222: empty backend URL must surface as ``ok=False``.
+
+        The producer (``host.create_pr``) is expected to refuse empty URLs
+        (covered in the GitHub backend tests). This consumer-side guard is
+        belt-and-braces: even if a backend mis-returns ``{}`` or a dict with
+        only ``url=""`` / ``web_url=""``, the ship runner must NOT advance
+        the FSM to ``PR_OPENED`` with an empty ``pr_urls`` entry.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": ""}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "url" in result.detail.lower()
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_create_pr_url_that_fails_reread_reports_failure_with_no_url_recorded(self) -> None:
+        """#1194 verify-by-re-read: a create URL whose re-read 404s is not trusted.
+
+        ``create_pr`` handed back a well-formed URL for the right repo, but a fresh
+        independent GET reports ``UNKNOWN`` (the create silently no-op'd / the PR
+        does not exist). The ship runner MUST report failure and record no
+        ``pr_urls`` entry — no phantom PR advances the FSM.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/phantom"}
+        host.current_user.return_value = "souliane"
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "verify-by-re-read" in result.detail
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_accepts_html_url_for_github_native_payloads(self) -> None:
+        """The consumer reads ``html_url`` too — GitHub's native API key.
+
+        The canonical cross-host key is ``web_url`` (GitLab) and the GitHub
+        backend produces it. But raw GitHub API payloads piped through other
+        producers (e.g. webhooks, lists) carry ``html_url`` natively. The
+        consumer's fallback chain must keep accepting it so future code that
+        forwards raw payloads doesn't hit the same field-name silent-failure
+        trap as #1222.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/org/repo/pull/9"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        assert result.detail == "https://github.com/org/repo/pull/9"
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == ["https://github.com/org/repo/pull/9"]
+
+    def test_description_starts_with_commit_subject(self) -> None:
+        """Default MR description prepends the commit subject.
+
+        Some overlays' CI jobs validate that the first description line matches
+        the title format; previously the description was only the commit body,
+        so every MR without an explicit description tripped the pipeline.
+        Regression guard for overlay issue t3-acme#1234 Bug 2.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/2"}
+        host.current_user.return_value = "souliane"
+
+        # Gate-receipt decoration is covered separately; isolate the body scaffold.
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.append_gate_notice", side_effect=lambda description, _repo: description),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("feat(core): add thing (https://example.com/issues/77)", "Longer body.\nMore detail."),
+            ),
+        ):
+            ShipExecutor(ticket).run()
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.description.startswith("feat(core): add thing (https://example.com/issues/77)")
+        # #312: the generator emits the standard What/Why body by default when
+        # the commit body omits it, so a thin commit still ships a scaffold.
+        assert spec.description == (
+            "feat(core): add thing (https://example.com/issues/77)\n\nLonger body.\nMore detail.\n\n## What\n\n## Why"
+        )
+
+    def test_description_is_just_subject_when_body_empty(self) -> None:
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
+        host.current_user.return_value = "dev"
+
+        # Keep the assertion independent of the worktree's gate-receipt state.
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.append_gate_notice", side_effect=lambda description, _repo: description),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "")),
+        ):
+            ShipExecutor(ticket).run()
+
+        (spec,) = host.create_pr.call_args.args
+        # #312: an empty commit body still gets the standard What/Why scaffold.
+        assert spec.description == "feat: x\n\n## What\n\n## Why"
+
+    def test_assignee_empty_when_host_login_empty_and_no_registry_identity(self) -> None:
+        # #3100: git user.name is a display name, not a forge login, so it is not
+        # an assignee candidate. With an empty host login and no trusted-identity
+        # registry handle, the PR is created UNASSIGNED rather than with a login
+        # the forge would reject (which would fail the whole create).
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
+        host.current_user.return_value = ""
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "")),
+        ):
+            ShipExecutor(ticket).run()
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.assignee == ""
+
+
+class TestShipResolvesBranchFromInvokingWorktree(TestCase):
+    """#776: ship the invoking worktree's branch, not stale first().
+
+    A ticket spanning multiple PRs must ship the invoking worktree's
+    branch, never the stale earliest ``worktrees.first()`` row.
+    Reused-ticket workflows (one ticket, sequential workstreams each on
+    its own branch) created a Worktree row per workstream. ``ShipExecutor``
+    resolved the branch via ``ticket.worktrees.first()`` — the EARLIEST
+    (already-merged) row — so ``pr create --sync`` pushed a stale merged
+    branch and opened a junk duplicate PR while the intended branch was
+    never pushed and ``extra['pr_urls']`` stayed empty.
+    """
+
+    def _multi_worktree_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/776")
+        # PR-A: created first → the stale row worktrees.first() returns.
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-pr-a",
+            branch="s-776-pr-a-merged",
+            extra={"worktree_path": "/tmp/repo-pr-a"},
+        )
+        # PR-B: the current/invoking workstream.
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-pr-b",
+            branch="s-776-pr-b-current",
+            extra={"worktree_path": "/tmp/repo-pr-b"},
+        )
+        return ticket
+
+    def test_ships_invoking_branch_not_stale_first_worktree(self) -> None:
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/b"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # The intended PR-B branch is pushed — NOT the stale PR-A row.
+        push.assert_called_once_with(
+            repo="/tmp/repo-pr-b", remote="origin", branch="s-776-pr-b-current", ship_opens_pr=True
+        )
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "s-776-pr-b-current"
+        assert spec.repo == "/tmp/repo-pr-b"
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == ["https://example.com/mr/b"]
+        # The transient resolution hint is cleared after use.
+        assert "ship_invoking_branch" not in ticket.extra
+
+    def test_refuses_when_resolved_branch_already_merged(self) -> None:
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-pr-a-merged"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "merged" in result.detail.lower()
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def _single_repo_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/777")
+        for branch in ("s-777-first", "s-777-later"):
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path="/tmp/repo-only",
+                branch=branch,
+                extra={"worktree_path": "/tmp/repo-only"},
+            )
+        return ticket
+
+    def test_multi_repo_with_no_invoking_branch_refuses_instead_of_guessing(self) -> None:
+        """Across repos ``first()`` is a guess — the ship names the ambiguity."""
+        ticket = self._multi_worktree_ticket()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "spans 2 repos" in result.detail
+        push.assert_not_called()
+
+    def test_multi_repo_invoking_branch_with_no_matching_row_refuses(self) -> None:
+        """A pruned row must not silently demote the ship to another repo."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-776-branch-with-no-row"}
+        ticket.save(update_fields=["extra"])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "s-776-branch-with-no-row" in result.detail
+        push.assert_not_called()
+
+    def test_single_repo_falls_back_to_first_when_no_invoking_branch(self) -> None:
+        """Async-worker path (no CLI cwd context): the legacy arc, within ONE repo."""
+        ticket = self._single_repo_ticket()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/legacy"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo="/tmp/repo-only", remote="origin", branch="s-777-first", ship_opens_pr=True)
+
+    def test_refuses_merged_branch_when_no_invoking_hint_recorded(self) -> None:
+        """Merged-branch refusal with no ``ship_invoking_branch`` key set.
+
+        Covers ``_clear_invoking_branch`` early-exit (key absent) on the
+        async-worker / single-PR path where the resolved first() branch
+        is already merged.
+        """
+        ticket = self._multi_worktree_ticket()  # no ship_invoking_branch in extra
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=True),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "merged" in result.detail.lower()
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+
+class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
+    """#1263: ``ShipExecutor.run`` must not short-circuit on a stale prior URL.
+
+    Reused-ticket / multi-workstream flow: one ticket spans several PRs,
+    each on its own branch. The first workstream records its URL on
+    ``extra['pr_urls']``; a second workstream then invokes ship on a
+    different branch. The legacy short-circuit returned the first
+    workstream's URL on truthiness alone — the new branch was never
+    pushed and no PR was opened, yet ``pr create --sync`` reported
+    success and the FSM advanced to ``REVIEW_REQUESTED``.
+
+    The guard: when ``ship_invoking_branch`` names a branch whose URL is
+    not the one recorded for that branch, the runner must proceed to
+    push and open a new PR for the invoking branch.
+    """
+
+    def _multi_worktree_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1263")
+        # Workstream A (already shipped; URL on the ticket).
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-1263-a",
+            branch="s-1263-pr-a-shipped",
+            extra={"worktree_path": "/tmp/repo-1263-a"},
+        )
+        # Workstream B (current; needs its own PR).
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-1263-b",
+            branch="s-1263-pr-b-current",
+            extra={"worktree_path": "/tmp/repo-1263-b"},
+        )
+        return ticket
+
+    def test_does_not_short_circuit_when_prior_url_is_for_a_different_branch(self) -> None:
+        """Stale ``pr_urls`` from workstream A must not skip workstream B."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {
+            "pr_urls": ["https://example.com/pr/a-shipped"],
+            "ship_invoking_branch": "s-1263-pr-b-current",
+        }
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/b-new"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        # The runner must push the current invoking branch and open a new PR —
+        # NOT silently return the stale workstream-A URL.
+        assert result.ok is True
+        assert result.detail == "https://example.com/pr/b-new"
+        push.assert_called_once_with(
+            repo="/tmp/repo-1263-b", remote="origin", branch="s-1263-pr-b-current", ship_opens_pr=True
+        )
+        host.create_pr.assert_called_once()
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "s-1263-pr-b-current"
+        ticket.refresh_from_db()
+        # Both URLs are recorded; the new one is appended (not replacing the prior).
+        assert "https://example.com/pr/a-shipped" in ticket.extra["pr_urls"]
+        assert "https://example.com/pr/b-new" in ticket.extra["pr_urls"]
+
+    def test_short_circuits_when_current_branch_already_has_pr_recorded(self) -> None:
+        """Idempotent retry: same branch + URL already mapped ⇒ short-circuit.
+
+        The guard rail must NOT regress the original idempotency: a retry
+        of ship on the SAME workstream (the recorded URL is for this
+        branch) must still short-circuit and return the recorded URL.
+        """
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {
+            "pr_urls": ["https://example.com/pr/b-already"],
+            "pr_url_by_branch": {"s-1263-pr-b-current": "https://example.com/pr/b-already"},
+            "ship_invoking_branch": "s-1263-pr-b-current",
+        }
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        assert result.detail == "https://example.com/pr/b-already"
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_records_pr_url_by_branch_for_each_workstream(self) -> None:
+        """After a successful ship, the URL is recorded against its branch."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-1263-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/b-new"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+        ):
+            ShipExecutor(ticket).run()
+
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"]["s-1263-pr-b-current"] == "https://example.com/pr/b-new"
+
+    def test_persists_the_pull_request_arbiter_row_for_the_pr_it_opened(self) -> None:
+        """#3840: the row every merge-time consumer reads is written when the PR opens.
+
+        ``PullRequest`` is the PR-facts arbiter the merge keystone, the board
+        reconcile and the merge-evidence gate all resolve through. Recording the
+        URL only in ``extra`` left the pipeline's own PRs with no row, so the
+        keystone had no ticket to advance when they merged.
+        """
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-1263-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/acme/widget/pull/77"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+        ):
+            ShipExecutor(ticket).run()
+
+        row = PullRequest.objects.get(url="https://github.com/acme/widget/pull/77")
+        assert row.ticket == ticket
+        assert row.repo == "acme/widget"
+        assert row.iid == "77"
+        assert PullRequest.objects.owning_ticket(slug="acme/widget", pr_id=77) == ticket
+
+
+class TestShipReconcilesWorktreeBranch(TestCase):
+    """#1519: ship pushes the worktree's ACTUAL git branch and reconciles the DB.
+
+    ``workspace ticket <N>`` mints ``Worktree.branch`` as ``<N>-ticket``;
+    the agent renames the git branch in the worktree to the
+    ``<N>-<type>-<desc>`` convention. ``ShipExecutor`` pushed the
+    DB-recorded (stale) ref and left the worktree↔branch DB mapping
+    desynced. The fix resolves the current git branch, pushes that, and
+    reconciles ``Worktree.branch`` (and ``Ticket.extra['branch']``) — but
+    only for a real branch that belongs to this ticket; a detached HEAD or
+    an unrelated branch falls back to the recorded branch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_repo(self, tmp_path: Path) -> None:
+        self.repo = tmp_path / "repo"
+        self.repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo)
+        _run_git("config", "user.email", "t@t", cwd=self.repo)
+        _run_git("config", "user.name", "t", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo)
+
+    def _checkout(self, branch: str) -> None:
+        (self.repo / "f.txt").write_text(branch, encoding="utf-8")
+        _run_git("checkout", "-q", "-b", branch, cwd=self.repo)
+        _run_git("add", "f.txt", cwd=self.repo)
+        _run_git("commit", "-q", "-m", f"work on {branch}", cwd=self.repo)
+
+    def _ticket(self, *, recorded_branch: str, extra: dict | None = None) -> Ticket:
+        merged = {"branch": recorded_branch, **(extra or {})}
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/1519",
+            extra=merged,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(self.repo),
+            branch=recorded_branch,
+            extra={"worktree_path": str(self.repo)},
+        )
+        return ticket
+
+    def _host(self) -> MagicMock:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/1519"}
+        host.current_user.return_value = "souliane"
+        return host
+
+    def test_pushes_actual_branch_and_reconciles_db_on_drift(self) -> None:
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # (a) pushes the REAL branch, not the stale recorded one.
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo", ship_opens_pr=True)
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "1519-fix-foo"
+        # (b) the DB rows are reconciled to the current branch.
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-fix-foo"
+        assert ticket.extra["branch"] == "1519-fix-foo"
+
+    def test_reconcile_keeps_the_invoking_branch_key_in_step(self) -> None:
+        """A key left naming the OLD branch matches no row on the NEXT resolution.
+
+        The async ``execute_ship`` worker and the CLEAR preflight both re-resolve
+        from ``extra['ship_invoking_branch']`` after this write, in processes that
+        never saw the operator's cwd — so a stale key sends them to another repo's
+        row, or (on a multi-repo ticket) to a refusal.
+        """
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket", extra={"ship_invoking_branch": "1519-ticket"})
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/1519-other-repo",
+            branch="1519-other",
+            extra={"worktree_path": "/tmp/1519-other-repo"},
+        )
+        worktree = ticket.worktrees.order_by("pk").first()
+        assert worktree is not None
+
+        resolve_and_reconcile_branch(ticket, worktree, str(self.repo))
+
+        ticket.refresh_from_db()
+        assert ticket.extra["ship_invoking_branch"] == "1519-fix-foo"
+        assert resolve_ship_worktree(ticket, ticket.extra) == worktree
+
+    def test_no_drift_leaves_db_unchanged(self) -> None:
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-fix-foo")
+        host = self._host()
+        worktree = ticket.worktrees.get()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
+            patch.object(Worktree, "save", autospec=True) as wt_save,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo", ship_opens_pr=True)
+        # No spurious reconcile write when the names already agree.
+        wt_save.assert_not_called()
+        worktree.refresh_from_db()
+        assert worktree.branch == "1519-fix-foo"
+
+    def test_detached_head_falls_back_to_recorded_branch(self) -> None:
+        self._checkout("1519-fix-foo")
+        sha = subprocess.run(
+            [_GIT, "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        _run_git("checkout", "-q", sha, cwd=self.repo)  # detached HEAD
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # Falls back to the recorded branch — never pushes the bare SHA / HEAD.
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket", ship_opens_pr=True)
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-ticket"
+
+    def test_unrelated_branch_falls_back_and_is_not_pushed(self) -> None:
+        self._checkout("9999-someone-elses-branch")  # not prefixed 1519-
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch") as push,
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket", ship_opens_pr=True)
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "1519-ticket"
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-ticket"
+
+    def test_redelivery_adopts_recorded_url_after_reconcile(self) -> None:
+        """#1522 idempotency holds: a second run adopts the recorded PR url.
+
+        The first run reconciles the branch and records the url under the
+        ACTUAL branch; the redelivered job resolves the same branch and
+        short-circuits on the recorded url instead of re-creating the PR.
+        """
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        patches = (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            first = ShipExecutor(ticket).run()
+        assert first.ok is True
+        assert host.create_pr.call_count == 1
+
+        ticket.refresh_from_db()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            second = ShipExecutor(ticket).run()
+
+        assert second.ok is True
+        assert second.detail == "https://example.com/pr/1519"
+        # No second PR — the recorded url for the reconciled branch is adopted.
+        assert host.create_pr.call_count == 1
+
+
+class TestShipResolvesBackendFromRepoHost(TestCase):
+    """#2025: ship resolves the forge from the repo's origin host.
+
+    The ship path resolved the backend via token-presence precedence
+    (GitHub first when both PATs are set), so a GitLab-hosted repo on an
+    overlay carrying both PATs ran ``gh pr create`` against a GitLab
+    remote and failed with ``Could not resolve to a Repository``. The
+    backend must derive from where the repo actually lives.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gitlab_repo(self, tmp_path: Path) -> None:
+        self.repo = tmp_path / "gl-repo"
+        self.repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo)
+        _run_git("config", "user.email", "t@t", cwd=self.repo)
+        _run_git("config", "user.name", "t", cwd=self.repo)
+        _run_git("remote", "add", "origin", "git@gitlab.com:group/repo.git", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
+        _run_git("checkout", "-q", "-b", "547-fix-foo", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
+
+    def _ticket(self) -> Ticket:
+        # A real ticket records its canonical overlay; backend selection still
+        # comes from the checkout's remote host.
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://gitlab.com/group/repo/-/issues/2025",
+            extra={"branch": "547-fix-foo"},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path=str(self.repo),
+            branch="547-fix-foo",
+            extra={"worktree_path": str(self.repo)},
+        )
+        return ticket
+
+    def test_gitlab_repo_creates_pr_via_gitlab_backend(self) -> None:
+        ticket = self._ticket()
+        overlay = MagicMock()
+        overlay.config.get_github_token.return_value = "gh-tok"
+        overlay.config.get_gitlab_token.return_value = "gl-tok"
+        overlay.config.gitlab_url = "https://gitlab.com"
+        overlay.config.code_host = ""
+
+        calls: list[str] = []
+
+        def record(name: str, url: str):
+            def _create_pr(self: object, spec: object) -> dict[str, str]:
+                calls.append(name)
+                return {"web_url": url}
+
+            return _create_pr
+
+        with (
+            patch("teatree.core.backend_factory.get_overlay", return_value=overlay),
+            patch(
+                "teatree.backends.gitlab.client.GitLabCodeHost.create_pr",
+                autospec=True,
+                side_effect=record("gitlab", "https://gitlab.com/group/repo/-/merge_requests/1"),
+            ),
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.create_pr",
+                autospec=True,
+                side_effect=record("github", "https://github.com/group/repo/pull/1"),
+            ),
+            patch("teatree.backends.gitlab.client.GitLabCodeHost.current_user", autospec=True, return_value="souliane"),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", autospec=True, return_value="souliane"),
+            # #1194: the create is verify-by-re-read confirmed against a live GET.
+            patch(
+                "teatree.backends.gitlab.client.GitLabCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
+            patch("teatree.core.runners.ship.push_branch"),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True, result.detail
+        # The PR is created via the GitLab backend — NOT GitHub (the bug:
+        # token precedence picked GitHub and ran gh against a GitLab remote).
+        assert calls == ["gitlab"]
+
+    def test_resolution_error_returns_structured_failure_before_pr_attempt(self) -> None:
+        """The central AC: a mismatched forge surfaces as a structured failure.
+
+        ``BackendResolutionError`` from the resolver must become a clean
+        ``RunnerResult(ok=False)`` — never an unhandled exception — and no
+        push or PR-create is attempted.
+        """
+        ticket = self._ticket()
+
+        with (
+            patch(
+                "teatree.core.runners.ship.code_host_for_repo_from_overlay",
+                side_effect=BackendResolutionError("repo origin resolves to the gitlab forge but no gitlab token"),
+            ),
+            patch("teatree.core.runners.ship.push_branch") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "gitlab" in result.detail
+        push.assert_not_called()
+
+
+class TestSanitizeCloseKeywords:
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("Closes #123", "Relates to #123"),
+            ("Fixes #42", "Relates to #42"),
+            ("Resolves #7", "Relates to #7"),
+            ("closes #123", "Relates to #123"),
+            ("See Closes #1 and Fixes #2", "See Relates to #1 and Relates to #2"),
+            ("Closes group/project#99", "Relates to group/project#99"),
+            (
+                "Closes https://gitlab.com/org/project/-/issues/729",
+                "Relates to https://gitlab.com/org/project/-/issues/729",
+            ),
+            (
+                "Resolves https://github.com/owner/repo/issues/10",
+                "Relates to https://github.com/owner/repo/issues/10",
+            ),
+            # #1090: the colon separator GitLab's default issue_closing_pattern
+            # accepts ("Closes: #N" auto-closes on merge) must be rewritten too.
+            ("Closes: #1", "Relates to #1"),
+            ("closes:#1", "Relates to #1"),
+            ("Fixes:  #1", "Relates to #1"),
+            ("Closes: group/project#99", "Relates to group/project#99"),
+            (
+                "Resolves: https://gitlab.com/org/project/-/issues/729",
+                "Relates to https://gitlab.com/org/project/-/issues/729",
+            ),
+            # #1090: past-tense verbs (the gate already rejected these; the
+            # sanitizer must match the unified superset so the two stay in lockstep).
+            ("Closed #5", "Relates to #5"),
+            ("Fixed: #6", "Relates to #6"),
+            ("No ticket ref here", "No ticket ref here"),
+            ("", ""),
+            # Negatives — must stay unchanged (no new false positives).
+            ("Relates to #1", "Relates to #1"),
+            ("Refs #1", "Refs #1"),
+            ("See #1", "See #1"),
+            # The \b word boundary keeps "discloses" from matching "closes".
+            ("This discloses #1 in a sentence", "This discloses #1 in a sentence"),
+            # Space BEFORE the colon is intentionally NOT matched: GitLab's real
+            # issue_closing_pattern is `(:?) +`, so `Closes : #1` does not auto-close.
+            ("Closes : #1", "Closes : #1"),
+        ],
+    )
+    def test_replaces_close_keywords_when_close_ticket_false(self, description: str, expected: str) -> None:
+        assert sanitize_close_keywords(description, close_ticket=False) == expected
+
+    def test_leaves_description_unchanged_when_close_ticket_true(self) -> None:
+        assert sanitize_close_keywords("Closes #123", close_ticket=True) == "Closes #123"
+
+
+class TestShouldCloseTicket:
+    """The auto-close disposition resolver (#873).
+
+    Default = close-on-merge when the overlay setting is enabled.
+    Suppression is the exception: only an explicit ``more_prs_coming``
+    opt-out (declared partial / umbrella with remaining scope) keeps the
+    issue open.
+    """
+
+    def test_setting_enabled_standalone_full_resolve_closes(self) -> None:
+        # (a) setting True + standalone non-umbrella full-resolve PR ⇒ close.
+        assert should_close_ticket({}, setting_enabled=True) is True
+
+    def test_setting_enabled_none_extra_closes(self) -> None:
+        # Orphan-branch path with no ticket extra still close-on-merge.
+        assert should_close_ticket(None, setting_enabled=True) is True
+
+    def test_setting_enabled_explicit_followup_opt_out_keeps_open(self) -> None:
+        # (b) umbrella / declared-partial PR ⇒ issue stays open.
+        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=True) is False
+
+    def test_setting_disabled_never_closes(self) -> None:
+        # (c) setting False ⇒ no auto-close regardless of opt-out flag.
+        assert should_close_ticket({}, setting_enabled=False) is False
+        assert should_close_ticket({"more_prs_coming": True}, setting_enabled=False) is False
+
+    def test_followup_flag_falsey_value_still_closes(self) -> None:
+        # An explicitly-false / absent opt-out keeps the close-on-merge default.
+        assert should_close_ticket({"more_prs_coming": False}, setting_enabled=True) is True
+
+
+class TestShipExecutorHonorsAutoCloseSetting(TestCase):
+    """End-to-end: the PR description the ship path sends to the code host.
+
+    Proves the setting is wired through ``_build_pr_spec`` — the exact
+    regression: a True setting + standalone PR must keep ``Closes #N`` so
+    the platform auto-closes on merge; an explicit ``more_prs_coming``
+    opt-out (umbrella/partial) must rewrite to ``Relates to``.
+    """
+
+    def _ticket_with_extra(self, extra: dict) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/873",
+            extra=extra,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo873",
+            branch="fix/873",
+            extra={"worktree_path": "/tmp/repo873"},
+        )
+        return ticket
+
+    def _capture_pr_description(self, ticket: Ticket, *, setting_enabled: bool) -> str:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
+        host.current_user.return_value = "souliane"
+        cfg = MagicMock()
+        cfg.config.mr_close_ticket = setting_enabled
+        cfg.config.pr_auto_labels = []
+        # The default title hook returns the subject unchanged; mirror that so
+        # this auto-close test exercises sanitization, not title generation.
+        cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
+        with (
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=cfg),
+            patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("fix(ship): honor auto-close", "Closes #873"),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+        ):
+            ShipExecutor(ticket).run()
+        return host.create_pr.call_args[0][0].description
+
+    def test_setting_true_standalone_keeps_closes_keyword(self) -> None:
+        ticket = self._ticket_with_extra({})
+        description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Closes #873" in description
+        assert "Relates to #873" not in description
+
+    def test_setting_true_umbrella_partial_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({"more_prs_coming": True})
+        description = self._capture_pr_description(ticket, setting_enabled=True)
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
+
+    def test_setting_false_rewrites_to_relates(self) -> None:
+        ticket = self._ticket_with_extra({})
+        description = self._capture_pr_description(ticket, setting_enabled=False)
+        assert "Relates to #873" in description
+        assert "Closes #873" not in description
+
+
+class TestShipExecutorHonorsTitleOverride(TestCase):
+    """The ship path PRODUCES the title via the shared ``resolve_pr_title``.
+
+    A title pinned on ``extra['pr_title_override']`` is what ships — the same
+    title ``ship_preview`` previews and the preflight validates. This is the
+    ship-side half of the title-resolution parity; ``test_pr_preview`` covers
+    the preview/preflight side.
+    """
+
+    def _ticket_with_extra(self, extra: dict) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/298",
+            extra=extra,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo298",
+            branch="298-fix-thing",
+            extra={"worktree_path": "/tmp/repo298"},
+        )
+        return ticket
+
+    def _capture_pr_title(self, ticket: Ticket) -> str:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
+        host.current_user.return_value = "souliane"
+        cfg = MagicMock()
+        cfg.config.mr_close_ticket = True
+        cfg.config.pr_auto_labels = []
+        cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
+        with (
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.get_overlay_for_ticket", return_value=cfg),
+            patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
+            patch("teatree.core.runners.ship.branch_is_landed", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("chore: unrelated subject (#298)", "Body."),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+        ):
+            ShipExecutor(ticket).run()
+        return host.create_pr.call_args[0][0].title
+
+    def test_pr_title_override_is_the_shipped_title(self) -> None:
+        ticket = self._ticket_with_extra({"pr_title_override": "fix(scope): pinned title (#298)"})
+        title = self._capture_pr_title(ticket)
+        assert title == "fix(scope): pinned title (#298)"
+
+    def test_no_override_falls_back_to_subject(self) -> None:
+        ticket = self._ticket_with_extra({})
+        title = self._capture_pr_title(ticket)
+        assert title == "chore: unrelated subject (#298)"
+
+
+class TestOverlayPrLabels:
+    def test_default_overlay_returns_empty(self) -> None:
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            assert overlay_pr_labels(get_overlay()) == []
+
+    def test_overlay_with_string_labels(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_labels = "label-a, label-b"
+        assert overlay_pr_labels(mock) == ["label-a", "label-b"]
+
+    def test_non_iterable_returns_empty(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_labels = 42
+        assert overlay_pr_labels(mock) == []
+
+
+class TestOverlayPrReviewers:
+    """The standing reviewer policy is overlay CONFIG, read through one normalizer."""
+
+    def test_default_overlay_returns_empty(self) -> None:
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            assert overlay_pr_reviewers(get_overlay()) == []
+
+    def test_overlay_with_string_reviewers(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_reviewers = "alice, bob"
+        assert overlay_pr_reviewers(mock) == ["alice", "bob"]
+
+    def test_non_iterable_returns_empty(self) -> None:
+        mock = MagicMock()
+        mock.config.pr_auto_reviewers = 42
+        assert overlay_pr_reviewers(mock) == []
+
+
+class TestPrReviewersForRemote:
+    """The policy is SCOPED to a repo whose MRs the owner did not author.
+
+    ``pr_auto_reviewers`` makes the owner an independent checker of a bot's MR.
+    Applied where the overlay writes as the owner himself it would set him as
+    reviewer of his own MR — colleague-visible on the product repos, and the
+    exact assignment ``handle_block_self_reviewer_assign`` exists to refuse.
+    """
+
+    @staticmethod
+    def _overlay(*, reviewers: list[str], distinct: bool) -> MagicMock:
+        overlay = MagicMock()
+        overlay.config.pr_auto_reviewers = reviewers
+        overlay.config.acts_as_distinct_identity_on.return_value = distinct
+        return overlay
+
+    def test_bot_authored_remote_carries_the_policy(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=True)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git") == ["owner"]
+
+    def test_owner_authored_remote_carries_no_reviewer(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=False)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/product.git") == []
+
+    def test_the_remote_is_the_one_the_scope_is_asked_about(self) -> None:
+        overlay = self._overlay(reviewers=["owner"], distinct=True)
+
+        pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git")
+
+        overlay.config.acts_as_distinct_identity_on.assert_called_once_with("git@gitlab.com:org/factory.git")
+
+    def test_no_configured_policy_stays_empty_on_a_bot_remote(self) -> None:
+        overlay = self._overlay(reviewers=[], distinct=True)
+
+        assert pr_reviewers_for_remote(overlay, "git@gitlab.com:org/factory.git") == []
+
+
+class TestShipResolvesOverlayFromTicket(TestCase):
+    """B09_core_intake_review-2: the spec is built from the TICKET's overlay.
+
+    The queued FSM worker runs with every installed overlay registered, so an
+    ambient ``get_overlay()`` is ambiguous there — and when it does resolve it
+    resolves to whichever overlay the process happens to carry, not the one
+    shipping this ticket.
+    """
+
+    def _ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="beta", issue_url="https://github.com/beta/core/issues/5")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="beta",
+            repo_path="/tmp/repo-beta",
+            branch="fix/5",
+            extra={"worktree_path": "/tmp/repo-beta"},
+        )
+        return ticket
+
+    @staticmethod
+    def _overlays(*, bot_authored: bool) -> tuple[MagicMock, MagicMock]:
+        beta = MagicMock()
+        beta.config.mr_close_ticket = True
+        beta.config.pr_auto_labels = ["beta-label"]
+        beta.config.pr_auto_reviewers = ["beta-reviewer"]
+        beta.config.acts_as_distinct_identity_on.return_value = bot_authored
+        beta.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
+        beta.metadata.get_required_description_sections.return_value = []
+        beta.metadata.get_description_section_defaults.return_value = {}
+        alpha = MagicMock()
+        alpha.config.pr_auto_labels = ["alpha-label"]
+        alpha.config.pr_auto_reviewers = ["alpha-reviewer"]
+        alpha.config.acts_as_distinct_identity_on.return_value = bot_authored
+        return alpha, beta
+
+    @staticmethod
+    def _ship(ticket: Ticket, overlays: dict[str, MagicMock], remote: str) -> MagicMock:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/beta/core/pull/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("fix(beta): a change", "Body."),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+            patch("teatree.core.runners.ship.git.remote_url", return_value=remote),
+        ):
+            ShipExecutor(ticket).run()
+        return host
+
+    def test_spec_carries_the_ticket_overlays_labels_and_reviewers_not_the_ambient_ones(self) -> None:
+        alpha, beta = self._overlays(bot_authored=True)
+
+        host = self._ship(self._ticket(), {"alpha": alpha, "beta": beta}, "git@gitlab.com:beta/core.git")
+
+        spec = host.create_pr.call_args[0][0]
+        assert spec.labels == ["beta-label"]
+        assert spec.reviewers == ["beta-reviewer"]
+
+    def test_an_owner_authored_repo_gets_no_reviewer_from_the_standing_policy(self) -> None:
+        """The user-visible defect: the owner set as reviewer of his OWN product MR.
+
+        ``pr_auto_reviewers`` is configured overlay-wide, but the credential that
+        authors the MR is per-repo. On every repo written under the overlay-wide
+        credential the author IS the owner, so the policy must withhold — the
+        labels still apply, which is what proves the spec was built at all.
+        """
+        alpha, beta = self._overlays(bot_authored=False)
+
+        host = self._ship(self._ticket(), {"alpha": alpha, "beta": beta}, "git@gitlab.com:beta/product.git")
+
+        spec = host.create_pr.call_args[0][0]
+        assert spec.labels == ["beta-label"]
+        assert spec.reviewers == []
+
+
+class TestShipPrUrlRepoMismatch(TestCase):
+    """#1120 (a): the PR URL must point at the expected repo.
+
+    ``host.create_pr`` returning a syntactically-valid URL for the *wrong*
+    repo (e.g. a cross-project CI mirror) must surface as ``ok=False`` and
+    must NOT advance the FSM to ``review_requested`` or record a ``pr_urls`` entry.
+    """
+
+    _EXPECTED_SLUG = "expected-org/expected-repo"
+    _EXPECTED_URL = "https://github.com/expected-org/expected-repo/pull/42"
+    _WRONG_URL = "https://github.com/other-org/other-repo/pull/1"
+
+    def _ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/expected-repo",
+            branch="feat-y",
+            extra={"worktree_path": "/tmp/expected-repo"},
+        )
+        return ticket
+
+    def _run_ship(self, ticket: Ticket, pr_url: str) -> RunnerResult:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": pr_url}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: y", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=self._EXPECTED_SLUG),
+        ):
+            return ShipExecutor(ticket).run()
+
+    def test_returns_failure_when_pr_url_targets_wrong_repo(self) -> None:
+        """PR URL for a different repo → ``ok=False``, FSM does not advance."""
+        ticket = self._ticket_with_worktree()
+
+        result = self._run_ship(ticket, self._WRONG_URL)
+
+        assert result.ok is False
+        assert self._EXPECTED_SLUG in result.detail
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_returns_success_when_pr_url_matches_expected_repo(self) -> None:
+        """PR URL containing the expected slug → ``ok=True``, URL recorded."""
+        ticket = self._ticket_with_worktree()
+
+        result = self._run_ship(ticket, self._EXPECTED_URL)
+
+        assert result.ok is True
+        assert result.detail == self._EXPECTED_URL
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == [self._EXPECTED_URL]
+
+
+def _tmp_dir(case: TestCase) -> Path:
+    """A temp dir bound to *case*'s lifetime — ``TestCase`` has no ``tmp_path`` fixture."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    return Path(tmp.name)
+
+
+def _make_repo_with_origin(tmp_path: Path, *, branch: str) -> str:
+    """A real clone on *branch*, with a real bare ``origin`` it has not pushed to yet."""
+    origin = tmp_path / "origin.git"
+    subprocess.run([_GIT, "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    _run_git("init", "-b", "main", cwd=clone)
+    _run_git("config", "user.email", "dev@example.com", cwd=clone)
+    _run_git("config", "user.name", "Dev", cwd=clone)
+    _run_git("remote", "add", "origin", str(origin), cwd=clone)
+    (clone / "README.md").write_text("base\n")
+    _run_git("add", "README.md", cwd=clone)
+    _run_git("commit", "-m", "chore: base", cwd=clone)
+    _run_git("push", "-u", "origin", "main", cwd=clone)
+    _run_git("checkout", "-b", branch, cwd=clone)
+    (clone / "feature.txt").write_text("work\n")
+    _run_git("add", "feature.txt", cwd=clone)
+    _run_git("commit", "-m", "feat: the branch's own work", cwd=clone)
+    return str(clone)
+
+
+def _merge_main_into_head(repo: str) -> None:
+    """Advance ``origin/main`` and merge it in, so HEAD is the merge commit ``pr create`` makes."""
+    _run_git("checkout", "main", cwd=Path(repo))
+    (Path(repo) / "other.txt").write_text("moved on\n")
+    _run_git("add", "other.txt", cwd=Path(repo))
+    _run_git("commit", "-m", "chore: main moved on", cwd=Path(repo))
+    _run_git("push", "origin", "main", cwd=Path(repo))
+    _run_git("checkout", "-", cwd=Path(repo))
+    _run_git("merge", "--no-ff", "--no-edit", "main", cwd=Path(repo))
+
+
+class TestShipPushSuppliesTheForgeCredential(TestCase):
+    """#4103: the ship path pushed with a raw ``git push`` carrying no forge credential.
+
+    ``t3 push`` resolves the credential through ``forge_push`` and hands it to git
+    as ``GH_TOKEN`` env; the ship path did not, so ``pr create --sync`` died on
+    git's own ``could not read Username`` in exactly the venues the credential
+    chain exists for.
+    """
+
+    def _ticket_for(self, repo: str, branch: str) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4103")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo,
+            branch=branch,
+            extra={"worktree_path": repo},
+        )
+        return ticket
+
+    def _ship(self, ticket: Ticket) -> tuple[RunnerResult, MagicMock, list[dict[str, str]]]:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1"}
+        host.current_user.return_value = "souliane"
+        push_envs: list[dict[str, str]] = []
+        real_popen = subprocess.Popen
+
+        def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any) -> subprocess.Popen[str]:
+            if "push" in cmd:
+                push_envs.append(dict(env or {}))
+            return real_popen(cmd, env=env, **kwargs)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch(
+                "teatree.core.forge_push.resolve_repo_token",
+                return_value=ForgeTokenResolution("github_token", "test", ForgeTokenState.TOKEN, token="routed-token"),
+            ),
+            patch("teatree.utils.run.subprocess.Popen", side_effect=spy),
+        ):
+            return ShipExecutor(ticket).run(), host, push_envs
+
+    def test_push_carries_the_resolved_credential_git_alone_cannot_see(self) -> None:
+        """The owner-routed DB token is handed to git under its explicit key."""
+        repo = _make_repo_with_origin(_tmp_dir(self), branch="4103-feature")
+        ticket = self._ticket_for(repo, "4103-feature")
+
+        result, _host, push_envs = self._ship(ticket)
+
+        assert result.ok is True
+        assert push_envs, "the ship path never ran a git push"
+        assert all("GH_TOKEN" in env for env in push_envs)
+
+    def test_failed_push_is_a_structured_refusal_and_opens_no_pr(self) -> None:
+        """An unreachable remote must name its failure, not raise git's raw error."""
+        tmp = _tmp_dir(self)
+        repo = _make_repo_with_origin(tmp, branch="4103-feature")
+        _run_git("remote", "set-url", "origin", str(tmp / "gone.git"), cwd=Path(repo))
+        ticket = self._ticket_for(repo, "4103-feature")
+
+        result, host, _envs = self._ship(ticket)
+
+        assert result.ok is False
+        assert "push" in result.detail
+        host.create_pr.assert_not_called()
+
+
+class TestShipTitleSkipsMergeCommits(TestCase):
+    """#4103: ``pr create``'s own auto-merge left a merge commit at the tip.
+
+    The title was then derived from ``Merge branch 'main' …``, which the overlay's
+    own conventional-commit validator rejects — a command generating a title its
+    sibling validator refuses.
+    """
+
+    def test_title_comes_from_the_branch_s_own_last_real_commit(self) -> None:
+        repo = _make_repo_with_origin(_tmp_dir(self), branch="4103-feature")
+        _merge_main_into_head(repo)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4103")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo,
+            branch="4103-feature",
+            extra={"worktree_path": repo},
+        )
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        (spec,) = host.create_pr.call_args.args
+        assert spec.title == "feat: the branch's own work"
+
+
+class _HookHost:
+    """The forge the pre-push ``ensure-pr`` hook opens its PR against."""
+
+    URL = "https://github.com/souliane/teatree/pull/4305"
+
+    def current_user(self) -> str:
+        return "souliane"
+
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        return True
+
+    def create_pr(self, spec):
+        return {"web_url": self.URL}
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        return PrOpenState.OPEN
+
+
+class TestPostPushRefusalLeavesAReconcilableState(TestCase):
+    """#4305: a refusal reached AFTER the push must not orphan the PR the push opened.
+
+    A pre-push hook that ignores the ship marker (a branch still on the pre-marker hook
+    config) runs ``ensure-pr`` and opens a PR for the branch. Every refusal after that point — the post-push fleet-claim
+    fence here, the PR-open half's no-URL / wrong-slug / 404 returns — returns
+    ``ok=False`` for a ship whose PR is live on the forge. Unrecorded, that PR was
+    invisible to the retry, which collided with ``already exists``.
+    """
+
+    BRANCH = "fix/4305-post-push"
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def _repo(self) -> Path:
+        origin = self._tmp_path / "origin.git"
+        subprocess.run([_GIT, "init", "--bare", str(origin)], check=True, capture_output=True)
+        work = self._tmp_path / "work"
+        subprocess.run([_GIT, "init", "-b", "main", str(work)], check=True, capture_output=True)
+        _run_git("config", "user.email", "agent@example.com", cwd=work)
+        _run_git("config", "user.name", "agent", cwd=work)
+        _run_git("remote", "add", "origin", str(origin), cwd=work)
+        (work / "README.md").write_text("seed\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "seed", cwd=work)
+        _run_git("push", "-u", "origin", "main", cwd=work)
+        _run_git("checkout", "-b", self.BRANCH, cwd=work)
+        (work / "fix.py").write_text("x = 1\n")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-m", "fix(core): own commit", cwd=work)
+        return work
+
+    def test_the_hook_opened_pr_is_on_the_ticket_after_a_post_push_refusal(self) -> None:
+        repo = self._repo()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/souliane/teatree/issues/4305")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=repo.name,
+            branch=self.BRANCH,
+            extra={"worktree_path": str(repo)},
+        )
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda repo_path: _HookHost())
+        ship_host = MagicMock()
+        ship_host.current_user.return_value = "souliane"
+
+        def fire_pre_push_hook(*, repo: str, remote: str, branch: str, ship_opens_pr: bool):
+            create_or_defer_pr(repo, branch)
+            return MagicMock(ok=True)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=ship_host),
+            patch("teatree.core.runners.ship.push_branch", side_effect=fire_pre_push_hook),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("fix(core): own commit", "")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch.object(
+                ShipExecutor,
+                "_fleet_claim_lost",
+                side_effect=[None, RunnerResult(ok=False, detail="fleet claim lost")],
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        ship_host.create_pr.assert_not_called()
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"] == {self.BRANCH: _HookHost.URL}

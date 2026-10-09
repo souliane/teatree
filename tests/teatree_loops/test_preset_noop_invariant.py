@@ -1,0 +1,69 @@
+"""The empty-table fail-open invariant at the loop-admission level.
+
+With no presets, no active schedule and no override, nothing can resolve a posture at all
+— so admission FAILS OPEN and every loop runs unless a hold or a manual override refuses
+it. A NON-activated preset (a row with entries but no override / active schedule) never
+changes admission; only activation does. The direction matters: a resolution that cannot
+answer must not mask the fleet, which is what an empty TOTAL table would say if it were
+read as an answer.
+"""
+
+import datetime as dt
+
+import django.test
+from django.utils import timezone
+
+from teatree.core.models import Loop, LoopState, Mode
+from teatree.loop.loop_state_db import loop_state_admits
+from teatree.loops.loop_table import admitted_loop_names
+from teatree.loops.registry import iter_loops
+from teatree.loops.seed import seed_default_loops_and_prompts
+
+
+def _interval_loop_names() -> list[str]:
+    # Registry loops that are due immediately when never run (interval, not daily,
+    # not off_live_tick) — the set admission can actually return.
+    return [loop.name for loop in iter_loops() if not loop.off_live_tick][:6]
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestEmptyTableNoOpInvariant(django.test.TestCase):
+    def setUp(self) -> None:
+        # Ensure the registry Loop rows exist in both migration modes, then toggle a
+        # representative spread WITHOUT recreating rows (an update never trips the
+        # prompt-xor-script constraint a fresh create would on a prompt-backed loop).
+        seed_default_loops_and_prompts()
+        Mode.objects.all().delete()
+        self.names = _interval_loop_names()
+        if self.names:
+            Loop.objects.filter(name=self.names[0]).update(
+                enabled=False, override_reason="test override", last_run_at=None
+            )
+        if len(self.names) >= 2:
+            LoopState.objects.pause(self.names[1])
+
+    def _base_expected(self, now: dt.datetime) -> set[str]:
+        held = set(LoopState.objects.held_names())
+        due_registry = {loop.name for loop in iter_loops() if not loop.off_live_tick}
+        rows = {row.name: row for row in Loop.objects.all()}
+        return {
+            name
+            for name in self.names
+            if name in due_registry
+            and (row := rows.get(name)) is not None
+            and row.is_due(now)
+            and loop_state_admits(held=name in held, manual=row.enabled, preset_state=True)
+        }
+
+    def test_admission_matches_the_fail_open_verdict(self) -> None:
+        now = timezone.now()
+        assert set(admitted_loop_names(now)) & set(self.names) == self._base_expected(now)
+
+    def test_non_activated_preset_does_not_change_admission(self) -> None:
+        now = timezone.now()
+        before = set(admitted_loop_names(now)) & set(self.names)
+        # A preset that would force everything off — but it is NOT activated
+        # (no override, no active schedule), so admission is unchanged.
+        Mode.objects.update_or_create(name="off", defaults={"entries": dict.fromkeys(self.names, False)})
+        after = set(admitted_loop_names(now)) & set(self.names)
+        assert after == before == self._base_expected(now)

@@ -1,0 +1,630 @@
+import re
+from datetime import datetime
+from functools import partial
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
+from django.db import models, transaction
+from django.db.models import Q
+from django.utils import timezone
+from django_fsm import FSMField, TransitionNotAllowed, can_proceed
+
+from teatree.core.claim_liveness import RELEASED_CLAIM
+from teatree.core.managers import TaskManager
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
+from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.external_delivery import not_under_external_delivery_q
+from teatree.core.models.plan_decision import has_plan_decision, refuse_unplanned_mint
+from teatree.core.models.session import Session
+from teatree.core.models.task_claim import claim as _claim_task
+from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
+from teatree.core.models.task_claim import fail as _fail_task
+from teatree.core.models.task_claim import fail_claimed as _fail_claimed_task
+from teatree.core.models.task_claim import renew_lease as _renew_task_lease
+from teatree.core.models.task_claim import window_parked as _window_parked
+from teatree.core.models.task_phase_disposition import (
+    AUTHOR_PHASE_ADVANCES,
+    escalate_unmatched_phase_transition,
+    transition_source_states,
+)
+from teatree.core.models.ticket import Ticket
+from teatree.core.telemetry.admission import record_lifecycle_transition
+
+if TYPE_CHECKING:
+    from teatree.core.models.task_attempt import TaskAttempt
+
+#: Every column a claim writes, so the ``update_fields`` lists that release one cannot drift
+#: from :meth:`Task._clear_claim` nor from the compare-and-swap releases that splat
+#: :data:`~teatree.core.claim_liveness.RELEASED_CLAIM` — a released claim that kept a stale
+#: ``owner_pid`` would report a dead owner as the executor of whoever holds the row next.
+CLAIM_FIELDS = tuple(RELEASED_CLAIM)
+
+#: A server-held conversation id ``claude_sdk`` resumes by; a metered run's bare hex id names no such conversation.
+SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class Task(models.Model):
+    attempts: "models.Manager[TaskAttempt]"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        CLAIMED = "claimed", "Claimed"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+        @classmethod
+        def active(cls) -> frozenset["Task.Status"]:
+            """The states a task is still being worked in — the active half of the partition."""
+            return frozenset({cls.PENDING, cls.CLAIMED})
+
+        @classmethod
+        def terminal(cls) -> frozenset["Task.Status"]:
+            """The states a task is finished in — the terminal half of the partition."""
+            return frozenset({cls.COMPLETED, cls.FAILED})
+
+    class SessionContinuation(models.TextChoices):
+        """Which conversation a dispatch of this task carries — a decision, never a guess.
+
+        Phase equality answered neither half: ``spawn_child_tasks`` mints ordinary
+        same-phase children that must start fresh, and a retry that reopens the SAME row
+        keeps its original ``parent_task``, so no parent-chain walk reaches its own attempt.
+        """
+
+        FRESH = "fresh", "Fresh"
+        PARENT = "parent", "Resume parent"
+        SELF = "self", "Resume self"
+
+    ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="tasks")
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="tasks")
+    parent_task = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="child_tasks",
+    )
+    subject = models.CharField(max_length=120, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    phase = models.CharField(max_length=64, blank=True)
+    execution_reason = models.TextField(blank=True)
+    session_continuation = models.CharField(
+        max_length=8,
+        choices=SessionContinuation.choices,
+        default=SessionContinuation.FRESH,
+        db_default=SessionContinuation.FRESH,
+    )
+    # #3957: why this task FAILED, as distinct from ``execution_reason`` (why it was
+    # SCHEDULED). Written only by :meth:`fail`, which REQUIRES a reason, so no failure
+    # path can land a task in FAILED carrying no cause; cleared by :meth:`reopen`.
+    # ``failure_kind`` is the :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`
+    # name derived from it, stored rather than re-derived per read so the task listing
+    # stays one query and so failures are groupable by cause in the DB.
+    failure_reason = models.TextField(blank=True, default="")
+    failure_kind = models.CharField(max_length=32, choices=FailureKind.choices, blank=True, default="")
+    status = FSMField(max_length=32, choices=Status.choices, default=Status.PENDING)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    claimed_by = models.CharField(max_length=255, blank=True)
+    claimed_by_session = models.CharField(max_length=255, blank=True, default="")
+    # db_default: a generation predating this column must still INSERT a valid row.
+    claimed_generation = models.CharField(max_length=40, blank=True, default="", db_default="")
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # #4164 The OS process currently executing this claim, so a sweep can tell a stalled
+    # worker from a dead one — a lapsed lease is evidence about the LEASE, not the process.
+    # The namespace rides along because a bare pid means nothing outside the namespace it
+    # was recorded in (#4253): each service in the deployment has its own, so the same
+    # integer names a different process — or none — depending on who reads it.
+    owner_pid = models.PositiveIntegerField(null=True, blank=True)
+    # ``db_default`` beside the Python default is load-bearing, not belt-and-braces (#4379):
+    # Django never persists a Python ``default`` into the column, so #4309's ``AddField``
+    # produced a NOT NULL column with NO DB default. An INSERT from a process whose model
+    # class predates the field OMITS it and writes NULL — the measured
+    # ``IntegrityError: NOT NULL constraint failed: teatree_task.owner_pid_namespace`` that
+    # rolled back completed runs. The claim gate (#4387) protects processes running the new
+    # code; this protects every process, including ones older than the gate itself.
+    owner_pid_namespace = models.CharField(max_length=64, blank=True, default="", db_default="")
+    # #4164 follow-up: SET once when a drive begins, CLEARED once when it ends — never
+    # periodically renewed, so a memory-thrashed event loop that cannot heartbeat still
+    # recorded it before the stall began. The cross-process twin of claim_liveness's
+    # in-memory ``driving`` registry: a sweep running in a SEPARATE loops_tick subprocess
+    # cannot see that registry, but can read this column plus verify owner_pid is alive.
+    owner_driving_since = models.DateTimeField(null=True, blank=True)
+    # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
+    # window the task is returned to the
+    # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
+    # skips it until then, so a parked task never re-dispatches into the same 429. Null
+    # (every task that was never limit-parked) leaves the claim path byte-identical.
+    not_before = models.DateTimeField(null=True, blank=True)
+    # #4098 When this row was last handed to the task runner. A row is PENDING both
+    # before and after that handoff, so without the stamp an admission a chokepoint has
+    # just made is invisible to the next probe — which is how a burst of cheap rows
+    # outran the lane ceiling. Stamped by ``TaskQuerySet.record_admission`` at every
+    # admission chokepoint; null = never admitted.
+    admitted_at = models.DateTimeField(null=True, blank=True)
+    result_artifact_path = models.CharField(max_length=500, blank=True)
+    # How many times this row's lapsed lease has been reclaimed and re-offered. The
+    # re-offer budget is counted HERE rather than over ``TaskAttempt`` because a
+    # dispatch that never records its outcome leaves the attempt ledger frozen, so the
+    # per-phase iteration budget never advances and nothing bounds the re-offer loop.
+    reclaim_count = models.PositiveIntegerField(default=0)
+    # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
+    # checked via an atomic conditional UPDATE before verifying its artifact,
+    # so two concurrent ticks never double-verify (or double-complete) the
+    # same task. Null = never swept.
+    last_sweep_check_ts = models.DateTimeField(null=True, blank=True)
+
+    objects = TaskManager()
+
+    class Meta:
+        db_table = "teatree_task"
+
+    def __str__(self) -> str:
+        return f"task-{self.pk}"
+
+    def display_subject(self) -> str:
+        """A human-readable one-line description of the work this task is about.
+
+        Prefers an explicitly stored ``subject``, then the work item the task
+        targets (the ticket's terminal-friendly summary or its cached tracker
+        title), and last the ``#N phase`` shape. Never returns the bare phase
+        token alone — that is the unreadable ``Task NN (short_describe)`` the
+        statusline used to show when nothing populated this field.
+        """
+        if self.subject.strip():
+            return self.subject.strip()
+        title = self.ticket.short_description or self._ticket_issue_title()
+        number = self.ticket.ticket_number
+        if title.strip():
+            return f"#{number} {title.strip()}"
+        if self.phase:
+            return f"#{number} {self.phase}"
+        return f"#{number}"
+
+    def _ticket_issue_title(self) -> str:
+        extra = self.ticket.extra if isinstance(self.ticket.extra, dict) else {}
+        title = extra.get("issue_title", "")
+        return title if isinstance(title, str) else ""
+
+    @classmethod
+    def loop_dispatched(cls, *, role: str, phase: str) -> bool:
+        """True iff ``(role, phase)`` has a registered phase sub-agent.
+
+        Pure registry membership (``SUBAGENT_BY_PHASE``): such a pair is worked by
+        that agent, and a pair with no registered agent is free-form work the
+        generic runner takes. Either way the task runs through
+        ``core.tasks.execute_task``.
+        """
+        from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415 — deferred: call-time import
+
+        return bool(subagent_for_phase(role, phase))
+
+    @staticmethod
+    def dispatchable_q() -> Q:
+        """The single filter selecting loop-DISPATCHABLE Tasks — the SSOT (#6).
+
+        A Task is dispatchable when its ``(ticket.role, phase)`` pair has a
+        registered sub-agent (``SUBAGENT_BY_PHASE``, matched across every accepted
+        phase spelling via ``phase_spellings`` — the DB-side of ``loop_dispatched``)
+        AND its ticket is NOT under a live #2104 external-delivery lease
+        (``not_under_external_delivery_q``, #2217).
+
+        The ONE source of truth every dispatch consumer builds on: the
+        ``orchestrate`` planner's target + admit sweep and its in-flight budget
+        count. Because all sites reference this symbol, the external-delivery
+        exclusion and the role/phase set can never diverge across them the way
+        #2218's fix landed on one side.
+        """
+        role_phase = Q(pk__in=[])
+        for role, phase in SUBAGENT_BY_PHASE:
+            role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
+        return role_phase & not_under_external_delivery_q()
+
+    def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
+        _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
+        self.observe_transition("task.claimed")
+
+    def observe_transition(self, kind: str, cause: str = "none") -> None:
+        """Record a committed lifecycle change, including manager-side CAS writes."""
+        transaction.on_commit(
+            partial(
+                record_lifecycle_transition,
+                kind=kind,
+                entity_id=self.pk,
+                ticket_id=self.ticket.pk,
+                task_id=self.pk,
+                cause=cause,
+            )
+        )
+
+    def renew_lease(self, *, lease_seconds: int = 300) -> None:
+        _renew_task_lease(self, lease_seconds=lease_seconds)
+
+    def is_window_parked(self, now: datetime | None = None) -> bool:
+        return _window_parked(self, now)
+
+    def complete(self, *, result_artifact_path: str = "") -> None:
+        """Mark the task COMPLETED and auto-advance the ticket — atomically.
+
+        #883: the task ``save()`` and the FSM transition in
+        ``_advance_ticket`` are wrapped in a single ``transaction.atomic``.
+        Pre-#883 these were two separate write boundaries: a crash between
+        them left the task COMPLETED but the ticket on its old state, and
+        because the task is no longer CLAIMED neither ``reap_stale_claims``
+        nor ``reclaim_orphaned_claims`` could rescue it — the loop stalled
+        forever. One transaction closes that window: either both writes
+        land or neither does. ``replay_orphaned_transitions`` is the
+        boot/tick safety net for rows that slipped through before the fix
+        or any future seam.
+
+        ``complete_claimed`` refuses the write when a rival reclaimed the
+        row under this worker, raising ``LeaseLostError``.
+        """
+        with transaction.atomic():
+            _complete_claimed_task(self, result_artifact_path=result_artifact_path)
+            self._advance_ticket()
+            self.observe_transition("task.completed")
+
+    def complete_surfacing_advance_failure(self, *, result_artifact_path: str = "") -> str:
+        """Complete the task; on a TYPED FSM-advance refusal, keep the task done.
+
+        The operator out-of-band-done path (``tasks complete``, #1977): a
+        deliberate gate refusal during the auto-advance — a ``planning`` task on
+        a ticket with no ``PlanArtifact`` (``NoPlanArtifactError``), a dirty
+        worktree (``DirtyWorktreeError``), a missing shipping attestation
+        (``QualityGateError``), or any ``TransitionNotAllowed`` — must NOT wedge
+        the task ``claimed`` by rolling back the completion. The task-completion
+        bookkeeping commits in its OWN boundary, then the FSM advance runs in a
+        SEPARATE one; a typed refusal there is returned (caller surfaces it
+        loudly) instead of propagating to roll back the completion. The
+        ``replay_orphaned_transitions`` boot/tick sweep fires the transition
+        later once the gate is satisfied. Returns ``""`` on a clean advance,
+        else the refusal reason.
+
+        ``complete()`` keeps its #883 single-atomic coupling for the loop /
+        headless callers; this is the deliberate operator-only decoupling.
+        """
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415 — deferred: ORM/app-registry
+
+        with transaction.atomic():
+            _complete_claimed_task(self, result_artifact_path=result_artifact_path)
+            self.observe_transition("task.completed")
+        try:
+            self._advance_ticket()
+        except (InvalidTransitionError, QualityGateError, TransitionNotAllowed) as exc:
+            return str(exc) or exc.__class__.__name__
+        return ""
+
+    def _advance_ticket(self) -> None:
+        """Auto-advance ticket state based on the completed task's phase.
+
+        Each phase's completion triggers the matching FSM transition, which in
+        turn auto-schedules the next-phase task via the ``schedule_*`` methods
+        on ``Ticket``. The guards on ``self.phase`` + ``ticket.state`` make
+        this safe for repeat calls (e.g. parallel child tasks): once a ticket
+        has advanced, later calls find the state mismatch and no-op.
+        """
+        if self._last_attempt_needs_user_input():
+            from teatree.core.models.task_handoff import park_for_user_input  # noqa: PLC0415 — deferred: import cycle
+
+            park_for_user_input(self)
+            return
+        if not self._review_skipped():
+            self._record_phase_visit()
+        self._apply_phase_transition()
+
+    def _review_skipped(self) -> bool:
+        """Whether the latest attempt records a deliberate no-review disposition."""
+        if normalize_phase(self.phase) != "reviewing":
+            return False
+        last_attempt = self.attempts.order_by("-pk").first()
+        return bool(last_attempt and (last_attempt.result or {}).get("review_skipped"))
+
+    def _needs_user_input_followup_pending(self) -> bool:
+        """True iff this task was *held* for human input (#927).
+
+        The agent returned ``needs_user_input`` so ``_advance_ticket``
+        deliberately did NOT fire the FSM transition and scheduled an
+        interactive followup instead. The replay sweep
+        (``replay_orphaned_transitions``) takes this task as
+        latest-per-ticket and would otherwise force-advance the ticket
+        past a phase the agent said it could not finish, orphaning the
+        followup. The suppression therefore belongs on the *shared*
+        transition path, not only the live ``complete()`` chain.
+        """
+        return self._last_attempt_needs_user_input()
+
+    def _complete_reviewer_task_transition(self, ticket: Ticket) -> bool:
+        """Distinguish a recorded no-review disposition from an actual review."""
+        if self._review_skipped():
+            if ticket.state == Ticket.State.REVIEW_DELIVERED:
+                return False
+            # A self-authored stray can share its reviewer ticket with an armed
+            # cold review or a claimed run. mark_review_no_action consumes both.
+            protected_sibling = (
+                Task.objects.pending_in_phase("reviewing")
+                .filter(ticket=ticket)
+                .filter(Q(status=Task.Status.CLAIMED) | Q(auto_review_dispatches__isnull=False))
+                .exclude(pk=self.pk)
+                .exists()
+            )
+            if protected_sibling:
+                return False
+            if can_proceed(ticket.mark_review_no_action):
+                ticket.mark_review_no_action()
+        else:
+            ticket.mark_reviewed_externally()
+        return True
+
+    def _advance_reviewer_ticket(self, ticket: Ticket) -> bool:
+        if not self._complete_reviewer_task_transition(ticket):
+            return False
+        ticket.save()
+        return True
+
+    def _apply_phase_transition(self) -> bool:
+        """Fire the FSM transition this task's phase implies, if its guard holds.
+
+        The single phase→state advance path, shared by the live
+        ``complete()`` chain and the ``replay_orphaned_transitions``
+        boot/tick recovery sweep (#883) — there is exactly ONE place that
+        maps a completed phase to an FSM transition, so replay can never
+        skip a lifecycle gate the live path enforces. Every branch is
+        guarded by both ``phase`` *and* the required ``ticket.state``
+        (gate-integrity): a ``shipping`` task whose ticket never went
+        through code→test→review finds no matching guard and no-ops, so a
+        ticket can never reach a state it did not earn. The guards also
+        make the call idempotent — once the ticket has advanced, a repeat
+        call (a parallel child task) finds the state mismatch and no-ops.
+        ``mark_reviewed_externally`` is the one exception, by design: it
+        accepts its own target so a re-review at a moved head SHA can
+        re-stamp the reviewed-at record, which is why the replay sweep
+        drops terminal tickets rather than leaning on this guard (#3879).
+
+        A task held for human input (#927) never fires its transition
+        here — the agent said it could not finish this phase, so neither
+        the live ``complete()`` chain nor the replay sweep may advance
+        the ticket past it. Enforced on this shared path so the gate is
+        not bypassable by any caller of ``_apply_phase_transition``.
+
+        Returns ``True`` iff a transition fired (used by the replay sweep
+        to count recovered tickets).
+        """
+        if self._needs_user_input_followup_pending():
+            return False
+        # Normalize once, mirroring _record_phase_visit() — a task whose
+        # phase is a short verb ("review"/"code"/...) must advance the
+        # FSM too, not just record the session visit (#750). Raw
+        # comparison silently desynced ticket.state from visited_phases.
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
+
+        phase = normalize_phase(self.phase)
+        # Mirror the FSM source list of mark_reviewed_externally() — guarding
+        # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
+        # orphan sweep can complete a second reviewing task on a ticket that
+        # already advanced to REVIEW_DELIVERED (or any other terminal state), and an
+        # unconditional FSM call then raises TransitionNotAllowed and crashes
+        # the loop tick. Sibling branches below all guard on ``ticket.state``;
+        # this branch must too. The source set is DERIVED from the transition
+        # declaration (not hand-enumerated) so it can never drift (#808 class).
+        mark_reviewed_externally_source_states = transition_source_states("mark_reviewed_externally")
+        # The state read + guard + FSM advance all happen inside ONE atomic
+        # block with the ticket re-read under ``select_for_update`` (#883/#804
+        # discipline). On the production BEGIN IMMEDIATE backend two concurrent
+        # completions serialize: the second's re-read sees the first's committed
+        # state, its guard no longer matches, and it no-ops — closing the
+        # read-then-transition double-fire window (two schedule_* tasks + two
+        # Sessions). Reading the state OUTSIDE the atomic (the previous shape)
+        # let both completions read the same stale state and both fire.
+        with transaction.atomic():
+            ticket = Ticket.objects.select_for_update().get(pk=self.ticket_id)  # ty: ignore[unresolved-attribute]
+            if (
+                phase == "reviewing"
+                and ticket.role == Ticket.Role.REVIEWER
+                and ticket.state in mark_reviewed_externally_source_states
+            ):
+                return self._advance_reviewer_ticket(ticket)
+            if (advance := AUTHOR_PHASE_ADVANCES.get(phase)) is not None:
+                return advance(self, ticket)
+            if phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+                ticket.start()
+                ticket.save()
+            elif (
+                phase == "planning"
+                and ticket.state in Ticket.EARLY_STATES
+                and (ticket.state == Ticket.State.WORK_STARTED or has_plan_decision(ticket))
+            ):
+                ticket.walk_to_work_started()
+                ticket.plan(parent_task=self)
+                ticket.save()
+            elif phase == "testing" and ticket.state == Ticket.State.CODED:
+                ticket.test(passed=True, parent_task=self)
+                ticket.save()
+            else:
+                escalate_unmatched_phase_transition(self, phase=phase, ticket=ticket)
+                return False
+        return True
+
+    def _record_phase_visit(self) -> None:
+        """Record this task's phase on its session as completion happens (#694).
+
+        Couples the FSM to the work: finishing a phase task *is* the phase
+        visit, so the shipping gate's single source of truth
+        (``Session.visited_phases``) is fed by the loop path without a
+        separate ``lifecycle visit-phase`` CLI call. The phase is normalized
+        so the loop path and the CLI path write the same canonical token.
+        """
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415 — deferred: call-time import
+
+        if not self.phase:
+            return
+        # #755: resolve a guaranteed-non-empty attribution identity,
+        # symmetric with the CLI path — a blank Session.agent_id must not
+        # silently drop the maker attribution here either.
+        self.session.visit_phase(
+            normalize_phase(self.phase),
+            agent_id=self.session.recording_identity(),
+        )
+
+    def _last_attempt_needs_user_input(self) -> bool:
+        last = self.attempts.order_by("-pk").first()
+        return bool(last and isinstance(last.result, dict) and last.result.get("needs_user_input"))
+
+    def fail(self, *, reason: str, by_holder: bool) -> None:
+        """Land this task FAILED with a NAMED cause, releasing occupancy per *by_holder* (#3957, #4872).
+
+        A thin delegate, mirroring :meth:`fail_claimed` — the full contract (why *reason*
+        and *by_holder* are both required, and the self- vs third-party occupancy split)
+        lives on :func:`teatree.core.models.task_claim.fail`'s docstring.
+        """
+        _fail_task(self, reason=reason, by_holder=by_holder)
+
+    def fail_claimed(self, *, reason: str) -> None:
+        _fail_claimed_task(self, reason=reason)
+
+    def reopen(self) -> None:
+        if self.status != self.Status.FAILED:
+            msg = f"Can only reopen failed tasks, got '{self.status}'"
+            raise InvalidTransitionError(msg)
+        self.status = self.Status.PENDING
+        # The recorded cause belongs to the attempt that failed; a reopened task is
+        # in flight again and must not render the previous run's error as its own.
+        # The TaskAttempt rows keep the full history.
+        self.failure_reason = ""
+        self.failure_kind = ""
+        self.session_continuation = self.continuation_on_requeue()
+        self.save(update_fields=["status", "failure_reason", "failure_kind", "session_continuation"])
+
+    def park(self, *, not_before: datetime) -> None:
+        """Return this task to the queue PENDING, gated until *not_before* (Directive #3).
+
+        The park-not-fail alternative to :meth:`fail`: a usage-window limit is NOT a task
+        failure, so the task stays in flight (PENDING) rather than terminal FAILED. The
+        claim path skips it while ``not_before`` is in the future, so it does not
+        re-dispatch into the same exhausted window; ``usage_window_recovery`` releases it
+        once the window re-arms. The park reason is recorded by the caller on the parked
+        ``TaskAttempt`` (the ``limit_parked:`` marker), not stored on the task.
+        """
+        self.status = self.Status.PENDING
+        self.not_before = not_before
+        self.session_continuation = self.continuation_on_requeue()
+        self._clear_claim()
+        self.save(
+            update_fields=[
+                "status",
+                "not_before",
+                "session_continuation",
+                *CLAIM_FIELDS,
+            ],
+        )
+
+    def continuation_on_requeue(self) -> str:
+        """The conversation a re-queued attempt carries: its own once it has one, else the one it already had.
+
+        Adopting SELF unconditionally strands a needs-input continuation whose run died
+        before the harness opened: the owner's answer lives on the PARENT's conversation and
+        this row has nothing of its own, so SELF would silently retry from scratch.
+
+        A conversation the last run EXHAUSTED carries nothing either, and FRESH rather than the
+        stored discriminator: a needs-input run that filled the window filled the parent's own
+        conversation, which is the very history it was continuing. So does one the retry cannot
+        continue: served by the CLI's fallback model, or with no room left for another prompt (#4874).
+        """
+        last_attempt = self.attempts.order_by("-pk").first()
+        if last_attempt is not None and (
+            exhausted_the_conversation(last_attempt.error) or last_attempt.cannot_continue_its_conversation()
+        ):
+            # Answering FRESH is not enough on its own: the exhausted run's thread stays under this
+            # pk, where the NEXT sweep's ``_holds_a_conversation`` reads it back and stamps SELF.
+            self.ticket.pop_task_thread(int(self.pk))
+            return self.SessionContinuation.FRESH
+        if self._holds_a_conversation(last_attempt):
+            return self.SessionContinuation.SELF
+        return self.session_continuation
+
+    def _holds_a_conversation(self, last_attempt: "TaskAttempt | None") -> bool:
+        """Whether this row holds a conversation a resume can continue: a server-side session, or a stored thread."""
+        if last_attempt is not None and SERVER_SESSION_ID_RE.match(last_attempt.agent_session_id):
+            return True
+        return self.ticket.has_task_thread(int(self.pk))
+
+    def complete_with_attempt(
+        self,
+        *,
+        artifact_path: str = "",
+        exit_code: int = 0,
+        error: str = "",
+        result: dict[str, object] | None = None,
+        usage_unknown: bool = False,
+    ) -> "TaskAttempt":
+        """Record a terminal attempt for a run this layer cannot read spend off.
+
+        *usage_unknown* is for the crash catches ONLY: an exception that ESCAPED the
+        drive leaves no result message, and core cannot import the agent layer to parse
+        one, so tokens already billed are genuinely unreadable here. Every other caller
+        reaches this having billed nothing, which the default ``False`` says (#4816).
+        """
+        task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+
+        attempt = task_attempt_model.objects.create(
+            # no-usage: core cannot import the agent layer to parse a result message, so usage_unknown carries it
+            task=self,
+            ended_at=timezone.now(),
+            exit_code=exit_code,
+            artifact_path=artifact_path,
+            error=error,
+            result=result or {},
+            usage_unknown=usage_unknown,
+        )
+        if exit_code == 0:
+            self.complete(result_artifact_path=artifact_path)
+        else:
+            # A non-zero exit with no error text still names a cause (#3957): the exit
+            # code IS the only thing known, so record that rather than nothing.
+            self.fail(
+                reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded",
+                by_holder=True,
+            )
+        return attempt
+
+    def spawn_child_tasks(self, repos: list[str], *, phase: str = "") -> list["Task"]:
+        """Create one child task per repo for parallel execution.
+
+        Each child task inherits the ticket and session from the parent.
+        The parent can wait for all children by querying ``child_tasks``. An implementing
+        phase on a ticket with no plan decision raises ``NoPlanArtifactError`` and spawns nothing.
+        """
+        refuse_unplanned_mint(self.ticket, phase=phase or self.phase)
+        children = []
+        for repo in repos:
+            child = Task.objects.create(
+                ticket=self.ticket,
+                session=self.session,
+                phase=phase or self.phase,
+                execution_reason=f"Repo: {repo}",
+                parent_task=self,
+            )
+            children.append(child)
+        return children
+
+    def phase_iteration_count(self) -> int:
+        """How many attempts this ticket-phase has already recorded (#2009)."""
+        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred: import cycle
+
+        return len(phase_attempts(self))
+
+    def check_requeue_allowed(self) -> None:
+        """Raise if this ticket-phase may NOT be re-queued; escalate on a stall (#2009).
+
+        Delegates to :func:`teatree.core.models.task_repair.check_requeue_allowed`
+        (split out for the module-health cap): a phase at the iteration cap raises
+        ``MaxIterationsExceeded``; two consecutive identical failure fingerprints
+        raise ``IterationStalled`` and record a user-facing ``DeferredQuestion``.
+        """
+        from teatree.core.models.task_repair import check_requeue_allowed  # noqa: PLC0415 — deferred: import cycle
+
+        check_requeue_allowed(self)
+
+    def _clear_claim(self) -> None:
+        for field, released in RELEASED_CLAIM.items():
+            setattr(self, field, released)

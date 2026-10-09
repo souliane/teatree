@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-cleanup_sweep_redundant_never_hand_rolls_git_deletion-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

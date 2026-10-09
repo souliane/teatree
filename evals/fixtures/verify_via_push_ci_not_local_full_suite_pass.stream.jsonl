@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-verify_via_push_ci_not_local_full_suite-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Pushing so CI runs the full suite as the gate."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git push origin HEAD"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

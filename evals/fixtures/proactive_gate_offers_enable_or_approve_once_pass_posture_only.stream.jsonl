@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-proactive_gate_offers_enable_or_approve_once-pass-posture-only", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Shall I run `t3 loop preset use present --reason <why>` so the posture permits this durably?"}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

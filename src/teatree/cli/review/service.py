@@ -1,0 +1,596 @@
+"""Review CLI commands — GitLab draft note operations.
+
+The posture pre-gate covers colleague-
+**VISIBLE** posts only. Every colleague-visible publishing method
+(``post_comment --live`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` /
+``update_*`` / ``approve`` / ``unapprove`` / ``delete_discussion``)
+routes through the same posture gate the reply transport uses.
+
+The colleague-INVISIBLE draft path is the ungated safe-by-default:
+``post_draft_note`` (and the default ``live=False`` path of
+``post_comment``, which routes through it) bypasses the gate under EVERY
+posture — a draft is never visible to colleagues, so it needs no approval.
+The draft publishes autonomously and the agent DMs the user the
+publish/delete commands. Read-only methods (``list_draft_notes``,
+``delete_draft_note``) bypass the gate too.
+
+``reply_to_discussion`` carries the author-side carve-out: on an MR the
+OWNER AUTHORED it posts without approval (the owner's own voice on the
+owner's own work), while the same reply on a COLLEAGUE's MR stays gated.
+Authorship is PROVED per call by
+:func:`~teatree.cli.review.own_mr.owner_authored_mr` and fails CLOSED; no
+other method takes the carve-out, so an approve/unapprove/live comment on
+one's own MR is gated exactly as before.
+
+``delete_discussion`` IS gated even though it is the deletion-shaped
+sibling of ``delete_draft_note`` — it removes a *published* note that
+colleagues can already see, so the removal itself is an on-behalf
+colleague-visible mutation. Mirrors the ``update_note`` gating shape
+exactly.
+
+The gate is satisfiable without a TTY via a recorded
+:class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`
+scoped to ``(<repo>!<mr>, <method_name>)`` — the next matching
+invocation publishes and consumes the row.
+"""
+
+from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+import typer
+
+from teatree.backends.gitlab.inline_position import find_added_line, resolve_inline_position
+from teatree.cli.review.approval import identity_has_reviewed
+from teatree.cli.review.audit import gitlab_mr_url
+from teatree.cli.review.drafts import register as _register_drafts
+from teatree.cli.review.evidence_gate import FindingEvidence
+from teatree.cli.review.forge_target import read_token, resolve_base_url
+from teatree.cli.review.on_behalf import (
+    check_on_behalf,
+    check_on_behalf_issue,
+    on_behalf_gate_active,
+    publish_or_blocked,
+    publish_or_blocked_issue,
+)
+from teatree.cli.review.on_behalf import register as _register_on_behalf
+from teatree.cli.review.own_mr import owner_authored_mr
+from teatree.cli.review.send_routing import route_forge_send
+from teatree.cli.review.shape_gate import check_review_shape
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from teatree.backends.gitlab.api import GitLabAPI
+    from teatree.cli.review.batch_post import InlineNote
+    from teatree.core.modelkit.gate_verdict import ReadOutcome
+
+# Re-exports — keep monkeypatch targets under the ``review`` namespace
+# after extraction to :mod:`teatree.backends.gitlab.inline_position` /
+# :mod:`teatree.cli.review.on_behalf` for module-health LOC reasons.
+# ``resolve_inline_position`` is re-exported here so the existing
+# ``monkeypatch.setattr(review_mod, "resolve_inline_position", …)`` test
+# pattern keeps working after the impl bodies moved to
+# :mod:`teatree.cli.review.post_impl` (#1280).
+_find_added_line = find_added_line
+_on_behalf_gate_active = on_behalf_gate_active
+_resolve_inline_position = resolve_inline_position
+
+review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
+
+
+class ReviewService:
+    """GitLab draft note operations for code review.
+
+    Every method that publishes to an MR (post comment, post draft note,
+    publish drafts, reply, resolve, update note, approve, unapprove,
+    delete discussion) is wrapped by the recorded-approval on-behalf
+    pre-gate. See module docstring for the full contract.
+
+    ``repo`` is the target the service was built for; both forge coordinates
+    (base URL, API token) derive from the overlay that owns it — see
+    :mod:`teatree.cli.review.forge_target`.
+    """
+
+    def __init__(self, token: str, *, repo: str = "", api: "GitLabAPI | None" = None, base_url: str = "") -> None:
+        self.token = token
+        self.repo = repo
+        # Injected forge handle. ``None`` (every production caller) keeps the lazy
+        # build in :meth:`_get_api`; a test passes its own double here instead of
+        # rebinding the private method on a live instance.
+        self._api = api
+        # Injected forge base URL. Empty (every production caller) resolves from
+        # ``repo`` as before; a test supplies one instead of rebinding the method.
+        self._base_url = base_url
+
+    @staticmethod
+    def read_gitlab_token(repo: str = "") -> "ReadOutcome[str]":
+        """The API token for the forge that owns *repo*, with a failed read kept distinct."""
+        return read_token(repo)
+
+    @staticmethod
+    def get_gitlab_token(repo: str = "") -> str:
+        """The API token for the forge that owns *repo*, or ``""`` when it cannot be read."""
+        return read_token(repo).value
+
+    def _get_api(self) -> "GitLabAPI":
+        if self._api is not None:
+            return self._api
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
+
+    def _resolve_base_url(self) -> str:
+        """The GitLab API base URL this service's posts are addressed to."""
+        return self._base_url or resolve_base_url(self.repo)
+
+    def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
+        """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""
+        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def post_draft_note(  # noqa: PLR0913 — public service method whose params support the ``t3 review post-comment`` draft path; ``evidence`` is the #1280 structured-evidence record and the ``allow_*`` overrides are the #126 documented escapes — all must stay kwargs on this surface.
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+        evidence: FindingEvidence | None = None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
+        force_general: bool = False,
+        allow_bloat: bool = False,
+    ) -> tuple[str, int]:
+        """Post a draft note. Returns (message, exit_code).
+
+        For inline notes (file+line), validates that the target line is an added
+        (``+``) line in the MR diff, then verifies after posting that GitLab
+        actually anchored the draft (``line_code`` non-null). Broken drafts
+        (anchor refused, usually because the file diff is collapsed) are
+        deleted and surfaced as an error so they cannot be published silently.
+
+        A draft is colleague-INVISIBLE (only the user can submit it), so it
+        is EXEMPT from the gate under every posture — it never needs approval:
+        the gate resolves to AUTO_DRAFT (publish + DM the user the
+        publish/delete commands). The remaining pre-publish
+        gates in :meth:`_run_pre_publish_gates` still apply (shape, bloat,
+        general-note, TODO-anchor, evidence); the ``allow_*`` / ``force_*``
+        kwargs are the #126 per-call escapes documented there.
+        """
+        refusal = self._run_pre_publish_gates(
+            repo=repo,
+            mr=mr,
+            note=note,
+            file=file,
+            line=line,
+            action="post_draft_note",
+            evidence=evidence,
+            allow_long_review=allow_long_review,
+            allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
+            allow_bloat=allow_bloat,
+        )
+        if refusal:
+            return refusal, 1
+        return publish_or_blocked(
+            repo, mr, "post_draft_note", lambda: self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+        )
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def _run_pre_publish_gates(  # noqa: PLR0913 — wide signature by design: each parameter is a distinct required input
+        self,
+        *,
+        repo: str,
+        mr: int,
+        note: str,
+        file: str,
+        line: int,
+        action: str,
+        evidence: FindingEvidence | None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
+        force_general: bool = False,
+        allow_bloat: bool = False,
+    ) -> str:
+        """Run the pre-publish gate chain; return the first refusal or ``""``.
+
+        Thin delegator to :func:`teatree.cli.review.pre_publish_gates.run_pre_publish_gates`
+        — that module owns the chain order (on-behalf → shape → bloat →
+        general-inline → TODO-anchor → evidence) and the per-call escape
+        semantics; service.py stays under the module-health LOC ceiling.
+        """
+        from teatree.cli.review.pre_publish_gates import run_pre_publish_gates  # noqa: PLC0415 — lazy CLI import
+
+        return run_pre_publish_gates(
+            self,
+            repo=repo,
+            mr=mr,
+            note=note,
+            file=file,
+            line=line,
+            action=action,
+            evidence=evidence,
+            allow_long_review=allow_long_review,
+            allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
+            allow_bloat=allow_bloat,
+        )
+
+    def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
+        """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
+        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        return post_comment_impl(self, repo, mr, note, file=file, line=line)
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` (#1207 default-flip), ``evidence`` (#1280) and the ``allow_*`` escapes (#126) must stay kwargs on this surface.
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+        live: bool = False,
+        evidence: FindingEvidence | None = None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
+        force_general: bool = False,
+        allow_bloat: bool = False,
+    ) -> tuple[str, int]:
+        """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
+
+        The default (``live=False``) path routes through
+        :meth:`post_draft_note`, so it inherits the colleague-INVISIBLE
+        draft exemption — it bypasses the posture gate
+        under EVERY posture (a draft needs no approval). ``--live`` is the
+        colleague-VISIBLE branch and stays gated: under a forbidding posture it
+        requires both a ``post_comment`` on-behalf approval and a
+        LivePostApproval. Under a permitting posture one resolution
+        (:class:`~teatree.cli.review.authorize.LiveAuthorization`) waives both,
+        so the two gates can never disagree about the same post.
+
+        Also gated by the structured-evidence pre-publish gate (#1280):
+        when ``note`` matches an "X is missing/wrong/broken" pattern, the
+        ``evidence`` kwarg must carry a verified
+        :class:`~teatree.cli.review.evidence_gate.FindingEvidence` record.
+
+        The ``allow_*`` / ``force_*`` kwargs are the #126 per-call escapes
+        for the shape, TODO-anchor, general-note, and comment-bloat gates,
+        documented in :meth:`_run_pre_publish_gates`.
+        """
+        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415 — deferred: lazy CLI import
+        from teatree.cli.review.default_draft import (  # noqa: PLC0415 — lazy: monkeypatchable + defers ORM
+            notify_draft_created,
+            publish_live_post,
+            resolve_reviewed_head_sha,
+        )
+
+        if not live:
+            msg, code = self.post_draft_note(
+                repo,
+                mr,
+                note,
+                file=file,
+                line=line,
+                evidence=evidence,
+                allow_long_review=allow_long_review,
+                allow_todo_blocker=allow_todo_blocker,
+                force_general=force_general,
+                allow_bloat=allow_bloat,
+            )
+            if code == 0:
+                notify_draft_created(
+                    repo=repo,
+                    mr=mr,
+                    mr_url=gitlab_mr_url(self._resolve_base_url(), repo, mr),
+                    reviewed_head_sha=resolve_reviewed_head_sha(self._get_api(), repo, mr),
+                )
+            return msg, code
+        # One-step authorization gate (#126): a single ``t3 review authorize``
+        # is the satisfier. Surface the unified refusal naming that one
+        # command before the per-token chokepoints below would emit the old
+        # two-command messages.
+        authorization = resolve_live_authorization(scope=f"{repo}!{mr}", action="post_comment")
+        if authorization.refusal:
+            return authorization.refusal, 1
+        refusal = self._run_pre_publish_gates(
+            repo=repo,
+            mr=mr,
+            note=note,
+            file=file,
+            line=line,
+            action="post_comment",
+            evidence=evidence,
+            allow_long_review=allow_long_review,
+            allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
+            allow_bloat=allow_bloat,
+        )
+        if refusal:
+            return refusal, 1
+        note, send_refusal = route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
+        if send_refusal:
+            return send_refusal, 1
+
+        def post() -> tuple[str, int]:
+            return self._post_comment_impl(repo, mr, note, file=file, line=line)
+
+        return publish_or_blocked(
+            repo,
+            mr,
+            "post_comment",
+            lambda: publish_live_post(repo=repo, mr=mr, publish=post, token_required=authorization.token_required),
+        )
+
+    def post_comments(
+        self, repo: str, mr: int, notes: "Sequence[InlineNote]", *, live: bool = False
+    ) -> tuple[str, int]:
+        """Post a whole review's findings in ONE publish envelope (delegates to :mod:`batch_post`).
+
+        Every body still runs the full pre-publish gate chain on its own; what the
+        batch shares is the authorization ceremony, which is per-REVIEW rather than
+        per-finding.
+        """
+        from teatree.cli.review.batch_post import post_comments  # noqa: PLC0415 — deferred: lazy CLI import
+
+        return post_comments(self, repo, mr, notes, live=live)
+
+    def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
+        """Delete a draft note. Returns (message, exit_code)."""
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        status = api.delete(f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}")
+        if status == HTTPStatus.NO_CONTENT:
+            return f"OK deleted draft_note_id={note_id}", 0
+        return f"Failed: HTTP {status}", 1
+
+    def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        """Bulk-publish every draft note on an MR.
+
+        Gated by the active posture (BLOCK under a forbidding one): the bulk publish is
+        the moment drafts become visible to colleagues, so it routes
+        through the same recorded-approval gate every other on-behalf
+        post uses.
+        """
+        blocked = check_on_behalf(repo, mr, "publish_draft_notes")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        encoded = repo.replace("/", "%2F")
+        return publish_or_blocked(
+            repo, mr, "publish_draft_notes", lambda: publish_draft_notes_impl(self, repo, mr, encoded=encoded)
+        )
+
+    def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
+        """Reply to an existing discussion thread on an MR. Returns (message, exit_code).
+
+        Gated by the active posture (BLOCK under a forbidding one): the reply is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "reply_to_discussion")``.
+
+        The one exception is the author-side carve-out: on an MR the OWNER
+        AUTHORED, replying to a reviewer is the owner's own voice on the
+        owner's own work and posts without approval. Authorship is PROVED
+        here — :func:`~teatree.cli.review.own_mr.owner_authored_mr` reads the
+        MR's author against the posting identity and fails CLOSED — and the
+        proof is passed to the peek and the publish so both resolve the same
+        verdict. A reply on a COLLEAGUE's MR is unaffected and stays gated.
+        The receipt DM fires from the publish body either way.
+        """
+        api = self._get_api()
+        own_mr = owner_authored_mr(api, repo, mr)
+        blocked = check_on_behalf(repo, mr, "reply_to_discussion", own_mr=own_mr)
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        encoded = repo.replace("/", "%2F")
+        # Reply bodies are always inline (anchored on the existing discussion's
+        # diff position), so the inline cap applies.
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=True)
+        if shape_error:
+            return shape_error, 1
+        return publish_or_blocked(
+            repo,
+            mr,
+            "reply_to_discussion",
+            lambda: reply_to_discussion_impl(self, repo, mr, discussion_id, body, encoded=encoded),
+            own_mr=own_mr,
+        )
+
+    def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
+        """Mark a discussion thread resolved or unresolved. Returns (message, exit_code).
+
+        Gated by the active posture (BLOCK under a forbidding one): a resolve flip is
+        visible to colleagues (it closes the discussion under the user's
+        identity), so it routes through the same recorded-approval gate.
+        """
+        blocked = check_on_behalf(repo, mr, "resolve_discussion")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        encoded = repo.replace("/", "%2F")
+        return publish_or_blocked(
+            repo,
+            mr,
+            "resolve_discussion",
+            lambda: resolve_discussion_impl(self, repo, mr, discussion_id, resolved=resolved, encoded=encoded),
+        )
+
+    def update_note(self, repo: str, mr: int, note_id: int, body: str) -> tuple[str, int]:
+        """Update a note (draft or published) on an MR.
+
+        Tries draft-notes first; falls back to published-notes on 404.
+
+        Gated by the active posture (BLOCK under a forbidding one): an update to a
+        *published* note is a colleague-visible edit; the gate covers
+        both fallback paths uniformly so a published-note edit cannot
+        slip through while a comment-create would be blocked.
+        """
+        blocked = check_on_behalf(repo, mr, "update_note")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        # Without diff coordinates here, treat the updated body as MR-level
+        # prose — the tight cap applies. If the updated note is itself an
+        # inline DiffNote the body will fit the inline cap too.
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=False)
+        if shape_error:
+            return shape_error, 1
+        return publish_or_blocked(
+            repo, mr, "update_note", lambda: update_note_impl(self, repo, mr, note_id, body, encoded=encoded)
+        )
+
+    def delete_discussion(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
+        """Delete a *published* note from an MR. Returns (message, exit_code).
+
+        Use to clean up a published general discussion that should have
+        been inline (or any other published note that needs removal).
+        Distinct from :meth:`delete_draft_note`, which removes the user's
+        own unpublished draft — that is not a colleague-visible mutation
+        and stays ungated; this one is.
+
+        Gated by the active posture: the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "delete_discussion")``.
+        """
+        blocked = check_on_behalf(repo, mr, "delete_discussion")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        encoded = repo.replace("/", "%2F")
+        return publish_or_blocked(
+            repo, mr, "delete_discussion", lambda: delete_discussion_impl(self, repo, mr, note_id, encoded=encoded)
+        )
+
+    def delete_issue_note(self, repo: str, issue_iid: int, note_id: int) -> tuple[str, int]:
+        """Delete a *published* note from a GitLab ISSUE/work-item. Returns (message, exit_code).
+
+        The issue/work-item twin of :meth:`delete_discussion`: it removes a
+        published note that colleagues can already see, so the removal is a
+        colleague-visible on-behalf mutation and routes through the SAME
+        recorded-approval on-behalf gate — scoped to
+        ``(<repo>#<issue>, "delete_issue_note")`` (the ``#`` separator keeps it
+        distinct from the same-numbered MR's ``<repo>!<mr>`` scope).
+
+        This is the sanctioned path for removing an issue note: a raw
+        ``glab api --method DELETE projects/.../issues/<iid>/notes/<id>`` is
+        denied by the ``block-raw-review-post`` hook (#1164), which has no
+        bypass — only this CLI does, because it routes through the gate the
+        raw write skips.
+        """
+        blocked = check_on_behalf_issue(repo, issue_iid, "delete_issue_note")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415 — deferred: lazy CLI import
+
+        encoded = repo.replace("/", "%2F")
+        return publish_or_blocked_issue(
+            repo,
+            issue_iid,
+            "delete_issue_note",
+            lambda: delete_issue_note_impl(self, repo, issue_iid, note_id, encoded=encoded),
+        )
+
+    def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
+        """List draft notes. Returns (message, exit_code)."""
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        notes = api.get_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes")
+        if not isinstance(notes, list):
+            return "No draft notes found", 0
+
+        lines = []
+        for n in notes:
+            if not isinstance(n, dict):
+                continue
+            entry: dict[str, object] = n
+            nid = entry.get("id")
+            pos_raw = entry.get("position")
+            pos = dict(pos_raw) if isinstance(pos_raw, dict) else {}
+            fp = pos.get("new_path", "")
+            ln = pos.get("new_line", "")
+            body = str(entry.get("note", ""))[:60]
+            lines.append(f"  {nid}  {fp}:{ln}  {body}...")
+        return "\n".join(lines), 0
+
+    def approve(self, repo: str, mr: int) -> tuple[str, int]:
+        """Approve an MR — refuses unless the identity has already reviewed it.
+
+        Returns (message, exit_code). The review-first precondition encodes
+        the approve-on-review doctrine: an approval cannot be recorded
+        without a prior reviewing footprint from the same identity.
+
+        Gated by the active posture: an approval is
+        an outward post on the user's identity, so it routes through the
+        same recorded-approval gate every other on-behalf method uses. Gate
+        ON + no recorded :class:`OnBehalfApproval` matching
+        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
+        effect; gate ON + recorded row → consume single-use and proceed.
+        """
+        blocked = check_on_behalf(repo, mr, "approve")
+        if blocked:
+            return blocked, 1
+        encoded = repo.replace("/", "%2F")
+        reviewed, error = identity_has_reviewed(self._get_api(), encoded, mr)
+        if error:
+            return error, 1
+        if not reviewed:
+            msg = (
+                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
+                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
+                "`post-comment`) first, then approve."
+            )
+            return msg, 1
+        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
+
+    def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
+        """Revoke this identity's approval on an MR. Returns (message, exit_code).
+
+        No review-first precondition — removing an approval is the safe
+        direction and must always be reachable.
+
+        Gated by the active posture: an unapproval
+        is still a colleague-visible post on the user's identity, so it
+        routes through the same recorded-approval gate as ``approve`` (and
+        every other on-behalf method). The recorded row scopes to
+        ``(<repo>!<mr>, "unapprove")``.
+        """
+        blocked = check_on_behalf(repo, mr, "unapprove")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+        encoded = repo.replace("/", "%2F")
+        return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
+
+
+# Register sibling-module typer commands. Kept out of this file so the
+# OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
+# satisfied — see `teatree.cli.review.on_behalf`,
+# `teatree.cli.review.drafts`, `teatree.cli.review.live_approval`, and
+# `teatree.cli.review.commands`.
+from teatree.cli.review import commands as _review_commands  # noqa: E402 — registration side-effect
+from teatree.cli.review.authorize import register as _register_authorize  # noqa: E402 — late, after typer app
+from teatree.cli.review.commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
+from teatree.cli.review.live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
+from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402 — late import
+
+_register_on_behalf(review_app)
+_register_drafts(review_app)
+_register_live_approval(review_app)
+_register_authorize(review_app)
+_register_fail_open(review_app)
+_ = _review_commands  # quiet "unused import" — module load is the side-effect

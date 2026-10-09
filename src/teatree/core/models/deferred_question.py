@@ -1,0 +1,574 @@
+"""Durable away-mode question backlog (#58, BLUEPRINT §17.1 invariant 9 / §17.3 C3).
+
+24/7 dual question-mode: when the resolved availability mode is ``away``,
+the ``AskUserQuestion`` PreToolUse hook converts the tool call into a
+:class:`DeferredQuestion` row instead of waiting on a TTY answer. The
+question is *captured*, never silently dropped — exactly the §17.1
+invariant 9 guarantee — and the user later answers it via
+``t3 teatree questions list|answer|dismiss``.
+
+This model mirrors the ``OnBehalfApproval`` shape (#960, mirrored from
+#953 ``DbApproval`` and §17.4 ``MergeClear``):
+
+* guarded factory :meth:`DeferredQuestion.record` is the only path that
+    writes a row, and it refuses empty payloads (no silent drop);
+* :meth:`consume` atomically claims and stamps ``answered_at``/
+    ``dismissed_at`` so the same row can never be answered twice;
+* :class:`DeferredQuestionAudit` is the post-answer audit row — who
+    answered, what they answered, when — matching the
+    ``MergeAudit``/``OnBehalfAudit``/``DbAudit`` family.
+
+Unlike ``OnBehalfApproval`` (which records a *prior* approval the gate
+*consumes*), a ``DeferredQuestion`` is a *queued question* the user
+*resolves later*. The shape is identical — durable, single-use, scoped,
+audited — so the team can reason about all four (DB, on-behalf, merge,
+question) as the same primitive.
+"""
+
+import logging
+from functools import partial
+from typing import TYPE_CHECKING, ClassVar
+
+from django.db import DatabaseError, models, transaction
+from django.db.models import Max
+from django.utils import timezone
+
+from teatree import answer_handback
+from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
+    is_tool_lack_selfreport,
+    question_fingerprint,
+)
+from teatree.core.telemetry.admission import record_lifecycle_transition
+
+if TYPE_CHECKING:
+    from teatree.core.models.session import Session
+    from teatree.core.models.task import Task
+
+logger = logging.getLogger(__name__)
+
+
+class DeferredQuestionError(ValueError):
+    """A :class:`DeferredQuestion` was rejected at record time — contract failed."""
+
+
+class DeferredQuestion(models.Model):
+    """One queued user-directed question recorded while availability=away.
+
+    The question text and options are the verbatim ``AskUserQuestion``
+    payload; the hook layer (see ``hook_router.handle_mirror_question_to_slack``)
+    is the only producer. Single-use: once :meth:`consume` stamps either
+    ``answered_at`` or ``dismissed_at``, the row no longer matches a
+    pending-question scan. The original ``tool_use_id`` (when the harness
+    emits one) is stored verbatim so audits can be cross-referenced to
+    the transcript.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_ANSWERED = "answered"
+    STATUS_DISMISSED = "dismissed"
+
+    class ResolvedVia(models.TextChoices):
+        UNRESOLVED = "", "Unresolved"
+        SLACK = "slack", "Slack reply"
+        LOCAL = "local", "Local CLI"
+        STALE = "stale", "Stale"
+        POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
+        AGENT = "agent", "Agent surface"
+
+    #: Provenance the server records and checks: a Slack reply by the owner, or the owner's graduated policy.
+    OWNER_CHANNELS: ClassVar[frozenset[str]] = frozenset({ResolvedVia.SLACK, ResolvedVia.POLICY})
+
+    class Audience(models.TextChoices):
+        OWNER_QUESTION = "owner_question", "Owner question"
+        INTERNAL = "internal", "Internal"
+
+    question = models.TextField()
+    # Who the question is for. OWNER_QUESTION rows are DM'd to the owner; INTERNAL
+    # rows (repair-loop stalls, dispatch-health escalations synthesized by the box
+    # about its OWN health) are logged/statusline-only and never reach the owner
+    # feed — mirroring ``NotifyAudience`` so the two queues share one audience model.
+    audience = models.CharField(
+        max_length=16,
+        default=Audience.OWNER_QUESTION,
+        choices=Audience.choices,
+        db_index=True,
+    )
+    options_json = models.TextField(blank=True, default="")
+    session_id = models.CharField(max_length=255, blank=True, default="")
+    tool_use_id = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now)
+    answered_at = models.DateTimeField(null=True, blank=True)
+    answer_text = models.TextField(blank=True, default="")
+    dismissed_at = models.DateTimeField(null=True, blank=True)
+    dismissed_reason = models.TextField(blank=True, default="")
+    slack_ts = models.CharField(max_length=64, blank=True, default="")
+    slack_channel = models.CharField(max_length=64, blank=True, default="")
+    options_hash = models.CharField(max_length=64, blank=True, default="")
+    # Idempotency marker for escalation-once callers (repair-loop stalls, headless
+    # needs-input parks): a non-empty marker collapses repeat records of the same
+    # underlying signal to one PENDING row. Blank for the ordinary capture path.
+    dedupe_marker = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    generation = models.PositiveIntegerField(default=0)
+    run_id = models.CharField(max_length=255, blank=True, default="")
+    parked_task = models.ForeignKey(
+        "core.Task",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deferred_questions",
+    )
+    task_session = models.ForeignKey(
+        "core.Session",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    if TYPE_CHECKING:
+        parked_task_id: int | None
+        task_session_id: int | None
+    resolved_via = models.CharField(
+        max_length=8,
+        blank=True,
+        default="",
+        choices=ResolvedVia.choices,
+    )
+    applied_at = models.DateTimeField(null=True, blank=True)
+    # #4178 age-backstop stamps. An escalation records that a row has sat past the
+    # ceiling WITHOUT resolving it — the row stays pending. #4706 bounds that ladder:
+    # past question_drain.MAX_ESCALATIONS the sweep drains the row stale with an
+    # audited reason, so directive #45's "never silently dropped" holds as "never
+    # dropped unaudited, and never before the owner was asked N times".
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    escalation_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = "teatree_deferred_question"
+        ordering: ClassVar = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"deferred-question<{self.pk}:{self.status} '{self.question[:40]}'>"
+
+    @property
+    def status(self) -> str:
+        if self.answered_at is not None:
+            return self.STATUS_ANSWERED
+        if self.dismissed_at is not None:
+            return self.STATUS_DISMISSED
+        return self.STATUS_PENDING
+
+    @property
+    def is_pending(self) -> bool:
+        return self.answered_at is None and self.dismissed_at is None
+
+    @property
+    def answered_on_owner_channel(self) -> bool:
+        return self.answered_at is not None and self.resolved_via in self.OWNER_CHANNELS
+
+    @property
+    def stable_notify_ref(self) -> str:
+        """Stable discriminator for outward-notification idempotency keys.
+
+        Prefers the harness-assigned ``tool_use_id`` — stable across restarts
+        and independent of this DB's autoincrement — so a key built from it does
+        not shift when the local pk does. Only when the harness supplied no
+        ``tool_use_id`` does it fall back to the pk, qualified by the fleet
+        ``instance_id`` (:mod:`teatree.instance_id`) so two instances'
+        independently-numbered rows can never collide into a false-dedup on a
+        shared operator DM surface. Never the bare local pk.
+        """
+        if self.tool_use_id:
+            return self.tool_use_id
+        from teatree.instance_id import instance_id  # noqa: PLC0415 — leaf import kept out of module load
+
+        return f"{instance_id()}:{self.pk}"
+
+    @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def record(  # noqa: PLR0913 — guarded factory: each kwarg is a documented column, kwargs-only.
+        cls,
+        question: str,
+        *,
+        options_json: str = "",
+        session_id: str = "",
+        tool_use_id: str = "",
+        slack_ts: str = "",
+        slack_channel: str = "",
+        options_hash: str = "",
+        generation: int = 0,
+        run_id: str = "",
+        dedupe_marker: str = "",
+        parked_task: "Task | None" = None,
+        task_session: "Session | None" = None,
+        audience: str = Audience.OWNER_QUESTION,
+    ) -> "DeferredQuestion":
+        """The single guarded factory for a queued question.
+
+        Enforces the contract before any row is written and raises
+        :class:`DeferredQuestionError` with a precise reason on the first
+        violation: non-empty ``question`` after stripping. Construction is
+        atomic so a rejected record leaves no partial row. The mirror
+        kwargs (``slack_ts`` / ``slack_channel`` / ``options_hash`` /
+        ``generation`` / ``run_id``) link the row to its Slack DM so a
+        later Slack reply can resolve exactly the live generation (#1174).
+        ``parked_task`` correlates a headless-lane question back to the SDK
+        task that emitted ``needs_user_input`` so the reply re-queues a
+        headless resume of that task (the SDK lane has no Slack DM yet — the
+        tick-level poster scanner mirrors it later).
+
+        ``dedupe_marker`` is the escalate-once guard: when non-empty, an existing
+        PENDING row already carrying that marker is returned instead of writing a
+        duplicate — so two consecutive repair-loop stalls, or eight identical
+        "I lack tools" review-failure parks, collapse to a single queued question
+        rather than flooding the backlog.
+        """
+        clean_question = question.strip()
+        if not clean_question:
+            msg = "question is required and must be non-empty (#58)"
+            raise DeferredQuestionError(msg)
+        if session_id.isdigit():
+            msg = f"session_id {session_id!r} names a teatree Session; pass it as task_session"
+            raise DeferredQuestionError(msg)
+
+        with transaction.atomic():
+            if dedupe_marker:
+                existing = (
+                    cls.objects.select_for_update()
+                    .filter(dedupe_marker=dedupe_marker, answered_at__isnull=True, dismissed_at__isnull=True)
+                    .first()
+                )
+                if existing is not None:
+                    return existing
+            row = cls.objects.create(
+                question=clean_question,
+                options_json=options_json or "",
+                session_id=session_id or "",
+                tool_use_id=tool_use_id or "",
+                slack_ts=slack_ts or "",
+                slack_channel=slack_channel or "",
+                options_hash=options_hash or "",
+                generation=generation,
+                run_id=run_id or "",
+                dedupe_marker=dedupe_marker or "",
+                parked_task=parked_task,
+                task_session=task_session,
+                audience=audience or cls.Audience.OWNER_QUESTION,
+            )
+            transaction.on_commit(
+                partial(
+                    record_lifecycle_transition,
+                    kind="question.recorded",
+                    entity_id=row.pk,
+                    ticket_id=parked_task.ticket.pk if parked_task is not None else 0,
+                )
+            )
+            return row
+
+    @classmethod
+    def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows with no Slack mirror yet, oldest first.
+
+        The headless lane and ``task_repair._escalate_stall`` record a row
+        with an empty ``slack_ts``; the tick-level poster drains exactly these
+        so a reply can later bind. A row already mirrored (``slack_ts != ""``)
+        or resolved is excluded.
+        """
+        return cls.objects.filter(
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+            slack_ts="",
+            audience=cls.Audience.OWNER_QUESTION,
+        ).order_by("created_at")
+
+    @classmethod
+    def supersedable(
+        cls,
+        *,
+        session_id: str,
+        run_id: str,
+        audience: str = Audience.OWNER_QUESTION,
+    ) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows a newer question of the same (session, run) may stale-mark, oldest first.
+
+        Three exclusions, each one a way the owner silently loses a question (#4721). A
+        DELIVERED row (``slack_ts != ""``) may already have the owner's Slack reply in
+        flight, and dismissing it strands that reply on a row nothing can bind it to. An
+        ``INTERNAL`` row is the box's own health queue, which ``task_repair`` records under
+        a session id of its own. And an unnameable scope matches NOTHING rather than
+        widening: a supersession that cannot say which run it belongs to would otherwise
+        sweep every pending row in the session.
+        """
+        if not session_id or not run_id:
+            return cls.objects.none()
+        return cls.pending().filter(session_id=session_id, run_id=run_id, audience=audience, slack_ts="")
+
+    def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:
+        """Stamp the Slack mirror coordinates single-use; ``True`` on the transition.
+
+        An idempotent ``UPDATE … WHERE slack_ts = ''`` so a concurrent second
+        drain (or a re-tick after a partial stamp) sees 0 rows updated and does
+        not re-stamp — the verify-by-re-read seam for the poster scanner.
+        """
+        if not channel or not slack_ts:
+            return False
+        updated = bool(
+            type(self).objects.filter(pk=self.pk, slack_ts="").update(slack_ts=slack_ts, slack_channel=channel)
+        )
+        if updated:
+            self.slack_ts = slack_ts
+            self.slack_channel = channel
+            transaction.on_commit(partial(record_lifecycle_transition, kind="question.mirrored", entity_id=self.pk))
+        return updated
+
+    @classmethod
+    def next_generation(cls, *, session_id: str, run_id: str) -> int:
+        """The next per-(session, run) question cursor — ``max(generation) + 1``.
+
+        A Slack reply resolves only the current generation, so each new
+        captured question for a (session, run) scope claims a strictly
+        higher cursor. Atomic max-then-increment under the row lock the
+        caller already holds when superseding the prior generation.
+        """
+        current = cls.objects.filter(session_id=session_id, run_id=run_id).aggregate(top=Max("generation"))["top"]
+        return (current or 0) + 1
+
+    @classmethod
+    def _reply_candidates(cls, *, channel: str, after_ts: str) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows mirrored to *channel* whose mirror ts precedes *after_ts*.
+
+        The ``after_ts`` guard is the one invariant every reply-binding query
+        shares: a reply can never answer a question posted after it.
+        """
+        return cls.objects.filter(
+            slack_channel=channel,
+            slack_ts__lt=after_ts,
+            slack_ts__gt="",
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+        )
+
+    @classmethod
+    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The most recently captured pending question mirrored to *channel* before *after_ts*.
+
+        Recency is a heuristic, not identity: with a deep mirrored backlog the
+        newest row is reliably NOT the one an unaddressed reply answers. Reply
+        binding therefore goes through :meth:`for_thread` /
+        :meth:`sole_for_reply`; this stays the cursor for the capture path.
+
+        Recency, not ``generation``, orders the candidates: the cursor
+        :meth:`next_generation` mints is scoped to one ``(session_id, run_id)``,
+        so comparing it across the many scopes that mirror into one DM binds a
+        reply to whichever scope happens to count highest. Within a scope the
+        two agree — a superseded question is already stale — so nothing is lost.
+        """
+        if not channel or not after_ts:
+            return None
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).order_by("-created_at", "-pk").first()
+
+    @classmethod
+    def for_thread(cls, *, channel: str, thread_ts: str, after_ts: str) -> "DeferredQuestion | None":
+        """The pending question *thread_ts* roots on — an exact mirror join, no guessing.
+
+        A Slack thread roots on the message being replied to, so a reply
+        carrying ``thread_ts`` names its question's mirror ``slack_ts``
+        outright. ``None`` when no pending row was mirrored at that ts.
+        """
+        if not channel or not thread_ts or not after_ts:
+            return None
+        return cls._reply_candidates(channel=channel, after_ts=after_ts).filter(slack_ts=thread_ts).first()
+
+    @classmethod
+    def sole_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The only live question on *channel*, or ``None`` when there is not exactly one.
+
+        The fallback for a top-level reply that names no question: with a single
+        pending mirror the reply cannot be for anything else, and with two or
+        more it is unattributable — so nothing binds rather than the wrong row.
+        """
+        if not channel or not after_ts:
+            return None
+        candidates = list(cls._reply_candidates(channel=channel, after_ts=after_ts)[:2])
+        return candidates[0] if len(candidates) == 1 else None
+
+    def mark_stale(self, reason: str, *, resolver_id: str = "") -> None:
+        """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.
+
+        Used at capture-time supersession (a newer-generation question
+        arrived) and as the terminal state for a reply that found no live
+        row. A no-op on an already-resolved row. *resolver_id* names the
+        automated resolver that decided it, so a sweep-driven dismissal is
+        distinguishable from a human one in the audit trail.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return
+            row.dismissed_at = timezone.now()
+            row.dismissed_reason = reason
+            row.resolved_via = self.ResolvedVia.STALE
+            row.save(update_fields=["dismissed_at", "dismissed_reason", "resolved_via"])
+            DeferredQuestionAudit.objects.create(
+                question=row,
+                action="dismissed",
+                dismissed_reason=reason,
+                resolver_id=resolver_id,
+            )
+            self.dismissed_at = row.dismissed_at
+            self.dismissed_reason = row.dismissed_reason
+            self.resolved_via = row.resolved_via
+
+    def mark_escalated(self, note: str) -> bool:
+        """Stamp an age-backstop escalation on a still-pending row; ``True`` on the transition.
+
+        The transition a row past the age ceiling gets INSTEAD of a resolution: it
+        bumps ``escalation_count`` and writes an ``escalated`` audit row, leaving
+        ``answered_at``/``dismissed_at`` untouched so the question stays queued. The
+        ``select_for_update`` re-read is the verify-by-re-read seam — a row a
+        concurrent answer resolved first returns ``False`` and is not counted.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return False
+            row.escalated_at = timezone.now()
+            row.escalation_count += 1
+            row.save(update_fields=["escalated_at", "escalation_count"])
+            DeferredQuestionAudit.objects.create(question=row, action="escalated", note=note)
+            self.escalated_at = row.escalated_at
+            self.escalation_count = row.escalation_count
+            return True
+
+    def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
+        """Resolve this pending row with *answer*, stamping ``resolved_via``.
+
+        Wraps :meth:`consume` (the single-use CAS that stamps
+        ``answered_at`` + ``answer_text``) and additionally records
+        ``resolved_via``. Returns the consumed row, or ``None`` when the
+        row was already resolved (a concurrent answer won).
+        """
+        with transaction.atomic():
+            row = type(self).consume(self.pk, answer=answer)
+            if row is None:
+                return None
+            row.resolved_via = resolved_via
+            row.save(update_fields=["resolved_via"])
+            return row
+
+    def mark_posted(self) -> bool:
+        """Stamp ``applied_at``: the answer was posted to the asking session's mailbox (not that it was read)."""
+        manager = type(self).objects.using(self._state.db)
+        return bool(manager.filter(pk=self.pk, applied_at__isnull=True).update(applied_at=timezone.now()))
+
+    def post_to_asking_session(self) -> None:
+        try:
+            answer_handback.post(session_id=self.session_id, question_id=self.pk, answer=self.answer_text)
+        except (OSError, ValueError):
+            logger.warning(
+                "Answer to question %s was not posted to session %s", self.pk, self.session_id, exc_info=True
+            )
+            return
+        try:
+            self.mark_posted()
+        except DatabaseError:
+            logger.warning("Answer to question %s was posted but not stamped as posted", self.pk, exc_info=True)
+
+    @classmethod
+    def pending(cls, *, using: str | None = None) -> models.QuerySet["DeferredQuestion"]:
+        """Return the unanswered, undismissed queue, oldest first.
+
+        The statusline and ``t3 teatree questions list`` use this — a row whose
+        ``answered_at`` or ``dismissed_at`` is set is excluded.
+        """
+        manager = cls.objects.using(using) if using else cls.objects
+        return manager.filter(answered_at__isnull=True, dismissed_at__isnull=True).order_by("created_at")
+
+    @classmethod
+    def consume(
+        cls,
+        question_id: int,
+        *,
+        answer: str = "",
+        dismissed_reason: str = "",
+        using: str | None = None,
+    ) -> "DeferredQuestion | None":
+        """Atomically resolve a pending question.
+
+        Exactly one of ``answer`` / ``dismissed_reason`` must be non-empty
+        — the caller chooses answer vs dismiss. Returns the consumed row
+        (so the caller can write the audit) or ``None`` when the
+        question is missing or already resolved. ``select_for_update``
+        + ``answered_at``/``dismissed_at`` stamps make resolution
+        single-use even under a concurrent second answer.
+        """
+        if bool(answer.strip()) == bool(dismissed_reason.strip()):
+            msg = "consume requires exactly one of answer / dismissed_reason (#58)"
+            raise DeferredQuestionError(msg)
+
+        manager = cls.objects.using(using) if using else cls.objects
+        with transaction.atomic(using=using):
+            row = (
+                manager.select_for_update()
+                .filter(pk=question_id, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return None
+            now = timezone.now()
+            if answer.strip():
+                row.answered_at = now
+                row.answer_text = answer
+                row.save(update_fields=["answered_at", "answer_text"], using=using)
+                kind = "question.answered"
+                if row.session_id and row.parked_task_id is None:
+                    transaction.on_commit(row.post_to_asking_session, using=using, robust=True)
+            else:
+                row.dismissed_at = now
+                row.dismissed_reason = dismissed_reason
+                row.save(update_fields=["dismissed_at", "dismissed_reason"], using=using)
+                kind = "question.dismissed"
+            transaction.on_commit(partial(record_lifecycle_transition, kind=kind, entity_id=row.pk), using=using)
+            return row
+
+
+class DeferredQuestionAudit(models.Model):
+    """Post-resolution audit of a :class:`DeferredQuestion` (#58).
+
+    Mirrors ``OnBehalfAudit`` / ``DbAudit`` / ``MergeAudit``: who resolved,
+    what they answered (or why they dismissed), when. One row per
+    resolution; the gate writes it inside the same atomic block as
+    :meth:`DeferredQuestion.consume` so the resolution and the audit
+    land together or not at all.
+    """
+
+    question = models.ForeignKey(
+        DeferredQuestion,
+        on_delete=models.CASCADE,
+        related_name="audits",
+    )
+    action = models.CharField(max_length=16)  # "answered" | "dismissed" | "escalated"
+    answer_text = models.TextField(blank=True, default="")
+    dismissed_reason = models.TextField(blank=True, default="")
+    # Why a NON-resolving action fired. Separate from ``dismissed_reason`` because an
+    # escalation leaves the row pending — reusing the dismissal column would read as
+    # a resolution that never happened.
+    note = models.TextField(blank=True, default="")
+    resolver_id = models.CharField(max_length=255, blank=True, default="")
+    resolved_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "teatree_deferred_question_audit"
+        ordering: ClassVar = ["-resolved_at"]
+
+    def __str__(self) -> str:
+        return f"deferred-question-audit<{self.action}:{self.question.pk} by {self.resolver_id or '?'}>"

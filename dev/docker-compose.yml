@@ -1,0 +1,51 @@
+# Docker Compose for teatree CI/testing tasks.
+# Lightweight, SQLite-only, ephemeral containers.
+#
+# Usage (prefer t3 CLI wrappers):
+#   t3 teatree run tests          # unit tests
+#   t3 teatree e2e project      # E2E with parallel Playwright workers
+
+x-base: &base
+  build:
+    context: ..
+    dockerfile: dev/Dockerfile.test
+    # The Dockerfile is multi-stage (a `lint` stage bakes prek's hook envs FROM
+    # base); pin the target explicitly so an untargeted build never silently
+    # produces the LAST stage instead.
+    target: base
+  volumes:
+    - ..:/app:ro
+  environment:
+    UV_PROJECT_ENVIRONMENT: /tmp/.venv
+    COVERAGE_FILE: /tmp/.coverage
+  working_dir: /app
+
+services:
+  tests:
+    <<: *base
+    command: >
+      uv run pytest
+      --no-header --no-cov -v
+      -o cache_dir=/tmp/.pytest_cache
+    profiles: [tests]
+
+  e2e:
+    <<: *base
+    # Pin platform to linux/amd64 so snapshot baselines match CI (GitHub
+    # ubuntu-latest is x86_64). Without this, Apple Silicon Docker pulls the
+    # aarch64 image and font rendering shifts enough to break pixelmatch.
+    platform: linux/amd64
+    volumes:
+      - ..:/app:ro
+      - ../e2e/snapshots:/app/e2e/snapshots
+      # Writable mounts for failure triage — host paths are git-ignored.
+      - ../e2e/.logs:/app/e2e/.logs
+      - ../e2e/.videos:/app/e2e/.videos
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile.e2e
+    entrypoint: ["uv", "run", "pytest", "--no-cov",
+      "-p", "no:tach", "-v",
+      "-o", "cache_dir=/tmp/.pytest_cache"]
+    command: ["e2e/"]
+    profiles: [e2e]

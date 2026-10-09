@@ -1,0 +1,242 @@
+"""Which ticket(s) a pending ``DeferredQuestion`` is about (#4178).
+
+The repair-loop reconcile (:mod:`teatree.loop.repair_halt_reconcile`) could only
+answer that for a row carrying a ``repair-`` ``dedupe_marker`` — 6 of 70 pending
+rows when #4178 was measured. The other 64 had no marker to key a subject off, so
+no resolver could reach them and each waited on a human.
+
+This is the generalised answer. Three sources, consulted in order, and the FIRST one
+that is applicable to the row owns it:
+
+1. the repair markers — a ``repair-`` prefixed row belongs to #3692's reconcile
+    outright, delegated verbatim to
+    :func:`~teatree.loop.repair_halt_reconcile.repair_marker_subject_tickets`.
+2. ``parked_task`` — an explicit FK to the ``Task`` whose park raised the question,
+    so its ticket IS the subject. The headless needs-input lane sets it.
+3. ``task_session`` — the ``Session`` of the task a task-derived producer raised the
+    question from, so its ticket is the subject. ``session_id`` names only an asking
+    Claude session and never derives a subject.
+
+Applicability is why the answer is a typed three-way rather than ``list | None``.
+The repair escalation stamps ``task_session``, so every repair row
+also carries source 3 — and a falsy ``no subject`` from source 1 would hand the row to
+a source that answers about the ASKING session instead of the marker's own subjects.
+An applicable source that cannot name a subject therefore STOPS the chain, which is
+#3692's "the caller keeps its question" preserved through the generalisation.
+
+The marker parse is deliberately NOT widened past the ``repair-`` prefixes: a
+non-repair marker's second field is not a ticket pk (``attachment-hold:5``), and
+reading it as one would drain a live owner question on a coincidence.
+
+Every source answers ``None`` — undeterminable — rather than guessing, and the
+sweep treats ``None`` as KEEP.
+"""
+
+from collections import defaultdict
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+
+from teatree.core.models import PullRequest, Session, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.repair_halt_reconcile import repair_marker_subject_tickets
+from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_PK_RE
+
+_REPAIR_PREFIX = "repair-"
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectAnswer:
+    """One source's answer about a question's subject, as ticket PKs.
+
+    ``applicable`` is what a bare ``list[int] | None`` could not express: whether this
+    source OWNS the row, independently of whether it managed to name a subject.
+
+    PKs rather than FSM states because the state is only ONE of the facts a subject
+    ticket carries: whether its pull requests are settled is another, and a ticket
+    can sit non-terminal for weeks with its PR already merged.
+    """
+
+    applicable: bool
+    tickets: tuple[int, ...] = ()
+
+
+NOT_APPLICABLE = SubjectAnswer(applicable=False)
+UNDETERMINABLE = SubjectAnswer(applicable=True)
+
+
+def _resolved(tickets: Sequence[int]) -> SubjectAnswer:
+    return SubjectAnswer(applicable=True, tickets=tuple(tickets))
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectIndex:
+    """Pre-resolved subject states for one sweep's pending rows.
+
+    Built once per sweep so a backlog of N rows costs three queries rather than 3N.
+    """
+
+    #: ``repair-`` dedupe marker -> the pks of the tickets that raised it.
+    marker_tickets: dict[str, list[int]]
+    #: question pk -> its parked task's ticket pk, for the rows that carry one.
+    parked_task_tickets: dict[int, int]
+    #: question pk -> the ticket pk its stuck-redispatch-halt TEXT names.
+    halt_marker_tickets: dict[int, int]
+    session_tickets: dict[int, int]
+    ticket_states: dict[int, str]
+    #: subject ticket pk -> the state of every pull request recorded against it.
+    ticket_pr_states: dict[int, tuple[str, ...]]
+
+    @classmethod
+    def build(cls, questions: Sequence[DeferredQuestion]) -> "SubjectIndex":
+        markers = repair_marker_subject_tickets(
+            {q.dedupe_marker for q in questions if q.dedupe_marker.startswith(_REPAIR_PREFIX)}
+        )
+        parked = _parked_ticket_ids({q.pk for q in questions})
+        sessions = _session_ticket_ids(_session_pks(questions))
+        halted = _halt_marker_ticket_ids(questions)
+
+        subjects = (
+            {pk for pks in markers.values() for pk in pks}
+            | set(parked.values())
+            | set(sessions.values())
+            | set(halted.values())
+        )
+        return cls(
+            marker_tickets=markers,
+            parked_task_tickets=parked,
+            halt_marker_tickets=halted,
+            session_tickets=sessions,
+            ticket_states=_ticket_states(subjects),
+            ticket_pr_states=_ticket_pr_states(subjects),
+        )
+
+    def ticket_ids_for(self, question: DeferredQuestion) -> list[int] | None:
+        """Every subject ticket's pk, or ``None`` when no source can name one."""
+        for source in _SUBJECT_SOURCES:
+            answer = source(self, question)
+            if answer.applicable:
+                return list(answer.tickets) or None
+        return None
+
+    def states_for(self, question: DeferredQuestion) -> list[str] | None:
+        """Every subject ticket's FSM state, or ``None`` when no source can name one."""
+        tickets = self.ticket_ids_for(question)
+        if tickets is None:
+            return None
+        return [self.ticket_states[pk] for pk in tickets if pk in self.ticket_states] or None
+
+    def pr_states_for(self, question: DeferredQuestion) -> list[str] | None:
+        """Every pull-request state the subject tickets carry, or ``None`` when undeterminable.
+
+        ``None`` covers both "no subject" and "a subject ticket has no pull request at
+        all": a ticket with no PR row proves nothing about whether its work landed, so
+        a caller reading this must never drain on it. Partial evidence is no evidence —
+        one un-PR'd subject voids the whole answer rather than shrinking it.
+        """
+        tickets = self.ticket_ids_for(question)
+        if not tickets:
+            return None
+        states: list[str] = []
+        for pk in tickets:
+            recorded = self.ticket_pr_states.get(pk)
+            if not recorded:
+                return None
+            states.extend(recorded)
+        return states
+
+
+SubjectSource = Callable[[SubjectIndex, DeferredQuestion], SubjectAnswer]
+
+
+def _repair_marker_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
+    if not question.dedupe_marker.startswith(_REPAIR_PREFIX):
+        return NOT_APPLICABLE
+    tickets = index.marker_tickets.get(question.dedupe_marker)
+    return _resolved(tickets) if tickets else UNDETERMINABLE
+
+
+def _parked_task_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
+    ticket = index.parked_task_tickets.get(question.pk)
+    return _resolved([ticket]) if ticket is not None else NOT_APPLICABLE
+
+
+def _stuck_halt_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
+    """The ticket a ``stuck-redispatch-halt:N`` question names in its dedupe marker.
+
+    ``stuck_ticket_redispatch._escalate_once`` records the question with no session and
+    no parked task, so the marker is the ONLY handle on its subject — which is why nine
+    of these sat pending after their shared dispatch failure was fixed, reachable by the
+    age backstop alone.
+
+    A marker naming a ticket that no longer exists is UNDETERMINABLE, not absent: the
+    row is owned by this source and kept, rather than falling through to a source that
+    would answer about something else.
+    """
+    if STUCK_HALT_PK_RE.match(question.dedupe_marker) is None:
+        return NOT_APPLICABLE
+    ticket = index.halt_marker_tickets.get(question.pk)
+    return _resolved([ticket]) if ticket is not None else UNDETERMINABLE
+
+
+def _session_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
+    ticket = index.session_tickets.get(_session_pk(question) or 0)
+    return _resolved([ticket]) if ticket is not None else NOT_APPLICABLE
+
+
+#: Consulted in order; the first APPLICABLE source owns the row (see the module docstring).
+_SUBJECT_SOURCES: tuple[SubjectSource, ...] = (
+    _repair_marker_answer,
+    _stuck_halt_answer,
+    _parked_task_answer,
+    _session_answer,
+)
+
+
+def _session_pk(question: DeferredQuestion) -> int | None:
+    return question.task_session_id
+
+
+def _session_pks(questions: Sequence[DeferredQuestion]) -> set[int]:
+    return {pk for pk in (_session_pk(q) for q in questions) if pk is not None}
+
+
+def _parked_ticket_ids(question_pks: set[int]) -> dict[int, int]:
+    if not question_pks:
+        return {}
+    return dict(
+        DeferredQuestion.objects.filter(pk__in=question_pks, parked_task__isnull=False).values_list(
+            "pk", "parked_task__ticket_id"
+        )
+    )
+
+
+def _halt_marker_ticket_ids(questions: Sequence[DeferredQuestion]) -> dict[int, int]:
+    """Question pk -> the LIVE ticket its halt marker names, in one query."""
+    named = {
+        q.pk: int(match.group(1)) for q in questions if (match := STUCK_HALT_PK_RE.match(q.dedupe_marker)) is not None
+    }
+    if not named:
+        return {}
+    live = set(Ticket.objects.filter(pk__in=set(named.values())).values_list("pk", flat=True))
+    return {pk: ticket for pk, ticket in named.items() if ticket in live}
+
+
+def _session_ticket_ids(session_pks: set[int]) -> dict[int, int]:
+    if not session_pks:
+        return {}
+    return dict(Session.objects.filter(pk__in=session_pks).values_list("pk", "ticket_id"))
+
+
+def _ticket_states(ticket_pks: set[int]) -> dict[int, str]:
+    if not ticket_pks:
+        return {}
+    return dict(Ticket.objects.filter(pk__in=ticket_pks).values_list("pk", "state"))
+
+
+def _ticket_pr_states(ticket_pks: set[int]) -> dict[int, tuple[str, ...]]:
+    if not ticket_pks:
+        return {}
+    grouped: dict[int, list[str]] = defaultdict(list)
+    for ticket_pk, state in PullRequest.objects.filter(ticket_id__in=ticket_pks).values_list("ticket_id", "state"):
+        grouped[ticket_pk].append(state)
+    return {pk: tuple(states) for pk, states in grouped.items()}

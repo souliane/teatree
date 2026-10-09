@@ -1,0 +1,5 @@
+{
+  "name": "eval-skill-catalog",
+  "version": "0.0.1",
+  "description": "Eval-only fixture plugin. Provides synthetic SKILL.md stand-ins for names that skill-routing eval scenarios (evals/scenarios/skill_routing.yaml, overlay_work_requires_overlay_skill.yaml) reference but core does not itself ship: a placeholder overlay's workspace/legal-entity skill, its project dev skill, the generic language bibles, and the review skill named without a leading slash. Registered by teatree.eval.api_runner ONLY for a scenario that declares EvalSpec.available_skills, so the isolated eval clean room has a real, discoverable Skill-tool catalog entry for each. Not a real overlay, not shipped skill content, not installed for real use."
+}

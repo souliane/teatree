@@ -1,0 +1,580 @@
+"""GitHub backend — code host via the ``gh`` CLI."""
+
+import logging
+from typing import cast
+from urllib.parse import quote_plus, urlparse
+
+from teatree.backends import forge_merge_rpc as _forge_merge
+from teatree.backends.errors import IssueNotFoundError
+from teatree.backends.github import pr_reads as _pr_reads
+from teatree.backends.github.api import (
+    _FORGE_READ_TIMEOUT_SECONDS,
+    _gh_api_get,
+    _gh_api_get_paginated,
+    _gh_api_patch,
+    _gh_api_post,
+    _gh_api_search_paginated,
+    _parse_issue_ref,
+    _run_gh,
+)
+from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
+from teatree.backends.github.payloads import _GitHubUser, latest_review_state_from_reviews, reviewer_is_requested
+from teatree.backends.github.pr_create import create_pr as _create_pr
+from teatree.backends.github.pr_notes import GitHubPrNotes
+from teatree.backends.github.pr_reads import PR_URL_RE
+from teatree.core.backend_protocols import (
+    ApprovalState,
+    DraftState,
+    ForgeMergeResult,
+    PrMergeState,
+    PrMessage,
+    PrOpenState,
+    PrReview,
+    PullRequestSpec,
+    ReviewState,
+    UploadVerification,
+)
+from teatree.types import RawAPIDict
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
+
+#: Intake's queue order. An unsorted GitHub search ranks by *best match* — a relevance
+#: score nobody set — so an issue that ranks low can lose every free slot indefinitely
+#: (#4238). The intake scanner re-sorts the merged result too; this makes each single
+#: query's order the same thing rather than something the merge has to undo.
+_OLDEST_FIRST = "sort=created&order=asc"
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
+    """CodeHost implementation backed by the ``gh`` CLI."""
+
+    def __init__(self, *, token: str = "") -> None:
+        self._token = token
+        self._notes = GitHubPrNotes(token)
+
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict:
+        return _create_pr(spec, token=self._token)
+
+    def current_user(self) -> str:
+        """Return the authenticated GitHub login (e.g. ``souliane``)."""
+        data = _gh_api_get("user", token=self._token)
+        if not isinstance(data, dict):
+            return ""
+        user = cast("_GitHubUser", data)
+        return user.get("login", "")
+
+    def is_assignable(self, *, repo: str, login: str) -> bool:
+        """Whether *login* can be assigned on *repo* (#3100).
+
+        ``GET /repos/{slug}/assignees/{login}`` answers 204 for an
+        assignable login and 404 otherwise; any probe failure (network,
+        auth, no slug) reads as not-assignable so PR creation degrades to
+        an unassigned PR instead of failing at ``gh --assignee``.
+        """
+        slug = git.remote_slug(repo=repo)
+        if not slug or not login:
+            return False
+        try:
+            _run_gh(
+                "gh",
+                "api",
+                f"repos/{slug}/assignees/{login}",
+                "--silent",
+                token=self._token,
+                timeout=_FORGE_READ_TIMEOUT_SECONDS,
+            )
+        except CommandFailedError:
+            return False
+        return True
+
+    def list_my_prs(self, *, author: str, updated_after: str | None = None, enrich: bool = True) -> list[RawAPIDict]:
+        """Open PRs authored by *author*, ENRICHED with head SHA + CI rollup (#7).
+
+        The ``search/issues`` API carries no pipeline fields, so a bare search hit
+        drives ``MyPrsScanner``'s red-pipeline lane with an empty status — the
+        my_pr.failed auto-debug lane was structurally inert on GitHub (this
+        deployment's forge). Each hit is enriched with one bounded
+        ``gh pr view --json headRefOid,statusCheckRollup,mergeable,mergeStateStatus``
+        so ``head_sha`` and the aggregate CI state reach the scanner. An
+        enrichment that fails (auth/network/unknown PR) leaves the hit unenriched
+        — the scanner then warns about the gap rather than silently reading "".
+
+        ``enrich=False`` skips it entirely for a caller that reads only the search
+        hit's own fields: the enrichment is one SEQUENTIAL ``gh pr view`` per PR, which
+        cost intake ~14s of its 60s scan budget for CI state it never looks at (#4466).
+        """
+        terms = [f"is:pr is:open author:{author}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        query = quote_plus(" ".join(terms))
+        hits = _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+        if not enrich:
+            return hits
+        return [_pr_reads.enrich_pr_pipeline(hit, token=self._token) for hit in hits]
+
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        """List merged PRs authored by *author*.
+
+        GitHub's search API caps EVERY query at 1000 results regardless of
+        pagination, so without an *updated_after* cutoff a prolific author's
+        merged-PR history silently truncates at the 1000 most recent. Callers
+        that need completeness must pass a recent *updated_after*; an uncut call
+        warns (throttled) so the truncation is visible rather than silent.
+        """
+        terms = [f"is:pr is:merged author:{author}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        else:
+            warn_throttled(
+                logger,
+                f"github-merged-prs-uncapped:{author}",
+                "list_my_merged_prs(%r) has no updated_after cutoff — GitHub search caps at 1000 results, "
+                "older merged PRs may be silently truncated",
+                author,
+            )
+        query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]:
+        terms = [f"is:pr is:open review-requested:{reviewer}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_prs(self, *, repo: str, state: str = "", author: str = "") -> list[RawAPIDict]:
+        """Return PRs on ``owner/repo`` filtered by *state* and *author*.
+
+        *state* is GitHub's search qualifier (``open`` / ``closed`` / ``merged``);
+        an empty *state* lists every state. Uses the issue-search API so an
+        ``author`` filter is a first-class qualifier (the ``pulls`` list endpoint
+        cannot filter by author).
+        """
+        terms = [f"repo:{repo} is:pr"]
+        if state:
+            terms.append(f"is:{state}")
+        if author:
+            terms.append(f"author:{author}")
+        query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]:
+        """PRs on *repo* merged at or after ISO-8601 *since* — the external-outcome read.
+
+        Every failure RE-RAISES. An empty result is read downstream as "the factory
+        shipped nothing", which is the alarm this measure exists to raise — so a
+        rate-limited or unauthenticated read must never degrade into that answer.
+        """
+        query = quote_plus(f"repo:{repo} is:pr is:merged merged:>={since}")
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the PR's changed files (path + per-file additions/deletions/patch).
+
+        Returns ``[]`` ONLY for a genuine HTTP 404 (unknown PR/repo) — a real
+        "no such PR" degrades to a caught empty result. Every OTHER failure
+        (auth, rate-limit, network, 5xx) RE-RAISES: an empty diff read as data
+        would let a reviewer sign off on a lie ("this PR touches nothing"), so an
+        indeterminate read must surface, not masquerade as an empty PR.
+        """
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> dict[str, str | None]:
+        files = _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/files?per_page=100", token=self._token)
+        return {
+            str(path): patch if isinstance(patch := entry.get("patch"), str) else None
+            for entry in files
+            for path in (entry.get("previous_filename"), entry.get("filename"))
+            if path
+        }
+
+    def list_pr_reviews(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the PR's submitted reviews (state + author); ``[]`` ONLY for a genuine HTTP 404.
+
+        The existing-review surface ``t3 review run`` reports: which logins
+        approved, and how many of the viewer's own reviews are still ``PENDING``
+        (GitHub's analogue of a GitLab draft note — the endpoint exposes a
+        pending review only to the account that owns it). Shares
+        :meth:`get_pr_diff`'s polarity: an unknown PR degrades to ``[]``, every
+        other failure re-raises rather than reading as "nobody has reviewed".
+        """
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/reviews?per_page=100", token=self._token)
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        """Return the commits on the PR; ``[]`` ONLY for a genuine HTTP 404.
+
+        Like :meth:`get_pr_diff`, an unknown PR degrades to ``[]`` but any other
+        failure (auth/rate-limit/network/5xx) re-raises rather than being read as
+        an empty commit list.
+        """
+        try:
+            return _gh_api_get_paginated(f"repos/{repo}/pulls/{pr_iid}/commits?per_page=100", token=self._token)
+        except CommandFailedError as exc:
+            if _pr_reads.is_not_found(exc):
+                return []
+            raise
+
+    def get_repo(self, *, repo: str) -> RawAPIDict:
+        """Return ``owner/repo`` metadata (default branch, visibility, …).
+
+        Returns ``{"error": ...}`` when the repo cannot be resolved so an unknown
+        repo yields a caught structured error, never an uncaught transport failure.
+        """
+        try:
+            data = _gh_api_get(f"repos/{repo}", token=self._token)
+        except CommandFailedError:
+            return {"error": f"Could not resolve repo: {repo}"}
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Repo not found: {repo}"}
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
+        return self._notes.post_comment(repo=repo, pr_iid=pr_iid, body=body)
+
+    def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
+        _ = pr_iid  # GitHub comment IDs are globally unique
+        return self._notes.update_comment(repo=repo, comment_id=comment_id, body=body)
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        return self._notes.list_comments(repo=repo, pr_iid=pr_iid)
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:
+        return self._notes.find_review(repo=repo, pr_iid=pr_iid, marker=marker)
+
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:
+        return self._notes.submit_review(repo=repo, pr_iid=pr_iid, review=review)
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # noqa: PLR6301 — instance method to satisfy the CodeHostBackend Protocol.
+        """No STALE-BOT-thread filtering surface on GitHub (#3340).
+
+        This method backs GitLab's stale-bot-thread exclusion
+        (:func:`thread_opened_solely_by`), which keys on the per-note authorship
+        the GitLab discussions endpoint exposes. GitHub's aggregate unresolved
+        count is read directly in :meth:`get_mr_approvals` via
+        ``reviewThreads(isResolved:false)`` (GitHub DOES enforce conversation
+        resolution as a merge gate), so no per-note thread list is assembled
+        here. Returns ``[]`` — a caller iterating it for the stale-bot filter
+        selects nothing.
+        """
+        _ = (repo, pr_iid)
+        return []
+
+    def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues assigned to *assignee*, scoped to *repo_slugs* when supplied."""
+        query = quote_plus(f"is:issue is:open assignee:{assignee}" + "".join(f" repo:{s}" for s in repo_slugs))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues *author* FILED — the trusted-author intake query (#3235).
+
+        *repo_slugs* AND OR-ed ``repo:owner/name`` qualifiers in, scoping intake to the
+        factory's own repos; empty keeps GitHub's cross-repo author search (the pre-scope
+        firehose + cross-repo claim hole this closes — see the commit body).
+        """
+        query = quote_plus(f"is:issue is:open author:{author}" + "".join(f" repo:{s}" for s in repo_slugs))
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues carrying *label* — the owner-admission intake query (#3634).
+
+        The ONLY route by which an untrusted author's issue reaches the factory, so it
+        is repo-scoped exactly like the author query.
+        """
+        query = quote_plus(f'is:issue is:open label:"{label}"' + "".join(f" repo:{s}" for s in repo_slugs))
+        return _gh_api_search_paginated(f"search/issues?q={query}&{_OLDEST_FIRST}&per_page=100", token=self._token)
+
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict:
+        """Open a GitHub issue on ``owner/repo`` and return the created payload.
+
+        ``repo`` is the ``owner/repo`` slug. The returned dict carries the
+        forge's ``html_url`` (the clickable issue link) and ``number``.
+        """
+        payload: RawAPIDict = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        data = _gh_api_post(f"repos/{repo}/issues", payload, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> RawAPIDict:
+        _ = (title, body, labels)
+        return {
+            "error": (
+                f"GitHub child work items are not supported (token={'set' if self._token else 'unset'}, "
+                f"parent={parent_url}, type={child_type})"
+            ),
+        }
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
+        """Return open issues on ``owner/repo`` matching the free-text *query*.
+
+        Uses GitHub's issue search so a dedup caller can find an
+        already-filed enforcement issue by a fingerprint marker embedded in
+        its body, without paging the whole issue list.
+        """
+        terms = quote_plus(f"repo:{repo} is:issue is:open {query}")
+        return _gh_api_search_paginated(f"search/issues?q={terms}&per_page=100", token=self._token)
+
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
+        """Every OPEN issue on ``owner/repo``, all pages — the create-dedupe landscape (#162).
+
+        Uses the repository issues endpoint rather than search: search is
+        eventually consistent and its index lags a just-filed issue by up to a
+        minute, which is precisely the window a retrying filer would create a
+        duplicate in. GitHub returns pull requests from this endpoint too, so
+        entries carrying ``pull_request`` are dropped — an MR is never a
+        candidate for an issue dedupe.
+        """
+        raw = _gh_api_get_paginated(f"repos/{repo}/issues?state=open&per_page=100", token=self._token)
+        return [issue for issue in raw if "pull_request" not in issue]
+
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+        """Close a GitHub issue, optionally leaving an audit-trail comment first.
+
+        Idempotent: ``PATCH state=closed`` is a no-op on an already-closed issue.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
+        """
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, number = ref
+        if comment:
+            self.post_issue_comment(issue_url=issue_url, body=comment)
+        data = _gh_api_patch(
+            f"repos/{repo}/issues/{number}",
+            {"state": "closed", "state_reason": "not_planned"},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Replace a GitHub issue's body (description) in place.
+
+        Used to keep ONE auto-managed checkbox ledger in a standing umbrella
+        issue's body: the dream-promote flow re-fetches the body, upserts a
+        gap checkbox keyed on a stable HTML-comment marker, and writes the
+        whole body back. Returns ``{"error": ...}`` when the URL is not a
+        recognised GitHub issue URL.
+        """
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, number = ref
+        data = _gh_api_patch(f"repos/{repo}/issues/{number}", {"body": body}, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
+        msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
+        raise NotImplementedError(msg)
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification:
+        msg = f"Upload verification for {repo} not supported (GitHub has no project upload API; upload={upload})"
+        raise NotImplementedError(msg)
+
+    def get_issue(self, issue_url: str) -> RawAPIDict:
+        """Fetch a GitHub issue from its full URL.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
+        issue URL.
+
+        Raises:
+            IssueNotFoundError: when ``gh api`` reports HTTP 404 (issue
+                permanently deleted or never existed).  Any other failure
+                (5xx, timeout, network error) propagates as the original
+                ``CommandFailedError`` so the scanner keeps retrying it.
+        """
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, number = ref
+        endpoint = f"repos/{repo}/issues/{number}"
+        try:
+            data = _gh_api_get(endpoint, token=self._token)
+        except CommandFailedError as exc:
+            # ``gh api`` exits non-zero for ALL HTTP errors (404, 5xx alike).
+            # The only reliable signal for a permanent 404 is the literal
+            # "HTTP 404" string in stderr — returncode is always 1.
+            if "HTTP 404" in exc.stderr:
+                raise IssueNotFoundError(issue_url) from exc
+            raise
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
+
+    def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+        """Return the ``<owner>/<repo>`` that owns *issue_url*, or ``""`` when unparsable."""
+        ref = _parse_issue_ref(issue_url)
+        return ref[0] if ref is not None else ""
+
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Post a comment to a GitHub issue; returns ``{"error": ...}`` on a non-issue URL."""
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, target_number = ref
+        data = _gh_api_post(
+            f"repos/{repo}/issues/{target_number}/comments",
+            {"body": body},
+            token=self._token,
+        )
+        result: RawAPIDict = cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        comment_id = result.get("id")
+        if isinstance(comment_id, int):
+            _record_github_note_claim(
+                repo=repo,
+                target_number=target_number,
+                comment_id=comment_id,
+                body=body,
+                target_url=str(result.get("html_url") or ""),
+            )
+        return result
+
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+        """List the comments on a GitHub issue; returns ``[]`` on a non-issue URL."""
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return []
+        repo, number = ref
+        return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=self._token)
+
+    def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+        """Edit a GitHub issue comment in place via /repos/{repo}/issues/comments/{id}.
+
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
+        """
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo = ref[0]
+        data = _gh_api_patch(
+            f"repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo = ref[0]
+        _run_gh(
+            "gh",
+            "api",
+            f"repos/{repo}/issues/comments/{comment_id}",
+            "--method",
+            "DELETE",
+            "--header",
+            "Accept: application/vnd.github+json",
+            token=self._token,
+            timeout=_FORGE_READ_TIMEOUT_SECONDS,
+        )
+        return {}
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+        return _pr_reads.approval_state(repo=repo, pr_iid=pr_iid, token=self._token)
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
+        """Return *reviewer*'s current review state on the PR at *pr_url*.
+
+        Walks the PR's review timeline (most recent first) and returns the
+        latest non-comment state the reviewer has submitted: ``APPROVED``,
+        ``CHANGES_REQUESTED``, ``DISMISSED``, or ``PENDING``. When the
+        reviewer has no terminal state but is still listed as a requested
+        reviewer (e.g. a re-request after a dismissal), the result is
+        ``PENDING``. Unparsable URLs and unknown reviewers yield ``NONE``.
+        """
+        path = urlparse(pr_url).path
+        match = PR_URL_RE.match(path)
+        if match is None or not reviewer:
+            return ReviewState.NONE
+
+        base = f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}"
+        reviews = _gh_api_get_paginated(f"{base}/reviews?per_page=100", token=self._token)
+        terminal = latest_review_state_from_reviews(reviews, reviewer)
+        if terminal is not None:
+            return terminal
+
+        pr = _gh_api_get(base, token=self._token)
+        if reviewer_is_requested(pr, reviewer):
+            return ReviewState.PENDING
+        return ReviewState.NONE
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        return _pr_reads.pr_open_state(pr_url=pr_url, token=self._token)
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        return _pr_reads.pr_author(pr_url=pr_url, token=self._token)
+
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:  # noqa: PLR6301 — CodeHostBackend Protocol surface; the probe is repo-dir scoped, not client-scoped.
+        return _pr_reads.open_pr_url_for_branch(repo=repo, branch=branch)
+
+    def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
+        return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
+        return self._merge_rpc().fetch_pr_draft_state(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None:
+        return self._merge_rpc().fetch_pr_same_repo(slug=slug, pr_id=pr_id)
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+
+    def fetch_workflow_runs_at_head(self, *, slug: str, head_sha: str) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_workflow_runs_at_head(slug=slug, head_sha=head_sha)
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
+
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
+    ) -> ForgeMergeResult:
+        return self._merge_rpc().merge_pr_squash_bound(
+            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, message=message, squash=squash
+        )

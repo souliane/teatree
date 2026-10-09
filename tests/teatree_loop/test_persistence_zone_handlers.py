@@ -1,0 +1,665 @@
+"""Wire-level persistence for the revived agent-dispatch zones (#1 blocker).
+
+Each revived zone is exercised through the REAL ``dispatch() -> persist_agent_actions()``
+round trip with a production-shaped ``ScanSignal`` — the previously-dropped zones
+(codex review, red-card, red-MR fix, e2e-fix, answerer, skill-drift) must now
+produce a ``Ticket`` + ``Task`` on the registered ``(role, phase)``, be
+idempotent, and — for the marker-bearing zones — claim their idempotency marker
+at PERSIST time so a dropped/failed persist rolls the marker back for retry.
+
+Anti-vacuity: on the pre-fix code every zone below except ``t3:reviewer`` /
+``t3:orchestrator`` was dropped by ``_ZONE_HANDLERS`` (``logger.debug`` + skip),
+so ``persist_agent_actions`` returned ``[]`` and created no rows — every
+``created`` / ``Task.objects.filter(...)`` assertion here was RED before the fix.
+"""
+
+from unittest.mock import patch
+
+from django.test import TestCase
+
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.modelkit.review_state import ReviewState
+from teatree.core.models import DeferredQuestion, PullRequest, Task, Ticket
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
+from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
+from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
+from teatree.core.tasks import execute_provision
+from teatree.loop.dispatch import DispatchAction, dispatch
+from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
+from teatree.loop.persistence_reviewer import _already_reviewed_at_head
+from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
+from tests.factories import planned_ticket
+
+
+def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
+    """Dispatch a signal and return only its ``kind="agent"`` actions."""
+    return [a for a in dispatch([signal]) if a.kind == "agent"]
+
+
+class TestDebugZoneRevived(TestCase):
+    """``my_pr.failed`` → author ``debugging`` task + persist-time RedMrFixAttempt."""
+
+    def _signal(self, *, pr_url: str = "https://example.com/o/r/pull/5", head_sha: str = "sha-red-1") -> ScanSignal:
+        return ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {pr_url}",
+            payload={"pr_url": pr_url, "head_sha": head_sha, "overlay": "acme"},
+        )
+
+    def test_a_fresh_fix_ticket_is_planned_first_carrying_the_remedy(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "planning"
+        assert "Auto-scheduled red-MR fix — debug https://example.com/o/r/pull/5" in task.execution_reason
+        assert task.ticket.role == Ticket.Role.AUTHOR
+
+    def test_a_planned_fix_ticket_gets_its_debugging_task(self) -> None:
+        planned_ticket(
+            issue_url="https://x/pr/8", overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED
+        )
+        created = persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/8", head_sha="sha-8")))
+        assert [task.phase for task in created] == ["debugging"]
+
+    def test_claims_red_mr_fix_marker_at_persist_time(self) -> None:
+        persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/9", head_sha="sha-9")))
+        assert RedMrFixAttempt.objects.filter(pr_url="https://x/pr/9", head_sha="sha-9").count() == 1
+
+    def test_idempotent_across_ticks_same_sha(self) -> None:
+        actions = _agent_actions(self._signal(pr_url="https://x/pr/10", head_sha="sha-10"))
+        first = persist_agent_actions(actions)
+        second = persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/10", head_sha="sha-10")))
+        assert len(first) == 1
+        assert second == []
+        assert Task.objects.filter(ticket__issue_url="https://x/pr/10", phase="planning").count() == 1
+        assert RedMrFixAttempt.objects.filter(pr_url="https://x/pr/10").count() == 1
+
+    def test_role_conflict_does_not_burn_marker(self) -> None:
+        # An existing REVIEWER ticket for the same url makes the handler drop
+        # (role conflict) BEFORE the claim — the marker is never touched, so the
+        # next tick retries once the conflict clears.
+        Ticket.objects.create(issue_url="https://x/pr/11", overlay="acme", role=Ticket.Role.REVIEWER)
+        created = persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/11", head_sha="sha-11")))
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url="https://x/pr/11").exists()
+
+    def test_task_creation_failure_rolls_back_marker(self) -> None:
+        # Force the Task write to fail AFTER the marker claim: the shared atomic
+        # block must roll the RedMrFixAttempt row back so the dropped action does
+        # not burn its idempotency marker (#1 blocker — markers survive for retry).
+        with patch.object(Ticket, "schedule_implementing", side_effect=RuntimeError("boom")):
+            errors: dict[str, str] = {}
+            created = persist_agent_actions(
+                _agent_actions(self._signal(pr_url="https://x/pr/12", head_sha="sha-12")),
+                errors=errors,
+            )
+        assert created == []
+        assert not RedMrFixAttempt.objects.filter(pr_url="https://x/pr/12").exists()
+        assert "persist:t3:debug" in errors
+
+
+class TestDebugZoneLandsOnTheOwningTicket(TestCase):
+    _PR = "https://github.com/o/r/pull/77"
+
+    def _red(self) -> list[Task]:
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {self._PR}",
+            payload={"pr_url": self._PR, "head_sha": "a" * 40, "overlay": "acme"},
+        )
+        return persist_agent_actions(_agent_actions(signal))
+
+    def _owner(self, state: str = Ticket.State.PR_OPENED) -> Ticket:
+        owner = planned_ticket(issue_url="https://github.com/o/r/issues/70", overlay="acme", state=state)
+        PullRequest.objects.create(ticket=owner, url=self._PR, repo="o/r", iid="77")
+        return owner
+
+    def test_a_red_owned_pr_debugs_its_owner_and_mints_no_url_keyed_ticket(self) -> None:
+        owner = self._owner()
+
+        created = self._red()
+
+        assert [(task.ticket_id, task.phase) for task in created] == [(owner.pk, "debugging")]
+        assert not Ticket.objects.filter(issue_url=self._PR).exists()
+
+    def test_a_later_review_of_that_pr_runs_on_a_reviewer_row_gated_on_the_owner(self) -> None:
+        owner = self._owner()
+        self._red()
+
+        dispatch_row = AutoReviewDispatch.enqueue(slug="o/r", pr_id=77, head_sha="b" * 40, pr_url=self._PR)
+
+        assert dispatch_row is not None
+        assert dispatch_row.task.ticket.role == Ticket.Role.REVIEWER
+        assert gated_ticket_for_review_task(dispatch_row.task) == owner
+
+    def test_an_owner_that_cannot_take_the_fix_leaves_it_to_a_url_keyed_ticket_without_an_error(self) -> None:
+        unplanned = Ticket.objects.create(
+            issue_url="https://github.com/o/r/issues/70", overlay="acme", state=Ticket.State.PR_OPENED
+        )
+        PullRequest.objects.create(ticket=unplanned, url=self._PR, repo="o/r", iid="77")
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary=f"PR failed: {self._PR}",
+            payload={"pr_url": self._PR, "head_sha": "a" * 40, "overlay": "acme"},
+        )
+        errors: dict[str, str] = {}
+
+        created = persist_agent_actions(_agent_actions(signal), errors=errors)
+
+        assert errors == {}
+        assert [(task.ticket.issue_url, task.phase) for task in created] == [(self._PR, "planning")]
+
+    def test_an_unowned_pr_keeps_its_url_keyed_ticket(self) -> None:
+        created = self._red()
+
+        assert [task.ticket.issue_url for task in created] == [self._PR]
+
+    def test_the_url_keyed_ticket_never_asks_the_owner_about_provisioning(self) -> None:
+        (planning,) = self._red()
+
+        execute_provision.call(planning.ticket_id, len(NO_REPOS_RETRY_DELAYS))
+
+        assert not DeferredQuestion.objects.filter(audience=DeferredQuestion.Audience.OWNER_QUESTION).exists()
+
+    def test_a_terminal_owner_is_not_debugged_and_no_phantom_is_minted(self) -> None:
+        self._owner(state=Ticket.State.MERGED)
+
+        assert self._red() == []
+        assert not Ticket.objects.filter(issue_url=self._PR).exists()
+
+
+class TestCodexReviewZoneRevived(TestCase):
+    """``codex_review.dispatch`` → reviewer variant task + persist-time CodexReviewMarker."""
+
+    def _signal(
+        self,
+        *,
+        pr_url: str = "https://github.com/o/r/pull/7",
+        pr_id: int = 7,
+        head_sha: str = "codexsha1",
+        variant: str = "codex:review",
+    ) -> ScanSignal:
+        return ScanSignal(
+            kind="codex_review.dispatch",
+            summary=f"codex review {pr_url}",
+            payload={
+                "slug": "o/r",
+                "pr_id": pr_id,
+                "head_sha": head_sha,
+                "pr_url": pr_url,
+                "variant": variant,
+                "overlay": "acme",
+                "title": "PR 7",
+            },
+        )
+
+    def test_standard_variant_creates_codex_reviewing_task(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "codex_reviewing"
+        assert task.ticket.role == Ticket.Role.REVIEWER
+        assert task.ticket.extra["codex_variant"] == "codex:review"
+
+    def test_adversarial_variant_creates_adversarial_phase(self) -> None:
+        created = persist_agent_actions(
+            _agent_actions(
+                self._signal(pr_url="https://github.com/o/r/pull/8", pr_id=8, variant="codex:adversarial-review")
+            ),
+        )
+        assert len(created) == 1
+        assert created[0].phase == "codex_adversarial_reviewing"
+
+    def test_claims_codex_marker_at_persist_time(self) -> None:
+        persist_agent_actions(_agent_actions(self._signal(pr_id=100, head_sha="csha-100")))
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=100, head_sha="csha-100").count() == 1
+
+    def test_idempotent_after_marker_claim_across_completed_task(self) -> None:
+        # Prove the PERSIST-time marker (not just the open-task check) dedups: even
+        # after the first review task completes, the same SHA does not re-dispatch.
+        first = persist_agent_actions(_agent_actions(self._signal(pr_id=101, head_sha="csha-101")))
+        assert len(first) == 1
+        first[0].complete()
+        second = persist_agent_actions(_agent_actions(self._signal(pr_id=101, head_sha="csha-101")))
+        assert second == []
+        assert (
+            Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/7", phase="codex_reviewing").count() == 1
+        )
+
+    def test_role_conflict_does_not_burn_marker(self) -> None:
+        Ticket.objects.create(issue_url="https://github.com/o/r/pull/13", overlay="acme", role=Ticket.Role.AUTHOR)
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/13", pr_id=13, head_sha="csha-13")),
+        )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=13).exists()
+
+    def test_reused_ticket_restamps_reviewed_sha_to_the_new_arming_head(self) -> None:
+        first = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-a")),
+        )
+        assert len(first) == 1
+        assert first[0].ticket.extra["reviewed_sha"] == "csha-15-a"
+        first[0].complete()
+        second = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-b")),
+        )
+        assert len(second) == 1
+        assert second[0].ticket.pk == first[0].ticket.pk
+        second[0].ticket.refresh_from_db()
+        assert second[0].ticket.extra["reviewed_sha"] == "csha-15-b"
+
+    def _approved_reviewer_ticket(self, *, pr_id: int, head_sha: str) -> tuple[Ticket, dict[str, str]]:
+        extra = {"reviewed_sha": head_sha, "last_review_state": ReviewState.APPROVED.value}
+        ticket = Ticket.objects.create(
+            issue_url=f"https://github.com/o/r/pull/{pr_id}",
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            extra=dict(extra),
+        )
+        return ticket, extra
+
+    def test_reused_ticket_does_not_carry_the_old_heads_approval_to_the_new_arming_head(self) -> None:
+        ticket, _ = self._approved_reviewer_ticket(pr_id=16, head_sha="csha-16-a")
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/16", pr_id=16, head_sha="csha-16-b")),
+        )
+
+        assert len(created) == 1
+        ticket.refresh_from_db()
+        assert not _already_reviewed_at_head(ticket, "csha-16-b")
+        assert _discharged_sha(ticket) == ""
+
+    def test_an_unclaimed_new_head_leaves_the_reviewed_head_and_its_approval(self) -> None:
+        ticket, extra = self._approved_reviewer_ticket(pr_id=17, head_sha="csha-17-a")
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=17, head_sha="csha-17-b", variant="codex:review")
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/17", pr_id=17, head_sha="csha-17-b")),
+        )
+
+        assert created == []
+        ticket.refresh_from_db()
+        assert ticket.extra == extra
+
+    def test_task_creation_failure_rolls_back_marker(self) -> None:
+        with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):
+            errors: dict[str, str] = {}
+            created = persist_agent_actions(
+                _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/14", pr_id=14, head_sha="csha-14")),
+                errors=errors,
+            )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=14).exists()
+        assert "persist:codex:review" in errors
+
+
+class TestSelfPrReviewZoneRevived(TestCase):
+    """``self_pr_review.dispatch`` → reviewer ``reviewing`` task + persist-time marker (#3569).
+
+    The Claude self-review fallback routes through the SAME ``t3:reviewer`` zone as
+    a colleague review, but the ``self_pr`` payload flag sends it to the self-PR
+    branch, which claims a per-SHA :class:`CodexReviewMarker`. Anti-vacuity: on the
+    pre-#3569 code ``_handle_reviewer`` had no self-PR branch, so the unconditional
+    scanner emit would create a fresh reviewing task every tick (the flood) instead
+    of the single, per-SHA-deduped task these assertions pin.
+    """
+
+    def _signal(
+        self,
+        *,
+        pr_url: str = "https://github.com/o/r/pull/70",
+        pr_id: int = 70,
+        head_sha: str = "selfsha1",
+        variant: str = "claude:review",
+    ) -> ScanSignal:
+        return ScanSignal(
+            kind="self_pr_review.dispatch",
+            summary=f"self-PR review {pr_url}",
+            payload={
+                "slug": "o/r",
+                "pr_id": pr_id,
+                "head_sha": head_sha,
+                "pr_url": pr_url,
+                "url": pr_url,
+                "variant": variant,
+                "overlay": "acme",
+                "title": "PR 70",
+                "self_pr": True,
+            },
+        )
+
+    def test_creates_reviewer_reviewing_task_routed_to_claude(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "reviewing"
+        assert task.ticket.role == Ticket.Role.REVIEWER
+        assert task.ticket.extra["self_pr_review_variant"] == "claude:review"
+
+    def test_dispatch_routes_self_pr_to_reviewer_zone(self) -> None:
+        actions = _agent_actions(self._signal())
+        assert [a.zone for a in actions] == ["t3:reviewer"]
+
+    def test_claims_marker_at_persist_time(self) -> None:
+        persist_agent_actions(_agent_actions(self._signal(pr_id=200, head_sha="selfsha-200")))
+        assert CodexReviewMarker.objects.filter(slug="o/r", pr_id=200, head_sha="selfsha-200").count() == 1
+
+    def test_idempotent_per_sha_after_task_completes(self) -> None:
+        # The persist-time marker (not just the open-task check) dedups per SHA:
+        # even after the first review task completes, the same SHA does NOT re-fire.
+        first = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
+        assert len(first) == 1
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(first[0].ticket)
+        first[0].complete()
+        second = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
+        assert second == []
+        assert Task.objects.filter(ticket__issue_url="https://github.com/o/r/pull/70", phase="reviewing").count() == 1
+
+    def test_force_push_new_sha_re_reviews(self) -> None:
+        first = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202a")))
+        assert len(first) == 1
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(first[0].ticket)
+        first[0].complete()
+        second = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202b")))
+        assert len(second) == 1
+
+    def test_incomplete_payload_creates_nothing(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal(head_sha="")))
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=70).exists()
+
+    def test_role_conflict_does_not_burn_marker(self) -> None:
+        Ticket.objects.create(issue_url="https://github.com/o/r/pull/73", overlay="acme", role=Ticket.Role.AUTHOR)
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/73", pr_id=73, head_sha="selfsha-73")),
+        )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=73).exists()
+
+    def test_task_creation_failure_rolls_back_marker(self) -> None:
+        with patch(
+            "teatree.loop.persistence_self_pr_review.create_phase_task",
+            side_effect=RuntimeError("boom"),
+        ):
+            errors: dict[str, str] = {}
+            created = persist_agent_actions(
+                _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/71", pr_id=71, head_sha="selfsha-71")),
+                errors=errors,
+            )
+        assert created == []
+        assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=71).exists()
+        assert "persist:t3:reviewer" in errors
+
+
+class TestRedCardZoneRevived(TestCase):
+    """``red_card.signal`` → author corrective ``coding`` task, row_id stamped."""
+
+    def _signal(self, *, row_id: int = 42) -> ScanSignal:
+        return ScanSignal(
+            kind="red_card.signal",
+            summary="RED CARD (red_circle) from U1",
+            payload={
+                "row_id": row_id,
+                "signal_kind": "red_circle",
+                "user_id": "U1",
+                "signal_text": ":red_circle:",
+                "offending_message_text": "the offending message",
+                "overlay": "acme",
+            },
+        )
+
+    def test_creates_corrective_task_and_stamps_row_id(self) -> None:
+        # On the pre-fix code red_card fell into _handle_orchestrator, whose
+        # ``auto_start is not True`` guard returned None — nothing was created (RED).
+        created = persist_agent_actions(_agent_actions(self._signal(row_id=42)))
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "planning"
+        assert "Auto-scheduled RED CARD corrective action" in task.execution_reason
+        assert task.ticket.role == Ticket.Role.AUTHOR
+        assert task.ticket.extra["red_card_signal_id"] == 42
+        assert task.ticket.issue_url == "redcard://signal/42"
+
+    def test_idempotent_across_ticks(self) -> None:
+        first = persist_agent_actions(_agent_actions(self._signal(row_id=43)))
+        second = persist_agent_actions(_agent_actions(self._signal(row_id=43)))
+        assert len(first) == 1
+        assert second == []
+
+
+class TestAutoStartOrchestratorSchedulesPlanning(TestCase):
+    """An auto-started issue is routed to planning (#4578); no coding task is minted on it."""
+
+    def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
+        return ScanSignal(
+            kind="issue_intake.admitted",
+            summary=f"Admitted for auto-implement: {url}",
+            payload={"url": url, "auto_start": True, "overlay": "acme"},
+        )
+
+    def test_auto_start_ticket_gets_a_planning_task(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+
+        assert len(created) == 1
+        task = created[0]
+        assert task.phase == "planning"
+        assert task.ticket.role == Ticket.Role.AUTHOR
+        assert not Task.objects.filter(ticket=task.ticket, phase="coding").exists()
+
+
+class TestE2eFixZoneRevived(TestCase):
+    def _signal(self, *, spec: str = "e2e/specs/login.spec.ts") -> ScanSignal:
+        return ScanSignal(
+            kind="e2e.failure_detected",
+            summary=f"Failed E2E: {spec}",
+            payload={"spec": spec, "test_title": "login flow", "skill_overlay": "acme", "ts": "1.2"},
+        )
+
+    def test_creates_author_planning_task_carrying_the_e2e_fix(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        assert created[0].phase == "planning"
+        assert "Auto-scheduled E2E fix — e2e/specs/login.spec.ts" in created[0].execution_reason
+        assert created[0].ticket.role == Ticket.Role.AUTHOR
+
+    def test_idempotent_across_ticks(self) -> None:
+        persist_agent_actions(_agent_actions(self._signal(spec="e2e/specs/a.spec.ts")))
+        second = persist_agent_actions(_agent_actions(self._signal(spec="e2e/specs/a.spec.ts")))
+        assert second == []
+
+
+class TestSkillDriftZoneRevived(TestCase):
+    def _signal(self, *, repo: str = "/repos/skills", file_path: str = "code/SKILL.md") -> ScanSignal:
+        return ScanSignal(
+            kind="skill_drift_detected",
+            summary=f"drift {file_path}",
+            payload={"repo": repo, "file_path": file_path, "finding_fingerprint": "fp1", "overlay": "acme"},
+        )
+
+    def test_creates_author_planning_task_carrying_the_drift_fix(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        assert created[0].phase == "planning"
+        assert "Auto-scheduled skill-drift fix — code/SKILL.md" in created[0].execution_reason
+        assert created[0].ticket.role == Ticket.Role.AUTHOR
+
+
+class TestAnswererZoneRevived(TestCase):
+    def _signal(self, *, event_id: int = 55) -> ScanSignal:
+        return ScanSignal(
+            kind="incoming_event.task_needed",
+            summary="task request (answering): what is X?",
+            payload={"event_id": event_id, "phase": "answering", "detail": "what is X?", "target_ref": ""},
+        )
+
+    def test_creates_author_answering_task(self) -> None:
+        created = persist_agent_actions(_agent_actions(self._signal()))
+        assert len(created) == 1
+        assert created[0].phase == "answering"
+        assert created[0].ticket.role == Ticket.Role.AUTHOR
+
+
+class TestCorrectionZonesClassifyKindFix(TestCase):
+    """#17: correction-origin zones stamp ``kind=FIX`` so the S2 signal + DoD gate see them.
+
+    On the pre-wire code every correction ticket defaulted to ``FEATURE`` — the
+    fix-record DoD gate never fired and S2 read a vacuous FEATURE-only world.
+    Codex-review and answerer tickets are NOT corrections and stay ``FEATURE``.
+    """
+
+    def _created_ticket(self, signal: ScanSignal) -> Ticket:
+        created = persist_agent_actions(_agent_actions(signal))
+        assert len(created) == 1
+        return created[0].ticket
+
+    def test_red_card_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="red_card.signal",
+            summary="RED CARD",
+            payload={"row_id": 71, "signal_kind": "red_circle", "signal_text": ":red_circle:", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_red_mr_fix_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary="PR failed",
+            payload={"pr_url": "https://x/pr/71", "head_sha": "sha-71", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_e2e_fix_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="e2e.failure_detected",
+            summary="Failed E2E",
+            payload={"spec": "e2e/specs/x.spec.ts", "test_title": "x", "skill_overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_skill_drift_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="skill_drift_detected",
+            summary="drift",
+            payload={"repo": "/r", "file_path": "a/SKILL.md", "finding_fingerprint": "fp71", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_codex_review_ticket_stays_feature(self) -> None:
+        signal = ScanSignal(
+            kind="codex_review.dispatch",
+            summary="codex review",
+            payload={
+                "slug": "o/r",
+                "pr_id": 71,
+                "head_sha": "csha-71",
+                "pr_url": "https://github.com/o/r/pull/71",
+                "variant": "codex:review",
+                "overlay": "acme",
+            },
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FEATURE
+
+    def test_answerer_ticket_stays_feature(self) -> None:
+        signal = ScanSignal(
+            kind="incoming_event.task_needed",
+            summary="task request (answering): what is X?",
+            payload={"event_id": 71, "phase": "answering", "detail": "what is X?"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FEATURE
+
+
+class TestFailLoudOnUnhandledZone(TestCase):
+    def test_unhandled_zone_records_persist_error(self) -> None:
+        # An agent zone that is neither handled nor persisted-at-source is a
+        # DROPPED dispatch — it must surface in errors (action_needed), not a
+        # silent logger.debug (#1 blocker fail-loud contract).
+        action = DispatchAction(kind="agent", zone="t3:never-registered", detail="?", payload={"url": "x"})
+        errors: dict[str, str] = {}
+        created = persist_agent_actions([action], errors=errors)
+        assert created == []
+        assert errors["persist:t3:never-registered"]
+
+    def test_handled_zone_records_no_error(self) -> None:
+        # Anti-vacuity: a genuinely-handled zone must NOT record a spurious error.
+        signal = ScanSignal(kind="my_pr.failed", summary="x", payload={"pr_url": "https://x/pr/1", "head_sha": "s1"})
+        errors: dict[str, str] = {}
+        persist_agent_actions(_agent_actions(signal), errors=errors)
+        assert errors == {}
+
+    def test_pending_task_reemission_is_a_silent_no_op(self) -> None:
+        # A pending_task re-emission (carrying task_id) of a persisted-at-source
+        # zone is a deliberate no-op — no row, no error.
+        action = DispatchAction(
+            kind="agent", zone="t3:coder", detail="pending", payload={"task_id": 99, "phase": "coding"}
+        )
+        errors: dict[str, str] = {}
+        created = persist_agent_actions([action], errors=errors)
+        assert created == []
+        assert errors == {}
+
+
+class TestFullDispatchPersistWire(TestCase):
+    def test_every_revived_zone_yields_exactly_one_task(self) -> None:
+        """One end-to-end sweep: each revived zone's signal yields exactly one Task."""
+        signals = [
+            ScanSignal(
+                kind="my_pr.failed", summary="x", payload={"pr_url": "https://w/pr/1", "head_sha": "w1", "overlay": "o"}
+            ),
+            ScanSignal(
+                kind="codex_review.dispatch",
+                summary="x",
+                payload={
+                    "slug": "o/r",
+                    "pr_id": 200,
+                    "head_sha": "w2",
+                    "pr_url": "https://w/pr/2",
+                    "variant": "codex:review",
+                    "overlay": "o",
+                },
+            ),
+            ScanSignal(
+                kind="red_card.signal",
+                summary="x",
+                payload={"row_id": 300, "signal_kind": "red_circle", "overlay": "o"},
+            ),
+            ScanSignal(
+                kind="e2e.failure_detected", summary="x", payload={"spec": "e2e/z.spec.ts", "skill_overlay": "o"}
+            ),
+            ScanSignal(
+                kind="skill_drift_detected", summary="x", payload={"repo": "/r", "file_path": "f.md", "overlay": "o"}
+            ),
+            ScanSignal(
+                kind="incoming_event.task_needed",
+                summary="x",
+                payload={"event_id": 400, "phase": "answering", "detail": "q"},
+            ),
+        ]
+        actions = [a for s in signals for a in dispatch([s]) if a.kind == "agent"]
+        created = persist_agent_actions(actions)
+        assert len(created) == len(signals), f"expected one task per revived zone, got {[t.phase for t in created]}"
+
+
+class TestEveryFixKindHasAScheduledRemedy(TestCase):
+    """``_FIX_REASON_BY_KIND`` ↔ ``RedMrFixAttempt.Kind`` parity.
+
+    ``_handle_debug`` indexes the table with the payload's resolved fix kind, which
+    ``fix_kind_of`` guarantees is one of the ledger's kinds — so a kind added to the
+    ledger without a remedy here is a ``KeyError`` at persist time, on the dispatch
+    path, where it surfaces as a dropped fix rather than a failure.
+    """
+
+    def test_the_remedy_table_covers_exactly_the_ledger_kinds(self) -> None:
+        assert set(_FIX_REASON_BY_KIND) == set(RedMrFixAttempt.Kind.values)
+
+    def test_every_remedy_names_the_merge_request_it_is_scheduled_for(self) -> None:
+        # Each reason is formatted with ``pr_url``; one that drops the placeholder
+        # would schedule a task naming no merge request.
+        assert all("{pr_url}" in reason for reason in _FIX_REASON_BY_KIND.values())

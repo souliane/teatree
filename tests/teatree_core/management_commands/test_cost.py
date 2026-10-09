@@ -1,0 +1,109 @@
+"""Tests for the ``t3 cost`` management command (SDK-equivalent spend)."""
+
+import json
+from datetime import datetime
+from io import StringIO
+
+import pytest
+from django.core.management import call_command
+from django.utils import timezone
+
+from teatree.core.management.commands.cost import CostPayload
+from teatree.core.models import Session, Task, TaskAttempt
+from tests.factories import TicketFactory
+
+# ``pinned_clock``: the report is cycle-scoped, so a ``when=timezone.now()`` attempt falls
+# outside the cycle the command re-derives once the local date rolls over mid-test (#3996).
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("pinned_clock")]
+
+
+def _call(*args: str, **kwargs: object) -> str:
+    """Stdout — the machine channel (JSON under ``--json``, empty otherwise)."""
+    buf = StringIO()
+    call_command("cost", *args, stdout=buf, **kwargs)
+    return buf.getvalue()
+
+
+def _call_human(*args: str, **kwargs: object) -> str:
+    """Stderr — where the seam routes the human view."""
+    buf = StringIO()
+    call_command("cost", *args, stderr=buf, **kwargs)
+    return buf.getvalue()
+
+
+class TestCostCommand:
+    def setup_method(self) -> None:
+        self.ticket = TicketFactory()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+    def _attempt(
+        self,
+        *,
+        cost: float | None,
+        when: datetime,
+        **fields: object,
+    ) -> TaskAttempt:
+        attempt = TaskAttempt.objects.create(task=self.task, cost_usd=cost, **fields)
+        # ``started_at`` is auto_now_add; an update() bypasses it to place the
+        # row inside or outside the billing cycle under test.
+        TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=when)
+        return attempt
+
+    def test_sums_cost_in_current_cycle(self) -> None:
+        now = timezone.now()
+        self._attempt(cost=3.0, when=now)
+        self._attempt(cost=1.4, when=now)
+        out = _call(json_output=True)
+        payload = json.loads(out)
+        assert payload["cycle_to_date_usd"] == pytest.approx(4.4)
+        assert payload["attempts"] == 2
+        assert payload["credit_usd"] == pytest.approx(200.0)
+        assert payload["chip"] == "SDK mtd ≈$4/$200"
+
+    def test_excludes_attempts_before_cycle_start(self) -> None:
+        now = timezone.now()
+        last_cycle = now.replace(year=now.year - 1)
+        self._attempt(cost=99.0, when=last_cycle)
+        self._attempt(cost=2.0, when=now)
+        payload = json.loads(_call(json_output=True))
+        assert payload["cycle_to_date_usd"] == pytest.approx(2.0)
+
+    def test_per_model_breakdown(self) -> None:
+        now = timezone.now()
+        self._attempt(cost=4.0, when=now, model="claude-opus-4-8")
+        self._attempt(cost=1.0, when=now, model="claude-sonnet-4-6")
+        payload = json.loads(_call(json_output=True))
+        assert payload["per_model_usd"]["opus"] == pytest.approx(4.0)
+        assert payload["per_model_usd"]["sonnet"] == pytest.approx(1.0)
+
+    def test_human_output_shows_credit_and_projection(self) -> None:
+        self._attempt(cost=20.0, when=timezone.now())
+        out = _call_human()
+        assert "cycle-to-date:" in out
+        assert "$200 credit" in out
+        assert "projected end-of-cycle:" in out
+
+    def test_effective_tokens_and_lane_breakdown_in_json(self) -> None:
+        now = timezone.now()
+        self._attempt(cost=1.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        self._attempt(cost=2.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.METERED)
+        self._attempt(cost=3.0, when=now, model="gpt-5.6-sol", input_tokens=1000, lane=TaskAttempt.Lane.MANAGED)
+        payload = json.loads(_call(json_output=True))
+        assert payload["effective_tokens_total"] == pytest.approx(3000.0)
+        assert payload["per_lane_usd"]["subscription"] == pytest.approx(1.0)
+        assert payload["per_lane_usd"]["metered"] == pytest.approx(2.0)
+        assert payload["per_lane_usd"]["managed"] == pytest.approx(3.0)
+        assert payload["per_lane_effective_tokens"]["subscription"] == pytest.approx(1000.0)
+        assert payload["per_lane_effective_tokens"]["metered"] == pytest.approx(1000.0)
+        assert payload["per_lane_effective_tokens"]["managed"] == pytest.approx(1000.0)
+
+    def test_human_output_shows_effective_tokens(self) -> None:
+        self._attempt(cost=1.0, when=timezone.now(), model="opus", input_tokens=1000)
+        out = _call_human()
+        assert "effective tokens (ET): 1,000" in out
+
+    def test_returns_exactly_the_declared_payload_shape(self) -> None:
+        payload = call_command("cost", stdout=StringIO(), stderr=StringIO())
+        assert set(payload) == set(CostPayload.__annotations__)

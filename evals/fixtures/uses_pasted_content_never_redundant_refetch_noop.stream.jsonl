@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-uses_pasted_content_never_redundant_refetch-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The article covers three log-batching techniques; noting them mentally without acting."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

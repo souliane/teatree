@@ -1,0 +1,73 @@
+"""After-receipt notifier for colleague-visible on-behalf posts (#949).
+
+The companion of the *pre*-gate :mod:`teatree.core.on_behalf_gate_recorded`
+(which decides whether a post may publish). This module fires *after* a
+colleague-visible post has already published successfully — it DMs the
+user the destination, a clickable artifact link, and a one-line summary
+so every post made under their identity is visible to them.
+
+Distinct concern from the pre-gate (kept in its own module so the
+pre-gate stays pure): the pre-gate may BLOCK; this never can — the post
+already happened, the caller already published. So the failure model is
+**record-and-proceed**: attempt the notify, durably record its outcome
+via :func:`teatree.core.notify.notify_user` (which never raises into the
+caller and writes a ``BotPing`` FAILED/NOOP + ``OutboundClaim`` row on
+non-delivery so the audit scanner re-DMs on drift), then return. Never
+raise, never fail or roll back the post — a colleague comment cannot be
+un-posted.
+
+The receipt runs after every colleague-visible on-behalf post.
+
+Depends only on :mod:`teatree.core.notify`, an already legal
+``teatree.core`` edge, so no new tach edge.
+"""
+
+from teatree.core.modelkit.notify_policy import NotifyAudience
+
+
+def notify_user_on_behalf_post(
+    *,
+    target: str,
+    action: str,
+    destination: str,
+    artifact_url: str,
+    summary: str,
+) -> None:
+    """DM the user that a colleague-visible post published under their identity.
+
+    ``target``/``action``/``artifact_url`` form the idempotency key
+    ``on_behalf_post:{target}:{action}:{artifact_url}`` — one DM per
+    PUBLICATION, not per (target, action): a retry re-posts the same
+    artifact and dedups, while a second comment on the same MR is a second
+    post under the user's identity and gets its own receipt.
+    ``destination`` is the human-readable place the post landed (a review
+    channel, an ``org/repo!7`` ref). ``artifact_url`` is the clickable
+    permalink/URL of the post; ``notify_user``'s ``maybe_linkify``
+    converts the ``[label](url)`` form to Slack ``<url|label>``. A
+    non-URL ``artifact_url`` (a raw Slack channel id, or an internal
+    note/discussion/line id) carries NO clickable link — the receipt
+    names the destination plainly rather than emitting a dead
+    ``[id](id)`` link that both breaks and leaks the internal id.
+    ``summary`` is the one-line description of what was posted.
+
+    Every on-behalf publication sends this after-receipt visibility DM.
+
+    Never raises into the caller and never fails or rolls back the post:
+    ``notify_user`` already wraps every transport failure into a
+    NOOP/FAILED ``BotPing`` row (the audit scanner re-DMs on drift), so
+    a misconfigured Slack backend cannot break a legitimate publish.
+    """
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    if artifact_url.startswith("http"):
+        short = artifact_url.rsplit("/", 1)[-1] or artifact_url
+        link_line = f"[{short}]({artifact_url})\n"
+    else:
+        link_line = ""
+    text = f"Posted under your identity to {destination}.\n{link_line}{summary}"
+    notify_user(
+        text,
+        kind=NotifyKind.INFO,
+        idempotency_key=f"on_behalf_post:{target}:{action}:{artifact_url}",
+        audience=NotifyAudience.COLLEAGUE_ACTION,
+    )

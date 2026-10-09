@@ -1,0 +1,236 @@
+"""Tests for teatree.core.gates.fix_dod_gate — the fix-ticket FixRecord DoD merge gate.
+
+The gate's pure helpers (``is_fix``, ``override_reason``,
+``missing_fix_record_fields``, ``check_fix_record_dod``)
+are exercised directly; the FSM wiring is exercised through
+``Ticket.mark_delivered`` so a fix without a validated FixRecord cannot reach
+DELIVERED.
+"""
+
+import pytest
+from django.test import TestCase
+
+from teatree.core.gates.fix_dod_gate import (
+    FixRecordDodError,
+    check_fix_record_dod,
+    is_fix,
+    missing_fix_record_fields,
+    override_reason,
+)
+from teatree.core.models import Ticket
+from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, validated_ticket_extra
+from teatree.loop.dispatch import dispatch
+from teatree.loop.persistence import persist_agent_actions
+from teatree.loop.scanners.base import ScanSignal
+from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
+
+_COMPLETE_RECORD = {
+    "root_cause": "carve-out resolved repo from ambient cwd, ignoring git -C target",
+    "evidence": "sub-agent commit to a verified-private repo was over-blocked; cwd reset between shells",
+    "regression_test": "tests/test_publish_surface.py::TestEffectiveRepoDir::test_dash_c_separate_value",
+    "observed_red": "ran against pre-fix SHA d4bd513 — FAILED with over-block",
+    "recurrence_fingerprint": "publish_surface:commit_repo_cwd_vs_dash_c",
+}
+
+
+def _fix_ticket(**extra: object) -> Ticket:
+    return Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX, extra=dict(extra))
+
+
+class TestIsFix(TestCase):
+    def test_fix_kind_is_governed(self) -> None:
+        assert is_fix(Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)) is True
+
+    def test_feature_kind_is_not_governed(self) -> None:
+        assert is_fix(Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FEATURE)) is False
+
+    def test_default_kind_is_feature(self) -> None:
+        assert Ticket.objects.create(overlay="acme").kind == Ticket.Kind.FEATURE
+
+
+class TestMissingFixRecordFields(TestCase):
+    def test_no_record_means_all_fields_missing(self) -> None:
+        ticket = _fix_ticket()
+        assert set(missing_fix_record_fields(ticket)) == {
+            "root_cause",
+            "evidence",
+            "regression_test",
+            "observed_red",
+            "recurrence_fingerprint",
+        }
+
+    def test_non_mapping_record_means_all_fields_missing(self) -> None:
+        ticket = _fix_ticket(fix_record="not-a-dict")
+        assert len(missing_fix_record_fields(ticket)) == 5
+
+    def test_partial_record_reports_only_the_gaps(self) -> None:
+        ticket = _fix_ticket(fix_record={"root_cause": "x", "evidence": "y"})
+        assert set(missing_fix_record_fields(ticket)) == {
+            "regression_test",
+            "observed_red",
+            "recurrence_fingerprint",
+        }
+
+    def test_blank_field_counts_as_missing(self) -> None:
+        record = {**_COMPLETE_RECORD, "observed_red": "   "}
+        ticket = _fix_ticket(fix_record=record)
+        assert missing_fix_record_fields(ticket) == ["observed_red"]
+
+
+class TestOverrideReason(TestCase):
+    def test_absent_override_is_empty(self) -> None:
+        assert override_reason(_fix_ticket()) == ""
+
+    def test_recorded_reason_is_returned(self) -> None:
+        ticket = _fix_ticket(fix_record_override={"reason": "trivial one-char typo, no root cause to state"})
+        assert override_reason(ticket) == "trivial one-char typo, no root cause to state"
+
+
+class TestCheckFixRecordDod(TestCase):
+    def test_feature_ticket_passes_without_a_record(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FEATURE)
+        check_fix_record_dod(ticket)  # does not raise
+
+    def test_fix_with_complete_record_passes(self) -> None:
+        check_fix_record_dod(_fix_ticket(fix_record=_COMPLETE_RECORD))
+
+    def test_fix_with_override_passes(self) -> None:
+        check_fix_record_dod(_fix_ticket(fix_record_override={"reason": "exempt"}))
+
+    def test_fix_without_record_is_refused(self) -> None:
+        with pytest.raises(FixRecordDodError):
+            check_fix_record_dod(_fix_ticket())
+
+    def test_fix_with_partial_record_is_refused(self) -> None:
+        with pytest.raises(FixRecordDodError):
+            check_fix_record_dod(_fix_ticket(fix_record={"root_cause": "x"}))
+
+    def test_refusal_names_the_missing_fields(self) -> None:
+        with pytest.raises(FixRecordDodError) as exc:
+            check_fix_record_dod(_fix_ticket(fix_record={"root_cause": "x"}))
+        assert "recurrence_fingerprint" in str(exc.value)
+
+    def test_refusal_names_delivery_where_it_fires(self) -> None:
+        with pytest.raises(FixRecordDodError, match="Refusing to deliver"):
+            check_fix_record_dod(_fix_ticket())
+
+
+class TestOneFieldDefinition(TestCase):
+    """#4520: the gate, the recorder, the envelope schema and the brief share ONE tuple."""
+
+    def test_the_gate_requires_exactly_the_declared_fields(self) -> None:
+        assert set(missing_fix_record_fields(_fix_ticket())) == set(FIX_RECORD_FIELDS)
+
+    def test_the_tuple_derives_from_the_typed_dict(self) -> None:
+        assert tuple(FixRecord.__annotations__) == FIX_RECORD_FIELDS
+
+    def test_both_keys_survive_the_validated_extra_filter(self) -> None:
+        """An undeclared key is stripped by every ``_extra()`` write-back — these must not be."""
+        raw = {"fix_record": _COMPLETE_RECORD, "fix_record_override": {"reason": "x"}, "undeclared": "y"}
+        validated = validated_ticket_extra(raw)
+        assert validated["fix_record"] == _COMPLETE_RECORD
+        assert validated["fix_record_override"] == {"reason": "x"}
+        assert "undeclared" not in validated
+
+
+class TestRefusalNamesThePositivePath(TestCase):
+    """The gate's message must not read as though the override is the only route."""
+
+    def _message(self) -> str:
+        with pytest.raises(FixRecordDodError) as exc:
+            check_fix_record_dod(_fix_ticket())
+        return str(exc.value)
+
+    def test_it_prescribes_returning_the_envelope_record(self) -> None:
+        message = self._message()
+        assert "fix_record" in message
+        assert "result envelope" in message
+
+    def test_the_envelope_route_precedes_the_override(self) -> None:
+        message = self._message()
+        assert message.index("result envelope") < message.index("fix-record-override")
+
+
+class TestMarkDeliveredFsmGate(TestCase):
+    def _retrospected(self, **kwargs: object) -> Ticket:
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED, **kwargs)
+        record_confirmed_merge_for_test(ticket)
+        return ticket
+
+    def test_feature_ticket_delivers(self) -> None:
+        ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
+        waive_rubric(ticket)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_fix_with_record_delivers(self) -> None:
+        ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record": _COMPLETE_RECORD})
+        waive_rubric(ticket)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_fix_without_record_cannot_deliver(self) -> None:
+        ticket = self._retrospected(kind=Ticket.Kind.FIX)
+        with pytest.raises(FixRecordDodError):
+            ticket.mark_delivered()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+
+    def test_fix_with_override_delivers(self) -> None:
+        ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record_override": {"reason": "exempt"}})
+        waive_rubric(ticket)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+
+class TestFixRecordDodLivePath(TestCase):
+    """#17 end-to-end: a correction FLOW mints a real FIX ticket the DoD gate then enforces.
+
+    Unlike ``TestMarkDeliveredFsmGate`` (factory-injected ``kind=FIX``), the ticket
+    here is produced by the PRODUCTION red-card persistence handler — proving the
+    Kind.FIX writer (SIG-3) and the fix_record_dod consumer are wired live end to
+    end. Before the classifier wire-up the produced ticket defaulted to FEATURE and
+    the gate never fired.
+    """
+
+    def _correction_ticket(self) -> Ticket:
+        signal = ScanSignal(
+            kind="red_card.signal",
+            summary="RED CARD",
+            payload={"row_id": 917, "signal_kind": "red_circle", "signal_text": ":red_circle:", "overlay": "acme"},
+        )
+        actions = [action for action in dispatch([signal]) if action.kind == "agent"]
+        created = persist_agent_actions(actions)
+        assert len(created) == 1
+        ticket = created[0].ticket
+        assert ticket.kind == Ticket.Kind.FIX
+        return ticket
+
+    def _at_retrospected(self, ticket: Ticket, **extra_overrides: object) -> Ticket:
+        extra = {**(ticket.extra or {}), **extra_overrides}
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED, extra=extra)
+        ticket.refresh_from_db()
+        record_confirmed_merge_for_test(ticket)
+        return ticket
+
+    def test_correction_ticket_without_record_is_refused_at_delivery(self) -> None:
+        ticket = self._at_retrospected(self._correction_ticket())
+        with pytest.raises(FixRecordDodError):
+            ticket.mark_delivered()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+
+    def test_correction_ticket_with_record_delivers(self) -> None:
+        ticket = self._at_retrospected(self._correction_ticket(), fix_record=_COMPLETE_RECORD)
+        waive_rubric(ticket)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_correction_ticket_with_override_delivers(self) -> None:
+        ticket = self._at_retrospected(
+            self._correction_ticket(), fix_record_override={"reason": "trivial one-liner, no root cause"}
+        )
+        waive_rubric(ticket)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED

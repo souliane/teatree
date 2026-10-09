@@ -1,0 +1,210 @@
+from typing import IO, Annotated, cast
+
+import typer
+from django_typer.management import command
+
+from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.machine_output import emit
+from teatree.core.management.commands._shared_code_host import no_code_host_error
+from teatree.core.management.refusal_exit import RefusalExitTyperCommand
+from teatree.core.models import Task, Ticket
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.table_output import print_table
+from teatree.types import ConflictedMR, RawAPIDict
+from teatree.url_classify import pr_ref
+
+
+def _str_field(data: RawAPIDict, *names: str) -> str:
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _int_field(data: RawAPIDict, *names: str) -> int:
+    for name in names:
+        value = data.get(name)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def _is_draft(pr: RawAPIDict) -> bool:
+    return bool(pr.get("draft"))
+
+
+def _repo_slug(pr: RawAPIDict) -> str:
+    """Best-effort ``owner/name`` for a PR/MR across GitLab and GitHub shapes."""
+    references = pr.get("references")
+    if isinstance(references, dict):
+        full = cast("RawAPIDict", references).get("full")
+        if isinstance(full, str) and full:
+            return full.split("!", 1)[0].split("#", 1)[0]
+    repository_url = _str_field(pr, "repository_url")
+    if "/repos/" in repository_url:
+        return repository_url.split("/repos/", 1)[-1]
+    url = _str_field(pr, "web_url", "html_url")
+    ref = pr_ref(url) if url else None
+    return ref.slug if ref is not None else ""
+
+
+# #4234: `discover-mrs` RETURNS its no-code-host refusal; the base class stops a
+# review-request batch proceeding on an empty discovery it never actually made.
+class Command(RefusalExitTyperCommand):
+    """Daily follow-up: MR discovery, ticket/PR sync, and reviewer reminders."""
+
+    @command()
+    def refresh(self) -> dict[str, int]:
+        return {
+            "tickets": Ticket.objects.count(),
+            "tasks": Task.objects.count(),
+            "open_tasks": Task.objects.exclude(status=Task.Status.COMPLETED).count(),
+        }
+
+    @command()
+    def sync(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the sync summary as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> dict[str, int | list[str] | list[dict[str, int | str]]]:
+        from teatree.core.sync import sync_followup  # noqa: PLC0415 — deferred: keeps command import light
+
+        result = sync_followup()
+        # The conflict banner is a human diagnostic, not machine data — always to
+        # stderr so stdout stays a clean JSON channel (pre-PR-30 it wrote a
+        # ``'=' * 64`` banner to stdout ahead of the repr'd dict, #78/#2763).
+        self._warn_conflicted_mrs(result.conflicted_mrs)
+        payload: dict[str, int | list[str] | list[dict[str, int | str]]] = {
+            "prs_found": result.prs_found,
+            "tickets_created": result.tickets_created,
+            "tickets_updated": result.tickets_updated,
+            "worktrees_cleaned": result.worktrees_cleaned,
+            "errors": result.errors,
+            "conflicted_mrs": [c.to_dict() for c in result.conflicted_mrs],
+        }
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_sync(payload, stream),
+        )
+        return payload
+
+    def _warn_conflicted_mrs(self, conflicted: list[ConflictedMR]) -> None:
+        """Surface conflicted open authored MRs LOUDLY, never buried like errors.
+
+        A conflicted MR sits invisibly until someone resolves it, and re-arises
+        as master advances — so the sweep prints a clearly-visible WARNING
+        block naming each one. Detection only: resolution stays an explicit,
+        separate action (#78). Written to stderr (the human channel) so stdout
+        remains a pure JSON contract under ``--json``.
+        """
+        if not conflicted:
+            return
+        count = len(conflicted)
+        plural = "s" if count != 1 else ""
+        self.stderr.write("")
+        self.stderr.write(f"{'=' * 64}")
+        self.stderr.write(f"WARNING: {count} open MR{plural} in merge conflict — resolve before merge:")
+        self.stderr.write(f"{'=' * 64}")
+        for mr in conflicted:
+            self.stderr.write(f"  CONFLICT  !{mr.iid}  {mr.repo}  {mr.title}")
+            self.stderr.write(f"            {mr.web_url}")
+        self.stderr.write(f"{'=' * 64}")
+
+    @command(name="discover-mrs")
+    def discover_mrs(self) -> RawAPIDict:
+        """List the user's open, non-draft PRs/MRs awaiting a review request.
+
+        Backs ``t3 review-request discover`` (BLUEPRINT.md §10.1). Mirrors
+        ``glab api /merge_requests?scope=created_by_me&state=opened``
+        filtered to non-draft MRs; each entry carries ``repo``, ``iid``,
+        ``title`` and ``url`` so the result is suitable for the
+        review-request batch ping or a human paste into Slack.
+        """
+        host = code_host_from_overlay()
+        if host is None:
+            return {**no_code_host_error()}
+
+        author = get_overlay().config.get_gitlab_username() or host.current_user()
+        if not author:
+            return {
+                "error": "Could not resolve author username — "
+                "set it with `t3 <overlay> config_setting set <host>_username <value>`",
+            }
+
+        mrs = [
+            self._with_review_status(
+                {
+                    "repo": _repo_slug(pr),
+                    "iid": _int_field(pr, "iid", "number"),
+                    "title": _str_field(pr, "title"),
+                    "url": _str_field(pr, "web_url", "html_url"),
+                }
+            )
+            for pr in host.list_my_prs(author=author)
+            if not _is_draft(pr)
+        ]
+        return {"author": author, "count": len(mrs), "mrs": mrs}
+
+    @staticmethod
+    def _with_review_status(mr: RawAPIDict) -> RawAPIDict:
+        """Annotate an MR with a LIVE-verified review-request status (#1084).
+
+        ``review_already_requested`` / ``review_permalink`` come from a
+        recency-bounded read of the review channel (read-token ==
+        post-token) so ``review-request discover`` reflects reality, not a
+        stale DB. Fails open: an unconfigured channel or a slow/failed
+        read leaves the MR unannotated rather than wedging discovery.
+        """
+        from teatree.core.gates.review_request_guard import (  # noqa: PLC0415 — deferred: keeps command import light
+            ReconcileStatus,
+            overlay_for_mr_url,
+            reconcile_out_of_band,
+            resolve_guard_target,
+        )
+
+        url = mr.get("url")
+        if not isinstance(url, str) or not url:
+            return mr
+        overlay_name = overlay_for_mr_url(url)
+        target = resolve_guard_target(overlay_name=overlay_name)
+        if target is None:
+            return mr
+        result = reconcile_out_of_band(mr_url=url, target=target, overlay=overlay_name)
+        mr["review_already_requested"] = result.status is ReconcileStatus.RECONCILED
+        mr["review_permalink"] = result.permalink
+        return mr
+
+    @command()
+    def remind(self) -> list[int]:
+        return list(
+            Task.objects.filter(status=Task.Status.PENDING).order_by("pk").values_list("id", flat=True),
+        )
+
+
+def _render_sync(payload: dict[str, int | list[str] | list[dict[str, int | str]]], stream: IO[str]) -> None:
+    errors = cast("list[str]", payload["errors"])
+    conflicted = cast("list[dict[str, int | str]]", payload["conflicted_mrs"])
+    print_table(
+        ["Metric", "Value"],
+        [
+            ["prs_found", payload["prs_found"]],
+            ["tickets_created", payload["tickets_created"]],
+            ["tickets_updated", payload["tickets_updated"]],
+            ["worktrees_cleaned", payload["worktrees_cleaned"]],
+            ["errors", len(errors)],
+            ["conflicted_mrs", len(conflicted)],
+        ],
+        title="followup sync",
+        stream=stream,
+        justify=["left", "right"],
+    )
+    if errors:
+        print_table(["Error"], [[err] for err in errors], title="errors", stream=stream)

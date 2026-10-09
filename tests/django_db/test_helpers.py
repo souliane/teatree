@@ -1,0 +1,340 @@
+"""Tests for teatree.utils.django_db — pure / DSLR / Postgres helpers + dump validation.
+
+Split verbatim from the former monolithic ``tests/test_django_db.py``
+(souliane/teatree#443). No behavior change.
+"""
+
+from pathlib import Path
+from subprocess import CompletedProcess
+
+import pytest
+
+from teatree.utils import run as run_mod
+from teatree.utils.django_db import dslr as dslr_mod
+from teatree.utils.django_db import validate_dump
+from teatree.utils.django_db.dslr import dslr_env as _dslr_env
+from teatree.utils.django_db.dslr import dslr_snap_name as _dslr_snap_name
+from teatree.utils.django_db.dslr import extract_failing_migration as _extract_failing_migration
+from teatree.utils.django_db.dslr import find_dslr_cmd as _find_dslr_cmd
+from teatree.utils.django_db.dslr import find_dslr_snapshots as _find_dslr_snapshots
+from teatree.utils.django_db.dslr import restore_ref_from_dslr as _restore_ref_from_dslr
+from teatree.utils.django_db.helpers import (
+    _ensure_ref_db,
+    _local_db_url,
+    _pg_args,
+    _terminate_connections,
+    split_password_from_url,
+)
+from teatree.utils.django_db.reconcile import is_config_error
+
+from ._shared import _fail_run, _make_importer, _ok_run
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFailingMigration:
+    def test_finds_migration_name(self) -> None:
+        stdout = "Applying myapp.0042_auto...\nOK\n"
+        assert _extract_failing_migration(stdout) == "myapp.0042_auto"
+
+    def test_returns_none_when_no_match(self) -> None:
+        assert _extract_failing_migration("no migration here") is None
+
+
+class TestExtractInconsistentHistory:
+    """Parse Django's ``InconsistentMigrationHistory`` message verbatim.
+
+    souliane/teatree#1038: a master renumber makes the snapshot's old-numbered
+    record fail ``check_consistent_history`` with this exact sentence, fired
+    BEFORE any ``Applying …`` line. The parser keys on the canonical wording in
+    ``django/db/migrations/loader.py::check_consistent_history``.
+    """
+
+    def test_parses_applied_and_dependency(self) -> None:
+        from teatree.utils.django_db.reconcile import extract_inconsistent_history  # noqa: PLC0415
+
+        combined = (
+            "django.db.migrations.exceptions.InconsistentMigrationHistory: "
+            "Migration widgetapp.0016_remove_widgets_owner_link is applied "
+            "before its dependency gadgetapp.0047_move_owner_link_data "
+            "on database 'default'.\n"
+        )
+        assert extract_inconsistent_history(combined) == (
+            ("widgetapp", "0016_remove_widgets_owner_link"),
+            ("gadgetapp", "0047_move_owner_link_data"),
+        )
+
+    def test_returns_none_on_unrelated_error(self) -> None:
+        from teatree.utils.django_db.reconcile import extract_inconsistent_history  # noqa: PLC0415
+
+        assert extract_inconsistent_history("relation foo already exists") is None
+        assert extract_inconsistent_history("Applying myapp.0001_initial...\n") is None
+
+
+class TestIsConfigError:
+    """The environment-vs-app boundary that gates the dockerized fallback.
+
+    The three consumers all read this as "do not trust this interpreter" — retry
+    in docker, refuse to fake, refuse to reconcile — so a missed environment
+    failure costs a whole provision, while a misread APP error costs one docker
+    retry that fails identically. The line is drawn at what the IMAGE owns: a
+    Python module, a settings module, a native library the loader could not
+    open, a program name PATH could not resolve. Never a bare exception class.
+    """
+
+    @pytest.mark.parametrize(
+        "combined",
+        [
+            "ModuleNotFoundError: No module named 'celery'",
+            "django.core.exceptions.ImproperlyConfigured: settings are not configured",
+            "ImportError: failed to find libmagic.  Check your installation",
+            "ImportError: libGL.so.1: cannot open shared object file: No such file or directory",
+            "OSError: cannot load library 'libgobject-2.0-0': libgobject-2.0-0: not found",
+            "ImageNotFoundError: dlopen(libcairo.2.dylib): Library not loaded: libcairo.2.dylib",
+            "FileNotFoundError: [Errno 2] No such file or directory: 'patch'",
+        ],
+    )
+    def test_environment_failures_are_config_errors(self, combined: str) -> None:
+        assert is_config_error(combined) is True
+
+    @pytest.mark.parametrize(
+        "combined",
+        [
+            "ImportError: cannot import name 'Gizmo' from partially initialized module 'catalog'",
+            "FileNotFoundError: [Errno 2] No such file or directory: '/app/fixtures/gizmos.json'",
+            "FileNotFoundError: [Errno 2] No such file or directory: 'gizmos.json'",
+            "django.db.utils.OperationalError: connection refused",
+            'psycopg2.errors.DuplicateTable: relation "catalog_gizmo" already exists',
+        ],
+    )
+    def test_application_failures_are_not_config_errors(self, combined: str) -> None:
+        assert is_config_error(combined) is False
+
+
+class TestDslrSnapName:
+    def test_includes_ref_db_name(self) -> None:
+        result = _dslr_snap_name("development-acme")
+        assert result.endswith("_development-acme")
+        assert len(result.split("_")[0]) == 8  # YYYYMMDD
+
+
+class TestLocalDbUrl:
+    def test_builds_url_from_pass_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_HOST", "db.local")
+        monkeypatch.setenv("POSTGRES_USER", "u")
+        monkeypatch.setenv("POSTGRES_PASSWORD_PASS_KEY", "teatree/wt/1/postgres")
+        monkeypatch.setattr("teatree.utils.postgres_secret.secrets.read_pass", lambda _key: "p@ss")
+        url = _local_db_url("mydb")
+        assert "db.local" in url
+        assert "mydb" in url
+        assert "p%40ss" in url  # URL-encoded
+
+
+class TestSplitPasswordFromUrl:
+    def test_strips_and_decodes_the_password(self) -> None:
+        url, password = split_password_from_url("postgres://u:p%40ss@db.local:5432/mydb?sslmode=require")
+        assert url == "postgres://u@db.local:5432/mydb?sslmode=require"
+        assert password == "p@ss"
+
+    def test_passwordless_url_is_returned_verbatim(self) -> None:
+        assert split_password_from_url("postgres://u@db.local/mydb") == ("postgres://u@db.local/mydb", "")
+
+    def test_url_without_userinfo_is_returned_verbatim(self) -> None:
+        assert split_password_from_url("postgres://db.local/mydb") == ("postgres://db.local/mydb", "")
+
+
+class TestPgArgs:
+    def test_reads_host_and_password_reference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_HOST", "h")
+        monkeypatch.setenv("POSTGRES_USER", "u")
+        monkeypatch.setenv("POSTGRES_PASSWORD_PASS_KEY", "teatree/wt/1/postgres")
+        monkeypatch.setattr("teatree.utils.postgres_secret.secrets.read_pass", lambda _key: "p")
+        monkeypatch.setenv("POSTGRES_PORT", "5433")
+        host, user, env = _pg_args()
+        assert host == "h"
+        assert user == "u"
+        assert env["PGPASSWORD"] == "p"
+        assert env["PGPORT"] == "5433"
+
+    def test_defaults_without_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+        monkeypatch.delenv("POSTGRES_USER", raising=False)
+        monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+        monkeypatch.delenv("POSTGRES_PORT", raising=False)
+        # The unset-host default is venue-dependent, and CI itself runs in a container.
+        monkeypatch.setattr("teatree.utils.ports.running_in_container", lambda: False)
+        host, user, _env = _pg_args()
+        assert host == "localhost"
+        assert user == "postgres"  # default from db.pg_user()
+
+
+# ---------------------------------------------------------------------------
+# DSLR helpers
+# ---------------------------------------------------------------------------
+
+
+class TestFindDslrCmd:
+    def test_uses_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DSLR_CMD", "/custom/dslr")
+        monkeypatch.setattr(dslr_mod.shutil, "which", lambda p: p)
+        assert _find_dslr_cmd("dslr") == ["/custom/dslr"]
+
+    def test_prefers_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without DSLR_CMD, always uses uv run (avoids broken pyenv shims)."""
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        monkeypatch.setattr(dslr_mod.shutil, "which", lambda p: p)
+        assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
+
+    def test_falls_back_to_uv_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        monkeypatch.setattr(dslr_mod.shutil, "which", lambda p: "uv" if p == "uv" else None)
+        assert _find_dslr_cmd("dslr") == ["uv", "run", "dslr"]
+
+    def test_returns_empty_when_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DSLR_CMD", raising=False)
+        monkeypatch.setattr(dslr_mod.shutil, "which", lambda _: None)
+        assert _find_dslr_cmd("dslr") == []
+
+
+class TestDslrEnv:
+    def test_sets_database_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_HOST", "localhost")
+        monkeypatch.setenv("POSTGRES_USER", "u")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "p")
+        env = _dslr_env("development-acme")
+        assert "development-acme" in env["DATABASE_URL"]
+        assert env["DSLR_DB_URL"] == env["DATABASE_URL"]
+
+
+class TestFindDslrSnapshots:
+    def test_returns_sorted_newest_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        output = (
+            "20260301_development-acme  2026-03-01  100MB\n"
+            "20260315_development-acme  2026-03-15  110MB\n"
+            "20260310_development-other  2026-03-10  90MB\n"
+        )
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 0, output, ""),
+        )
+        result = _find_dslr_snapshots(["/bin/dslr"], {}, "development-acme")
+        assert result == ["20260315_development-acme", "20260301_development-acme"]
+
+    def test_returns_empty_when_no_match(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 0, "", ""),
+        )
+        assert _find_dslr_snapshots(["/bin/dslr"], {}, "development-acme") == []
+
+    def test_returns_empty_when_command_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 1, "", "error"),
+        )
+        assert _find_dslr_snapshots(["/bin/dslr"], {}, "development-acme") == []
+
+
+class TestRestoreRefFromDslr:
+    def test_returns_success_tuple_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(run_mod.subprocess, "run", _ok_run)
+        assert _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1") == (True, False, "")
+
+    def test_returns_failure_tuple_with_stderr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(run_mod.subprocess, "run", _fail_run)
+        ok, _is_env, stderr = _restore_ref_from_dslr(["/bin/dslr"], {}, "snap1")
+        assert ok is False
+        assert isinstance(stderr, str)
+
+
+class TestTakeDslrSnapshot:
+    def test_calls_dslr_snapshot(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands: list = []
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda args, **kw: commands.append(args) or _ok_run(),
+        )
+        importer = _make_importer(tmp_path, dslr_cmd=["/bin/dslr"])
+        importer._take_dslr_snapshot()
+        assert commands[0][0] == "/bin/dslr"
+        assert commands[0][1] == "snapshot"
+
+
+# ---------------------------------------------------------------------------
+# Postgres helpers
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureRefDb:
+    def test_calls_createdb(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands: list = []
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda args, **kw: commands.append(args) or _ok_run(),
+        )
+        _ensure_ref_db("development-acme", "localhost", "u", {})
+        assert commands[0][0] == "createdb"
+        assert "development-acme" in commands[0]
+
+
+class TestTerminateConnections:
+    def test_calls_psql(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        commands: list = []
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda args, **kw: commands.append(args) or _ok_run(),
+        )
+        _terminate_connections("mydb", "localhost", "u", {})
+        assert commands[0][0] == "psql"
+
+
+class TestCopyRefToTicket:
+    def test_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(run_mod.subprocess, "run", _ok_run)
+        importer = _make_importer(tmp_path)
+        assert importer._copy_ref_to_ticket() is True
+
+    def test_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 1, "", "template copy error"),
+        )
+        importer = _make_importer(tmp_path)
+        assert importer._copy_ref_to_ticket() is False
+
+
+# ---------------------------------------------------------------------------
+# Dump validation
+# ---------------------------------------------------------------------------
+
+
+class TestValidateDump:
+    def test_rejects_empty_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "empty.pgsql"
+        f.write_bytes(b"")
+        assert validate_dump(f) is False
+
+    def test_rejects_truncated_dump(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        f = tmp_path / "trunc.pgsql"
+        f.write_bytes(b"some data")
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **kw: CompletedProcess(a, 1, "", "could not read"),
+        )
+        assert validate_dump(f) is False
+
+    def test_accepts_valid_dump(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        f = tmp_path / "ok.pgsql"
+        f.write_bytes(b"PGDMP data here")
+        monkeypatch.setattr(run_mod.subprocess, "run", _ok_run)
+        assert validate_dump(f) is True

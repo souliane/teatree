@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review-one-place-over-unification-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Clean. One resolver is easier to maintain than two, and consistently falling back to the live reading removes duplication."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

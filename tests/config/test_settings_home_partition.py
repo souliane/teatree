@@ -1,0 +1,77 @@
+# test-path: cross-cutting
+"""Every ``UserSettings`` field has exactly one home — DB or TOML (#1775).
+
+The hard partition: a setting that CAN live in the DB MUST be DB-home. The
+TOML-home carve-out is EMPTY — every field is DB-home. One field is DERIVED (the
+resolver computes it), so it has no home and is excluded from the partition.
+
+The fitness functions below make the partition machine-checked: they go RED the
+moment a new ``UserSettings`` field is added without classifying it, or a field
+lands in both homes.
+"""
+
+import dataclasses
+
+from teatree.config import DERIVED_FIELDS, SETTING_HOMES, SettingHome, UserSettings
+
+_TOML_CARVE_OUT: frozenset[str] = frozenset()
+
+
+def _all_field_names() -> set[str]:
+    return {f.name for f in dataclasses.fields(UserSettings)}
+
+
+def test_every_user_settings_field_has_exactly_one_classification() -> None:
+    fields = _all_field_names()
+    classified = set(SETTING_HOMES) | DERIVED_FIELDS
+    missing = sorted(fields - classified)
+    extra = sorted(classified - fields)
+    assert missing == [], f"UserSettings fields with no home/derived classification: {missing}"
+    assert extra == [], f"classified names that are not UserSettings fields: {extra}"
+
+
+def test_no_field_is_both_homed_and_derived() -> None:
+    overlap = set(SETTING_HOMES) & DERIVED_FIELDS
+    assert overlap == set(), f"a field cannot be both homed and derived: {overlap}"
+
+
+def test_db_home_and_toml_home_are_disjoint() -> None:
+    db_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.DB}
+    toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
+    assert db_home & toml_home == set(), "DB-home and TOML-home must be disjoint"
+    assert db_home | toml_home == set(SETTING_HOMES)
+
+
+def test_per_overlay_fields_are_db_home() -> None:
+    # A per-overlay override lives in a ``ConfigSetting`` overlay row, not a file.
+    assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
+
+
+def test_handover_mirror_path_is_db_home() -> None:
+    assert SETTING_HOMES["handover_mirror_path"] is SettingHome.DB
+
+
+def test_statusline_chain_is_db_home() -> None:
+    assert SETTING_HOMES["statusline_chain"] is SettingHome.DB
+
+
+def test_autoload_is_db_home() -> None:
+    assert SETTING_HOMES["autoload"] is SettingHome.DB
+
+
+def test_speak_is_db_home() -> None:
+    assert SETTING_HOMES["speak"] is SettingHome.DB
+
+
+def test_mr_reminder_is_db_home() -> None:
+    assert SETTING_HOMES["mr_reminder"] is SettingHome.DB
+
+
+def test_no_derived_setting_fields_remain() -> None:
+    assert not DERIVED_FIELDS
+
+
+def test_db_home_covers_every_non_carve_out_non_derived_field() -> None:
+    db_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.DB}
+    expected = _all_field_names() - _TOML_CARVE_OUT - DERIVED_FIELDS
+    assert db_home == expected

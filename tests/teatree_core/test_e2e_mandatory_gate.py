@@ -1,0 +1,208 @@
+"""Mandatory-E2E gate over durable state (#1967).
+
+The gate refuses a ship / §17.4 CLEAR for a customer-display-impacting change
+unless recorded green E2E evidence exists at the reviewed tree OR a single-use
+user-recorded bypass exists. The decision
+is a pure function over durable rows + the classifier verdict + the SHA; no
+network.
+
+Symmetric corpus per the regression-eval rule. must-ALLOW: non-impacting diff;
+green posted evidence; recorded bypass. must-BLOCK: impacting
+diff with no evidence and no bypass.
+
+Each must-ALLOW is anti-vacuous: the same impacting diff with the satisfier
+removed BLOCKs, so the satisfier is what flips the verdict.
+"""
+
+import pytest
+from django.test import TestCase
+
+from teatree.core.gates.e2e_mandatory_gate import (
+    E2EMandatoryGateError,
+    GateInputs,
+    check_e2e_mandatory,
+    e2e_mandatory_verdict,
+)
+from teatree.core.modelkit.gate_verdict import Pass, Refuse, Unknown
+from teatree.core.models import E2EBypassApproval, E2EBypassAudit, E2eMandatoryRun, Ticket
+
+_SHA = "e" * 40
+_USER = "souliane"
+_URL = "https://example.com/issues/1#note_7"
+# A glob set under which a serializer change is unknown (impacting), a test is not.
+_NON_IMPACTING = ("*/tests/*", "test_*.py", "*.md")
+_IMPACTING_DIFF = ["app/api/serializers.py"]
+_NON_IMPACTING_DIFF = ["app/tests/test_api.py", "README.md"]
+
+
+def _inputs(ticket: Ticket, *, diff: list[str], display_impacting: bool) -> GateInputs:
+    return GateInputs(
+        ticket=ticket,
+        changed_files=diff,
+        head_sha=_SHA,
+        display_impacting=display_impacting,
+    )
+
+
+class TestMustBlock(TestCase):
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/20")
+
+    def test_impacting_diff_no_evidence_no_bypass_blocks(self) -> None:
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_block_message_names_both_remedies(self) -> None:
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        message = str(exc.value)
+        assert "record-e2e-run" in message
+        assert "e2e-bypass" in message
+
+    def test_block_message_claims_only_what_the_classifier_established(self) -> None:
+        # A fail-closed verdict says one changed path matched no non-impacting
+        # glob; it never establishes that a rendering file is present. Asserting
+        # presence sent the reader hunting for a file that was not in the diff.
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        message = str(exc.value)
+        assert "a serializer / view / frontend / template / document-generation file is in the diff" not in message
+        assert "did not match" in message
+        assert "non-impacting allowlist" in message
+
+    def test_block_message_names_the_diff_it_judged(self) -> None:
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        assert "app/api/serializers.py" in str(exc.value)
+
+    def test_block_message_elides_a_long_diff(self) -> None:
+        diff = [f"app/api/module_{i}.py" for i in range(13)]
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=diff, display_impacting=True))
+        message = str(exc.value)
+        assert "app/api/module_9.py" in message
+        assert "app/api/module_10.py" not in message
+        assert "(+3 more)" in message
+
+    def test_block_message_says_an_empty_diff_is_why(self) -> None:
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=[], display_impacting=True))
+        assert "enumerated no files" in str(exc.value)
+
+
+class TestUnreadableDiffDidNotRun(TestCase):
+    """An unreadable diff with nothing covering the tree is Unknown, never a pass and never a classified refusal."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/24")
+        self.unread = GateInputs(
+            ticket=self.ticket,
+            changed_files=[],
+            head_sha=_SHA,
+            display_impacting=True,
+            unread_diff="CommandFailedError: fatal: bad revision",
+        )
+
+    def test_nothing_covering_the_tree_did_not_run(self) -> None:
+        verdict = e2e_mandatory_verdict(self.unread)
+
+        assert isinstance(verdict, Unknown)
+        assert "could not be read" in verdict.cause
+        assert "bad revision" in verdict.cause
+        assert "e2e-bypass" in verdict.cause
+
+    def test_green_posted_evidence_at_the_tree_still_passes(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="e2e/a.spec.ts", result="green", posted_url=_URL)
+
+        assert e2e_mandatory_verdict(self.unread) == Pass()
+
+    def test_a_user_bypass_at_the_tree_passes_and_is_consumed(self) -> None:
+        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
+
+        assert e2e_mandatory_verdict(self.unread) == Pass()
+        assert isinstance(e2e_mandatory_verdict(self.unread), Unknown)
+
+    def test_a_readable_impacting_diff_is_refused_not_unknown(self) -> None:
+        verdict = e2e_mandatory_verdict(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+        assert isinstance(verdict, Refuse)
+
+
+class TestMustAllow(TestCase):
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/21")
+
+    def test_non_impacting_diff_allows(self) -> None:
+        check_e2e_mandatory(_inputs(self.ticket, diff=_NON_IMPACTING_DIFF, display_impacting=False))
+
+    def test_green_posted_evidence_allows(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="e2e/x.spec.ts", result="green", posted_url=_URL)
+        check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_recorded_bypass_allows_and_is_consumed(self) -> None:
+        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
+        check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        # Single-use: consumed, and an audit row written.
+        assert E2EBypassApproval.has_unconsumed(self.ticket, _SHA) is False
+        assert E2EBypassAudit.objects.filter(ticket=self.ticket).count() == 1
+
+
+class TestAntiVacuity(TestCase):
+    """Each satisfier flips the verdict: remove it and the same diff BLOCKs."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/22")
+
+    def test_green_evidence_at_wrong_sha_does_not_allow(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha="f" * 40, spec="x", result="green", posted_url=_URL)
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_red_evidence_does_not_allow(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="red", posted_url=_URL)
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_green_but_unposted_evidence_does_not_allow(self) -> None:
+        # Recorded green run with NO posted comment URL — the gate stays blocked
+        # (#1967: recorded evidence is not enough, it must be posted).
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="green", posted_url="")
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_bypass_for_other_ticket_does_not_allow(self) -> None:
+        other = Ticket.objects.create(issue_url="https://example.com/i/23")
+        E2EBypassApproval.record(ticket=other, head_sha=_SHA, approver_id=_USER)
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+    def test_consumed_bypass_does_not_allow_again(self) -> None:
+        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
+        check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        # A second gate evaluation at the same SHA has no unconsumed bypass left.
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+
+
+class TestNeverLockout(TestCase):
+    """The gate is satisfiable, never a hard trap (#1967).
+
+    Posted evidence and a single-use user bypass can each unblock a genuinely
+    impacting change without changing the gate.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/25")
+        self.blocked = _inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True)
+
+    def test_blocked_without_any_escape(self) -> None:
+        with pytest.raises(E2EMandatoryGateError):
+            check_e2e_mandatory(self.blocked)
+
+    def test_posted_evidence_escape_unblocks(self) -> None:
+        E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="green", posted_url=_URL)
+        check_e2e_mandatory(self.blocked)
+
+    def test_user_bypass_escape_unblocks(self) -> None:
+        E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
+        check_e2e_mandatory(self.blocked)

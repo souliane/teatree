@@ -1,0 +1,659 @@
+"""The on-behalf pre-gate is enforced on every colleague-posting CLI method (#960).
+
+``ReviewService`` is the second on-behalf chokepoint (alongside
+``_BaseReplier``) — its ``post_comment``, ``post_draft_note``,
+``publish_draft_notes``, ``reply_to_discussion``, ``resolve_discussion``,
+``update_note``, and ``delete_discussion`` methods all publish on the
+user's identity to a GitLab MR. They route through the same
+satisfiable posture gate as the reply transport.
+
+Behaviour per posture:
+
+*   a permitting posture → publish, no approval needed.
+*   a forbidding posture → refuse without a recorded
+    :class:`OnBehalfApproval`, publish with one. ``post_draft_note`` is the
+    exception under both: it is colleague-invisible, so it publishes
+    autonomously and records a ``BotPing`` row for the user DM.
+
+Pure-read / pre-publication methods (``list_draft_notes``,
+``delete_draft_note``) are NOT on-behalf posts and remain ungated —
+``delete_draft_note`` removes the *user's own* unpublished draft, no
+colleague sees it. ``delete_discussion`` is different: it removes a
+*published* (colleague-visible) note and IS gated.
+
+The companion ``t3 review approve-on-behalf`` CLI command is the
+no-TTY satisfier — its end-to-end behaviour is also exercised here so
+the gated method ↔ approval recording loop is verified in one suite.
+"""
+
+from collections.abc import Callable
+from http import HTTPStatus
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import httpx
+import pytest
+from typer.testing import CliRunner
+
+from teatree.cli import app
+from teatree.cli.review import ReviewService
+from teatree.core.models import BotPing, OnBehalfApproval
+from tests._send_gate import allow_forge_repos
+from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
+
+
+@pytest.fixture(autouse=True)
+def _installation_send_gate(db: None) -> None:
+    allow_forge_repos(OWNED_REPO)
+
+
+_runner = CliRunner()
+
+
+def _http_404() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/x")
+    response = httpx.Response(HTTPStatus.NOT_FOUND, request=request)
+    return httpx.HTTPStatusError("not found", request=request, response=response)
+
+
+# Modes under which a non-draft colleague-visible action is blocked.
+
+
+class _StubAPI:
+    """In-memory stand-in for ``GitLabAPI`` — records every network call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+        self._deleted_ids: set[str] = set()
+        self.mr = BulkPublishMR()
+
+    def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
+        self.calls.append(("post_json", endpoint, payload))
+        # ``line_code`` keeps the draft-notes anchor check happy on the
+        # new default-draft ``post_comment`` path (#1207); the discussions
+        # endpoint ignores it, so the same shape serves both branches.
+        return {"id": 1, "notes": [{"type": "DiffNote", "id": 1}], "line_code": "abc123_10_10"}
+
+    def post_status(self, endpoint: str) -> int:
+        self.calls.append(("post_status", endpoint, None))
+        self.mr.saw_post(endpoint)
+        return 200
+
+    def put_status(self, endpoint: str, payload: object | None = None) -> int:
+        self.calls.append(("put_status", endpoint, payload))
+        return 200
+
+    def current_username(self) -> str:
+        return "souliane"
+
+    def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
+        self.calls.append(("get_json_paginated", endpoint, None))
+        return self.mr.listing(endpoint) or []
+
+    def get_json(self, endpoint: str) -> object:
+        self.calls.append(("get_json", endpoint, None))
+        # Verify-after-post (#2081) reads the artifact back: confirm it landed.
+        # A note whose delete already succeeded reads back as 404 (gone), which
+        # is exactly what ``verify_note_deleted`` requires for a clean delete.
+        last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+        if last.isdigit():
+            if last in self._deleted_ids:
+                raise _http_404()
+            return {"id": int(last), "resolvable": True, "resolved": True}
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": "souliane"}}]}
+        if (listed := self.mr.listing(endpoint)) is not None:
+            return listed
+        if "discussions/" in endpoint:
+            return {"notes": [{"resolvable": True, "resolved": True}]}
+        return []
+
+    def delete(self, endpoint: str) -> int:
+        self.calls.append(("delete", endpoint, None))
+        self._deleted_ids.add(endpoint.rstrip("/").rsplit("/", 1)[-1])
+        return 204
+
+
+def _service_with_stub() -> tuple[ReviewService, _StubAPI]:
+    stub = _StubAPI()
+    service = ReviewService(token="t", api=stub)
+    # Replace the lazy API factory so no real GitLab call is attempted.
+    return service, stub
+
+
+class TestReviewServicePostCommentGated:
+    """``post_comment`` default-draft path: drafts bypass the gate under EVERY posture (#draft-bypass).
+
+    The default (live=False) path routes through ``post_draft_note``,
+    which is colleague-INVISIBLE and therefore exempt from the on-behalf
+    gate under every posture — under a forbidding one the draft
+    auto-publishes with a user DM, under a permitting one it publishes with
+    no DM. No recorded approval is ever required for the draft path. The
+    ``--live`` path stays gated on the ``post_comment`` action.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_post_comment_default_auto_drafts_under_forbidding_posture(self) -> None:
+        """ANTI-VACUITY: under a forbidding posture with NO approval the draft path SUCCEEDS.
+
+        Pre-fix this BLOCKed (the bug: a colleague-invisible draft needed an
+        approval). With the fix the draft auto-publishes without any recorded
+        approval — a draft is never colleague-visible.
+        """
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm")
+
+        assert code == 0, msg
+        # The draft-note publish DID happen, on ``/draft_notes`` (not ``/discussions``).
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any("draft_notes" in ep for ep in post_endpoints), f"expected draft_notes hit, got {post_endpoints!r}"
+        # No approval was recorded or consumed — the draft never needed one.
+        assert not OnBehalfApproval.objects.exists()
+
+    def test_post_comment_default_proceeds_under_permitting_posture(self) -> None:
+        seed_permitting_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.post_comment(OWNED_REPO, 7, "lgtm")
+
+        assert code == 0
+        assert any(c[0] == "post_json" for c in stub.calls)
+
+    def test_post_comment_live_blocked_when_no_approval(self) -> None:
+        """The ``--live`` branch keeps the gate and names the one-step ``authorize`` (#126)."""
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+
+        assert code == 1
+        # The unified refusal names the single ``t3 review authorize`` command
+        # (the #126 collapse) rather than the old two-command dance.
+        assert "authorize" in msg
+        # The HTTP publish MUST NOT have happened.
+        assert all(kind != "post_json" for kind, _, _ in stub.calls)
+
+    def test_post_comment_live_still_needs_live_post_token_with_on_behalf_approval(self) -> None:
+        """A ``post_comment`` on-behalf approval alone does NOT satisfy ``--live``.
+
+        Both gates must be satisfied: the on-behalf approval (#960) AND the
+        Slack-recorded LivePostApproval (#1207). With only the former, the
+        ``--live`` call still refuses with the ``approve-live-post`` message.
+        """
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="post_comment", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+
+        assert code == 1
+        assert "approve-live-post" in msg
+
+    def test_post_comment_live_under_permitting_posture_needs_no_live_post_token(self) -> None:
+        """``--live`` under a permitting posture publishes with NO recorded LivePostApproval.
+
+        A permitting posture is the state ``resolve_live_authorization`` documents as
+        "no token at all is required" — the live-post chokepoint asserting the token
+        independently of that verdict declared the post authorized and then refused
+        it, which is the bug this pins the fix for. The on-behalf gate (#960) and the
+        live-post gate (#1207) are no longer independent under a permitting posture:
+        it waives both. A forbidding posture is unchanged — see the tests above.
+        """
+        seed_permitting_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+
+        assert code == 0, msg
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any(("draft_notes" not in ep) and ("notes" in ep) for ep in post_endpoints), (
+            f"expected a live publish to /notes or /discussions, got {post_endpoints!r}"
+        )
+
+    def test_post_comment_live_proceeds_with_both_approvals(self) -> None:
+        """``--live`` publishes when both the on-behalf approval AND the LivePostApproval are recorded."""
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="post_comment", approver_id="souliane")
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+
+        assert code == 0, msg
+        # The live publish lands on ``/discussions`` (or ``/notes``), NOT ``/draft_notes``.
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any(("draft_notes" not in ep) and ("notes" in ep) for ep in post_endpoints), (
+            f"expected a live publish to /notes or /discussions, got {post_endpoints!r}"
+        )
+
+
+class TestReviewServicePostDraftNoteGated:
+    """``post_draft_note`` is the draft-form action — EXEMPT from the gate under every posture."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_post_draft_note_auto_drafts_under_forbidding_posture(self) -> None:
+        """ANTI-VACUITY: under a forbidding posture with NO recorded approval the draft note SUCCEEDS.
+
+        Pre-fix this BLOCKed (the bug). With the fix a draft is exempt from
+        the gate whatever the posture: it auto-publishes and records the
+        user-DM ``BotPing`` — no approval.
+        """
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_draft_note(OWNED_REPO, 7, "nit")
+
+        assert code == 0, msg
+        assert any(c[0] == "post_json" for c in stub.calls), "The draft note publish must fire"
+        ping = BotPing.objects.get(idempotency_key=f"on_behalf_autodraft:{OWNED_REPO}!7:post_draft_note")
+        assert ping.kind == BotPing.Kind.INFO
+        # No approval was recorded or consumed.
+        assert not OnBehalfApproval.objects.exists()
+
+    def test_post_draft_note_passes_under_permitting_posture(self) -> None:
+        seed_permitting_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.post_draft_note(OWNED_REPO, 7, "nit")
+        assert code == 0
+        assert any(c[0] == "post_json" for c in stub.calls)
+
+
+class TestReviewServicePublishDraftsGated:
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_publish_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.publish_draft_notes(OWNED_REPO, 7)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_publish_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="publish_draft_notes", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        _, code = service.publish_draft_notes(OWNED_REPO, 7)
+        assert code == 0
+
+
+class TestReviewServiceReplyToDiscussionGated:
+    """A reply whose MR authorship is not proved to be the owner's stays gated.
+
+    ``reply_to_discussion`` reads the MR's author before the gate peek (the
+    author-side carve-out's precondition, ``teatree.cli.review.own_mr``), so
+    a blocked reply is no longer call-free — it is WRITE-free, which is the
+    guarantee that matters. The stub's MR payload carries no author, so
+    authorship is unproven and the gate refuses exactly as before.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_reply_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert [kind for kind, _, _ in stub.calls if kind != "get_json"] == []
+
+    def test_reply_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="reply_to_discussion", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        _, code = service.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
+        assert code == 0
+
+
+class TestReviewServiceResolveDiscussionGated:
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_resolve_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.resolve_discussion(OWNED_REPO, 7, "d1")
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_resolve_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="resolve_discussion", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        _, code = service.resolve_discussion(OWNED_REPO, 7, "d1")
+        assert code == 0
+
+
+class TestReviewServiceUpdateNoteGated:
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_update_note_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.update_note(OWNED_REPO, 7, 99, "edited")
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_update_note_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="update_note", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        _, code = service.update_note(OWNED_REPO, 7, 99, "edited")
+        assert code == 0
+
+
+class TestReviewServiceDeleteDiscussionGated:
+    """Deleting a *published* discussion is a colleague-visible mutation — gated.
+
+    Mirrors :class:`TestReviewServiceUpdateNoteGated` exactly: the action
+    routes through the on-behalf gate just like ``update_note``, because
+    removing a published comment under the user's identity is as visible
+    to colleagues as editing one. Distinct from ``delete_draft_note``
+    (ungated): a draft is pre-publication and not colleague-visible.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_delete_discussion_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion(OWNED_REPO, 7, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_delete_discussion_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="delete_discussion", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion(OWNED_REPO, 7, 99)
+
+        assert code == 0
+        assert "OK" in msg
+        assert any(c[0] == "delete" for c in stub.calls)
+
+    def test_delete_discussion_proceeds_under_permitting_posture(self) -> None:
+        seed_permitting_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_discussion(OWNED_REPO, 7, 99)
+
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
+
+
+class TestReviewServiceDeleteIssueNoteGated:
+    """Deleting a published ISSUE/work-item note is a colleague-visible mutation — gated.
+
+    The issue/work-item twin of :class:`TestReviewServiceDeleteDiscussionGated`.
+    The on-behalf scope is ``<repo>#<issue>`` (``#``, not ``!``), so an MR
+    approval can never satisfy an issue-note delete and vice versa.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_delete_issue_note_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note(OWNED_REPO, 9103, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_delete_issue_note_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}#9103", action="delete_issue_note", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note(OWNED_REPO, 9103, 99)
+
+        assert code == 0, msg
+        assert "OK" in msg
+        delete_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "delete"]
+        assert any("issues/9103/notes/99" in ep for ep in delete_endpoints), (
+            f"expected the issue-notes delete endpoint, got {delete_endpoints!r}"
+        )
+
+    def test_mr_scoped_approval_does_not_satisfy_issue_note_delete(self) -> None:
+        """ANTI-VACUITY: a ``<repo>!<iid>`` MR approval must NOT unlock the issue-note delete.
+
+        Without the ``#`` scope separation an approval recorded for the
+        same-numbered MR would satisfy the issue-note delete — exactly the
+        confusion the distinct target prevents. The delete must still BLOCK.
+        """
+        seed_forbidding_posture()
+        OnBehalfApproval.record(target=f"{OWNED_REPO}!9103", action="delete_issue_note", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note(OWNED_REPO, 9103, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_delete_issue_note_proceeds_under_permitting_posture(self) -> None:
+        seed_permitting_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_issue_note(OWNED_REPO, 9103, 99)
+
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
+
+    def test_recorded_issue_approval_via_cli_satisfies_delete(self) -> None:
+        """End-to-end: ``approve-on-behalf <repo>#<issue> delete_issue_note`` unlocks the delete."""
+        seed_forbidding_posture()
+        record = _runner.invoke(
+            app,
+            ["review", "approve-on-behalf", f"{OWNED_REPO}#9103", "delete_issue_note", "--approver", "souliane"],
+        )
+        assert record.exit_code == 0, record.output
+
+        service, stub = _service_with_stub()
+        msg, code = service.delete_issue_note(OWNED_REPO, 9103, 99)
+
+        assert code == 0, msg
+        assert any(c[0] == "delete" for c in stub.calls)
+        # Single-use: a second delete blocks again.
+        _, code2 = service.delete_issue_note(OWNED_REPO, 9103, 99)
+        assert code2 == 1
+
+
+class TestReviewServiceReadMethodsNotGated:
+    """Pure-read methods (no on-behalf publish) MUST NOT be gated."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_list_draft_notes_runs_even_when_blocked(self) -> None:
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.list_draft_notes(OWNED_REPO, 7)
+        assert code == 0
+        # The list call hit the API — it was not blocked.
+        assert any(c[0] == "get_json" for c in stub.calls)
+
+    def test_delete_draft_note_runs_even_when_blocked(self) -> None:
+        """Deleting one's own draft (pre-publication) is not an on-behalf colleague post."""
+        seed_forbidding_posture()
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_draft_note(OWNED_REPO, 7, 99)
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
+
+
+# Sanity: end-to-end, the service uses the gate helper at the chokepoint —
+# not in the typer command wrapper. Patch the helper at its source module
+# (``teatree.core.on_behalf_gate_recorded``) — the CLI imports it lazily
+# inside ``_check_on_behalf`` to keep the cli module importable before
+# ``django.setup()`` runs, so patching there is the canonical surface.
+class TestReviewServiceGateIntegration:
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seed_permitting_posture()
+        self.monkeypatch = monkeypatch
+
+    def test_post_comment_default_calls_require_with_post_draft_note(self) -> None:
+        """The default-draft path routes through ``post_draft_note``'s gate (#1207)."""
+        from teatree.core import on_behalf_gate_recorded as gate_mod  # noqa: PLC0415
+
+        called: list[tuple[str, str]] = []
+
+        def _fake_require[T](
+            *,
+            target: str,
+            action: str,
+            publish: Callable[[], T],
+            context: object = None,
+        ) -> T:
+            del context
+            called.append((target, action))
+            return publish()
+
+        with patch.object(gate_mod, "require_on_behalf_approval", _fake_require):
+            service, _stub = _service_with_stub()
+            service.post_comment(OWNED_REPO, 7, "lgtm")
+
+        # Default path => the on-behalf action consumed is the draft-form
+        # ``post_draft_note``, NOT ``post_comment``. ``post_comment`` is
+        # reserved for the ``--live`` colleague-visible branch.
+        assert called == [(f"{OWNED_REPO}!7", "post_draft_note")]
+
+    def test_post_comment_live_calls_require_with_post_comment(self) -> None:
+        """The ``--live`` branch still gates on the ``post_comment`` on-behalf action."""
+        from teatree.core import on_behalf_gate_recorded as gate_mod  # noqa: PLC0415
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        # The live publish reaches the atomic gate only past the LivePostApproval
+        # authorization (#1207); record one so the post site (and thus the
+        # consume) is reached.
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+
+        called: list[tuple[str, str]] = []
+
+        def _fake_require[T](
+            *,
+            target: str,
+            action: str,
+            publish: Callable[[], T],
+            context: object = None,
+        ) -> T:
+            del context
+            called.append((target, action))
+            return publish()
+
+        with patch.object(gate_mod, "require_on_behalf_approval", _fake_require):
+            service, _stub = _service_with_stub()
+            service.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+
+        assert (f"{OWNED_REPO}!7", "post_comment") in called
+
+
+class TestApproveOnBehalfCommand:
+    """``t3 review approve-on-behalf`` is the no-TTY satisfier (#960)."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seed_forbidding_posture()
+
+    def test_records_an_approval_row(self) -> None:
+        result = _runner.invoke(
+            app,
+            ["review", "approve-on-behalf", f"{OWNED_REPO}!7", "post_comment", "--approver", "souliane"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "OK recorded approval" in result.output
+        approval = OnBehalfApproval.objects.get(target=f"{OWNED_REPO}!7", action="post_comment")
+        assert approval.approver_id == "souliane"
+        assert approval.consumed_at is None
+
+    def test_refuses_a_maker_approver(self) -> None:
+        result = _runner.invoke(
+            app,
+            ["review", "approve-on-behalf", f"{OWNED_REPO}!7", "post_comment", "--approver", "coding-agent"],
+        )
+        assert result.exit_code == 1
+        assert "Refused" in result.output
+        assert OnBehalfApproval.objects.count() == 0
+
+    def test_end_to_end_recorded_approval_satisfies_visible_post(self) -> None:
+        """Record an approval via the CLI; the next colleague-VISIBLE post then proceeds.
+
+        Uses ``reply_to_discussion`` (a colleague-visible, single-chokepoint
+        action) — drafts are exempt from the gate so they cannot exercise
+        the recorded-approval satisfier. The recorded approval is single-use:
+        the second visible post blocks again.
+        """
+        record = _runner.invoke(
+            app,
+            ["review", "approve-on-behalf", f"{OWNED_REPO}!7", "reply_to_discussion", "--approver", "souliane"],
+        )
+        assert record.exit_code == 0, record.output
+
+        # The posture still forbids — but the recorded approval now satisfies the next call.
+        service, stub = _service_with_stub()
+        _, code = service.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
+
+        assert code == 0
+        assert any(c[0] == "post_json" for c in stub.calls)
+        # Single-use: the approval is now consumed; a second call fails.
+        _, code2 = service.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
+        assert code2 == 1

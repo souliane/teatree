@@ -1,0 +1,450 @@
+"""``_check_*`` probes for loop / scheduling staleness invoked by `t3 doctor check`.
+
+Each helper is narrow (single concern, single ``typer.echo`` path) and returns
+``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
+"""
+
+import datetime as dt
+from typing import TYPE_CHECKING
+
+import typer
+
+from teatree.loop.preset_resolution import consistency_findings
+
+if TYPE_CHECKING:
+    from teatree.core.models import DreamRunMarker
+
+
+def _check_loop_presets() -> bool:
+    """Warn on a dangling loop-preset reference (#3159): deleted preset / loop / schedule.
+
+    Presets, slots and the active-schedule selector reference loops and presets BY
+    NAME, so a deleted target fails open to base config at read time — but the
+    dangling reference should still be surfaced. Reports each such finding (never
+    repairs). Crash-proof: any error degrades to OK so a doctor run never aborts,
+    same posture as the other DB-reading checks.
+    """
+    try:
+        findings = consistency_findings()
+    except Exception as exc:  # noqa: BLE001  # doctor check must never crash the run
+        typer.echo(f"WARN  Loop-preset consistency check crashed: {exc.__class__.__name__}: {exc}")
+        return True  # degrades to OK: a crashed advisory read never reddens the run
+    if not findings:
+        return True
+    for finding in findings:
+        typer.echo(f"WARN  Loop preset: {finding}")
+    return False
+
+
+def _check_marker_jam() -> bool:
+    """Warn when orphaned issue-markers strand the intake budget (#3275).
+
+    The jam signature: non-terminal ``ImplementedIssueMarker`` rows whose ticket
+    is already terminal, gone, or stalled — they never left ``dispatched`` /
+    ``ticket_created`` (release-on-completion only fires on the live transition),
+    so they permanently consume the in-flight intake budget and no new issue is
+    ever claimed. Reads the non-mutating :meth:`find_stale`
+    preview across every
+    overlay. A WARN (never a hard FAIL): the loop self-heals each tick, and the
+    operator can force it now with ``t3 loop reclaim-markers``. Crash-proof: any
+    error degrades to OK so a doctor run never aborts on this check.
+    """
+    from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        stale = ImplementedIssueMarker.objects.find_stale()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Issue-marker jam check crashed: {exc.__class__.__name__}: {exc}")
+        return False
+    if stale.released == 0:
+        return True
+    typer.echo(
+        f"WARN  {stale.released} orphaned issue-marker(s) hold intake budget but their tickets are "
+        f"terminal, gone, stalled, or cancelled ({len(stale.completed)} completed, "
+        f"{len(stale.abandoned)} abandoned, {len(stale.declined)} declined) — "
+        "run `t3 loop reclaim-markers` to free the issue_implementer budget (#3275)."
+    )
+    return False
+
+
+def _check_intake_pass_incomplete() -> bool:
+    """FAIL when intake keeps running out of budget before finishing a pass (#4466).
+
+    An abandoned pass drops the frontier — the only candidates that can still become work —
+    so nothing filed in that window is admitted. It surfaced only as a WARN in the worker
+    log, which nobody reads: 21 abandoned passes in three hours went unnoticed while five
+    filed issues sat unadmitted. Crash-proof: any error degrades to OK with a WARN.
+    """
+    from teatree.core.models import IntakeScanCursor  # noqa: PLC0415 — ORM import needs the app registry
+
+    try:
+        stalled = list(IntakeScanCursor.objects.stalled())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Intake-pass check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for row in stalled:
+        typer.echo(
+            f"FAIL  Intake pass incomplete: {row.report()} — nothing filed since is being admitted; "
+            "raise `issue_intake_pass_budget_seconds` or cut the candidate set (#4466)."
+        )
+    return not stalled
+
+
+def _check_dream_staleness() -> bool:
+    """Warn when the idle-time dream consolidation cron is stale (#1933).
+
+    The dream pass distils session feedback into the ``ConsolidatedMemory``
+    ledger; if it stops succeeding, memories pile up unpromoted unnoticed. The
+    alarm keys on the last *successful* run (``DreamRunMarker.is_stale``, 48h):
+    a run that keeps failing bumps only the attempt timestamp, so staleness
+    keeps firing, and bootstrap (never succeeded) is stale by construction. A
+    fresh successful pass clears it; the remedy points at scheduling
+    ``t3 dream tick`` (which advances the cadence ledger) rather than a one-off
+    ``t3 dream run``. Mirrors the SelfUpdateMarker-style marker-staleness alarms.
+
+    Crash-proof: any error (DB offline, unmigrated self-DB) degrades to OK so a
+    doctor run never aborts on this check — same posture as the other
+    DB-reading doctor checks.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    try:
+        stale = DreamRunMarker.objects.is_stale(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-staleness check crashed: {exc.__class__.__name__}: {exc}")
+        return True  # degrades to OK: a crashed advisory read never reddens the run
+    if not stale:
+        return True
+    typer.echo(
+        "WARN  Dream consolidation is stale — no successful pass in 48h. "
+        "Memories pile up unpromoted; schedule `t3 dream tick` (~04:00 cron) so "
+        "the cadence ledger advances, not just a one-off `t3 dream run` (#1933). "
+        "If `t3 dream run` reports 0 members, see the transcript-visibility check.",
+    )
+    return False
+
+
+def _check_dream_consolidation_blocked() -> bool:
+    """Hard-FAIL when a once-working dream pass has been unable to stamp success (#3993).
+
+    The escalation tier over :func:`_check_dream_staleness`'s advisory WARN, whose
+    verdict is surfacing-only: a pass can run nightly, fail an acceptance gate and
+    withhold the marker indefinitely without any operator-visible signal. A pass that
+    once succeeded and has not for ``CRITICAL_STALE_MULTIPLE`` staleness windows is
+    structurally blocked, not merely behind, so it gates the doctor exit code.
+    Bootstrap (never succeeded) is excluded — see
+    :meth:`DreamRunMarkerManager.is_critically_stale`.
+
+    Crash-proof: any error degrades to OK, the same posture as every other DB-reading
+    doctor check.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    try:
+        now = timezone.now()
+        blocked = DreamRunMarker.objects.is_critically_stale(now)
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first() if blocked else None
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-blocked check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not blocked:
+        return True
+    succeeded = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "never"
+    typer.echo(
+        f"FAIL  Dream consolidation has not stamped success since {succeeded} — {_dream_block_cause(marker, now)} "
+        "so no memory or eval candidate is promoted. Run `t3 dream run` and read the "
+        "gate verdict it now exits non-zero on (#3993).",
+    )
+    return False
+
+
+def _dream_block_cause(marker: "DreamRunMarker | None", now: "dt.datetime") -> str:
+    """Which of the FOUR causes the marker establishes (#4355, #4671, #4725).
+
+    Naming the wrong one is expensive in every direction: "every pass is withheld" sends
+    the reader hunting a gate that is refusing when no pass ran, and the reverse sends
+    them after a driver that is already firing every ten minutes.
+
+    The killed cause is one #4671 itself creates. #4355 made the LOOP's liveness anchor
+    pre-pass; THIS marker's attempt anchor stayed terminal-only, so a SIGKILLed pass
+    moved it not at all, went stale and read FROZEN — a mislabel, because the driver had
+    fired. (The ten-day "withheld" misreport came from a terminal stamp that DID land,
+    most plausibly the 0-members one below.) Stamping this anchor pre-pass corrects the
+    FROZEN mislabel and would make a kill read as a refusal in turn, so the same stamp
+    CLEARS the previous outcome: a recent attempt carrying none died before reaching one.
+
+    ``OUTCOME_FAILED`` is the fourth: a raised pass, 0 members or a broken distiller
+    could not EVALUATE the corpus, which is not the same claim as refusing it.
+    """
+    from teatree.core.models.dream_run_marker import (  # noqa: PLC0415 — deferred: the module imports the ORM
+        OUTCOME_FAILED,
+        STALE_THRESHOLD_HOURS,
+    )
+
+    attempted = marker.last_attempted_at if marker else None
+    if attempted is not None and (now - attempted) < dt.timedelta(hours=STALE_THRESHOLD_HOURS):
+        outcome = marker.last_outcome if marker else ""
+        if not outcome:
+            return "the last pass was killed before reaching a verdict,"
+        detail = (marker.last_failure_detail if marker else "").strip()
+        quoted = f" ({detail})" if detail else ""
+        if outcome == OUTCOME_FAILED:
+            return f"the last pass could not be evaluated{quoted},"
+        return f"every pass is being withheld{quoted},"
+    since = f"since {attempted.isoformat()}" if attempted else "ever"
+    return f"and no pass has been attempted {since} — the loop is FROZEN, not withheld —"
+
+
+def _check_dream_transcript_visibility() -> bool:
+    """Warn when the dream pass can see NO session transcripts at any age.
+
+    Keys on STRUCTURAL absence (projects dir missing, or zero ``*/*.jsonl`` /
+    subagent transcripts regardless of mtime) — not the 48h recency window — so a
+    genuinely quiet couple of days never false-alarms. In the Docker factory a
+    structurally empty projects dir means the selected transcript source has no
+    members: every dream pass then finds 0 members.
+    Complements :func:`_check_dream_staleness` (cadence) — this one names the
+    mount as the remedy. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.dream.replay import default_projects_dir  # noqa: PLC0415 — deferred import
+
+    try:
+        root = default_projects_dir()
+        if root.is_dir() and (any(root.glob("*/*.jsonl")) or any(root.glob("*/*/subagents/agent-*.jsonl"))):
+            return True
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-transcript-visibility check crashed: {exc.__class__.__name__}: {exc}")
+        return True  # degrades to OK: a crashed advisory read never reddens the run
+    from teatree.memory_audit import transcript_mount  # noqa: PLC0415 — deferred: doctor check runs only on demand
+
+    mount_type, source = transcript_mount(root)
+    topology = {
+        "bind": f"the bind mount {source} at ~/.claude/projects",
+        "volume": f"the factory-owned {source} volume at ~/.claude/projects",
+    }.get(mount_type, "the transcript source at ~/.claude/projects")
+    typer.echo(f"WARN  Dream sees 0 session transcripts under {root} (any age); check {topology}.")
+    return False
+
+
+def _check_compose_output_root_pinned() -> bool:
+    """Warn when a compose service does not pin the agent output root (#3641).
+
+    ``deploy/entrypoint.sh`` exports ``TMPDIR`` for a service's MAIN process, but
+    ``docker exec`` does not run the entrypoint — an exec'd agent's transcripts
+    then land under a second, ephemeral root, so every transcript consumer must
+    scan both or silently miss half the data. Only an inline ``environment``
+    entry reaches an exec'd process. Crash-proof: any error degrades to OK.
+    """
+    from teatree.cli.doctor.self_heal import _Probe  # noqa: PLC0415 — deferred: lazy CLI import
+    from teatree.docker.output_root import (  # noqa: PLC0415 — deferred: lazy CLI import
+        OUTPUT_ROOT_ENV,
+        services_missing_output_root,
+    )
+    from teatree.docker.workflow import compose_path  # noqa: PLC0415 — deferred: lazy CLI import
+
+    try:
+        clone = _Probe.runtime_clone_root()
+        if clone is None:
+            return True
+        missing = services_missing_output_root(compose_path(clone))
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Compose-output-root check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not missing:
+        return True
+    typer.echo(
+        f"WARN  {len(missing)} compose service(s) do not pin {OUTPUT_ROOT_ENV} in their "
+        f"`environment` ({', '.join(missing)}). A `docker exec` into them bypasses the "
+        f"entrypoint export, so agent output splits across two roots and every "
+        f"transcript consumer must scan both. Declare {OUTPUT_ROOT_ENV} per service in "
+        "deploy/docker-compose.yml.",
+    )
+    return False
+
+
+def _check_loop_classification_drift() -> bool:
+    """Warn when a ``Loop`` row's classification disagrees with the shipped table.
+
+    A row is seeded once and never re-read, so a ``colleague_facing`` value that
+    outlived a shipped change keeps winning at read time — and a stale ``True``
+    is skipped by the away-class admission gate, so the loop stops firing while
+    every surface still reports it enabled. The field is admin-editable, so this
+    reports rather than repairs; ``seed_loops --reconcile-classification`` writes
+    the shipped value back. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.seed_drift import classification_drift  # noqa: PLC0415 — deferred: ORM-reading import
+
+    try:
+        findings = classification_drift()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Loop-classification drift check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not findings:
+        return True
+    for finding in findings:
+        typer.echo(f"WARN  Loop classification drift: {finding}")
+    typer.echo(
+        "WARN  Run `python -m teatree seed_loops --reconcile-classification` to write the shipped values back.",
+    )
+    return False
+
+
+def _check_shipped_seed_inertness() -> bool:
+    """Report shipped loop/preset/schedule faults and deliberate manual overrides.
+
+    The expected set is sourced from the shipped seed tables, not the DB, so a row somebody
+    deleted is visible at all. Only FAULTS are echoed — a shipped-off loop or an inactive
+    calendar is a deliberate choice. A manual off override is a single INFO with the
+    preset/mode remedy; masked loops stay quiet. Crash-proof: any error degrades to OK.
+    """
+    from teatree.loops.seed_inertness import (  # noqa: PLC0415 — deferred: ORM-reading import
+        KIND_DISABLED_VS_SHIPPED,
+        shipped_inertness,
+    )
+
+    try:
+        findings = shipped_inertness()
+        faults = [finding for finding in findings if finding.is_fault]
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Shipped-seed inertness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for finding in findings:
+        if finding.kind == KIND_DISABLED_VS_SHIPPED:
+            typer.echo(f"INFO  Shipped loop override: {finding.label}")
+    if not faults:
+        return True
+    for finding in faults:
+        typer.echo(f"WARN  Shipped seed inert: {finding.label}")
+    typer.echo("WARN  Run `t3 loops audit` for the full report, including the deliberate ones.")
+    return False
+
+
+def _check_aged_sweep_skips() -> bool:
+    """One standing finding for the PRs the merge sweep keeps skipping (#4523).
+
+    A sweep skip is log-only, so a PR held by ``ci_red`` / ``no_clear_for_head`` /
+    a fork provenance hold sits indefinitely with nobody told. Reporting a line per
+    row made 41 rows read as 41 incidents; the count is the finding. A deliberate
+    park is counted, never a fault. Crash-proof: any error degrades to OK.
+    """
+    from teatree.core.models import SweepSkipStreak  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loop.pr_sweep_skip_surface import (  # noqa: PLC0415 — deferred: lazy CLI import
+        SURFACE_AFTER_TICKS,
+        render_standing_skips,
+    )
+
+    try:
+        summary = SweepSkipStreak.objects.standing(threshold=SURFACE_AFTER_TICKS)
+        lines = render_standing_skips(summary, threshold=SURFACE_AFTER_TICKS)
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Aged-sweep-skip check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for line in lines:
+        typer.echo(line)
+    return summary.stalls == 0
+
+
+def _check_unconsumed_merge_clears() -> bool:
+    """Hard-FAIL on a standing merge authorisation whose PR the forge still reports OPEN (#4250).
+
+    A ``MergeClear`` is a durable authorisation to merge exactly one diff. One that is
+    never consumed while its PR is still open is a finished, reviewed branch that
+    silently never lands — and no surface reported it: the S4 age signal joined
+    ``ticket__overlay`` while ticket-less is the norm, the sweep logged an unrelated
+    reason at INTERNAL audience, and ``MergeAudit`` was correctly empty.
+
+    A missing local ``MergeAudit`` is NOT evidence that no merge happened, and reading
+    it as one made this check 6/6 false on live data. The forge decides: only a PR it
+    reports OPEN is a stall; one that merged or closed outside the keystone is a spent
+    authorisation reported as a self-clearing WARN, and a PR whose state cannot be read
+    produces no finding at all.
+
+    Deliberately GLOBAL: a CLEAR whose repo no overlay declares is still a stalled merge,
+    and scoping this report per overlay is how such a row would go unreported again.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens on
+    the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.backends.loader import pr_open_state  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.core.factory.clear_liveness_report import stale_clear_report  # noqa: PLC0415 — deferred: same
+
+    try:
+        report = stale_clear_report("", timezone.now(), read=pr_open_state)
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Unconsumed-merge-CLEAR check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for line in report.lines():
+        typer.echo(line)
+    return not report.stalled
+
+
+def _check_t3_master_unheld_while_loops_tick() -> bool:
+    """Hard-FAIL when ``t3-master`` is unheld while loops are still ticking (#4253).
+
+    The owner-gated reactive cycles (``loop_slack_answer`` / ``loop_self_improve``) skip
+    every beat on an unheld lease, and the only notice is a log line. Meanwhile
+    ``t3 worker status`` exits 0 and every cadence surface reads healthy, because none of
+    them knows about this lease — so the degraded state reached nobody for the whole
+    night that produced the ticket.
+
+    Silent when nothing is ticking: an unheld lease on an idle box is honest, and a
+    stopped chain is ``_check_loop_schedule_liveness``'s finding, not this one.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens on
+    the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.loops.master_lease_contradiction import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        unheld_master_lease_with_live_ticks,
+    )
+
+    try:
+        finding = unheld_master_lease_with_live_ticks(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  t3-master owner-lease check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if finding is None:
+        return True
+    typer.echo(
+        f"FAIL  The `t3-master` owner lease is unheld while {finding.describe()} — every owner-gated "
+        "reactive cycle (`t3 loop slack-answer run`, `t3 loop self-improve run`) is skipping its beat. "
+        "Inspect with `t3 loop owner`; a running worker re-claims the slot on its next refresh, so a "
+        "lease that stays unheld means the claim itself is failing (#4253).",
+    )
+    return False
+
+
+def _check_loop_schedule_liveness() -> bool:
+    """Hard-FAIL when an enabled, timer-chained loop is carrying no live timer (#4140).
+
+    The reading no other surface has: ``t3 loop list`` reports a manually-poked loop
+    as scheduled, because a manual ``t3 loops tick`` bumps ``Loop.last_run_at``
+    without restoring the chain. During the 61-minute ``issue_implementer`` outage
+    every cadence surface read healthy while no successor existed at all.
+
+    Crash-proof: any error degrades to OK with a WARN, so a doctor run never reddens
+    on the alarm's own failure.
+    """
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.loops.schedule_liveness import unscheduled_loops  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    try:
+        stalled = unscheduled_loops(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Loop schedule-liveness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for loop in stalled:
+        typer.echo(
+            f"FAIL  Loop `{loop.name}` is enabled but nothing is scheduled to fire it — {loop.reason}. "
+            "The periodic reconciler re-heads the chain on its next pass; if this persists, "
+            "restart the worker with `t3 worker ensure` (#4140).",
+        )
+    return not stalled

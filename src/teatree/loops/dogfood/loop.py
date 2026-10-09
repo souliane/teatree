@@ -1,0 +1,27 @@
+"""Dogfood mini-loop — overlay-provision-smoke cadence."""
+
+from typing import TYPE_CHECKING
+
+from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.loop.job_identity import _ScannerJob
+
+
+def _build_jobs(**_: object) -> "list[_ScannerJob]":
+    from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415 — tick-time import
+    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    scanner = _dogfood_smoke_scanner()
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay="")]
+
+
+MINI_LOOP = MiniLoop(
+    name="dogfood",
+    default_cadence_seconds=3600,  # a floor only; the seeded row asks for 86400 and that IS the cadence
+    build_jobs=_build_jobs,
+    declared_reach=frozenset({LoopReach.COLLEAGUE}),
+    determinism=LoopDeterminism.AI,
+)

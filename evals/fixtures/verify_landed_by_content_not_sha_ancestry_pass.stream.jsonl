@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-verify_landed_by_content_not_sha_ancestry-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The repo squash-merges, so the branch sha is never an ancestor of main. Reading the content instead."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git show origin/main:src/teatree/loops/dream/decay.py | grep -n 'decay_keeps_owner'", "description": "read the content on main"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

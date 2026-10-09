@@ -1,0 +1,64 @@
+"""Tests for the ``t3 <overlay> signals`` management command (SIG-PR-1)."""
+
+import json
+from datetime import timedelta
+from io import StringIO
+
+import pytest
+from django.core.management import call_command
+from django.utils import timezone
+
+from tests.factories import MergeAuditFactory, MergeClearFactory
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
+
+GRADED_SIGNAL_IDS = ["first_try_green", "defect_escape", "review_catch", "merge_latency", "repair_burn"]
+VISIBILITY_SIGNAL_IDS = ["net_hand_written_loc"]
+
+
+def _call(*args: str, **kwargs: object) -> str:
+    """Stdout — the machine channel (JSON under ``--json``, empty otherwise)."""
+    buf = StringIO()
+    call_command("signals", *args, stdout=buf, **kwargs)
+    return buf.getvalue()
+
+
+def _call_human(*args: str, **kwargs: object) -> str:
+    """Stderr — where the seam routes the human view."""
+    buf = StringIO()
+    call_command("signals", *args, stderr=buf, **kwargs)
+    return buf.getvalue()
+
+
+class TestSignalsCommand:
+    def test_json_emits_the_graded_signals_the_visibility_row_and_a_verdict(self) -> None:
+        payload = json.loads(_call(json_output=True))
+        assert payload["window_days"] == 28
+        assert payload["verdict"] in {"ok", "regressing", "red"}
+        # Two lists, not a count of six: the LoC row is REPORTED on this surface, never graded.
+        assert [row["provider_id"] for row in payload["signals"]] == [*GRADED_SIGNAL_IDS, *VISIBILITY_SIGNAL_IDS]
+
+    def test_window_days_flows_through(self) -> None:
+        payload = json.loads(_call("--window-days", "7", json_output=True))
+        assert payload["window_days"] == 7
+
+    def test_human_view_renders_markdown_table(self) -> None:
+        out = _call_human()
+        assert "Factory signals" in out
+        assert "first_try_green" in out
+
+    def test_rubber_stamp_window_surfaces_red(self) -> None:
+        now = timezone.now()
+        for i in range(5):
+            merged_at = now - timedelta(days=5)
+            clear = MergeClearFactory(
+                pr_id=901 + i,
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at)
+        payload = json.loads(_call(json_output=True))
+        assert payload["verdict"] == "red"
+        review = next(row for row in payload["signals"] if row["provider_id"] == "review_catch")
+        assert review["tripped"] is True

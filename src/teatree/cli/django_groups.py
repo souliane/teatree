@@ -1,0 +1,488 @@
+"""Overlay Django command-group catalogue.
+
+The static ``DJANGO_GROUPS`` table describing every ``t3 <overlay> <group> <sub>`` command
+tree, split out of ``overlay.py`` so the app-builder logic and this data catalogue each stay
+a focused module; the group type itself is :class:`~teatree.cli.django_group.DjangoGroup`.
+"""
+
+from teatree.cli.django_group import DjangoGroup
+
+DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "worktree": DjangoGroup(
+        "Per-worktree FSM operations.",
+        [
+            ("provision", "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree."),
+            ("start", "Boot ``docker compose up`` for one worktree."),
+            ("verify", "Run overlay health checks for one worktree."),
+            ("ready", "Run runtime readiness probes for one worktree."),
+            ("teardown", "Stop docker, drop DB, remove git worktree, delete row."),
+            ("status", "Report FSM state, branch, and allocated host ports for one worktree."),
+            ("diagnose", "Print a structured health checklist for one worktree."),
+            ("smoke-test", "Quick health check: overlay loads, CLI responds, imports OK."),
+            ("diagram", "Print a state diagram as Mermaid. Models: worktree, ticket, task."),
+            ("occupancy", "Show every checkout a live agent currently holds."),
+            ("claim-occupancy", "Claim a checkout for a hand-driven lane, refusing if an agent already holds it."),
+            ("release-occupancy", "Hand a checkout back, naming whose claim was freed."),
+            ("adopt", "Register an existing on-disk checkout as a Worktree row."),
+        ],
+    ),
+    "workspace": DjangoGroup(
+        "Ticket-level workspace operations (every worktree in the ticket).",
+        [
+            ("ticket", "Create or update a ticket and trigger worktree provisioning."),
+            ("provision", "Provision every worktree in the current ticket workspace."),
+            ("start", "Start docker for every worktree in the current ticket workspace."),
+            ("ready", "Run readiness probes for every worktree in the ticket workspace."),
+            ("teardown", "Tear down every worktree in the current ticket workspace."),
+            ("finalize", "Squash worktree commits and rebase on the default branch."),
+            ("doctor", "Detect state drift across every store; optionally fix it."),
+            ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
+            ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
+            ("repair-split", "Move a ticket's divergent worktrees into its canonical workspace dir (keeps all work)."),
+            (
+                "relocate",
+                "Move this overlay's existing worktrees under the per-overlay workspace dir (git worktree move).",
+            ),
+            ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
+            ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
+            ("branch-verdict", "Is this branch's work already on the default branch? The canonical answer."),
+            ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
+            (
+                "reclaim-disk",
+                "Reclaim disk via zero-data-loss docker prunes (builder + dangling images + unreferenced volumes).",
+            ),
+            ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
+            (
+                "stamp-owners",
+                "Record which checkout owns each auto-isolated env dir this venue can see (deletes nothing).",
+            ),
+            (
+                "release-dead-rows",
+                "Delete Worktree rows whose checkout is provably gone — the row alone, nothing else touched.",
+            ),
+            (
+                "repair-branch-upstreams",
+                "Point every branch tracking someone else's ref back at its own, or untrack it.",
+            ),
+            ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
+            ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
+            ("restore", "Apply a captured salvage bundle back into a checkout (--into, --dry-run)."),
+            (
+                "prek-patches",
+                "Which prek patches hold work absent from the tree, and restore one (--repo, --restore, --dry-run).",
+            ),
+        ],
+    ),
+    "run": DjangoGroup(
+        "Run services.",
+        [
+            ("verify", "Verify worktree state and return URLs."),
+            ("services", "Return configured run commands."),
+            ("backend", "Start the backend dev server."),
+            ("build-frontend", "Build the frontend for production/testing."),
+            ("tests", "Run the project test suite."),
+            ("e2e", "Run one targeted E2E spec through the canonical E2E runner."),
+            ("lint", "Run the overlay's lint pipeline on this worktree."),
+        ],
+    ),
+    "e2e": DjangoGroup(
+        "E2E test commands.",
+        [
+            ("run", "Run E2E tests — dispatches to project or external runner based on overlay config."),
+            ("lanes", "Emit the {lane: [spec, ...]} CI matrix folded from the overlay's registered specs."),
+            ("trigger-ci", "Trigger E2E tests on a remote CI pipeline."),
+            ("external", "Run Playwright tests from the external specs repo (the overlay's own, or --repo)."),
+            ("project", "Run E2E tests from the project's own test directory."),
+            ("in-tree", "Run a Playwright config from THIS checkout's e2e dir — no stack, no credentials."),
+            (
+                "write-test-plan",
+                "Write/update the ticket's plan at test-plans/<repo>-<ticket>.md in the e2e repo, from a manifest.",
+            ),
+            (
+                "verify-plan-captures",
+                "Verify every capture committed under test-plans/evidence/ passes the preflight.",
+            ),
+            (
+                "write-plan-from-seams",
+                "Assemble the scenario-plan file from the overlay seams instead of a manifest.",
+            ),
+            (
+                "tracked-manifest",
+                "Print a manifest's authored half (run provenance stripped) for a private test repo to commit.",
+            ),
+        ],
+    ),
+    "db": DjangoGroup(
+        "Database operations.",
+        [
+            ("migrate", "Apply pending migrations to the runtime self-DB (non-destructive self-rescue)."),
+            ("seed-loops", "Seed the shipped loops, prompts, modes and schedules (existing rows untouched)."),
+            ("refresh", "Re-import the worktree database from dump/DSLR."),
+            ("migrate-app", "Apply pending migrations to the worktree's app DB, without re-importing it."),
+            ("approve", "Record a single-use DbApproval that satisfies the #777 fresh-dump gate without a TTY (#953)."),
+            ("restore-ci", "Restore database from the latest CI dump."),
+            ("reset-passwords", "Reset all user passwords to a known dev value."),
+            ("query", "Run a read-only SQL query against the control DB; emit rows as JSON."),
+            ("shell", "Drop into a Django shell against the resolved (gate) control DB."),
+        ],
+        # `approve` records a DbApproval row in the teatree-core control DB the
+        # gate reads at consume time, so it must run in the runtime process
+        # (`python -m teatree`) rather than route through an overlay manage.py
+        # whose self-DB lacks the row (#953/#126). `migrate` must apply BOTH the
+        # core migrations AND the overlay app's migrations against that same
+        # canonical DB — the core settings cannot see an overlay-shipped app
+        # (its bootstrap-time app discovery fails), so migrate runs in the
+        # overlay's own settings context when the overlay ships one, and stays
+        # on the core path otherwise. Their siblings (refresh/restore-ci/
+        # reset-passwords) always route through the overlay manage.py for the
+        # overlay's db_import strategy. `seed-loops` joins `approve` on the core
+        # path: the rows it writes are core's (Loop/Prompt/Mode/ModeSchedule) and
+        # no overlay app is involved, so the overlay settings context adds nothing.
+        core_subcommands=frozenset({"approve", "seed-loops"}),
+        overlay_settings_subcommands=frozenset({"migrate"}),
+    ),
+    "pr": DjangoGroup(
+        "Pull request helpers.",
+        [
+            ("create", "Create a pull request for the ticket's branch."),
+            ("merge", "[Removed] Refuses with a redirect to the §17.4 keystone (`ticket clear` + `ticket merge`)."),
+            ("ensure-pr", "Create a PR for an orphan branch (idempotent)."),
+            ("discharge-pending", "Drop a deferred-PR obligation the drain can never discharge."),
+            ("check-gates", "Check whether session gates allow a phase transition."),
+            ("fetch-issue", "Fetch issue details from the configured tracker."),
+            ("detect-tenant", "Detect the current tenant variant from the overlay."),
+            ("post-test-plan", "Post a test plan as a PR comment."),
+            ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
+        ],
+        # `create` gate-validates against the teatree-core control DB the
+        # shipping gate reads (`assert_lifecycle_db_is_canonical`), and every
+        # sibling lives in the same core-only `pr.py` module. Without
+        # `core_dispatch`, the overlay project-path resolver prefers any
+        # `manage.py` discovered from the invoking cwd — which, from inside a
+        # ticket worktree, is that worktree's OWN `manage.py`, running against
+        # its per-worktree auto-isolated DB the gate never consults (#2925,
+        # the same #126 class `db migrate`/`db approve` were fixed under).
+        core_dispatch=True,
+    ),
+    "tasks": DjangoGroup(
+        "Async task queue.",
+        [
+            ("cancel", "Cancel a task by ID."),
+            ("claim", "Claim the next available task."),
+            ("complete", "Mark a claimed task COMPLETED for work finished out-of-band."),
+            ("create", "Enqueue the next-phase task for a ticket."),
+            ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
+            ("reconcile-checklist", "Emit the in-session harness-TODO reconciliation checklist (read-only)."),
+            ("record-attempt", "Record an in-session sub-agent's result back onto a Task."),
+            ("work-next", "Claim and execute the next pending task."),
+        ],
+    ),
+    "queue": DjangoGroup(
+        "Background-task DB queue (inspect, expire stale jobs).",
+        [
+            ("status", "Print the queue breakdown by status and READY jobs by task name (read-only)."),
+            ("expire-stale", "Retire READY jobs older than the threshold to FAILED so a drainer never runs them."),
+        ],
+        core_dispatch=True,
+    ),
+    "retention": DjangoGroup(
+        "Age-based pruning of the high-churn control-DB tables (#3693).",
+        [
+            ("artifacts", "Reclaim dormant rebuildable build artifacts (dry-run unless --apply)."),
+            ("prune", "Preview or drain the hourly control-DB retention pass (dry-run unless --apply)."),
+            ("scratch", "Reclaim stale agent scratch under the temp root (dry-run unless --apply, #4165)."),
+        ],
+        # Reads/deletes rows in the teatree-core control DB — dispatch via
+        # ``python -m teatree`` so a cwd inside a ticket worktree resolves core,
+        # not that worktree's per-worktree DB (same #2925/#126 class as queue).
+        core_dispatch=True,
+    ),
+    "followup": DjangoGroup(
+        "Follow-up snapshots.",
+        [
+            ("refresh", "Return counts of tickets and tasks."),
+            ("sync", "Synchronize followup data from MRs."),
+            ("discover-mrs", "List the user's open non-draft PRs/MRs awaiting a review request."),
+            ("remind", "Return list of pending user input tasks."),
+        ],
+        core_dispatch=True,
+    ),
+    "standup": DjangoGroup(
+        "Auto-generated daily update (read-only).",
+        [
+            ("generate", "Generate a standup from transition + attempt data (read-only)."),
+            ("stale", "List tickets with no activity past the staleness threshold (read-only)."),
+        ],
+    ),
+    "live": DjangoGroup(
+        "Sessions running now on this host's workers: inspect them passively, steer them actively.",
+        [
+            ("list", "List every live session on this host's workers (passive)."),
+            ("inspect", "Show one live session's state, tool and progress without contacting the agent."),
+            ("steer", "Send input into a running agent's current turn and print its receipt (active)."),
+        ],
+        # The broker sockets are this host's runtime state, not an overlay's: core runtime only.
+        core_dispatch=True,
+    ),
+    "checking": DjangoGroup(
+        "Terse 'what did I miss' report since the last check (read-only).",
+        [
+            ("show", "Print grouped merged/in-flight/needs-you changes since the last check (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
+    "health": DjangoGroup(
+        "Global operational-health verdict + known-issues registry.",
+        [
+            ("show", "Reconcile and print the green/yellow/red verdict + open KnownIssue rows."),
+            ("add", "Record a manual operational-health issue the deterministic signals miss."),
+            ("dismiss", "Acknowledge and close an open KnownIssue by id."),
+        ],
+        core_dispatch=True,
+    ),
+    "waiting": DjangoGroup(
+        "The durable 'waiting on you' lane — questions, merge authorizations, reviews, manual items.",
+        [
+            ("list", "List everything currently waiting on the user (all kinds), computed live."),
+            ("add", "Record a manual waiting item the live sources cannot see."),
+            ("resolve", "Resolve a manual waiting item by id."),
+        ],
+        core_dispatch=True,
+    ),
+    "handover": DjangoGroup(
+        "Hand all current work from this session to another session.",
+        [
+            ("create", "Hand this session's full durable state to the loop owner, a named session, or next."),
+            ("whoami", "Print this Claude session's own id."),
+            ("claim-on-start", "Claim an unclaimed hand-off for a starting session (SessionStart hook entry)."),
+        ],
+        core_dispatch=True,
+    ),
+    "session": DjangoGroup(
+        "Session-lifecycle operations.",
+        [
+            ("prepare-stop", "Refresh the durable recovery artifacts (TODO mirror, resume plan, at-risk worktrees)."),
+            ("todo-add", "Append an item to this session's durable working list."),
+            ("todo-list", "List this session's working items, in working order."),
+            ("todo-set", "Move one working item to a new status."),
+        ],
+        # ``prepare-stop`` reads the teatree-core control DB (open PRs, deferred
+        # questions) — dispatch via ``python -m teatree`` so a cwd inside a ticket
+        # worktree resolves core, not the worktree's per-worktree DB.
+        core_dispatch=True,
+    ),
+    "lifecycle": DjangoGroup(
+        "Session lifecycle and phase tracking.",
+        [
+            ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
+            ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
+            ("record-review-skill-run", "Record evidence the configured review skill ran (reviewing-phase gate)."),
+            ("record-review-context", "Record referenced-context retrieval before reviewing (deep-retrieval gate)."),
+            ("record-e2e-run", "Record a green E2E run + posted evidence, clearing the mandatory-E2E gate (#1967)."),
+            ("record-anti-vacuity", "Record the SHA-bound anti-vacuity attestation before review-request/merge."),
+        ],
+        # Every subcommand records phase attestations against the
+        # teatree-core control DB the shipping gate reads
+        # (`assert_lifecycle_db_is_canonical`) — same #2925/#126 reasoning as
+        # the `pr` group above: without `core_dispatch`, a cwd inside a ticket
+        # worktree resolves that worktree's own `manage.py` and its
+        # per-worktree auto-isolated DB instead.
+        core_dispatch=True,
+    ),
+    "env": DjangoGroup(
+        "Inspect and mutate the worktree env cache.",
+        [
+            ("show", "Print the env cache as the DB would render it."),
+            ("set-var", "Persist an override on the worktree and refresh the cache."),
+            ("unset", "Delete an override row and refresh the cache."),
+            ("overrides", "List user-declared overrides for this worktree."),
+            ("check", "Exit non-zero if the on-disk cache diverges from the DB render."),
+        ],
+    ),
+    "ticket": DjangoGroup(
+        "Ticket state management.",
+        [
+            ("transition", "Transition a ticket to a new state."),
+            ("plan", 'Record a PlanArtifact and advance WORK_STARTED → PLAN_RECORDED (`plan <id> "<text>"`).'),
+            ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLAN_RECORDED (--human-authorize)."),
+            ("skip-planning", "Skip planning on a trivial ticket, advancing to PLAN_RECORDED (--reason, no artifact)."),
+            ("plan-reconcile-inflight", "Retroactively advance WORK_STARTED tickets to PLAN_RECORDED."),
+            ("plan-reaffirm", "Re-bind a plan to a new base — the plan-currency gate's never-lockout escape."),
+            ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
+            (
+                "integration-review-override",
+                "Record the audited escape hatch for the cross-repo integration-review gate.",
+            ),
+            ("fix-record-override", "Record the audited exception for the fix-ticket FixRecord DoD gate."),
+            ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
+            ("set-target-branch", "Set one repo's stacked-delivery parent branch for this ticket."),
+            ("rework-hold", "Re-queue the findings of a self-review HOLD a ticket was parked past."),
+            ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
+            ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
+            ("list-clears", "List every unconsumed merge authorisation, tagged live / superseded / incomplete."),
+            ("reconcile-clears", "Consume every standing merge authorisation whose PR already merged or closed."),
+            ("merge", "Execute the REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4)."),
+            ("list", "List tickets, optionally filtered by state and/or overlay."),
+            ("dead-rows", "List every non-terminal ticket intake can never find (#4527)."),
+            ("bulk-close", "Close (ignore) a batch of tickets, gated by the no-bulk-close guard."),
+            ("fold", "Merge a member ticket's body into its host's, verbatim (#4344)."),
+            ("fold-check", "Prove a host body still carries the folded member's substance (#4344)."),
+            ("attach-gaps", "Fold pending dream gaps into an existing host ticket, proved on the forge."),
+            ("sync-completions", "Reconcile the ticket board against forge truth and advance what has landed."),
+            ("reconcile-overlay", "Backfill `overlay` for rows whose attribution disagrees with inference."),
+            ("comment", "Post a comment to an issue or work item by its URL."),
+            ("create-sub", "Create a child work item nested under a parent issue/work item."),
+            ("sweep-begin", "Open a ticket-hygiene sweep run and print its id (#162 Rule 4)."),
+            ("sweep-finish", "Close a sweep run, persisting its changed-ticket count — zero included."),
+            ("sweep-trend", "Report the changed-ticket count series, the zero streak, and any unfinished runs."),
+            ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
+            ("show", "Show a ticket's state plus the per-phase attempt counts."),
+            ("expedite", "Flag a ticket as an expedite/release-blocker."),
+            ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
+            ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
+        ],
+        core_dispatch=True,
+    ),
+    "review": DjangoGroup(
+        "Persist + look up cold-review verdicts per MR.",
+        [
+            ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("record-evidence", "Record a review-evidence artifact for a ticket."),
+            ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
+            ("findings", "Print a recorded verdict's findings, so a HOLD can be read and acted on."),
+            ("publish-findings", "Post a recorded verdict's findings to its PR."),
+            ("lock-acquire", "Acquire the per-MR review-dispatch lock before a manual review."),
+            ("lock-status", "Report the current MRReviewLock state for an MR (read-only)."),
+            ("rebind-clearance", "Re-bind a CLEAR to a conflict-only merge commit."),
+            ("apply-reviewer-policy", "Put the configured reviewers on this repo's open bot-authored MRs."),
+        ],
+        core_dispatch=True,
+    ),
+    "repro": DjangoGroup(
+        "Forced-repro gate: record the RED/GREEN reproduction a fix must carry.",
+        [
+            ("record-red", "Record the harness-run FAILING red reproduction for a fix ticket."),
+            ("record-green", "Record the harness-run PASSING green and freeze the provenance."),
+            ("waive", "Record a human-authorized waiver of the forced-repro gate."),
+            ("status", "Show the recorded red/green/provenance/waiver state for a ticket."),
+        ],
+        core_dispatch=True,
+    ),
+    "recipe": DjangoGroup(
+        "Read seam over the recipe-weighted factory score.",
+        [
+            ("score", "Compute the recipe-weighted factory score over the trailing window."),
+            ("approve", "Pin the committed recipe's sha into approved_recipe_sha."),
+        ],
+        core_dispatch=True,
+    ),
+    "config_setting": DjangoGroup(
+        "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",
+        [
+            ("set", "Upsert a DB row for a DB-home setting (JSON value)."),
+            ("seed", "Provenance-aware deploy seed of a DB-home setting (#3435)."),
+            ("get", "Print a setting's resolved value and its source (db vs file/env)."),
+            ("clear", "Remove a DB row, falling back to the dataclass default."),
+            ("list", "List every DB config setting row (read-only)."),
+            ("import", "Seed the DB store from operational [teatree] toml keys (one-time)."),
+            ("export", "Dump the ConfigSetting store to TOML — the inverse of import."),
+            ("flags", "Read-only dead-toggle audit report over the FEATURE_FLAGS registry."),
+            ("inert", "Which gated features shipped and then never ran (#4189)."),
+        ],
+        core_dispatch=True,
+    ),
+    "approval_dial": DjangoGroup(
+        "Per-action-class approval dial — graduate a class from ask to auto (#119).",
+        [
+            ("set", "Set an action class's trust (ask|auto) in the dial table."),
+            ("clear", "Remove an action class from the dial table (falls back to ask)."),
+            ("show", "Render each class's trust, never-fades floor, breach, and verdict."),
+        ],
+        core_dispatch=True,
+    ),
+    "questions": DjangoGroup(
+        "Manage the away-mode deferred-question backlog (#58).",
+        [
+            ("record", "Record a deferred question (used by the PreToolUse away-mode hook)."),
+            ("list", "List pending deferred questions, oldest first."),
+            ("reachability", "Report which automated resolvers can decide each pending question."),
+            ("answer", "Resolve a pending question with a user answer."),
+            ("dismiss", "Dismiss a pending question without answering it."),
+            ("mirror", "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap."),
+            ("resurface", "Re-post the pending backlog to the user's Slack DM (away→present drain)."),
+        ],
+    ),
+    "pending_chat": DjangoGroup(
+        "Manage the inbound Slack-DM queue (#1063).",
+        [
+            ("list", "List inbound rows from the last hour (or --all)."),
+            ("mark-answered", "Stamp ``answered_at`` on rows matching a Slack ts."),
+        ],
+    ),
+    "notify": DjangoGroup(
+        "Slack egress from the shell (#1030, #1750).",
+        [
+            ("send", "Raise an alarm/status signal; the push/pull registry decides whether it interrupts."),
+            ("dm", "Deliver a directly requested owner DM without applying the recurring-signal registry."),
+            ("digest", "Read the status signals the push/pull classifier kept off the DM channel."),
+            ("post", "Post, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
+            ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
+        ],
+    ),
+    "mr_reminder": DjangoGroup(
+        'Cross-repo "my open MRs" Slack reminder (TODO-276).',
+        [
+            ("preview", "Assemble the per-channel reminder read-only (no Slack post)."),
+            ("send", "Post the per-channel reminder to Slack (one message per routed channel)."),
+        ],
+        core_dispatch=True,
+    ),
+    "retro": DjangoGroup(
+        "Retrospective enforcement tooling (#1573).",
+        [
+            (
+                "finding",
+                "Record one confirmed lesson on the gap ledger as a deduped umbrella checkbox + a scheduled fix.",
+            ),
+            (
+                "review-findings",
+                "Classify a PR's review findings A/B/C and auto-file a deduped enforcement issue per class-C.",
+            ),
+            (
+                "gate-failures",
+                (
+                    "Extract a session's gate failures, classify preventable/environmental, "
+                    "and --escalate a deduped enforcement issue per recurring preventable one."
+                ),
+            ),
+        ],
+        core_dispatch=True,
+    ),
+    "honesty": DjangoGroup(
+        "Situational honesty-critical escalation (#2263).",
+        [
+            (
+                "escalate",
+                "Record a situational escalation so the next verification spawn routes to the most-honest model.",
+            ),
+        ],
+        core_dispatch=True,
+    ),
+    "memory": DjangoGroup(
+        "Cold-tier memory recall (#2746).",
+        [
+            ("recall", "Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a query (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
+    "learnings": DjangoGroup(
+        "Durable per-repo knowledge store, DB-placed (#2892).",
+        [
+            ("show", "Print the repo's durable learnings store."),
+            ("add", "Append a timestamped entry to the repo's durable learnings store."),
+            ("edit", "Open the repo's full learnings store in $EDITOR and replace it."),
+        ],
+        core_dispatch=True,
+    ),
+}

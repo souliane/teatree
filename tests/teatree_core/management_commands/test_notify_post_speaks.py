@@ -1,0 +1,220 @@
+"""``t3 <overlay> notify post`` to the user's own DM reads the text aloud (#2060).
+
+The ``notify post`` self-DM short-circuit is a bot→user IM/DM egress — it
+routes through the SAME :func:`teatree.core.speak.deliver_user_dm` chokepoint
+:func:`teatree.core.notify.notify_user` uses, so the user's own DM plays
+locally when ``local`` plays DMs and attaches audio when ``slack`` is on.
+
+Coverage:
+
+*   a self-DM post with ``local = dm`` reaches the ``say`` binary (asserted
+    via a fake ``say`` on ``PATH`` that records a marker);
+*   a colleague/channel post does NOT speak (a colleague surface is not a
+    bot→user IM, so reading it aloud to the user would be wrong);
+*   the feature off (``local = off``, ``slack`` false) is silent on the
+    self-DM path.
+
+Only the Slack HTTP egress is mocked; the speak chokepoint, the self-DM
+classifier, and the CLI plumbing all run for real, with ``say`` shadowed
+by a fake on ``PATH`` so no audio plays and the user is never messaged.
+"""
+
+import os
+import stat
+import time
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+import httpx
+import pytest
+from django.core.management import call_command
+
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.types import LocalPlayback, SpeakConfig
+from tests._send_gate import allow_slack_channels
+from tests._speak_thread_sentinel import join_speak_threads
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
+
+_DM_CHANNEL = "D_ME"
+_USER_ID = "U_ME"
+
+
+def _install_fake_say(bin_dir: Path, marker: Path) -> None:
+    """Write a fake ``say`` that records its invocation, then sleeps briefly.
+
+    The sleep models real audio latency: the marker write happens after
+    the parent's post has returned, so a dispatch that does not survive
+    the egress call would miss it.
+    """
+    fake = bin_dir / "say"
+    fake.write_text(f'#!/bin/sh\nprintf "spoke\\n" >> "{marker}"\nsleep 0.2\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _settings(speak: SpeakConfig) -> object:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    return MagicMock(speak=speak)
+
+
+def _backend() -> SlackBotBackend:
+    return SlackBotBackend(bot_token="xoxb-test", user_id=_USER_ID, dm_channel_id=_DM_CHANNEL)
+
+
+def _call(*args: str) -> int:
+    out, err = StringIO(), StringIO()
+    try:
+        call_command(*args, stdout=out, stderr=err)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    return 0
+
+
+def _call_capturing(*args: str) -> tuple[int, str]:
+    out, err = StringIO(), StringIO()
+    try:
+        call_command(*args, stdout=out, stderr=err)
+    except SystemExit as exc:
+        return int(exc.code or 0), out.getvalue()
+    return 0, out.getvalue()
+
+
+def _wait_for(marker: Path, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if marker.exists():
+            return
+        time.sleep(0.02)
+
+
+class TestNotifyPostSpeaks:
+    def test_self_dm_post_reads_text_aloud_under_speak_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "spoke.txt"
+        _install_fake_say(bin_dir, marker)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        backend = _backend()
+        with (
+            patch.object(backend, "_post", return_value={"ok": True, "ts": "1.0"}),
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                lambda *_a, **_k: backend,
+            ),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(local=LocalPlayback.DM)),
+            ),
+        ):
+            code = _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "hello phone")
+
+        assert code == 0
+        _wait_for(marker)
+        # The fake ``say`` sleeps PAST the marker write, so the playback thread outlives
+        # the wait — hand it back here or it runs on inside the next test (#4277).
+        join_speak_threads()
+        assert marker.exists(), "self-DM notify post did not invoke `say` (the IM egress was silent)"
+        assert "spoke" in marker.read_text()
+
+    def test_colleague_post_does_not_speak(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        allow_slack_channels("C_TEAM")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "spoke.txt"
+        _install_fake_say(bin_dir, marker)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        backend = _backend()
+        with (
+            patch.object(backend, "_post", return_value={"ok": True, "ts": "1.0"}),
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                lambda *_a, **_k: backend,
+            ),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(local=LocalPlayback.DM)),
+            ),
+            patch(
+                "teatree.core.on_behalf_egress.require_on_behalf_approval",
+                lambda *, target, action, context, publish: publish(),
+            ),
+            patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post", lambda *_a, **_k: None),
+        ):
+            _call("notify", "post", "--channel", "C_TEAM", "--text", "hi team")
+
+        time.sleep(0.5)
+        assert not marker.exists(), "a colleague-surface post must not be read aloud to the user"
+
+    def test_self_dm_audio_post_success_line_carries_resolved_ts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        say = bin_dir / "say"
+        say.write_text('#!/bin/sh\n: > "$2"\nexit 0\n')
+        afconvert = bin_dir / "afconvert"
+        afconvert.write_text('#!/bin/sh\neval "out=\\${$#}"\n: > "$out"\nexit 0\n')
+        for fake in (say, afconvert):
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        complete_body = {
+            "ok": True,
+            "files": [{"id": "F1", "shares": {"private": {_DM_CHANNEL: [{"ts": "1717689600.001900"}]}}}],
+        }
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            body = {"ok": True, "upload_url": "https://files.slack/u", "file_id": "F1"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            if "slack.com/api" not in url:
+                return httpx.Response(200, request=httpx.Request("POST", url))
+            return httpx.Response(200, json=complete_body, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        monkeypatch.setattr(httpx, "post", fake_post)
+
+        backend = _backend()
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                lambda *_a, **_k: backend,
+            ),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(slack=True)),
+            ),
+        ):
+            code, out = _call_capturing("notify", "post", "--channel", _DM_CHANNEL, "--text", "tests are green")
+
+        assert code == 0
+        assert "ts=1717689600.001900" in out
+
+    def test_self_dm_post_silent_under_speak_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "spoke.txt"
+        _install_fake_say(bin_dir, marker)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        backend = _backend()
+        with (
+            patch.object(backend, "_post", return_value={"ok": True, "ts": "1.0"}),
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                lambda *_a, **_k: backend,
+            ),
+            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig())),
+        ):
+            _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "nothing to hear")
+
+        time.sleep(0.5)
+        assert not marker.exists(), "the feature off (local=off, slack false) must stay silent on the self-DM path"

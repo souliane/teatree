@@ -1,0 +1,129 @@
+"""Low-level git subprocess runners shared by every git-concern module.
+
+This is the primitive partition of :mod:`teatree.utils.git`: the three thin
+``git -C <repo> ...`` runners (lenient, strict, boolean) plus the ``GIT_*``
+env-stripping helper. Every sibling git module (``git_branch``, ``git_commit``,
+``git_status``, ``git_sync``, ``git_worktree``, ``git_remote_ops``) imports its
+runners from here, so the runners live in exactly one place and a test that
+patches the subprocess boundary (``teatree.utils.run``) intercepts all of them.
+"""
+
+import contextlib
+import os
+from collections.abc import Iterator
+
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_bounded_group, run_checked
+
+
+def run(*, repo: str = ".", args: list[str]) -> str:
+    result = run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None)
+    return result.stdout.strip()
+
+
+def run_strict(*, repo: str = ".", args: list[str]) -> str:
+    result = run_checked(["git", "-C", repo, *args])
+    return result.stdout.strip()
+
+
+def run_strict_verbatim(*, repo: str = ".", args: list[str]) -> str:
+    """Like :func:`run_strict`, but stdout byte-for-byte — for output whose whitespace is semantic.
+
+    A patch is the load-bearing case (#4435): ``git apply`` rejects one missing
+    its trailing newline as ``corrupt patch``, and because ``.strip()`` eats ALL
+    trailing whitespace, a patch whose last line is a blank CONTEXT line (a lone
+    space) loses that line outright — its hunk header then counts one line too
+    many, so re-appending a newline yields a differently corrupt patch rather
+    than the original. ``-z`` porcelain is the other case: its records are
+    column-fixed, so a leading strip shifts every path by one character.
+    """
+    return run_checked(["git", "-C", repo, *args]).stdout
+
+
+def check(*, repo: str = ".", args: list[str]) -> bool:
+    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None).returncode == 0
+
+
+def run_with_status(
+    *,
+    repo: str = ".",
+    args: list[str],
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> CompletedProcess[str]:
+    """The lenient runner for a caller that must tell a failed command from an empty answer.
+
+    :func:`run` collapses both onto ``""``, which is fatal for a remote probe:
+    "the ref is not there" and "the remote could not be reached" demand opposite
+    conclusions, and only the return code separates them.
+
+    A *timeout* ends the whole process group: a remote read spawns its transport
+    (ssh), which a kill of git alone would leave running.
+    """
+    argv = ["git", "-C", repo, *args]
+    if timeout is None:
+        return run_allowed_to_fail(argv, expected_codes=None, env=env)
+    return run_bounded_group(argv, expected_codes=None, env=env, timeout=timeout)
+
+
+def git_env_without_overrides() -> dict[str, str]:
+    """Process env with every ``GIT_*`` variable stripped.
+
+    A git hook (pre-commit, pre-push) runs under an outer ``git`` that exports
+    ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``. Inherited by a child
+    ``git -C <other-repo>`` call these hijack it onto the outer repo, so a
+    command meant for another repo silently operates on the ambient one. Any
+    ``git`` call that targets an explicit repo from inside a possible hook
+    context must run with this env so it stays hermetic.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+#: Overrides that turn a credential-less remote operation into an immediate failure
+#: rather than an indefinite block. ``GIT_ASKPASS=""`` neutralises an inherited GUI
+#: askpass helper — git skips an empty program name — which is what leaves
+#: ``GIT_TERMINAL_PROMPT=0`` free to fail the prompt; ``GCM_INTERACTIVE`` is the same
+#: switch for Git Credential Manager. ``LC_ALL=C`` keeps git's diagnostics in the one
+#: language every caller that CLASSIFIES them was written against — under a translated
+#: locale a marker match silently stops firing, and a classifier degrades to its
+#: catch-all without ever reporting that it could not read the answer.
+NON_INTERACTIVE_GIT_ENV: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "SSH_ASKPASS": "",
+    "GCM_INTERACTIVE": "never",
+    "LC_ALL": "C",
+}
+
+
+def git_env_non_interactive() -> dict[str, str]:
+    """The hermetic env of :func:`git_env_without_overrides`, with every credential prompt disabled.
+
+    The env every remote-touching git call must run under (souliane/teatree#3927).
+    Without it a missing credential makes git block on an interactive username
+    prompt that no unattended venue will ever answer, so the caller hangs until
+    something kills it instead of reporting a failure it could act on.
+    """
+    return git_env_without_overrides() | NON_INTERACTIVE_GIT_ENV
+
+
+@contextlib.contextmanager
+def git_env_hermetic() -> Iterator[None]:
+    """Strip every ``GIT_*`` override from ``os.environ`` for the duration, restoring after.
+
+    The mutating sibling of :func:`git_env_without_overrides`, for a caller that
+    cannot pass an explicit ``env=`` — a child spawned by a library that merges
+    ``os.environ`` under the caller's overrides (e.g. the claude-agent-sdk
+    transport builds ``{**os.environ, ..., **options.env}``, a merge that cannot
+    DELETE a key the overrides omit). A dispatch fired from inside a git hook
+    inherits ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``; removing them from
+    ``os.environ`` for the spawn window is the only point such a child inherits a
+    hermetic environment. They are restored on exit so the rest of the process is
+    unaffected.
+    """
+    stripped = {k: v for k, v in os.environ.items() if k.startswith("GIT_")}
+    for key in stripped:
+        del os.environ[key]
+    try:
+        yield
+    finally:
+        os.environ.update(stripped)

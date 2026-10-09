@@ -1,0 +1,172 @@
+"""Agent-lane config enums — harness transport, provider/credential, eval credential."""
+
+from enum import StrEnum
+
+
+class AgentHarness(StrEnum):
+    """Which in-process TRANSPORT drives an agent run — the harness backend.
+
+    ``agent_harness`` picks the transport that opens the agent session behind the
+    narrow ``teatree.agents.harness.Harness`` protocol; WHICH provider/credential
+    that transport authenticates with is the orthogonal
+    :class:`AgentHarnessProvider`.
+
+    Tiers (default :attr:`CLAUDE_SDK`, today's behaviour):
+
+    *   :attr:`CLAUDE_SDK` (default) — the ``claude-agent-sdk`` transport
+        (:class:`~teatree.agents.harness.ClaudeSdkHarness`, wrapping
+        ``ClaudeSDKClient``). Byte-identical to the transport before the seam.
+    *   :attr:`PYDANTIC_AI` — the provider-agnostic transport
+        (:class:`~teatree.agents.harness.PydanticAiHarness`,
+        [#2885](https://github.com/souliane/teatree/issues/2885)): a
+        ``pydantic_ai.Agent`` targeting the configured OpenAI-compatible,
+        metered endpoint. Its credential resolves lazily inside
+        ``open``, so selecting this value never itself requires a live
+        credential.
+
+    ``agent_harness`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set agent_harness pydantic_ai`` (per-overlay overridable with
+    ``--overlay <name>``) or the ``T3_AGENT_HARNESS`` environment variable — a
+    ``[teatree] agent_harness`` TOML value is ignored on read.
+    """
+
+    CLAUDE_SDK = "claude_sdk"
+    PYDANTIC_AI = "pydantic_ai"
+
+    @classmethod
+    def parse(cls, value: str) -> "AgentHarness":
+        """Parse an agent-harness string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`CLAUDE_SDK`) is applied by the caller when the setting is
+        absent, so a typo never silently switches the transport. This is the
+        strict BUILT-IN parser (a member of this two-value enum); the OPEN
+        ``agent_harness`` setting is parsed by :func:`parse_harness_name`, which
+        also admits an overlay-registered harness name.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid agent_harness {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
+def parse_harness_name(value: str) -> str:
+    """Parse the OPEN ``agent_harness`` setting to a harness registry key (#3157 E1).
+
+    The backend set is no longer closed to the two :class:`AgentHarness` members: an
+    overlay registers a third transport under the ``teatree.harnesses`` entry-point group
+    (:mod:`teatree.agents.harness_registry`), so this setting must admit any registered
+    name, not only the built-in enum. A BUILT-IN name resolves to its :class:`AgentHarness`
+    member (a ``StrEnum``, so byte-identical to before for every existing consumer); an
+    overlay name returns the plain normalised string. The config layer cannot import the
+    agents-layer registry (that would be a backwards dependency edge), so an unregistered
+    overlay name is NOT rejected here — it surfaces as a LOUD
+    :class:`~teatree.agents.harness_registry.UnknownHarnessError` at dispatch resolution
+    rather than a silent wrong transport. An empty value is still rejected here so a blank
+    row never resolves to a nameless backend.
+    """
+    normalised = value.strip().lower()
+    if not normalised:
+        msg = "Invalid agent_harness: must be a non-empty harness name"
+        raise ValueError(msg)
+    try:
+        return AgentHarness(normalised)
+    except ValueError:
+        return normalised
+
+
+class AgentHarnessProvider(StrEnum):
+    """Layer 2 of the two-layer harness config model — the provider/credential.
+
+    [#2887](https://github.com/souliane/teatree/issues/2887): the "single home"
+    for the provider/credential a headless run authenticates with, CONSTRAINED by
+    Layer 1 (:class:`AgentHarness`) via :meth:`valid_for`. Mirrors the resolution
+    table the credential modules document in prose:
+
+    | Layer 1 (``agent_harness``) | Layer 2 (this enum)     | Credential                            |
+    |------------------------------|---------------------------|-----------------------------------------|
+    | ``claude_sdk``                | ``subscription_oauth``    | ``AnthropicSubscriptionCredential``     |
+    | ``claude_sdk``                | ``api_key``               | ``AnthropicApiKeyCredential``           |
+    | ``claude_sdk``                | ``subscription_then_api_key`` | either, resolved per dispatch       |
+    | ``pydantic_ai``               | ``openai_compatible``     | ``OpenAICompatibleCredential``          |
+    | ``pydantic_ai``               | ``anthropic_api``         | ``AnthropicApiKeyCredential``           |
+
+    A Vertex AI Layer-2 provider under ``pydantic_ai`` is reserved but not yet
+    implemented, so it carries no enum member yet — :meth:`valid_for` names only
+    what is actually selectable today.
+
+    Tiers (default :attr:`SUBSCRIPTION_OAUTH`, today's ``claude_sdk`` behaviour):
+
+    *   :attr:`SUBSCRIPTION_OAUTH` (default) — the plan's OAuth token
+        (:class:`~teatree.llm.credentials.AnthropicSubscriptionCredential`).
+        Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`API_KEY` — the metered Anthropic API key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`).
+        Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`SUBSCRIPTION_THEN_API_KEY` — ride the plans, and fail over to the
+        metered key only while every plan is exhausted. A POLICY rather than a
+        credential: :func:`~teatree.agents.credential_policy.resolve_credential_provider`
+        resolves it per dispatch into :attr:`SUBSCRIPTION_OAUTH` or :attr:`API_KEY`
+        and never returns it, so the lane map, the child env and cost accounting only
+        ever see the two concrete values. Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`OPENAI_COMPATIBLE` — the key for whichever OpenAI-compatible API
+        the generic backend settings name
+        (:class:`~teatree.llm.openai_compatible.OpenAICompatibleCredential`).
+        Valid only under ``agent_harness=pydantic_ai`` — the OpenAI-compatible
+        binding, where prompt-cache semantics are opaque.
+    *   :attr:`ANTHROPIC_API` — the metered Anthropic API key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`), driving the
+        NATIVE Anthropic Messages-API binding on the ``pydantic_ai`` lane
+        ([#3157](https://github.com/souliane/teatree/issues/3157) E1b): a direct
+        ``pydantic_ai`` Anthropic model instead of the OpenAI-compatible router
+        client, so real ``cache_control`` breakpoints are reachable. Valid only
+        under ``agent_harness=pydantic_ai``.
+
+    ``agent_harness_provider`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set agent_harness_provider api_key`` (per-overlay overridable
+    with ``--overlay <name>``) or the ``T3_AGENT_HARNESS_PROVIDER`` environment
+    variable — a ``[teatree] agent_harness_provider`` TOML value is ignored on
+    read.
+    """
+
+    SUBSCRIPTION_OAUTH = "subscription_oauth"
+    API_KEY = "api_key"
+    SUBSCRIPTION_THEN_API_KEY = "subscription_then_api_key"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    ANTHROPIC_API = "anthropic_api"
+
+    @classmethod
+    def parse(cls, value: str) -> "AgentHarnessProvider":
+        """Parse an agent-harness-provider string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`SUBSCRIPTION_OAUTH`) is applied by the caller when the setting is
+        absent, so a typo never silently switches the credential.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid agent_harness_provider {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+    @classmethod
+    def valid_for(cls, harness: "AgentHarness") -> frozenset["AgentHarnessProvider"]:
+        """The Layer-2 providers CONSTRAINED-VALID under Layer-1 *harness*."""
+        return _VALID_PROVIDERS_BY_HARNESS[harness]
+
+
+_VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {
+    AgentHarness.CLAUDE_SDK: frozenset(
+        {
+            AgentHarnessProvider.SUBSCRIPTION_OAUTH,
+            AgentHarnessProvider.API_KEY,
+            AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY,
+        }
+    ),
+    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}),
+}

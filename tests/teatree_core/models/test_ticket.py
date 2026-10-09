@@ -1,0 +1,847 @@
+"""Ticket model tests (souliane/teatree#443 split of test_models.py).
+
+Number derivation, locked ``extra`` RMW, FSM transitions, and the
+shippable-diff gate.
+"""
+
+from collections.abc import Callable
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from django.db import connection
+from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
+from django_fsm import can_proceed
+
+from teatree.core.models import (
+    DeferredQuestion,
+    E2eMandatoryRun,
+    PullRequest,
+    ReviewEvidence,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
+from teatree.core.models.ticket_state_sets import TicketStateSetsModel
+from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
+from tests.factories import record_test_plan, waive_rubric
+from tests.teatree_core.conftest import (
+    record_confirmed_merge_for_test,
+    record_maker_review_for_test,
+    record_review_context_for_test,
+)
+from tests.teatree_core.models._shared import (
+    _advance_ticket_to_tested,
+    _advance_work_started_to_plan_recorded,
+    _attach_shippable_worktree,
+    _complete_phase_task,
+    _init_repo_with_branch,
+)
+
+
+class TestTicketNumber(TestCase):
+    """``Ticket.ticket_number`` derives a stable identifier from ``issue_url``.
+
+    The fallback to ``str(self.pk)`` covers issue URLs that do not end in a
+    valid issue number — empty, non-numeric suffix, or the placeholder ``/0``
+    that GitHub and GitLab never assign to a real issue (issue numbers start at 1).
+    """
+
+    def test_returns_trailing_number_when_url_is_well_formed(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/123")
+        assert ticket.ticket_number == "123"
+
+    def test_falls_back_to_pk_when_url_is_empty(self) -> None:
+        ticket = Ticket.objects.create()
+        assert ticket.ticket_number == str(ticket.pk)
+
+    def test_falls_back_to_pk_when_url_has_no_trailing_number(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/no-number")
+        assert ticket.ticket_number == str(ticket.pk)
+
+    def test_falls_back_to_pk_when_url_ends_in_zero(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/0")
+        assert ticket.ticket_number == str(ticket.pk)
+
+
+class TestTicketMergeExtra(TestCase):
+    """#800 N3: the canonical locked ``extra`` RMW primitive.
+
+    Behaviour contract (the concurrency proof is the file-backed-SQLite
+    harness in ``tests/test_ticket_extra_merge_serialization.py``); here
+    we pin the API: set/pop semantics and that a re-read from the DB
+    between two calls is merged, not clobbered (the locked primitive
+    re-reads the row, so it never overwrites a key it did not touch).
+    """
+
+    def test_set_keys_persists_and_merges_existing(self) -> None:
+        ticket = Ticket.objects.create(extra={"keep": 1})
+        ticket.merge_extra(set_keys={"pr_urls": ["u"]})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"keep": 1, "pr_urls": ["u"]}
+
+    def test_pop_keys_removes_only_named(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1, "ship_invoking_branch": "b"})
+        ticket.merge_extra(pop_keys=["ship_invoking_branch"])
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+    def test_does_not_clobber_a_concurrent_writers_key(self) -> None:
+        # Two handles to the same row (the lost-update setup): a stale
+        # in-memory instance and a fresh write by "another worker".
+        ticket = Ticket.objects.create(extra={})
+        stale = Ticket.objects.get(pk=ticket.pk)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"visual_qa": {"x": 1}})
+        # The stale handle's merge must NOT wipe visual_qa — the locked
+        # re-read inside merge_extra sees the other worker's commit.
+        stale.merge_extra(set_keys={"pr_urls": ["u"]})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"visual_qa": {"x": 1}, "pr_urls": ["u"]}
+
+    def test_set_and_pop_in_one_call(self) -> None:
+        ticket = Ticket.objects.create(extra={"pr_title_override": "t"})
+        ticket.merge_extra(set_keys={"pr_urls": ["u"]}, pop_keys=["pr_title_override"])
+        ticket.refresh_from_db()
+        assert ticket.extra == {"pr_urls": ["u"]}
+
+    def test_noop_call_persists_current_state(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1})
+        ticket.merge_extra()
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+    def test_also_set_writes_sibling_fields_in_the_same_locked_update(self) -> None:
+        # The tracker-sync paths co-write extra + state/repos in one
+        # save; also_set keeps that atomic through the locked primitive.
+        ticket = Ticket.objects.create(extra={"keep": 1}, repos=["a"])
+        ticket.merge_extra(
+            set_keys={"prs": {}},
+            also_set={"repos": ["a", "b"], "variant": "x"},
+        )
+        ticket.refresh_from_db()
+        assert ticket.extra == {"keep": 1, "prs": {}}
+        assert ticket.repos == ["a", "b"]
+        assert ticket.variant == "x"
+        # The in-memory instance is updated too (no stale read after).
+        assert ticket.variant == "x"
+
+    def test_also_set_does_not_clobber_concurrent_extra_writer(self) -> None:
+        ticket = Ticket.objects.create(extra={})
+        stale = Ticket.objects.get(pk=ticket.pk)
+        Ticket.objects.filter(pk=ticket.pk).update(extra={"visual_qa": {"x": 1}})
+        stale.merge_extra(set_keys={"prs": {}}, also_set={"variant": "v"})
+        ticket.refresh_from_db()
+        assert ticket.extra == {"visual_qa": {"x": 1}, "prs": {}}
+        assert ticket.variant == "v"
+
+
+class TestMergeExtraSkipsTheNoOpWrite(TestCase):
+    """A merge that changes nothing takes no write.
+
+    Re-stamping a value the row already holds is what a replaying caller does:
+    ``mark_reviewed_externally`` accepts its own target so a re-review at a moved
+    head SHA can re-stamp, and the tick sweep re-fires it for every closed reviewer
+    ticket. On the write-serialised production SQLite each of those took the
+    database's single write lock to store the bytes already there.
+    """
+
+    @staticmethod
+    def _updates(fn: Callable[[], None]) -> list[str]:
+        with CaptureQueriesContext(connection) as captured:
+            fn()
+        return [q["sql"] for q in captured.captured_queries if q["sql"].lstrip().upper().startswith("UPDATE")]
+
+    def test_restamping_the_same_extra_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc", "last_review_state": "approved"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "abc"}))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "abc", "last_review_state": "approved"}
+
+    def test_a_real_change_still_writes(self) -> None:
+        # Anti-vacuity: the elide is decided from the locked re-read, never blanket.
+        ticket = Ticket.objects.create(extra={"reviewed_sha": "abc"})
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"reviewed_sha": "def"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.extra == {"reviewed_sha": "def"}
+
+    def test_an_unchanged_extra_with_a_changed_sibling_field_still_writes(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1}, variant="x")
+
+        updates = self._updates(lambda: ticket.merge_extra(set_keys={"a": 1}, also_set={"variant": "y"}))
+
+        assert len(updates) == 1
+        ticket.refresh_from_db()
+        assert ticket.variant == "y"
+
+    def test_popping_an_absent_key_issues_no_update(self) -> None:
+        ticket = Ticket.objects.create(extra={"a": 1})
+
+        updates = self._updates(lambda: ticket.merge_extra(pop_keys=["never_set"]))
+
+        assert updates == []
+        ticket.refresh_from_db()
+        assert ticket.extra == {"a": 1}
+
+
+class TestStampIssueTitle(TestCase):
+    """``Ticket.stamp_issue_title`` seeds the dashboard label from the forge title."""
+
+    def test_stamps_extra_and_short_description(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        written = ticket.stamp_issue_title("Make the dashboard usable")
+        ticket.refresh_from_db()
+        assert ticket.extra["issue_title"] == "Make the dashboard usable"
+        assert ticket.short_description == "Make the dashboard usable"
+        assert set(written) == {"extra", "short_description"}
+
+    def test_blank_title_is_a_noop(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        assert ticket.stamp_issue_title("") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == ""
+        assert "issue_title" not in (ticket.extra or {})
+
+    def test_does_not_clobber_existing_values(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/o/r/issues/5",
+            short_description="hand-written",
+            extra={"issue_title": "original title"},
+        )
+        assert ticket.stamp_issue_title("new title") == []
+        ticket.refresh_from_db()
+        assert ticket.short_description == "hand-written"
+        assert ticket.extra["issue_title"] == "original title"
+
+    def test_long_title_is_truncated_to_column_width(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/o/r/issues/5")
+        max_len = Ticket._meta.get_field("short_description").max_length or 80
+        ticket.stamp_issue_title("x" * (max_len + 50))
+        ticket.refresh_from_db()
+        assert len(ticket.short_description) == max_len
+        # The full untruncated title is preserved for the summariser.
+        assert ticket.extra["issue_title"] == "x" * (max_len + 50)
+
+
+class TestTicketTransitions(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_persist_delivery_state(self) -> None:
+        ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
+
+        _advance_ticket_to_tested(ticket)
+
+        # #1284: ``_advance_ticket_to_tested`` fires ``test()`` directly on
+        # the FSM so the testing phase visit is not recorded. Record it
+        # symmetrically with how the loop would have done it on the testing
+        # task's completion — the shipping gate now enforces the visited
+        # phases the ``pr create`` path always required.
+        testing_session = Session.objects.create(ticket=ticket, agent_id="testing")
+        testing_session.visit_phase("testing", agent_id="testing")
+        record_review_context_for_test(ticket)
+        record_maker_review_for_test(ticket, "a" * 40)
+
+        # test() auto-scheduled a reviewing task — complete it to unlock review()
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+        # review() auto-scheduled a shipping task — complete it to unlock ship()
+        _complete_phase_task(ticket, "shipping")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PR_OPENED
+
+        ticket.request_review()
+        ticket.save()
+        record_confirmed_merge_for_test(ticket)
+        ticket.mark_merged()
+        ticket.save()
+        ticket.retrospect()
+        ticket.save()
+        waive_rubric(ticket)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+            reviewer_identity="fixture-independent-reviewer",
+            verdict="pass",
+            head_sha="a" * 40,
+            repos=ticket.repos,
+        )
+        ticket.mark_delivered()
+        ticket.save()
+
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.issue_url == "https://example.com/issues/123"
+        assert ticket.variant == "acme"
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.extra["tests_passed"] is True
+        assert str(ticket) == "https://example.com/issues/123"
+
+    def test_auto_schedules_review_task(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        _advance_work_started_to_plan_recorded(ticket)
+        ticket.code()
+        ticket.save()
+        ticket.test()
+        ticket.save()
+
+        # test() auto-schedules a reviewing task; reviewing is loop-dispatched
+        # ((author, reviewing) → t3:reviewer) so it runs in-session.
+        task = ticket.tasks.get(phase="reviewing")
+        assert task.session.agent_id == "review"
+        assert ticket.state == Ticket.State.TESTED
+
+    def test_review_blocked_without_completed_review_task(self) -> None:
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+
+        with pytest.raises(TransitionNotAllowed):
+            ticket.review()
+
+    def test_reviewing_task_completion_advances_to_reviewed(self) -> None:
+        ticket = Ticket.objects.create()
+        _attach_shippable_worktree(ticket, self._tmp_path)
+        _advance_ticket_to_tested(ticket)
+
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        # review() also auto-scheduled a shipping task
+        assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).exists()
+
+    def test_rework_cancels_pending_tasks(self) -> None:
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+
+        # There's a pending reviewing task from test()
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).exists()
+
+        ticket.rework()
+        ticket.save()
+
+        # Pending tasks should now be failed
+        assert not ticket.tasks.filter(status=Task.Status.PENDING).exists()
+        assert ticket.tasks.filter(status=Task.Status.FAILED).exists()
+
+    def test_needs_user_input_creates_interactive_followup(self) -> None:
+        ticket = Ticket.objects.create()
+        _advance_ticket_to_tested(ticket)
+
+        task = ticket.tasks.get(phase="reviewing")
+        task.claim(claimed_by="worker")
+
+        # Simulate agent output with needs_user_input
+        TaskAttempt.objects.create(
+            task=task,
+            exit_code=0,
+            result={"needs_user_input": True, "user_input_reason": "Need design decision"},
+        )
+        task.complete()
+
+        # Should NOT advance ticket (needs_user_input blocks it)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+
+        # There is no terminal to ask at, so the STOP parks as a durable question.
+        question = DeferredQuestion.objects.get(parked_task=task)
+        assert "Need design decision" in question.question
+
+    def test_rework_returns_to_started_and_clears_testing_fact(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        _advance_work_started_to_plan_recorded(ticket)
+        ticket.code()
+        ticket.save()
+        ticket.test(passed=True)
+        ticket.save()
+
+        ticket.rework()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert "tests_passed" not in ticket.extra
+
+    def test_ignore_hides_ticket_from_in_flight(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+
+        assert ticket in Ticket.objects.in_flight()
+
+        ticket.ignore()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["ignored_from"] == "work_started"
+        assert ticket not in Ticket.objects.in_flight()
+
+    def test_unignore_restores_previous_state(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.scope()
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        _advance_work_started_to_plan_recorded(ticket)
+        ticket.code()
+        ticket.save()
+
+        ticket.ignore()
+        ticket.save()
+        assert ticket.state == Ticket.State.IGNORED
+
+        ticket.unignore()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.CODED
+        assert "ignored_from" not in ticket.extra
+
+    def test_rejects_invalid_transition(self) -> None:
+        ticket = Ticket.objects.create()
+
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        with pytest.raises(TransitionNotAllowed):
+            ticket.review()
+
+
+class TestHasShippableDiff(TestCase):
+    """``Ticket.has_shippable_diff`` and the auto-shipping gate (issue #473)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _make_ticket_with_worktree(self, *, commits_ahead: int) -> Ticket:
+        ticket = Ticket.objects.create()
+        repo_dir = self._tmp_path / f"repo-{commits_ahead}"
+        branch = "feature"
+        _init_repo_with_branch(repo_dir, branch=branch, commits_ahead=commits_ahead)
+        Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch=branch)
+        return ticket
+
+    def test_returns_false_when_no_worktrees(self) -> None:
+        ticket = Ticket.objects.create()
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_returns_false_when_branch_has_no_commits_ahead(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=0)
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_returns_true_when_branch_has_commits_ahead(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=2)
+
+        assert ticket.has_shippable_diff() is True
+
+    def test_review_with_no_diff_skips_shipping_and_auto_ignores(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=0)
+        _advance_ticket_to_tested(ticket)
+
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra.get("ignored_from") == Ticket.State.SELF_REVIEWED
+        assert not ticket.tasks.filter(phase="shipping").exists()
+        assert "no shippable diff" in ticket.extra.get("shipping_skipped", "")
+
+    def test_review_schedules_shipping_when_branch_has_commits(self) -> None:
+        ticket = self._make_ticket_with_worktree(commits_ahead=1)
+        _advance_ticket_to_tested(ticket)
+
+        _complete_phase_task(ticket, "reviewing")
+        ticket.refresh_from_db()
+
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+        assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).exists()
+        assert "shipping_skipped" not in ticket.extra
+
+    def test_returns_false_when_worktree_missing_branch(self) -> None:
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(ticket=ticket, repo_path=str(self._tmp_path), branch="")
+
+        assert ticket.has_shippable_diff() is False
+
+    def test_raises_when_present_checkout_probe_is_unverifiable(self) -> None:
+        # A checkout that is present on disk but cannot be probed (here: a real
+        # directory that is not a git repo) is UNVERIFIABLE, not verified-empty.
+        # Per #F1.4 it must raise so the caller HOLDs the tick, never flatten to
+        # False (which would route review() to dispose and abandon a live ticket
+        # on a transient git error). The gone-from-disk case still returns False.
+        ticket = Ticket.objects.create()
+        not_a_repo = self._tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        Worktree.objects.create(ticket=ticket, repo_path=str(not_a_repo), branch="feature")
+
+        with pytest.raises(WorktreeProbeUnverifiableError):
+            ticket.has_shippable_diff()
+
+
+class TestHasDispatchableOverlay(TestCase):
+    """``Ticket.has_dispatchable_overlay`` — the single poison-pill predicate (#1959)."""
+
+    def test_blank_overlay_is_dispatchable(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+
+        assert ticket.has_dispatchable_overlay() is True
+
+    def test_resolvable_overlay_is_dispatchable(self) -> None:
+        ticket = Ticket.objects.create(overlay="known-overlay")
+
+        with patch("teatree.core.overlay_loader.resolve_overlay_name", return_value="known-overlay"):
+            assert ticket.has_dispatchable_overlay() is True
+
+    def test_unresolvable_overlay_is_poison(self) -> None:
+        ticket = Ticket.objects.create(overlay="ghost-overlay")
+
+        with patch("teatree.core.overlay_loader.resolve_overlay_name", return_value=None):
+            assert ticket.has_dispatchable_overlay() is False
+
+
+class TestTicketArtifacts(TestCase):
+    """``Ticket.artifacts`` — read-only per-ticket "find our eggs" aggregation (#273).
+
+    Collects, over EXISTING related rows (no new storage model): the ticket's
+    worktrees (on-disk path, ports, db_name, state), PlanArtifact rows, each
+    Task's ``result_artifact_path``, and E2eMandatoryRun evidence (spec + posted
+    video/comment URL). The port resolver is injected so the model method stays
+    pure — no live docker query in the model.
+    """
+
+    def _ports(self, _worktree: Worktree) -> dict[str, int]:
+        return {"backend": 18000, "frontend": 18080}
+
+    def test_empty_ticket_yields_empty_artifacts(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+
+        artifacts = ticket.artifacts()
+
+        assert artifacts.ticket_id == ticket.pk
+        assert artifacts.worktrees == ()
+        assert artifacts.plan_artifacts == ()
+        assert artifacts.result_artifact_paths == ()
+        assert artifacts.e2e_runs == ()
+
+    def test_collects_worktree_path_ports_db_name_and_state(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            db_name="wt_273",
+            state=Worktree.State.READY,
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+
+        artifacts = ticket.artifacts(port_resolver=self._ports)
+
+        assert len(artifacts.worktrees) == 1
+        wt = artifacts.worktrees[0]
+        assert wt.worktree_path == "/ws/273/example-repo"
+        assert wt.db_name == "wt_273"
+        assert wt.state == Worktree.State.READY
+        assert wt.repo_path == "example/repo"
+        assert wt.branch == "ac/273"
+        assert wt.ports == {"backend": 18000, "frontend": 18080}
+
+    def test_ports_default_to_empty_without_a_resolver(self) -> None:
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+
+        artifacts = ticket.artifacts()
+
+        assert artifacts.worktrees[0].ports == {}
+
+    def test_collects_plan_artifacts(self) -> None:
+        ticket = Ticket.objects.create()
+        record_test_plan(ticket, plan_text="the plan", recorded_by="planner")
+
+        artifacts = ticket.artifacts()
+
+        assert len(artifacts.plan_artifacts) == 1
+        plan = artifacts.plan_artifacts[0]
+        assert plan.plan_text == "the plan"
+        assert plan.recorded_by == "planner"
+
+    def test_collects_task_result_artifact_paths_skipping_blanks(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
+        Task.objects.create(ticket=ticket, session=session, phase="testing", result_artifact_path="/runs/b.jsonl")
+        # A task with no recorded artifact path must not surface as a blank "egg".
+        Task.objects.create(ticket=ticket, session=session, phase="review", result_artifact_path="")
+
+        artifacts = ticket.artifacts()
+
+        assert set(artifacts.result_artifact_paths) == {"/runs/a.jsonl", "/runs/b.jsonl"}
+
+    def test_collects_e2e_runs_with_spec_and_posted_video_url(self) -> None:
+        ticket = Ticket.objects.create()
+        E2eMandatoryRun.record(
+            ticket=ticket,
+            head_sha="a" * 40,
+            spec="e2e/login.spec.ts",
+            result=E2eMandatoryRun.Result.GREEN,
+            posted_url="https://github.com/example/repo/issues/273#comment-1",
+        )
+
+        artifacts = ticket.artifacts()
+
+        assert len(artifacts.e2e_runs) == 1
+        run = artifacts.e2e_runs[0]
+        assert run.spec == "e2e/login.spec.ts"
+        assert run.result == E2eMandatoryRun.Result.GREEN
+        assert run.posted_url == "https://github.com/example/repo/issues/273#comment-1"
+        assert run.head_sha == "a" * 40
+
+    def test_aggregates_all_sources_together(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            db_name="wt_273",
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+        record_test_plan(ticket, plan_text="plan", recorded_by="planner")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
+        E2eMandatoryRun.record(
+            ticket=ticket,
+            head_sha="b" * 40,
+            spec="e2e/flow.spec.ts",
+            result=E2eMandatoryRun.Result.GREEN,
+            posted_url="https://example.com/c1",
+        )
+
+        artifacts = ticket.artifacts(port_resolver=self._ports)
+
+        assert len(artifacts.worktrees) == 1
+        assert len(artifacts.plan_artifacts) == 1
+        assert artifacts.result_artifact_paths == ("/runs/a.jsonl",)
+        assert len(artifacts.e2e_runs) == 1
+
+    def test_artifacts_are_immutable(self) -> None:
+        ticket = Ticket.objects.create()
+
+        artifacts = ticket.artifacts()
+
+        with pytest.raises(AttributeError):
+            artifacts.ticket_id = 99  # frozen dataclass rejects mutation
+
+
+class TestHasCompletedPhase(TestCase):
+    """``Ticket.has_completed_phase`` tells a live phase apart from a superseded one.
+
+    True iff the FSM state has already reached the state the phase produces, so the
+    transient-requeue sweep can retire a dead FAILED task whose output the ticket
+    already has instead of escalating an already-answered away-mode question.
+    """
+
+    def test_phase_at_or_before_state_is_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # testing produces TESTED (== state) and coding produces CODED (< state): both done.
+        assert ticket.has_completed_phase("testing") is True
+        assert ticket.has_completed_phase("coding") is True
+        assert ticket.has_completed_phase("test") is True  # short-verb spelling normalizes
+
+    def test_phase_beyond_state_is_not_completed(self) -> None:
+        ticket = Ticket.objects.create(state=Ticket.State.TESTED)
+
+        # reviewing produces SELF_REVIEWED (> state): the ticket has NOT reached it.
+        assert ticket.has_completed_phase("reviewing") is False
+        assert ticket.has_completed_phase("shipping") is False
+
+    def test_unknown_or_off_ladder_is_conservatively_incomplete(self) -> None:
+        # An unknown phase and an off-ladder state both default to NOT completed —
+        # the safe answer that escalates rather than silently retiring a live task.
+        assert Ticket.objects.create(state=Ticket.State.TESTED).has_completed_phase("bughunt") is False
+        assert Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED).has_completed_phase("coding") is False
+
+
+class TestTicketStateSets(TestCase):
+    """The canonical ticket state-set classmethods — the SSOT the scanners/managers read.
+
+    ~10 sites used to re-hand-roll these sets (some as raw strings that bypass the
+    enum), the drift class behind #798/#799/#808. Each classmethod is pinned to its
+    exact intended membership so any future edit that changes a set breaks HERE, and
+    every member is asserted to be a real ``State`` so a rename can't silently rot.
+    """
+
+    def test_sets_live_on_the_composed_facet(self) -> None:
+        # The SSOT is the field-less TicketStateSetsModel facet, reachable as a
+        # Ticket classmethod via composition — not re-defined on the concrete model.
+        assert issubclass(Ticket, TicketStateSetsModel)
+        assert Ticket.merged_states.__func__ is TicketStateSetsModel.merged_states.__func__
+
+    def test_marker_release_states_membership(self) -> None:
+        assert Ticket.marker_release_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},
+        )
+
+    def test_finished_states_membership(self) -> None:
+        assert Ticket.finished_states() == frozenset(
+            {
+                Ticket.State.MERGED,
+                Ticket.State.RETRO_RECORDED,
+                Ticket.State.DELIVERED,
+                Ticket.State.REVIEW_DELIVERED,
+                Ticket.State.IGNORED,
+            },
+        )
+
+    def test_in_flight_excluded_states_membership(self) -> None:
+        assert Ticket.in_flight_excluded_states() == frozenset(
+            {Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED},
+        )
+
+    def test_in_flight_excluded_is_marker_release_minus_merged(self) -> None:
+        # The invariant the docstring names: a MERGED ticket's PR has landed but the
+        # ticket is still in flight (retro/delivery pending), so it stays on the board.
+        assert Ticket.in_flight_excluded_states() == Ticket.marker_release_states() - {Ticket.State.MERGED}
+
+    def test_completable_states_membership(self) -> None:
+        assert Ticket.completable_states() == frozenset(
+            {Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED, Ticket.State.MERGED},
+        )
+
+    def test_merged_states_membership(self) -> None:
+        assert Ticket.merged_states() == frozenset(
+            {Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED},
+        )
+
+    def test_issue_owning_states_is_every_state_but_ignored(self) -> None:
+        # Derived, not enumerated: a new State joins the owning set by default, so
+        # intake can never re-admit an issue a live ticket already holds (#4133).
+        assert Ticket.issue_owning_states() == frozenset(Ticket.State.values) - {Ticket.State.IGNORED}
+
+    def test_pre_ship_states_membership(self) -> None:
+        assert Ticket.pre_ship_states() == frozenset(
+            {
+                Ticket.State.NOT_STARTED,
+                Ticket.State.SCOPED,
+                Ticket.State.WORK_STARTED,
+                Ticket.State.PLAN_RECORDED,
+                Ticket.State.CODED,
+                Ticket.State.TESTED,
+                Ticket.State.SELF_REVIEWED,
+            },
+        )
+
+    def test_pre_ship_and_post_ship_partition_every_state(self) -> None:
+        # Derived, not enumerated (#4711): a State added later must land in exactly one
+        # of the two sets, so it cannot escape BOTH the completion rule and rule F.
+        post_ship = Ticket.completable_states() | Ticket.merged_states()
+        terminals = {Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED}
+        assert Ticket.pre_ship_states() & post_ship == frozenset()
+        assert Ticket.pre_ship_states() & terminals == frozenset()
+        assert Ticket.pre_ship_states() | post_ship | terminals == frozenset(Ticket.State.values)
+
+    def test_pre_ship_states_includes_planned(self) -> None:
+        # The #2663 defect: the disposition scanner's hand-listed set skipped PLAN_RECORDED,
+        # so twelve tickets whose issue the owner closed NOT_PLANNED were never
+        # auto-ignored.
+        assert Ticket.State.PLAN_RECORDED in Ticket.pre_ship_states()
+
+    def test_every_pre_ship_state_can_be_ignored(self) -> None:
+        # The disposition scanner's auto-ignore only pays off if it is a legal FSM
+        # edge from every member — a state in the set the FSM refuses would emit a
+        # signal the mechanical handler can never act on.
+        for state in sorted(Ticket.pre_ship_states()):
+            ticket = Ticket.objects.create(overlay="acme", issue_url=f"https://example.com/issues/{state}", state=state)
+            assert can_proceed(ticket.ignore), f"ignore must be reachable from {state}"
+
+    def test_every_set_member_is_a_real_state(self) -> None:
+        valid = set(Ticket.State.values)
+        for name in (
+            "marker_release_states",
+            "in_flight_excluded_states",
+            "completable_states",
+            "merged_states",
+            "issue_owning_states",
+            "pre_ship_states",
+        ):
+            states = getattr(Ticket, name)()
+            assert isinstance(states, frozenset), f"{name} must return an immutable frozenset"
+            assert states <= valid, f"{name} has non-State members: {states - valid}"
+
+
+class TestSettledStateEnumIndependence(TestCase):
+    """``Ticket.State`` shares a member name+value with ``PullRequest.State`` twice.
+
+    ``MERGED`` always has (pre-existing); since #4779 ``review_requested`` also collides
+    with ``PullRequest.State.REVIEW_REQUESTED``.
+    Both enums must stay independent — writing one never reads back as the other.
+    """
+
+    def test_merged_is_independent_across_the_two_enums(self) -> None:
+        assert Ticket.State.MERGED == PullRequest.State.MERGED
+        assert Ticket.State.MERGED is not PullRequest.State.MERGED
+        ticket = Ticket.objects.create(state=Ticket.State.MERGED)
+        assert ticket.state == PullRequest.State.MERGED
+        assert Ticket.objects.filter(state=PullRequest.State.CLOSED).count() == 0
+
+    def test_review_requested_is_independent_across_the_two_enums(self) -> None:
+        assert Ticket.State.REVIEW_REQUESTED == PullRequest.State.REVIEW_REQUESTED
+        assert Ticket.State.REVIEW_REQUESTED is not PullRequest.State.REVIEW_REQUESTED
+        ticket = Ticket.objects.create(state=Ticket.State.REVIEW_REQUESTED)
+        assert ticket.state == PullRequest.State.REVIEW_REQUESTED
+        assert Ticket.objects.filter(state=PullRequest.State.OPEN).count() == 0
+
+
+class TestIsSettled(TestCase):
+    """``is_terminal`` -> ``is_settled`` is a rename, not a semantic change (#4779)."""
+
+    def test_membership_matches_the_settled_states_set(self) -> None:
+        for state in Ticket.State.values:
+            ticket = Ticket.objects.create(state=state)
+            assert ticket.is_settled == (state in Ticket._SETTLED_STATES)
+
+    def test_settled_states_unchanged_by_the_rename(self) -> None:
+        assert (
+            frozenset(
+                {
+                    Ticket.State.PR_OPENED,
+                    Ticket.State.MERGED,
+                    Ticket.State.DELIVERED,
+                    Ticket.State.REVIEW_DELIVERED,
+                    Ticket.State.IGNORED,
+                },
+            )
+            == Ticket._SETTLED_STATES
+        )

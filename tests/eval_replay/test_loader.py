@@ -1,0 +1,906 @@
+from pathlib import Path
+
+import pytest
+
+from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
+from teatree.eval.loader import EvalSpecError, load_eval_yaml
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalToolCall, FinalStateMatcher
+from teatree.eval.report import evaluate
+
+_MINIMAL = (
+    "- name: example\n"
+    "  scenario: example scenario\n"
+    "  prompt: do the thing\n"
+    "  expect:\n"
+    "    - tool_call: bash\n"
+    '      args.command: contains "git worktree add"\n'
+)
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    target = tmp_path / "spec.yaml"
+    target.write_text(body, encoding="utf-8")
+    return target
+
+
+def _run(*calls: EvalToolCall) -> EvalRun:
+    return EvalRun(
+        spec_name="neg_contains",
+        tool_calls=calls,
+        text_blocks=(),
+        terminal_reason="success",
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+    )
+
+
+class TestLoadEvalYaml:
+    def test_loads_one_spec_with_required_fields(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _MINIMAL)
+        specs = load_eval_yaml(path)
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.name == "example"
+        assert spec.scenario == "example scenario"
+        assert spec.prompt == "do the thing"
+
+    def test_defaults_model_tier_and_phase_to_unset(self, tmp_path: Path) -> None:
+        # A scenario that declares none of model/tier/phase leaves all three unset;
+        # the runner resolves it to the DEFAULT_TIER model. No concrete id default.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.model == ""
+        assert spec.tier == ""
+        assert spec.phase == ""
+
+    def test_parses_tier(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  tier: frontier\n")
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.tier == "frontier"
+        assert spec.model == ""
+
+    def test_parses_phase(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  phase: planning\n")
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.phase == "planning"
+
+    def test_unknown_tier_fails_loud(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  tier: gold\n")
+        with pytest.raises(EvalSpecError, match="tier"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_blank_phase_fails_loud(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", '  prompt: do the thing\n  phase: "  "\n')
+        with pytest.raises(EvalSpecError, match="phase"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_defaults_max_turns_to_the_generous_default(self, tmp_path: Path) -> None:
+        # A scenario that declares no max_turns gets the GENEROUS lane default —
+        # the old floor of 4 force-FAILed multi-step / delegating scenarios.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.max_turns == DEFAULT_MAX_TURNS
+        assert DEFAULT_MAX_TURNS >= 20
+
+    def test_defaults_tools_to_bash(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.tools == ("Bash",)
+
+    def test_defaults_per_scenario_caps_to_none(self, tmp_path: Path) -> None:
+        # A scenario that declares no per-scenario cap defers to the run/lane default
+        # (the override is None), so existing scenarios are unchanged.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.max_budget_usd is None
+        assert spec.watchdog_seconds is None
+
+    def test_parses_per_scenario_budget_and_watchdog(self, tmp_path: Path) -> None:
+        # The cap-relief overrides: a delegation scenario raises both to FIT a
+        # legitimate sub-agent TDD cycle without widening the shared default.
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  max_budget_usd: 4.0\n"
+            "  watchdog_seconds: 600\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.max_budget_usd == pytest.approx(4.0)
+        assert spec.watchdog_seconds == pytest.approx(600.0)
+
+    def test_rejects_non_positive_budget(self, tmp_path: Path) -> None:
+        # A fat-fingered 0 must be a spec error, never a silent tighten-to-nothing.
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  max_budget_usd: 0\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        with pytest.raises(EvalSpecError, match="max_budget_usd"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_numeric_watchdog(self, tmp_path: Path) -> None:
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  watchdog_seconds: soon\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        with pytest.raises(EvalSpecError, match="watchdog_seconds"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_overrides_model_max_turns_and_tools(self, tmp_path: Path) -> None:
+        body = (
+            "- name: tuned\n"
+            "  scenario: tuned scenario\n"
+            "  prompt: do the thing\n"
+            "  model: sonnet\n"
+            "  max_turns: 7\n"
+            "  tools: [Bash, Read]\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.model == "sonnet"
+        assert spec.max_turns == 7
+        assert spec.tools == ("Bash", "Read")
+
+    def test_uses_agent_path_field(self, tmp_path: Path) -> None:
+        body = (
+            "- name: agent_path_test\n"
+            "  scenario: agent path\n"
+            "  agent_path: skills/ship/SKILL.md\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.agent_path == "skills/ship/SKILL.md"
+
+    def test_defaults_agent_path_to_code_skill(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.agent_path == "skills/code/SKILL.md"
+
+    def test_defaults_agent_sections_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.agent_sections == ()
+
+    def test_parses_agent_sections_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: scoped\n"
+            "  scenario: scoped scenario\n"
+            "  agent_path: skills/rules/SKILL.md\n"
+            "  agent_sections:\n"
+            "    - Background Long Operations\n"
+            "    - Worktree-First Work\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.agent_sections == ("Background Long Operations", "Worktree-First Work")
+
+    def test_rejects_empty_agent_sections(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  agent_sections: []\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="agent_sections"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_string_agent_sections(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  agent_sections: [123]\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="agent_sections"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_defaults_available_skills_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.available_skills == ()
+
+    def test_parses_available_skills_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: widened\n"
+            "  scenario: widened scenario\n"
+            "  available_skills: [t3-widget, ac-django]\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.available_skills == ("t3-widget", "ac-django")
+
+    def test_rejects_empty_available_skills(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  available_skills: []\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="available_skills"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_string_available_skills(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  available_skills: [123]\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="available_skills"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_defaults_lane_to_clean_room(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.lane == "clean_room"
+
+    def test_defaults_context_preamble_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.context_preamble == ""
+
+    def test_parses_under_load_lane_and_context_preamble(self, tmp_path: Path) -> None:
+        body = (
+            "- name: drift\n"
+            "  scenario: drift scenario\n"
+            "  lane: under_load\n"
+            "  context_preamble: a wall of polluted context\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.lane == "under_load"
+        assert spec.context_preamble == "a wall of polluted context"
+
+    def test_rejects_unknown_lane(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  lane: heavy_load\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="lane"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_defaults_surface_to_headless(self, tmp_path: Path) -> None:
+        # Absent means BLOCKING, so no scenario can become advisory by omission.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.surface == "headless"
+
+    def test_parses_the_interactive_surface(self, tmp_path: Path) -> None:
+        body = (
+            "- name: chip\n"
+            "  scenario: grades the interactive tool call\n"
+            "  surface: interactive\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: AskUserQuestion\n"
+            '      args.questions: contains "?"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.surface == "interactive"
+
+    def test_rejects_unknown_surface(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  surface: slack\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="surface"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_default_agent_path_overrides_global_default_when_omitted(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL), default_agent_path="skills/ship/SKILL.md")[0]
+        assert spec.agent_path == "skills/ship/SKILL.md"
+
+    def test_explicit_agent_path_wins_over_default_agent_path(self, tmp_path: Path) -> None:
+        body = (
+            "- name: explicit\n"
+            "  scenario: explicit agent\n"
+            "  agent_path: skills/review/SKILL.md\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body), default_agent_path="skills/ship/SKILL.md")[0]
+        assert spec.agent_path == "skills/review/SKILL.md"
+
+    def test_parses_positive_matcher(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "positive"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.operator == "contains"
+        assert matcher.value == "git worktree add"
+
+    def test_parses_negative_matcher(self, tmp_path: Path) -> None:
+        body = (
+            "- name: neg\n"
+            "  scenario: negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: ~ "rm -rf"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "negative"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.operator == "~"
+        assert matcher.value == "rm -rf"
+
+    def test_negative_contains_yaml_round_trips_through_grader(self, tmp_path: Path) -> None:
+        # Regression seam (loader -> dispatch): the loader accepts `contains` for a
+        # `no_tool_call_matching` line, producing Matcher(kind="negative",
+        # operator="contains"); the grader's _dispatch had no branch for that combo
+        # and fell through to NotImplementedError, crashing the dream `--full` eval
+        # derivation. The matcher-level and dispatch-level halves are covered
+        # separately; this exercises a LOADER-produced matcher (not a hand-built
+        # one) through report.evaluate in a single load -> grade round-trip.
+        body = (
+            "- name: neg_contains\n"
+            "  scenario: forbid a drift substring\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: contains "--no-verify"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "negative"
+        assert matcher.operator == "contains"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.value == "--no-verify"
+
+        # FAIL when a matching tool call CONTAINS the forbidden substring...
+        present = _run(EvalToolCall(name="Bash", input={"command": "git commit --no-verify -m x"}, turn=1))
+        assert evaluate(spec, present).passed is False
+
+        # ...PASS when it is absent. The present/absent pair proves teeth.
+        absent = _run(EvalToolCall(name="Bash", input={"command": "git commit -m x"}, turn=1))
+        assert evaluate(spec, absent).passed is True
+
+    def test_parses_order_guard_before_first(self, tmp_path: Path) -> None:
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill ~ \"t3-widget\"'\n"
+        )
+        matcher = load_eval_yaml(_write(tmp_path, body))[0].matchers[1]
+        assert matcher.kind == "negative"
+        assert matcher.has_order_guard is True
+        assert matcher.guard_tool == "Skill"
+        assert matcher.guard_arg_path == "skill"
+        assert matcher.guard_operator == "~"
+        assert matcher.guard_value == "t3-widget"
+
+    def test_before_first_malformed_fails_loud(self, tmp_path: Path) -> None:
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill'\n"
+        )
+        with pytest.raises(EvalSpecError, match="before_first"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def _order_spec(self, tmp_path: Path):
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill ~ \"t3-widget\"'\n"
+        )
+        return load_eval_yaml(_write(tmp_path, body))[0]
+
+    def test_order_aware_negative_passes_when_forbidden_after_guard(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=1),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=2),
+        )
+        assert evaluate(spec, run).passed is True
+
+    def test_order_aware_negative_fails_when_forbidden_before_guard(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=2),
+        )
+        assert evaluate(spec, run).passed is False
+
+    def test_order_aware_negative_fails_when_guard_absent(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+        )
+        assert evaluate(spec, run).passed is False
+
+    def test_order_aware_negative_supports_contains_operator(self, tmp_path: Path) -> None:
+        # `contains` on both the forbidden line and the before_first guard is escaped
+        # to a literal regex, so a substring match still orders correctly.
+        body = (
+            "- name: order_neg_contains\n"
+            "  scenario: order-aware negative (contains)\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: contains "mr view"\n'
+            "      before_first: 'Skill.skill contains \"t3-widget\"'\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        after = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=1),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=2),
+        )
+        assert evaluate(spec, after).passed is True
+        before = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=2),
+        )
+        assert evaluate(spec, before).passed is False
+
+    def _exempt_spec(self, tmp_path: Path):
+        body = (
+            "- name: exempt_neg\n"
+            "  scenario: a sleep-loop waiter is forbidden only in the foreground\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "check_job"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "(while|until) .*sleep"\n'
+            "      unless: 'run_in_background ~ \"(?i)true\"'\n"
+        )
+        return load_eval_yaml(_write(tmp_path, body))[0]
+
+    def test_parses_exemption_unless(self, tmp_path: Path) -> None:
+        matcher = self._exempt_spec(tmp_path).matchers[1]
+        assert matcher.kind == "negative"
+        assert matcher.has_exemption is True
+        assert matcher.unless_arg_path == "run_in_background"
+        assert matcher.unless_operator == "~"
+        assert matcher.unless_value == "(?i)true"
+
+    def test_unless_malformed_fails_loud(self, tmp_path: Path) -> None:
+        body = (
+            "- name: exempt_neg\n"
+            "  scenario: malformed exemption\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "sleep"\n'
+            "      unless: 'run_in_background'\n"
+        )
+        with pytest.raises(EvalSpecError, match="unless"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_exempt_negative_passes_when_the_same_call_satisfies_unless(self, tmp_path: Path) -> None:
+        spec = self._exempt_spec(tmp_path)
+        run = _run(
+            EvalToolCall(
+                name="Bash",
+                input={"command": "until check_job; do sleep 5; done", "run_in_background": True},
+                turn=0,
+            )
+        )
+        assert evaluate(spec, run).passed is True
+
+    def test_exempt_negative_still_fails_the_unexcused_call(self, tmp_path: Path) -> None:
+        # The control for the pass above: the identical command WITHOUT the exempting
+        # arg must still red, else `unless` would have disarmed the matcher outright.
+        spec = self._exempt_spec(tmp_path)
+        run = _run(EvalToolCall(name="Bash", input={"command": "until check_job; do sleep 5; done"}, turn=0))
+        assert evaluate(spec, run).passed is False
+
+    def test_exempt_negative_does_not_excuse_a_different_call(self, tmp_path: Path) -> None:
+        spec = self._exempt_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "check_job --wait", "run_in_background": True}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "while ! check_job; do sleep 5; done"}, turn=1),
+        )
+        assert evaluate(spec, run).passed is False
+
+    def test_rejects_empty_expect(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do the thing\n  expect: []\n"
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_missing_required_field(self, tmp_path: Path) -> None:
+        body = (
+            "- scenario: no name here\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_positive_max_turns(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad_turns\n"
+            "  scenario: bad turns\n"
+            "  prompt: do\n"
+            "  max_turns: 0\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_empty_tools_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad_tools\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  tools: []\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_yaml_with_parse_error(self, tmp_path: Path) -> None:
+        # Tabs inside a flow-style block trigger a YAML scanner error and the
+        # loader must surface it as EvalSpecError with a file location.
+        body = "- name: bad\n\tindent_error_here: 1\n"
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_top_level_non_list(self, tmp_path: Path) -> None:
+        body = "name: example\nscenario: not in a list\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expected a top-level YAML list" in str(exc.value)
+
+    def test_rejects_non_mapping_entry(self, tmp_path: Path) -> None:
+        body = "- just a string\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "each spec must be a mapping" in str(exc.value)
+
+    def test_rejects_expect_entry_without_known_key(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - something_else: yes\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "tool_call" in str(exc.value)
+
+    def test_rejects_negative_without_dot_key(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        nodot: ~ "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "<tool>.<arg>" in str(exc.value)
+
+    def test_rejects_negative_with_multiple_inner_keys(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: ~ "x"\n'
+            '        bash.description: ~ "y"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_positive_without_args_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - tool_call: bash\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "args." in str(exc.value)
+
+    def test_rejects_unknown_operator(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: startswith "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "contains" in str(exc.value)
+
+    def test_rejects_non_mapping_expect_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - just a string entry\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expect" in str(exc.value) or "mapping" in str(exc.value)
+
+
+class TestUnknownTopLevelKeyFailsLoud:
+    """A key the parser never reads is a typo whose declaration is silently dropped.
+
+    ``watchdog_second: 30`` leaves the scenario on the lane default and
+    ``max_turn: 3`` leaves it on the generous one — a cap the author wrote that
+    never applied, with nothing red at load time to say so.
+    """
+
+    def test_typoed_optional_key_is_rejected(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  watchdog_second: 30\n")
+        with pytest.raises(EvalSpecError, match=r"unknown spec key\(s\) \['watchdog_second'\]"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_refusal_lists_the_permitted_keys(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  max_turn: 3\n")
+        with pytest.raises(EvalSpecError, match=r"permitted: .*\bmax_turns\b"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_a_spec_using_only_parsed_keys_still_loads(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace(
+            "  prompt: do the thing\n",
+            "  prompt: do the thing\n  tier: frontier\n  lane: under_load\n"
+            "  context_preamble: noisy\n  watchdog_seconds: 30\n  production_hooks: true\n",
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.watchdog_seconds == 30
+        assert spec.production_hooks is True
+
+
+class TestJudgeBlock:
+    def test_parses_judge_with_rubric_and_defaults(self, tmp_path: Path) -> None:
+        body = (
+            "- name: judged\n"
+            "  scenario: needs a judge\n"
+            "  prompt: do\n"
+            "  judge:\n"
+            "    rubric: The explanation is faithful to the diff.\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge is not None
+        assert spec.judge.rubric == "The explanation is faithful to the diff."
+        assert spec.judge.model == TIER_MODELS[DEFAULT_TIER]
+        assert spec.matchers == ()
+
+    def test_judge_overrides_the_model(self, tmp_path: Path) -> None:
+        body = "- name: judged\n  scenario: needs a judge\n  prompt: do\n  judge:\n    rubric: r\n    model: sonnet\n"
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge.model == "sonnet"
+
+    def test_judge_and_matchers_coexist(self, tmp_path: Path) -> None:
+        body = (
+            "- name: both\n"
+            "  scenario: matcher plus judge\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+            "  judge:\n"
+            "    rubric: r\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge is not None
+        assert len(spec.matchers) == 1
+
+    def test_rejects_empty_rubric(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  judge:\n    rubric: '   '\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "rubric" in str(exc.value)
+
+    def test_missing_both_expect_and_judge_rejected(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expect" in str(exc.value)
+
+
+class TestAnyOfMatcher:
+    def test_parses_any_of_disjunction_of_positive_branches(self, tmp_path: Path) -> None:
+        body = (
+            "- name: anyof\n"
+            "  scenario: background the long op either way\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - any_of:\n"
+            "        - tool_call: Task\n"
+            '          args.prompt: ~ "pytest"\n'
+            "        - tool_call: Bash\n"
+            '          args.run_in_background: ~ "(?i)true"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        item = spec.matchers[0]
+        assert isinstance(item, AnyOf)
+        assert len(item.alternatives) == 2
+        assert item.alternatives[0].tool == "Task"
+        assert item.alternatives[1].arg_path == "run_in_background"
+        assert all(alt.kind == "positive" for alt in item.alternatives)
+
+    def test_rejects_empty_any_of(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - any_of: []\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "any_of" in str(exc.value)
+
+    def test_rejects_negative_branch_in_any_of(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - any_of:\n"
+            "        - no_tool_call_matching:\n"
+            '            bash.command: ~ "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "tool_call" in str(exc.value)
+
+
+class TestFinalStateMatcher:
+    def test_parses_final_state_regex_matcher(self, tmp_path: Path) -> None:
+        # A `#` in the regex needs the whole value YAML-quoted (same constraint
+        # the tool-call matchers face) so YAML does not treat it as a comment.
+        body = (
+            "- name: ends_with_pr\n"
+            "  scenario: the agent ends by reporting the opened PR\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - final_state: '~ \"opened PR #\\d+\"'\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        item = spec.matchers[0]
+        assert isinstance(item, FinalStateMatcher)
+        assert item.operator == "~"
+        assert item.value == "opened PR #\\d+"
+
+    def test_parses_final_state_contains_matcher(self, tmp_path: Path) -> None:
+        body = (
+            "- name: ends_clean\n"
+            "  scenario: the agent ends with a clean summary\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            '    - final_state: contains "branch is pushed"\n'
+        )
+        item = load_eval_yaml(_write(tmp_path, body))[0].matchers[0]
+        assert isinstance(item, FinalStateMatcher)
+        assert item.operator == "contains"
+        assert item.value == "branch is pushed"
+
+    def test_rejects_final_state_with_bad_operator(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - final_state: equals foo\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "final_state" in str(exc.value) or "operator" in str(exc.value)
+
+    def test_final_state_coexists_with_tool_call(self, tmp_path: Path) -> None:
+        body = (
+            "- name: both\n"
+            "  scenario: pushes AND reports it\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "git push"\n'
+            '    - final_state: contains "pushed"\n'
+        )
+        matchers = load_eval_yaml(_write(tmp_path, body))[0].matchers
+        assert len(matchers) == 2
+        assert isinstance(matchers[1], FinalStateMatcher)
+
+
+class TestUnknownTopLevelKeys:
+    """A key the loader does not know is a spec error, never a silently-ignored typo."""
+
+    def test_a_typoed_optional_key_is_rejected(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  max_turn: 3\n")
+        with pytest.raises(EvalSpecError, match="max_turn"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_the_error_names_the_permitted_keys(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  watchdog_second: 30\n")
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "watchdog_seconds" in str(exc.value)
+
+    def test_every_known_key_still_loads(self, tmp_path: Path) -> None:
+        body = (
+            "- name: full\n"
+            "  scenario: every supported key at once\n"
+            "  agent_path: skills/code/SKILL.md\n"
+            "  agent_sections: ['## Workflow']\n"
+            "  prompt: do the thing\n"
+            "  model: claude-sonnet-5\n"
+            "  tier: cheap\n"
+            "  phase: coding\n"
+            "  max_turns: 4\n"
+            "  tools: [Bash]\n"
+            "  fixture: git_repo\n"
+            "  lane: under_load\n"
+            "  surface: interactive\n"
+            "  context_preamble: noise\n"
+            "  max_budget_usd: 0.5\n"
+            "  watchdog_seconds: 30\n"
+            "  available_skills: [t3:code]\n"
+            "  cli_stubs: [t3]\n"
+            "  production_hooks: false\n"
+            "  single_action: true\n"
+            "  judge:\n"
+            "    rubric: grade it\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.name == "full"
+        assert spec.max_turns == 4
+
+    def test_the_shipped_catalog_loads_under_the_strict_check(self) -> None:
+        from teatree.eval.discovery import discover_specs  # noqa: PLC0415 — deferred: needs the app registry
+
+        assert discover_specs()

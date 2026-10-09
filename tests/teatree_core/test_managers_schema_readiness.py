@@ -1,0 +1,128 @@
+"""The schema-readiness admission gate on the Task claim path (#3901).
+
+`self_update` advances a live worker's CODE on a cadence while the schema migrate
+is a separate boot-time step, so a worker can hold code whose models the control
+DB does not carry. While that is true the claim path must admit ZERO new work —
+`claim_next_pending` (the headless CAS) and `_claimable_for_target` (the
+interactive/headless claim query) both short-circuit, exactly as they do for
+`worker_quiescing` — rather than dispatch an agent that will crash on the first
+missing relation.
+
+These drive the REAL gate: the pending-migration probe is the only thing stubbed,
+so the verdict, the memo and both claim chokepoints are exercised
+end to end. Every case asserts the row survives untouched — a refused claim is a
+deferral, never a loss.
+"""
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import cast
+from unittest.mock import patch
+
+import django.test
+
+from teatree.core.models import ConfigSetting
+from teatree.core.models.task import Task
+from teatree.core.schema_readiness import invalidate_schema_readiness
+from tests.factories import TaskFactory
+
+_PROBE = "teatree.core.schema_readiness.pending_migrations"
+_BEHIND = ["core.0042_widget", "core.0043_gizmo"]
+
+
+class _SchemaGateBase(django.test.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        invalidate_schema_readiness()
+        self.addCleanup(invalidate_schema_readiness)
+
+    @contextmanager
+    def _behind(self) -> Iterator[None]:
+        with patch(_PROBE, return_value=_BEHIND):
+            invalidate_schema_readiness()
+            yield
+
+
+class TestSchemaBehindBlocksNewClaims(_SchemaGateBase):
+    def test_claim_next_pending_returns_none_while_the_schema_is_behind(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+
+        with self._behind():
+            claimed = Task.objects.claim_next_pending(claimed_by="loop")
+
+        assert claimed is None
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+    def test_claimable_for_target_is_empty_while_the_schema_is_behind(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+
+        with self._behind():
+            assert not Task.objects.claimable().exists()
+            assert not Task.objects.claimable().exists()
+
+    def test_claim_admits_again_once_the_migrations_are_applied(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+        with self._behind():
+            assert Task.objects.claim_next_pending(claimed_by="loop") is None
+
+        invalidate_schema_readiness()
+        with patch(_PROBE, return_value=[]):
+            claimed = Task.objects.claim_next_pending(claimed_by="loop")
+
+        assert claimed is not None
+        assert claimed.status == Task.Status.CLAIMED
+
+    def test_current_schema_admits_new_work(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+
+        with patch(_PROBE, return_value=[]):
+            assert Task.objects.claim_next_pending(claimed_by="loop") is not None
+
+
+class TestUnverifiableSchemaFailsClosed(_SchemaGateBase):
+    def test_a_probe_that_raised_refuses_the_claim(self) -> None:
+        """UNKNOWN is not CURRENT — a gate that cannot tell must not admit."""
+        TaskFactory(status=Task.Status.PENDING)
+
+        with patch(_PROBE, side_effect=RuntimeError("migration graph unreadable")):
+            invalidate_schema_readiness()
+            claimed = Task.objects.claim_next_pending(claimed_by="loop")
+
+        assert claimed is None
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+
+class TestSchemaKillSwitch(_SchemaGateBase):
+    def test_behind_schema_refuses_by_default(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+
+        with self._behind():
+            assert Task.objects.claim_next_pending(claimed_by="loop") is None
+
+    def test_false_behind_reading_can_be_bypassed_for_both_claim_paths(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+        ConfigSetting.objects.set_value("schema_readiness_gate_enabled", value=False)
+
+        with self._behind():
+            assert Task.objects.claimable().exists()
+            assert Task.objects.claim_next_pending(claimed_by="loop") is not None
+
+    def test_process_freshness_false_behind_uses_the_same_escape(self) -> None:
+        ConfigSetting.objects.set_value("schema_readiness_gate_enabled", value=False)
+        with patch("teatree.core.managers_task_claim._process_code_behind_schema", return_value="false BEHIND"):
+            from teatree.core.managers_task_claim import code_behind_schema  # noqa: PLC0415 — test the claim seam
+
+            assert code_behind_schema() is False
+
+
+class TestSchemaGateLeavesInFlightAlone(_SchemaGateBase):
+    def test_in_flight_lease_renews_while_the_schema_is_behind(self) -> None:
+        """The gate defers NEW work only — it never kills a live sub-agent mid-task."""
+        task = cast("Task", TaskFactory(status=Task.Status.PENDING))
+        task.claim(claimed_by="loop", lease_seconds=300)
+
+        with self._behind():
+            task.renew_lease(lease_seconds=300)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED

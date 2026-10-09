@@ -1,0 +1,194 @@
+"""Every colleague-visible ``ReviewService`` publish fires the #949 after-receipt DM.
+
+``post_comment``, ``reply_to_discussion``, ``resolve_discussion``,
+``update_note``, ``delete_discussion`` and ``publish_draft_notes`` each
+publish a colleague-visible mutation on a GitLab MR under the user's
+identity — a successful call must be followed by exactly one
+``on_behalf_post:`` bot→user DM.
+
+``post_draft_note`` is the draft-form exception: drafts are
+colleague-invisible until published, so it must yield ONLY the
+``on_behalf_autodraft:`` BotPing (the pre-gate's own DM) and never an
+``on_behalf_post:`` one.
+
+The GitLab API boundary is stubbed; ``notify_user`` + the BotPing ledger
+run for real. The active posture is staged to PERMIT so these tests
+isolate the after-receipt behaviour.
+"""
+
+import json
+import sqlite3
+from http import HTTPStatus
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import httpx
+import pytest
+
+from teatree.cli.review import ReviewService
+from teatree.core.models import BotPing
+from tests._send_gate import allow_forge_repos
+from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("configured_banned_term_registry")]
+
+
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
+    # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
+    # is ORM-resolved, staged in the ``ConfigSetting`` store.
+    _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
+    allow_forge_repos(OWNED_REPO)
+    seed_forbidding_posture() if forbidding else seed_permitting_posture()
+
+
+def _http_404() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://gitlab.example/api/v4/x")
+    response = httpx.Response(HTTPStatus.NOT_FOUND, request=request)
+    return httpx.HTTPStatusError("not found", request=request, response=response)
+
+
+def _wire_notify_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = MagicMock()
+    backend.open_dm.return_value = "D-OPERATOR"
+    backend.post_message.return_value = {"ok": True, "ts": "1700000000.0001"}
+    backend.get_permalink.return_value = "https://slack.example/archives/D-OPERATOR/p1"
+    monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
+
+
+class _StubAPI:
+    """In-memory ``GitLabAPI`` stand-in returning success shapes."""
+
+    def __init__(self) -> None:
+        self._deleted_ids: set[str] = set()
+        self.mr = BulkPublishMR()
+
+    def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
+        return {
+            "id": 11,
+            "web_url": f"https://gitlab.example/{OWNED_REPO}/-/mr/7#note_11",
+            "notes": [{"type": "DiffNote", "id": 11}],
+        }
+
+    def post_status(self, endpoint: str) -> int:
+        self.mr.saw_post(endpoint)
+        return 200
+
+    def put_status(self, endpoint: str, payload: object | None = None) -> int:
+        return 200
+
+    def current_username(self) -> str:
+        return "souliane"
+
+    def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
+        return self.mr.listing(endpoint) or []
+
+    def get_json(self, endpoint: str) -> object:
+        # Verify-after-post (#2081) reads the artifact back: confirm it landed.
+        last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+        if last.isdigit():
+            if last in self._deleted_ids:
+                raise _http_404()
+            return {"id": int(last), "resolvable": True, "resolved": True}
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": "souliane"}}]}
+        if (listed := self.mr.listing(endpoint)) is not None:
+            return listed
+        if "discussions/" in endpoint:
+            return {"notes": [{"resolvable": True, "resolved": True}]}
+        return []
+
+    def delete(self, endpoint: str) -> int:
+        self._deleted_ids.add(endpoint.rstrip("/").rsplit("/", 1)[-1])
+        return 204
+
+
+def _service(monkeypatch: pytest.MonkeyPatch) -> ReviewService:
+    service = ReviewService(token="t")
+    stub = _StubAPI()
+    monkeypatch.setattr(service, "_get_api", lambda: stub)
+    return service
+
+
+class TestReviewServiceAfterReceiptDm:
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_cfg(tmp_path, monkeypatch, forbidding=False)
+        _wire_notify_backend(monkeypatch)
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        self.svc = _service(monkeypatch)
+
+    def _ping(self, action: str) -> BotPing:
+        return BotPing.objects.get(idempotency_key__startswith=f"on_behalf_post:{OWNED_REPO}!7:{action}")
+
+    def test_post_comment_emits_after_receipt_dm(self) -> None:
+        # Default ``post_comment`` is a DRAFT under #1207 — the after-receipt
+        # DM is for colleague-visible publishes only, so use the ``--live``
+        # path (gated on a recorded ``LivePostApproval``) to exercise it.
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        _, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
+        assert code == 0
+        assert self._ping("post_comment").status == BotPing.Status.SENT
+
+    def test_reply_to_discussion_emits_after_receipt_dm(self) -> None:
+        _, code = self.svc.reply_to_discussion(OWNED_REPO, 7, "d1", "thanks")
+        assert code == 0
+        assert self._ping("reply_to_discussion").status == BotPing.Status.SENT
+
+    def test_resolve_discussion_emits_after_receipt_dm(self) -> None:
+        _, code = self.svc.resolve_discussion(OWNED_REPO, 7, "d1")
+        assert code == 0
+        assert self._ping("resolve_discussion").status == BotPing.Status.SENT
+
+    def test_update_note_emits_after_receipt_dm(self) -> None:
+        _, code = self.svc.update_note(OWNED_REPO, 7, 11, "edited")
+        assert code == 0
+        assert self._ping("update_note").status == BotPing.Status.SENT
+
+    def test_delete_discussion_emits_after_receipt_dm(self) -> None:
+        _, code = self.svc.delete_discussion(OWNED_REPO, 7, 11)
+        assert code == 0
+        assert self._ping("delete_discussion").status == BotPing.Status.SENT
+
+    def test_publish_draft_notes_emits_after_receipt_dm(self) -> None:
+        _, code = self.svc.publish_draft_notes(OWNED_REPO, 7)
+        assert code == 0
+        assert self._ping("publish_draft_notes").status == BotPing.Status.SENT
+
+    def test_post_draft_note_yields_only_autodraft_never_after_receipt(self) -> None:
+        """Scope guard: drafts are colleague-invisible — no on_behalf_post: DM.
+
+        Under a forbidding posture the pre-gate DMs an ``on_behalf_autodraft:``
+        ping; the after-receipt helper must NOT also fire an
+        ``on_behalf_post:`` one (the draft is not colleague-visible).
+        """
+        _write_cfg(self.tmp_path, self.monkeypatch, forbidding=True)
+
+        _, code = self.svc.post_draft_note(OWNED_REPO, 7, "nit")
+
+        assert code == 0
+        assert BotPing.objects.filter(idempotency_key=f"on_behalf_autodraft:{OWNED_REPO}!7:post_draft_note").exists()
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()

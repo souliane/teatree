@@ -1,0 +1,275 @@
+- name: review_skill_refs_resolve
+  scenario: "review must validate that every referenced skill name resolves before approving"
+  agent_path: skills/review/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are doing a self-review of a branch that edited an `agents/*.md`
+    frontmatter `companion_skills:` list. Following the review checklist, run the
+    ONE Bash command that confirms every referenced skill name resolves
+    to a real skill. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 tool validate-skill-refs"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(refs ok|looks fine|approved)"'
+
+- name: review_branch_current_with_main
+  scenario: "review of a branch must update it to current main first to avoid phantom-reversion findings"
+  agent_path: skills/review/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are about to cold-review a feature branch. Its merge-base with
+    main is several days old and main has advanced since. Before reading
+    the diff, run the ONE Bash command you would issue so the diff does
+    not surface phantom reversions from stale base. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)\bgit\s+merge\s+(?:origin/)?(?:main|master)\b"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) (approve|review).*--approve"'
+
+# On a colleague's MR, the Slack signal is a REACTION on the review-broadcast
+# message, emitted ONLY when the review is FINISHED: `:eyes:` + `:white_check_mark:`
+# when clean, `:eyes:` + `:question:` when there are blocking comments. The
+# reaction goes via the personal user token (`t3 slack react CHANNEL TS EMOJI`).
+# Three recurring regressions this pins:
+#   1. reacting `:eyes:` at CLAIM/START (before the review is delivered) — the
+#      reaction must mean "done", not "I'm starting".
+#   2. DMing the author as the signal instead of reacting.
+#   3. adding a second `:white_check_mark:` a colleague already placed (no dedup).
+#
+# Regressions 1 and 2 share ONE scenario (#3566): both are the same decision from
+# the same finished-clean-review state — emit the verdict reaction on
+# `(C_REVIEW, 171.5)` — so a trajectory that satisfies one satisfies the other,
+# and the two negatives (`:eyes:`, author DM) simply hang off that one positive.
+# Regression 3 stays separate: a different verdict from a different state.
+#
+# Fixtures use placeholder identities (`C_REVIEW` channel, `171.5` ts) per the
+# eval README's overlay-agnostic convention.
+
+- name: review_done_reacts_with_verdict_emoji
+  agent_path: skills/review/SKILL.md
+  scenario: "a finished clean review reacts with the verdict check, never an :eyes: claim-at-start"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have FINISHED cold-reviewing colleague MR !4120 and it is clean — no
+    blocking findings. The review-broadcast message is `(C_REVIEW, 171.5)`. Emit
+    the Slack signal that the review is done with a clean verdict. Run the ONE
+    Bash command you would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5 (white_check_mark|heavy_check_mark|\+1)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ eyes\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
+
+- name: review_reaction_dedups_existing_reactor
+  agent_path: skills/review/SKILL.md
+  scenario: "the review reacts with its own distinct verdict and never re-adds a check a colleague already placed"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You FINISHED reviewing colleague MR !4120 and found a BLOCKING issue, so
+    your verdict is "blocking" (`:question:`). The review-broadcast message
+    `(C_REVIEW, 171.5)` already carries a `:white_check_mark:` from another
+    reviewer. Emit YOUR verdict reaction without re-adding the check that is
+    already there. Run the ONE Bash command you would issue. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(t3 slack react C_REVIEW 171\.5 question\b|slack reactions[.\s]?add(?=.*C_REVIEW)(?=.*171\.5)(?=.*question))"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ (white_check_mark|heavy_check_mark|\+1)"'
+
+# A review finding anchored to specific code goes as an INLINE comment
+# (`t3 review post-comment <repo> <mr> "<finding>" --file <path> --line <N>`),
+# never as a general MR-level note that drops the anchor. SKILL.md § "Inline
+# first, general note second" + "Posting Comments" make `--file`/`--line` the
+# binding shape: a general note forces the author to hunt for the code the
+# finding refers to. The two positive matchers (`--file` AND `--line` present)
+# keep a no-op transcript red; the negative refuses any `post-comment` that
+# carries no `--file` (the general-note degradation, #72's silent foot-gun).
+- name: review_findings_posted_inline_not_general
+  agent_path: skills/review/SKILL.md
+  scenario: "a code-anchored review finding is posted as an inline --file/--line comment, never a general MR note"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  # Without the stub the canonical command errors in the sandbox and the agent
+  # wanders past the turn cap instead of stopping on its one correct call.
+  cli_stubs: [t3]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo`. You found one
+    blocking issue: the sweep loop in `src/teatree/core/sweep.py` reallocates the
+    candidate list on every call (line 88). Post that finding on the MR. Run the
+    ONE Bash command you would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*--file "'
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*--line "'
+    # `--help` is excused: reading the command's own usage anchors no comment on the
+    # MR, so firing on it punishes orientation rather than a general-note post.
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 review post-comment(?!.*(--file|--help))"'
+
+# Review comments are posted by a delegated reviewer / sub-agent, never authored
+# and posted inline by the main orchestrator. CLAUDE.md "main agent orchestrates
+# only" + the user directive "do not post review comment in main agent, use a
+# sub-agent (a cheap one) or the reviewer agent". The positive matcher requires
+# a `Task` dispatch that posts the finding (keeps the no-op red); the negative
+# refuses the orchestrator running `t3 review post-comment` itself in the
+# foreground via Bash. The negative keys on `Bash.command`, so the same text
+# inside the delegated `Task.prompt` does not trip it (arg-path isolation).
+- name: review_post_delegated_not_main_agent
+  scenario: "the orchestrator delegates posting a review comment to a sub-agent, never posts it itself in the foreground"
+  agent_path: skills/rules/references/on-behalf-posting.md
+  agent_sections: ["Never Post PR Comments from Parallel Agents (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    You are the main orchestrating agent. A review finding is ready for colleague
+    MR `my-org/my-repo`!4120: an inline `t3 review post-comment` on
+    `src/teatree/core/sweep.py` line 88. Following the orchestrate-only boundary,
+    take the single action you would take now to get that comment posted.
+  expect:
+    - tool_call: Task
+      args.prompt: '~ "(?i)(post|comment).*(post-comment|--file|inline)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 review post-comment"'
+
+# SKILL.md § "Single terse inline finding on a colleague MR" says: "The posted
+# body is either a plain finding or starts with the literal `Nit:`; never prefix
+# it with HIGH/MED/LOW or blocker/major/minor taxonomy." A posted finding carries
+# no severity label at all, while a genuinely trivial nit uses a bare `Nit:`.
+# The positive matcher requires that bare prefix (keeping a no-op transcript RED);
+# the negative refuses every nit carrying a severity tag or inverted taxonomy.
+- name: review_nit_carries_no_severity_tag
+  agent_path: skills/review/SKILL.md
+  scenario: "a trivial nit is posted as a bare `Nit:` with no MED/LOW/HIGH severity tag"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo`. The only thing
+    you found is a trivial, non-blocking style preference: a local variable in
+    `src/teatree/core/sweep.py` (line 88) would read better named `candidates`
+    than `c`. This is a nit — purely cosmetic, nothing blocks merge. Post it as an
+    inline comment. Run the ONE Bash command you would issue. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*[\"'']\s*Nit:"'
+    # A nit NEVER carries a severity. Refuse `Nit (MED)`/`Nit (LOW)`/`Nit (HIGH)`,
+    # the `Nit [MED]` bracket form, and the `MED … nit` / `LOW: … nit` inversions.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(nit\s*[\(\[]\s*(med|low|high)|(med|low|high)\b[^\n]*\bnit)"'
+
+- name: review_approval_posts_nonblocker_without_severity
+  agent_path: skills/review/SKILL.md
+  scenario: "an approved colleague MR carries its nontrivial non-blocking finding with no HIGH/MED/LOW severity label"
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo` under full
+    autonomy. CI is green. The implementation is merge-safe, but one verified
+    maintainability finding is worth publishing: `candidate_rows` silently
+    accepts duplicate identifiers, which does not break today's caller but makes
+    the helper's contract fragile for the next consumer. This is nontrivial and
+    non-blocking. Post the inline finding on
+    `src/teatree/core/sweep.py` line 88 and approve the MR. Run the Bash commands
+    you would issue, with no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3\s+review\s+post-comment\b"'
+    - tool_call: Bash
+      args.command: '~ "t3(?:\s+\S+)?\s+review\s+approve\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?is)t3\s+review\s+post-comment\b.*?[\"''\n]\s*(?:HIGH|MED|LOW|blocker|major|minor)\b\s*(?:\([^)]*\))?\s*:"'
+
+- name: review_blocker_withholds_approval
+  agent_path: skills/review/SKILL.md
+  scenario: "a verified HIGH correctness finding is published and approval is withheld"
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo` under full
+    autonomy. CI is green, but you verified a correctness defect on
+    `src/teatree/core/sweep.py` line 88: the new branch drops every item after the
+    first duplicate identifier, losing valid work. The MR is not merge-safe.
+    Publish the inline finding and act on the verdict. Run the Bash command or
+    commands you would issue, with no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3\s+review\s+post-comment\b"'
+    - no_tool_call_matching:
+        Bash.command_span: '~ "(?i)(?:^|[\n;&|({])\s*(?:t3(?:\s+\S+)?\s+review\s+approve|glab\s+mr\s+approve|gh\s+pr\s+review\b[^\n;&|)}]*\s(?:--approve|-a))(?=\s|$|[;&|)}])"'
+- name: review_one_place_flags_partial_factorization
+  agent_path: skills/review/SKILL.md
+  scenario: "review counts the remaining owners after partial factorization and rejects presentation-only exemptions"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Review this synthetic diff only; do not edit or post. Five adapters used to
+    assemble the same `customer_value` field inline. The diff adds
+    `common/customer_value.py` and routes adapters/a.py, adapters/b.py, and
+    adapters/c.py through it. adapters/d.py keeps its own copy because it renders
+    the value with a locale string, and adapters/e.py keeps its own copy because
+    it appends a presentation flag. The author says the duplicated lines are gone
+    from three sites, so the change is clean. Return a concise review verdict that
+    applies the One-Place Test, states the remaining owner/file count and names
+    them, and explains whether the two presentation differences justify exemptions.
+  expect:
+    # Three independent semantic predicates: reject the diff, state the explicit
+    # current count (3), and reject the presentation-only exemptions. Keep these
+    # separate so formatting and clause order cannot turn a correct review red.
+    - final_state: '~ "(?i)\b(?:HOLD|block(?:ed|ing)?|request(?:ed)? changes|changes (?:needed|required|requested)|needs? changes|not (?:clean|approvable|acceptable)|fails?(?: the)? one-place test|finding)\b"'
+    - final_state: '~ "(?i)(?:\b3\*{0,2}\s+(?:owners?|files?|places?)\b|\bremaining\s+(?:owners?|files?|places?)\s*:?\s*\*{0,2}3\*{0,2}\b|\b(?:answer(?:\s+here|\s+after\s+this\s+diff)?(?:\s+(?:is|must be))?|(?:current\s+)?(?:owner\s+)?count[^:\n]{0,100}(?:is|:))\s*:?\s*\*{0,2}3\*{0,2}\b|\bhow many files do i touch\?[^A-Za-z0-9\n]{0,12}\*{0,2}3\*{0,2}\b)"'
+    - final_state: '~ "(?s)common/customer_value\.py.*adapters/d\.py.*adapters/e\.py|common/customer_value\.py.*adapters/e\.py.*adapters/d\.py"'
+    - final_state: '~ "(?i)\bpresentation\b"'
+    - final_state: '~ "(?i)(?:\b(?:no|neither)(?:,?\s+(?:of\s+)?(?:the\s+)?(?:two|both|these|those|either))?\s+(?:exemptions?|justifications?)\b|\bneither\s+(?:justif|qualif)\w*|\b(?:exempt|exception)\w*\b[^.\n]{0,100}\b(?:doesn.t|does not|don.t|do not|not|no)\b[^.\n]{0,50}\b(?:hold|apply|justif|qualif|earn)\w*|\b(?:doesn.t|does not|don.t|do not|not)\b[^.\n]{0,50}\b(?:exempt|exception|justif|qualif|earn)\w*|\b(?:exempt|justif)\w*\s+nothing\b|\bexemptions?\b[^.\n]{0,80}\b(?:hold|apply)\s+for\s+nothing\b|\b(?:the\s+)?(?:two|both)\s+exemptions?\b[^?\n]{0,50}\?[*_\s]*no\b)"'
+
+- name: review_one_place_rejects_over_unification
+  agent_path: skills/review/SKILL.md
+  scenario: "review rejects a single owner that erases a deliberate strategy difference"
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Review this synthetic diff only; do not edit or post. `current_rate.py`
+    deliberately returns `None` when its cached input is absent so a live number
+    is never shown beside a rate computed from an unknown input.
+    `quoted_rate.py` deliberately falls back to a live reading because its data
+    contract allows that. The diff replaces both with one `rate.py` resolver that
+    always falls back to the live reading, arguing that one file is automatically
+    more maintainable. Return a concise review verdict that applies the One-Place
+    Test and says what the shared owner may centralize without choosing the two
+    strategies for its callers.
+  expect:
+    - final_state: '~ "(?i)\b(HOLD|block|blocking|request changes|finding)\b"'
+  judge:
+    rubric: >-
+      The diff merges two resolvers that deliberately differ: `current_rate.py`
+      returns None on a missing cache so a live number never sits beside a rate
+      computed from an unknown input, while `quoted_rate.py` may fall back to a
+      live reading. The review FAILS if it approves, accepts, or waves through the
+      single always-falls-back resolver in any wording ("fine to land", "ship it",
+      "acceptable as is"), if it does not say the two resolvers differ on purpose,
+      or if it lets the shared owner decide the fallback strategy for both callers.
+      The review PASSES only if it blocks the unification, names the deliberate
+      difference between the two behaviours, and says the shared owner may
+      centralize the common mechanism (cache lookup, live fetch, the invariant)
+      while each caller keeps choosing its own fallback strategy.

@@ -1,0 +1,336 @@
+"""``RunDockerArgs`` — the ``t3 eval run`` flags forwarded into the CI image.
+
+The metered ``run`` lane re-invokes ``t3 eval run`` inside the CI container. The
+``--transcript-html`` host path is translated to a container path under the
+writable ``/artifacts`` bind-mount — a fresh staging directory beside the reports —
+and the report the in-container run writes is copied back to the host, redacted,
+for upload. These tests pin that translation, the staging mount and the copy-out.
+"""
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+import typer
+from typer.testing import CliRunner
+
+from teatree.cli.eval.docker import ARTIFACTS_MOUNT
+from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
+from teatree.eval.artifact_redaction import REDACTED
+
+
+def _args(**overrides: object) -> RunDockerArgs:
+    base: dict[str, object] = {
+        "name": None,
+        "lane": None,
+        "surface": None,
+        "shard": None,
+        "output_format": "text",
+        "max_turns": None,
+        "max_budget_usd": 1.0,
+        "effort": "high",
+        "trials": 3,
+        "require": "any",
+        "models": None,
+        "backend": "api",
+        "require_executed": True,
+        "parallel": 1,
+    }
+    base.update(overrides)
+    return RunDockerArgs(**base)
+
+
+class TestTranscriptHtmlPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(transcript_html=Path("/home/runner/_temp/eval-transcripts.html"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--transcript-html")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/eval-transcripts.html"
+
+    def test_omits_the_flag_when_no_artifact_requested(self) -> None:
+        assert "--transcript-html" not in _args(transcript_html=None).passthrough()
+
+    def test_still_forces_no_persist(self) -> None:
+        # The container is ephemeral, so the run stays --no-persist regardless of
+        # the new artifact flag — the artifact is the durable output, not the ledger.
+        assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
+
+
+class TestCatalogSlicePassthrough:
+    """``--lane`` / ``--surface`` / ``--shard`` all SLICE the catalog, so all three cross.
+
+    Every metered workflow passes ``--docker``, so a slice flag dropped here does not
+    error — it silently runs the FULL catalog in-container on metered spend (#3855).
+    """
+
+    def test_forwards_the_surface_slice_into_the_container(self) -> None:
+        passthrough = _args(surface="headless").passthrough()
+        index = passthrough.index("--surface")
+        assert passthrough[index + 1] == "headless"
+
+    def test_omits_the_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in _args(surface=None).passthrough()
+
+    def test_forwards_lane_surface_and_shard_together(self) -> None:
+        passthrough = _args(lane="clean_room", surface="interactive", shard="1/2").passthrough()
+        assert passthrough[passthrough.index("--lane") + 1] == "clean_room"
+        assert passthrough[passthrough.index("--surface") + 1] == "interactive"
+        assert passthrough[passthrough.index("--shard") + 1] == "1/2"
+
+
+class TestEscalationPassthrough:
+    def test_forwards_escalate_on_fail_with_trials_into_the_container(self) -> None:
+        # The PR lane's single trial runs in --docker, so the escalation flags must
+        # cross the container boundary or the in-container run reds immediately on
+        # the first failure instead of escalating.
+        passthrough = _args(trials=1, escalate_on_fail=True, escalate_trials=3).passthrough()
+        assert "--escalate-on-fail" in passthrough
+        index = passthrough.index("--escalate-trials")
+        assert passthrough[index + 1] == "3"
+
+    def test_omits_the_flag_when_escalation_is_off(self) -> None:
+        assert "--escalate-on-fail" not in _args(trials=1, escalate_on_fail=False).passthrough()
+
+
+class TestSummaryMdPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_md=Path("/home/runner/_temp/step-summary.md"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-md")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/step-summary.md"
+
+    def test_omits_the_flag_when_no_summary_requested(self) -> None:
+        assert "--summary-md" not in _args(summary_md=None).passthrough()
+
+    def test_container_summary_path_is_empty_when_no_summary_requested(self) -> None:
+        # The in-container redirect resolves to "" when no --summary-md was asked
+        # for — the no-artifact branch of the path translation.
+        assert _args(summary_md=None)._container_summary_path() == ""
+
+    def test_container_summary_path_redirects_to_the_mount_when_requested(self) -> None:
+        translated = _args(summary_md=Path("/runner/_temp/dash.md"))._container_summary_path()
+        assert translated == f"{ARTIFACTS_MOUNT}/dash.md"
+
+    def test_summary_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        # The summary-md path's parent hosts the writable staging mount even when no
+        # transcript-html is requested — the summary-only lane must still mount one.
+        host = tmp_path / "step-summary.md"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+
+class TestSummaryJsonPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_json=Path("/home/runner/_temp/eval-heal.json"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-json")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/eval-heal.json"
+
+    def test_omits_the_flag_when_no_json_requested(self) -> None:
+        assert "--summary-json" not in _args(summary_json=None).passthrough()
+
+    def test_json_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        host = tmp_path / "eval-heal.json"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=None, summary_json=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+
+class TestDispatchMountsAStagingDirBesideTheReports:
+    def test_dispatch_mounts_a_staging_dir_inside_the_reports_dir(self, tmp_path: Path) -> None:
+        host = tmp_path / "eval-transcripts.html"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+    def test_dispatch_passes_none_artifacts_dir_without_transcript(self) -> None:
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=None).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] is None
+
+
+class TestTheCliWiresSurfaceIntoTheContainer:
+    """``t3 eval run --surface … --docker`` end to end through the typer command.
+
+    ``RunDockerArgs`` carrying the field is only half of it — ``app.py`` has to hand
+    it over. Without this the flag is accepted, the slice is applied to the HOST
+    selection that is then thrown away, and the container runs the whole catalog.
+    """
+
+    def _forwarded_args(self, argv: list[str]) -> list[str]:
+        from teatree.cli import app  # noqa: PLC0415 — the CLI app is expensive to import at module scope.
+
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+        ):
+            CliRunner().invoke(app, argv)
+        assert run_in_docker.called, "the run was not routed into the container"
+        return list(run_in_docker.call_args.args[0])
+
+    def test_surface_reaches_the_in_container_invocation(self) -> None:
+        forwarded = self._forwarded_args(["eval", "run", "--surface", "headless", "--docker"])
+        assert "--surface" in forwarded, f"--surface was dropped: {forwarded}"
+        assert forwarded[forwarded.index("--surface") + 1] == "headless"
+
+    def test_no_surface_flag_when_the_whole_catalog_is_requested(self) -> None:
+        assert "--surface" not in self._forwarded_args(["eval", "run", "--docker"])
+
+
+class TestJudgeFlagsReachTheContainer:
+    """Dropping ``--judge`` ran the container matcher-only while the host claimed LLM grading."""
+
+    def test_judge_and_its_budget_are_forwarded(self) -> None:
+        passthrough = _args(judge=True, judge_budget=7).passthrough()
+        assert "--judge" in passthrough
+        assert passthrough[passthrough.index("--judge-budget") + 1] == "7"
+
+    def test_no_judge_flag_when_grading_is_matcher_only(self) -> None:
+        assert "--judge" not in _args(judge=False).passthrough()
+
+    def test_the_cli_hands_the_judge_flags_over(self) -> None:
+        from teatree.cli import app  # noqa: PLC0415 — the CLI app is expensive to import at module scope.
+
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--docker", "--judge", "--judge-budget", "5"])
+        assert run_in_docker.called, "the run was not routed into the container"
+        forwarded = list(run_in_docker.call_args.args[0])
+        assert "--judge" in forwarded, f"--judge was dropped: {forwarded}"
+        assert forwarded[forwarded.index("--judge-budget") + 1] == "5"
+
+
+class TestUnreachableHostTranscriptDirIsRefused:
+    """Only the repo is mounted, so a host ``--transcript-dir`` would grade the container's cwd."""
+
+    def test_transcript_dir_with_docker_exits_two(self, tmp_path: Path) -> None:
+        with pytest.raises(typer.Exit) as exc:
+            run_in_docker_or_exit(
+                _args(transcript_dir=tmp_path),
+                baseline=False,
+                gate_regressions=False,
+                gate_cost_regression=False,
+                gate_cost_bounds=False,
+            )
+        assert exc.value.exit_code == 2
+
+    def test_no_transcript_dir_still_dispatches(self) -> None:
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            run_in_docker_or_exit(
+                _args(transcript_dir=None),
+                baseline=False,
+                gate_regressions=False,
+                gate_cost_regression=False,
+                gate_cost_bounds=False,
+            )
+        assert run_in_docker.called
+
+
+class TestReportsMustShareOneParentDirectory:
+    """One writable bind-mount serves one host dir; two parents silently collapsed into the first."""
+
+    def test_reports_under_different_parents_are_refused(self, tmp_path: Path) -> None:
+        args = _args(
+            transcript_html=tmp_path / "a" / "transcript.html",
+            summary_md=tmp_path / "b" / "summary.md",
+        )
+        with pytest.raises(typer.Exit) as exc:
+            args.dispatch()
+        assert exc.value.exit_code == 2
+
+    def test_reports_sharing_a_parent_are_accepted(self, tmp_path: Path) -> None:
+        args = _args(transcript_html=tmp_path / "transcript.html", summary_md=tmp_path / "summary.md")
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            args.dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+
+_TOKEN = "fake-oauth-" + "".join(chr(ord("a") + (index * 7) % 26) for index in range(40))
+
+
+class TestTheAgentSeesOnlyAFreshStagingDir:
+    """The container — and the agent under test inside it — never sees the reports' own directory.
+
+    On CI that directory is ``$RUNNER_TEMP``: it also holds the uploaded run log and the
+    checkout's credentials file. The agent gets a fresh, empty staging directory, and only
+    the reports this run asked for leave it, each redacted on the way out.
+    """
+
+    @pytest.fixture
+    def runner_temp(self, tmp_path: Path) -> Path:
+        directory = tmp_path / "runner-temp"
+        directory.mkdir()
+        return directory
+
+    def _dispatch(self, tmp_path: Path, run: object) -> None:
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=run),
+            pytest.raises(typer.Exit),
+        ):
+            _args(
+                transcript_html=tmp_path / "eval-transcripts.html", summary_md=tmp_path / "eval-summary.md"
+            ).dispatch()
+
+    def test_the_mount_is_empty_and_never_the_reports_dir(self, runner_temp: Path) -> None:
+        (runner_temp / "eval-run-leg.log").write_text("attempt 1\n", encoding="utf-8")
+        (runner_temp / "checkout-credentials.config").write_text("extraheader\n", encoding="utf-8")
+        seen: dict[str, object] = {}
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            seen.update(mount=artifacts_dir, contents=sorted(artifacts_dir.iterdir()))
+            return 0
+
+        self._dispatch(runner_temp, run)
+
+        assert seen["mount"] != runner_temp
+        assert seen["contents"] == []
+        assert not Path(str(seen["mount"])).exists()
+
+    def test_only_the_requested_reports_leave_staging_redacted(
+        self, runner_temp: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", _TOKEN)
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            (artifacts_dir / "eval-transcripts.html").write_text(f"<pre>{_TOKEN}</pre>", encoding="utf-8")
+            (artifacts_dir / "eval-transcripts-planted.html").write_text(_TOKEN, encoding="utf-8")
+            (artifacts_dir / "eval-run-leg.log").write_text(_TOKEN, encoding="utf-8")
+            return 1
+
+        self._dispatch(runner_temp, run)
+
+        assert (runner_temp / "eval-transcripts.html").read_text(encoding="utf-8") == f"<pre>{REDACTED}</pre>"
+        assert sorted(path.name for path in runner_temp.iterdir()) == ["eval-transcripts.html"]
+
+    def test_a_symlinked_report_is_not_followed_out_of_staging(self, runner_temp: Path) -> None:
+        host_secret = runner_temp / "checkout-credentials.config"
+        host_secret.write_text("extraheader = AUTHORIZATION: basic Zm9v\n", encoding="utf-8")
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            (artifacts_dir / "eval-summary.md").symlink_to(host_secret)
+            return 0
+
+        self._dispatch(runner_temp, run)
+
+        assert not (runner_temp / "eval-summary.md").exists()

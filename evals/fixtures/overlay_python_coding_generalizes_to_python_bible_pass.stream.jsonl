@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_python_coding_generalizes_to_python_bible-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Pure-Python service, no Django; the matching language bible is ac-python. Loading the overlay skill, dev skill, and ac-python."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "t3-widget"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Skill", "input": {"skill": "backend-dev"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Skill", "input": {"skill": "ac-python"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}

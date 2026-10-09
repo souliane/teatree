@@ -1,0 +1,519 @@
+"""Effective-settings resolution — the DB-home partition + env + the autonomy collapse.
+
+``get_effective_settings`` (the single resolver both the active-overlay and
+named-overlay paths share), ``cadence_seconds``, and the autonomy-collapse
+(``_apply_autonomy``). Split out of the package module for the module-health LOC
+cap; re-exported from ``teatree.config``.
+
+The #1775 partition: every ``UserSettings`` field has exactly one home (see
+``config/homes.py``). The per-install file config tier was removed, so every field
+is DB-home. A DB-home field's OVERRIDE tiers are the ``ConfigSetting`` store
+(``_db_setting_overrides``:
+global rows then the active overlay's rows on top) + ``T3_*`` env ONLY. A DB-home
+key mistakenly placed in the DB overlays-registry entry (the ``[overlays.<name>]``
+table in ``config.raw``) is NOT one of its homes, so it is dropped on read
+(``drop_db_home_overlay_keys``). The DB read is fail-safe (an absent/empty table or
+unconfigured Django yields no overrides) so an empty table resolves every DB-home
+field to its shipped default.
+
+Beneath every override sits the DEFAULTS base: the DECLARATION itself — the
+``UserSettings`` dataclass default, or the registry entry for a key with no field.
+``config/defaults.toml`` is not a tier: it is RENDERED from those declarations
+(``config/declared_defaults.py``), so reading it back would be a second authority that
+can only agree or be a bug. Nothing here imports ``schema``: ``teatree.config``'s package
+init imports this module and the cold hook path imports that package, so a pydantic read
+would put ~110ms on every hook invocation.
+"""
+
+import logging
+import os
+from dataclasses import dataclass, replace
+from typing import Any
+
+import teatree.config as _facade
+from teatree.config.discovery import _active_overlay_entry
+from teatree.config.enums import Autonomy, Mode
+from teatree.config.known_settings import SETTING_ENTRIES
+from teatree.config.overlay_code_defaults import overlay_code_defaults
+from teatree.config.override_read_health import SAFETY_FAIL_CLOSED_STORED_VALUES
+from teatree.config.override_reader import GLOBAL_SCOPE_LABEL, OVERLAY_SCOPE_LABEL, load_global_rows, load_overlay_rows
+from teatree.config.setting_layers import (
+    SettingLayers,
+    apply_structured_settings,
+    drop_db_home_overlay_keys,
+    stored_form,
+)
+from teatree.config.setting_registries import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, env_pinned_value
+from teatree.config.settings import OverlayEntry, UserSettings
+from teatree.request_cache import cached_per_request
+
+_logger = logging.getLogger("teatree.config")
+
+# The structured nested settings: stored as a JSON
+# dict ConfigSetting, NOT a scalar. ``_coerce_setting_rows`` SKIPS them — a bare dict
+# cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
+# them bespoke from the raw row layers (``setting_layers.apply_structured_settings``):
+# ``mr_reminder`` highest-layer-wins, ``speak`` as a MERGE up the layers.
+_BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
+
+#: Sentinel for "no declaration owns this key at all" — never equals a real value, so a
+#: seed/import of such a key is always written, and a provenance walk can tell a key whose
+#: declared default IS ``None`` from one that has no declared default.
+NO_EFFECTIVE_DEFAULT: object = object()
+
+
+def effective_default(key: str) -> object:
+    """The value *key* resolves to with NO DB row / env override — the ONE default authority.
+
+    The single source the seed-skip (``config_setting seed``), the import-skip
+    (``config_interchange.migration``), and the resolver all agree on, so a row equal to it is
+    provably redundant: writing it and clearing it resolve to the SAME value.
+
+    Answered from the DECLARATION that states it: a ``UserSettings`` field from the
+    dataclass (the two structured fields in the stored dict form a row holds), every other
+    key from its registry entry. ``defaults.toml`` is not consulted — it is RENDERED from
+    these same declarations (``config/declared_defaults.py``), so reading it back would be
+    a second authority that can only ever agree or be a bug.
+
+    Returns a never-equal sentinel for a key no declaration owns, so its seed/import is
+    always written.
+    """
+    field_default = getattr(UserSettings(), key, NO_EFFECTIVE_DEFAULT)
+    if field_default is not NO_EFFECTIVE_DEFAULT:
+        return stored_form(field_default)
+    entry = SETTING_ENTRIES.get(key)
+    return NO_EFFECTIVE_DEFAULT if entry is None else entry.default
+
+
+@cached_per_request
+def get_effective_settings(overlay_name: str | None = None, *, apply_env: bool = False) -> UserSettings:
+    """Return the user settings under the #1775 DB-home partition + env.
+
+    Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``).
+    The per-install file config tier was removed, so every field is DB-home. A
+    DB-home field resolves, first match wins:
+
+        env -> DB(overlay scope) -> DB(global scope) -> overlay code default -> declared default.
+
+    ``T3_*`` env var, then the ``ConfigSetting`` store (overlay-scope row, then
+    global-scope row), then — for a key promoted to an overlay code default (#36,
+    ``overlay_code_defaults``) — the active overlay's ``OverlayConfig`` value, and
+    finally the dataclass default the field DECLARES, which is the resolver base. A
+    value for the field in the DB overlays-registry entry (its ``[overlays.<name>]``
+    table in ``config.raw``) is NOT one of its homes and is dropped on read. Both
+    default tiers are DEFAULTS (never hard pins), so they sit below every DB / env
+    override and must not defeat the autonomy collapse.
+
+    The per-overlay overlays-registry override layer is filtered by home
+    (``setting_layers.drop_db_home_overlay_keys`` / ``toml_home``) so a ``[overlays.<name>]``
+    value for a DB-home key never leaks in: every such key is dropped with a loud
+    WARN. That home filter governs a field's OVERRIDE tier and is orthogonal to the
+    TOML default tier, which is a shipped base under every field. The DB read fails
+    safe to ``{}`` whenever Django is not
+    configured or the table does not exist yet, so an empty table resolves every
+    DB-home field to its shipped default.
+
+    The DB tier has TWO scopes: a GLOBAL ``ConfigSetting`` row (``scope=""``)
+    applies to every overlay, and an OVERLAY-scoped row (``scope=<overlay name>``)
+    applies to that overlay alone. The resolver layers global rows first, then the
+    active overlay's rows on top — so an overlay-scoped DB row beats a global DB
+    row.
+
+    The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
+    ``get_overlay()``), then cwd-based discovery, then the single
+    installed overlay.
+
+    ``overlay_name`` resolves a SPECIFIC named overlay instead of the active
+    one — the loop's scanner-builders fan out over every registered overlay,
+    not just the session's, and a per-session ``T3_*`` opinion must not be
+    smeared across all of them, so that mode drops the env layer by default; the
+    DB tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
+    collapse run identically. This is the single resolver both paths share.
+
+    ``apply_env`` re-arms the env layer for a named overlay. A caller that named
+    the overlay because the WORK named it — not because it is fanning out — is
+    still the operator's one session, and dropping the layer there silently
+    retires every ``T3_*`` override for that read, in the permissive direction as
+    readily as the restrictive one.
+
+    To make an additional setting DB-overridable, add it to
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
+    ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
+    ``dataclasses.replace``. The two non-generic fields are the nested structured
+    tables ``speak`` / ``mr_reminder`` (``_BESPOKE_STRUCTURED_FIELDS``): they are
+    stored as JSON dicts, so ``_coerce_setting_rows`` skips them and
+    ``setting_layers.apply_structured_settings`` rebuilds the dataclass from the raw row
+    layers (TOML default, DB global, DB overlay) — ``mr_reminder`` highest-layer-wins,
+    ``speak`` as a MERGE up the layers (a partial row overrides only the keys it sets).
+
+    As a final step the single ``autonomy`` switch is applied: under
+    :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the collapsed approval gates
+    take their autonomous value and ``mode`` is pinned to ``auto`` (unless the
+    user pinned a gate explicitly). See :func:`_apply_autonomy`.
+    """
+    config = _facade.load_config()
+    base = config.user
+    if overlay_name is not None:
+        overrides = _overlay_overrides_by_name(overlay_name)
+    else:
+        active = _active_overlay_entry()
+        overrides = dict(active.overrides) if active is not None else {}
+    # The #1775 partition: every ``[overlays.<name>]`` value for a DB-home key is dropped
+    # on read (that field's authoritative override tier is the DB store below). The drop
+    # is LOUD (never silent) so an operator who set a DB-home key in their
+    # overlays-registry entry is told the value had no effect.
+    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
+    # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
+    # including for ``mode``) is the per-overlay override layer so far. DB-home fields
+    # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
+    # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
+    # pin), env beats both.
+    resolved_overlay = _resolved_overlay_name(overlay_name)
+    layers = read_setting_layers(resolved_overlay)
+    # The overlay-code-default tier (#36): promoted constants the active overlay
+    # supplies, layered BELOW every DB / env override (a row overrides) and ABOVE the
+    # shipped TOML default (with no row the code default wins). Neither default tier is
+    # a hard pin, so neither may defeat the autonomy collapse.
+    code_defaults = overlay_code_defaults(resolved_overlay)
+    hard_pinned = set(overrides) | set(layers.overlay_db)
+    overrides.update(layers.global_db)
+    overrides.update(layers.overlay_db)
+    env_overrides: dict[str, Any] = {}
+    if overlay_name is None or apply_env:
+        env_overrides = env_setting_overrides()
+        overrides.update(env_overrides)
+        hard_pinned |= set(env_overrides)
+    # #3873: an override tier that could not be READ is not an override tier that is empty.
+    # The safety keys resolve to their most restrictive value while it is unreadable, and
+    # are HARD-PINNED so the autonomy collapse cannot re-expand what the degradation just
+    # closed. Empty (and therefore inert) on every healthy read.
+    fail_closed = fail_closed_overrides(layers.degraded_scopes, supplied_by_env=set(env_overrides))
+    overrides.update(fail_closed)
+    hard_pinned |= set(fail_closed)
+    defaults_base = base
+    layered = {**code_defaults, **overrides}
+    settings = defaults_base if not layered else replace(defaults_base, **layered)
+    settings = apply_structured_settings(settings, layers.db_rows, defaults_base.speak)
+    # Pin only parsed global settings; unknown stored rows never affect autonomy.
+    return _apply_autonomy(
+        settings,
+        hard_pinned=hard_pinned,
+        global_pinned=set(layers.global_db),
+    )
+
+
+def read_setting_layers(overlay_name: str) -> SettingLayers:
+    """Read the shipped-defaults table and both ``ConfigSetting`` scopes, coerced once.
+
+    Public because it is the ONE place the persisted tiers are read: the resolver folds
+    them into a ``UserSettings``, and ``config.provenance`` walks the same tiers to say
+    WHICH one supplied a value. A second reader would be a second resolution path.
+    """
+    global_rows, global_degraded = load_global_rows()
+    overlay_rows, overlay_degraded = load_overlay_rows(overlay_name)
+    db_rows = (global_rows, overlay_rows)
+    global_db, overlay_db = (_coerce_setting_rows(rows) for rows in db_rows)
+    degraded = frozenset(
+        label
+        for label, failed in ((GLOBAL_SCOPE_LABEL, global_degraded), (OVERLAY_SCOPE_LABEL, overlay_degraded))
+        if failed
+    )
+    return SettingLayers(db_rows, global_db, overlay_db, degraded_scopes=degraded)
+
+
+def fail_closed_overrides(degraded_scopes: frozenset[str], *, supplied_by_env: set[str]) -> dict[str, Any]:
+    """The coerced safety values that apply while the DB override tier is UNREADABLE (#3873).
+
+    Empty when nothing degraded, so a healthy resolution is byte-identical to before this
+    existed. Otherwise every :data:`SAFETY_FAIL_CLOSED_STORED_VALUES` key resolves to its
+    most restrictive value — because the tier that would have said otherwise could not be
+    read, and a shipped default is not a safe answer when two of them (``autonomy = full``,
+    ``mode = auto``) are the most permissive value the setting has.
+
+    *supplied_by_env* is excluded: ``T3_*`` reached this process through the environment,
+    which the failed DB read cannot have affected, so it is readable operator intent rather
+    than a guess and keeps its precedence.
+
+    The values go through :func:`_coerce_setting_rows` — the same registry parsers a stored
+    row goes through — so a fail-closed value can never be a type the resolver would reject.
+    """
+    if not degraded_scopes:
+        return {}
+    stored = {key: value for key, value in SAFETY_FAIL_CLOSED_STORED_VALUES.items() if key not in supplied_by_env}
+    return _coerce_setting_rows(stored)
+
+
+def _active_overlay_overrides() -> dict[str, Any]:
+    """Per-overlay overrides for the active overlay, with the DB + env layers applied.
+
+    Precedence (later wins): per-overlay overlays-registry override -> DB tier ->
+    env. Retained as the composed helper for the public re-export;
+    :func:`get_effective_settings` layers the same tiers inline so the
+    named-overlay path can skip the env layer.
+    """
+    active = _active_overlay_entry()
+    overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
+    overrides = drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
+    overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
+    overrides.update(env_setting_overrides())
+    return overrides
+
+
+@dataclass(frozen=True, slots=True)
+class EnvOverrideRejection:
+    """A ``T3_*`` var whose exported value the setting's own parser refuses."""
+
+    env_var: str
+    raw: str
+    error: ValueError
+
+    @property
+    def message(self) -> str:
+        return str(self.error)
+
+
+@dataclass(frozen=True, slots=True)
+class EnvOverrideRead:
+    """The parsed ``T3_*`` tier, and every var the parser refused, side by side."""
+
+    values: dict[str, Any]
+    rejected: dict[str, EnvOverrideRejection]
+
+
+def read_env_setting_overrides() -> EnvOverrideRead:
+    """The ``T3_*`` tier WITHOUT raising — a refused value is reported, never dropped.
+
+    The settings surfaces exist to show an operator what their config resolves to, and a
+    misconfigured var is exactly what they came to see; raising there kills the one page
+    that could have named the bad value. Every other caller wants the raise, so the
+    refusal is CARRIED here rather than swallowed, and :func:`env_setting_overrides`
+    re-raises it with its original traceback.
+    """
+    values: dict[str, Any] = {}
+    rejected: dict[str, EnvOverrideRejection] = {}
+    for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
+        raw = env_pinned_value(env_var)
+        if raw is None:
+            continue
+        try:
+            values[field_name] = parser(raw)
+        except ValueError as exc:
+            rejected[field_name] = EnvOverrideRejection(env_var, raw, exc)
+    return EnvOverrideRead(values, rejected)
+
+
+def env_setting_overrides() -> dict[str, Any]:
+    """``T3_*`` env overrides, the highest-precedence tier (see ``ENV_SETTING_OVERRIDES``).
+
+    Public for the same reason as :func:`read_setting_layers`: provenance names this tier.
+    Fails LOUD on a value the parser refuses — resolving a misconfigured pin to anything at
+    all would silently run the box on a value its operator did not choose.
+    """
+    read = read_env_setting_overrides()
+    for rejection in read.rejected.values():
+        raise rejection.error
+    return read.values
+
+
+def _resolved_overlay_name(overlay_name: str | None) -> str:
+    """The overlay name whose per-overlay DB rows the resolver should layer.
+
+    For the named-overlay path this is the explicit ``overlay_name``; for the
+    active-overlay path it is ``T3_OVERLAY_NAME`` if set, then the cwd/single
+    discovered overlay — the same active-overlay resolution the per-overlay
+    overlays-registry layer uses, so the DB scope and the overlays-registry layer
+    always agree on which overlay is active. ``""`` (no resolvable overlay) means
+    only the global DB scope applies.
+    """
+    if overlay_name is not None:
+        return overlay_name
+    env_name = os.environ.get("T3_OVERLAY_NAME")
+    if env_name:
+        return env_name
+    active = _active_overlay_entry()
+    return active.name if active is not None else ""
+
+
+def _db_setting_overrides(overlay_name: str = "") -> dict[str, Any]:
+    """The ``ConfigSetting`` DB-home tier (#1775) — global then per-overlay, layered.
+
+    The composed reader (global then *overlay_name* on top, later wins). Kept for
+    callers that want the merged value without distinguishing the pin scope;
+    :func:`get_effective_settings` instead reads the two scopes separately (so a
+    global-scope ``mode`` is a workspace default while an overlay-scope ``mode``
+    is a hard pin). See :func:`_db_global_overrides` / :func:`_db_overlay_overrides`.
+    """
+    return {**_db_global_overrides(), **_db_overlay_overrides(overlay_name)}
+
+
+def _db_global_overrides() -> dict[str, Any]:
+    """Coerced ``{field: value}`` for every GLOBAL-scope (``scope=""``) DB-home row.
+
+    The DB twin of the global ``[teatree]`` table: applies to every overlay. A
+    global ``mode`` row is a workspace default that does NOT pin ``mode`` against
+    the autonomy collapse (mirroring the old global-``[teatree] mode`` rule). See
+    :func:`_coerce_setting_rows` for the type coercion and the loud-on-corruption rule.
+    """
+    return _coerce_setting_rows(load_global_rows()[0])
+
+
+def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
+    """Coerced ``{field: value}`` for the active overlay's DB-home rows.
+
+    The DB twin of a per-overlay ``[overlays.<name>]`` override: a deliberate
+    per-overlay opinion that beats the global DB row AND the autonomy collapse
+    (it is a hard pin). The overlay scope is matched canonical-alias-tolerantly (a
+    request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
+    rows and vice versa) so a row written under either spelling resolves.
+    """
+    return _coerce_setting_rows(load_overlay_rows(overlay_name)[0])
+
+
+def _coerce_setting_rows(rows: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a ``{key: stored value}`` table via the DB-home parser registry.
+
+    Shared by every tier that arrives in stored form: the ``ConfigSetting`` rows of
+    both scopes AND the shipped ``defaults.toml`` table — ``defaults.toml`` is written
+    in exactly the ``config_setting export``/``import`` shape, so one coercer keeps the
+    defaults tier and the override tiers provably type-identical.
+
+    Returns ``{field: coerced}`` for every key that is a registered
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; unknown / non-DB keys are
+    dropped so neither a stray row nor a cold-hook-only ``defaults.toml`` key ever
+    mutates the resolved settings.
+
+    A per-row parser failure means a stored value is invalid for its setting's
+    type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
+    validation (``config_setting set``, #258) means such a row can only exist via
+    out-of-band corruption — so it is raised LOUD with the offending key named,
+    never swallowed back to the default with no signal.
+    """
+    overrides: dict[str, Any] = {}
+    for key, value in rows.items():
+        if key in _BESPOKE_STRUCTURED_FIELDS:
+            continue  # resolved bespoke in get_effective_settings (dict -> dataclass + merge)
+        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+        if parser is None:
+            continue
+        try:
+            coerced = parser(value)
+        except (ValueError, TypeError, AttributeError) as exc:
+            msg = f"Invalid stored ConfigSetting value for {key!r}: {exc}"
+            raise ValueError(msg) from exc
+        overrides[key] = coerced
+    return overrides
+
+
+def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
+    """Per-overlay overrides for a NAMED overlay (no env layer — see caller).
+
+    The match is canonical-alias-tolerant: a request for the short alias
+    ``teatree`` resolves the ``t3-``-prefixed entry-point overlay's
+    ``[overlays.t3-teatree]`` overrides, and vice versa. ``ticket.overlay``
+    and ``infer_overlay_for_url`` return the entry-point name while older
+    rows / configs may carry the bare alias; an exact-name-only match would
+    silently drop the per-overlay values (and an autonomous overlay would
+    resolve to ``babysit``).
+    """
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+    for entry in _facade.discover_overlays():
+        if not entry.overrides:
+            continue
+        if entry.name == overlay_name or OverlayEntry.canonical_overlay_name(entry.name) == canonical:
+            return dict(entry.overrides)
+    return {}
+
+
+#: The approval gates an autonomous tier collapses. Two gates are deliberately absent,
+#: for the same reason: "carry the work end to end" is a different decision from
+#: surrendering a distinct human control, and a tier switch that silently made the
+#: second one for the operator removed that control with no signal. Each stays its own
+#: named opt-in, which every tier reads unchanged —
+#: ``require_human_approval_to_merge = false`` for review before merge (#3630), and
+#: a permitting posture for colleague egress under the owner's own
+#: identity (#3895).
+_AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
+    "require_human_approval_to_answer": False,
+}
+
+
+_AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
+
+#: Every field :func:`_apply_autonomy` may write. Each still has its own home and its own
+#: shipped default, but an autonomous ``autonomy`` tier DERIVES its resolved value, so it
+#: can differ from that default without the declaration changing — the reviewed decision is
+#: the tier, not the per-field value. Sourced from the collapse itself so the
+#: set cannot drift from what the resolver actually writes.
+AUTONOMY_COLLAPSED_FIELDS: frozenset[str] = frozenset({*_AUTONOMY_COLLAPSED_GATE_VALUES, "mode"})
+
+
+def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
+    """Collapse the tier-governed approval gates for ``full`` / ``notify``.
+
+    The set is :data:`_AUTONOMY_COLLAPSED_GATE_VALUES`, which excludes
+    ``require_human_approval_to_merge`` (#3630) — no tier removes review before merge —
+    and the posture (#3895) — no tier opens colleague egress under the
+    owner's own identity.
+
+    Both autonomous tiers fill only the gates the user left unpinned and pin
+    ``mode`` to ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``,
+    so a ``full``/``notify`` overlay that forgot ``mode`` would otherwise be a
+    silent no-op). ``babysit`` is a no-op.
+
+    Pin precedence:
+
+    *   For the collapsed approval gates, an explicit pin of EITHER kind
+        (``hard_pinned`` = env / per-overlay override, or ``global_pinned`` =
+        a global ``[teatree]`` key) wins — a deliberate opinion is never
+        silently overridden.
+    *   For ``mode`` only, a global ``[teatree] mode`` does NOT win (it is a
+        workspace default, not an opinion about this overlay); only a
+        ``hard_pinned`` per-overlay/env ``mode`` keeps the user's value. This
+        is the over-pin fix: a common global ``mode = "interactive"`` no longer
+        leaves an autonomous overlay half-collapsed.
+
+    The safety floor is untouched: only the keys in
+    :data:`_AUTONOMY_COLLAPSED_GATE_VALUES` (plus ``mode``) are ever written here.
+    """
+    if settings.autonomy not in _AUTONOMOUS_TIERS:
+        return settings
+    gate_pinned = hard_pinned | global_pinned
+    relaxed: dict[str, Any] = {
+        field_name: value
+        for field_name, value in _AUTONOMY_COLLAPSED_GATE_VALUES.items()
+        if field_name not in gate_pinned
+    }
+    if "mode" not in hard_pinned:
+        relaxed["mode"] = Mode.AUTO
+    if not relaxed:
+        return settings
+    return replace(settings, **relaxed)
+
+
+def cadence_seconds() -> int:
+    """Resolve the loop slot cadence in seconds (minimum 60s).
+
+    This setting is not registered in ``ENV_SETTING_OVERRIDES`` — its env
+    layer is a bespoke direct read, so its resolution does NOT go through
+    the generic effective-settings env layer. Layers, first match wins:
+    first the ``T3_LOOP_CADENCE`` env var (the bespoke direct read), then
+    ``get_effective_settings().loop_cadence_seconds`` which covers the
+    per-overlay ``ConfigSetting`` overlay-scope row, then the global-scope
+    row, then the ``UserSettings`` default of 720.
+
+    Any ``T3_LOOP_CADENCE`` parse failure falls back to 720. The result is
+    clamped to a 60s minimum so a misconfigured tiny value cannot busy-loop
+    the tick.
+    """
+    raw = os.environ.get("T3_LOOP_CADENCE")
+    if raw is not None and raw.strip():
+        try:
+            return max(60, int(raw.strip()))
+        except ValueError:
+            return 720
+    return max(60, get_effective_settings().loop_cadence_seconds)
+
+
+def worker_is_quiescing() -> bool:
+    """True when the worker is draining for a deploy — admit NO new claims (read at the claim chokepoint only)."""
+    return get_effective_settings().worker_quiescing

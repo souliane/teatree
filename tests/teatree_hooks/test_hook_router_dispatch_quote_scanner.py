@@ -1,0 +1,306 @@
+"""Tests for the PreToolUse pre-dispatch quote-scanner gate (#1401).
+
+Companion to the #1213 publish-boundary gate. This one scans the
+``Agent``/``Task`` dispatch prompt BEFORE a sub-agent is spawned, so a
+verbatim user-voice/PII fragment pasted into a brief as "context" never
+reaches the sub-agent's model context (where it would later be echoed
+into a published MR/issue/note, defeating the publish gate).
+
+Integration-style: the real handler, the real detector
+(``quote_scanner.scan_text``, reused — no second matcher), and the real
+JSONL ledger pinned to ``tmp_path`` via ``T3_DATA_DIR``.
+
+Synthetic fixtures only — no customer names, no real user quotes. The
+user-voice shapes are neutral inventions that trip the existing HIGH
+patterns.
+"""
+
+import json
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from hooks.scripts.hook_router import (
+    handle_dispatch_prompt_quote_scanner,
+    handle_dispatch_prompt_quote_scanner_on_task_create,
+)
+from teatree.hooks.quote_scanner import dispatch_quote_ok_reason, extract_dispatch_payload
+
+
+@pytest.fixture(autouse=True)
+def _isolated_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin the ledger + blocklist root AND the config DB to ``tmp_path`` so tests never touch real state."""
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
+    return tmp_path
+
+
+def _agent(prompt: str, *, description: str = "implement feature", tool_name: str = "Agent") -> dict:
+    return {
+        "session_id": "sess-1",
+        "tool_name": tool_name,
+        "tool_input": {
+            "description": description,
+            "prompt": prompt,
+            "subagent_type": "t3:coder",
+        },
+    }
+
+
+def _ledger_lines(tmp_path: Path) -> list[dict[str, object]]:
+    ledger = tmp_path / "quote-scanner.jsonl"
+    if not ledger.exists():
+        return []
+    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+
+
+# A HIGH user-voice shape — a heading that explicitly announces a verbatim user
+# block. Neutral synthetic content; trips the unconditional
+# ``heading-user-ask-verbatim`` pattern (a bare ``## User mandate`` shape now
+# downgrades to MEDIUM without adjacent quote evidence, #3240) without quoting any
+# real person.
+_HIGH_VOICE_PROMPT = "## User ask (verbatim, 2026-05-20)\n\nImplement the export endpoint and wire it to the dashboard."
+
+
+class TestExtractDispatchPayload:
+    """Payload extraction joins the dispatch subject + brief; passes through others."""
+
+    def test_agent_joins_description_and_prompt(self) -> None:
+        payload = extract_dispatch_payload("Agent", {"description": "subj", "prompt": "body"})
+        assert payload == "subj\nbody"
+
+    def test_task_tool_is_a_dispatch_surface(self) -> None:
+        payload = extract_dispatch_payload("Task", {"prompt": "body only"})
+        assert payload == "body only"
+
+    def test_empty_dispatch_scans_empty_string_not_none(self) -> None:
+        # A dispatch with no populated body is clean by construction — it
+        # returns "" (scanned, finds nothing) rather than None (skipped).
+        assert extract_dispatch_payload("Agent", {}) == ""
+
+    @pytest.mark.parametrize("tool_name", ["Bash", "Edit", "Write", "Read", "Grep", "Skill"])
+    def test_non_dispatch_tools_return_none(self, tool_name: str) -> None:
+        assert extract_dispatch_payload(tool_name, {"prompt": "anything"}) is None
+
+
+class TestDispatchQuoteOkReason:
+    """The in-prompt ``[quote-ok: <reason>]`` opt-out token."""
+
+    def test_token_with_reason_returns_reason(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: paraphrase-impossible]\n\nbody") == "paraphrase-impossible"
+
+    def test_token_inline_first_line(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: legal-exact-wording] do the thing") == "legal-exact-wording"
+
+    def test_empty_reason_is_rejected(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: ]\n\nbody") is None
+
+    def test_no_token_returns_none(self) -> None:
+        assert dispatch_quote_ok_reason("an ordinary prompt with no token") is None
+
+    def test_token_buried_past_head_window_is_ignored(self) -> None:
+        prompt = ("x" * 600) + "[quote-ok: too-late]"
+        assert dispatch_quote_ok_reason(prompt) is None
+
+
+class TestHandlerDeny:
+    """A HIGH user-voice/PII match in a dispatch prompt is denied with an actionable reason."""
+
+    def test_high_voice_in_prompt_is_denied(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(_HIGH_VOICE_PROMPT))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        reason = decision["permissionDecisionReason"]
+        # The reason must name the gate, what matched, and the unblock path.
+        assert "pre-dispatch quote-scanner" in reason
+        assert "quote-ok" in reason
+        assert "paraphrase" in reason.lower()
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "deny"
+
+    def test_high_voice_in_description_field_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The subject field is scanned too — a quote pasted there is caught.
+        data = _agent("ordinary brief body", description="## User ask (verbatim, 2026-05-20)")
+        blocked = handle_dispatch_prompt_quote_scanner(data)
+        assert blocked is True
+        capsys.readouterr()
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
+
+    def test_task_tool_treated_same_as_agent(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(_HIGH_VOICE_PROMPT, tool_name="Task"))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+    def test_a_copied_fenced_token_does_not_authorise_the_whole_dispatch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MAJOR (MR !225 finding): a `[quote-ok: ...]` token merely quoted, on its
+        # own line, INSIDE a copied fenced document must NOT authorise a HIGH match
+        # elsewhere in the same dispatch. The decoy sits well past the 512-char
+        # window (padding + fenced block), where only the prior own-line-anywhere
+        # scan ever recognised it.
+        padding = "Implement the described feature end to end, in full. " * 20
+        assert len(padding) > 512, "the decoy must sit past the window, or this proves nothing"
+        fenced_decoy = (
+            "```text\n"
+            "Notes pasted from an old planning doc:\n"
+            "[quote-ok: relaying an old, unrelated authorisation]\n"
+            "End of pasted notes.\n"
+            "```\n"
+        )
+        data = _agent(padding + "\n\n" + fenced_decoy, description="## User ask (verbatim, 2026-05-20)")
+        blocked = handle_dispatch_prompt_quote_scanner(data)
+        assert blocked is True, "the copied token must not clear the HIGH match on the description field"
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
+
+
+class TestHandlerAllow:
+    """The opt-out token and clean/MEDIUM prompts pass without false-deny."""
+
+    def test_quote_ok_token_bypasses_high_match(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        prompt = f"[quote-ok: exact-wording-required-for-repro]\n\n{_HIGH_VOICE_PROMPT}"
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "allow-override"
+        assert ledger[-1]["override"] is True
+
+    def test_ordinary_prompt_is_allowed_no_false_deny(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The common case: a normal author-voice brief with no user-voice
+        # or PII shape. The fleet dispatches constantly — this MUST NOT deny.
+        prompt = (
+            "Implement issue #1401: add a PreToolUse branch that scans Agent/Task "
+            "dispatch prompts. Reuse scan_text. Add tests. Run the gates and push."
+        )
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "allow"
+
+    def test_medium_attribution_does_not_deny_on_dispatch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MEDIUM attribution shapes pass silently on dispatch (conservative:
+        # only HIGH denies). No deny JSON, no stderr noise.
+        blocked = handle_dispatch_prompt_quote_scanner(_agent("Per user direction, ship the export Friday."))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
+
+    def test_genuine_author_override_in_description_still_clears_a_high_match_beside_a_decoy(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Over-block check, symmetric to the bypass check above: the SAME decoy
+        # shape (a copied fenced block past the window) must not stop the
+        # LEGITIMATE escape — an author-written token in the one-line
+        # `description` field — from clearing the dispatch.
+        padding = "Implement the described feature end to end, in full. " * 20
+        fenced_decoy = (
+            "```text\nNotes pasted from an old planning doc:\n"
+            "[quote-ok: relaying an old, unrelated authorisation]\nEnd of pasted notes.\n```\n"
+        )
+        prompt = padding + "\n\n" + fenced_decoy
+        description = "## User ask (verbatim, 2026-05-20) [quote-ok: relaying the owner's verbatim authorisation]"
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt, description=description))
+        assert blocked is False, "the genuine description-field override must still clear the dispatch"
+        assert capsys.readouterr().out == ""
+        ledger = _ledger_lines(tmp_path)
+        assert ledger[-1]["decision"] == "allow-override"
+        assert ledger[-1]["override"] is True
+
+
+class TestToolScope:
+    """Only Agent/Task tools trigger the gate; everything else passes untouched."""
+
+    @pytest.mark.parametrize("tool_name", ["Bash", "Edit", "Write", "Read", "Grep", "AskUserQuestion", "Skill"])
+    def test_non_dispatch_tools_pass_through(self, tmp_path: Path, tool_name: str) -> None:
+        # Even with a HIGH-shaped payload, a non-dispatch tool is a no-op
+        # here (the publish gate, not this one, governs Bash/Slack).
+        data = {"session_id": "s", "tool_name": tool_name, "tool_input": {"prompt": _HIGH_VOICE_PROMPT}}
+        assert handle_dispatch_prompt_quote_scanner(data) is False
+        # A no-op never reaches the scan path, so the ledger stays empty.
+        assert _ledger_lines(tmp_path) == []
+
+    def test_non_dict_tool_input_is_a_noop(self, tmp_path: Path) -> None:
+        data = {"session_id": "s", "tool_name": "Agent", "tool_input": "not-a-dict"}
+        assert handle_dispatch_prompt_quote_scanner(data) is False
+
+
+def _task(description: str, *, subject: str = "do work", session_id: str = "sess-1") -> dict:
+    """A ``TaskCreated`` event payload (no ``tool_input`` — the task-list schema)."""
+    return {"session_id": session_id, "task_subject": subject, "task_description": description}
+
+
+def _run_task(description: str, *, subject: str = "do work", session_id: str = "sess-1") -> tuple[bool, dict | None]:
+    """Invoke the TaskCreated gate, capturing its ``continue:false`` stop envelope."""
+    data = _task(description, subject=subject, session_id=session_id)
+    out = StringIO()
+    with patch("sys.stdout", out):
+        blocked = handle_dispatch_prompt_quote_scanner_on_task_create(data)
+    raw = out.getvalue().strip()
+    return blocked, (json.loads(raw) if raw else None)
+
+
+class TestOnTaskCreateGate:
+    """The TaskCreated quote arm (#171): scans the new task's subject/description.
+
+    The PreToolUse dispatch-quote gate keys on ``Agent``/``Task``; the task-LIST
+    tools reach ``PreToolUse`` only for the visible-plan gate, so ``TaskCreated`` judges them,
+    and that event has one producer, so this arm never sees a sub-agent dispatch
+    (#4216). It rides that event and emits the ``TaskCreated`` teammate-stop
+    envelope (``continue: false``), NOT the PreToolUse deny.
+    """
+
+    def test_high_quote_denies(self, tmp_path: Path) -> None:
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
+        assert blocked is True
+        assert payload is not None
+        # TaskCreated deny schema — teammate-stop, not PreToolUse hookSpecificOutput.
+        assert payload["continue"] is False
+        assert "stopReason" in payload
+        assert "permissionDecision" not in payload
+        # The arm's OWN surface: this event has one producer, so a "pre-dispatch"
+        # reason would name a seam the entry never crossed (#4381).
+        assert "task-entry quote-scanner" in payload["stopReason"]
+        assert "pre-dispatch" not in payload["stopReason"]
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
+
+    def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:
+        blocked, payload = _run_task("ordinary brief", subject="## User ask (verbatim, 2026-05-20)")
+        assert blocked is True
+        assert payload is not None
+        assert payload["continue"] is False
+
+    def test_clean_task_is_allowed(self, tmp_path: Path) -> None:
+        blocked, payload = _run_task("Implement the export endpoint per the spec.")
+        assert blocked is False
+        assert payload is None
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
+
+    def test_quote_ok_token_clears_high_match(self, tmp_path: Path) -> None:
+        blocked, payload = _run_task(f"[quote-ok: exact-wording-required]\n\n{_HIGH_VOICE_PROMPT}")
+        assert blocked is False
+        assert payload is None
+        ledger = _ledger_lines(tmp_path)
+        assert ledger[-1]["decision"] == "allow-override"
+        assert ledger[-1]["override"] is True
+
+    def test_missing_session_id_passes_through(self, tmp_path: Path) -> None:
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT, session_id="")
+        assert blocked is False
+        assert payload is None
+        assert _ledger_lines(tmp_path) == []

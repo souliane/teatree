@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-done-pass-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Verify the artifact exists on disk and that the PR is actually merged before forwarding."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "ls -la /workspace/example/example/tests/foo_spec.py", "description": "verify spec exists"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "-rw-r--r--  1 user  staff  1234 May 26 14:00 /workspace/example/example/tests/foo_spec.py"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "gh pr view 99 --json state,mergedAt", "description": "verify merge state"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "{\"state\":\"MERGED\",\"mergedAt\":\"2026-05-26T13:50:00Z\"}"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

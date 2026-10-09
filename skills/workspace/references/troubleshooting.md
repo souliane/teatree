@@ -1,0 +1,305 @@
+# Troubleshooting
+
+> Load when diagnosing worktree setup failures, DB errors, port conflicts, or DSLR issues.
+
+---
+
+## Orchestrator Locked Out of Bash
+
+- **Symptom:** Every orchestrator (main-agent) `Bash` call is denied by the orchestrator-execution-boundary gate (`handle_enforce_orchestrator_boundary`, BLUEPRINT §17.6.4 gate 2), and — when `agent_id` detection misfires (sidechain misdetection) — every sub-agent's `Bash` is denied too. The session deadlocks with no in-band way to run a command.
+- **Recovery:** Run `t3 <overlay> gate disable` (e.g. `t3 teatree gate disable`). This is the always-allow-listed self-rescue: it sets `orchestrator_bash_gate_enabled = false` in the DB `ConfigSetting` store (out-of-repo), and the gate's heavy-Bash denylist never matches a `t3 …` command, so it runs even while the gate is fully enabled. If even that is somehow blocked, the kill-switch value can be written straight into the DB store (table `teatree_config_setting`) with the `sqlite3` CLI, from INSIDE the container — the control DB lives in the `teatree_control_db` named volume at `/var/lib/teatree/control-db/db.sqlite3` and has no host path. It is out-of-repo and needs no repo edit. Re-enable later with `t3 <overlay> gate enable`.
+- **Prevention:** Main-vs-sub-agent is detected via the PreToolUse payload's `agent_id` (non-empty ⇒ sub-agent), not the parent transcript's `isSidechain` marker — the transcript read misclassified every sub-agent and caused the double lockout. The durable out-of-repo kill-switch survives `t3 update`, so a stale clone cannot re-lock the orchestrator ([#1472](https://github.com/souliane/teatree/issues/1472), self-rescue command [#1474](https://github.com/souliane/teatree/issues/1474)).
+
+## `ty` Version Bumps Break Pre-Commit
+
+- **Symptom:** `uv lock --upgrade` bumps `ty` by many minor versions; the new ty finds dozens of new type errors (e.g., `invalid-return-type`, `invalid-argument-type` on Django/FSM patterns).
+- **Cause:** `ty` releases frequently with new checks. A jump from e.g. 0.0.20 to 0.0.35 enables checks that didn't exist before.
+- **Fix:** Pin ty separately during dep upgrades: `uv lock --upgrade && uv lock --upgrade-package 'ty==<current>'` (where `<current>` is the version from `git show origin/main:uv.lock | grep -A1 'name = "ty"'`).
+- **Prevention:** The bump-deps script bumps the `>=` lower bound in `pyproject.toml`. Revert the ty bound if it was raised: keep `ty>=0.0.18` and let the lock file control the actual version. Upgrade ty intentionally in a dedicated PR with time to fix type errors.
+
+## "Database Already Exists"
+
+- **Cause:** Previous `t3 <overlay> worktree provision` created the DB but was interrupted before completing.
+- **Fix:** Run `t3 <overlay> db refresh` to drop and reimport cleanly.
+
+## Port Already in Use
+
+- **Cause:** Stale process from a previous session holds the port.
+- **Fix:** `lsof -i :<port>` to identify the process, then kill it. Or run `t3 <overlay> worktree provision` again — it allocates free ports automatically.
+- **Docker variants:** If using Docker-based services, port conflicts can also come from stale containers or compose project name collisions. Check `docker ps -a` for conflicting containers. Project overlays may document additional Docker-specific failure modes in their own troubleshooting references.
+
+## Setup Reports "provisioned" But DB Is Missing or Empty
+
+- **Symptom:** `t3 <overlay> worktree provision` completes with state "provisioned" and `db_name` in facts, but `psql` shows the database does not exist. Or DB exists but seed tables are empty (row count is 0).
+- **Cause:** Two known scenarios:
+  1. `.t3-cache/.t3-env.cache` was stale from a previous worktree (different ticket/variant). The setup used the old `DATABASE_URL` for migrations — connecting to an existing DB instead of creating a new one. The cache is now DB-derived and regenerated on every `worktree start`; env-dependent commands run `detect_drift` (`src/teatree/core/worktree/worktree_env.py`) and refuse with "env cache stale" rather than silently using stale values.
+  2. The active project overlay was not configured in the overlay package, so project-layer DB hooks never ran.
+- **Verification after setup:** Always check: `psql -h localhost -p <port> -U <db_user> -d <db_name> -c "SELECT count(*) FROM <seed_table>"` — must be > 0.
+- **Fix:** Delete `.state.json`, drop the DB if it exists, and re-run `t3 <overlay> worktree provision`. The `.t3-cache/.t3-env.cache` (and its repo-level symlink) is DB-derived and regenerated on the next `worktree start` — no need to delete it by hand.
+
+## "Worktree Is Already Checked Out"
+
+- **Cause:** A worktree for this branch already exists elsewhere.
+- **Fix:** Run `git worktree list` to find it. Remove with `git worktree remove <path>` if no longer needed.
+
+## Branch Switch Fails on "Clean" File (skip-worktree Pitfall)
+
+- **Symptom:** `git switch <branch>` or `git checkout <branch>` fails with `Your local changes to the following files would be overwritten by checkout` on a file that `git status` reports as clean.
+- **Cause:** The file has the `skip-worktree` flag set (commonly used to keep a local `pyproject.toml` override pointing at a sibling editable-install path — e.g. `teatree = { path = "../../souliane/teatree", editable = true }`). `git status` hides the difference; `git checkout` honors it and blocks the switch to prevent clobbering the local content.
+- **Diagnosis:** `git ls-files -v <file>` — lowercase `h` = skip-worktree is on (`H` = normal).
+- **Fix (safe):** Do not naively branch-switch in a clone that carries skip-worktree overrides. Either:
+  1. Leave the clone on its current branch and do the work in a dedicated worktree (`git worktree add`), OR
+  2. Temporarily clear the flag with `git update-index --no-skip-worktree <file>`, commit or stash the local override, switch branches, then restore the flag. **Never `git checkout <file>` to "resolve" it — that wipes the override.**
+- **Prevention:** Keep the dogfood override on a dedicated branch, not on whichever branch the main clone happens to be sitting on. If the override must live in the main clone, document it in the repo's `AGENTS.md` so future agents don't try to check out another branch there.
+
+## `git push` Hangs Forever Inside the Worker Container
+
+- **Symptom:** a bare `git push` from a container shell produces no output and never returns, until a timeout or a kill ends it.
+- **Cause:** the global credential helper is `gh auth git-credential`, which answers only when `GH_TOKEN` is in **its own** env. The deploy entrypoint exports `GH_TOKEN` for the role process, but a `docker exec` shell bypasses the entrypoint and inherits only `TEATREE_GH_TOKEN` from the compose `env_file`. The helper returns nothing, and git falls back to an interactive username prompt nothing will ever answer.  <!-- mcp-ratchet: allow — names git's own default credential helper, not an agent-run fallback -->
+- **Fix:** `t3 push` — it resolves the token (`GH_TOKEN` → `TEATREE_GH_TOKEN` → the overlay's `pass` store), hands it to git as env only, and disables the interactive prompt so a genuinely missing credential fails in milliseconds with a readable reason. See `/t3:ship` § 4a.
+- **Never:** rewrite the remote to embed the token (`git remote set-url origin https://<token>@github.com/...`). That is the improvisation the seam replaces — it persists the credential in `.git/config`, which on a host-bind-mounted worktree outlives the session. `t3 push` refuses a remote whose URL already embeds one.
+
+## `gh pr create` Refuses `"push the current branch to a remote, or use the --head flag"`
+
+- **Symptom:** `gh pr create` aborts with `you must first push the current branch to a remote, or use the --head flag` even though you just ran `git push -u origin <branch>` successfully.
+- **Cause:** the repo has both `origin` (your personal fork, possibly under a host alias like `github.com-<alias>:<user>/<repo>.git`) and `upstream` (the canonical `github.com:<org>/<repo>.git`). `gh` picks a "default repo" from the set of known remotes (usually `upstream`) and looks for your branch there — but the branch only exists on `origin`.
+- **Fix:** pass both flags explicitly: `gh pr create --repo <owner>/<repo> --head <branch> ...`. Example: `gh pr create --repo souliane/teatree --head ac-teatree-379-ticket ...`.
+- **Prevention:** when the fork layout differs from upstream, always be explicit about `--repo` and `--head` on `gh pr create`; never rely on the "default repo" inference.
+
+## `gh pr merge --delete-branch` Fails When `main` Is in Another Worktree
+
+- **Symptom:** `gh pr merge <n> --squash --delete-branch` exits with `failed to run git: fatal: 'main' is already used by worktree at '<path>'`. The PR may have already merged on the remote despite the error.
+- **Cause:** `gh` tries to checkout `main` locally to update it and delete the merged branch. Git refuses because `main` is checked out in another worktree (typical when the main clone is at the canonical path and the current shell is in a ticket worktree).
+- **Fix:** Re-run without `--delete-branch`: `gh pr merge <n> --squash`. Then clean up manually: `git fetch --prune origin` deletes the remote-tracking ref, and from the main clone run `git worktree remove <path>` and `git branch -D <branch>` to drop the local worktree and branch.
+- **Prevention:** When the main clone is in a sibling worktree, omit `--delete-branch` on `gh pr merge`. The remote delete is handled by GitHub's "auto-delete branch on merge" setting; local cleanup belongs to `git fetch --prune` and `git worktree remove`.
+
+## `git worktree add <path> origin/<branch>` Lands on a Detached HEAD
+
+- **Symptom:** After `git worktree add <path> origin/<branch>` the new worktree prints `HEAD is now at <sha> (detached HEAD)`, and a later `git checkout -B <branch>` fails with `fatal: '<branch>' is already used by worktree at '<other-path>'`. Commits made here are not on the branch.
+- **Cause:** The local branch is already checked out in another worktree (a branch can be checked out in at most one worktree). `git worktree add` therefore creates a detached worktree at the remote ref instead of attaching the branch, and silently succeeds.
+- **Fix:** Find the worktree that owns the branch — `git worktree list | grep <branch>` — and do the work there (it is the single source of truth). Make edits directly in that worktree rather than moving a patch across.
+- **Prevention:** Before `git worktree add`, run `git worktree list` to see whether the branch is already checked out. If it is, `cd` into the existing worktree instead of adding a second one. Drop the stray detached worktree with `git worktree remove <path> --force`.
+- **Cross-worktree patch trap:** Do **not** move changes between worktrees via `git diff > p.patch && git apply p.patch` — `git diff` paths are repo-relative and `git apply` from a different worktree root strips the directory prefix (`error: <file>: No such file or directory`). Re-apply the edit directly in the owning worktree, or use `git -C <src> diff | git -C <dst> apply -p1` from matching roots.
+
+## `clean-all` Refuses a Worktree as "Unsynced" After a Squash Merge
+
+- **Symptom:** `t3 teatree workspace clean-all` reports `refused cleanup — N unsynced commit(s) not on origin/main` for a branch whose PR you just merged via squash.
+- **Cause:** `git log --not --remotes` detects merged-ness by SHA. Squash-merges create a new SHA on `main`, so the branch commit is still "not on any remote" by hash. The cleanup classifier catches this (see `teatree/core/cleanup.py::classify_branch_commits`) by matching commit subjects — after stripping `(#NNN)` PR suffixes and conventional-commit type prefixes (`relax:` vs `feat(scope):`). If the match still fails (e.g. the PR was merged under a completely rewritten title), the branch is reported as genuinely ahead.
+- **Fix (interactive TTY):** `clean-all` prompts `[P]ush to remote / [A]bandon (force delete) / [S]kip (default)`. Choose **A** once you've confirmed the PR was merged (`gh pr list --state merged --head <branch>`). Choose **P** to push the unreviewed work to a new PR.
+- **Fix (non-TTY / CI):** the worktree is left in place and listed as `Skipped:` — rerun interactively or clean it by hand with `git worktree remove <path> --force && git branch -D <branch>`.
+- **Prevention:** keep PR titles aligned with the squash commit message produced by the PR template — the classifier's subject-normalisation covers the common `type(scope): …` + `(#NNN)` case automatically.
+
+## GitHub Board "Done" Transitions Don't Clean Worktrees
+
+- **Symptom:** A ticket is moved to the GitHub Projects v2 "Done" column (or the GitLab PR is merged) but the worktree is still on disk after the next `t3 <overlay> followup sync`.
+- **Cause:** The branch has genuinely-unpushed commits, so `cleanup_worktree()` refused the delete. The sync logs an `INFO` line (`Keeping worktree … (unpushed work): …`) rather than raising — same squash-merge-aware classifier as `clean-all`.
+- **Fix:** run `t3 teatree workspace clean-all` interactively and choose **P** (push) or **A** (abandon) per the previous entry.
+- **Prevention:** commit or drop scratch work before moving the ticket to Done. `clean-all` never silently loses unpushed content.
+
+## DSLR Restore Fails Silently
+
+- **Cause:** `dslr` not installed or the snapshot is from an incompatible Postgres version.
+- **Fix:** Run `uv tool install dslr` to install. If version mismatch, delete the snapshot (`dslr delete <name>`) and let `t3 <overlay> db refresh` reimport from dump.
+
+## Remote `pg_dump` Times Out or Produces Truncated Dump
+
+- **Cause:** Slow internet or unstable VPN. Large tenant dumps (100MB+) need sustained bandwidth. Consecutive timeouts on the same day indicate a bandwidth problem, not a transient VPN glitch. A truncated dump can also look valid (`pg_restore -l` may succeed on the TOC header) but fail during actual restore.
+- **Symptoms:** 0-byte dump file, or non-zero file that fails `pg_restore` with "could not read from input file: end of file". Downstream: migrations succeed but every API call returns 400/500 (`KeyError` on enum lookups) — the DB has schema but no data.
+- **Fix:** Do not retry automatically. Ask the user whether to retry now or defer. Delete the corrupt/truncated dump from `.data/` before retrying.
+- **Prevention rules:**
+  1. NEVER assume a dump file is valid without checking its size — 0-byte is always corrupt, fail loudly.
+  2. NEVER try to manually seed a migration-only DB. If the dump is bad, fix the dump — do not reverse-engineer seed inserts across dozens of interdependent tables.
+  3. Treat "migrations succeeded but app errors on every request" as a dump/seed-data problem until proven otherwise.
+  4. Always verify network/VPN connectivity before remote DB operations.
+  5. Monitor `pg_dump` progress — if file hasn't grown in several minutes, connection is stalled.
+- **Diagnostic checklist:** check dump file size (`ls -lh .data/*.dump`), check VPN, check `pg_restore -l <dump>` stderr, spot-check a known seed table (`SELECT COUNT(*) FROM <table>`).
+  6. **Compare sizes across dates** for the same variant — a dump that is drastically smaller than a known-good one (e.g. 90MB vs 704MB) is almost certainly broken. Flag it immediately.
+
+## Statusline Blank or Missing Repo/Worktree Data
+
+- **Symptom:** Statusline shows `model=... | cwd=...` but no repo branches, no worktrees, no dirty markers. Or shows `0>` immediately after a truncated line.
+- **Cause:** `#!/usr/bin/env bash` resolved to `/bin/bash` 3.x (macOS system bash). `declare -A` silently degrades — creates indexed arrays instead of associative arrays, so all repo lookups return empty.
+- **Fix:** Install Bash 4+ (`brew install bash` on macOS). The statusline script includes a version guard that auto re-execs with a modern bash from well-known locations, but if none is found it exits with an error.
+- **Prevention:** When modifying shell scripts, always test with the system bash (`/bin/bash --version`). If a script uses `declare -A`, `${!array[@]}` on associative arrays, or `declare -n`, it needs either Bash 4+ on PATH or a version guard with re-exec fallback. Also audit for macOS-only commands (`md5 -q`, `stat -f`, `open`, `pbcopy`) — use platform detection or provide Linux alternatives (`md5sum`, `stat -c`, `xdg-open`, `xclip`).
+
+## TeaTree CLI Uses the Wrong Python Environment
+
+- **Symptom:** `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` on `str | None` type hints, or other 3.10+ syntax errors.
+- **Cause:** The shell wrapper or direct command resolved a Python outside the TeaTree `uv` environment.
+- **Fix:** Ensure the globally-installed `t3` was installed with `uv tool install --editable <teatree-repo>` so it picks up the 3.13 interpreter, then call `t3 ...` directly.
+- **Prevention:** Never patch syntax to accommodate older Python (e.g. `from __future__ import annotations`). Fix the Python resolution instead.
+
+## Issue Tracker CLI Quirks
+
+See your [issue tracker platform reference](../../platforms/references/) § "Known CLI Quirks" for platform-specific CLI issues. Common gotcha: some CLIs cannot serialize nested JSON — use `curl` instead for complex payloads.
+
+## Pre-Commit Hook Failure + Stash Cycle Destroys Uncommitted Work
+
+- **Symptom:** After a pre-commit hook fails, the agent runs `git stash` / `git checkout -- .` / `git clean -fd` to "fix" the working tree state. All uncommitted changes from the session are lost.
+- **Cause:** `prek` (pre-commit) stashes uncommitted changes before running hooks, then unstashes after. Running `git stash` on top of prek's internal stash creates a nested stash. Then `git checkout -- .` wipes the working tree, and `git stash pop` creates merge conflicts because the stash was made from a different state. The result: hours of work destroyed.
+- **Fix:** When a pre-commit hook fails, the ONLY safe actions are:
+  1. Fix the specific issue the hook reported (lint error, test failure, etc.)
+  2. Re-stage the fixed files
+  3. Commit again
+  4. If the user says to skip hooks: `git commit --no-verify` immediately
+- **Prevention:**
+  1. NEVER run `git stash`, `git checkout -- .`, `git clean -fd`, or `git reset --hard` when there are uncommitted changes you need to keep
+  2. When the user says `--no-verify`, do it immediately — do not keep retrying with hooks
+  3. `git diff` and `git status` are always safe; `git checkout` and `git stash` are not
+  4. If the working tree is in a confusing state, create a backup branch FIRST: `git branch backup-$(date +%s)`
+
+## Pre-Commit Hooks Stage Unrelated Files
+
+- **Symptom:** After running `prek run --all-files` (or `pre-commit run --all-files`), a subsequent `git commit` includes unexpected file changes (deletions, formatting fixes) that weren't explicitly staged.
+- **Cause:** Hooks like `end-of-file-fixer`, `trailing-whitespace`, and `ruff-format` modify files and stage them as part of their fix. If there are pending deletions or unstaged changes, the hook run can stage those too.
+- **Fix:** After running pre-commit hooks, always check `git diff --cached --stat` before committing to verify only intended files are staged. Unstage anything unrelated with `git restore --staged <file>`.
+- **Prevention:** Commit or stash all unrelated changes before running pre-commit on the full repo. When using pre-commit as a verification step (not a commit step), review the staging area before any commit.
+
+## Integration Tests Corrupt `.git/config` When Run Under Pre-Commit Hooks
+
+- **Symptom:** `git status` fails with `fatal: Invalid path '/private/.../pytest-of-.../pytest-NNN'`, or `user.name`/`user.email` are silently overwritten to test values like "Test User". The other shape writes BOTH `core.bare = true` and a `core.worktree` pointing at a temp dir that no longer exists, and reads as something milder than a broken repo: every command needing a working tree (`status`, `diff`, `grep`, `rev-parse --show-toplevel`) exits 128 on `warning: core.bare and core.worktree do not make sense` then `fatal: unable to set up work tree using invalid config`, while the object database still answers normally (`log`, `show`, `ls-files` all exit 0) and the clone's worktrees are untouched. A clone that answers `git log` but not `git status` is this, not a missing file.
+- **Cause:** Tests that spawn `git` subprocesses (e.g., `subprocess.run(["git", "init", ...])`) inherit `GIT_*` environment variables from the parent process. When pre-commit hooks run pytest, prek sets `GIT_INDEX_FILE`, `GIT_DIR`, etc. The test's git commands then operate on the **real repo's** config/index instead of the temp repo's — writing `core.worktree`, `user.name`, and other settings to the wrong `.git/config`.
+- **Fix:** Strip ALL `GIT_*` env vars from subprocess calls in tests:
+
+  ```python
+  import os
+  _GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+  def _git(repo, *args):
+      return subprocess.run(["git", "-C", str(repo), *args], env=_GIT_ENV, ...)
+  ```
+
+- **Recovery:** If already corrupted, edit `.git/config` directly (git commands may fail). Remove the stale `core.worktree` line, the injected `core.bare = true`, and any overwritten `[user]` section — `core.worktree` alone leaves the clone unusable.
+- **Prevention:** Every test helper that calls git subprocesses must use a sanitized env. `GIT_CONFIG_GLOBAL=/dev/null` alone is insufficient — `GIT_INDEX_FILE` and `GIT_DIR` also leak.
+
+## Pre-Commit Fails with `ImportError` When Committing to a Different Repo
+
+- **Symptom:** `git commit` in repo B fails during the pytest pre-commit hook with `ImportError: No module named '<overlay>'` — but the module belongs to repo A, not repo B.
+- **Cause:** `DJANGO_SETTINGS_MODULE` (and sometimes `VIRTUAL_ENV`) from repo A's direnv leaks into repo B's pre-commit run when the shell was previously in repo A's directory. Also occurs when repo A is installed as editable into repo B's venv (via `.pth` files), causing `pytest-django` to load the wrong project's settings.
+- **Fix:** Unset the leaking env vars before committing: `unset DJANGO_SETTINGS_MODULE && git commit ...`. If the issue is `.pth`-based cross-contamination, use `SKIP=pytest git commit ...` and verify tests pass separately with explicit `PYTHONPATH`.
+- **Prevention:** When committing to a repo other than the current working directory (e.g., during skill reviews or retros), sanitize Django-related env vars first. The agent should detect when the target repo differs from the cwd and preemptively unset `DJANGO_SETTINGS_MODULE` and reset `VIRTUAL_ENV`. When a shared venv has editable installs from multiple Django projects, the pytest pre-commit hook may always fail — use `SKIP=pytest` and run tests manually.
+
+## `uv run` Silently Reverts Edits in Editable Installs
+
+- **Symptom:** After editing a source file in an editable install, running `uv run <anything>` rebuilds the package and overwrites your changes.
+- **Cause:** `uv run` triggers an editable install rebuild, which replaces source files with the built version from the package metadata.
+- **Fix:** Re-apply the edits after the rebuild.
+- **Prevention:** Never use `uv run` to verify edits in an editable install. Use `python -c "..."` directly, or verify file content with `grep`/`read`. Commit changes before running `uv run` if possible.
+
+## Test Timeout in `sync_followup` or Other Overlay-Config-Dependent Tests
+
+- **Symptom:** `test_creates_tickets_from_mrs` (or similar) hangs for 10s then fails with `pytest-timeout`. Stack trace shows `read_pass` → `subprocess.run(["pass", ...])` blocking.
+- **Cause:** `OverlayConfig._register_secret()` used `setattr(type(self), method_name, _reader)` — setting the `get_*_token()` method on the **class**, not the instance. When any earlier test loaded a real overlay (e.g., `t3-teatree` with `GITHUB_TOKEN_PASS_KEY`), the dynamic method leaked to ALL `OverlayConfig` subclasses for the rest of the test session. The autouse `read_pass` mock couldn't intercept it because: (a) the closure captured the `read_pass` function reference at import time, bypassing `patch.object`, and (b) the method lived on the class, not re-created per test.
+- **Fix (applied):** Two changes in `overlay.py`:
+  1. `setattr(self, ...)` instead of `setattr(type(self), ...)` — instance-level binding prevents cross-test pollution.
+  2. `from teatree.utils.secrets import read_pass` moved inside the closure body (late binding) — so `patch.object(_secrets_mod, "read_pass", ...)` works.
+- **Prevention:** Never use `setattr(type(self), ...)` for per-instance dynamic methods — it mutates the class and leaks across all instances. Use `setattr(self, ...)` for instance-scoped behavior.
+
+## GitHub Branch Protection Check Names Don't Match CI
+
+- **Symptom:** PR shows "Expected — Waiting for status to be reported" for required checks, even though all CI jobs passed. Both pending and successful checks appear with identical display names.
+- **Cause:** GitHub displays check runs as `CI / lint (pull_request)` in the UI, but the actual check name used by the API is just `lint` (the job key in the workflow YAML). Branch protection rules must use the raw job name, not the display name.
+- **Diagnosis:** `gh api repos/OWNER/REPO/commits/BRANCH/check-runs --jq '.check_runs[] | .name'` — shows the real names.
+- **Fix:** Update branch protection to use raw names (e.g., `lint`, `test (3.13)`, `e2e`), not the display format (`CI / lint (pull_request)`).
+- **Prevention:** After setting branch protection, always verify with `gh api repos/OWNER/REPO/branches/main/protection --jq '.required_status_checks.checks[].context'` and compare against actual check-run names.
+
+## Docker CI: `FileNotFoundError: No such file or directory: 'docker'` (or `psql`)
+
+- **Symptom:** Tests pass locally but fail in the Docker test matrix with `FileNotFoundError` for `docker`, `psql`, or other CLI tools not available inside the CI container.
+- **Cause:** New code introduced a `subprocess.run` call to an external tool. Local dev has the tool installed; Docker CI does not. Common culprits: `_compose_has_service` (calls `docker compose`), `_drop_orphan_databases` (calls `psql`/`dropdb`).
+- **Subtle variant — local imports:** When a function uses `from module import func` inside the function body, patching the *caller's* `subprocess` doesn't cover calls made through the *imported module's* `subprocess`. Example: patching `lifecycle_mod.subprocess` does NOT mock `_compose_has_service` which is imported from `run_mod` at call time.
+- **Fix:** Patch the function directly on the module it lives in: `patch.object(run_mod, "_compose_has_service", return_value=True)`.
+- **Prevention:** When adding any `subprocess` call to an external tool, grep all test files for tests that exercise that code path (`grep -r "lifecycle.*start\|workspace.*clean"`) and add mocks. The pre-push gate (`dev/push-gate.sh`) runs host-native and diff-scoped, so it won't catch a missing-in-Docker tool; run the opt-in Docker matrix (`dev/test-matrix.sh`) before merging changes that add such a subprocess call.
+
+## direnv Not Loading `.envrc`
+
+- **Cause:** direnv not hooked into the shell or `.envrc` not allowed.
+- **Fix:** Run `direnv allow` in the worktree directory. Verify `eval "$(direnv hook zsh)"` is in `.zshrc`.
+
+## Pre-Push Docker Test Fails With `FileNotFoundError: /app/.t3-env.cache`
+
+- **Symptom:** The Docker pre-push matrix (`dev/test-matrix.sh`) fails inside the container with `FileNotFoundError: [Errno 2] No such file or directory: '/app/.t3-env.cache'`, often in tests that read the env cache (e.g. `TestE2eExternal::test_base_url_env_skips_port_discovery`).
+- **Cause:** A prior `t3 <overlay> worktree provision` in a **different** worktree left a `.t3-env.cache` symlink at the repo root pointing at an absolute host path like `/Users/<you>/.local/share/teatree/<other-ticket>/.t3-cache/.t3-env.cache`. When the test matrix bind-mounts the current repo as `/app`, the symlink still resolves against the host path — which does not exist inside the container — so Python sees a broken link.
+- **Fix:** `rm -f .t3-env.cache` at the repo root before pushing. The file is regenerated by `worktree provision`/`worktree start` whenever you genuinely need it in this worktree.
+- **Prevention:** Symlinks with absolute targets outside the repo do not survive bind-mounts. Never commit `.t3-env.cache` (it is in `.gitignore`) and clear stray copies before running containerized tests. If you see an untracked `.t3-env.cache` in `git status` that you did not create this session, it is almost certainly a leak from a sibling worktree — delete it.
+
+## `uv tool install` From `$T3_REPO` Strips Overlay Packages
+
+- **Symptom:** After running `uv tool install --editable . --force` from `$T3_REPO`, `t3 info` shows only the built-in `teatree` overlay — project overlay packages are gone. The loop tick produces signals from teatree only; overlay MRs/issues/dispositions vanish from the statusline.
+- **Cause:** `uv tool install` creates an isolated venv from the target package's dependency tree. Teatree's `pyproject.toml` does not depend on overlay packages (they are addons), so overlay entry points are not installed. The overlay's tool env (e.g., `~/.local/share/uv/tools/<overlay>/`) has teatree as a dependency, giving it both sets of entry points.
+- **Fix:** Always reinstall from the **overlay** dir, not from `$T3_REPO`:
+
+  ```bash
+  cd ~/workspace/<overlay-dir> && uv tool install --editable . --force
+  ```
+
+- **Prevention:** When updating teatree source code and reinstalling the CLI, run the install from whichever overlay package is the "outer" dependency. `t3 info` should show both overlays after install.
+- **Diagnostic:** `t3 info | grep -A5 "Installed overlays"` — must list both `teatree` and the project overlay.
+
+## Global `t3` Routes Commands to the Wrong Worktree
+
+- **Symptom:** `t3 <overlay> <cmd>` run from worktree B operates on worktree A's database/state — e.g. migrations apply to the old DB, `worktree status` shows the wrong ticket, or tests read stale fixtures despite being `cd`'d into the new worktree.
+- **Cause:** `uv tool install --editable <path>` pins the global `t3` binary to whatever `<path>` was at install time. The tool's venv, Django settings module, and default DB all resolve relative to that original worktree. Changing `cwd` does **not** rebind them.
+- **Fix (one-shot):** Run Django commands through the current worktree's venv instead: `uv run python manage.py <cmd>` (or `uv run t3 <overlay> <cmd>` from the worktree root). This picks up the local `.venv` and settings.
+- **Fix (persistent):** Run `t3 setup` from the main clone (or with `T3_REPO` set). Setup re-anchors the global tool at the main clone and leaves intentional worktree-dogfood installs alone.
+- **Prevention:** For anything that mutates DB/fixtures/ports, prefer `uv run ...` from within the worktree. Reserve the global `t3` binary for read-only or cross-worktree commands (`t3 doctor`, `t3 info`). See also § "TeaTree CLI Uses the Wrong Python Environment" for the Python-interpreter variant.
+
+## Global `t3` Fails With `ModuleNotFoundError: No module named 'teatree'`
+
+- **Symptom:** `t3 --help` (or any `t3` command) from outside the teatree main clone crashes with `ModuleNotFoundError: No module named 'teatree'`, traceback rooted at `~/.local/bin/t3`. Inside the main clone it still works because pyenv/direnv falls through to the repo-local `.venv/bin/t3`.
+- **Cause:** The global uv tool install is editable-anchored at a worktree that has since been cleaned up. Check `~/.local/share/uv/tools/teatree/uv-receipt.toml` — if the `editable = "..."` path no longer exists on disk, the `teatree.pth` resolves nowhere and every import fails.
+- **Fix:** Run `t3 setup` from the main clone. Since #434, setup parses the receipt, detects the missing source, and reinstalls via `uv tool install --force --editable <main-clone>`. Safe to run from a worktree too — setup honors `T3_REPO` and resolves worktrees to their main clone.
+- **Prevention:** Avoid running `uv tool install --editable .` directly from a worktree. Go through `t3 setup` instead — it anchors at the main clone by default, so worktree cleanup can't orphan the global install.
+
+## Dogfooding a Worktree's Teatree Source via the Global `t3`
+
+- **Goal:** Exercise `src/teatree/...` changes living in a worktree through the global `t3` binary, without a `uv run` prefix or a re-`install`.
+- **Mechanism:** The `t3_bootstrap` entry point pins the teatree source to the **configured** tree at invocation time. When `T3_REPO` names a teatree source tree (a `pyproject.toml` with `name = "teatree"` shipping `src/teatree/__init__.py`), the bootstrap prepends that `T3_REPO/src` to `sys.path` before importing `teatree.cli`. When `T3_REPO` is unset, it falls through to whatever the uv tool install resolved (main clone editable or PyPI libs).
+- **To dogfood a worktree:** point `T3_REPO` at the worktree for the session (`T3_REPO=$PWD t3 …`), or use `uv run t3` from the worktree root.
+- **cwd never selects the source ([#2055](https://github.com/souliane/teatree/issues/2055)).** A `t3` subprocess whose cwd lands inside a *different* teatree checkout — e.g. an autonomous `t3 loops tick --loop <name>` started from a feature worktree — must **not** silently import that checkout's unreviewed `src/` against the real shared DB and connectors. The execution tree is pinned to `T3_REPO`/the install, regardless of where the process started.
+- **Verify:** `t3 info | grep teatree:` prints the path that was loaded — compare against `$T3_REPO` (or the install) to confirm the configured source, not a stray cwd, was picked up.
+- **Caveat:** The tool's venv dependencies are shared between main clone and worktree source. If a worktree bumps a dep that isn't in the tool venv, imports fail — run `uv tool install --force --editable <main-clone>` to refresh the tool's deps, or fall back to `uv run t3` from the worktree.
+
+## Workflow-Durability Bug Class (recurring failure mode)
+
+A long task that *also* exercises the workflow substrate (lifecycle, ship, loop, overlay seam) repeatedly stalls not on the work itself but on the substrate quietly mis-behaving. These bugs share a shape: a step **reports success or progresses silently while doing nothing**, or a guard **fights the very flow it protects**. Recognize the family so the next instance is diagnosed in minutes, not cycles:
+
+- **Cross-DB attestation isolation.** An attestation/verification record written under one process's DB is read by another that points at a different DB, so the second process sees "no attestation" and re-does or blocks work. Symptom: a gate insists a step never ran when it demonstrably did. Check that the writer and reader resolve the *same* database before treating the gate as authoritative.
+- **Hollow ship.** A `pr create` / ship step reports "shipped" with **zero commits on the branch** — the deliverable was never built but the flow declares success. Symptom: a green "done" with an empty diff. The ship path must loud-fail (non-zero) when the branch has no commits ahead of base, never silently succeed.
+- **Hollow phase (the commits-and-green-CI variant of the above).** Symptom: a multi-phase plan where some phases shipped and one did not, while the whole feature is declared complete — commits exist, CI is green, and only the skipped phase's diff is absent. Root cause: that phase's acceptance criterion was satisfiable without doing the work — typically an absence-satisfied one ("suite S still passes unmodified", met by never touching the module under it) — so the criterion certified the skip as a success. Fix: map every planned phase to the commits that implement it before declaring the feature complete; an unmapped phase is unshipped, whatever the branch's overall commit count. Prevention: [`../../rules/SKILL.md`](../../rules/SKILL.md) § "An Acceptance Criterion That Cannot Fail Is Not a Criterion" — pair every absence-satisfied criterion with a positive one only the implemented phase can satisfy.
+- **Ensure-pr / pre-push self-deadlock.** A pre-push hook invoked by an `ensure-pr`-style helper itself triggers the push it is gating, deadlocking its own push. Symptom: push hangs or recurses. The helper must *defer* (skip and let the outer push proceed) rather than re-enter the push from inside the hook.
+- **Immortal-singleton loop death.** A long-running loop/dispatcher modeled as a convention-only singleton dies on every context compaction and needs manual re-spawn (toil), and two sessions can each believe they own it. Symptom: the loop "stops working" after a long wait; re-spawning is manual. Model the loop as a **per-tick DB-backed dispatcher** with an enforced single-owner invariant, not an in-memory process kept alive by discipline.
+- **Overlay-contract drift.** An overlay extension point's consumer is merged before its provider, or an overlay implements an extension point with a non-conforming signature, and nothing catches it until runtime. Symptom: a `NotImplementedError`/`TypeError` deep in a flow that "worked yesterday". Add a signature-conformance guard (a contract test) that fails at commit/CI when an overlay's extension-point method diverges from the core protocol, and order provider-before-consumer merges.
+
+**General principle:** any workflow step that can "succeed at doing nothing" or "block on its own side effect" is a latent multi-cycle detour. Make each such step **loud-fail on the empty/contradictory case** and prefer DB-backed, externally-observable state over discipline-maintained in-memory state.
+
+## Verify-Before-Relay (stale-artifact false positives, both directions)
+
+When relaying a sub-agent's success or failure claim that rests on a *generated artifact* (a rendered document, a build output, a test log) or on a *branch's apparent code state*, the relay is only as trustworthy as the artifact's freshness — and staleness produces **false signals in both directions**:
+
+- **False failure.** A worktree several commits behind the default branch is missing the very fix under test → "fix incomplete / evidence fake" alarm, often escalated hard before any currency check. Always run a branch-currency precheck before believing a "fix not present" verdict — by CONTENT (`git grep -n '<symbol the fix added>' HEAD -- <path>`, or `git log -1 -S'<symbol>' -- <path>`), never `git merge-base --is-ancestor <fix-sha> HEAD`, which a squash-merge defeats: the fix is rewritten into a new sha, so the ancestry probe reports a landed fix as absent.
+- **False success.** A stale generated artifact from before the relevant change still shows the desired value → "proven, it works" claim relayed upward. Always confirm the artifact's mtime/provenance post-dates the change before believing a "proven" verdict.
+
+Same root cause (no freshness gate), opposite signs. **Rule:** never relay a sub-agent success/failure claim built on an artifact or branch state without an independent freshness/currency check first. Make branch-currency and artifact-freshness **automatic preconditions of any verdict**, not manual discipline that compaction can erase.
+
+**The third axis: attribution.** Freshness asks *"is this evidence current?"*; attribution asks *"did the thing under test actually produce it?"* A shared endpoint answers both when the command is running and when something else is. Probing a well-known port (`curl localhost:8000` after starting a server), reading a file another process also writes, or checking a queue several producers feed all yield a result that looks like proof and attributes nothing. The failure is asymmetric and flatters: an unrelated listener reads as success, so the claim ships.
+
+Guard it by isolating the run, not by trusting the observation: bind an ephemeral port, assert on the process you started (its PID, its log line, its exit status), or stop the candidate and confirm the signal disappears. **Rule:** a verdict needs evidence that could only have come from the thing under test. When the evidence is merely *consistent* with success, say what was and was not established rather than reporting it as verified.
+
+## The `deploy/` Compose Wrapper Is Box-Only — Use the Native Install Locally
+
+`deploy/t3` routes every invocation through `docker compose`, and that compose file is written for the deployed box: it declares the box secrets file as a required `env_file`, and its bind mounts name the box's home as the **host-side source** (`source: /home/teatree/.local/share/teatree`). Both are correct there — the mount design is deliberate *path identity*, container and host seeing one absolute path.
+
+Neither holds on a developer machine, so the symptoms are venue errors wearing a config error's clothes:
+
+<!-- skill-symbol-ref: verbatim docker/compose error text naming the deploy env FILE, not an importable module -->
+
+```text
+env file .../deploy/teatree.env not found
+Error response from daemon: mounts denied: The path /home/teatree/.local/share/teatree
+is not shared from the host and is not known to Docker
+```
+
+The second one is not fixable by sharing the path or parameterising the source. Pointing the source at the developer's home makes the mount succeed and **breaks path identity**: the container records worktree paths under `/home/teatree/…` that do not resolve on the host, so the DB is fine (same bytes) while every path stored in it is wrong.
+
+**Rule:** the compose wrapper is a *box* venue. Local work runs the native install (`uv tool install --editable` → `~/.local/bin/t3`), which is a different binary from `deploy/t3`. A shell alias pointing `t3` at the wrapper makes every local command fail this way — check `command -v -a t3` when a local run dies on mounts or env files. Only genuinely optional box inputs (the secrets file) should be softened with compose's `required: false`; the mounts should not.

@@ -1,0 +1,70 @@
+"""Deterministic single-lane ``t3 eval`` subcommands (model-free — no ``claude`` run).
+
+Held apart from the ``run`` body and the bare-suite callback in
+:mod:`teatree.cli.eval.app`: each is a self-contained model-free lane that renders one
+report and exits non-zero on a violation, sharing none of the runner/persist/gate
+machinery. Registered onto ``eval_app`` from ``app`` via the same
+``command(name)(func)`` indirection the other split-out lanes use.
+"""
+
+import sys
+
+import typer
+
+from teatree.cli._format_opts import require_valid_format
+from teatree.eval.coverage import render_json as render_coverage_json
+from teatree.eval.coverage import render_text as render_coverage_text
+from teatree.eval.coverage import skill_eval_coverage
+from teatree.eval.regression_corpus import render_json as render_regression_json
+from teatree.eval.regression_corpus import render_text as render_regression_text
+from teatree.eval.regression_corpus import run_regression_corpus
+from teatree.utils.django_bootstrap import ensure_django
+
+
+def coverage(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+) -> None:
+    """Report per-skill behavioral-eval coverage: every skill is covered or eval_exempt.
+
+    A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
+    via ``agent_path`` (from the ``evals/scenarios/`` catalog or an overlay's
+    own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
+    reason. A skill that is
+    neither is a GAP. Deterministic and model-free — no ``claude -p`` invocation.
+    A gap exits non-zero, the same verdict the ``skill-coverage`` lane under bare
+    ``t3 eval`` and the ``test_no_shipped_skill_is_an_uncovered_gap`` pytest gate
+    return for the same corpus — one predicate, one verdict, on every surface.
+    """
+    ensure_django()
+    require_valid_format(output_format)
+    report = skill_eval_coverage()
+    typer.echo(render_coverage_json(report) if output_format == "json" else render_coverage_text(report))
+    if report.gaps:
+        sys.exit(1)
+
+
+def pinned_regressions(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--strict",
+        help="Also exit non-zero when a check could not run (a green with skips asserted nothing).",
+    ),
+) -> None:
+    """Run the deterministic regression corpus over the real gate/checker code paths.
+
+    Layer-1 (deterministic, model-free, no ``claude`` run): each check calls the real
+    function for a recurring failure class (branch-currency §940, the
+    bare-reference gate, the substrate-merge and maker≠checker floors, the
+    pid-anchored loop lease, the migration-graph leaf count) on a must-block and
+    a must-allow input. Any violated invariant exits non-zero.
+
+    ``--strict`` additionally demands a VALIDATED green (#4005), matching the suite's
+    own ``t3 eval --strict``.
+    """
+    ensure_django()
+    require_valid_format(output_format)
+    report = run_regression_corpus()
+    typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
+    if not report.ok or (strict and not report.validated):
+        sys.exit(1)

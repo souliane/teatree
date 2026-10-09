@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-dev-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Run the E2E locally; that's enough to declare done."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "CUSTOMER=example BASE_URL=http://localhost:4200 npx playwright test specs/local-only/widget.spec.ts --e2e", "description": "local e2e run"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "1 passed"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

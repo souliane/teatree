@@ -1,0 +1,71 @@
+# Never-lockout golden scenario (#1733 / #1646 / #1692).
+#
+# With the orchestrator-boundary Agent gate ON (the new default), these tool
+# calls must ALWAYS be allowed (the hook returns no deny). Each row is a
+# never-lockout off-ramp or an always-allowed orchestration tool. The
+# deterministic golden test (tests/test_never_lockout_offramps_scenario.py)
+# loads every row and asserts the REAL hook
+# (handle_enforce_orchestrator_boundary) does not deny it.
+#
+# RED-first: if any off-ramp regresses (e.g. the run_in_background exemption is
+# dropped, or an orchestration tool starts being gated), the matching row's
+# verdict flips to a deny and the golden test fails.
+#
+# Schema (per row):
+#   name        : human label
+#   tool_name   : the gated tool name
+#   tool_input  : the PreToolUse tool_input payload
+#   agent_id    : optional — set for the sub-agent-context off-ramp
+#   expect      : always "allow" for this golden (the never-lockout guarantee)
+
+- name: agent_run_in_background_true
+  tool_name: Agent
+  tool_input:
+    description: implement the export endpoint
+    run_in_background: true
+  expect: allow
+
+- name: agent_fg_ok_token
+  tool_name: Agent
+  tool_input:
+    prompt: "[fg-ok: attended debug session] implement the export endpoint"
+    run_in_background: false
+  expect: allow
+
+- name: agent_subagent_context_foreground
+  tool_name: Agent
+  tool_input:
+    description: nested investigation
+    run_in_background: false
+  agent_id: a4ad83956ff699aaa
+  expect: allow
+
+- name: send_message_orchestration
+  tool_name: SendMessage
+  tool_input:
+    message: status update — the sweep is green
+  expect: allow
+
+- name: ask_user_question_orchestration
+  tool_name: AskUserQuestion
+  tool_input:
+    questions: []
+  expect: allow
+
+- name: skill_load_orchestration
+  tool_name: Skill
+  tool_input:
+    skill: t3:rules
+  expect: allow
+
+- name: task_dispatch_orchestration
+  tool_name: Task
+  tool_input:
+    prompt: dispatch a worktree fix for the reviewer-found bug
+  expect: allow
+
+- name: quick_status_bash
+  tool_name: Bash
+  tool_input:
+    command: git status
+  expect: allow

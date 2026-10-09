@@ -1,0 +1,311 @@
+"""Bundled overlay for teatree self-development (dogfooding).
+
+Provides a real overlay that exercises the full overlay API using
+teatree's own repo, skills, and GitHub project as the target.
+"""
+
+import os
+import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING, override
+
+from teatree.overlay_sdk import (
+    OverlayBase,
+    OverlayConfig,
+    OverlayMetadata,
+    OverlayProvisioning,
+    OverlayReview,
+    OverlayRuntime,
+    ProvisionStep,
+    SkillMetadata,
+    clone_root,
+    compose_project,
+    discover_overlays,
+    matches_triggers,
+    reap_compose_project,
+    run_checked,
+)
+from teatree.utils.run import CommandFailedError, TimeoutExpired
+
+if TYPE_CHECKING:
+    from teatree.core.models import Worktree
+
+_SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
+_DEFAULT_FOLLOWUP_REPOS = ["souliane/teatree"]
+
+
+def _is_forge_repo_path(value: str) -> bool:
+    """True for a forge repo path — ``owner/repo`` OR a nested ``group/sub/repo``.
+
+    The nested arm is not cosmetic: the whole PR sweep hangs off this filter, and
+    requiring exactly two segments dropped every GitLab project the operator had
+    declared, so the sweep silently fell back to the public default and never saw
+    the fork's own MRs (#72). A single-segment entry is a bare directory name from
+    workspace discovery, never a slug, and is still dropped.
+    """
+    segments = value.split("/")
+    return len(segments) > 1 and all(segments)
+
+
+def _repo_root() -> Path:
+    """Return the teatree repository root (directory containing pyproject.toml)."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").is_file() and (parent / "skills").is_dir():
+            return parent
+    msg = f"Cannot find teatree repo root from {here}"
+    raise FileNotFoundError(msg)
+
+
+def _discover_workspace_repos() -> list[str]:
+    """Aggregate teatree's own repo + every discovered overlay project path.
+
+    Each path is returned relative to the CLONE root (``config.clone_root()``,
+    ``~/workspace``). Overlays whose path lives outside it (or cannot be resolved
+    on disk) are skipped — callers can always override via ``config.workspace_repos``.
+    """
+    workspace_dir = clone_root().resolve()
+    candidates: list[Path] = [_repo_root()]
+    candidates.extend(entry.project_path for entry in discover_overlays() if entry.project_path is not None)
+
+    seen: set[str] = set()
+    repos: list[str] = []
+    for candidate in candidates:
+        try:
+            rel = candidate.resolve().relative_to(workspace_dir)
+        except ValueError:
+            continue
+        key = str(rel)
+        if key not in seen:
+            seen.add(key)
+            repos.append(key)
+    return repos
+
+
+class TeatreeMetadata(OverlayMetadata):
+    """Metadata for the bundled teatree overlay."""
+
+    def __init__(self, config: OverlayConfig) -> None:
+        self._config = config
+
+    @override
+    def get_followup_repos(self) -> list[str]:
+        slugs = [repo for repo in self._config.workspace_repos if _is_forge_repo_path(repo)]
+        return slugs or list(_DEFAULT_FOLLOWUP_REPOS)
+
+    @override
+    def get_e2e_config(self) -> dict[str, str]:
+        # `-n0`: the dash specs share one live_server; `no:randomly`: they seed in order.
+        return {
+            "runner": "project",
+            "test_dir": "e2e/dash",
+            "settings_module": "e2e.dash.settings",
+            "pytest_args": "-n0 -p no:randomly -p no:cacheprovider",
+        }
+
+    @override
+    def get_skill_metadata(self) -> SkillMetadata:
+        root = _repo_root()
+        return {
+            "skill_path": "internals",
+            "skill_root": str(root / "skills"),
+            "remote_patterns": ["souliane/teatree"],
+        }
+
+
+class TeatreeProvisioning(OverlayProvisioning):
+    @override
+    def repo_clone_url(self, repo_name: str) -> str:
+        """The public GitHub remote for teatree's own repo; ``""`` for anything else.
+
+        ``TEATREE_REPO_URL`` (the same name ``deploy/entrypoint.sh`` reads for the
+        runtime clone) overrides it, so a fork-hosted deployment provisions from
+        its own remote rather than upstream.
+        """
+        if Path(repo_name).name != "teatree":
+            return ""
+        return os.environ.get("TEATREE_REPO_URL") or f"https://github.com/{_DEFAULT_FOLLOWUP_REPOS[0]}.git"
+
+    @override
+    def reap_external_resources(self, worktree: "Worktree") -> list[str]:
+        result = reap_compose_project(compose_project(worktree))
+        return [] if result.is_noop else [str(result)]
+
+
+def _python_env_ready(repo: Path) -> bool:
+    python = repo / ".venv" / "bin" / "python"
+    try:
+        run_checked([str(python), "-c", ""], cwd=repo, timeout=5)
+    except (OSError, CommandFailedError, TimeoutExpired):
+        return False
+    return True
+
+
+def _sync_dependencies_step(repo: Path) -> ProvisionStep:
+    """The ``uv sync`` step, shared by provisioning and by the test run's prerequisites.
+
+    ``subprocess_only`` because it is a pure shellout that touches no ORM, so the
+    runner time-boxes it on a worker thread — a network stall aborts loud rather
+    than hanging the caller silently (souliane/teatree#2244).
+    """
+
+    def sync_deps() -> None:
+        venv = repo / ".venv"
+        if (venv.is_dir() or venv.is_symlink()) and not _python_env_ready(repo):
+            if venv.is_symlink():
+                venv.unlink()
+            else:
+                shutil.rmtree(venv)
+        run_checked(["uv", "sync"], cwd=repo)
+
+    def python_env_ready() -> bool:
+        return _python_env_ready(repo)
+
+    return ProvisionStep(
+        name="sync-dependencies",
+        callable=sync_deps,
+        description="Install Python dependencies with uv sync",
+        subprocess_only=True,
+        produces=frozenset({"python-deps"}),
+        post_condition=python_env_ready,
+    )
+
+
+class TeatreeRuntime(OverlayRuntime):
+    @override
+    def test_command(self, worktree: "Worktree") -> list[str]:
+        return ["uv", "run", "pytest"]
+
+    @override
+    def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
+        """Sync a checkout that was never provisioned, before the test runner is spawned.
+
+        ``t3 review checkout`` materialises a bare worktree — no ``uv sync``, no
+        ``.venv`` — so a reviewer's test run had no environment except whatever
+        the spawn implicitly built, and a checkout where that could not happen
+        reported uv's bare ``Failed to spawn: pytest`` (souliane/teatree#4746).
+        """
+        on_disk = worktree.worktree_path
+        if service != "tests" or not on_disk:
+            return []
+        repo = Path(on_disk)
+        return [] if _python_env_ready(repo) else [_sync_dependencies_step(repo)]
+
+    @override
+    def lint_command(self, worktree: "Worktree") -> list[str]:
+        return ["prek", "run", "--all-files"]
+
+
+class TeatreeReview(OverlayReview):
+    @override
+    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        teatree_globs = (
+            "src/teatree/**/templates/**",
+            "src/teatree/**/static/**",
+            "src/teatree/core/views/**",
+            "src/teatree/core/urls.py",
+        )
+        return ["/"] if matches_triggers(changed_files, teatree_globs) else []
+
+    @override
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        # Teatree is a developer CLI / agent harness with no customer-facing
+        # product surface, so no change ships to a customer display. The
+        # mandatory-E2E gate (#1967) is a no-op for this overlay.
+        _ = changed_files
+        return False
+
+    @override
+    def mandatory_e2e_exempt_repo_slugs(self) -> tuple[str, ...]:
+        return tuple(_DEFAULT_FOLLOWUP_REPOS)
+
+
+class TeatreeOverlay(OverlayBase):
+    """Overlay for developing teatree itself."""
+
+    django_app: str | None = "teatree.contrib.t3_teatree"
+    config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="t3-teatree")
+    metadata = TeatreeMetadata(config)
+    provisioning = TeatreeProvisioning()
+    runtime = TeatreeRuntime()
+    review = TeatreeReview()
+
+    @override
+    def get_repos(self) -> list[str]:
+        return ["teatree"]
+
+    @override
+    def get_checking_sources(self) -> list[str]:
+        # The teatree overlay relies on the core needs-you sources (pending
+        # questions + failed agent runs); it adds none of its own.
+        return []
+
+    @override
+    def get_workspace_repos(self) -> list[str]:
+        if self.config.workspace_repos:
+            return list(self.config.workspace_repos)
+        discovered = _discover_workspace_repos()
+        return discovered or self.get_repos()
+
+    @override
+    def get_provision_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
+        # ``worktree.repo_path`` is the repo identifier (e.g. ``souliane/teatree``),
+        # NOT a filesystem path — the on-disk worktree path lives in ``extra['worktree_path']``
+        # and is exposed via ``worktree.worktree_path``. Before #941 this method used
+        # ``Path(worktree.repo_path)`` directly, which produced a relative path like
+        # ``souliane/teatree`` and caused every ``workspace provision`` to fail with
+        # ``FileNotFoundError: 'souliane/teatree'`` on the ``sync-dependencies`` step.
+        on_disk = worktree.worktree_path
+        if not on_disk:
+            # Worktree row exists but has not been materialised on disk yet —
+            # ``WorktreeRowProvisionRunner`` populates ``extra['worktree_path']`` after
+            # ``git worktree add`` succeeds. Provisioning steps require a real directory,
+            # so return an empty list (no-op) rather than crash with a misleading path.
+            return []
+        repo = Path(on_disk)
+
+        def install_overlays_editable() -> None:
+            workspace_dir = clone_root().resolve()
+            ticket_dir = repo.parent
+            repo_resolved = repo.resolve()
+            for entry in discover_overlays():
+                if entry.project_path is None:
+                    continue
+                try:
+                    entry.project_path.resolve().relative_to(workspace_dir)
+                except ValueError:
+                    continue
+                overlay_worktree = ticket_dir / entry.project_path.name
+                if not overlay_worktree.is_dir():
+                    continue
+                if overlay_worktree.resolve() == repo_resolved:
+                    continue
+                run_checked(["uv", "pip", "install", "-e", str(overlay_worktree)], cwd=repo)
+
+        # Both steps are pure subprocess shellouts (uv sync / uv pip install) that
+        # touch no ORM, so they are time-boxed on a worker thread (subprocess_only)
+        # — a network stall aborts loud instead of hanging the provision silently
+        # (souliane/teatree#2244). The teatree overlay declares NO db_import strategy,
+        # so these are the ONLY provision steps it runs; without the bound the
+        # dogfooding path had no ceiling/heartbeat/alert at all.
+        #
+        # PR-27 DAG edge: ``install-overlays-editable`` runs ``uv pip install -e``
+        # into the venv that ``sync-dependencies`` (``uv sync``) creates, so it
+        # ``requires`` the ``python-deps`` token the sync step ``produces`` — the
+        # runner then orders them instead of racing them concurrently.
+        return [
+            _sync_dependencies_step(repo),
+            ProvisionStep(
+                name="install-overlays-editable",
+                callable=install_overlays_editable,
+                description="Install discovered overlays editable from their ticket worktrees",
+                subprocess_only=True,
+                requires=frozenset({"python-deps"}),
+            ),
+        ]
+
+    @override
+    def get_eval_scenarios_dir(self) -> Path | None:
+        # Returned unconditionally: an is_dir() guard here would report a MOVED dir as
+        # the legitimate "I contribute none", which is the silence #4373 was about.
+        return Path(__file__).resolve().parent / "eval" / "scenarios"

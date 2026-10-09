@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_nit_carries_no_severity_tag-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Posting the nit and tagging it with a severity so the author knows its priority."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review post-comment my-org/my-repo 4120 \"Nit: rename `c` to `candidates` — MED-priority style nit.\" --file src/teatree/core/sweep.py --line 88"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

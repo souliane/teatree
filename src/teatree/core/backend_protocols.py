@@ -1,0 +1,676 @@
+"""Concern-based backend protocols.
+
+Each protocol defines a capability that teatree needs from external services.
+Overlays declare which implementation to load via ``OverlayConfig`` fields
+(``code_host``, ``messaging_backend``); ``backends.loader`` resolves the choice.
+
+A single class can satisfy multiple protocols when the platform provides
+multiple concerns (e.g. GitLab provides code hosting and CI in one client).
+"""
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Protocol, TypedDict, runtime_checkable
+
+from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
+from teatree.core.modelkit.review_state import ReviewState
+from teatree.types import RawAPIDict
+
+# Re-exported for the backends: ``teatree.backends`` may reach ``teatree.core``
+# but NOT ``teatree.core.modelkit`` (tach), and the sentinel has to be defined
+# below ``core.models`` because ``ReviewVerdict`` needs it too. This is the same
+# door ``ReviewState`` comes through, and it puts ``HEAD_SHA_UNREADABLE`` beside
+# its siblings ``ROLLUP_QUERY_FAILED`` / ``CHANGED_PATHS_UNAVAILABLE``, which is
+# where a backend author looks for it anyway.
+__all__ = ["HEAD_SHA_UNREADABLE", "ReviewState"]
+
+
+class BackendResolutionError(Exception):
+    """No code-host backend resolves for a repo's actual origin host.
+
+    Raised by the per-repo host resolver when a repo lives on a forge
+    whose credentials the active overlay has not configured (e.g. a
+    GitLab-hosted repo with no GitLab token). Surfacing this BEFORE the
+    PR-creation attempt replaces the raw ``gh``/``glab`` GraphQL error
+    ("Could not resolve to a Repository") that previously was the first
+    signal of a mismatched forge selection (#2025).
+    """
+
+
+class ApprovalState(TypedDict):
+    """Backend-resolved approval snapshot for a single PR/MR (#936).
+
+    ``approvals_left`` is the remaining count of required approvals — 0 when the
+    forge-side approval threshold is satisfied. ``approved_by`` is the list of
+    approver usernames in approval order. ``unresolved_resolvable`` counts open
+    discussion threads whose ``resolvable`` flag is true (i.e. would block a
+    merge under the upstream's "must resolve" policy) — distinct from system
+    note threads or non-resolvable comments.
+    """
+
+    approvals_left: int
+    approved_by: list[str]
+    unresolved_resolvable: int
+
+
+class PrOpenState(StrEnum):
+    """Whether a pull/merge request is genuinely still open on the forge.
+
+    Used by ``CodeHostBackend.get_pr_open_state`` so the orphan-task sweep
+    (``ReviewerPrsScanner._orphaned_task_signals``) can confirm a reviewing
+    task's PR is really MERGED/CLOSED before reaping it — absence from a
+    reviewer-assignment scan is NOT proof the PR closed (#1074). ``UNKNOWN``
+    is the fail-open value: any auth error, network failure, unparsable URL,
+    or unrecognised payload maps here, and the sweep never reaps on UNKNOWN.
+    """
+
+    OPEN = "open"
+    MERGED = "merged"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+
+class IssueReopenState(StrEnum):
+    """Whether an issue was closed and then REOPENED, per the forge's own payload.
+
+    Three-valued because "the issue is open" alone cannot answer it: a delivered
+    ticket whose issue simply never closed is open too, and reviving that one
+    re-does work the factory already shipped. ``UNKNOWN`` is the fail-CLOSED
+    value — a fetch error, an error payload, or a forge whose issue payload
+    carries no reopen marker at all — and no caller may act on it (#4152).
+    """
+
+    REOPENED = "reopened"
+    NOT_REOPENED = "not_reopened"
+    UNKNOWN = "unknown"
+
+
+class IssueOpenState(StrEnum):
+    """Whether the forge reports an ISSUE as open or closed, per its own payload.
+
+    Three-valued for the same reason as :class:`IssueReopenState`: ``UNKNOWN`` is the
+    fail-CLOSED value — a fetch error, an error payload, an unresolvable host, a state
+    string no forge teatree speaks to uses — and no caller may retire a ticket on it,
+    because a board that believes an unreachable forge closed an issue retires live
+    work (#4711).
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+
+class DraftState(StrEnum):
+    """Whether a pull/merge request is in DRAFT state on the forge.
+
+    Three-valued because ``bool`` cannot express "the forge did not answer",
+    and a draft probe that launders a read failure into ``not a draft`` silently
+    disarms the user's own hold mechanism: marking one MR of a batch Draft is how
+    a review-request broadcast is held back, so an unanswerable probe reading as
+    NOT_DRAFT fires the very broadcast the Draft flag exists to stop.
+
+    ``UNKNOWN`` is the fail-CLOSED value — an absent forge CLI, an auth or
+    network error, an unparsable URL, or an unrecognised payload all map here,
+    and every consumer refuses the harmful direction (no broadcast, no merge, no
+    nag) rather than proceeding on data it does not have.
+    """
+
+    DRAFT = "draft"
+    NOT_DRAFT = "not_draft"
+    UNKNOWN = "unknown"
+
+
+class ApprovalReadState(StrEnum):
+    """Whether a pull/merge request has been approved, per the forge.
+
+    The three-valued sibling of :class:`DraftState`, over the same payload
+    :class:`ApprovalState` carries: that TypedDict is the snapshot a successful
+    read returns, this is the verdict a caller acts on — including the case
+    where there was no successful read.
+
+    ``UNKNOWN`` is the fail-CLOSED value. A ``bool`` collapses "the forge says
+    nobody approved it" into the same answer as "the forge did not answer", and
+    the benign-looking one is NOT_APPROVED — which is exactly the value that
+    licenses re-pinging a group about a merge request review already finished
+    on. Every consumer refuses the harmful direction on UNKNOWN.
+    """
+
+    APPROVED = "approved"
+    NOT_APPROVED = "not_approved"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class PrReviewComment:
+    """One line-anchored comment of a submitted review."""
+
+    path: str
+    line: int
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
+class PrReview:
+    """One review to submit at *commit_sha*; the forge client places *marker* on the last body it posts."""
+
+    commit_sha: str
+    body: str
+    comments: tuple[PrReviewComment, ...]
+    marker: str
+
+
+class PartialReviewPublishError(RuntimeError):
+    """A review post that failed after *landed* of its *total* posts were already visible on the forge."""
+
+    def __init__(self, *, landed: int, total: int) -> None:
+        super().__init__(f"{landed} of {total} review posts landed before the forge refused the next one")
+        self.landed = landed
+        self.total = total
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestSpec:
+    """Fields needed to open a pull/merge request on a CodeHostBackend."""
+
+    repo: str
+    branch: str
+    title: str
+    description: str
+    target_branch: str = ""
+    labels: list[str] = field(default_factory=list)
+    assignee: str = ""
+    reviewers: list[str] = field(default_factory=list)
+    draft: bool = False
+
+
+class MergeConflictState(StrEnum):
+    """Whether the PR/MR conflicts with its target branch, per the forge.
+
+    Three-valued for the same reason :class:`DraftState` is: both forges compute
+    mergeability asynchronously, so "not conflicted" and "not answered yet" are
+    genuinely different facts and a ``bool`` collapses them into the benign one.
+    A conflict probe that launders an unanswered read into ``CLEAN`` makes the
+    conflict sweep silently inert — and one that launders it into ``CONFLICTED``
+    dispatches a fix for a merge request that has nothing wrong with it.
+
+    ``UNKNOWN`` is what every unreadable case maps to — a transport failure, an
+    unparsable payload, a forge that has not finished checking — and no consumer
+    acts on it in either direction.
+    """
+
+    CONFLICTED = "conflicted"
+    CLEAN = "clean"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class PrMergeState:
+    """The PR/MR's merge state from the forge — used for the §928 reconciliation.
+
+    ``state`` is the forge's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``, always
+    upper-cased so ``is_merged`` works across GitHub and GitLab);
+    ``merge_commit_oid`` is the resulting squash/merge commit when the PR is
+    already merged (else ``""``). ``conflict`` is the target-branch conflict axis,
+    defaulting to ``UNKNOWN`` so a backend that cannot read it is never mistaken
+    for one reporting a clean merge.
+    """
+
+    state: str
+    merge_commit_oid: str
+    conflict: MergeConflictState = MergeConflictState.UNKNOWN
+
+    @property
+    def is_merged(self) -> bool:
+        return self.state.upper() == "MERGED"
+
+
+_ROLLUP_QUERY_FAILED_KEY = "_teatree_rollup_query_failed"
+ROLLUP_QUERY_FAILED: "RawAPIDict" = {_ROLLUP_QUERY_FAILED_KEY: True}
+"""Sentinel rollup entry — the backend could not read the live checks rollup.
+
+``fetch_required_checks_rollup`` returns ``[ROLLUP_QUERY_FAILED]`` when the forge
+query itself failed (non-zero rc / malformed / non-list payload), distinct from
+an empty list (no required checks → green). Core's classifier treats the sentinel
+as ``failed`` so a transport failure is never mistaken for "no checks to satisfy".
+
+``fetch_required_status_check_contexts`` reuses the same sentinel for the
+branch-protection lookup: ``[ROLLUP_QUERY_FAILED]`` when the required-status-check
+contexts could not be read (the base branch or the protection endpoint errored —
+fail CLOSED so an indeterminate required set never falls open), distinct from an
+empty list (the base branch has no required-status-check protection → no gate →
+green).
+"""
+
+
+def rollup_query_failed(rollup: "list[RawAPIDict]") -> bool:
+    """True iff *rollup* carries the :data:`ROLLUP_QUERY_FAILED` sentinel."""
+    return any(entry.get(_ROLLUP_QUERY_FAILED_KEY) is True for entry in rollup)
+
+
+_PLAN_RESTRICTED_NO_PROTECTION_KEY = "_teatree_plan_restricted_no_protection"
+PLAN_RESTRICTED_NO_PROTECTION: "RawAPIDict" = {_PLAN_RESTRICTED_NO_PROTECTION_KEY: True}
+"""Sentinel required-context entry — the repo's plan cannot answer branch protection at all.
+
+``fetch_required_status_check_contexts`` returns ``[PLAN_RESTRICTED_NO_PROTECTION]`` when
+BOTH the rules and legacy protection endpoints answer GitHub Free's plan-restriction 403
+("Upgrade to GitHub Pro or make this repository public to enable this feature.") for every
+token — a DETERMINATE fact ("no branch protection is possible on this plan"), distinct from
+the INDETERMINATE :data:`ROLLUP_QUERY_FAILED` sentinel (a permission gap or transport
+failure). ``_github_required_checks_verdict`` falls back to the Actions API for this specific
+state; ``_required_context_names`` (the public ``required_context_names()``/``pr_sweep``
+path) still folds it into ``None`` so the sweep's existing fail-closed behavior is unchanged.
+"""
+
+
+def plan_restricted_no_protection(required: "list[RawAPIDict]") -> bool:
+    """True iff *required* carries the :data:`PLAN_RESTRICTED_NO_PROTECTION` sentinel."""
+    return any(entry.get(_PLAN_RESTRICTED_NO_PROTECTION_KEY) is True for entry in required)
+
+
+CHANGED_PATHS_UNAVAILABLE = "\x00_teatree_changed_paths_unavailable\x00"
+"""Sentinel path — the backend could NOT read the PR/MR changed-file list to completion.
+
+``fetch_pr_changed_paths`` returns ``[CHANGED_PATHS_UNAVAILABLE]`` when the diff
+query itself failed or could not be paginated to completion (non-zero rc, malformed
+payload), distinct from an empty list (a genuinely no-op diff) and from a complete
+list. The substrate detector treats an unavailable list as INDETERMINATE and fails
+CLOSED (holds the merge as substrate) — a >100-file PR whose substrate change sorts
+past a truncated page can never silently auto-merge. The NUL bytes make it
+un-collidable with any real forge path.
+"""
+
+
+def changed_paths_unavailable(paths: "list[str]") -> bool:
+    """True iff *paths* carries the :data:`CHANGED_PATHS_UNAVAILABLE` sentinel."""
+    return CHANGED_PATHS_UNAVAILABLE in paths
+
+
+@dataclass(frozen=True, slots=True)
+class ForgeMergeResult:
+    """Raw outcome of a backend bound-squash-merge — core does the classification.
+
+    The backend performs the I/O and returns the unclassified
+    ``(returncode, stdout, stderr)`` plus the ``merged_sha`` it parsed from a
+    successful response. Core's :mod:`teatree.core.merge.execution` runs the
+    transient / head-moved / policy-refusal classification on these fields and
+    raises the typed errors with the exact f-strings — keeping byte-for-byte
+    error parity while the transport lives in the backend.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
+    merged_sha: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PrMessage:
+    """The PR/MR title and body a bound merge publishes as its commit message."""
+
+    title: str
+    body: str
+
+    def as_text(self) -> str:
+        return f"{self.title}\n\n{self.body}" if self.body else self.title
+
+
+@dataclass(frozen=True, slots=True)
+class UploadVerification:
+    """One uploaded artifact's existence check + the reference to embed (#2156, #2165).
+
+    ``ok`` is True only when the backend confirmed, with its own
+    credentials, that the upload exists and carries the expected media bytes
+    — not merely that the upload POST returned 201. This is an *existence*
+    guard ("the upload succeeded and is the right media kind"), NOT a render
+    guarantee: an unclaimed upload returns 200 via the token API yet 404s in
+    a browser, so the token fetch alone can never prove the embed renders.
+
+    ``embed_url`` is the **relative** reference GitLab returns for the upload
+    (``/uploads/<secret>/<file>``). Embedding that relative form is what makes
+    render correctness happen: GitLab's reference scanner recognises a
+    relative ``/uploads/<secret>/...`` in the saved note markdown, *claims*
+    the upload, and serves it — its rendered DOM ``<img>``/``<video>`` then
+    resolves. The absolute ``https://<host>/-/project/<id>/uploads/...`` form
+    is NOT recognised by the scanner, so the upload is never claimed and every
+    browser route 404s (the #2165 regression this supersedes). ``detail``
+    carries the failure reason (HTTP status, wrong magic bytes) when ``ok`` is
+    False so the command can name the broken artifact.
+    """
+
+    ok: bool
+    embed_url: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineRead:
+    """What one CI read found in the latest pipeline, or why it could not read one.
+
+    Empty ``findings`` is a verdict ("nothing failed") only when ``unreadable_reason`` is blank.
+    """
+
+    findings: tuple[str, ...] = ()
+    unreadable_reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.unreadable_reason
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+@runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
+class CodeHostBackend(Protocol):
+    """Pull/merge requests + issue fetch — the canonical code-host concern.
+
+    PR is the canonical term in core; GitLab implementations translate
+    MR ↔ PR at the API edge. ``repo`` + ``pr_iid`` is the natural unit on
+    both APIs (GitLab ``merge_requests/<iid>``, GitHub ``pulls/<number>``).
+    """
+
+    def create_pr(self, spec: PullRequestSpec) -> RawAPIDict: ...  # pragma: no branch
+
+    def current_user(self) -> str: ...  # pragma: no branch
+
+    def is_assignable(self, *, repo: str, login: str) -> bool: ...  # pragma: no branch
+
+    def list_my_prs(
+        self,
+        *,
+        author: str,
+        updated_after: str | None = None,
+        enrich: bool = True,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_my_merged_prs(
+        self,
+        *,
+        author: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_review_requested_prs(
+        self,
+        *,
+        reviewer: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_prs(
+        self,
+        *,
+        repo: str,
+        state: str = "",
+        author: str = "",
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_merged_prs_since(self, *, repo: str, since: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_pr_diff(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_pr_file_diffs(self, *, repo: str, pr_iid: int) -> Mapping[str, str | None]:  # pragma: no branch
+        """Each changed file's diff by old and new path, ``None`` where the forge withheld it; a failed read raises."""
+        ...
+
+    def list_pr_commits(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def get_repo(self, *, repo: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState: ...  # pragma: no branch
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch
+
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None: ...  # pragma: no branch
+
+    def get_pr_author(self, *, pr_url: str) -> str: ...  # pragma: no branch
+
+    def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def update_pr_comment(
+        self,
+        *,
+        repo: str,
+        pr_iid: int,
+        comment_id: int,
+        body: str,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def find_pr_review(self, *, repo: str, pr_iid: int, marker: str) -> bool:  # pragma: no branch
+        """Whether a submitted review (or its summary note) on the PR already carries *marker*."""
+        ...
+
+    def submit_pr_review(self, *, repo: str, pr_iid: int, review: PrReview) -> RawAPIDict:  # pragma: no branch
+        """Publish *review* as submitted, never a pending draft; ``{"error": ...}`` for a refusal the forge names.
+
+        An unanchorable line raises before anything posts; a failure after a post landed raises
+        :class:`PartialReviewPublishError`.
+        """
+        ...
+
+    def list_pr_discussions(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:  # pragma: no branch
+        """Thread-structured, author-carrying discussion read (#3340).
+
+        Distinct from :meth:`list_pr_comments` (a flat note list): each element
+        is a thread whose notes carry authorship, so a caller can select "opened
+        by X with no reply from anyone else" — the stale-bot-thread predicate —
+        without dropping to a forge-specific client. Backends with no
+        resolvable-thread merge block (GitHub) return ``[]``.
+        """
+        ...
+
+    def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification: ...  # pragma: no branch
+
+    def repo_for_issue_url(self, issue_url: str) -> str: ...  # pragma: no branch
+
+    def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def update_issue_comment(
+        self,
+        *,
+        issue_url: str,
+        comment_id: int,
+        body: str,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def delete_issue_comment(
+        self,
+        *,
+        issue_url: str,
+        comment_id: int,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def list_assigned_issues(
+        self,
+        *,
+        assignee: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_authored_issues(
+        self,
+        *,
+        author: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_labeled_issues(
+        self,
+        *,
+        label: str,
+        repo_slugs: tuple[str, ...] = (),
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
+
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
+
+    # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge.execution``
+    # keeps every verdict/transient/head-moved classification and error
+    # f-string so the keystone path stays byte-for-byte identical across
+    # forges. The raw ``gh``/``glab`` argv is the canonical chokepoint home
+    # here (the argv-ban chokepoint itself awaits the #1890 match-kind).
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState: ...  # pragma: no branch
+
+    def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState: ...  # pragma: no branch
+
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
+
+    def fetch_pr_same_repo(self, *, slug: str, pr_id: int) -> bool | None: ...  # pragma: no branch
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_required_status_check_contexts(  # pragma: no branch
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+    ) -> list[RawAPIDict]: ...
+
+    def fetch_workflow_runs_at_head(  # pragma: no branch
+        self,
+        *,
+        slug: str,
+        head_sha: str,
+    ) -> list[RawAPIDict]: ...
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
+
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None: ...  # pragma: no branch
+
+    def merge_pr_squash_bound(
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+        expected_head_oid: str,
+        message: PrMessage,
+        squash: bool = True,
+    ) -> ForgeMergeResult: ...  # pragma: no branch
+
+
+@runtime_checkable
+class CIService(Protocol):
+    """Interact with CI/CD pipelines — cancel, fetch logs/tests, trigger."""
+
+    def cancel_pipelines(self, *, project: str, ref: str) -> list[int]: ...  # pragma: no branch
+
+    def fetch_pipeline_errors(self, *, project: str, ref: str) -> PipelineRead: ...  # pragma: no branch
+
+    def fetch_failed_tests(self, *, project: str, ref: str) -> PipelineRead: ...  # pragma: no branch
+
+    def trigger_pipeline(
+        self,
+        *,
+        project: str,
+        ref: str,
+        variables: dict[str, str] | None = None,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def quality_check(self, *, project: str, ref: str) -> RawAPIDict: ...  # pragma: no branch
+
+
+@runtime_checkable
+class MessagingBackend(Protocol):
+    """Messaging — mentions, DMs, posts, reactions, user lookup.
+
+    The single Protocol covers both inbound (fetch_mentions, fetch_dms) and
+    outbound (post_message, post_reply, react) concerns plus user-id
+    resolution for routing.
+    """
+
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    # The honest peer of ``fetch_channel_history``: same read, but a channel the
+    # backend may not read RAISES instead of returning ``[]``. Poll loops keep the
+    # swallowing form (one unreadable channel must not break a scan over many);
+    # interactive single-channel callers use this one, because "quiet" and "the bot
+    # was never invited" are opposite facts an empty list cannot tell apart.
+    def fetch_channel_history_or_refuse(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        limit: int = 50,
+    ) -> list[RawAPIDict]: ...
+
+    def post_message(  # pragma: no branch
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str = "",
+        blocks: list[RawAPIDict] | None = None,
+    ) -> RawAPIDict: ...
+
+    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def open_dm(self, user_id: str) -> str: ...  # pragma: no branch
+
+    def get_permalink(self, *, channel: str, ts: str) -> str: ...  # pragma: no branch
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def resolve_usergroup_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def auth_test(self) -> RawAPIDict: ...  # pragma: no branch
+
+    def post_audio_dm(
+        self,
+        *,
+        channel: str,
+        filepath: str,
+        text: str,
+        thread_ts: str = "",
+        title: str = "",
+    ) -> RawAPIDict: ...  # pragma: no branch

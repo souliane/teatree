@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-slack-tick-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "DM the user a status update."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree notify send 'everything green, still running' --idempotency-key tick:status", "description": "routine status DM"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "sent"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

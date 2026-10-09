@@ -1,0 +1,730 @@
+# Management Commands
+
+Auto-generated from the live Django management command tree.
+Edit the source command, not this file.
+
+## `approval_dial`
+
+| Subcommand | Description |
+| --- | --- |
+| `set` | Set *action_class*'s trust to *trust* in *overlay*'s dial table (merging) |
+| `clear` | Remove *action_class* from *overlay*'s dial table (it falls back to ASK) |
+| `show` | Render every class's configured trust, never-fades floor, breach, and verdict |
+
+## `checking`
+
+``t3 <overlay> checking`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Print a terse, grouped, clickable report of changes since the last check |
+
+## `config_setting`
+
+| Subcommand | Description |
+| --- | --- |
+| `set` | Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value* |
+| `seed` | Provenance-aware DEPLOY seed of *key* → *value* (#3435) |
+| `clear` | Delete the DB override row for *key* in *overlay*'s scope (or global) |
+| `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
+| `inert` | Which gated features shipped and then never ran (#4189) |
+| `get` | Print the resolved value for *key* and name its source (DB vs env/default) |
+| `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
+| `list` | List every DB config override row under its group, naming each row's scope |
+| `import` | Load a ``config_setting export`` TOML dump into the store — the inverse of ``export`` |
+
+## `cost`
+
+Print cycle-to-date SDK-equivalent spend vs the monthly credit.
+
+## `db`
+
+| Subcommand | Description |
+| --- | --- |
+| `migrate` | Apply pending migrations to the runtime self-DB, non-destructively |
+| `refresh` | Re-import the worktree database from DSLR snapshot or dump |
+| `approve` | Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126) |
+| `query` | Run a read-only SQL query against the control DB; emit rows as JSON |
+| `shell` | Drop into a Django shell against the resolved (gate) control DB |
+| `seed-loops` | Seed the shipped loops, prompts, modes and schedules into the control DB |
+| `restore-ci` | Restore the worktree database from the latest CI dump |
+| `migrate-app` | Apply pending migrations to the worktree's APP database, without re-importing it |
+| `reset-passwords` | Reset all user passwords to a known dev value |
+
+## `db_backup`
+
+Back up teatree's control DB and prune past the keep-last-N-days retention (directive #2).
+
+## `deploy_roll`
+
+Roll the runtime stack to an immutable image generation.
+
+## `directive`
+
+Capture, drive, and inspect plain-language directives about teatree's own behavior.
+
+| Subcommand | Description |
+| --- | --- |
+| `capture` | Record a plain-language directive verbatim as a CAPTURED row |
+| `status` | Print one directive's state, sketch, and ratification (read-only) |
+| `tick` | Advance the directive loop one step IF the cadence elapsed (cron entry) |
+| `history` | Print the recent directive ledger with decisions (read-only) |
+| `list` | Print the recent directive ledger (read-only) |
+| `resolve-revert` | Close a REVERT_PENDING directive to terminal REVERTED (config already rolled back) |
+
+## `do`
+
+Walk a ticket through the lifecycle, each phase's existing gate enforced.
+
+## `dogfood`
+
+Dogfood overlay smokes — exercise CLI paths so bugs surface in the loop, not in E2E.
+
+| Subcommand | Description |
+| --- | --- |
+| `overlay-provision-smoke` | Run the overlay provision smoke against a fixture ticket |
+
+## `dream`
+
+Drive the idle-time memory-consolidation (dreaming) cron (#1933).
+
+| Subcommand | Description |
+| --- | --- |
+| `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
+| `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
+| `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
+| `gap-coverage` | Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap |
+| `gap-disposition` | Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host |
+
+## `e2e`
+
+Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
+
+| Subcommand | Description |
+| --- | --- |
+| `run` | Run E2E tests — the one command that works for every overlay |
+| `external` | Run Playwright tests from an external specs repo (the overlay's own, or --repo) |
+| `project` | Run E2E tests from the project's own test directory |
+| `lanes` | Emit the ``{lane: [spec, ...]}`` split derived from the overlay's registered specs (#3329) |
+| `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
+| `in-tree` | Run a Playwright config that lives in THIS checkout's e2e dir — no stack, no credentials |
+| `write-test-plan` | Write (or update) the ticket's plan at ``test-plans/<repo>-<ticket>.md`` in the e2e repo |
+| `verify-plan-captures` | Verify every capture committed under ``test-plans/evidence/`` passes the preflight |
+| `write-plan-from-seams` | Assemble the ``scenario-plan`` file from the overlay seams instead of a manifest (#3329) |
+| `tracked-manifest` | Print a manifest's authored half (run provenance stripped) for a private test repo to commit |
+
+## `env`
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Print the current env as the DB would render it |
+| `unset` | Delete an override row and refresh the cache |
+| `overrides` | List user-declared overrides for this worktree |
+| `set-var` | Persist an override on the worktree and refresh the cache |
+| `check` | Exit non-zero if the on-disk cache diverges from the DB render |
+
+## `followup`
+
+Daily follow-up: MR discovery, ticket/PR sync, and reviewer reminders.
+
+| Subcommand | Description |
+| --- | --- |
+| `refresh` |  |
+| `sync` |  |
+| `remind` |  |
+| `discover-mrs` | List the user's open, non-draft PRs/MRs awaiting a review request |
+
+## `generate_all_docs`
+
+Generate overlay and skill documentation (CLI reference is generated by the pre-commit hook).
+
+## `generate_management_commands_doc`
+
+Generate the management-commands reference doc from the live command tree.
+
+## `generate_overlay_docs`
+
+Generate deterministic overlay extension-point documentation.
+
+## `generate_skill_catalogue`
+
+Generate the skills catalogue from skills/*/SKILL.md frontmatter.
+
+## `generate_skill_docs`
+
+Generate deterministic TeaTree skill delegation documentation.
+
+## `handover`
+
+Hand all current work from this session to another session.
+
+| Subcommand | Description |
+| --- | --- |
+| `create` | Hand this session's full durable state to another session |
+| `whoami` | Print this Claude session's own id (the hand-off ``--to`` target) |
+| `claim-on-start` | Atomically claim an unclaimed hand-off for *session* and print its payload |
+
+## `health`
+
+``t3 <overlay> health`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Reconcile and print the global-health verdict + open KnownIssue rows |
+| `add` | Record a manual operational-health issue the deterministic signals miss |
+| `dismiss` | Acknowledge and close an open issue by id |
+
+## `honesty`
+
+``t3 <overlay> honesty`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `escalate` | Record a honesty escalation so the next verification spawn routes to the most-honest model |
+
+## `identities`
+
+| Subcommand | Description |
+| --- | --- |
+| `seed` | Consolidate the configured ``user_identity_aliases`` into the DB (idempotent) |
+| `bootstrap` | Derive ``user_identity_aliases`` from the forge logins this venue authenticates as |
+| `add` | Add a trusted identity (idempotent on ``(platform, handle)``) |
+| `remove` | Remove a trusted identity by ``(platform, handle)`` |
+| `list` | List all trusted identities |
+
+## `info`
+
+``t3 info`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `artifacts` | Locate every artifact for a ticket: stack, ports, plans, run artifacts, E2E evidence |
+
+## `learnings`
+
+``t3 <overlay> learnings`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Print the repo's durable learnings store |
+| `add` | Append a timestamped entry to the repo's durable learnings store |
+| `edit` | Open the repo's full learnings store in ``$EDITOR`` and replace it |
+
+## `lifecycle`
+
+Group root — forces sub-commands to be addressed by name.
+
+| Subcommand | Description |
+| --- | --- |
+| `visit-phase` | Mark a phase as visited and advance the ticket FSM if applicable |
+| `clear-ledger` | Clear a reused ticket's stale phase ledger (sanctioned session-retire) |
+| `record-review-skill-run` | Record durable evidence that the deep-review ``skill`` ran (#1539) |
+| `record-review-context` | Record durable evidence the referenced context was retrieved + analyzed |
+| `record-e2e-run` | Record SHA-bound, PUBLISHED E2E evidence for the mandatory-E2E gate (#1967) |
+| `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
+
+## `live`
+
+Live sessions on this host's workers: ``list`` and ``inspect`` are passive, ``steer`` is active.
+
+| Subcommand | Description |
+| --- | --- |
+| `inspect` | Show one live session's state, tool and progress without contacting the agent |
+| `steer` | Send input into a running agent's current turn and print its receipt (active) |
+| `list` | List every live session on this host's workers (passive) |
+
+## `loop_directive_set`
+
+Switch standing-directive slots off (disable) or back on (enable) (#4166).
+
+| Subcommand | Description |
+| --- | --- |
+| `disable` | Switch each named slot off by writing an empty override body |
+| `enable` | Switch each named slot back on, restoring the owner's own text where there is one |
+
+## `loop_directives`
+
+Print the standing directives with their resolved cadence, scope and text (#4166).
+
+## `loop_dispatch`
+
+``loop_dispatch`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `claim-next` | Atomically claim the oldest pending dispatchable Task, then emit it |
+
+## `loop_drain_queue`
+
+Run one reactive DB-queue drain cycle (expire stale READY jobs, then drain a bounded batch).
+
+## `loop_list`
+
+Print LIVE loop status computed from the DB (read-only; #1744).
+
+## `loop_owner`
+
+Claim, inspect, or release the session-scoped t3-master slot (#1073).
+
+| Subcommand | Description |
+| --- | --- |
+| `claim` | Claim the t3-master slot for this session |
+| `owner` | Show which session owns the t3-master slot |
+| `whoami` | Print this Claude session's own id |
+| `release` | Release this session's t3-master claim (CAS — non-owner is a no-op unless --force) |
+
+## `loop_preset`
+
+List/show/use/auto/create/edit/delete loop presets (#3159).
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
+| `use` | Activate *name* as the manual override — it holds until someone clears it |
+| `auto` | Clear the manual override so the active schedule / default mode decides again |
+| `create` | Create a new preset from its ``--set`` entries |
+| `edit` | Edit a preset's entries and description in place |
+| `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
+| `list` | List every preset with its scope, entry count, and the ACTIVE marker |
+
+## `loop_schedule`
+
+Read and edit loop schedules and their slots (#3159).
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Show a schedule's ordered slots (weekdays at a start time, then the preset) |
+| `delete` | Delete a calendar and its slots — the ACTIVE one is refused; a shipped one needs ``--confirm`` |
+| `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
+| `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
+| `set-timezone` | Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally |
+| `set-slot` | Create a schedule slot, or update the slot named by ``--slot-id`` |
+| `delete-slot` | Delete one slot owned by a schedule |
+| `clear-active` | Clear the active schedule so no L2 layer applies (presets only via override) |
+
+## `loop_self_improve`
+
+Run one schedule cycle of the self-improving monitor.
+
+## `loop_slack_answer`
+
+Run one reactive Slack-answer cycle (the third /loop slot).
+
+## `loop_state`
+
+Pause, resume, disable, or inspect a mini-loop's durable state (#1913).
+
+| Subcommand | Description |
+| --- | --- |
+| `pause` | Move *name* into the reversible PAUSED hold |
+| `resume` | Return *name* to ENABLED, clearing a pause OR a disable — both planes |
+| `disable` | Move *name* into the durable DISABLED kill-switch — both planes |
+| `override` | Set the MANUAL override for *name* — on/off beats the preset, clear hands it back |
+| `status` | Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it |
+
+## `loop_tick`
+
+Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.
+
+## `loops_list`
+
+List DB-configured autonomous loops (read-only; #1796).
+
+## `loops_tick`
+
+Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each worker `loop_timer` fires.
+
+## `makemigrations`
+
+Creates new migration(s) for apps.
+
+## `memory`
+
+``t3 <overlay> memory`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `recall` | Print the cold-tier memory rules most relevant to *query* (top *limit*) |
+
+## `mr_reminder`
+
+| Subcommand | Description |
+| --- | --- |
+| `preview` | Assemble the per-channel reminder read-only (no Slack post) |
+| `send` | Post the per-channel reminder to Slack (one message per routed channel) |
+
+## `notify`
+
+``t3 <overlay> notify`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `send` | Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise) |
+| `dm` | DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise) |
+| `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
+| `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
+| `react` | React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
+
+## `outer`
+
+Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→keep-only-if-better).
+
+| Subcommand | Description |
+| --- | --- |
+| `tick` | Advance the outer loop one step IF the cadence elapsed (cron entry) |
+| `status` | Print the guard-chain verdict and the active experiment (read-only) |
+| `propose` | Record an operator hypothesis as a PROPOSED experiment |
+| `history` | Print the recent experiment ledger (read-only) |
+| `resolve-revert` | Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot |
+| `resolve-keep` | Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot |
+
+## `overlay`
+
+| Subcommand | Description |
+| --- | --- |
+| `config` | Show overlay configuration |
+| `info` | Show overlay class path |
+| `contract-check` | Fail if compose templates reference keys with no declared producer |
+
+## `pending_chat`
+
+``t3 <overlay> pending-chat`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `list` | List inbound Slack-DM rows; the last hour by default |
+| `mark-answered` | Stamp ``answered_at = now`` on rows matching ``slack_ts`` |
+
+## `pr`
+
+Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan posting.
+
+| Subcommand | Description |
+| --- | --- |
+| `create` | Validate ship gates and trigger the ship transition |
+| `merge` | REMOVED — FSM-incoherent post-#863; refuses with a redirect to the §17.4 keystone |
+| `sweep` | List all open PRs/MRs authored by the current user across the forge |
+| `discharge-pending` | Drop a deferred-PR obligation the drain can never discharge |
+| `ensure-pr` | Create a PR for an orphan branch (idempotent, no-op when a PR already exists) |
+| `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
+| `fetch-issue` | Fetch issue details with embedded image URLs and external links |
+| `detect-tenant` | Detect the current tenant variant from the overlay |
+| `post-test-plan` | Post a test plan as a PR comment. Uploads files and updates existing notes |
+
+## `prompts_list`
+
+List reusable prompts: name, params, version, description (read-only; #2513).
+
+## `prompts_render`
+
+Render a reusable prompt by name with its declared params (read-only; #2513).
+
+## `provision_declared_notion_routing`
+
+Persist declared Notion pass-key routes without replacing database overrides.
+
+## `questions`
+
+``t3 teatree questions`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `record` | Record a deferred question by hand — the agent-facing capture surface |
+| `reachability` | Report which automated resolvers can decide each pending question (#4178) |
+| `answer` | Resolve pending questions with a user answer (resumes any parked headless task) |
+| `dismiss` | Dismiss pending questions without answering them |
+| `mirror` | Deliver ONE un-mirrored question now, bypassing the per-tick batch cap |
+| `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
+| `list` | List pending deferred questions, oldest first |
+
+## `queue`
+
+| Subcommand | Description |
+| --- | --- |
+| `status` | Print the queue breakdown by status, and READY jobs by task name |
+| `expire-stale` | Retire stale READY jobs to FAILED so a drainer never runs them |
+
+## `recipe`
+
+Score the factory against the committed recipe, and pin an approved recipe sha.
+
+| Subcommand | Description |
+| --- | --- |
+| `score` | Compute the recipe-weighted factory score over the trailing window |
+| `approve` | Pin the committed recipe's sha into ``approved_recipe_sha`` (the human EVOLVE gate) |
+
+## `recover`
+
+Report (and optionally recover) work stranded by an outage.
+
+## `repro`
+
+Group root — forces sub-commands to be addressed by name.
+
+| Subcommand | Description |
+| --- | --- |
+| `waive` | Record a HUMAN-authorized waiver of the forced-repro gate (#118) |
+| `status` | Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit) |
+| `record-red` | Record the harness-run FAILING RED reproduction for a FIX ticket (#118) |
+| `record-green` | Record the harness-run PASSING GREEN and freeze the provenance verdict (#118) |
+
+## `retention`
+
+``t3 <overlay> retention`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
+| `artifacts` | Reclaim dormant rebuildable build artifacts from the checkout pool (dry-run unless --apply) |
+| `scratch` | Reclaim stale agent scratch under the temp root (dry-run unless --apply) |
+
+## `retro`
+
+``t3 <overlay> retro`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `finding` | Record one retro finding in the ledger and queue it for the backlog sweep |
+| `review-findings` | Classify a PR's review findings A/B/C and file class-C enforcement issues |
+| `gate-failures` | Extract a session's gate failures, classify them, record, and optionally escalate |
+
+## `review`
+
+``t3 <overlay> review`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `record` | Persist a cold-review verdict for a PR at an exact reviewed SHA |
+| `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
+| `findings` | Print the recorded findings for *mr_url* — the surface a HOLD is acted on through |
+| `apply-reviewer-policy` | Put the overlay's configured reviewers on this repo's open bot-authored MRs |
+| `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
+| `publish-findings` | Post a recorded verdict's findings to its PR, so the author sees them where the work is |
+| `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
+| `lock-status` | Report the current :class:`MRReviewLock` state for *mr_url* (read-only) |
+| `rebind-clearance` | Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07) |
+
+## `review_request_check`
+
+Decide POST or SUPPRESS for a review-request message.
+
+## `review_request_groups`
+
+Print each work group's readiness, its blockers, and how to broadcast it.
+
+## `review_request_post`
+
+Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
+
+## `run`
+
+| Subcommand | Description |
+| --- | --- |
+| `verify` | Check that dev services respond via HTTP, then advance FSM |
+| `services` |  |
+| `backend` | Start the backend via docker-compose. Host port is auto-mapped |
+| `tests` | Run the project test suite |
+| `e2e` | Run one targeted E2E spec through the overlay's configured runner |
+| `lint` | Run the overlay's lint pipeline on this worktree |
+| `build-frontend` | Build the frontend app for production/testing |
+
+## `safe_kill`
+
+Signal *pid* only if it maps to a dead target AND is confirmed non-live.
+
+## `seed_loops`
+
+Idempotently seed the default loops + prompts + presets + schedules (#2513, #3159).
+
+## `session`
+
+Session-lifecycle operations.
+
+| Subcommand | Description |
+| --- | --- |
+| `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
+| `todo-add` | Append an item to this session's durable working list |
+| `todo-list` | List this session's working items, in working order |
+| `todo-set` | Move one working item to *status* |
+
+## `settings_compare`
+
+Render the same settings comparison as the dashboard, including peers and saved snapshots.
+
+## `shipped_seed`
+
+Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).
+
+| Subcommand | Description |
+| --- | --- |
+| `audit` | Report every shipped definition missing, disabled, not ticking, or diverged from shipped |
+| `delete-loop` | Delete a loop row — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-schedule` | Delete a calendar and its slots — a shipped one needs ``--confirm stop-<name>`` |
+| `delete-preset` | Delete a preset — a shipped one needs ``--confirm stop-<name>`` |
+
+## `signals`
+
+Print the five factory signals over the trailing window vs its baseline.
+
+## `snapshot_settings_defaults`
+
+Report which live global settings differ from the shipped defaults (writes nothing).
+
+## `speak`
+
+Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
+
+## `standing_goal`
+
+Register, clear, or list standing verified-green goals (PR-25).
+
+| Subcommand | Description |
+| --- | --- |
+| `clear` | Delete one named standing goal, or every goal when no name is given |
+| `set` | Register (or re-arm) a standing verified-green goal |
+| `list` | List every registered standing goal and its active state |
+
+## `standup`
+
+| Subcommand | Description |
+| --- | --- |
+| `generate` | Generate the standup from existing transition + attempt data (read-only) |
+| `stale` | List tickets with no activity past the threshold (read-only) |
+
+## `tasks`
+
+| Subcommand | Description |
+| --- | --- |
+| `create` | Enqueue the next-phase task for a ticket |
+| `cancel` | Cancel a pending or (with --confirm) claimed task, driving it to FAILED |
+| `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
+| `claim` |  |
+| `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
+| `list` | List the teatree tasks queue (not your harness TODO list) |
+| `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
+| `work-next` |  |
+
+## `ticket`
+
+Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue writes.
+
+| Subcommand | Description |
+| --- | --- |
+| `comment` | Record a note on an issue, in the place its ``--purpose`` belongs (#162) |
+| `merge` | Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4) |
+| `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
+| `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
+| `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
+| `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
+| `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
+| `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
+| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, address_self_review, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
+| `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
+| `rework-hold` | Supersede the ticket's active tasks and queue one coding task carrying its held self-review's findings |
+| `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
+| `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |
+| `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
+| `set-target-branch` | Point *repo*'s future PR at *branch* (its stack parent) instead of the repo default |
+| `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
+| `sweep-begin` | Open a ticket-hygiene sweep run and print its id (#162 Rule 4) |
+| `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
+| `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
+| `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
+| `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
+| `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
+| `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
+| `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
+| `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
+| `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED |
+| `skip-planning` | Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED |
+| `plan-reconcile-inflight` | Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added |
+| `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
+| `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
+| `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
+| `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
+| `e2e-bypass` | Record a single-use user bypass of the mandatory-E2E gate (#1967) |
+| `create-sub` | Create a child work item nested under a parent issue/work item |
+| `list` | List tickets, optionally filtered by state and/or overlay |
+
+## `ticket_backfill_titles`
+
+Backfill Ticket.extra['issue_title'] from the forge for existing tickets.
+
+## `ticket_short_describe`
+
+Generate Ticket.short_description (#1156).
+
+## `tokens`
+
+Show per-account Anthropic 5h / weekly token utilization + status.
+
+## `tool`
+
+| Subcommand | Description |
+| --- | --- |
+| `run` | Run an overlay tool command by name |
+| `list` | List available overlay tool commands |
+
+## `waiting`
+
+``t3 teatree waiting`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `list` | List everything currently waiting on the user |
+| `add` | Record a manual waiting item the live sources cannot see |
+| `resolve` | Resolve a manual waiting item by id |
+
+## `worker`
+
+Run the singleton loop-timer worker (#1796) — K pinned executors, no OS scheduler.
+
+## `workspace`
+
+| Subcommand | Description |
+| --- | --- |
+| `ticket` | Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932) |
+| `provision` | Provision every worktree in the current ticket workspace, in parallel |
+| `start` | Start docker for every worktree in the current ticket workspace |
+| `ready` | Run readiness probes for every worktree in the ticket workspace |
+| `teardown` | Tear down every worktree in the current ticket workspace |
+| `finalize` | Squash worktree commits into one, then rebase on the default branch |
+| `doctor` | Detect state drift across every store; optionally fix it |
+| `landscape` | Survey what is already in flight or settled before planning (#2541) |
+| `relocate` | Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup) |
+| `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
+| `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
+| `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
+| `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
+| `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
+| `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none |
+| `branch-verdict` | Is this branch's work already on the default branch? The canonical answer (#4070) |
+| `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
+| `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
+| `stamp-owners` | Record which checkout owns each auto-isolated env dir THIS venue can see (#3872) |
+| `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
+| `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
+| `repair-branch-upstreams` | Point every branch tracking someone else's ref back at its own, or untrack it (#4225) |
+| `prek-patches` | Which prek patches hold work that is nowhere else, and put one back (#144) |
+| `repair-split` | Move a ticket's divergent worktrees into its canonical workspace dir |
+
+## `worktree`
+
+Per-worktree FSM operations.
+
+| Subcommand | Description |
+| --- | --- |
+| `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
+| `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
+| `start` | Boot ``docker compose up`` for one worktree |
+| `verify` | Run overlay health checks for one worktree |
+| `ready` | Run runtime readiness probes for one worktree |
+| `teardown` | Stop docker, drop DB, remove git worktree, delete row |
+| `status` | Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27) |
+| `diagnose` | Print a structured health checklist for one worktree |
+| `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
+| `claim-occupancy` | Claim a checkout for a hand-driven lane, or refuse naming who already holds it |
+| `release-occupancy` | Hand a checkout back, naming whose claim was freed |
+| `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

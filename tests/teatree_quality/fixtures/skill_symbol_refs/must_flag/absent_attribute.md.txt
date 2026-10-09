@@ -1,0 +1,3 @@
+# Absent attribute on a live module
+
+The claim is recorded by `teatree.core.tasks.claim`.

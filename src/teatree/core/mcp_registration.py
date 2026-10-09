@@ -1,0 +1,142 @@
+"""Verify teatree's own plugin-bundled structured-search MCP server (#2863).
+
+``t3 mcp serve`` (:mod:`teatree.mcp.server`, built under #1023) is registered
+via a plugin-bundled ``.mcp.json`` at the repo root — the same convention
+official Claude Code plugins use (a flat or ``mcpServers``-wrapped map of
+server name to launch command, sitting beside ``.claude-plugin/``). Claude
+Code starts plugin-bundled MCP servers automatically once the plugin is
+enabled (``t3 setup`` already handles that via
+:class:`~teatree.cli.setup.plugin_registrar.PluginRegistrar`) — nothing further
+is required to make the tools reachable.
+
+What *is* required is catching drift: a hand-edited or accidentally-deleted
+``.mcp.json`` would silently leave agents shelling out to the CLI again
+instead of calling the structured-search tools, with no loud signal. This
+module is the single chokepoint both ``t3 setup``
+(:mod:`teatree.cli.setup.mcp_registrar`) and ``t3 doctor check``
+(``_check_teatree_mcp_registration`` in :mod:`teatree.cli.doctor.checks_mcp`)
+read, so the two surfaces can never drift on what "correctly registered"
+means.
+"""
+
+import json
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from teatree.core.modelkit.phase_tools import MCP_WRITE, mcp_write_tools_for_phase, tools_for_phase
+
+MCP_JSON_FILENAME = ".mcp.json"
+TEATREE_MCP_SERVER_NAME = "teatree"
+EXPECTED_COMMAND = "t3"
+EXPECTED_ARGS = ("mcp", "serve")
+#: Appended for a dispatch whose phase may not write through the server.
+READ_ONLY_ARG = "--read-only"
+#: Names one write tool a read-only server still registers.
+ALLOW_WRITE_ARG = "--allow-write"
+
+
+@dataclass(frozen=True, slots=True)
+class McpRegistrationOutcome:
+    """The result of verifying teatree's own MCP server registration."""
+
+    ok: bool
+    message: str
+
+
+def read_only_serve_flags(allowed_writes: Iterable[str]) -> list[str]:
+    """The ``mcp serve`` flags of a read-only launch that still registers *allowed_writes*."""
+    return [READ_ONLY_ARG, *(arg for tool in sorted(allowed_writes) for arg in (ALLOW_WRITE_ARG, tool))]
+
+
+def serve_flags_for_phase(phase: str) -> list[str]:
+    """The ``mcp serve`` flags a dispatch in *phase* launches: none with ``mcp_write``, else read-only."""
+    if MCP_WRITE in tools_for_phase(phase):
+        return []
+    return read_only_serve_flags(mcp_write_tools_for_phase(phase))
+
+
+def mcp_json_path(repo: Path) -> Path:
+    """The path a teatree clone's plugin-bundled ``.mcp.json`` lives at."""
+    return repo / MCP_JSON_FILENAME
+
+
+def read_declared_mcp_servers(path: Path) -> dict[str, dict]:
+    """The ``{server_name: launch_config}`` map declared at *path*.
+
+    Accepts both shapes Claude Code's plugin ``.mcp.json`` loader tolerates —
+    a flat map (``{"teatree": {...}}``, the shape most official marketplace
+    plugins ship) and one wrapped in a top-level ``mcpServers`` key (the shape
+    the plugin-reference docs show, and the shape teatree itself ships). A
+    missing, unreadable, or malformed file reads as "no servers declared"
+    (``{}``) rather than raising — the caller decides what an empty result
+    means for its own OK/WARN/FAIL posture.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    wrapped = data.get("mcpServers")
+    servers = wrapped if isinstance(wrapped, dict) else data
+    return {name: cfg for name, cfg in servers.items() if isinstance(cfg, dict)}
+
+
+def launches_teatree_server(entry: Mapping[str, object]) -> bool:
+    args = entry.get("args")
+    return entry.get("command") == EXPECTED_COMMAND and isinstance(args, list) and tuple(args) == EXPECTED_ARGS
+
+
+def verify_teatree_mcp_registration(repo: Path) -> McpRegistrationOutcome:
+    """Verify *repo* ships a well-formed ``teatree`` entry in ``.mcp.json``.
+
+    Structural only — no live probe. ``t3 doctor check`` pairs it with the
+    exercising liveness check (:mod:`teatree.mcp.liveness`); ``t3 setup`` uses
+    this alone, since it only needs to confirm the file it ships is intact.
+    """
+    path = mcp_json_path(repo)
+    entry = read_declared_mcp_servers(path).get(TEATREE_MCP_SERVER_NAME)
+    if entry is None:
+        return McpRegistrationOutcome(
+            ok=False,
+            message=(
+                f"{path} does not declare the '{TEATREE_MCP_SERVER_NAME}' MCP server. "
+                "Agents fall back to shelling out to the t3 CLI for structured reads instead "
+                "of calling the read-only search tools."
+            ),
+        )
+    if not launches_teatree_server(entry):
+        return McpRegistrationOutcome(
+            ok=False,
+            message=(
+                f"{path} declares '{TEATREE_MCP_SERVER_NAME}' as {entry.get('command')!r} {entry.get('args')!r} — "
+                f"expected {EXPECTED_COMMAND!r} {list(EXPECTED_ARGS)}."
+            ),
+        )
+    return McpRegistrationOutcome(
+        ok=True,
+        message=(
+            f"MCP server '{TEATREE_MCP_SERVER_NAME}' registered via {path} "
+            "(plugin-bundled; Claude Code starts it once the t3 plugin is enabled)."
+        ),
+    )
+
+
+__all__ = [
+    "ALLOW_WRITE_ARG",
+    "EXPECTED_ARGS",
+    "EXPECTED_COMMAND",
+    "MCP_JSON_FILENAME",
+    "READ_ONLY_ARG",
+    "TEATREE_MCP_SERVER_NAME",
+    "McpRegistrationOutcome",
+    "launches_teatree_server",
+    "mcp_json_path",
+    "read_declared_mcp_servers",
+    "read_only_serve_flags",
+    "serve_flags_for_phase",
+    "verify_teatree_mcp_registration",
+]

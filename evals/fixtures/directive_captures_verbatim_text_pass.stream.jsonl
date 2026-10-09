@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_captures_verbatim_text-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Capturing verbatim."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 directive capture \"From now on, teatree should never force-push to a protected branch without a second confirmation.\"", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Captured directive #12 (state=captured). A ratify question will arrive as a Slack DM."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,118 @@
+"""``t3 eval skill-command-validity`` — Tier-1 command-validity lane (#550, model-free).
+
+The thin CLI surface over the pure :mod:`teatree.eval.skill_command_validity`
+engine. The engine validates SKILL.md ``t3 …`` invocations against an injected
+``(valid_paths, group_paths)`` registry built from the LIVE typer command tree
+(``teatree.cli_reference.command_paths`` / ``command_groups`` — the SSOT for "is
+``t3 <sub> …`` a real command"), so a renamed/removed subcommand cited in a skill
+doc FAILs the lane.
+
+**Dependency inversion.** Building that registry needs the assembled root ``t3``
+app, which only ``teatree.cli`` (the parent of ``teatree.cli.eval``) can hand
+over — a direct import here would be a backwards edge (``teatree.cli`` already
+depends on ``teatree.cli.eval``, so it would be a cycle tach forbids). The lane
+therefore consumes a REGISTERED provider: ``teatree.cli`` calls
+:func:`register_command_registry_provider` at import time to inject a closure
+that builds the registry from its own app. The default provider raises a clear
+error, so a caller that never registered one fails loud rather than silently
+validating against an empty registry.
+
+Model-free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
+model-free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
+"""
+
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+import typer
+
+from teatree.cli._format_opts import require_valid_format
+from teatree.cli.eval.verdict import LaneResult
+from teatree.eval.skill_command_validity import DEFAULT_REPO_ROOT, CommandValidityReport, validate_doc_commands
+from teatree.utils.django_bootstrap import ensure_django
+
+#: Builds the live ``(valid_paths, group_paths)`` registry. Registered by
+#: ``teatree.cli`` (which owns the assembled root app); inverted to break the
+#: ``teatree.cli.eval → teatree.cli`` backwards edge.
+RegistryProvider = Callable[[], tuple[set[str], set[str]]]
+
+
+def _unregistered_provider() -> tuple[set[str], set[str]]:
+    msg = (
+        "skill-command-validity registry provider not registered — "
+        "teatree.cli must call register_command_registry_provider() at import time"
+    )
+    raise RuntimeError(msg)
+
+
+_registry_provider: RegistryProvider = _unregistered_provider
+
+
+def register_command_registry_provider(provider: RegistryProvider) -> None:
+    """Inject the registry builder (called by ``teatree.cli`` at import time)."""
+    global _registry_provider  # noqa: PLW0603 — the single registration seam for the inverted dependency
+    _registry_provider = provider
+
+
+def build_command_registry() -> tuple[set[str], set[str]]:
+    """The live ``(valid_paths, group_paths)`` via the registered provider."""
+    return _registry_provider()
+
+
+def validate_shipped_skill_commands(repo_root: Path = DEFAULT_REPO_ROOT) -> CommandValidityReport:
+    """Validate the shipped repo docs against the live registry (the lane body)."""
+    valid, groups = build_command_registry()
+    return validate_doc_commands(valid, groups, repo_root=repo_root)
+
+
+def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
+    """Fold a validity report into the model-free ``skill-command-validity`` lane for ``t3 eval``."""
+    detail = (
+        f"{report.checked} `t3 …` invocation(s) all resolve"
+        if report.ok
+        else f"{len(report.violations)} stale `t3 …` reference(s) of {report.checked} checked"
+    )
+    return LaneResult(
+        name="skill-command-validity",
+        cost="model-free",
+        passed=report.ok,
+        skipped=False,
+        detail=detail,
+    )
+
+
+def skill_command_validity(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+) -> None:
+    """Validate every backticked ``t3 …`` in the repo docs against the live CLI registry.
+
+    Tier-1 (deterministic, model-free, no ``claude`` run): the backticked ``t3 …``
+    commands in the skills tree, the ``agents/*.md`` role briefs, ``BLUEPRINT.md``
+    and ``docs/`` are token-walked against the live typer command tree. A leading
+    ``t3 <overlay>`` is resolved to a representative overlay so an overlay-scoped
+    ``t3 <overlay> <group> <sub>`` is validated too. A command that no longer
+    resolves (a CLI rename left the doc stale) is a violation — the "no stale
+    references" rule — and exits non-zero. A generic mention whose command path is
+    a placeholder (``t3 …``, ``t3 <overlay> …``) is skipped.
+    """
+    ensure_django()
+    require_valid_format(output_format)
+    report = validate_shipped_skill_commands()
+    if output_format == "json":
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": report.ok,
+                    "checked": report.checked,
+                    "violations": [{"doc": v.doc, "command": v.command} for v in report.violations],
+                },
+                indent=2,
+            )
+        )
+    else:
+        typer.echo(report.render_text())
+    if not report.ok:
+        sys.exit(1)

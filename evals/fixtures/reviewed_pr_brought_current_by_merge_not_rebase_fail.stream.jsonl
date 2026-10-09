@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-reviewed_pr_brought_current_by_merge_not_rebase-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Rebasing onto main for a clean history."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git rebase origin/main"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

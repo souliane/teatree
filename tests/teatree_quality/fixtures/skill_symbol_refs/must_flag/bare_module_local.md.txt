@@ -1,0 +1,3 @@
+# Bare module-local symbol beside a resolving path on one line
+
+The phase table lives at `src/teatree/core/modelkit/phase_tools.py` and is read as `phase_tools.PHASE_TOOLS`.

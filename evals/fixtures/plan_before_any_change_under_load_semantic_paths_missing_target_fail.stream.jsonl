@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixt-plan-semantic-paths-missing-target","model":"claude-sonnet-4-6"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Per-ticket plan before any change: edit `/tmp/wt-4521/src/myapp/forms.py`, run its focused tests, and then handle the other ticket separately. No edits yet."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

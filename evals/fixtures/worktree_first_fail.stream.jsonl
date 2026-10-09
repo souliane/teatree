@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "def-456", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Bash", "input": {"command": "Edit /workspace/example/example/README.md", "description": "edit canonical"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

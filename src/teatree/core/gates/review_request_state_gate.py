@@ -1,0 +1,88 @@
+"""Review-state gate on the review-request broadcast (PR-08).
+
+The hole this forecloses: a review-request broadcast goes out for a ticket
+whose FSM never reached SELF_REVIEWED (no cold review ran) — colleagues are pinged
+to review work that was not itself reviewed first. Skill prose says "review
+before you request review", but nothing mechanically refuses the broadcast.
+
+This is the structural gate. A broadcast is refused unless BOTH hold:
+
+* the ticket's FSM has passed the ``SELF_REVIEWED`` milestone — it is SELF_REVIEWED or a
+    later maker state (PR_OPENED/REVIEW_REQUESTED/…). The broadcast fires at
+    ``request_review`` time (PR_OPENED → REVIEW_REQUESTED), so a canonically-progressed
+    ticket is in PR_OPENED/REVIEW_REQUESTED, not the momentary SELF_REVIEWED, when its request
+    goes out — a strict ``state == SELF_REVIEWED`` check over-blocked every such
+    ticket (PR-08b). :func:`~teatree.core.models.ticket_review_state.has_passed_review`
+    is the canonical predicate; pre-review states are still refused.
+* a recorded review-evidence artifact exists — a
+    :class:`~teatree.core.models.review_evidence.ReviewEvidence` cold-review
+    row, OR an existing
+    :class:`~teatree.core.models.review_verdict.ReviewVerdict` for the ticket.
+    Accepting the verdict keeps the artifact **recordable by the cold-review
+    step**: that step already records a ``ReviewVerdict``, so a normal
+    reviewed-and-cleared flow satisfies the gate with no extra step.
+
+The gate is a pure function over durable state; on
+a block it returns a non-empty refusal string (the review-request post command
+surfaces it as a non-zero exit), mirroring
+:mod:`teatree.core.gates.anti_vacuity_gate`.
+
+Caveat — the ``ReviewVerdict`` bridge only fires when the verdict is bound to
+*this* ticket. :func:`has_review_evidence` matches a ``ReviewVerdict`` via
+``filter(ticket=ticket)``, so a cold review satisfies the gate with no extra
+``record-evidence`` step **only if** its verdict was recorded with
+``review record … --ticket-id <ticket>``. A verdict recorded without
+``--ticket-id`` (e.g. the auto-review-dispatch contract in
+:func:`teatree.core.models.auto_review_dispatch.build_review_contract`, which
+anchors a reviewer ticket rather than the work ticket) leaves ``ticket`` unset,
+so it does NOT satisfy this gate — record a ``record-evidence --kind cold_review``
+for the work ticket, or bind the verdict with ``--ticket-id``.
+"""
+
+from typing import TYPE_CHECKING
+
+from teatree.core.models import ReviewEvidence, ReviewVerdict
+from teatree.core.models.ticket_review_state import has_passed_review
+
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
+
+def has_review_evidence(ticket: "Ticket") -> bool:
+    """Whether a review-evidence artifact exists for the ticket.
+
+    True when a ``ReviewEvidence`` cold-review row exists, OR an existing
+    ``ReviewVerdict`` for the ticket does — the cold-review step records the
+    latter, so this bridge keeps the evidence recordable by that step without
+    changing it.
+    """
+    if ReviewEvidence.objects.has_cold_review(ticket):
+        return True
+    return ReviewVerdict.objects.filter(ticket=ticket).exists()
+
+
+def check_reviewed_state(ticket: "Ticket") -> str:
+    """Return a non-empty refusal when the review-request may not broadcast.
+
+    Refuses — naming the missing precondition — unless the
+    ticket has passed the ``SELF_REVIEWED`` milestone AND a review-evidence artifact
+    exists. "Passed review" accepts SELF_REVIEWED or any later maker state
+    (see :func:`~teatree.core.models.ticket_review_state.has_passed_review`), so a
+    ticket already advanced to PR_OPENED/REVIEW_REQUESTED by the time its broadcast fires
+    is not over-blocked (PR-08b).
+    """
+    if not has_passed_review(ticket):
+        return (
+            f"request review refused: ticket {ticket.pk} is "
+            f"in state {ticket.state!r}, before the SELF_REVIEWED milestone — a cold review must run and the "
+            f"ticket reach SELF_REVIEWED before its review request broadcasts. Advance it through review first."
+        )
+    if not has_review_evidence(ticket):
+        return (
+            f"request review refused: ticket {ticket.pk} has "
+            f"passed review but has no recorded review-evidence artifact. Record one with "
+            f"`t3 <overlay> review record-evidence {ticket.pk} --kind cold_review --reviewer <id> "
+            f"--verdict <merge_safe|hold> --head-sha <full-40-char-sha>` (the cold-review step's "
+            f"ReviewVerdict also satisfies this), then retry."
+        )
+    return ""

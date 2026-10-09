@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-architecture_design_tach_check_before_new_import-noop-20", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

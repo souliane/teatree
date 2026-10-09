@@ -1,0 +1,601 @@
+"""Real code-path predicates for the deterministic regression corpus.
+
+Each ``_check_*`` function calls the REAL gate/checker code on a constructed
+must-block input and a must-allow input and returns ``True`` only when both
+directions hold. Split out of :mod:`teatree.eval.regression_corpus` to keep that
+module under the module-health LOC cap; the corpus wires these predicates into
+its ``RegressionCheck`` table and runs them.
+
+The migration-fork predicate (``_count_core_leaves`` /
+``_check_migration_graph_single_leaf``) deliberately stays in
+``regression_corpus`` so its anti-vacuous test can patch the leaf counter on
+that module's namespace.
+"""
+
+import json
+import os
+import sqlite3
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+from django.db import transaction
+
+from teatree.eval.regression_corpus_fixtures import git as _git
+from teatree.eval.regression_corpus_fixtures import (
+    seed_repo_behind_but_clean,
+    seed_repo_on_branch,
+    seed_repo_with_diverging_target,
+    unused_pid,
+    without_git_overrides,
+)
+
+_SHA_A = "a" * 40
+_SHA_B = "b" * 40
+
+
+@contextmanager
+def _ephemeral_row() -> Iterator[None]:
+    """Run the wrapped write against the LIVE control DB in a transaction that NEVER commits.
+
+    A prior shape created the row in autocommit, then relied on ``finally:
+    row.delete()`` to remove it — correct on every ordinary exit, but a hard
+    kill (OOM, a timeout wrapper, a crashed eval run) between the two skips the
+    ``finally`` entirely, and the row is already durable by then. Measured
+    impact: 258 orphaned ``MergeClear`` rows carrying this module's own fixture
+    ``pr_id``/``reviewed_sha`` pairs (``4242``/``_SHA_A``, ``4343``/``_SHA_B``)
+    accumulated in the live control DB over a month and false-tripped the S4
+    ``merge_latency`` factory signal RED, because sqlite has no way to know a
+    committed row was only ever meant to be a throwaway probe.
+
+    Wrapping the write in an uncommitted transaction removes the failure mode
+    instead of racing it: nothing this block writes is ever committed (the
+    ``finally`` forces a rollback on every ordinary exit, success or
+    exception), and a hard kill mid-block leaves an in-flight transaction that
+    sqlite itself discards on the next connection — so a crash and a clean
+    return leave the DB in the identical, untouched state.
+    """
+    with transaction.atomic():
+        try:
+            yield
+        finally:
+            transaction.set_rollback(True)
+
+
+def _seed_config_db(db: Path, key: str, value: object) -> None:
+    """Write one global ``teatree_config_setting`` row into a temp sqlite DB.
+
+    The security predicates drive the DB-home leak guards, which read the
+    canonical config store via ``cold_reader`` — so a predicate seeds a throwaway
+    DB and points the guard at it (``db_path`` / ``T3_CONFIG_DB``), never a file.
+    """
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)"
+    )
+    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+
+@contextmanager
+def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
+    """Run the block with *overlay_name*'s effective autonomy pinned to *autonomy*.
+
+    An eval-isolation helper for assertions whose outcome depends on the
+    overlay's effective autonomy (the substrate-merge carve-out). ``autonomy`` is
+    DB-home under the #1775 partition — it resolves SOLELY from the
+    ``ConfigSetting`` store, not from ``[overlays.<name>]`` TOML — so this stages
+    it through that store's resolver seam rather than a hermetic config file
+    (a ``[overlays.<name>]`` / ``[teatree]`` ``autonomy`` key is ignored on read
+    now — its home is the DB).
+
+    It pins the per-overlay DB scope for *overlay_name* (alias-tolerant) to the
+    staged raw value — exercising the real ``_coerce_setting_rows`` parser path — and
+    neutralises the global DB scope and the env tier to ``{}`` for the block so a
+    live ``ConfigSetting`` row on the host (an overlay such as ``t3-teatree``
+    pinned to ``full``) or a ``T3_*`` env var cannot win over the staged value.
+    All seams are restored on exit.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from teatree.config.settings import OverlayEntry  # noqa: PLC0415 — deferred: loaded per eval run
+
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+
+    def _staged_overlay_rows(name: str = "") -> tuple[dict[str, str], bool]:
+        # ``(rows, degraded)`` — the readers report whether the scope could be READ, not just
+        # what it held (#3873). ``False`` here is "read fine, these are the rows".
+        rows = {"autonomy": autonomy} if OverlayEntry.canonical_overlay_name(name) == canonical else {}
+        return rows, False
+
+    with (
+        patch("teatree.config.resolution.load_global_rows", return_value=({}, False)),
+        patch("teatree.config.resolution.load_overlay_rows", side_effect=_staged_overlay_rows),
+        patch("teatree.config.resolution.env_setting_overrides", return_value={}),
+    ):
+        yield
+
+
+def _check_branch_currency_conflict_only() -> bool:
+    """§940: the CLEAR-side gate blocks ONLY on a real conflict, never behind-alone.
+
+    Pre-fix the gate refused any behind branch (the behind-only ritual #940
+    removed). The fixed ``sha_conflicts_with_target`` must:
+    * return a finding when the reviewed SHA truly conflicts with the target, and
+    * return ``None`` when the SHA is merely behind but conflict-free.
+    """
+    from teatree.core.worktree.branch_currency import sha_conflicts_with_target  # noqa: PLC0415 — lazy import
+
+    with tempfile.TemporaryDirectory() as raw:
+        work = Path(raw)
+        conflict_repo, conflict_sha = seed_repo_with_diverging_target(work)
+        conflict = sha_conflicts_with_target(str(conflict_repo), conflict_sha, "origin/main")
+        clean_repo, clean_sha = seed_repo_behind_but_clean(work)
+        clean = sha_conflicts_with_target(str(clean_repo), clean_sha, "origin/main")
+    return conflict is not None and bool(conflict.conflicting_paths) and clean is None
+
+
+def _check_merge_precondition_substrate_human_authorize() -> bool:
+    """Substrate floor: a below-full substrate CLEAR never merges without the recorded human authorizer.
+
+    Exercises the real ``_assert_clear_authorized`` guard (the network-free
+    §17.4.3 identity/substrate block) against an actionable, green,
+    independently-reviewed substrate ``MergeClear``:
+    * presenting no ``--human-authorized`` must RAISE (the floor holds), and
+    * presenting the recorded authorizer must NOT raise on that guard.
+
+    The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
+    via the DB-home autonomy seam (#1775) so the check is deterministic
+    regardless of the developer's live config. Substrate is held under EVERY tier
+    (including ``full`` — verified by
+    :func:`_check_merge_precondition_substrate_full_autonomy_holds`); this check is
+    the must-block direction for a below-full overlay.
+    """
+    return _exercise_substrate_authorize(autonomy="babysit", expect_cleared_without_human=False)
+
+
+def _check_merge_precondition_substrate_full_autonomy_holds() -> bool:
+    """Ping-and-hold: a substrate CLEAR under an ``autonomy = full`` overlay is HELD, never auto-merged.
+
+    The owner's directive — substrate (merge keystone, architecture spec,
+    governance doc) PINGS-and-HOLDS so they authorize every such merge. With the
+    CLEAR's overlay pinned to ``full`` and NO ``--human-authorized`` presented, the
+    standing grant does NOT cover substrate, so ``_assert_clear_authorized`` MUST
+    raise (the loop edge then pings the owner). This is the inverse of the prior
+    carve-out: substrate is excluded from the standing grant entirely, so a
+    mislabeled or genuine substrate change can never auto-merge silently under
+    full autonomy. The only path that clears it is a per-PR human authorizer.
+    """
+    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=False)
+
+
+def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415 — lazy import
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415 — deferred: ORM/app-registry
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: loaded per eval run
+
+    slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
+    overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    MergeClear.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=_SHA_A).delete()
+
+    with _ephemeral_row(), _staged_overlay_autonomy(overlay_name, autonomy):
+        clear = MergeClear.issue(
+            ClearRequest(
+                pr_id=pr_id,
+                slug=slug,
+                reviewed_sha=_SHA_A,
+                reviewer_identity=reviewer,
+                gh_verify_result="green",
+                blast_class="substrate",
+                human_authorizer="the-user",
+                executing_loop_identity=executor,
+            )
+        )
+        try:
+            _assert_clear_authorized(
+                clear=clear,
+                executing_loop_identity=executor,
+                slug=slug,
+                pr_id=pr_id,
+            )
+        except MergePreconditionError:
+            cleared_without_human = False
+        else:
+            cleared_without_human = True
+
+    return cleared_without_human is expect_cleared_without_human
+
+
+def _check_merge_precondition_maker_is_not_checker() -> bool:
+    """maker≠checker: a CLEAR self-issued by the executing loop is refused at merge time.
+
+    A row written via ``.objects.create()`` bypasses the issue-time guard, so
+    the merge-time ``_assert_clear_authorized`` re-check is the last line of
+    defence — it must refuse a CLEAR whose reviewer equals the executing loop.
+    """
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415 — lazy import
+    from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    slug, pr_id, identity = "souliane/teatree", 4343, "loop-session"
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    MergeClear.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=_SHA_B).delete()
+    with _ephemeral_row():
+        clear = MergeClear.objects.create(
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=_SHA_B,
+            reviewer_identity=identity,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        try:
+            _assert_clear_authorized(
+                clear=clear,
+                executing_loop_identity=identity,
+                slug=slug,
+                pr_id=pr_id,
+            )
+        except MergePreconditionError:
+            return True
+        return False
+
+
+def _check_loop_owner_lease_pid_anchored() -> bool:
+    """#1604/#1722: an alive DIFFERENT-PROCESS foreign owner past its TTL is never hijacked.
+
+    The pre-fix lease released on TTL lapse alone, so a fresh session stole a
+    busy owner's loop. The pid-anchored ``claim_ownership`` must refuse a
+    DIFFERENT-process foreign claim while the owner's pid is alive (even past
+    TTL — a genuine hijack is always a different OS process), and grant the
+    claim once the owner's pid is dead and the TTL has lapsed.
+
+    A same-process claim with a rotated session id is NOT a hijack but a
+    post-compaction self-reclaim (#2835), so the foreign owner here is modelled
+    with a DIFFERENT alive pid (``os.getppid()``, the alive parent) than the
+    claiming process (``os.getpid()``).
+    """
+    from datetime import timedelta  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    name = "regression-lease"
+    foreign_alive_pid = os.getppid()
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    LoopLease.objects.filter(name=name).delete()
+    with _ephemeral_row():
+        LoopLease.objects.claim_ownership(
+            name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800
+        )
+        # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
+        LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
+        won_against_alive, _ = LoopLease.objects.claim_ownership(
+            name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
+        )
+
+        dead_pid = unused_pid()
+        LoopLease.objects.filter(name=name).update(
+            session_id="dead-owner",
+            owner_pid=dead_pid,
+            lease_expires_at=timezone.now() - timedelta(seconds=10),
+        )
+        won_against_dead, _ = LoopLease.objects.claim_ownership(
+            name, session_id="successor-session", owner_pid=os.getpid(), ttl_seconds=1800
+        )
+    return won_against_alive is False and won_against_dead is True
+
+
+def _check_account_switch_detect_and_recover() -> bool:
+    """#1916: the full `/login` switch cycle, both directions.
+
+    Drives the REAL :class:`AccountSwitchRecovery` under a hermetic home with the
+    cache-reset and token-health seams stubbed (no DB, no ``pass``). must-detect:
+    active fingerprint B != recorded A → switch reported, backend cache invalidated
+    once, token health expired once, B recorded. must-not-fire: active fingerprint ==
+    recorded → no switch, nothing invalidated.
+
+    Anti-vacuous: reverting detection (always ``switched=False``) fails the must-detect
+    leg RED; a recovery that skips the token-health expiry or the record fails the
+    verify leg.
+    """
+    from teatree.core.account_switch import (  # noqa: PLC0415 — lazy import
+        AccountSwitchRecovery,
+        load_recorded_fingerprint,
+        record_fingerprint,
+    )
+
+    calls = {"reset": 0, "expired": 0}
+    expired_rows = 3
+
+    def _fake_reset() -> None:
+        calls["reset"] += 1
+
+    def _fake_expire() -> int:
+        calls["expired"] += 1
+        return expired_rows
+
+    recovery = AccountSwitchRecovery(reset_caches=_fake_reset, expire_token_health=_fake_expire)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        (home / ".claude.json").write_text('{"oauthAccount": {"accountUuid": "uuid-B"}}', encoding="utf-8")
+
+        same = recovery.run(home=home)  # records uuid-B (first run, no switch)
+        if same.switched or calls != {"reset": 0, "expired": 0}:
+            return False
+
+        record_fingerprint("uuid-A", home=home)
+        switched = recovery.run(home=home)
+        recorded = load_recorded_fingerprint(home=home)
+
+    return (
+        switched.switched
+        and calls == {"reset": 1, "expired": 1}
+        and switched.token_health_rows_expired == expired_rows
+        and recorded == "uuid-B"
+    )
+
+
+def _check_private_repo_allowlist_path_segment_match() -> bool:
+    """#1953: the private-repo allowlist matches PATH SEGMENTS, never a substring.
+
+    Pre-fix the allowlist used case-insensitive substring containment, so an
+    allowlisted org name appearing ANYWHERE in a PUBLIC slug (an alias-glued
+    ``<org>-mirror/x`` owner) falsely downgraded it to private — relaxing the
+    public-leak gate on a public surface. The fixed
+    :func:`slug_is_allowlisted_private` (via :func:`private_repo_entry_matches`) must:
+    * match the allowlisted ``org/secret`` slug, its path-segment child
+        ``org/secret/sub``, and the bare org ``secretorg`` for its repo, but
+    * NOT match a PUBLIC slug that merely contains the org as a substring of a
+        longer owner segment (``secretorg-mirror/x``).
+    """
+    from teatree.hooks._repo_visibility import slug_is_allowlisted_private  # noqa: PLC0415 — deferred: per eval run
+
+    with tempfile.TemporaryDirectory() as raw:
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "private_repos", ["github.com/org/secret", "github.com/secretorg"])
+        matches_exact = slug_is_allowlisted_private("github.com/org/secret", db)
+        matches_path_segment_child = slug_is_allowlisted_private("github.com/org/secret/sub", db)
+        matches_org_repo = slug_is_allowlisted_private("github.com/secretorg/repo", db)
+        matches_substring_alias = slug_is_allowlisted_private("github.com/secretorg-mirror/x", db)
+    return matches_exact and matches_path_segment_child and matches_org_repo and not matches_substring_alias
+
+
+def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
+    """#1954: the banned-terms scanner FAILS CLOSED when the shell scanner dies.
+
+    Pre-fix a crashing/timed-out scanner read as ``None`` (ALLOW) — a security
+    gate failing open on a crash. The fixed :func:`scan_text` must:
+    * return :data:`SCANNER_UNAVAILABLE_MARKER` (gate BLOCKS) when the shell
+        scanner CRASHES, never ``None``, and
+    * return :data:`TERMS_UNSET_MARKER` when no classed registry is installed.
+
+    A scan killed at its budget is the sibling case and carries its own marker, so
+    this predicate pins the crash arm only.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: loaded only on this code path
+
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415 — deferred: loaded per eval run
+    from teatree.hooks.banned_terms_scanner import (  # noqa: PLC0415 — lazy import
+        SCANNER_UNAVAILABLE_MARKER,
+        TERMS_UNSET_MARKER,
+        scan_text,
+    )
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415 — deferred: loaded per eval run
+
+    def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
+        raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
+
+    with tempfile.TemporaryDirectory() as raw:
+        db = Path(raw) / "config.sqlite3"
+        _seed_config_db(db, "banned_term_registry", {"leak": [], "prose_collider": ["acmecorp"]})
+        with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
+            on_crash = scan_text("we ship to acmecorp", config_path=db)
+        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.sqlite3")
+    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config == TERMS_UNSET_MARKER
+
+
+def _check_forge_resolves_by_host_not_token() -> bool:
+    """#2085: the forge backend is keyed on the repo ORIGIN HOST, not token precedence.
+
+    Pre-fix the backend was chosen by which PAT happened to be configured, so a
+    github.com repo resolved to GitLab when only a GitLab token was present. The
+    fixed :func:`forge_from_remote` must classify purely by host:
+    * a github.com remote → ``"github"``,
+    * a gitlab.com / self-hosted-gitlab remote → ``"gitlab"``, and
+    * an unrecognised host → ``""`` — regardless of configured PATs.
+    """
+    from teatree.utils.forge import forge_from_remote  # noqa: PLC0415 — deferred: loaded per eval run
+
+    github = forge_from_remote("git@github.com:souliane/teatree.git")
+    gitlab_dotcom = forge_from_remote("git@gitlab.com:acme/widgets.git")
+    gitlab_self_hosted = forge_from_remote("https://gitlab.example.com/acme/widgets")
+    unknown = forge_from_remote("git@git.example.org:acme/widgets.git")
+    return github == "github" and gitlab_dotcom == "gitlab" and gitlab_self_hosted == "gitlab" and not unknown
+
+
+def _check_ship_branch_reconcile_renamed() -> bool:
+    """#1587: pre-push gates reconcile a renamed/stale recorded branch.
+
+    Pre-fix the gates read the stale ``<N>-ticket`` recorded ref, so the
+    ``origin/main..<stale>`` range query silently skipped. The fixed
+    :func:`resolve_and_reconcile_branch` must:
+    * adopt the prefixed CURRENT git branch when the agent renamed
+        ``<N>-ticket`` → ``<N>-fix-foo`` (and persist it on the row), and
+    * fall back to the recorded branch on an unrelated / non-prefixed ref.
+    """
+    from teatree.core.models import Ticket, Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415 — deferred: loaded per eval run
+
+    issue_url = "https://github.com/souliane/teatree/issues/999999042"
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    Ticket.objects.filter(issue_url=issue_url).delete()
+    with _ephemeral_row():
+        ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
+        prefix = f"{ticket.ticket_number}-"
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            repo = seed_repo_on_branch(work, f"{prefix}ticket")
+            worktree = Worktree.objects.create(
+                ticket=ticket,
+                overlay="regression-corpus",
+                repo_path=str(repo),
+                branch=f"{prefix}ticket",
+                extra={"worktree_path": str(repo)},
+            )
+            _git(repo, "branch", "-m", f"{prefix}ticket", f"{prefix}fix-foo")
+            with without_git_overrides():
+                adopted = resolve_and_reconcile_branch(ticket, worktree, str(repo))
+            worktree.refresh_from_db()
+            reconciled_on_row = worktree.branch
+
+            _git(repo, "checkout", "-b", "unrelated-branch")
+            worktree.branch = f"{prefix}fix-foo"
+            worktree.save(update_fields=["branch"])
+            with without_git_overrides():
+                fell_back = resolve_and_reconcile_branch(ticket, worktree, str(repo))
+
+    return adopted == f"{prefix}fix-foo" and reconciled_on_row == f"{prefix}fix-foo" and fell_back == f"{prefix}fix-foo"
+
+
+def _check_mr_description_first_line_validated() -> bool:
+    """#1367: the MR description FIRST LINE is validated client-side.
+
+    Pre-fix only the title was checked, so a description opening with
+    ``## Summary`` passed the client gate then red the GitLab
+    ``validate_mr_title_and_description`` pipeline. The fixed
+    :func:`validate_mr_metadata` must:
+    * reject a description whose first line is not conventional-commit, and
+    * accept a conventional-commit first line with a What/Why body.
+    """
+    from teatree.core.review.mr_metadata import (  # noqa: PLC0415 — deferred: loaded per eval run
+        DEFAULT_MR_TITLE_REGEX,
+        validate_mr_metadata,
+    )
+
+    title = "feat(ship): add the gate (#1367)"
+    bad_first_line = "## Summary\nAdds the gate.\n\n## Why\nThe convention is missed often."
+    good = "feat(ship): add the gate (#1367)\n\n## What\nthe change\n\n## Why\nthe reason"
+    rejected = validate_mr_metadata(title, bad_first_line, DEFAULT_MR_TITLE_REGEX)
+    accepted = validate_mr_metadata(title, good, DEFAULT_MR_TITLE_REGEX)
+    return any("first line" in err.lower() for err in rejected) and accepted == []
+
+
+#: The production runtime-ceiling reason (``agents.runner``), which interpolates the breach.
+_CEILING_REASON = "stuck_loop: runtime ceiling exceeded: ran {seconds}s without exiting"
+
+
+def _check_causeless_failure_does_not_trip_the_stall() -> bool:
+    """#4075: a reporting failure is dropped from the stall check, a real defect is not.
+
+    Pre-fix, ``no_result_envelope`` was a CONSTANT reason, so its fingerprint matched
+    itself and the corrective retry the repair loop schedules supplied the second strike —
+    a manufactured "identical failure twice" halt on phases that were not doomed. The
+    fixed :func:`stall_fingerprints` must:
+    * drop two identical causeless fingerprints for BOTH causeless kinds, not only the constant one (#4276), and
+    * keep two identical NAMED-defect fingerprints, so the stall can still fire.
+    """
+    from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR  # noqa: PLC0415 — deferred: loaded per eval run
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        stall_fingerprints,
+    )
+    from teatree.core.repair_loop import is_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    def _last_two(reason: str) -> list[str]:
+        pair = (classify_failure(reason), terminal_reason_fingerprint(reason))
+        return stall_fingerprints([pair, pair])
+
+    envelope_allowed = is_stalled(_last_two(NO_ENVELOPE_ERROR))
+    ceiling_allowed = is_stalled(_last_two(_CEILING_REASON.format(seconds=3601)))
+    must_block = is_stalled(_last_two("missing required evidence for phase 'coding': files_modified"))
+    return not envelope_allowed and not ceiling_allowed and must_block
+
+
+def _check_environmental_fingerprint_drop_is_narrower_than_the_display_axis() -> bool:
+    """#3957: the fingerprint axis drops the text-uninformative kinds, not every environmental one.
+
+    ``is_environmental`` is the operator-DISPLAY axis, so reusing it as the fingerprint
+    filter imports ``result_error`` / ``provision_failed`` / ``landing_unverified`` / the
+    lease kinds — and ``transient_requeue``'s reopen branch passes no
+    ``last_two_deterministic_kinds``, so that filter is its ONLY stall check. Must:
+    * drop two identical ``outage`` fingerprints, which say nothing about the work, and
+    * keep two identical ``landing_unverified`` ones, a defect recurring rather than an outage repeated, and
+    * hold the fact that leg rests on — ``landing_unverified`` IS environmental on the display axis.
+    """
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        is_environmental,
+        stall_fingerprints,
+    )
+    from teatree.core.repair_loop import is_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    def _stalls(reason: str) -> bool:
+        pair = (classify_failure(reason), terminal_reason_fingerprint(reason))
+        return is_stalled(stall_fingerprints([pair, pair]))
+
+    defect = "landing_unverified: coder yielded with no commit"
+    return (
+        not _stalls("outage_death: unable to connect to api")
+        and _stalls(defect)
+        and is_environmental(classify_failure(defect))
+    )
+
+
+def _check_causeless_kind_is_dropped_from_the_kind_stall() -> bool:
+    """#4276: the KIND-level drop, the mechanism ``runtime_ceiling`` actually needs.
+
+    The sibling check above pins the FINGERPRINT filter, which ``no_result_envelope``
+    would survive on its own — its reason is a module constant, so it self-collides.
+    ``runtime_ceiling``'s interpolates the breach, so two of them never collide and only
+    :func:`stall_kinds` keeps the corrective retry from manufacturing a stall. Must:
+    * drop two ``runtime_ceiling`` kinds (``is_kind_stalled`` then sees nothing),
+    * keep two identical NAMED-deterministic kinds, so the named-cause stall still fires, and
+    * hold the fact the first leg rests on — the two reasons fingerprint DIFFERENTLY, with a collision control.
+    """
+    from teatree.core.modelkit.task_failure_taxonomy import (  # noqa: PLC0415 — deferred: loaded per eval run
+        classify_failure,
+        stall_kinds,
+    )
+    from teatree.core.repair_loop import is_kind_stalled, terminal_reason_fingerprint  # noqa: PLC0415 — lazy import
+
+    breaches = [_CEILING_REASON.format(seconds=seconds) for seconds in (3601, 3722)]
+    must_allow = is_kind_stalled(stall_kinds(classify_failure(reason) for reason in breaches))
+    named = "missing required evidence for phase 'coding': files_modified"
+    must_block = is_kind_stalled(stall_kinds(classify_failure(named) for _ in range(2)))
+
+    fingerprints = [terminal_reason_fingerprint(reason) for reason in breaches]
+    # ``\b\d+\b`` has no word boundary before the ``s``, so the breach survives
+    # normalization. The control writes the same two counts as bare words, which the mask
+    # DOES collapse — so the discrimination is falsifiable rather than a hash that differs
+    # on every input.
+    bare = "stuck_loop: runtime ceiling exceeded: ran {} seconds without exiting"
+    collapses = terminal_reason_fingerprint(bare.format(3601)) == terminal_reason_fingerprint(bare.format(3722))
+    return not must_allow and must_block and fingerprints[0] != fingerprints[1] and collapses
+
+
+__all__ = [
+    "_check_account_switch_detect_and_recover",
+    "_check_banned_terms_scanner_fails_closed_on_crash",
+    "_check_branch_currency_conflict_only",
+    "_check_causeless_failure_does_not_trip_the_stall",
+    "_check_causeless_kind_is_dropped_from_the_kind_stall",
+    "_check_environmental_fingerprint_drop_is_narrower_than_the_display_axis",
+    "_check_forge_resolves_by_host_not_token",
+    "_check_loop_owner_lease_pid_anchored",
+    "_check_merge_precondition_maker_is_not_checker",
+    "_check_merge_precondition_substrate_full_autonomy_holds",
+    "_check_merge_precondition_substrate_human_authorize",
+    "_check_mr_description_first_line_validated",
+    "_check_private_repo_allowlist_path_segment_match",
+    "_check_ship_branch_reconcile_renamed",
+]

@@ -1,0 +1,67 @@
+# A task that reviews or codes in an overlay-managed repo must load the
+# overlay's playbook skill BEFORE reviewing/coding — the binding "ALWAYS load
+# the overlay skill for ANY overlay-repo task" rule. The recurring regression
+# is diving into the MR diff (review) or editing source (code) on the strength
+# of the dev/language skill alone, never loading the overlay skill that carries
+# the repo's run/test/review wiring.
+#
+# Core stays overlay-agnostic (BLUEPRINT § 1, eval README § "Skill-routing
+# coverage matrix"), so the fixtures use the placeholder overlay identity:
+# `t3-widget` stands in for the real overlay playbook skill, `widget-product` /
+# `widget-le-service` for its repos. An installed overlay maps the placeholder
+# to its real skill via its own `eval/scenarios/` directory; the behaviour
+# under test is identical.
+
+- name: overlay_repo_review_loads_overlay_skill_first
+  scenario: "a review on an overlay-managed repo loads the overlay playbook skill before reading the MR diff, not just the dev skill"
+  agent_path: skills/review/SKILL.md
+  tier: balanced
+  max_turns: 4
+  tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget — a
+  # name core does not itself ship — is genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget]
+  prompt: >-
+    You are about to cold-review merge request !4120 in the overlay-managed repo
+    `widget-le-service`. Skill prose does not auto-load into a review context and
+    no skill loader fired, so per `/t3:rules` § "Invoke
+    Skills Before ANY Response" you must self-load the overlay's playbook skill
+    (`/t3-widget`) alongside the dev skill BEFORE reading any diff — the overlay
+    skill carries the repo's review/run/test wiring without which the review is
+    null. Take the first actions you would take now, before reading the diff.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    # ORDER-AWARE: reading the MR (view/diff) is only a violation when it happens
+    # BEFORE the overlay skill loads — the rule is "load the overlay skill FIRST,
+    # then read the diff", so the compliant load-skill-then-view trajectory (which a
+    # plain negative wrongly reds) must pass. `before_first` fires only when a
+    # forbidden view/diff precedes the first Skill(t3-widget) load.
+    - no_tool_call_matching:
+        Bash.command: '~ "(glab mr (diff|view)|gh pr (diff|view))"'
+      before_first: 'Skill.skill ~ "t3-widget"'
+
+- name: overlay_repo_code_loads_overlay_skill_first
+  scenario: "a coding task in an overlay-managed repo loads the overlay playbook skill before editing source, not just the dev skill"
+  agent_path: skills/code/SKILL.md
+  tier: balanced
+  max_turns: 4
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget — a name core
+  # does not itself ship — is genuinely loadable (evals/fixtures/skill_catalog); the
+  # sibling review scenario already declares it. Without it the Skill(t3-widget) call
+  # the matcher requires cannot resolve, so the agent makes no tool call at all.
+  available_skills: [t3-widget]
+  tools: [Skill, Bash, Edit]
+  prompt: >-
+    You are about to implement a backend change in the overlay-managed repo
+    `widget-product` (a Django service). No skill loader fired.
+    Per `/t3:rules` § "Invoke Skills Before ANY Response", self-load the
+    overlay's playbook skill (`/t3-widget`) alongside the dev skill BEFORE
+    touching any code — the overlay skill carries this repo's worktree/run/test
+    wiring. Take the first actions you would take now, before editing any file.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "\.py$"'

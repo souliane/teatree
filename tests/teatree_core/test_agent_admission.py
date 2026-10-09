@@ -1,0 +1,1290 @@
+"""Governor gating of the HEADLESS admission chokepoints (#3644 / F9, #4098).
+
+The pure decision (``decide_admission``) is exercised by
+``test_admission_governor``; these cover the CORE-side wiring that F9 added:
+the ``agent_admission_denied_reason`` seam and its consultation at the
+post_save auto-enqueue and the drain safety net, so a governor DENY refuses a
+new headless admission with a VISIBLE log instead of silently admitting into
+the measured congestion collapse.
+
+#4098 splits that one verdict per phase COST CLASS. The drain applied a single
+verdict to the whole queue, so a 3-minute ``reviewing`` task was refused on the same
+brake as a 272-turn ``coding`` agent — and reviewing/shipping are what RETIRE work, so
+the brake removed its own relief and held itself on for 3h22m.
+``TestTheDrainDoesNotStarveTheCheapClass`` is the guard that the self-clearing property
+is pinned by a test rather than by argument, and that the exemption stays BOUNDED: the
+two chokepoints have different shapes (a drain loop, a one-row ``post_save``), so the
+bound they share has to be the durable ``Task.admitted_at`` stamp rather than either
+one's in-memory count.
+"""
+
+import datetime as dt
+import os
+from collections.abc import Callable
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+from django.db import connection
+from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+
+from teatree.config import get_effective_settings
+from teatree.core import agent_admission as gate_mod
+from teatree.core import task_dispatch as task_dispatch_mod
+from teatree.core.admission_governor import MachineSignal, QuotaSignal, decide_admission
+from teatree.core.agent_admission import (
+    AgentAdmission,
+    HeadlessAdmissionStatus,
+    agent_admission_denied_reason,
+    agent_admission_verdict,
+    headless_admission_status,
+    headless_lane_widths,
+    review_lane_width,
+)
+from teatree.core.managers_admission import ADMITTED_INFLIGHT_WINDOW
+from teatree.core.modelkit.phases import PhaseCost
+from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, TaskAttempt, Ticket, UsageWindowState
+from teatree.core.tasks import execute_task
+from tests.teatree_core.conftest import IMMEDIATE_BACKEND
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
+
+_WEEK = 7 * 24 * 3600
+
+
+def _healthy_quota() -> QuotaSignal:
+    return QuotaSignal(
+        fresh=True,
+        all_accounts_exhausted=False,
+        weekly_utilization=0.1,
+        short_utilization=0.1,
+        seconds_to_weekly_reset=_WEEK * 0.5,
+    )
+
+
+def _exhausted_quota() -> QuotaSignal:
+    return QuotaSignal(
+        fresh=True,
+        all_accounts_exhausted=True,
+        weekly_utilization=1.0,
+        short_utilization=1.0,
+        seconds_to_weekly_reset=100.0,
+    )
+
+
+def _machine(load1: float = 1.0, *, cores: int = 8) -> MachineSignal:
+    return MachineSignal(cores=cores, load1=load1, ram_available_gb=20.0)
+
+
+def _denied(reason: str) -> AgentAdmission:
+    return AgentAdmission(expensive_denied=reason, cheap_denied=reason)
+
+
+def _admitted() -> AgentAdmission:
+    return AgentAdmission(expensive_denied=None, cheap_denied=None)
+
+
+class TestAgentAdmissionDeniedReason(TestCase):
+    def test_headless_governor_emits_the_consumed_pressure_span(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(gate_mod, "record_admission_decision") as emit_span,
+        ):
+            agent_admission_verdict()
+        emit_span.assert_called_once()
+        assert emit_span.call_args.kwargs["lane"] == "headless"
+        assert emit_span.call_args.kwargs["pressure"].dominant.name == "accounts-exhausted"
+
+    def test_a_signal_read_failure_admits_fail_open(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
+        ):
+            assert agent_admission_denied_reason() is None
+
+    def test_quota_exhaustion_denies_with_a_reason(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            reason = agent_admission_denied_reason()
+        assert reason is not None
+        assert "quota-exhausted" in reason
+
+    def test_healthy_signals_below_ceiling_admit(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            assert agent_admission_denied_reason() is None
+
+    def test_a_full_coding_lane_denies(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=999),
+        ):
+            reason = agent_admission_denied_reason()
+        assert reason is not None
+        assert "at/over the expensive ceiling" in reason
+
+
+class TestAStaleQuotaCacheStillBoundsTheLane(TestCase):
+    """#4097: the lane passes ``static_ceiling=None``, so an unknown quota was unbounded.
+
+    The production shape, not a contrived one: healthy ``AnthropicTokenUsage`` rows carry
+    a 5-minute TTL and are written only reactively, so ``read_quota_signal()`` reports
+    ``fresh=False`` for most of the factory's life. Reading the real (empty) cache here
+    reproduces that; only the box probe is stubbed, so the assertion does not ride on the
+    load of whatever machine runs the suite.
+    """
+
+    def _live_headless_agents(self, count: int) -> None:
+        ticket = Ticket.objects.create()
+        for _ in range(count):
+            Task.objects.create(
+                ticket=ticket,
+                session=Session.objects.create(ticket=ticket),
+                status=Task.Status.CLAIMED,
+                phase="architectural_review",
+                lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+            )
+
+    def test_an_unknown_quota_denies_once_the_live_count_reaches_the_machine_ceiling(self) -> None:
+        self._live_headless_agents(4)
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            reason = agent_admission_denied_reason()
+        assert reason is not None
+        assert "at/over the expensive ceiling 4" in reason
+
+    def test_an_unknown_quota_still_admits_below_the_ceiling(self) -> None:
+        self._live_headless_agents(3)
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            assert agent_admission_denied_reason() is None
+
+
+class TestPhaseAwareVerdict(TestCase):
+    """One probe, two classes — the cheap lane survives a brake the expensive class fails."""
+
+    #: Past the 5.0-per-core deny watermark on the 8-core ``_machine`` signal.
+    _MELTED = 8 * 5.0 + 1
+
+    def _verdict(self, *, load1: float = 1.0, coding: int = 0, occupancy: int = 0) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=coding),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=occupancy),
+        ):
+            return agent_admission_verdict()
+
+    def test_a_load_brake_denies_the_expensive_class_and_admits_the_cheap_one(self) -> None:
+        verdict = self._verdict(load1=self._MELTED)
+        assert "load" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_the_class_is_resolved_from_the_phase(self) -> None:
+        verdict = self._verdict(load1=self._MELTED)
+        assert verdict.denied_reason("coding") is not None
+        assert verdict.denied_reason("reviewing") is None
+        # An unregistered phase inherits the braked class, never the exemption.
+        assert verdict.denied_reason("banana") is not None
+
+    def test_a_full_coding_lane_still_admits_the_review_lane(self) -> None:
+        verdict = self._verdict(coding=999)
+        assert "at/over the expensive ceiling" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_the_review_lane_is_bounded_by_its_own_ceiling(self) -> None:
+        # The exemption must never become a second unbounded lane (#4097's cost).
+        verdict = self._verdict(load1=self._MELTED, occupancy=2)
+        assert "review lane occupancy 2 at/over the review ceiling 2" in (verdict.denied_for(PhaseCost.CHEAP) or "")
+
+    def test_a_spent_token_budget_still_denies_the_cheap_class(self) -> None:
+        # The exemption is from the MACHINE brake only. A review burns tokens like
+        # anything else, so a spent weekly window refuses every class.
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_exhausted_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            verdict = agent_admission_verdict()
+        assert verdict.denied_for(PhaseCost.CHEAP) is not None
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
+
+    def test_a_zero_width_still_keeps_one_review_seat_outside_the_brake(self) -> None:
+        # Folding reviews back under the coding brake would queue them behind coding again.
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
+        assert self._verdict(load1=self._MELTED).denied_for(PhaseCost.CHEAP) is None
+        assert "review ceiling 1" in (self._verdict(load1=self._MELTED, occupancy=1).denied_for(PhaseCost.CHEAP) or "")
+
+    def test_a_probe_failure_admits_both_classes_fail_open(self) -> None:
+        with (
+            patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
+        ):
+            verdict = agent_admission_verdict()
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_the_single_shot_wrapper_defaults_to_the_expensive_class(self) -> None:
+        # Back-compat: the phase-less call is the pre-#4098 verdict verbatim, so a
+        # caller that admits new coding work keeps braking exactly as it did.
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._MELTED)),
+        ):
+            assert agent_admission_denied_reason() is not None
+            assert agent_admission_denied_reason("reviewing") is None
+
+    def test_every_refused_class_is_announced_and_an_admitted_one_is_not(self) -> None:
+        # A refusal is never silent, and the wording lives on the verdict so both
+        # chokepoints report it identically.
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            self._verdict(load1=self._MELTED).log_denials()
+        assert any("expensive" in line for line in logs.output)
+        assert not any("cheap" in line for line in logs.output)
+
+
+class TestTheShedBandRefusesTheExpensiveClassAlone(TestCase):
+    """#4508 — between "healthy" and "halt" there is now a band, and it sheds ONE class.
+
+    Before the scalar these inputs admitted everything: the weekly window was under the
+    0.99 brake, so nothing refused, and the box went on starting 272-turn coding agents
+    against a budget that was nearly gone. Shedding the expensive class alone is what
+    keeps the review/ship lanes — the ones that RETIRE work — draining into the reset.
+    """
+
+    def _verdict(self, *, weekly: float, shed_at: float = 0.9) -> AgentAdmission:
+        quota = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=weekly,
+            short_utilization=0.1,
+            # An imminent reset keeps PACE healthy, so the SPEND is the dimension under test.
+            seconds_to_weekly_reset=_WEEK * 0.02,
+        )
+        ConfigSetting.objects.set_value("admission_pressure_shed_at", str(shed_at), scope="")
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=0),
+        ):
+            return agent_admission_verdict()
+
+    def test_shed_denies_expensive_and_keeps_the_cheap_drain_running(self) -> None:
+        verdict = self._verdict(weekly=0.92)
+        assert "weekly window" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_below_the_band_nothing_is_shed(self) -> None:
+        verdict = self._verdict(weekly=0.5)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+    def test_raising_the_threshold_to_one_is_the_rollback_lever(self) -> None:
+        """At 1.0 SHED collapses into HALT — admission is the pre-#4508 behaviour."""
+        verdict = self._verdict(weekly=0.92, shed_at=1.0)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+
+    def test_halt_still_refuses_both_classes(self) -> None:
+        verdict = self._verdict(weekly=1.0)
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
+        assert verdict.denied_for(PhaseCost.CHEAP) is not None
+
+
+class TestTheWriteFactorNeverOutrunsTheLoadShed(TestCase):
+    """A wider per-core factor buys seats on an idle box, never on a loaded one."""
+
+    _SHED_LOAD = 38.0  # 0.95 of the 40 watermark on 8 cores: past the 0.9 shed point, short of HALT
+
+    def test_the_shed_band_refuses_expensive_work_whatever_the_factor(self) -> None:
+        for factor in (0.25, 0.5, 2.0):
+            with self.subTest(factor=factor):
+                ConfigSetting.objects.set_value("admission_write_concurrency_per_core", factor)
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=self._SHED_LOAD)),
+                    patch.object(Task.objects, "expensive_lane_occupancy", return_value=0),
+                ):
+                    verdict = agent_admission_verdict()
+                assert "shed band" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+                assert verdict.denied_for(PhaseCost.CHEAP) is None
+
+
+_CEILING_PARTS = (
+    "ceiling",
+    "cores",
+    "per_core",
+    "machine_ceiling",
+    "weekly_pace",
+    "expensive_lane",
+    "cheap_lane",
+    "expensive_occupied",
+    "cheap_occupied",
+)
+
+
+class TestHeadlessAdmissionStatus(TestCase):
+    """The parts ``t3 worker status`` shows are the ones the headless verdict is decided on."""
+
+    def _claimed(self, phase: str) -> None:
+        ticket = Ticket.objects.create()
+        Task.objects.create(
+            ticket=ticket,
+            session=Session.objects.create(ticket=ticket),
+            status=Task.Status.CLAIMED,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1),
+        )
+
+    def _status(self, quota: QuotaSignal) -> HeadlessAdmissionStatus:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=quota),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return headless_admission_status()
+
+    def test_the_ceiling_parts_and_lane_occupancy_are_reported(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        self._claimed("coding")
+        self._claimed("coding")
+        self._claimed("reviewing")
+        paced = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.625,
+            short_utilization=0.1,
+            seconds_to_weekly_reset=_WEEK * 0.5,
+        )
+
+        status = self._status(paced)
+
+        parts = status.as_json()
+        assert {key: parts[key] for key in _CEILING_PARTS} == {
+            "ceiling": 6,
+            "cores": 8,
+            "per_core": 1.0,
+            "machine_ceiling": 8,
+            "weekly_pace": 0.75,
+            "expensive_lane": 6,
+            "cheap_lane": 2,
+            "expensive_occupied": 2,
+            "cheap_occupied": 1,
+        }
+        assert parts["band"] == str(status.pressure.band)
+        assert "ceiling 6 = 8 cores x 1 per core (8) x weekly pace 0.75" in status.line()
+        assert "lanes 6 expensive + 2 cheap (review lane outside the ceiling)" in status.line()
+        assert "occupied 2 expensive + 1 cheap" in status.line()
+
+    def test_the_status_resolves_to_exactly_the_verdict(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        for claimed in (0, 7, 8, 9):  # under the ceiling, its last seat, at it, then an inherited overfull fleet
+            with self.subTest(claimed=claimed):
+                Task.objects.all().delete()
+                for _ in range(claimed):
+                    self._claimed("coding")
+                with (
+                    patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+                    patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+                ):
+                    status = headless_admission_status()
+                    verdict = agent_admission_verdict()
+                    widths = headless_lane_widths()
+
+                assert status.verdict() == verdict
+                assert status.widths == widths
+                assert (
+                    status.as_json()["ceiling"]
+                    == decide_admission(quota=_healthy_quota(), machine=_machine()).ceiling
+                    == 8
+                )
+                assert status.as_json()["expensive_denied"] == verdict.expensive_denied
+                assert status.as_json()["cheap_denied"] == verdict.cheap_denied
+
+    def test_a_claim_admission_block_is_what_the_status_reports(self) -> None:
+        quiescing = "this worker is quiescing for a rolling deploy"
+        with patch.object(gate_mod, "claim_admission_block_reason", return_value=quiescing):
+            status = self._status(_healthy_quota())
+
+        assert status.as_json()["expensive_denied"] == status.as_json()["cheap_denied"] == quiescing
+        assert f"expensive denied: {quiescing}; cheap denied: {quiescing}" in status.line()
+
+    def test_an_unread_quota_reports_the_unscaled_machine_ceiling(self) -> None:
+        unread = QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        )
+
+        status = self._status(unread)
+
+        assert status.as_json()["weekly_pace"] is None
+        assert status.widths.ceiling.value == 4
+        assert "weekly pace unread" in status.line()
+
+    def test_a_braking_band_names_its_cause(self) -> None:
+        status = self._status(_exhausted_quota())
+
+        assert status.pressure.band == "halt"
+        assert status.pressure.reason
+        assert status.pressure.reason in status.line()
+
+    def test_the_status_read_books_no_seat_and_records_no_span(self) -> None:
+        self._claimed("coding")
+        with patch.object(gate_mod, "record_admission_decision") as emit_span:
+            self._status(_healthy_quota())
+
+        emit_span.assert_not_called()
+        assert not Task.objects.filter(admitted_at__isnull=False).exists()
+
+
+class TestDrainConsultsTheGovernor(TestCase):
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _pending_headless(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_drain_admits_nothing_on_a_governor_deny(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
+
+        task = self._pending_headless()
+        with patch.object(gate_mod, "agent_admission_verdict", return_value=_denied("weekly window spent")):
+            result = drain_queue_body()
+
+        assert result["enqueued"] == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_drain_admits_when_the_governor_is_silent(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
+
+        task = self._pending_headless()
+        with (
+            patch.object(gate_mod, "agent_admission_verdict", return_value=_admitted()),
+            patch.object(task_dispatch_mod, "execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+
+        assert task.pk in result["enqueued"]
+
+
+class TestTheDrainDoesNotStarveTheCheapClass(TestCase):
+    """#4098's headline guard: a drain that denies the expensive class still admits the cheap one.
+
+    Measured 2026-08-03: the load brake denied EVERY headless admission for 3h22m —
+    zero review verdicts, 18 pending tasks, no merges. Reviewing and shipping are what
+    retire a worktree and its agent, so refusing them alongside the coding agents that
+    caused the load removed the only work that would have relieved it. This exercises
+    the real signal chain (not the seam) so the self-clearing property is pinned rather
+    than argued.
+    """
+
+    #: Past the 5.0-per-core deny watermark on the 8-core ``_machine`` signal.
+    _MELTED = 8 * 5.0 + 1
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+
+    def _pending(self, phase: str) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            phase=phase,
+        )
+
+    def _drain_under_load(self, load1: float) -> tuple[dict, MagicMock]:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
+
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()) as quota_probe,
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=load1)),
+            patch.object(os, "getloadavg", side_effect=AssertionError("test leaked runner load")) as live_load,
+            patch.object(task_dispatch_mod, "execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+            live_load.assert_not_called()
+            return result, quota_probe
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_braked_drain_admits_the_cheap_class_and_holds_the_expensive_one(self) -> None:
+        coding = self._pending("coding")
+        reviewing = self._pending("reviewing")
+
+        result, _ = self._drain_under_load(self._MELTED)
+
+        assert result["enqueued"] == [reviewing.pk]
+        coding.refresh_from_db()
+        assert coding.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_an_unbraked_drain_admits_both_classes(self) -> None:
+        coding = self._pending("coding")
+        reviewing = self._pending("reviewing")
+
+        result, _ = self._drain_under_load(load1=1.0)
+
+        assert set(result["enqueued"]) == {coding.pk, reviewing.pk}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_the_governor_is_probed_once_per_drain_not_once_per_row(self) -> None:
+        # Nothing changes between iterations of the drain loop, so a per-task re-ask
+        # would return the same verdict N times and cost N probes. The verdict is
+        # computed once and RESOLVED per row.
+        for phase in ("coding", "reviewing", "shipping"):
+            self._pending(phase)
+
+        _, quota_probe = self._drain_under_load(self._MELTED)
+
+        assert quota_probe.call_count == 1
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_the_cheap_lane_bound_still_holds_inside_the_drain(self) -> None:
+        # The exemption is bounded, so a full cheap lane holds cheap rows too — it can
+        # never become the second unbounded lane.
+        reviewing = self._pending("reviewing")
+        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=2):
+            result, _ = self._drain_under_load(self._MELTED)
+
+        assert result["enqueued"] == []
+        reviewing.refresh_from_db()
+        assert reviewing.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_the_cheap_lane_bound_binds_within_one_drain(self) -> None:
+        # A verdict is probed once and then walked over N rows, so within a pass the
+        # headroom it carries is what bounds the lane; without it a single braked drain
+        # would admit every pending cheap row at once.
+        pending = [self._pending("reviewing") for _ in range(5)]
+        with patch.object(Task.objects, "cheap_lane_occupancy", return_value=1):
+            result, _ = self._drain_under_load(self._MELTED)
+
+        # ceiling 2 minus 1 occupied seat leaves headroom for exactly one more.
+        assert result["enqueued"] == [pending[0].pk]
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_row_refused_for_spent_headroom_says_so(self) -> None:
+        # Spent headroom is the one refusal that can only arise MID-loop, so the
+        # pass-level announcement cannot carry it — and it is the one an operator most
+        # needs, since the rows just sit there PENDING — said once a pass, not once a row.
+        for _ in range(3):
+            self._pending("reviewing")
+        with (
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=1),
+            self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs,
+        ):
+            self._drain_under_load(self._MELTED)
+
+        assert len([line for line in logs.output if "headroom spent" in line]) == 1
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_what_a_drain_admits_is_visible_to_the_next_chokepoint(self) -> None:
+        # The property the two chokepoints actually share: the drain's admissions are
+        # STAMPED, so a later probe — the drain's next pass or the post_save receiver,
+        # neither of which can see the other's in-memory headroom — counts them and
+        # stops at the same ceiling.
+        for _ in range(4):
+            self._pending("reviewing")
+
+        result, _ = self._drain_under_load(self._MELTED)
+
+        assert len(result["enqueued"]) == 2
+        assert Task.objects.cheap_lane_occupancy() == 2
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_an_admission_the_runner_never_claimed_releases_its_seat(self) -> None:
+        # The seat is bounded in TIME so a runner that died holding an admission cannot
+        # wedge the lane shut — the failure mode a stamp with no expiry would introduce.
+        stale = self._pending("reviewing")
+        Task.objects.filter(pk=stale.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        assert Task.objects.cheap_lane_occupancy() == 0
+
+
+class TestTheLaneSeatIsArbitratedInsideTheWrite(TestCase):
+    """#4125: the bound holds across processes, not merely inside one probe window.
+
+    The occupancy probe and the admission stamp were two unsynchronised statements, so two
+    processes hitting a chokepoint between them each saw room and each admitted — an
+    effective bound of ceiling PLUS however many raced. The racers below are deliberately
+    NOT wrapped in ``transaction.atomic()``: the path under test is a stale read followed
+    by a bare autocommit write, and wrapping them would let the backend's connection-level
+    write serialization hide the very race being reproduced.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+
+    def _cheap_row(self) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            status=Task.Status.PENDING,
+            phase="reviewing",
+        )
+
+    def _seated_row(self) -> Task:
+        row = self._cheap_row()
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
+        return row
+
+    def _probe(self) -> AgentAdmission:
+        """One chokepoint's verdict, off the live occupancy count — a racer's stale read."""
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            return agent_admission_verdict()
+
+    def test_two_racing_chokepoints_cannot_both_take_the_last_seat(self) -> None:
+        self._seated_row()
+        racer_one, racer_two = self._probe(), self._probe()
+        first, second = self._cheap_row(), self._cheap_row()
+
+        assert racer_one.admit(first.pk, "reviewing", at="racer-one") is True
+        assert racer_two.admit(second.pk, "reviewing", at="racer-two") is False
+        assert Task.objects.cheap_lane_occupancy() == 2
+
+    def test_a_row_already_holding_a_live_seat_is_not_admitted_twice(self) -> None:
+        # Re-admitting a row already in the runner's hand is a duplicate dispatch, which
+        # is what the drain did to every row it had admitted on its previous pass.
+        row = self._cheap_row()
+
+        assert self._probe().admit(row.pk, "reviewing", at="first pass") is True
+        assert self._probe().admit(row.pk, "reviewing", at="next pass") is False
+
+    def test_a_seat_the_window_released_can_be_taken_again(self) -> None:
+        # The single-occupancy rule must not outlive the seat: a runner that died holding
+        # an admission would otherwise wedge that row out of the lane permanently.
+        row = self._cheap_row()
+        assert self._probe().admit(row.pk, "reviewing", at="first pass") is True
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        assert self._probe().admit(row.pk, "reviewing", at="after the window") is True
+
+    def test_the_expensive_class_is_not_seated_against_the_cheap_ceiling(self) -> None:
+        # The cheap ceiling bounds the cheap lane only; an expensive row is braked by the
+        # governor's own verdict and its own coding ceiling, and must not inherit a width
+        # that was never about it.
+        for _ in range(3):
+            self._seated_row()
+        coding = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            status=Task.Status.PENDING,
+            phase="coding",
+        )
+
+        assert self._probe().admit(coding.pk, "coding", at="expensive") is True
+
+    def test_a_class_level_refusal_is_not_repeated_for_every_row_it_holds(self) -> None:
+        # A braked drain announced the class refusal once and then repeated it per held
+        # row — 19 lines a cadence on the measured shape, all saying the same thing.
+        for _ in range(2):
+            self._seated_row()
+        held = [self._cheap_row() for _ in range(3)]
+        verdict = self._probe()
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            verdict.log_denials()
+            for row in held:
+                assert verdict.admit(row.pk, "reviewing", at="headless drain") is False
+
+        assert len([line for line in logs.output if "review lane occupancy" in line]) == 1
+
+    def test_a_pass_announces_the_seats_the_window_released(self) -> None:
+        # The ceiling goes soft exactly when the box is saturated — the state an operator
+        # most needs named, and the one carrying no refusal of its own to name it.
+        released = self._cheap_row()
+        Task.objects.filter(pk=released.pk).update(admitted_at=timezone.now() - ADMITTED_INFLIGHT_WINDOW * 2)
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            self._probe().log_denials()
+
+        assert any("released 1 unclaimed seat" in line for line in logs.output)
+
+
+class TestAutoEnqueueConsultsTheGovernor(TestCase):
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_immediate_backend_accepts_the_shipped_cheap_queue(self) -> None:
+        assert execute_task.using(queue_name="cheap").queue_name == "cheap"
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_auto_enqueue_is_suppressed_on_a_governor_deny(self) -> None:
+        # The post_save auto-enqueue must consult the governor: a DENY leaves the
+        # task PENDING for the (also-gated) drain, never fires the dispatch.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        with (
+            patch.object(gate_mod, "agent_admission_verdict", return_value=_denied("load over watermark")),
+            patch.object(task_dispatch_mod, "execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            Task.objects.create(
+                ticket=ticket,
+                session=session,
+                status=Task.Status.PENDING,
+                phase="architectural_review",
+            )
+            enqueue_task.enqueue.assert_not_called()
+
+    def _create_pending(self, phase: str) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.PENDING,
+            phase=phase,
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_auto_enqueue_classifies_by_phase_like_the_drain(self) -> None:
+        # The two chokepoints share one classification, so they cannot diverge on which
+        # rows a braked box still admits.
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=8 * 5.0 + 1)),
+            patch.object(task_dispatch_mod, "execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            self._create_pending("coding")
+            enqueue_task.enqueue.assert_not_called()
+            self._create_pending("reviewing")
+            enqueue_task.using.assert_called_once_with(queue_name="cheap")
+            enqueue_task.using.return_value.enqueue.assert_called_once()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_burst_of_cheap_rows_cannot_outrun_the_lane_ceiling(self) -> None:
+        # The bound the two chokepoints SHARE, exercised where it is hardest to hold:
+        # post_save sees one row at a time, so it carries no per-pass headroom, and the
+        # rows a burst admits are still PENDING — invisible to a re-probe that counts
+        # only CLAIMED agents. Six cheap rows created under a firing machine brake with
+        # a ceiling of two must admit two, not six; N-wide review/ship agents let
+        # through a brake is the melt the ceiling exists to stop.
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(load1=8 * 5.0 + 1)),
+            patch.object(task_dispatch_mod, "execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            for _ in range(6):
+                self._create_pending("reviewing")
+
+            assert enqueue_task.using.return_value.enqueue.call_count == 2
+
+
+class TestTheReviewLaneIsOutsideTheCodingCeiling(TestCase):
+    """#5051: reviewing always comes first — it is never queued behind coding.
+
+    ``_machine()`` is 8 cores and ``_healthy_quota()`` paces at 1.0, so the governor's
+    ceiling is a deterministic 4 for the coding lane; the review lane is
+    ``cheap_phase_admission_ceiling`` (2) wide beside it.
+    """
+
+    _CEILING = 4
+
+    def _verdict(self, *, expensive: int = 0, cheap: int = 0) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(Task.objects, "expensive_lane_occupancy", return_value=expensive),
+            patch.object(Task.objects, "cheap_lane_occupancy", return_value=cheap),
+        ):
+            return agent_admission_verdict()
+
+    def test_the_review_lane_width_follows_its_setting_and_never_drops_below_one(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 3)
+        assert review_lane_width() == 3
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
+        assert review_lane_width() == 1
+
+    def test_a_full_coding_lane_leaves_the_review_lane_its_whole_width(self) -> None:
+        verdict = self._verdict(expensive=self._CEILING)
+
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is not None
+        assert verdict.denied_for(PhaseCost.CHEAP) is None
+        assert verdict.cheap_lane.headroom == 2
+
+    def test_running_reviews_leave_the_coding_lane_its_whole_ceiling(self) -> None:
+        verdict = self._verdict(expensive=self._CEILING - 1, cheap=2)
+
+        assert verdict.denied_for(PhaseCost.EXPENSIVE) is None
+        assert verdict.expensive_lane.headroom == 1
+
+    def test_the_coding_ceiling_still_refuses_the_expensive_class_at_it(self) -> None:
+        verdict = self._verdict(expensive=self._CEILING)
+
+        assert "expensive lane occupancy 4 at/over the expensive ceiling 4" in (
+            verdict.denied_for(PhaseCost.EXPENSIVE) or ""
+        )
+
+    def test_a_raised_factor_widens_the_coding_lane_and_leaves_the_review_lane_its_width(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 2.0)
+
+        full = self._verdict(expensive=16)
+
+        assert "expensive lane occupancy 16 at/over the expensive ceiling 16" in (
+            full.denied_for(PhaseCost.EXPENSIVE) or ""
+        )
+        assert full.expensive_lane.ceiling == 16
+        assert full.denied_for(PhaseCost.CHEAP) is None
+        assert full.cheap_lane.ceiling == 2
+        assert self._verdict(expensive=15).denied_for(PhaseCost.EXPENSIVE) is None
+
+
+class TestReviewingIsNeverQueuedBehindCoding(TestCase):
+    """End to end through the post_save walk: the owner's two critics start beside a full coding lane."""
+
+    def setUp(self) -> None:
+        for name, signal in (("read_quota_signal", _healthy_quota()), ("read_machine_signal", _machine())):
+            probe = patch.object(gate_mod, name, return_value=signal)
+            probe.start()
+            self.addCleanup(probe.stop)
+        runner = patch.object(task_dispatch_mod, "execute_task")
+        self.runner = runner.start()
+        self.addCleanup(runner.stop)
+        self.ticket = Ticket.objects.create()
+
+    def _task(self, phase: str, *, status: str = Task.Status.PENDING) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            status=status,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1) if status == Task.Status.CLAIMED else None,
+        )
+
+    def _claimed(self, phase: str, count: int) -> None:
+        for _ in range(count):
+            self._task(phase, status=Task.Status.CLAIMED)
+
+    @staticmethod
+    def _admitted(task: Task) -> bool:
+        task.refresh_from_db()
+        return task.admitted_at is not None
+
+    def test_two_critics_start_beside_a_full_coding_lane(self) -> None:
+        self._claimed("coding", 4)
+
+        critics = [self._task("critic_reviewing") for _ in range(2)]
+
+        assert all(self._admitted(critic) for critic in critics)
+        assert self.runner.using.call_args_list == [call(queue_name="cheap")] * 2
+        assert self.runner.using.return_value.enqueue.call_count == 2
+
+    def test_control_the_review_lane_is_still_bounded(self) -> None:
+        self._claimed("coding", 4)
+        for _ in range(2):
+            self._task("critic_reviewing")
+
+        with self.assertLogs("teatree.core.agent_admission", level="WARNING") as logs:
+            third = self._task("critic_reviewing")
+
+        assert not self._admitted(third)
+        assert any("review lane occupancy 2 at/over the review ceiling 2" in line for line in logs.output)
+
+    def test_running_reviews_do_not_hold_back_a_coding_row(self) -> None:
+        self._claimed("reviewing", 2)
+        self._claimed("coding", 3)
+
+        assert self._admitted(self._task("coding"))
+
+    def test_background_phases_do_not_take_review_seats(self) -> None:
+        for _ in range(2):
+            self._task("scanning_news")
+
+        assert self._admitted(self._task("critic_reviewing"))
+
+
+class TestTheCodingLaneIsArbitratedInsideTheWrite(TestCase):
+    """The #4125 lesson applied to the coding lane: a stale probe must not let two racers share one seat.
+
+    The racers are deliberately NOT wrapped in ``transaction.atomic()``, for the reason the
+    review-lane twin records: the wrapper would serialize them and hide the race.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+
+    def _row(self, phase: str = "coding") -> Task:
+        return Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING, phase=phase)
+
+    def _seated_row(self, phase: str = "coding") -> Task:
+        row = self._row(phase)
+        Task.objects.filter(pk=row.pk).update(admitted_at=timezone.now())
+        return row
+
+    def _probe(self, *, cores: int = 8) -> AgentAdmission:
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine(cores=cores)),
+        ):
+            return agent_admission_verdict()
+
+    def test_seated_reviews_spend_no_coding_seat(self) -> None:
+        for _ in range(2):
+            self._seated_row("reviewing")
+        coding = [self._row() for _ in range(4)]
+
+        admitted = [row.pk for row in coding if self._probe(cores=6).admit(row.pk, "coding", at="post_save")]
+
+        assert admitted == [row.pk for row in coding[:3]]
+
+    def test_a_zero_review_width_leaves_the_coding_ceiling_in_force(self) -> None:
+        ConfigSetting.objects.set_value("cheap_phase_admission_ceiling", 0)
+        for _ in range(2):
+            self._seated_row()
+
+        assert self._probe(cores=4).admit(self._row().pk, "coding", at="zero width") is False
+
+    def test_two_racing_chokepoints_cannot_both_take_the_last_coding_seat(self) -> None:
+        for _ in range(3):
+            self._seated_row()
+        racer_one, racer_two = self._probe(), self._probe()
+        first, second = self._row(), self._row()
+
+        assert racer_one.admit(first.pk, "coding", at="racer-one") is True
+        assert racer_two.admit(second.pk, "coding", at="racer-two") is False
+        assert Task.objects.expensive_lane_occupancy() == 4
+
+    def test_the_coding_headroom_binds_within_one_pass(self) -> None:
+        self._seated_row()
+        verdict = self._probe()
+        rows = [self._row() for _ in range(4)]
+
+        admitted = [row.pk for row in rows if verdict.admit(row.pk, "coding", at="drain")]
+
+        assert admitted == [row.pk for row in rows[:3]]
+
+    def test_the_review_lane_is_not_narrowed_by_a_full_coding_lane(self) -> None:
+        for _ in range(4):
+            self._seated_row()
+
+        assert self._probe().admit(self._row("reviewing").pk, "reviewing", at="review") is True
+
+
+class TestTheDrainAdmitsReviewsBesideAFullCodingLane(TestCase):
+    """The live shape #4374 recorded — every slot held by coding, reviews queued — through the real drain."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 - deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 - deferred: local import
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create()
+
+    def _task(self, phase: str, *, status: str = Task.Status.PENDING) -> Task:
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=Session.objects.create(ticket=self.ticket),
+            status=status,
+            phase=phase,
+            lease_expires_at=timezone.now() + dt.timedelta(hours=1) if status == Task.Status.CLAIMED else None,
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_lane_full_of_coding_still_admits_every_queued_review(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 - deferred: local import
+
+        for _ in range(4):
+            self._task("coding", status=Task.Status.CLAIMED)
+        coding = self._task("coding")
+        reviews = [self._task("reviewing") for _ in range(2)]
+
+        with (
+            patch.object(gate_mod, "read_quota_signal", return_value=_healthy_quota()),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch.object(task_dispatch_mod, "execute_task"),
+        ):
+            result = drain_queue_body()
+
+        assert result["enqueued"] == [review.pk for review in reviews]
+        coding.refresh_from_db()
+        assert coding.admitted_at is None
+
+
+class TestTheClaimAdmissionGateDeniesBothClasses(TestCase):
+    def test_the_off_posture_denies_even_with_the_governor_live(self) -> None:
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+
+        verdict = agent_admission_verdict()
+
+        assert "admits no loop" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert "admits no loop" in (verdict.denied_for(PhaseCost.CHEAP) or "")
+
+
+def _pin_metered_harness() -> None:
+    """The operator's own metered pin — the harness must move before the provider validates."""
+    ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+    ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
+
+
+def _exhausted_fleet() -> None:
+    """Every configured Anthropic account drained — the fleet the metered lane never touches."""
+    from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: local
+
+    for index in range(2):
+        AnthropicTokenUsage.objects.create(
+            pass_path=f"anthropic/account-{index}",
+            utilization_5h=1.0,
+            utilization_7d=1.0,
+            status_7d="rejected",
+            reset_7d=timezone.now() + dt.timedelta(days=3),
+            checked_at=timezone.now(),
+            valid_until=timezone.now() + dt.timedelta(days=3),
+        )
+
+
+class TestAdmissionIsLaneAware(TestCase):
+    """A dispatch is judged against the budget it would actually spend (#4816).
+
+    ``BRAKE_PRECEDENCE`` leads with ``accounts-exhausted``, so an exhausted OAuth fleet
+    HALTed every dispatch — including the metered ones that authenticate through a key
+    the fleet says nothing about. That is the 307 refused tasks the ticket names.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("metered_token_ceiling", "1000000")
+
+    def _metered_attempt(self, tokens: int) -> None:
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred: local
+
+        TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            lane=TaskAttempt.Lane.METERED,
+            input_tokens=tokens,
+            output_tokens=0,
+        )
+
+    def test_control_a_subscription_exhausted_fleet_does_not_block_a_metered_dispatch(self) -> None:
+        _pin_metered_harness()
+        _exhausted_fleet()
+        self._metered_attempt(10_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is None
+
+    def test_control_an_exhausted_metered_key_blocks_a_metered_dispatch(self) -> None:
+        _pin_metered_harness()
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "metered" in verdict.expensive_denied
+        assert "1,000,000" in verdict.expensive_denied
+        assert "24h" in verdict.expensive_denied
+
+    def test_metered_spend_halts_the_review_lane_too(self) -> None:
+        _pin_metered_harness()
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert "metered" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert "metered" in (verdict.denied_for(PhaseCost.CHEAP) or "")
+
+    def test_metered_park_halts_the_review_lane_too(self) -> None:
+        _pin_metered_harness()
+        UsageWindowState.record_limit(
+            lane=TaskAttempt.Lane.METERED,
+            cause="rate_limit",
+            resets_at=timezone.now() + dt.timedelta(hours=1),
+        )
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert "metered lane is parked" in (verdict.denied_for(PhaseCost.EXPENSIVE) or "")
+        assert "metered lane is parked" in (verdict.denied_for(PhaseCost.CHEAP) or "")
+
+    def test_control_a_healthy_anthropic_fleet_does_not_rescue_an_exhausted_metered_key(self) -> None:
+        _pin_metered_harness()
+        from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage  # noqa: PLC0415 — deferred: local
+
+        AnthropicTokenUsage.objects.create(
+            pass_path="anthropic/healthy",
+            utilization_5h=0.01,
+            utilization_7d=0.01,
+            checked_at=timezone.now(),
+            valid_until=timezone.now() + dt.timedelta(minutes=10),
+        )
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "metered" in verdict.expensive_denied
+
+    def test_control_the_subscription_lane_is_still_judged_on_the_fleet(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        _exhausted_fleet()
+        self._metered_attempt(2_000_000)
+
+        with patch.object(gate_mod, "read_machine_signal", return_value=_machine()):
+            verdict = agent_admission_verdict()
+
+        assert verdict.expensive_denied is not None
+        assert "quota-exhausted" in verdict.expensive_denied, "metered spend must not govern a subscription dispatch"
+
+
+class TestAMeteredCeilingBreachAdmitsZeroTasks(TestCase):
+    """The 307-dispatch shape: a refused lane must enqueue NOTHING, not fail each row."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local
+
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        ConfigSetting.objects.set_value("metered_token_ceiling", "1000000")
+        _pin_metered_harness()
+
+    def _pending(self, count: int) -> list[Task]:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return [
+            Task.objects.create(
+                ticket=ticket, session=session, status=Task.Status.PENDING, phase="architectural_review"
+            )
+            for _ in range(count)
+        ]
+
+    def _burn_the_metered_ceiling(self) -> None:
+        from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred: local
+
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR)
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            ended_at=timezone.now(),
+            lane=TaskAttempt.Lane.METERED,
+            input_tokens=2_000_000,
+            output_tokens=0,
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_breached_ceiling_enqueues_zero_and_leaves_every_row_pending(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 — deferred: local
+
+        pending = self._pending(5)
+        self._burn_the_metered_ceiling()
+
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+
+        assert result["enqueued"] == []
+        assert enqueue_task.enqueue.call_count == 0
+        for task in pending:
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_control_an_unbreached_ceiling_still_drains(self) -> None:
+        from teatree.core.tasks import drain_queue_body  # noqa: PLC0415 — deferred: local
+
+        pending = self._pending(2)
+
+        with (
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+            patch("teatree.core.tasks.execute_task") as enqueue_task,
+        ):
+            enqueue_task.enqueue = MagicMock()
+            result = drain_queue_body()
+
+        assert set(result["enqueued"]) == {task.pk for task in pending}
+
+
+class TestOneVerdictResolvesTheSettingsOnce(TestCase):
+    """Every Task creation runs a verdict, so each extra resolution is paid per row."""
+
+    def _config_reads(self, probe: Callable[[], object]) -> int:
+        table = ConfigSetting._meta.db_table
+        with CaptureQueriesContext(connection) as captured:
+            probe()
+        return sum(table in query["sql"] for query in captured.captured_queries)
+
+    def _assert_one_resolution(self) -> None:
+        one = self._config_reads(get_effective_settings)
+        assert one > 0, "control: a resolution must be observable as config-table reads"
+        # The fleet-admission block reads the preset rows directly, ahead of the governor's resolution.
+        with (
+            patch.object(gate_mod, "claim_admission_block_reason", return_value=None),
+            patch.object(gate_mod, "read_machine_signal", return_value=_machine()),
+        ):
+            assert self._config_reads(agent_admission_verdict) == one
+
+    def test_the_subscription_lane_resolves_once(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        self._assert_one_resolution()
+
+    def test_the_metered_lane_resolves_once(self) -> None:
+        _pin_metered_harness()
+        self._assert_one_resolution()

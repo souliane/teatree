@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review-one-place-over-unification-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "HOLD — blocking finding. This erases a deliberate behavior and data-contract difference. Keep the two strategies distinct: a shared owner may centralize the invariant without choosing or flattening either strategy."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

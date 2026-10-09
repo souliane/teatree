@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-records_sha_bound_anti_vacuity_attestation_before_review_request-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 widget lifecycle record-anti-vacuity 1829 --head-sha abc123 --ac-coverage 'AC1-3 mapped' --proven-test tests/x.py::test_y", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,1144 @@
+"""Race-safe review-request dedup guard against LIVE Slack messages (#1084).
+
+The guard reads the target channel's recent history *and* takes an
+atomic DB claim before a review-request post. Every fake here stops at
+the ``conversations.history`` httpx boundary (pattern mirrored from
+``tests/teatree_backends/test_slack.py``) — no live Slack call, no
+network. The DB is the real Django test DB so the atomic-claim race is
+exercised end to end.
+"""
+
+import datetime as dt
+import os
+from functools import partial
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
+from django.core.exceptions import ImproperlyConfigured
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.core.gates.review_request_guard import (
+    GuardDecision,
+    GuardOptions,
+    GuardTarget,
+    overlay_for_mr_url,
+    resolve_guard_target,
+)
+from teatree.core.gates.review_request_guard import peek_should_post_review_request as _peek_should_post_review_request
+from teatree.core.gates.review_request_guard import reconcile_out_of_band as _reconcile_out_of_band
+from teatree.core.gates.review_request_guard import should_post_review_request as _should_post_review_request
+from teatree.core.models import PullRequest, ReviewRequestPost, Ticket
+from teatree.core.overlay import OverlayConfig
+
+if TYPE_CHECKING:
+    from tests.teatree_core.conftest import CommandOverlay
+
+_MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
+_CHANNEL_ID = "C0DEMOCHAN1"
+_CHANNEL_NAME = "review-channel"
+_BOT_AUTHOR = "B_AGENT"
+_HUMAN_AUTHOR = "U_HUMAN"
+
+should_post_review_request = partial(_should_post_review_request, overlay="overlay-a")
+peek_should_post_review_request = partial(_peek_should_post_review_request, overlay="overlay-a")
+reconcile_out_of_band = partial(_reconcile_out_of_band, overlay="overlay-a")
+
+
+def _ts_now() -> str:
+    return f"{timezone.now().timestamp():.6f}"
+
+
+class FakeClient:
+    """Fake for the module-level ``httpx.get`` :class:`SlackHttpClient` calls internally."""
+
+    def __init__(
+        self,
+        *,
+        pages: list[dict] | None = None,
+        replies: dict | None = None,
+        raises: BaseException | None = None,
+    ) -> None:
+        self.pages = pages or []
+        self._page_idx = 0
+        self.replies = replies
+        self._raises = raises
+        self.get_calls: list[dict[str, object]] = []
+
+    def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.get_calls.append({"url": url, **kwargs})
+        if self._raises is not None:
+            raise self._raises
+        if "auth.test" in url:
+            return httpx.Response(
+                200,
+                json={"ok": True, "url": "https://team.slack.com/"},
+                request=httpx.Request("GET", url),
+            )
+        if "conversations.history" in url:
+            page = self.pages[self._page_idx] if self._page_idx < len(self.pages) else {"ok": False}
+            self._page_idx += 1
+            return httpx.Response(200, json=page, request=httpx.Request("GET", url))
+        if "conversations.replies" in url:
+            payload = self.replies if self.replies is not None else {"ok": False, "error": "thread_not_found"}
+            return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+        return httpx.Response(404, request=httpx.Request("GET", url))
+
+
+class TestPriorAgentPostSuppresses(TestCase):
+    """(a) A prior agent post already in channel history → SUPPRESS + permalink."""
+
+    def test_prior_post_in_history_suppresses(self) -> None:
+        page = {
+            "ok": True,
+            "messages": [
+                {"text": f"feat: thing {_MR_URL}", "ts": _ts_now(), "bot_id": _BOT_AUTHOR},
+            ],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                overlay="overlay-a",
+            )
+        assert decision.action == "suppress"
+        assert decision.permalink.startswith("https://team.slack.com/archives/")
+        assert decision.author == _BOT_AUTHOR
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).overlay == "overlay-a"
+
+
+class TestUserManualPostSuppresses(TestCase):
+    """(b) A user's manual post (DIFFERENT author) → SUPPRESS, author == human.
+
+    A naive "only suppress my own posts" implementation returns POST here
+    — caught by asserting suppression on a non-bot author.
+    """
+
+    def test_user_manual_post_suppresses_with_human_author(self) -> None:
+        page = {
+            "ok": True,
+            "messages": [
+                {"text": f"please review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR},
+            ],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.author == _HUMAN_AUTHOR
+
+
+class TestRaceAtomicClaim(TestCase):
+    """(c) Race: call 1 history empty → POST; call 2 finds URL → SUPPRESS.
+
+    The atomic DB claim from call 1 (get_or_create created=False on the
+    second invocation) independently yields SUPPRESS. Exactly one
+    effective POST across the two invocations against one test DB.
+    """
+
+    def test_claim_records_the_required_overlay(self) -> None:
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                overlay="overlay-a",
+            )
+
+        assert decision.action == "post"
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).overlay == "overlay-a"
+
+    def test_two_invocations_yield_exactly_one_post(self) -> None:
+        empty_page = {"ok": True, "messages": [], "has_more": False}
+        fake1 = FakeClient(pages=[empty_page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake1.get)
+            first = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+        # Second invocation: history now shows the just-posted message
+        # (a concurrent actor) AND the DB claim already exists.
+        page2 = {
+            "ok": True,
+            "messages": [{"text": f"feat {_MR_URL}", "ts": _ts_now(), "bot_id": _BOT_AUTHOR}],
+            "has_more": False,
+        }
+        fake2 = FakeClient(pages=[page2])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake2.get)
+            second = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+        assert first.action == "post"
+        assert second.action == "suppress"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+    def test_db_claim_alone_suppresses_even_if_history_empty(self) -> None:
+        """The atomic claim is independent of the live read.
+
+        Once call 1 has claimed the row, a second caller whose live read
+        is *still empty* (the concurrent post not yet visible) must still
+        SUPPRESS — the get_or_create created=False is the race backstop.
+        """
+        empty_page = {"ok": True, "messages": [], "has_more": False}
+        fake1 = FakeClient(pages=[empty_page])
+        fake2 = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake1.get)
+            first = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake2.get)
+            second = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert first.action == "post"
+        assert second.action == "suppress"
+        assert second.reason == "already_claimed"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+
+class TestFailSafeOnReadError(TestCase):
+    """(d) httpx error/timeout → SUPPRESS reason=read_failed_failsafe, bounded."""
+
+    def test_timeout_suppresses_failsafe(self) -> None:
+        fake = FakeClient(raises=httpx.TimeoutException("slow"))
+        start = timezone.now()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                options=GuardOptions(read_timeout=2.0),
+            )
+        elapsed = (timezone.now() - start).total_seconds()
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+        # No post recorded; obligation stays open for a later tick.
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+        # Bounded — no unbounded retry loop.
+        assert elapsed < 10.0
+
+    def test_http_error_suppresses_failsafe(self) -> None:
+        fake = FakeClient(raises=httpx.HTTPError("boom"))
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+
+    def test_api_not_ok_suppresses_failsafe(self) -> None:
+        """A non-exception API ok=false read also fails safe to SUPPRESS."""
+        fake = FakeClient(pages=[{"ok": False, "error": "channel_not_found"}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_non_numeric_ts_is_excluded_from_window(self) -> None:
+        """A message whose ts is non-numeric is treated as out-of-window."""
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": "not-a-float", "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+
+
+class TestConnectTokenIsReadToken(TestCase):
+    """(e) The guard reads history with the token it is given (read==post).
+
+    The caller resolves the Connect⇒xoxp decision via
+    slack_token_policy.channel_token and hands the resulting token to the
+    guard; the guard must read with exactly that token. Asserted by
+    inspecting the captured Authorization header.
+    """
+
+    def test_guard_reads_with_supplied_xoxp_token(self) -> None:
+        page = {"ok": True, "messages": [], "has_more": False}
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxp-user-connect"),
+            )
+        history_calls = [c for c in fake.get_calls if "conversations.history" in str(c["url"])]
+        assert history_calls
+        for call in history_calls:
+            headers = call["headers"]
+            assert isinstance(headers, dict)
+            assert headers["Authorization"] == "Bearer xoxp-user-connect"
+
+
+class TestReconciliationOnOutOfBandPost(TestCase):
+    """A detected out-of-band post reconciles ReviewRequestPost + PullRequest.
+
+    done_at is set so ReviewNagScanner stops nagging; the PR transitions
+    OPEN → REVIEW_REQUESTED with the discovered permalink as slack_url.
+    The loop Task lifecycle is NOT touched (no Task row created/mutated).
+    """
+
+    def test_out_of_band_post_marks_done_and_transitions_pr(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        pr = PullRequest.objects.create(
+            ticket=ticket,
+            url=_MR_URL,
+            repo="org/repo",
+            iid="385",
+            state=PullRequest.State.OPEN,
+        )
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+        assert decision.action == "suppress"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.done_at is not None
+        pr.refresh_from_db()
+        assert pr.state == PullRequest.State.REVIEW_REQUESTED
+        assert pr.slack_url == decision.permalink
+
+    def test_recency_window_excludes_old_post(self) -> None:
+        """A post older than the recency window does NOT suppress."""
+        old_ts = f"{(timezone.now() - dt.timedelta(days=30)).timestamp():.6f}"
+        # conversations.history with `oldest` would not return this server
+        # side; the fake returns it anyway so the guard's own window
+        # filter is what must exclude it.
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": old_ts, "bot_id": _BOT_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                options=GuardOptions(recency_window=dt.timedelta(hours=24)),
+            )
+        assert decision.action == "post"
+
+
+class TestGuardDecisionShouldPost:
+    def test_should_post_true_only_for_post_action(self) -> None:
+        assert GuardDecision(action="post").should_post is True
+        assert GuardDecision(action="suppress").should_post is False
+
+
+def _bare_overlay() -> "CommandOverlay":
+    from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
+    from tests.teatree_core.conftest import CommandOverlay  # noqa: PLC0415
+
+    overlay = CommandOverlay()
+    # Per-instance config so we never mutate the class-level default
+    # shared across the suite (see test_followup_discover_mrs).
+    overlay.config = OverlayConfig()
+    return overlay
+
+
+class _ChannelConfig(OverlayConfig):
+    """An ``OverlayConfig`` with a fixed review channel and Slack token.
+
+    A real subclass, so the double is type-checked like production code.
+    """
+
+    def get_review_channel(self) -> tuple[str, str]:
+        return (_CHANNEL_NAME, _CHANNEL_ID)
+
+    def get_slack_token(self) -> str:
+        return "xoxb-sync"
+
+
+def _overlay_with_channel() -> "CommandOverlay":
+    overlay = _bare_overlay()
+    overlay.config = _ChannelConfig()
+    return overlay
+
+
+class TestResolveGuardTarget(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_returns_none_when_no_overlay(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader.get_overlay",
+            side_effect=ImproperlyConfigured("none"),
+        ):
+            assert resolve_guard_target() is None
+
+    def test_returns_none_when_no_review_channel(self) -> None:
+        with patch(
+            "teatree.core.overlay_loader._discover_overlays",
+            return_value={"test": _bare_overlay()},
+        ):
+            assert resolve_guard_target() is None
+
+    def test_ambiguous_registry_resolves_via_explicit_overlay_name(self) -> None:
+        """An ambiguous registry must not degrade into a bogus "no channel".
+
+        The in-process MCP server registers EVERY overlay and sets no
+        ``T3_OVERLAY_NAME``, so a no-arg ``get_overlay`` raises ``Multiple
+        overlays found``. That raise was swallowed into ``None`` and surfaced
+        as ``no_review_channel_or_token`` — a false negative making a
+        genuinely-unposted MR read as already handled, while the CLI (which
+        sets the env var) reported the truth on the same MR. Naming the
+        overlay resolves the same target, and the messaging backend must be
+        built for that SAME overlay so the bot token is not read for another.
+        """
+        registry = {"other": _bare_overlay(), "test": _overlay_with_channel()}
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=registry),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None) as messaging,
+            patch.dict(os.environ),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert resolve_guard_target() is None
+            target = resolve_guard_target(overlay_name="test")
+
+        assert target is not None
+        assert target.channel_id == _CHANNEL_ID
+        assert target.token == "xoxb-sync"
+        messaging.assert_called_once_with("test")
+
+    def test_uses_sync_token_when_messaging_not_bot(self) -> None:
+        overlay = _overlay_with_channel()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+        ):
+            target = resolve_guard_target()
+        assert target is not None
+        assert target.token == "xoxb-sync"
+        assert target.channel_id == _CHANNEL_ID
+
+    def test_uses_resolved_channel_token_for_slack_bot(self) -> None:
+        overlay = _overlay_with_channel()
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
+            patch.object(backend, "resolve_channel_token", return_value="xoxp-connect") as rct,
+        ):
+            target = resolve_guard_target()
+        assert target is not None
+        assert target.token == "xoxp-connect"
+        rct.assert_called_once_with(_CHANNEL_ID)
+
+    def test_connect_guard_token_is_xoxp_when_conversations_info_flaky(self) -> None:
+        """Guard read-token == post-token even when ``conversations.info`` fails (#1110).
+
+        The #1084 guard reads channel history with the exact token an
+        outbound post would use. On a Slack-Connect review channel whose
+        ``conversations.info`` probe is flaky (``ok:false``), the
+        pre-#1110 policy resolved the guard token to the bot ``xoxb`` —
+        a token the Connect channel rejects, so the live dedup read
+        always saw an empty history and never suppressed a duplicate
+        review-request post. #1110: an unconfirmable Connect channel
+        resolves the guard (a WRITE-class read-as-the-post) to the user
+        ``xoxp`` token. RED on main: ``target.token == "xoxb-bot"``.
+
+        The real ``resolve_channel_token`` / ``_channel_token`` run; only
+        the ``httpx`` boundary is faked so ``conversations.info`` fails.
+        """
+        overlay = _overlay_with_channel()
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "ratelimited"},
+                request=httpx.Request("GET", url),
+            )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
+            patch.object(slack_http.httpx, "get", fake_get),
+        ):
+            target = resolve_guard_target()
+
+        assert target is not None
+        assert target.token == "xoxp-user"
+
+    def test_returns_none_when_no_token(self) -> None:
+        overlay = _bare_overlay()
+        self._monkeypatch.setattr(overlay.config, "get_review_channel", lambda: (_CHANNEL_NAME, _CHANNEL_ID))
+        self._monkeypatch.setattr(overlay.config, "get_slack_token", lambda: "")
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+        ):
+            assert resolve_guard_target() is None
+
+    def test_explicit_channel_id_skips_overlay_channel_lookup(self) -> None:
+        overlay = _overlay_with_channel()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+        ):
+            target = resolve_guard_target(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME)
+        assert target is not None
+        assert target.channel_id == _CHANNEL_ID
+
+    def test_a_supplied_channel_id_is_kept_when_its_name_is_not_given(self) -> None:
+        overlay = _overlay_with_channel()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+        ):
+            target = resolve_guard_target(channel_id="C0DEMOBROADCAST")
+        assert target is not None
+        assert target.channel_id == "C0DEMOBROADCAST"
+
+
+class TestReconcileOutOfBand(TestCase):
+    def test_returns_empty_when_read_fails(self) -> None:
+        fake = FakeClient(raises=httpx.HTTPError("down"))
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "unreadable"
+        assert getattr(result, "permalink", None) == ""
+
+    def test_returns_empty_when_api_not_ok(self) -> None:
+        fake = FakeClient(pages=[{"ok": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "unreadable"
+
+    def test_returns_empty_when_nothing_in_window(self) -> None:
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "absent"
+
+    def test_reconciles_and_returns_permalink(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        pr = PullRequest.objects.create(
+            ticket=ticket,
+            url=_MR_URL,
+            repo="org/repo",
+            iid="385",
+            state=PullRequest.State.OPEN,
+        )
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "reconciled"
+        assert result.permalink.startswith("https://team.slack.com/archives/")
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.done_at is not None
+        pr.refresh_from_db()
+        assert pr.state == PullRequest.State.REVIEW_REQUESTED
+
+    def test_old_window_post_excluded(self) -> None:
+        old_ts = f"{(timezone.now() - dt.timedelta(days=40)).timestamp():.6f}"
+        fake = FakeClient(pages=[{"ok": True, "messages": [{"text": _MR_URL, "ts": old_ts}], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "absent"
+
+
+class TestReconcileIgnoresTheCallersOwnRoot(TestCase):
+    """The nag must not reconcile against the very post it is nagging about.
+
+    ``reconcile_out_of_band`` matches every message in the window carrying the URL —
+    including the review-request ROOT the nag's own row tracks. So the first due tick
+    set ``done_at`` and stopped the train it was supposed to run, taking the
+    ``:merge:`` reaction and the resume reply down with it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root_ts = f"{(timezone.now() - dt.timedelta(days=3)).timestamp():.6f}"
+        self.target = GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot")
+
+    def _reconcile(self, messages: list[dict[str, object]], **kwargs: str) -> object:
+        fake = FakeClient(pages=[{"ok": True, "messages": messages, "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            return reconcile_out_of_band(mr_url=_MR_URL, target=self.target, **kwargs)
+
+    def _root_only(self) -> list[dict[str, object]]:
+        return [{"text": f"review {_MR_URL}", "ts": self.root_ts, "user": _HUMAN_AUTHOR}]
+
+    def test_a_history_holding_only_the_tracked_root_is_an_absence(self) -> None:
+        result = self._reconcile(self._root_only(), ignore_ts=self.root_ts)
+
+        assert getattr(result, "status", None) == "absent"
+        assert not ReviewRequestPost.objects.filter(mr_url=_MR_URL, done_at__isnull=False).exists()
+
+    def test_the_same_history_without_ignore_ts_still_reconciles(self) -> None:
+        # followup's discover-mrs asks whether the channel carries ANY request for this
+        # MR, and there the tracked root IS the answer. The default must not move.
+        assert getattr(self._reconcile(self._root_only()), "status", None) == "reconciled"
+
+    def test_a_genuine_out_of_band_request_still_stops_the_nag_train(self) -> None:
+        # `conversations.history` pages newest-first, so a later request precedes the root.
+        messages = [
+            {"text": f"anyone free for {_MR_URL}?", "ts": _ts_now(), "user": _HUMAN_AUTHOR},
+            *self._root_only(),
+        ]
+
+        assert getattr(self._reconcile(messages, ignore_ts=self.root_ts), "status", None) == "reconciled"
+
+
+class TestAChannelReadNeverCompletesTheRowItsOwnRootBelongsTo(TestCase):
+    """Finding a tracked root proves a request exists, not that its follow-up is done.
+
+    Discovery and the pre-post dedup peek both reconcile on any match, and reconciling sets
+    ``done_at`` — which the nag, the resume and the merge-react all read, so a check on an MR
+    that was already asked about retired all three.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root_ts = f"{(timezone.now() - dt.timedelta(days=3)).timestamp():.6f}"
+        self.target = GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot")
+        self.post = ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            overlay="overlay-a",
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts=self.root_ts,
+            created_at=timezone.now() - dt.timedelta(days=3),
+        )
+
+    def _read(self, messages: list[dict[str, object]]) -> pytest.MonkeyPatch:
+        mp = pytest.MonkeyPatch()
+        self.addCleanup(mp.undo)
+        fake = FakeClient(pages=[{"ok": True, "messages": messages, "has_more": False}])
+        mp.setattr(slack_http.httpx, "get", fake.get)
+        return mp
+
+    def _root(self) -> dict[str, object]:
+        return {"text": f"review {_MR_URL}", "ts": self.root_ts, "user": _HUMAN_AUTHOR}
+
+    def test_discovery_still_reports_the_request_without_completing_its_row(self) -> None:
+        self._read([self._root()])
+
+        result = reconcile_out_of_band(mr_url=_MR_URL, target=self.target)
+
+        assert getattr(result, "status", None) == "reconciled"
+        self.post.refresh_from_db()
+        assert self.post.done_at is None
+
+    def test_the_dedup_peek_still_suppresses_without_completing_the_row(self) -> None:
+        self._read([self._root()])
+
+        decision = _peek_should_post_review_request(mr_url=_MR_URL, target=self.target, overlay="overlay-a")
+
+        assert decision.action != "post"
+        self.post.refresh_from_db()
+        assert self.post.done_at is None
+
+    def test_a_genuine_out_of_band_request_still_completes_the_row(self) -> None:
+        # `conversations.history` pages newest-first, so a later request precedes the root.
+        later = {"text": f"anyone free for {_MR_URL}?", "ts": _ts_now(), "user": _HUMAN_AUTHOR}
+        self._read([later, self._root()])
+
+        reconcile_out_of_band(mr_url=_MR_URL, target=self.target)
+
+        self.post.refresh_from_db()
+        assert self.post.done_at is not None
+
+
+class TestReconcileIdempotent(TestCase):
+    """A second reconcile of an already-done row / non-OPEN PR is a no-op."""
+
+    def test_reconcile_is_idempotent(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=_MR_URL,
+            repo="org/repo",
+            iid="385",
+            state=PullRequest.State.APPROVED,
+        )
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1.0",
+            done_at=timezone.now(),
+        )
+        page = {
+            "ok": True,
+            "messages": [{"text": f"x {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            result = reconcile_out_of_band(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert getattr(result, "status", None) == "reconciled"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+
+class TestStaleOrphanReclaim(TestCase):
+    """A stale unposted orphan must not suppress an authoritative POST (#1103).
+
+    ``review_request_check`` (pre-#1103) left a durable claim row with
+    ``done_at=None`` and ``slack_thread_ts=''``. Such an orphan older
+    than ``_CLAIM_RACE_WINDOW`` is NOT a concurrent dup — the live scan
+    is the authority that nothing was posted, so the orphan is reclaimed.
+    A *recent* orphan (< window) is still a genuine race → SUPPRESS.
+    """
+
+    def test_stale_orphan_does_not_suppress(self) -> None:
+        stale_at = timezone.now() - dt.timedelta(minutes=5)
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id="",
+            slack_thread_ts="",
+            done_at=None,
+            created_at=stale_at,
+        )
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.created_at > stale_at
+        assert post.slack_channel_id == _CHANNEL_ID
+        assert post.done_at is None
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+    def test_recent_unposted_claim_suppresses(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="",
+            done_at=None,
+            created_at=timezone.now(),
+        )
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_claimed"
+
+    def test_posted_row_with_live_thread_beyond_window_suppresses(self) -> None:
+        """A posted row whose thread is still LIVE (verified) suppresses (#1084 follow-up).
+
+        The channel-history window read is empty (the post is older than the
+        window), so the DB alone used to decide. Now the exact thread is
+        live-verified: present ⇒ SUPPRESS ``already_claimed``.
+        """
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": f"review {_MR_URL}"}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_claimed"
+
+    def test_a_duplicate_post_on_a_live_thread_leaves_the_row_following_up(self) -> None:
+        # The live thread IS this row's own root, so a second post attempt proves nothing is done.
+        post = ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": f"review {_MR_URL}"}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+        post.refresh_from_db()
+        assert post.done_at is None
+
+    def test_posted_row_with_deleted_thread_reclaims_and_posts(self) -> None:
+        """A posted row whose thread is GONE (deleted) is reclaimed → POST.
+
+        Live Slack, not the DB row, is the authority: an empty
+        ``conversations.replies`` means the message is gone, so the row is
+        atomically reclaimed and the guard POSTs a fresh request.
+        """
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=timezone.now(),
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": []},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.slack_thread_ts == ""
+        assert post.done_at is None
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+    def test_posted_row_thread_read_failure_suppresses_failsafe(self) -> None:
+        """ANY failure reading the posted row's thread fails safe to SUPPRESS."""
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": False, "error": "ratelimited"},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+
+
+class TestPostedRowProbesRecordedChannel(TestCase):
+    """The posted-row verify reads the thread in the channel the post was RECORDED under (#3292 part 3)."""
+
+    def test_thread_read_uses_recorded_channel_not_current_target(self) -> None:
+        recorded_channel = "C_RECORDED"
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=recorded_channel,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            # The review channel changed since the post — the current target is a
+            # different channel than the one recorded on the row.
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id="C_NEW_TARGET", channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        replies_calls = [c for c in fake.get_calls if "conversations.replies" in str(c["url"])]
+        assert replies_calls, "the posted-row verify must live-read the thread"
+        params = replies_calls[0]["params"]
+        assert isinstance(params, dict)
+        assert params["channel"] == recorded_channel
+
+
+def _busy_channel_history(page_count: int, *, broadcast_on: int = 0, failing_page: int = 0) -> list[dict]:
+    pages: list[dict] = []
+    for number in range(1, page_count + 1):
+        messages = [{"text": f"chatter {number}-{i}", "ts": _ts_now(), "user": _HUMAN_AUTHOR} for i in range(100)]
+        if number == broadcast_on:
+            messages[42] = {"text": f"please review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}
+        last = number == page_count
+        page: dict = {"ok": True, "messages": messages, "has_more": not last}
+        if not last:
+            page["response_metadata"] = {"next_cursor": f"cursor-{number + 1}"}
+        pages.append({"ok": False, "error": "internal_error"} if number == failing_page else page)
+    return pages
+
+
+class TestChannelScanReadsTheWholeLookbackWindow(TestCase):
+    """A window busier than any fixed page count is still read to its edge."""
+
+    def _peek(self, fake: FakeClient) -> GuardDecision:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            return peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+    def _history_params(self, fake: FakeClient) -> list[dict]:
+        return [
+            params
+            for call in fake.get_calls
+            if "conversations.history" in str(call["url"]) and isinstance(params := call["params"], dict)
+        ]
+
+    def test_a_broadcast_on_page_six_of_seven_is_found(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7, broadcast_on=6))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "suppress"
+        assert decision.reason == "already_posted"
+        assert decision.permalink.startswith("https://team.slack.com/archives/")
+        assert len(self._history_params(fake)) == 6
+
+    def test_seven_clean_pages_read_to_the_edge_allow_the_post(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "post"
+        params = self._history_params(fake)
+        assert len(params) == 7
+        assert all(page["oldest"] for page in params)
+
+    def test_a_page_failing_mid_walk_still_fails_safe(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7, broadcast_on=6, failing_page=4))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+        assert len(self._history_params(fake)) == 4
+
+
+class TestPeekPostedRowVerification(TestCase):
+    """``check`` (peek) gets the SAME live posted-row verification, but writes nothing (#1084 follow-up)."""
+
+    def test_peek_live_thread_suppresses_without_mutating(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": _MR_URL}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.done_at is None  # peek never mutates
+
+    def test_peek_deleted_thread_reports_post_without_reclaiming(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=timezone.now(),
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": []},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.slack_thread_ts == "1700000000.000100"  # unchanged — peek writes nothing
+
+
+class TestPeekTakesNoClaim(TestCase):
+    """``peek_should_post_review_request`` never persists a row (#1103)."""
+
+    def test_peek_clean_scan_posts_without_claim(self) -> None:
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_peek_passes_through_terminal_suppress(self) -> None:
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_posted"
+
+
+class TestNoLoopTaskTouched(TestCase):
+    """#1086 coupling guard: the dedup guard never touches loop Task rows.
+
+    #1084 must reconcile via ReviewRequestPost + PullRequest only — the
+    reviewing-Task lifecycle is owned by souliane/teatree#1086.
+    """
+
+    def test_reconcile_creates_no_task_rows(self) -> None:
+        from teatree.core.models import Task  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(ticket=ticket, url=_MR_URL, repo="org/repo", iid="385", state=PullRequest.State.OPEN)
+        page = {
+            "ok": True,
+            "messages": [{"text": f"x {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        before = Task.objects.count()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert Task.objects.count() == before
+
+
+class TestOverlayForMrUrl(TestCase):
+    """The shared precedence rule: env pin wins, else infer from repo ownership (#1310)."""
+
+    def test_an_explicit_env_pin_is_the_owning_overlay(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "acme"}, clear=False):
+            assert overlay_for_mr_url(_MR_URL) == "acme"
+
+    def test_without_env_pin_infers_from_repo_ownership(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value="widget") as infer,
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == "widget"
+        infer.assert_called_once_with(_MR_URL)
+
+    def test_an_unattributable_url_falls_back_to_the_resolved_overlays_name(self) -> None:
+        # The nag, the resume and the merge-react all select by CONCRETE overlay name,
+        # so an unattributed row is invisible to every one of them forever.
+        resolved = MagicMock()
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value=""),
+            patch("teatree.core.overlay_loader.get_overlay", return_value=resolved),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"widget": resolved}),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == "widget"
+
+    def test_an_unresolvable_overlay_still_answers_empty(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value=""),
+            patch(
+                "teatree.core.overlay_loader.get_overlay",
+                side_effect=ImproperlyConfigured("Multiple overlays found"),
+            ),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == ""

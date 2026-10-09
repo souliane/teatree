@@ -1,0 +1,222 @@
+"""Pure parser for the ON-DISK Claude Code session JSONL.
+
+This is a DIFFERENT schema from :mod:`teatree.eval.transcript`, which parses
+the ``claude -p --output-format stream-json`` CLI stream. The on-disk session
+log under ``~/.claude/projects/<slug>/<session-id>.jsonl`` carries a richer
+envelope (parent/child uuids, sidechain marker, cwd, git branch) and folds hook
+outcomes in as ``attachment`` events rather than as a separate stream. A reader
+who assumes the two schemas are interchangeable will mis-extract; they are not.
+
+Every line is one JSON envelope keyed by ``type``:
+
+``assistant`` carries ``message.content[]`` blocks (``thinking`` / ``text`` /
+``tool_use``); a ``tool_use`` block carries ``name``, ``input``, ``id`` and a
+``caller`` object.
+
+``user`` carries ``message.content`` as a str (a real prompt) or a list of
+``tool_result`` blocks.
+
+``attachment`` carries ``attachment.type`` discriminating the kind. Hook
+outcomes use the version-volatile pair ``hook`` / ``hook_success`` (plus
+``hook_blocking_error`` / ``hook_non_blocking_error`` / …) and carry
+``hookEvent`` (PreToolUse / PostToolUse / TaskCreated / Stop / …), ``hookName``,
+``exitCode`` (0 = allow, non-zero = deny), ``stdout`` / ``stderr``
+(PRIVACY-SENSITIVE — never surfaced by the conformance report), ``toolUseID``
+and ``command``.
+
+A DENYING gate MAY stamp a small non-privacy-sensitive ``gate_id`` marker on its
+deny output (PR-25 plan_gate marker), so a conformance invariant can key on the
+gate WITHOUT ever reading the raw (privacy-sensitive) deny reason. It is read
+from a top-level ``attachment.gate_id`` when the harness surfaces it there, else
+from the ``gate_id`` key of the JSON-decoded ``stdout`` deny payload (top-level
+or nested under ``hookSpecificOutput``) — ONLY that one marker key, never the
+reason.
+
+Parsing is fail-soft: a malformed line, a missing field, or an unrecognised
+hook discriminator yields a best-effort :class:`SessionEvent` (or is skipped)
+rather than raising — the on-disk schema drifts between Claude Code versions.
+"""
+
+import dataclasses
+import json
+from typing import Any, cast
+
+_HOOK_ATTACHMENT_TYPES: frozenset[str] = frozenset(
+    {
+        "hook",
+        "hook_success",
+        "hook_blocking_error",
+        "hook_non_blocking_error",
+        "hook_system_message",
+        "hook_additional_context",
+        "hook_cancelled",
+        "async_hook_response",
+    }
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class SessionEvent:
+    """One ordered event from an on-disk session JSONL line.
+
+    A single dataclass spans the three envelope kinds. ``tool_name`` /
+    ``tool_input`` are populated only for an ``assistant`` ``tool_use`` block;
+    ``hook_event`` / ``hook_exit_code`` / ``tool_use_id`` / ``gate_id`` only for
+    a hook ``attachment`` (``gate_id`` only on a deny that stamped the marker).
+    ``raw`` keeps the parsed line so a caller can reach a field this dataclass
+    does not surface.
+    """
+
+    line_no: int
+    type: str
+    is_sidechain: bool
+    timestamp: str | None
+    tool_name: str | None
+    tool_input: dict[str, Any] | None
+    hook_event: str | None
+    hook_exit_code: int | None
+    tool_use_id: str | None
+    gate_id: str | None
+    raw: dict[str, Any]
+
+
+def _as_dict(value: object) -> dict[str, Any]:
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else {}
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _attachment_hook_fields(attachment: dict[str, Any]) -> tuple[str | None, int | None, str | None, str | None]:
+    """Return ``(hook_event, exit_code, tool_use_id, gate_id)`` from a hook attachment.
+
+    Reads ``hookEvent`` / ``exitCode`` / ``toolUseID`` defensively — any may be
+    absent on a given Claude Code version (the schema is volatile), in which
+    case the corresponding slot is ``None`` and the event still parses.
+    ``gate_id`` is the optional non-privacy deny marker (see :func:`_attachment_gate_id`).
+    """
+    return (
+        _str_or_none(attachment.get("hookEvent")),
+        _int_or_none(attachment.get("exitCode")),
+        _str_or_none(attachment.get("toolUseID")),
+        _attachment_gate_id(attachment),
+    )
+
+
+def _attachment_gate_id(attachment: dict[str, Any]) -> str | None:
+    """Extract ONLY the ``gate_id`` deny marker from a hook attachment, never the reason.
+
+    A top-level ``attachment.gate_id`` wins when the harness surfaces the marker
+    there. Otherwise the recorded ``stdout`` deny payload is JSON-decoded and its
+    ``gate_id`` key is read (top-level, else nested under ``hookSpecificOutput``).
+    The (privacy-sensitive) ``permissionDecisionReason`` is never read. Fail-soft:
+    any absent field or undecodable ``stdout`` yields ``None``.
+    """
+    top_level = _str_or_none(attachment.get("gate_id"))
+    if top_level:
+        return top_level
+    stdout = attachment.get("stdout")
+    if not isinstance(stdout, str) or not stdout:
+        return None
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    marker = _str_or_none(payload.get("gate_id"))
+    if marker:
+        return marker
+    return _str_or_none(_as_dict(payload.get("hookSpecificOutput")).get("gate_id"))
+
+
+def _event_from_envelope(line_no: int, obj: dict[str, Any]) -> SessionEvent:
+    event_type = obj.get("type")
+    event_type = event_type if isinstance(event_type, str) else "unknown"
+    attachment = _as_dict(obj.get("attachment"))
+    is_hook = attachment.get("type") in _HOOK_ATTACHMENT_TYPES
+    hook_event, exit_code, tool_use_id, gate_id = (
+        _attachment_hook_fields(attachment) if is_hook else (None, None, None, None)
+    )
+    return SessionEvent(
+        line_no=line_no,
+        type=event_type,
+        is_sidechain=bool(obj.get("isSidechain")),
+        timestamp=_str_or_none(obj.get("timestamp")),
+        tool_name=None,
+        tool_input=None,
+        hook_event=hook_event,
+        hook_exit_code=exit_code,
+        tool_use_id=tool_use_id,
+        gate_id=gate_id,
+        raw=obj,
+    )
+
+
+def _tool_use_event(line_no: int, envelope: SessionEvent, block: dict[str, Any]) -> SessionEvent | None:
+    name = block.get("name")
+    if not isinstance(name, str):
+        return None
+    tool_input = block.get("input")
+    tool_input = dict(tool_input) if isinstance(tool_input, dict) else {}
+    return dataclasses.replace(
+        envelope,
+        line_no=line_no,
+        tool_name=name,
+        tool_input=tool_input,
+        tool_use_id=_str_or_none(block.get("id")),
+    )
+
+
+def parse_session_jsonl(text: str) -> list[SessionEvent]:
+    """Parse the on-disk session JSONL into ONE ordered event stream.
+
+    An ``assistant`` line fans out into one :class:`SessionEvent` per
+    ``tool_use`` block (so a turn issuing two tool calls yields two events);
+    ``thinking`` / ``text`` blocks contribute a single envelope event carrying
+    no tool. ``user`` and ``attachment`` lines each yield one envelope event.
+    Order follows the file. Malformed lines are skipped.
+    """
+    events: list[SessionEvent] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        envelope = _event_from_envelope(line_no, obj)
+        if envelope.type != "assistant":
+            events.append(envelope)
+            continue
+        content = _as_dict(obj.get("message")).get("content")
+        tool_blocks = (
+            [block for block in content if isinstance(block, dict) and block.get("type") == "tool_use"]
+            if isinstance(content, list)
+            else []
+        )
+        if not tool_blocks:
+            events.append(envelope)
+            continue
+        events.extend(
+            event for block in tool_blocks if (event := _tool_use_event(line_no, envelope, block)) is not None
+        )
+    return events
+
+
+def extract_tool_calls(events: list[SessionEvent]) -> list[SessionEvent]:
+    """Return only the events that carry a tool invocation (``tool_name`` set)."""
+    return [event for event in events if event.tool_name is not None]
+
+
+def extract_hook_events(events: list[SessionEvent]) -> list[SessionEvent]:
+    """Return only the hook-attachment events (``hook_event`` set)."""
+    return [event for event in events if event.hook_event is not None]

@@ -1,0 +1,1394 @@
+from datetime import timedelta
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
+from teatree.core.managers_phase_cadence import in_flight_for_phase, last_run_at_for_phase
+from teatree.core.modelkit.phases import phase_spellings
+from teatree.core.models import DeferredQuestion, IncomingEvent, ReplyDispatch, Session, Task, Ticket, Worktree
+from tests.factories import planned_ticket
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
+
+
+class TestTicketQuerySet(TestCase):
+    def test_in_flight_excludes_delivered_items(self) -> None:
+        active = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        Ticket.objects.create(state=Ticket.State.DELIVERED)
+
+        assert list(Ticket.objects.in_flight()) == [active]
+
+    def test_in_flight_excludes_done_tracker_status(self) -> None:
+        active = Ticket.objects.create(state=Ticket.State.WORK_STARTED, extra={"tracker_status": "In progress"})
+        Ticket.objects.create(state=Ticket.State.WORK_STARTED, extra={"tracker_status": "Done"})
+
+        assert list(Ticket.objects.in_flight()) == [active]
+
+    def test_unfindable_returns_only_rows_intake_can_never_reach(self) -> None:
+        unreachable = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="a lost request")
+        Ticket.objects.create(
+            state=Ticket.State.WORK_STARTED,
+            issue_url="https://github.com/souliane/teatree/issues/4527",
+            short_description="a real backlog item",
+        )
+
+        assert Ticket.objects.unfindable() == [unreachable]
+
+    def test_unfindable_sorts_the_row_with_no_task_at_all_first(self) -> None:
+        """No task is the most provably dead shape, so it must not sort last by accident."""
+        never_dispatched = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="never ran")
+        dispatched = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="ran once")
+        session = Session.objects.create(ticket=dispatched, agent_id="answering")
+        Task.objects.create(ticket=dispatched, session=session, phase="answering", subject="s")
+
+        assert Ticket.objects.unfindable() == [never_dispatched, dispatched]
+
+    def test_a_conversation_row_that_placed_its_work_is_not_a_dead_row(self) -> None:
+        """The lane succeeded: it filed the findable issue and recorded where it went.
+
+        The bookkeeping row stays non-admissible by design, so without this the mechanism
+        reports its own successes and the WARN grows with every inbound DM until the
+        genuinely dead rows are buried in it.
+        """
+        handled = Ticket.objects.create(
+            state=Ticket.State.WORK_STARTED,
+            short_description="answered and filed",
+            extra={"slack_answer": {"work_issue_url": "https://github.com/souliane/teatree/issues/7100"}},
+        )
+        dropped = Ticket.objects.create(state=Ticket.State.WORK_STARTED, short_description="answered, filed nothing")
+
+        assert Ticket.objects.unfindable() == [dropped], "the mechanism reported its own success case"
+        assert handled not in Ticket.objects.unfindable()
+
+
+class TestWorktreeQuerySet(TestCase):
+    def test_active_excludes_delivered_and_ignored_tickets(self) -> None:
+        """Matches the worktrees panel filter so KPI count and table size agree."""
+        active = Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.WORK_STARTED),
+            repo_path="/tmp/backend",
+            branch="active",
+            state=Worktree.State.READY,
+        )
+        also_active = Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.WORK_STARTED),
+            repo_path="/tmp/frontend",
+            branch="just-created",
+            state=Worktree.State.CREATED,
+        )
+        Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.DELIVERED),
+            repo_path="/tmp/done",
+            branch="done",
+            state=Worktree.State.READY,
+        )
+        Worktree.objects.create(
+            ticket=Ticket.objects.create(state=Ticket.State.IGNORED),
+            repo_path="/tmp/ignored",
+            branch="ignored",
+            state=Worktree.State.READY,
+        )
+
+        assert list(Worktree.objects.active()) == [active, also_active]
+
+    def test_for_ticket_scopes_to_the_given_ticket(self) -> None:
+        wanted_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        other_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/be", branch="mine")
+        also_mine = Worktree.objects.create(ticket=wanted_ticket, repo_path="/tmp/fe", branch="also")
+        Worktree.objects.create(ticket=other_ticket, repo_path="/tmp/other", branch="other")
+
+        assert list(Worktree.objects.for_ticket(wanted_ticket).order_by("pk")) == [mine, also_mine]
+
+
+class TestInboundManagersStayWired(TestCase):
+    """The inbound querysets still back their models after moving to `managers_inbound`.
+
+    The move is a pure relocation, so nothing below asserts behaviour — it pins
+    the wiring, which is the only thing a relocation can break. Every predicate
+    test in this module reaches these classes through `Model.objects`, so a
+    manager silently rebuilt from a plain `QuerySet` would leave them all
+    passing while `unprocessed()` vanishes at runtime.
+    """
+
+    def test_managers_are_built_from_the_relocated_querysets(self) -> None:
+        assert isinstance(IncomingEvent.objects.all(), IncomingEventQuerySet)
+        assert isinstance(ReplyDispatch.objects.all(), ReplyDispatchQuerySet)
+
+
+class TestIncomingEventQuerySet(TestCase):
+    def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref=channel,
+            thread_ref=thread_ref,
+            idempotency_key=key,
+        )
+
+    def test_active_dm_thread_returns_most_recent_thread_ref_for_channel(self) -> None:
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
+        self._slack(channel="D1", thread_ref="1700000099.0009", key="slack:b")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == "1700000099.0009"
+
+    def test_active_dm_thread_scopes_to_the_requested_channel(self) -> None:
+        self._slack(channel="D-other", thread_ref="9999999999.0001", key="slack:other")
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:mine")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == "1700000000.0001"
+
+    def test_active_dm_thread_ignores_non_slack_sources(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.GITHUB,
+            channel_ref="D1",
+            thread_ref="github-ref",
+            idempotency_key="github:1",
+        )
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == ""
+
+    def test_active_dm_thread_empty_when_no_event_for_channel(self) -> None:
+        self._slack(channel="D-other", thread_ref="1700000000.0001", key="slack:other")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == ""
+
+    def test_active_dm_thread_empty_channel_matches_nothing(self) -> None:
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="") == ""
+
+    def _event(
+        self, *, key: str, processed: bool = False, dead: bool = False, retry_ahead: bool = False
+    ) -> IncomingEvent:
+        now = timezone.now()
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            idempotency_key=key,
+            received_at=now - timedelta(days=60),
+            processed_at=now if processed else None,
+            dead_lettered_at=now if dead else None,
+            next_retry_at=(now + timedelta(hours=1)) if retry_ahead else None,
+        )
+
+    def test_prunable_is_the_settled_set_processed_or_dead_lettered(self) -> None:
+        processed = self._event(key="k-proc", processed=True)
+        dead = self._event(key="k-dead", dead=True)
+        self._event(key="k-inflight")
+
+        prunable = IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
+
+        assert set(prunable.values_list("pk", flat=True)) == {processed.pk, dead.pk}
+
+    def test_prunable_derives_from_the_unprocessed_boundary_not_its_due_clause(self) -> None:
+        # A backoff-retry event is unsettled but NOT due, so it is absent from BOTH
+        # unprocessed(now) and prunable(). Were prunable defined as the naive complement
+        # of unprocessed(now) it would wrongly prune this in-flight, backing-off row.
+        backoff = self._event(key="k-backoff", retry_ahead=True)
+
+        assert backoff not in IncomingEvent.objects.unprocessed()
+        assert backoff not in IncomingEvent.objects.prunable(timezone.now() - timedelta(days=30))
+
+
+class TestTaskQuerySet(TestCase):
+    def test_for_claude_session_scopes_to_matching_agent_id_newest_first(self) -> None:
+        ticket = Ticket.objects.create()
+        mine = Session.objects.create(ticket=ticket, agent_id="claude-abc")
+        other = Session.objects.create(ticket=ticket, agent_id="claude-xyz")
+        first = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+        second = Task.objects.create(ticket=ticket, session=mine, phase="testing")
+        Task.objects.create(ticket=ticket, session=other, phase="coding")
+
+        assert list(Task.objects.for_claude_session("claude-abc")) == [second, first]
+
+    def test_for_claude_session_empty_id_matches_nothing(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="claude-abc")
+        Task.objects.create(ticket=ticket, session=session)
+
+        assert list(Task.objects.for_claude_session("")) == []
+
+    def test_claimable_queries_respect_target_status_and_leases(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        expired = timezone.now() - timedelta(minutes=1)
+        future = timezone.now() + timedelta(minutes=5)
+
+        sdk_ready = Task.objects.create(ticket=ticket, session=session)
+        sdk_reclaimable = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-2",
+            lease_expires_at=future,
+            heartbeat_at=timezone.now(),
+        )
+        also_ready = Task.objects.create(
+            ticket=ticket,
+            session=session,
+        )
+
+        # A live lease is not claimable; an expired one is reclaimable.
+        assert list(Task.objects.claimable()) == [sdk_ready, sdk_reclaimable, also_ready]
+
+    def test_claim_next_pending_atomically_claims_oldest(self) -> None:
+        """#786: claim_next_pending atomically selects+claims the oldest PENDING task."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        first = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert claimed is not None
+        assert claimed.pk == first.pk  # FIFO (oldest first)
+        assert claimed.status == Task.Status.CLAIMED
+        assert claimed.claimed_by == "loop-slot"
+
+    def test_claim_next_pending_never_returns_same_task_twice(self) -> None:
+        """N4 at the manager level: a single PENDING task is never handed out twice.
+
+        Two sequential claims (two ticks): the first claims it, the
+        second gets None.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        only = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        a = Task.objects.claim_next_pending(claimed_by="tick-1")
+        b = Task.objects.claim_next_pending(claimed_by="tick-2")
+
+        assert a is not None
+        assert a.pk == only.pk
+        assert b is None  # nothing left to claim — no double-hand-out
+
+    def test_claim_next_pending_none_when_no_pending(self) -> None:
+        assert Task.objects.claim_next_pending(claimed_by="loop-slot") is None
+
+    def test_claim_next_pending_skips_already_claimed(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        claimed = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        claimed.claim(claimed_by="someone")
+        fresh = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        got = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert got is not None
+        assert got.pk == fresh.pk  # skipped the already-claimed one
+
+    def test_claim_next_pending_session_defaults_to_empty(self) -> None:
+        """#1917 inert default: a claim with no session leaves ``claimed_by_session`` empty."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert claimed is not None
+        assert claimed.claimed_by == "loop-slot"
+        assert claimed.claimed_by_session == ""
+
+    def test_claim_next_pending_records_session_orthogonally_to_claimed_by(self) -> None:
+        """#1917: a supplied session rides the claim; the role-label ``claimed_by`` is independent."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot", claimed_by_session="sess-A")
+
+        assert claimed is not None
+        assert claimed.claimed_by == "loop-slot"
+        assert claimed.claimed_by_session == "sess-A"
+
+
+class TestTaskPhaseCadenceQueries(TestCase):
+    """The periodic-scanner dedupe/last-run queries shared via ``PhaseCadence``."""
+
+    OVERLAY = "t3-teatree"
+    PHASE = "eval_local"
+
+    def _task(self, *, overlay: str, phase: str, status: str, started_hours_ago: int | None = None) -> Task:
+        ticket = Ticket.objects.create(overlay=overlay)
+        session = Session.objects.create(overlay=overlay, ticket=ticket, agent_id="a")
+        if started_hours_ago is not None:
+            Session.objects.filter(pk=session.pk).update(started_at=timezone.now() - timedelta(hours=started_hours_ago))
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=status)
+
+    def test_in_flight_for_phase_matches_pending_and_claimed_only(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        claimed = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.CLAIMED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED)
+
+        in_flight = set(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE))
+
+        assert in_flight == {pending, claimed}
+
+    def test_in_flight_for_phase_scopes_to_overlay_and_phase(self) -> None:
+        target = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay="other-overlay", phase=self.PHASE, status=Task.Status.PENDING)
+        self._task(overlay=self.OVERLAY, phase="scanning_news", status=Task.Status.PENDING)
+
+        assert list(Task.objects.in_flight_for_phase(self.OVERLAY, self.PHASE)) == [target]
+
+    def test_last_run_at_for_phase_returns_newest_session_start(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=48)
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=2)
+
+        last_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert last_run is not None
+        # The newest task started ~2h ago, so the clock reads ~2h, not 48h.
+        assert (timezone.now() - last_run) < timedelta(hours=3)
+
+    def test_last_run_at_for_phase_none_when_no_task(self) -> None:
+        assert Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE) is None
+
+    def test_manager_methods_delegate_to_module_helpers(self) -> None:
+        pending = self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=3)
+
+        # The module-level helpers are the concern-split home the manager methods
+        # delegate to. The helper matches a set of stored spellings; resolving a
+        # phase to that set is the manager's job, because the layering keeps
+        # ``modelkit`` out of the helper module.
+        assert list(in_flight_for_phase(Task.objects.all(), self.OVERLAY, phase_spellings(self.PHASE))) == [pending]
+        direct = last_run_at_for_phase(Task.objects.all(), self.OVERLAY, self.PHASE)
+        via_manager = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+        assert direct == via_manager
+
+    def test_last_run_at_for_phase_completed_statuses_ignores_failed(self) -> None:
+        completed = self._task(
+            overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200
+        )
+        # A newer FAILED task must NOT advance the COMPLETED-only clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+
+        completed_run = Task.objects.last_run_at_for_phase(
+            self.OVERLAY, self.PHASE, statuses=frozenset({Task.Status.COMPLETED})
+        )
+        any_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE)
+
+        assert completed_run is not None
+        assert (timezone.now() - completed_run) > timedelta(hours=100)  # the old COMPLETED one
+        assert completed_run == Session.objects.get(pk=completed.session_id).started_at
+        # The unfiltered clock still sees the newer FAILED task.
+        assert any_run is not None
+        assert (timezone.now() - any_run) < timedelta(hours=2)
+
+    def test_last_run_at_for_phase_terminal_statuses_counts_failed(self) -> None:
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.COMPLETED, started_hours_ago=200)
+        # The terminal (COMPLETED|FAILED) clock — the backoff clock — sees the FAILED attempt.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.FAILED, started_hours_ago=1)
+        # A still-PENDING task is not terminal and must not advance the backoff clock.
+        self._task(overlay=self.OVERLAY, phase=self.PHASE, status=Task.Status.PENDING, started_hours_ago=0)
+
+        terminal_run = Task.objects.last_run_at_for_phase(self.OVERLAY, self.PHASE, statuses=Task.Status.terminal())
+
+        assert terminal_run is not None
+        # The FAILED one (1h ago) wins over the old COMPLETED (200h); the newer
+        # PENDING (0h) is not terminal, so it must NOT advance the clock.
+        assert timedelta(minutes=30) < (timezone.now() - terminal_run) < timedelta(hours=2)
+
+
+class TestActiveClaimExists(TestCase):
+    """#1760: the deferred-reinstall drain reads this to defer while a unit runs."""
+
+    def _task(self, *, status: str, lease_offset_seconds: int | None) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        lease = None if lease_offset_seconds is None else timezone.now() + timedelta(seconds=lease_offset_seconds)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=status,
+            lease_expires_at=lease,
+        )
+
+    def test_false_when_no_tasks(self) -> None:
+        assert Task.objects.active_claim_exists() is False
+
+    def test_true_for_a_live_claimed_lease(self) -> None:
+        self._task(status=Task.Status.CLAIMED, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is True
+
+    def test_false_for_an_expired_claimed_lease(self) -> None:
+        self._task(status=Task.Status.CLAIMED, lease_offset_seconds=-10)
+
+        assert Task.objects.active_claim_exists() is False
+
+    def test_false_for_a_pending_task(self) -> None:
+        self._task(status=Task.Status.PENDING, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is False
+
+    def test_false_for_a_completed_task(self) -> None:
+        self._task(status=Task.Status.COMPLETED, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is False
+
+
+class TestWithoutKeptClaims(TestCase):
+    """#4872: a third-party fail keeps a possibly-live holder's claim on the terminal row."""
+
+    def _task(self, *, status: str, claimed_by: str, lease_offset_seconds: int | None) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        lease = None if lease_offset_seconds is None else timezone.now() + timedelta(seconds=lease_offset_seconds)
+        return Task.objects.create(
+            ticket=ticket, session=session, status=status, claimed_by=claimed_by, lease_expires_at=lease
+        )
+
+    def _kept(self) -> set[int]:
+        return set(Task.objects.all().values_list("pk", flat=True)) - set(
+            Task.objects.without_kept_claims().values_list("pk", flat=True)
+        )
+
+    def test_a_terminal_row_with_a_live_kept_claim_is_dropped(self) -> None:
+        failed = self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=300)
+        completed = self._task(status=Task.Status.COMPLETED, claimed_by="worker-1", lease_offset_seconds=300)
+
+        assert self._kept() == {failed.pk, completed.pk}
+
+    def test_released_expired_and_active_rows_stay(self) -> None:
+        self._task(status=Task.Status.FAILED, claimed_by="", lease_offset_seconds=None)
+        self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=-10)
+        self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=None)
+        self._task(status=Task.Status.CLAIMED, claimed_by="worker-1", lease_offset_seconds=300)
+
+        assert self._kept() == set()
+
+
+class TestReclaimOrphanedClaims(TestCase):
+    """#652 — an orphaned in-flight task must be *taken over*, not failed.
+
+    When the Claude session driving the loop exits mid-task, its CLAIMED
+    Task stops heartbeating and the lease expires. The pre-#652 behaviour
+    (``reap_stale_claims``) transitions that row CLAIMED→FAILED, which
+    needs a manual ``reopen()`` before any other open session can resume
+    it — so the loop silently stalls. ``reclaim_orphaned_claims`` instead
+    returns the expired-lease CLAIMED row to PENDING so the next tick's
+    ``PendingTasksScanner`` (in any still-open session) re-surfaces it and
+    the loop continues. Same backend-agnostic conditional-UPDATE CAS as
+    ``claim_next_pending`` — fastest tick wins, losers update 0 rows.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_expired_claimed_task_is_returned_to_pending_not_failed(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        orphan = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-99999",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        orphan.refresh_from_db()
+        assert reclaimed == 1
+        # Takeover, NOT fail: the row is claimable again so another open
+        # session's loop tick resumes it (issue #652 "fastest wins").
+        assert orphan.status == Task.Status.PENDING, (
+            f"orphaned task was not taken over (got {orphan.status!r}) — the loop stalls until a manual reopen()"
+        )
+        assert orphan.claimed_by == ""
+        assert orphan.claimed_at is None
+        assert orphan.lease_expires_at is None
+        assert orphan.heartbeat_at is None
+
+    def test_reclaim_clears_claimed_by_session(self) -> None:
+        """#1917: the session attribution is cleared alongside ``claimed_by`` on reclaim.
+
+        A row taken over by the orphan sweep is claimable again, so a stale
+        session attribution must not survive — symmetric with ``claimed_by``.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        orphan = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-99999",
+            claimed_by_session="sess-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        orphan.refresh_from_db()
+        assert reclaimed == 1
+        assert orphan.status == Task.Status.PENDING
+        assert orphan.claimed_by == ""
+        assert orphan.claimed_by_session == ""
+
+    def test_a_live_claim_is_left_untouched(self) -> None:
+        # Anti-vacuity: a healthy in-flight task (lease in the future)
+        # must NOT be yanked away from its live owner.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        future = timezone.now() + timedelta(seconds=300)
+        live = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-1",
+            claimed_at=timezone.now(),
+            lease_expires_at=future,
+            heartbeat_at=timezone.now(),
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        live.refresh_from_db()
+        assert reclaimed == 0
+        assert live.status == Task.Status.CLAIMED
+        assert live.claimed_by == "pid-1"
+
+    def test_terminal_tasks_are_not_resurrected(self) -> None:
+        # A COMPLETED/FAILED task must never be dragged back to PENDING by
+        # the orphan sweep even if its (stale) lease columns are in the past.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        done = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+            lease_expires_at=expired,
+        )
+        failed = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.FAILED,
+            lease_expires_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        done.refresh_from_db()
+        failed.refresh_from_db()
+        assert reclaimed == 0
+        assert done.status == Task.Status.COMPLETED
+        assert failed.status == Task.Status.FAILED
+
+    def test_concurrent_ticks_reclaim_one_orphan_exactly_once(self) -> None:
+        """#652 fastest-wins on the PRODUCTION SQLite backend.
+
+        Two ticks both observe the orphan; the conditional-UPDATE CAS
+        (``WHERE status=CLAIMED AND lease_expires_at < now``) lets exactly
+        one tick's UPDATE match — the other updates 0 rows. Same in-process
+        interleave technique as ``TestClaimNextPendingConcurrencyOnSqlite``
+        so it runs under the real SQLite test DB where
+        ``select_for_update(skip_locked=True)`` is a silent no-op.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        fired: list[str] = []
+        rival_result: list[int] = [-1]
+        real_update = QuerySet.update
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            rival_result[0] = Task.objects.reclaim_orphaned_claims()
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        with patch.object(QuerySet, "update", update_with_rival):
+            caller1 = Task.objects.reclaim_orphaned_claims()
+
+        rival = rival_result[0]
+        # Exactly one tick reclaimed the single orphan (count 1); the other
+        # raced inside the first's write boundary and updated 0 rows.
+        assert sorted([caller1, rival]) == [0, 1], (
+            f"orphan reclaimed by both ticks (not fastest-wins): {caller1=} {rival=}"
+        )
+
+
+class TestReapStaleClaimsCasOnSqlite(TestCase):
+    """#800 N5 — the reap must not spurious-fail a just-renewed lease.
+
+    Same leak-free in-process interleave technique as
+    ``TestClaimNextPendingConcurrencyOnSqlite`` (no threads, no
+    file-backed DB — runs on the production SQLite test backend; the
+    cross-thread file-SQLite harness is intractable vs the project-wide
+    ``filterwarnings=error`` and is unnecessary given this).
+
+    A live worker renews its lease *inside* ``reap_stale_claims``'s
+    write boundary (the shared seam: ``QuerySet.update`` for the fixed
+    conditional-UPDATE CAS, ``Task.save`` for the pre-fix
+    select-then-``fail()``). Fixed: the reap's
+    ``UPDATE ... WHERE status=CLAIMED AND lease_expires_at < now``
+    re-evaluates at write time ⇒ the renewed row no longer matches ⇒
+    survives (GREEN). Pre-fix: the row was scanned-as-stale and
+    ``fail()``-ed unconditionally ⇒ the renewed task is spuriously
+    FAILED (RED). Reverting the real ``reap_stale_claims`` body to the
+    pre-fix shape flips this RED — the genuine mutation-revert proof on
+    the real method.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_renew_inside_reap_write_boundary_spares_the_lease(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        fired: list[str] = []
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _renew_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            # The live worker heartbeats its still-valid claim inside the
+            # reaper's critical section, before the reaper's write lands.
+            Task.objects.filter(pk=stale.pk).update(
+                lease_expires_at=timezone.now() + timedelta(seconds=300),
+                heartbeat_at=timezone.now(),
+            )
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _renew_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _renew_once()
+            return real_save(self, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        # The lease was renewed before the reap's write committed: the CAS
+        # re-evaluates lease_expires_at < now and skips it. A pre-fix
+        # scan-then-unconditional-fail body would have FAILED it here.
+        assert stale.status == Task.Status.CLAIMED, (
+            f"renewed lease was spuriously reaped (pre-fix scan-then-fail behaviour): {stale.status!r}"
+        )
+
+    def test_reap_still_fails_a_genuinely_stale_lease(self) -> None:
+        # Anti-trivial-vacuity guard: with no racing renew, the real
+        # reap MUST fail the stale CLAIMED task (so the green above is
+        # not passing simply because reap never fails anything).
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+
+    def test_reap_clears_claimed_by_session(self) -> None:
+        """#1917: the session attribution is cleared alongside ``claimed_by`` on reap."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_by_session="sess-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+        assert stale.claimed_by == ""
+        assert stale.claimed_by_session == ""
+
+
+class TestClaimNextPendingConcurrencyOnSqlite(TestCase):
+    """#786 B1 keystone — double-CLAIM race closed on the PRODUCTION SQLite backend.
+
+    SQLite (settings.py:88-89, ENGINE = django.db.backends.sqlite3) has
+    ``has_select_for_update_skip_locked = False``, so
+    ``select_for_update(skip_locked=True)`` is a silent no-op here. This
+    test runs under that real SQLite test DB and reproduces a *concurrent
+    interleave* (two ticks both past the candidate SELECT before either
+    writes), NOT a sequential "second call finds it gone" (that stays
+    green with or without real locking — the B1/N1 anti-vacuous trap).
+    RED before the conditional-UPDATE CAS fix (both callers "claim" the
+    same task → double-dispatch); GREEN after (the ``WHERE
+    status='pending'`` guard lets exactly one writer win).
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        # Pin the premise: if this ever runs on Postgres the race-shape
+        # below no longer reflects the production backend.
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+        assert connection.features.has_select_for_update_skip_locked is False
+
+    def test_interleaved_ticks_claim_one_task_exactly_once(self) -> None:
+        """The B1 interleave: a stale tick-1 must not double-claim tick-2's row.
+
+        tick-1 has already selected the oldest pending candidate; tick-2
+        then runs to completion and claims that SAME row; tick-1 resumes
+        and attempts its claim write on the now-stale view.
+
+        The seam is the write boundary shared by BOTH code shapes — the
+        conditional ``QuerySet.update`` (fixed) and the row ``Task.save``
+        (pre-fix select-then-save). The rival is fired exactly once, just
+        before the first write executes, so tick-1's write lands on a row
+        tick-2 already moved out of PENDING. Fixed: tick-1's
+        ``WHERE status='pending'`` matches 0 rows ⇒ returns None (exactly
+        one claimer). Pre-fix: tick-1's unconditional ``save`` clobbers ⇒
+        BOTH "claim" the same task ⇒ assertion fails (RED).
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        only = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        fired: list[str] = []
+        rival_result: list[object] = [None]
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            # tick-2 runs fully (its own select + claim) inside tick-1's
+            # critical section, before tick-1's first write commits.
+            rival_result[0] = Task.objects.claim_next_pending(claimed_by="tick-2")
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_save(self, *args, **kwargs)
+
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            caller1 = Task.objects.claim_next_pending(claimed_by="tick-1")
+
+        rival = rival_result[0]
+        only.refresh_from_db()
+        # Exactly ONE of the two interleaved ticks claimed the single task;
+        # the other got None. Never double-dispatched.
+        claimers = [c for c in (caller1, rival) if c is not None]
+        assert len(claimers) == 1, f"double-claim race NOT closed on SQLite: {caller1=} {rival=}"
+        assert only.status == Task.Status.CLAIMED
+        winner = claimers[0]
+        assert winner.pk == only.pk
+        assert only.claimed_by == winner.claimed_by
+        assert only.claimed_by in {"tick-1", "tick-2"}
+
+
+class TestTaskClaimAtomic(TestCase):
+    """``Task.claim`` is an atomic CAS — the create-and-assign-to-one-session claim.
+
+    The owner-reported bug: two concurrent Claude sessions picked up the SAME
+    unit because ``Task.claim`` was a read-then-write — ``select_for_update()``
+    (a silent no-op on the production SQLite backend, ``has_select_for_update``
+    is ``False``) then an UNCONDITIONAL ``save()`` with no affected-row guard.
+    Both sessions passed the in-Python check on the same stale view and both
+    wrote. It is now a single guarded ``UPDATE ... WHERE pk AND <claimable>``
+    whose row count is the CAS token, the same backend-agnostic shape the
+    sibling ``claim_next_pending`` / ``reap_stale_claims`` paths already use.
+
+    Three directions, all pinned here:
+
+    * race — two concurrent claims on one available unit ⇒ EXACTLY one wins;
+    * dead-lease reclaim — a unit whose owner's lease lapsed is re-claimable;
+    * live-lease protection — a unit with a FRESH lease is NOT stolen.
+    """
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def test_backend_is_sqlite(self) -> None:
+        # Pin the premise: the race shape below reflects the PRODUCTION backend,
+        # where ``select_for_update`` is a no-op — the whole reason the previous
+        # read-then-write raced.
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+        assert connection.features.has_select_for_update is False
+
+    def test_two_concurrent_claims_on_one_task_exactly_one_wins(self) -> None:
+        """The race: session A and session B both claim the same PENDING unit.
+
+        Same deterministic single-connection interleave as
+        ``TestClaimNextPendingConcurrencyOnSqlite``: session B runs its FULL
+        claim inside session A's critical section, just before A's write
+        commits, so A's write lands on a row B already moved to CLAIMED. The
+        seam patches BOTH write primitives (``QuerySet.update`` — the fixed
+        CAS — and ``Task.save`` — the pre-fix read-then-write), so the test is
+        RED on the buggy code (both "win") and GREEN on the fix (the CAS
+        ``WHERE`` lets exactly one writer match).
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        row = self._task()
+        session_a = Task.objects.get(pk=row.pk)
+        session_b = Task.objects.get(pk=row.pk)
+
+        fired: list[str] = []
+        rival_won = [False]
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            try:
+                session_b.claim(claimed_by="session-B")
+                rival_won[0] = True
+            except InvalidTransitionError:
+                rival_won[0] = False
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_save(self, *args, **kwargs)
+
+        caller_won = False
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            try:
+                session_a.claim(claimed_by="session-A")
+                caller_won = True
+            except InvalidTransitionError:
+                caller_won = False
+
+        row.refresh_from_db()
+        # EXACTLY one of the two interleaved sessions claimed the single unit.
+        assert (caller_won, rival_won[0]).count(True) == 1, (
+            f"double-claim race NOT closed on SQLite: {caller_won=} {rival_won[0]=}"
+        )
+        assert row.status == Task.Status.CLAIMED
+        assert row.claimed_by in {"session-A", "session-B"}
+
+    def test_claim_reclaims_a_dead_sessions_expired_lease(self) -> None:
+        """Dead-lease reclaim: a unit whose owner's lease lapsed is re-claimable.
+
+        Session A claims the unit, then dies — its lease is forced into the
+        past. The next healthy session B claims the SAME unit directly via
+        ``Task.claim``; the CAS ``<claimable>`` predicate admits a CLAIMED row
+        whose lease is expired, so B reclaims it (no duplicate unit, no manual
+        reopen).
+        """
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+        # Session A dies: its lease lapses (no more heartbeats).
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+
+        session_b = Task.objects.get(pk=task.pk)
+        session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-B"  # reclaimed, not duplicated
+        assert task.lease_expires_at is not None
+        assert task.lease_expires_at > timezone.now()  # a fresh lease for B
+
+    def test_claim_does_not_steal_a_unit_with_a_fresh_lease(self) -> None:
+        """Live-lease protection: a unit with a FRESH lease is NOT stolen.
+
+        Session A holds a live lease. Session B's claim must lose — the CAS
+        ``<claimable>`` predicate excludes a CLAIMED row whose lease is still
+        in the future, so A's claim is left intact and B raises the typed
+        ``InvalidTransitionError``.
+        """
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+
+        session_b = Task.objects.get(pk=task.pk)
+        with pytest.raises(InvalidTransitionError):
+            session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-A"  # the live owner keeps its claim
+
+    def test_claim_refuses_a_terminal_task(self) -> None:
+        """A COMPLETED/FAILED unit is never re-claimed — the typed refusal stands."""
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.fail(reason="test: deliberate failure", by_holder=True)  # terminal
+
+        with pytest.raises(InvalidTransitionError):
+            task.claim(claimed_by="session-A")
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+
+class TestReplayOrphanedTransitions(TestCase):
+    """#883 — a mid-transition crash must leave *recoverable* state.
+
+    ``Task.complete`` does the task ``save()`` then ``_advance_ticket()``.
+    Pre-#883 these were two separate write boundaries: a crash between
+    them left the task COMPLETED but the ticket on its old state. Lease
+    expiry can't rescue it (the task is already COMPLETED, not CLAIMED),
+    so ``reclaim_orphaned_claims`` / ``reap_stale_claims`` never see it
+    and the loop silently stalls forever on a half-advanced ticket.
+
+    Two complementary guarantees. ``Task.complete`` is now one
+    ``transaction.atomic``: the crash window is gone — either both writes
+    land or neither does. ``replay_orphaned_transitions`` is the boot/tick
+    recovery sweep (sibling of ``reclaim_orphaned_claims``) for the rows
+    that *did* slip through before the fix shipped, or any future seam: it
+    finds a COMPLETED task whose phase implies an FSM transition the
+    ticket has not yet taken and replays the *same* idempotent
+    ``_advance_ticket`` path — no parallel transition mechanism.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_completed_task_with_unapplied_phase_transition_is_replayed(self) -> None:
+        # Simulate the half-advanced state a mid-transition crash leaves:
+        # the coding task is COMPLETED but the ticket is still PLAN_RECORDED
+        # (the FSM ``code()`` transition never landed).
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED, (
+            f"orphaned mid-transition ticket was not replayed (still {ticket.state!r}) — the loop stalls forever"
+        )
+
+    def test_already_advanced_ticket_is_left_untouched(self) -> None:
+        # Anti-vacuity: the common case (complete() already advanced the
+        # ticket) must NOT be double-fired — the phase/state guards no-op.
+        ticket = Ticket.objects.create(state=Ticket.State.CODED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.CODED
+
+    def test_replay_preserves_state_preconditions_no_gate_skip(self) -> None:
+        # GATE-INTEGRITY (#883): replay must never let a ticket reach a
+        # state it didn't earn. A COMPLETED *shipping* task whose ticket
+        # is only WORK_STARTED (it never went through code→test→review) must
+        # NOT be teleported to PR_OPENED — the same phase+state guard that
+        # protects the live ``complete()`` path protects replay, because
+        # replay reuses that exact path.
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="shipping",
+            status=Task.Status.COMPLETED,
+        )
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.WORK_STARTED, (
+            f"replay skipped the lifecycle gate — ticket reached {ticket.state!r} it never earned"
+        )
+
+    def test_replays_scoping_transition_when_guard_holds(self) -> None:
+        # The scoping→start branch of the shared transition path: a
+        # SCOPED ticket whose completed scoping task's start() was lost.
+        ticket = Ticket.objects.create(state=Ticket.State.SCOPED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="scoping", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_replays_shipping_transition_only_from_reviewed(self) -> None:
+        # The shipping→ship branch: only fires from SELF_REVIEWED (the earned
+        # state). A SELF_REVIEWED ticket whose completed shipping task's
+        # ship() was lost to a crash is recovered to PR_OPENED.
+        #
+        # #1284 (codex #1282-2): the replay sweep goes through the same
+        # ``_apply_phase_transition`` path the live ``complete()`` chain
+        # uses, so the visited-phases gate applies here too. Record
+        # ``testing``/``reviewing`` to satisfy the gate — a ticket that
+        # legitimately reached SELF_REVIEWED would have those attested.
+        ticket = Ticket.objects.create(state=Ticket.State.SELF_REVIEWED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        session.visit_phase("testing", agent_id="a")
+        session.visit_phase("reviewing", agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.PR_OPENED
+
+    def test_replays_testing_and_reviewing_transitions(self) -> None:
+        # The testing→test and reviewing→review branches of the shared
+        # path, each from its earned predecessor state.
+        from unittest.mock import patch  # noqa: PLC0415
+
+        coded = Ticket.objects.create(state=Ticket.State.CODED)
+        s1 = Session.objects.create(ticket=coded, agent_id="a")
+        Task.objects.create(ticket=coded, session=s1, phase="testing", status=Task.Status.COMPLETED)
+        tested = Ticket.objects.create(state=Ticket.State.TESTED)
+        record_review_context_for_test(tested)
+        record_maker_review_for_test(tested, "a" * 40)
+        s2 = Session.objects.create(ticket=tested, agent_id="b")
+        Task.objects.create(ticket=tested, session=s2, phase="reviewing", status=Task.Status.COMPLETED)
+
+        # Shippable so `tested`'s replayed review lands SELF_REVIEWED (not
+        # auto-ignored) — this test pins the replay branch, not the #3313
+        # unshippable-review disposition.
+        with patch.object(Ticket, "has_shippable_diff", return_value=True):
+            replayed = Task.objects.replay_orphaned_transitions()
+
+        coded.refresh_from_db()
+        tested.refresh_from_db()
+        assert replayed == 2
+        assert coded.state == Ticket.State.TESTED
+        assert tested.state == Ticket.State.SELF_REVIEWED
+
+    def test_replays_reviewer_role_external_review(self) -> None:
+        # The reviewing+REVIEWER branch (mark_reviewed_externally): a
+        # reviewer-role ticket whose completed reviewing task's external
+        # review transition was lost is recovered to REVIEW_DELIVERED.
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED, role=Ticket.Role.REVIEWER)
+        record_review_context_for_test(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
+
+    def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
+        # A ticket accrues one COMPLETED task per phase. The sweep must
+        # replay only the *latest* completed task's transition (newest
+        # pk), not re-fire every historical phase task — the older ones
+        # would all no-op on the guards anyway, but the dedup keeps the
+        # sweep O(tickets) not O(all completed tasks) and proves the
+        # latest-per-ticket selection is exercised.
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        # Older completed coding task, then the latest is also coding
+        # (e.g. a re-run). Both COMPLETED on the same PLAN_RECORDED ticket.
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        # Counted once (one ticket recovered), not once per completed task.
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED
+
+    def test_pending_and_failed_tasks_are_not_replayed(self) -> None:
+        # Only COMPLETED tasks represent finished work whose transition
+        # may have been lost; PENDING/FAILED tasks are handled by the
+        # claim/reap sweeps and must not be force-advanced here.
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+    def test_needs_user_input_held_task_is_not_force_advanced(self) -> None:
+        # #927 BLOCKER — a coding task that returned
+        # ``{"needs_user_input": True}`` is correctly *held* by
+        # ``_advance_ticket`` (ticket stays WORK_STARTED, a durable question is
+        # recorded, the task ends COMPLETED). The replay
+        # sweep then finds that COMPLETED task as latest-per-ticket and
+        # must NOT force-advance the ticket past the phase the agent
+        # said it could not finish. The needs-user-input suppression
+        # is part of the shared transition path, not only the live
+        # ``complete()`` chain.
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.complete_with_attempt(
+            exit_code=0,
+            result={"needs_user_input": True, "user_input_reason": "blocked on a design decision"},
+        )
+        # Precondition: the live path held the ticket and recorded the
+        # question — this is the state the sweep then sees.
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert DeferredQuestion.objects.filter(parked_task=task).exists()
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 0
+        assert ticket.state == Ticket.State.WORK_STARTED, (
+            f"replay force-advanced a needs-user-input-held ticket to {ticket.state!r} — "
+            "the agent said it could not finish coding; the recorded question is orphaned"
+        )
+        # The recorded question must survive the sweep untouched.
+        assert DeferredQuestion.objects.filter(parked_task=task).exists()
+
+    def test_completed_task_without_needs_user_input_still_replays(self) -> None:
+        # #927 anti-vacuity: the fix must suppress *only* the
+        # needs-user-input case. A genuinely orphaned COMPLETED coding
+        # task (last attempt did NOT request user input) must still be
+        # replay-advanced, exactly as before — the recovery sweep is
+        # not over-blocked into uselessness.
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.complete_with_attempt(exit_code=0, result={"summary": "done"})
+        # Simulate the half-advanced orphan: complete() advanced the
+        # ticket; reset it to PLAN_RECORDED so the sweep has work to replay.
+        ticket.state = Ticket.State.PLAN_RECORDED
+        ticket.save(update_fields=["state"])
+
+        replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.CODED
+
+
+class TestReplayLeavesTerminalTicketsAlone(TestCase):
+    """#3879 — a ticket at its terminal state has no dropped transition to replay.
+
+    ``_apply_phase_transition``'s branches each require a source state that is not
+    the transition's own target, so an applied transition no-ops on replay — except
+    ``mark_reviewed_externally``, which lists ``REVIEW_DELIVERED`` (its own target) as
+    a source so a re-review at a moved head SHA can re-stamp. The sweep takes each
+    ticket's newest COMPLETED task every tick, so every reviewer ticket ever closed
+    re-fired that self-loop forever: a locked read-modify-write plus a ``save`` plus
+    a ``post_transition`` fan-out per ticket per tick, which minted one
+    ``execute_teardown`` job each time. 747,732 of 747,753 ``DBTaskResult`` rows on
+    the live box were that enqueue, across 203 tickets.
+
+    The sweep exists for a ticket a crash left BEHIND. A terminal ticket is not
+    behind — no branch of the shared path can advance it — so it is not a candidate.
+    """
+
+    @staticmethod
+    def _closed_review() -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            role=Ticket.Role.REVIEWER,
+            state=Ticket.State.REVIEW_DELIVERED,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+        return ticket
+
+    def _sweep(self, times: int) -> tuple[int, int]:
+        """``(transitions replayed, teardown jobs enqueued)`` over *times* consecutive sweeps."""
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — module object for the enqueue patch
+
+        replayed = 0
+        with patch.object(tasks_mod, "execute_teardown") as teardown, self.captureOnCommitCallbacks(execute=True):
+            for _ in range(times):
+                replayed += Task.objects.replay_orphaned_transitions()
+        return replayed, teardown.enqueue.call_count
+
+    def test_repeated_sweeps_over_a_closed_review_enqueue_no_teardown(self) -> None:
+        ticket = self._closed_review()
+
+        replayed, enqueued = self._sweep(times=5)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
+        assert enqueued == 0, (
+            f"{enqueued} teardown job(s) minted for a ticket that reached its terminal state long ago — "
+            "the enqueue rate must be bounded by real work, not by tick cadence"
+        )
+        assert replayed == 0, f"the sweep re-fired an already-applied transition {replayed} time(s)"
+
+    def test_orphaned_reviewer_ticket_still_advances(self) -> None:
+        # Anti-vacuity: the sweep is not over-blocked. A reviewer ticket a crash
+        # left on a pre-terminal state still gets its dropped transition replayed.
+        ticket = Ticket.objects.create(overlay="test", role=Ticket.Role.REVIEWER, state=Ticket.State.NOT_STARTED)
+        record_review_context_for_test(ticket)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            replayed = Task.objects.replay_orphaned_transitions()
+
+        ticket.refresh_from_db()
+        assert replayed == 1
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
+
+
+class TestCompleteIsAtomic(TestCase):
+    """#883 — ``Task.complete`` must be one transaction.
+
+    The crash window is the gap between the task ``save()`` and the
+    ticket ``save()`` inside ``_advance_ticket``. We prove the gap is
+    closed by forcing the FSM transition to raise *after* the task save:
+    pre-fix the task save had already committed (separate boundary) so
+    the task is COMPLETED while the ticket is stale; post-fix the whole
+    ``complete()`` rolls back as a unit, so a retry can complete cleanly
+    rather than the ticket being permanently half-advanced.
+    """
+
+    def test_backend_is_sqlite(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+
+    def test_complete_rolls_back_task_save_when_advance_fails(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        import pytest  # noqa: PLC0415
+
+        ticket = planned_ticket(state=Ticket.State.PLAN_RECORDED)
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+        )
+
+        boom = RuntimeError("crash mid-transition")
+        with (
+            patch.object(Ticket, "code", side_effect=boom),
+            pytest.raises(RuntimeError),
+        ):
+            task.complete()
+
+        task.refresh_from_db()
+        ticket.refresh_from_db()
+        # Atomic: the task save is rolled back together with the failed
+        # FSM transition. Pre-fix the task was COMPLETED here (its save
+        # had committed on a separate boundary) while the ticket stayed
+        # PLAN_RECORDED — the unrecoverable half-advance #883 is about.
+        assert task.status == Task.Status.CLAIMED, (
+            f"task.complete() was not atomic — task is {task.status!r} but the FSM transition failed"
+        )
+        assert ticket.state == Ticket.State.PLAN_RECORDED

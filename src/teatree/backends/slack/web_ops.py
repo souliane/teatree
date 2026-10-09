@@ -1,0 +1,101 @@
+"""Single-call Slack Web API ops, split out of ``SlackBotBackend``.
+
+The ``auth.test`` scope probe, the permalink read, and the channel self-join —
+each a one-shot Web API call returning a scalar/body — factored into free
+functions taking the backend's http client or ``get`` / ``post`` callable so
+``bot.py`` stays under the module-health LOC cap. Each caller keeps its own
+empty-credential guard, so these assume a usable token/channel.
+"""
+
+import logging
+from typing import Protocol, cast
+
+from teatree.backends.slack.http import SlackHttpClient
+from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
+from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+
+class Getter(Protocol):
+    def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict: ...
+
+
+class Poster(Protocol):
+    def __call__(self, method: str, payload: RawAPIDict, *, token: str = "", idempotent: bool = True) -> RawAPIDict: ...
+
+
+def run_auth_test(http: SlackHttpClient, bot_token: str) -> RawAPIDict:
+    """Return the ``auth.test`` body with granted scopes attached from ``X-OAuth-Scopes``.
+
+    Slack reports the token's scopes in the response header, not the JSON body;
+    they are attached under :data:`GRANTED_SCOPES_KEY` (native keys untouched) so a
+    connector-preflight scope guard can read them.
+    """
+    body, scopes_header = http.post_with_header("auth.test", token=bot_token, json={}, header=OAUTH_SCOPES_HEADER)
+    return attach_granted_scopes(body, scopes_header)
+
+
+def read_ext_shared(get: Getter, channel: str) -> bool | None:
+    """Whether *channel* is a Slack-Connect externally-shared channel, or ``None`` when unknown.
+
+    Resolved from ``conversations.info`` (``is_ext_shared`` / ``is_shared``) on the bot
+    token, which can always READ channel metadata even where it cannot post. An
+    ``ok:false`` answer (bad token, missing scope, channel not found, rate-limit) is
+    ``None`` — membership unknown — so the token policy decides by operation class:
+    reads fail safe to the bot, writes/reactions fail toward the user ``xoxp`` (#1110).
+    A transport failure (5xx, connection error) propagates out of *get* and aborts the
+    call: conservative (no wrong-token send), but the call does not complete.
+    """
+    data = get("conversations.info", {"channel": channel})
+    if not data.get("ok"):
+        return None
+    info = cast("RawAPIDict", data.get("channel") or {})
+    return bool(info.get("is_ext_shared")) or bool(info.get("is_shared"))
+
+
+def read_permalink(get: Getter, channel: str, ts: str) -> str:
+    """Return the archive permalink for ``(channel, ts)`` or ``""``."""
+    if not channel or not ts:
+        return ""
+    data = get("chat.getPermalink", {"channel": channel, "message_ts": ts})
+    if not data.get("ok"):
+        return ""
+    permalink = data.get("permalink", "")
+    return permalink if isinstance(permalink, str) else ""
+
+
+def open_im_channel(post: Poster, user_id: str) -> str:
+    """Open (or resolve) the IM channel id for *user_id* via ``conversations.open``; ``""`` on failure.
+
+    The ``""`` collapses several unrelated causes — ``missing_scope``,
+    ``user_not_found``, and a body Slack never saw — and the caller can only report
+    the generic "conversations.open ok:false". Slack's own ``error``/``needed`` are
+    logged here so the distinction survives, instead of being reconstructed by
+    hand from a downstream symptom.
+    """
+    data = post("conversations.open", {"users": user_id})
+    if not data.get("ok"):
+        logger.warning(
+            "conversations.open failed for user %r: error=%r needed=%r",
+            user_id,
+            data.get("error", "<no error field — the call never reached Slack>"),
+            data.get("needed", ""),
+        )
+        return ""
+    channel = cast("RawAPIDict", data.get("channel") or {})
+    channel_id = channel.get("id")
+    return channel_id if isinstance(channel_id, str) else ""
+
+
+def join_conversation(post: Poster, channel: str) -> RawAPIDict:
+    """Join the bot to a public channel via ``conversations.join`` (bot token).
+
+    Returns the raw Slack body. ``ok:true`` is returned both on a fresh join and
+    when the bot is already a member (Slack sets ``already_in_channel``), so callers
+    treat the call as idempotent. A private or Slack-Connect channel rejects a
+    self-join with an error in the body.
+    """
+    if not channel:
+        return {}
+    return post("conversations.join", {"channel": channel})

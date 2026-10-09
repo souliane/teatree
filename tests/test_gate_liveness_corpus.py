@@ -1,0 +1,1724 @@
+# test-path: cross-cutting — drives every PreToolUse gate in hook_router.py (hooks/); no src/teatree/ mirror.
+"""Gate-liveness / enforcement-conformance corpus.
+
+The symmetric companion to ``test_lockout_regression_corpus.py``. That corpus
+catches OVER-deny (a gate that locks the factory out by denying a legitimate
+command). This corpus catches UNDER-fire (a gate whose handler is correct but
+that never fires on real input) and UNREACHABLE gates (a handler keyed on a
+tool/skill that no registered ``hooks.json`` matcher ever delivers to its
+event — a *phantom* gate, #167/#171).
+
+Every deny/enforcement gate is one :class:`GateRow`. Three mechanical
+assertions run per row:
+
+(a) DENIES the row's real must-DENY payload;
+(b) ALLOWS the row's real must-ALLOW payload;
+(c) REACHABILITY — the gate's declared ``matched`` tool/skill is actually
+delivered to the handler's ``event`` by a registered ``hooks.json`` matcher
+(PreToolUse: the tool name matches a matcher regex; TaskCreated/Stop: a handler
+is registered on that event).
+
+After #1646 wired the ``Agent`` PreToolUse matcher, NO reachability phantoms
+remain. The two PreToolUse ``Agent`` arms — the dispatch-quote and
+orchestrator-boundary gates — are now genuinely live (the ``Agent`` tool reaches
+PreToolUse and a registered ``Agent`` matcher delivers it). The
+orchestrator-boundary foreground-Agent guard is additionally default-ON (#1733),
+with its never-lockout off-ramps intact (sub-agent context,
+``run_in_background: true``, ``[fg-ok: <reason>]`` token, kill-switch,
+deny-circuit-breaker, and ``_fail_open_or_deny`` routing #1692). The ``Agent`` matcher is the
+ONLY interception point a sub-agent dispatch has (#4216); the task-LIST tools are
+a separate family that bypasses PreToolUse, and ``TaskCreated`` is THEIR event —
+which is why the quote concern also carries a reachable ``TaskCreated`` arm over
+task-list entries.
+The phantom roster is now asserted EMPTY (also visible via ``-rsx``); a row
+silently gaining phantom status without a deliberate update FAILS the build.
+"""
+
+import json
+import re
+import sqlite3
+import subprocess
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final
+
+import pytest
+
+import hooks.scripts.hook_router as router
+import hooks.scripts.standing_grant_ask_gate as _standing_grant_ask_gate
+from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
+from hooks.scripts.pretooluse_verdict import Verdict
+from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
+from teatree.core.merge.substrate_standing import SubstrateStandingAuthorization
+from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.hooks import _repo_visibility
+from tests._git_repo import _GIT, git_identity_env, make_git_repo
+
+if TYPE_CHECKING:
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import ProvisionStep
+
+# ── environment & invocation context ────────────────────────────────────
+
+_HOOKS_JSON: Final[Path] = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
+_REPO_SKILLS_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "skills"
+
+
+@dataclass
+class GateContext:
+    """Per-test arranged environment handed to each row's payload builders."""
+
+    tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch
+    home: Path
+    state_dir: Path
+    session_id: str = "sess-liveness"
+
+    def seed_setting(self, key: str, value: object, *, scope: str = "") -> None:
+        db = self.tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+                "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+                (scope, key, json.dumps(value)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    def seed_overlays(self, overlays: dict[str, dict[str, object]]) -> None:
+        self.seed_setting("overlays", overlays)
+
+    def patch_t3_subprocess(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        """Pin ``shutil.which('t3')`` and the gate's shelled validator result.
+
+        Gates that shell ``t3 tool …`` (AI-sig, MR-metadata) are made
+        deterministic without a real ``t3`` on PATH: ``which`` resolves and
+        ``subprocess.run`` returns a fixed :class:`CompletedProcess`.
+        """
+        self.monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+        real_run = subprocess.run
+
+        # Only the `t3` invocation is pinned. Answering EVERY subprocess.run also swallowed
+        # the git probes a gate runs to prove which repo a ship comes from, so those probes
+        # inherited this returncode and the gate skipped before it measured anything — a row
+        # could then never arrange a real repo, and a skip is not the denial it asserts.
+        def _run_pinning_only_t3(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+            argv = args[0] if args else kwargs.get("args", ())
+            program = str(argv[0]) if isinstance(argv, list | tuple) and argv else str(argv)
+            return result if Path(program).name.startswith("t3") else real_run(*args, **kwargs)
+
+        self.monkeypatch.setattr(subprocess, "run", _run_pinning_only_t3)
+
+    def write_state(self, suffix: str, lines: str) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / f"{self.session_id}.{suffix}").write_text(lines, encoding="utf-8")
+
+
+PayloadBuilder = Callable[[GateContext], dict]
+Arranger = Callable[[GateContext], None]
+
+
+@dataclass(frozen=True)
+class GateRow:
+    """One deny/enforcement gate. Adding a gate is exactly one of these rows."""
+
+    gate_id: str
+    handler: Callable[[dict], bool | Verdict | None]
+    event: str
+    matched: str
+    deny_input: PayloadBuilder
+    allow_input: PayloadBuilder
+    arrange: Arranger = field(default=lambda _ctx: None)
+    # A phantom gate fails reachability (c). ``phantom_reason`` is the xfail
+    # text for (c). ``allow_phantom_reason`` additionally marks (b) xfail when a
+    # real must-ALLOW payload cannot clear the gate. No row currently sets it
+    # (the #167 plan-tracker mismatch that needed it is fixed), but the
+    # mechanism stays for a future gate whose allow-path is genuinely blocked.
+    phantom_reason: str | None = None
+    allow_phantom_reason: str | None = None
+
+
+# ── reachability: parse hooks.json matchers ──────────────────────────────
+
+
+def _registered_matchers(event: str) -> list[str]:
+    """Return the matcher strings registered for *event* in ``hooks.json``.
+
+    An entry with no ``matcher`` key (TaskCreated/Stop/…) contributes the
+    empty string, signalling "every tool on this event reaches the handler".
+    """
+    config = json.loads(_HOOKS_JSON.read_text(encoding="utf-8"))
+    entries = config.get("hooks", {}).get(event, [])
+    return [entry.get("matcher", "") for entry in entries]
+
+
+def _tool_is_routed(event: str, tool_name: str) -> bool:
+    """True iff *tool_name* is delivered to *event*'s handler chain.
+
+    A matcher is an alternation regex (``Bash|Edit|Write``) anchored to the
+    full tool name. An empty matcher (eventless registration) routes every
+    tool. Mirrors how the Claude Code harness selects PreToolUse hooks.
+    """
+    matchers = _registered_matchers(event)
+    if not matchers:
+        return False
+    for matcher in matchers:
+        if matcher == "":
+            return True
+        if re.fullmatch(matcher, tool_name):
+            return True
+    return False
+
+
+def _handler_registered(event: str, handler: Callable) -> bool:
+    return handler in router._HANDLERS.get(event, [])
+
+
+def _gate_is_reachable(row: GateRow) -> bool:
+    """Assertion (c): is the gate's ``matched`` token actually delivered?
+
+    PreToolUse: the matched tool must match a registered matcher regex AND the
+    handler must be in the PreToolUse chain. TaskCreated/Stop and other
+    eventless registrations: a handler registered on that event reaches every
+    tool, so reachability reduces to "is the handler registered on its event".
+    """
+    if not _handler_registered(row.event, row.handler):
+        return False
+    if row.event == "PreToolUse":
+        return _tool_is_routed(row.event, row.matched)
+    return True
+
+
+# ── deny detection ───────────────────────────────────────────────────────
+
+
+def _denied(handler: Callable[[dict], bool | Verdict | None], event_input: dict) -> bool:
+    """Run *handler*; True iff it denied (returned ``True``).
+
+    Every deny gate in scope signals a deny via a ``True`` return — the
+    PreToolUse ``hookSpecificOutput`` deny, the TaskCreated ``continue: false``
+    envelope, and the Stop ``systemMessage`` break all return ``True`` from
+    their handler. A ``None``/``False`` return is an allow (pass-through).
+    """
+    return handler(event_input) is True
+
+
+# ── payload builders ──────────────────────────────────────────────────────
+#
+# Synthetic names only (public repo): ``acme`` / ``t3-acme`` /
+# ``attacker-org/acme-product`` / ``overlay-a:``. Never a real
+# tenant/overlay/colleague.
+
+_HIGH_QUOTE = "**User directive (verbatim, today):** ship it now"  # bold-user-directive-verbatim HIGH
+_BANNED_BODY = "Rolling out the acme integration."
+_AI_SIG_TRAILER = "fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+
+
+def _bash(command: str) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": "Bash", "tool_input": {"command": command}}
+
+
+def _visible_plan_event(ctx: GateContext, assistant_text: str) -> dict:
+    transcript = ctx.tmp_path / "visible-plan.jsonl"
+    entries = [
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Handle TEST-4101 and TEST-202. Present a per-ticket plan before any edit, commit, or push."
+                        ),
+                    }
+                ],
+            },
+        }
+    ]
+    if assistant_text:
+        entries.append(
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": assistant_text}]},
+            }
+        )
+    transcript.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+    return {
+        "session_id": ctx.session_id,
+        "transcript_path": str(transcript),
+        "tool_name": "Bash",
+        "tool_input": {"command": 'echo "dispatch placeholder"'},
+    }
+
+
+def _visible_plan_deny(ctx: GateContext) -> dict:
+    return _visible_plan_event(ctx, "")
+
+
+def _visible_plan_allow(ctx: GateContext) -> dict:
+    return _visible_plan_event(
+        ctx,
+        "Plan before action:\n"
+        "TEST-4101: implement the forms fix, then run and verify its focused tests.\n"
+        "TEST-202: implement the views fix, then run and verify its focused tests.",
+    )
+
+
+def _slack_send(tool: str, text: str) -> dict:
+    return {"session_id": "sess-liveness", "tool_name": tool, "tool_input": {"text": text}}
+
+
+def _agent(prompt: str, *, run_in_background: bool = False) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": prompt, "run_in_background": run_in_background},
+    }
+
+
+# skill-loading (PreToolUse): a real resolvable skill in <session>.pending
+# that is not in <session>.skills must block Bash; the [skill-load-ok] token
+# (or having loaded it) clears the gate.
+
+
+def _arrange_skill_loading(ctx: GateContext) -> None:
+    ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
+    ctx.write_state("pending", "code\n")
+    ctx.write_state("skills", "")
+
+
+# block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
+# worktree's ticket is still in WORK_STARTED state (no PlanArtifact yet).
+# _ticket_state_for_cwd() resolves via Django/DB, so the corpus monkeypatches it
+# directly rather than spinning up Django.
+
+
+def _arrange_block_edit_before_planned(ctx: GateContext) -> None:
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "work_started")
+
+
+def _block_edit_before_planned_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"file_path": str(ctx.tmp_path / "module.py"), "old_string": "a", "new_string": "b"},
+    }
+
+
+def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "plan_recorded")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"file_path": str(ctx.tmp_path / "module.py"), "old_string": "a", "new_string": "b"},
+    }
+
+
+# block-config-overwrite (PreToolUse Write/Edit/Bash): a Write that overwrites an
+# existing config/dotfile NOT read this session must block; recording the path in
+# <session>.reads first clears it.
+
+
+def _config_overwrite_cfg(ctx: GateContext) -> Path:
+    cfg = ctx.tmp_path / "config.toml"
+    cfg.write_text("old = true\n", encoding="utf-8")
+    return cfg
+
+
+def _cron_loop_shell_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "CronCreate",
+        "tool_input": {"cron": "*/12 * * * *", "prompt": "Run `t3 loops tick --loop dispatch` in Bash"},
+    }
+
+
+def _cron_loop_shell_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "CronCreate",
+        "tool_input": {"cron": "*/12 * * * *", "prompt": "/followup"},
+    }
+
+
+# block-standing-grant-ask (PreToolUse AskUserQuestion): with a standing substrate grant
+# configured, asking the owner to sign off a substrate merge blocks; a floor waiver passes.
+
+
+def _arrange_standing_grant(ctx: GateContext) -> None:
+    grant = ("t3-teatree", SubstrateStandingAuthorization(self_signoff=True))
+    ctx.monkeypatch.setattr(_standing_grant_ask_gate, "_configured_grant", lambda _refs: grant)
+
+
+def _standing_grant_ask(ctx: GateContext, question: str) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": question, "options": [{"label": "Yes"}, {"label": "No"}]}]},
+    }
+
+
+def _standing_grant_ask_deny(ctx: GateContext) -> dict:
+    return _standing_grant_ask(ctx, "Do you approve merging substrate PR souliane/teatree#4892?")
+
+
+def _standing_grant_ask_allow(ctx: GateContext) -> dict:
+    return _standing_grant_ask(ctx, "Authorize the expedite waiver so substrate PR #4805 can merge on pending checks?")
+
+
+def _block_config_overwrite_deny(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
+    }
+
+
+def _block_config_overwrite_allow(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    ctx.write_state("reads", f"0.0\t{cfg}\n")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
+    }
+
+
+# protect-default-branch (PreToolUse Edit/Write/Read): an Edit on a file in a
+# teatree-managed repo checked out on main must block; a worktree branch allows.
+
+
+def _git(cwd: Path, *args: str) -> None:
+    import os  # noqa: PLC0415
+
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        },
+    )
+
+
+def _init_repo(repo: Path, branch: str, remote_slug: str) -> None:
+    """Init *repo* on *branch* with one commit so ``rev-parse HEAD`` resolves.
+
+    A repo with no commit fails ``rev-parse --abbrev-ref HEAD`` (exit 128), so
+    ``_resolve_branch_and_root`` would fail open and the branch gate never
+    fires — defeating the test's premise. The seed commit makes the branch real.
+    """
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-b", branch)
+    _git(repo, "remote", "add", "origin", f"git@github.com:{remote_slug}.git")
+    (repo / "module.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "module.py")
+    _git(repo, "commit", "-m", "seed")
+
+
+def _managed_repo(ctx: GateContext, branch: str) -> Path:
+    ctx.seed_overlays({"acme": {"workspace_repos": ["attacker-org/acme-product"]}})
+    repo = ctx.tmp_path / "acme-product"
+    _init_repo(repo, branch, "attacker-org/acme-product")
+    return repo
+
+
+def _protect_branch_deny(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "module.py")}}
+
+
+def _protect_branch_allow(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "1-feat-acme")
+    return {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "module.py")}}
+
+
+# block-main-clone-mutation (PreToolUse Bash): a `git checkout <feature>` run in
+# a teatree-managed MAIN CLONE (a `.git`-*dir* primary clone) is denied; a
+# read-only `git status` in the same clone passes through (#2836).
+
+
+def _main_clone_bash_deny(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git checkout feature"},
+        "cwd": str(repo),
+    }
+
+
+def _main_clone_bash_allow(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status"},
+        "cwd": str(repo),
+    }
+
+
+# headless-posture authoring gate (PreToolUse Edit): an interactive session editing
+# teatree's own source while the resolved runtime is headless denies; the same edit
+# carrying the audited single-use override token allows. The runtime is SEEDED into the
+# real control DB and the lane read from the real env, so the gate's two live decisions
+# (posture, lane) are exercised rather than stubbed.
+
+
+def _arrange_headless_interactive(ctx: GateContext) -> Path:
+    ctx.write_state("teatree-active", "")
+    ctx.monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    ctx.monkeypatch.setenv("CLAUDECODE", "1")
+    ctx.monkeypatch.delenv("CLAUDE_AGENT_SDK_VERSION", raising=False)
+    ctx.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+    repo = _managed_repo(ctx, "1-feat-acme")
+    source = repo / "src" / "acme"
+    source.mkdir(parents=True, exist_ok=True)
+    target = source / "module.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    return target
+
+
+def _headless_authoring_deny(ctx: GateContext) -> dict:
+    target = _arrange_headless_interactive(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(target), "new_string": "hand-written"},
+    }
+
+
+# orchestrator delegation gate (PreToolUse Bash): the same interactive+engaged lane as the
+# authoring gate above, so its two live decisions (lane, engagement) are exercised rather than
+# stubbed. An unbounded `rg` sweep denies; the same sweep given a count bound allows.
+
+
+def _delegation_deny(ctx: GateContext) -> dict:
+    _arrange_headless_interactive(ctx)
+    return {"session_id": ctx.session_id, "tool_name": "Bash", "tool_input": {"command": "rg 'autonomy' src/"}}
+
+
+def _delegation_allow(ctx: GateContext) -> dict:
+    _arrange_headless_interactive(ctx)
+    return {"session_id": ctx.session_id, "tool_name": "Bash", "tool_input": {"command": "rg -m 5 'autonomy' src/"}}
+
+
+def _headless_authoring_allow(ctx: GateContext) -> dict:
+    target = _arrange_headless_interactive(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(target),
+            "new_string": "hand-written [headless-authoring-ok: factory down, restoring it]",
+        },
+    }
+
+
+# validate-mr-metadata Bash arm (PreToolUse Bash): glab mr create routes to the
+# overlay validator; rc!=0 denies, rc==0 allows.
+
+
+def _mr_meta_bash_deny(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=1, stderr="bad title")
+    return _bash("glab mr create --title '' --description ''")
+
+
+def _mr_meta_bash_allow(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=0)
+    return _bash("glab mr create --title 'feat: add acme widget' --description 'Closes #4242'")
+
+
+# validate-mr-metadata MCP arm (mcp__glab__glab_mr_create) — handler validates,
+# but the MCP tool is NOT in any PreToolUse matcher (phantom).
+
+
+def _mr_meta_mcp_deny(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=1, stderr="bad title")
+    return {"tool_name": "mcp__glab__glab_mr_create", "tool_input": {"title": "", "description": ""}}
+
+
+def _mr_meta_mcp_allow(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=0)
+    return {
+        "tool_name": "mcp__glab__glab_mr_create",
+        "tool_input": {"title": "feat: add acme widget", "description": "Closes #4242"},
+    }
+
+
+# block-self-reviewer-assign (PreToolUse): a reviewer-assignment surface denies;
+# a metadata-only edit / a GET read of the reviewer list allows. The gate
+# decides purely from the command — no t3 subprocess.
+
+
+def _reviewer_assign_bash_deny(ctx: GateContext) -> dict:
+    return _bash("glab mr update 9120 --reviewer reviewer-a")
+
+
+def _reviewer_assign_bash_allow(ctx: GateContext) -> dict:
+    return _bash("glab mr update 12 --add-label needs-review")
+
+
+def _reviewer_assign_mcp_deny(ctx: GateContext) -> dict:
+    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 9120, "reviewer": "reviewer-a"}}
+
+
+def _reviewer_assign_mcp_allow(ctx: GateContext) -> dict:
+    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 9120, "title": "fix: x (proj#1)"}}
+
+
+# block-ai-signature (PreToolUse Bash): a commit carrying a banned trailer
+# routes to the AI-sig scanner; rc!=0 denies, a clean commit (no payload) allows.
+
+
+def _ai_sig_deny(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=1, stdout="banned trailer")
+    return _bash(f"git commit -m '{_AI_SIG_TRAILER}'")
+
+
+def _ai_sig_allow(ctx: GateContext) -> dict:
+    ctx.patch_t3_subprocess(returncode=0)
+    return _bash("git commit -m 'fix: tidy up'")
+
+
+# quote-scanner (PreToolUse Bash arm): a publish command whose body carries a
+# verbatim user quote denies; a clean body allows.
+
+
+# The leak gates (#1415/#1213) enforce ONLY on an affirmatively-PUBLIC target, so
+# the must-DENY rows post to the genuinely-public ``souliane/teatree`` with the
+# probe pinned public (and a cold visibility cache) for a deterministic fire.
+def _pin_public_probe(ctx: GateContext) -> None:
+    ctx.monkeypatch.setenv("T3_DATA_DIR", str(ctx.tmp_path / "viscache"))
+    ctx.monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+
+def _quote_bash_deny(ctx: GateContext) -> dict:
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_HIGH_QUOTE}"')
+
+
+def _quote_bash_allow(ctx: GateContext) -> dict:
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Routine status update."')
+
+
+# quote-scanner Slack-MCP arm (mcp__*slack* send) — reachable via the
+# ``mcp__.*[Ss]lack.*`` PreToolUse matcher (#171).
+
+
+def _quote_slack_deny(ctx: GateContext) -> dict:
+    return _slack_send("mcp__slack__slack_send_message", _HIGH_QUOTE)
+
+
+def _quote_slack_allow(ctx: GateContext) -> dict:
+    return _slack_send("mcp__slack__slack_send_message", "Routine status update.")
+
+
+# self-DM gate (mcp__*slack* write): a write to a configured bot↔user DM
+# channel denies (renders as user-authored under the personal token); a write to
+# a colleague channel allows. The arrange step declares the DM channel id under
+# an overlay table so the gate can resolve it.
+
+_SELF_DM_CHANNEL = "D0BLIVEDM001"
+
+
+def _arrange_self_dm_gate(ctx: GateContext) -> None:
+    ctx.seed_overlays({"t3-acme": {"slack_dm_channel_id": _SELF_DM_CHANNEL}})
+
+
+# block-general-purpose-agent (PreToolUse Agent): a blank sub-agent dispatched at a
+# managed repo denies; the same brief with a typed sub-agent allows. WHICH repos are
+# managed is overlay knowledge, so the registry is seeded rather than read off the host.
+
+
+def _arrange_general_purpose_gate(ctx: GateContext) -> None:
+    ctx.seed_overlays({"t3-acme": {"workspace_repos": ["acme-product"]}})
+
+
+def _general_purpose_dispatch(subagent_type: str) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": subagent_type, "prompt": "Fix the failing test in acme-product"},
+    }
+
+
+def _general_purpose_deny(_ctx: GateContext) -> dict:
+    return _general_purpose_dispatch("general-purpose")
+
+
+def _general_purpose_allow(_ctx: GateContext) -> dict:
+    return _general_purpose_dispatch("t3:coder")
+
+
+def _self_dm_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__slack__slack_send_message",
+        "tool_input": {"channel": _SELF_DM_CHANNEL, "text": "Full-day review report"},
+    }
+
+
+def _self_dm_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__slack__slack_send_message",
+        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
+# block-mcp-slack-write (#1196): a Slack MCP WRITE (any destination) denies —
+# every Slack write must route through the t3 CLI; a Slack MCP READ allows.
+def _mcp_slack_write_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__slack__slack_send_message",
+        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
+def _mcp_slack_write_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__slack__slack_get_channel_history",
+        "tool_input": {"channel": "C0COLLEAGUE9"},
+    }
+
+
+# dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
+# verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
+# the `Agent` PreToolUse matcher in hooks.json, the only interception point a
+# dispatch has. The task-list arm below covers a quote pasted into a todo.
+
+
+def _dispatch_quote_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": _HIGH_QUOTE}}
+
+
+def _dispatch_quote_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "Implement the acme widget per the spec."},
+    }
+
+
+# quote-scanner ON TaskCreated (the task-list arm, #171): the task-LIST tools
+# bypass PreToolUse, so this TaskCreated handler scans the task
+# subject/description. It always runs: the corpus proves it denies a HIGH-quote
+# entry and allows a clean one. The payload carries
+# no teammate field — a top-level session's own todo is the shape it must handle.
+
+
+def _dispatch_quote_task_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": _HIGH_QUOTE}
+
+
+def _dispatch_quote_task_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "task_subject": "do work",
+        "task_description": "Implement the acme widget per the spec.",
+    }
+
+
+# admission governor on dispatch (#4107): the governor had two callers, both
+# factory lanes, so an interactive Agent/Task dispatch was admitted with no
+# ceiling and no load brake. Both arms are arranged over the load-brake
+# watermark (deterministic, no DB read — a brake short-circuits before the live
+# count), so the deny is the governor's own reason and the allow is the per-call
+# `[admission-ok:]` escape that keeps the gate never-lockout.
+_ADMISSION_OK = "[admission-ok: the merge keystone is blocked on this dispatch]"
+
+
+def _arrange_dispatch_admission(ctx: GateContext) -> None:
+    from teatree.core import dispatch_admission  # noqa: PLC0415 — deferred: arranged per-row, not at import
+
+    over_the_watermark = MachineSignal(cores=8, load1=BRAKE_LOAD_PER_CORE * 8 + 1, ram_available_gb=1.0)
+    ctx.monkeypatch.setattr(dispatch_admission, "read_machine_signal", lambda: over_the_watermark)
+    ctx.monkeypatch.setattr(
+        dispatch_admission,
+        "read_quota_signal",
+        lambda: QuotaSignal(
+            fresh=False,
+            all_accounts_exhausted=False,
+            weekly_utilization=0.0,
+            short_utilization=0.0,
+            seconds_to_weekly_reset=None,
+        ),
+    )
+
+
+def _dispatch_admission_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": "review the diff"}}
+
+
+def _dispatch_admission_allow(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": f"{_ADMISSION_OK} review"}}
+
+
+# brief-anchor lint on dispatch (#4341): a brief asserting a file:line and a
+# count with no SHA anchor and no trust-the-code clause.
+_BRIEF_ANCHOR_OK = "[brief-anchor-ok: the sha is on the ticket]"
+_UNANCHORED_BRIEF = "The guard is in src/teatree/core/ticket.py:412 and there are 3 callers. Fix each."
+
+
+def _brief_anchor_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "tool_name": "Agent", "tool_input": {"prompt": _UNANCHORED_BRIEF}}
+
+
+def _brief_anchor_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Agent",
+        "tool_input": {"prompt": f"{_BRIEF_ANCHOR_OK} {_UNANCHORED_BRIEF}"},
+    }
+
+
+# banned-terms (PreToolUse Bash arm): a publish body carrying a configured
+# banned term denies; a clean body allows. (No Slack-MCP arm exists.)
+
+
+def _arrange_banned_terms(ctx: GateContext) -> None:
+    ctx.seed_setting("banned_term_registry", {"leak": ["acme"], "prose_collider": ["acme"]})
+    ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+    _pin_public_probe(ctx)
+
+
+# block-verbatim-operator-paste (PreToolUse Bash): a public issue body that
+# blockquotes a recorded operator message denies; a paraphrase allows. The
+# operator message carries no banned term, so the denial is this gate's alone.
+
+_OPERATOR_SAID = (
+    "Stop pasting my chat messages into public issues verbatim. I want you to "
+    "write the summary in your own words every single time, without exception."
+)
+
+
+def _operator_transcript(ctx: GateContext) -> str:
+    return str(ctx.tmp_path / "operator.jsonl")
+
+
+def _arrange_verbatim_paste(ctx: GateContext) -> None:
+    _pin_public_probe(ctx)
+    ctx.monkeypatch.delenv("ALLOW_VERBATIM_PASTE", raising=False)
+    said = {"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": _OPERATOR_SAID}}
+    Path(_operator_transcript(ctx)).write_text(json.dumps(said) + "\n", encoding="utf-8")
+
+
+def _verbatim_paste_deny(ctx: GateContext) -> dict:
+    command = f'gh issue create --repo souliane/teatree --title t --body "> {_OPERATOR_SAID}"'
+    return {**_bash(command), "transcript_path": _operator_transcript(ctx)}
+
+
+def _verbatim_paste_allow(ctx: GateContext) -> dict:
+    command = (
+        "gh issue create --repo souliane/teatree --title t "
+        '--body "The operator asked for their chat text to be summarised, never reproduced."'
+    )
+    return {**_bash(command), "transcript_path": _operator_transcript(ctx)}
+
+
+def _banned_bash_deny(ctx: GateContext) -> dict:
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_BANNED_BODY}"')
+
+
+def _banned_bash_allow(ctx: GateContext) -> dict:
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Rolling out the integration."')
+
+
+# block-uncovered-diff (PreToolUse Bash): a non-draft gh pr create whose diff
+# fails Gate 12 denies; a passing report allows.
+
+
+_UNCOVERED_REPO = "shipping-repo"
+
+
+def _arrange_uncovered_repo(ctx: GateContext) -> None:
+    """A repo the gate can prove the ship comes FROM, so it reaches the measurement.
+
+    The gate skips — never denies — when it cannot resolve which repo a create publishes
+    (its never-lockout contract). Without a real repo and a push destination the row asserts
+    a denial the gate could not have produced for that reason alone, which proves nothing
+    about the coverage verdict this row exists to pin.
+    """
+    repo = make_git_repo(ctx.tmp_path / _UNCOVERED_REPO)
+    subprocess.run(
+        [_GIT, "-C", str(repo), "remote", "add", "origin", "https://example.invalid/o/r.git"],
+        check=True,
+        capture_output=True,
+        env=git_identity_env(),
+    )
+
+
+_STALE_BASE_REPO = "glab-base-repo"
+_CLEAN_BASE_REPO = "glab-clean-repo"
+_PINNED_REPO = "pinned-repo"
+
+
+def _add_remote(repo: Path, name: str, url: str) -> None:
+    subprocess.run(
+        [_GIT, "-C", str(repo), "remote", "add", name, url],
+        check=True,
+        capture_output=True,
+        env=git_identity_env(),
+    )
+
+
+def _arrange_glab_base_remotes(ctx: GateContext) -> None:
+    """One repo carrying a STALE `glab-base` override, one carrying none.
+
+    The gate reads the override off the cwd repo's remotes, so both arms need a real
+    repository — a payload with no repo allows for want of a remote to read, which is
+    not the allow the row means to assert.
+    """
+    stale = make_git_repo(ctx.tmp_path / _STALE_BASE_REPO)
+    _add_remote(stale, BASE_REMOTE, "https://gitlab.example.com/one/project.git")
+    make_git_repo(ctx.tmp_path / _CLEAN_BASE_REPO)
+
+
+def _glab_base_deny(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _STALE_BASE_REPO} && glab mr create -R other/project")
+
+
+def _glab_base_allow(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _CLEAN_BASE_REPO} && glab mr create -R other/project")
+
+
+def _arrange_single_branch_repo(ctx: GateContext) -> None:
+    """A repo whose slug is DECLARED single-branch, pinned to its default branch."""
+    repo = make_git_repo(ctx.tmp_path / _PINNED_REPO)
+    _add_remote(repo, "origin", "https://example.invalid/acme/pinned.git")
+    ctx.seed_setting("single_branch_repos", ["acme/pinned=main"])
+
+
+def _second_branch_deny(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _PINNED_REPO} && git checkout -b feature/second")
+
+
+def _second_branch_allow(ctx: GateContext) -> dict:
+    return _bash(f"cd {ctx.tmp_path / _PINNED_REPO} && git worktree list")
+
+
+def _uncovered_deny(ctx: GateContext) -> dict:
+    report = json.dumps({"passes": False, "uncovered": [{"path": "a.py", "lines": [1, 2]}]})
+    ctx.patch_t3_subprocess(returncode=1, stdout=report)
+    return _bash(f"cd {ctx.tmp_path / _UNCOVERED_REPO} && gh pr create --title t --body b")
+
+
+def _uncovered_allow(ctx: GateContext) -> dict:
+    report = json.dumps({"passes": True, "uncovered": []})
+    ctx.patch_t3_subprocess(returncode=0, stdout=report)
+    return _bash(f"cd {ctx.tmp_path / _UNCOVERED_REPO} && gh pr create --title t --body b")
+
+
+# enforce-orchestrator-boundary Bash arm (PreToolUse Bash): a foreground heavy
+# Bash command from the main agent denies; run_in_background clears it.
+
+
+def _orch_bash_deny(ctx: GateContext) -> dict:
+    return {"tool_name": "Bash", "tool_input": {"command": "pytest tests/", "run_in_background": False}}
+
+
+def _orch_bash_allow(ctx: GateContext) -> dict:
+    return {"tool_name": "Bash", "tool_input": {"command": "pytest tests/", "run_in_background": True}}
+
+
+# enforce-orchestrator-boundary Agent arm (#1442): a foreground Agent dispatch
+# from the main agent denies. Now REACHABLE (#1646 wired the `Agent` PreToolUse
+# matcher) and default-ON (#1733). The arrange writes the flag explicitly — a
+# no-op for the verdict since it is default-ON, but it documents intent at the
+# call site. run_in_background / a [fg-ok: <reason>] token / a sub-agent context
+# clears it; the deny routes through _fail_open_or_deny (#1692).
+
+
+def _arrange_orch_agent_gate(ctx: GateContext) -> None:
+    ctx.seed_setting("orchestrator_boundary_agent_gate_enabled", value=True)
+
+
+def _orch_agent_deny(ctx: GateContext) -> dict:
+    return _agent("implement", run_in_background=False)
+
+
+def _orch_agent_allow(ctx: GateContext) -> dict:
+    return _agent("implement", run_in_background=True)
+
+
+# block-direct-commands (PreToolUse Bash): a blocked tool invocation denies; a
+# t3 / read-only command allows.
+
+
+def _direct_deny(_ctx: GateContext) -> dict:
+    return _bash("pip install requests")
+
+
+def _direct_allow(_ctx: GateContext) -> dict:
+    return _bash("t3 teatree ticket list")
+
+
+# block-git-add-all (PreToolUse Bash): the whole-tree stage denies; naming the
+# paths allows.
+
+
+def _add_all_deny(_ctx: GateContext) -> dict:
+    return _bash("git add -A")
+
+
+def _add_all_allow(_ctx: GateContext) -> dict:
+    return _bash("git add src/app/models.py")
+
+
+# block-out-of-band-merge (PreToolUse Bash): a raw merge in a managed repo
+# denies; the same merge in an unmanaged repo allows.
+
+
+def _oob_merge_deny(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
+
+
+def _oob_merge_allow(ctx: GateContext) -> dict:
+    ctx.seed_overlays({"acme": {"workspace_repos": ["attacker-org/acme-product"]}})
+    repo = ctx.tmp_path / "unmanaged"
+    _init_repo(repo, "main", "someone-else/public")
+    return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
+
+
+# block-unapprovable-author-create (PreToolUse Bash): a raw `glab mr create` on a repo that
+# DECLARES a non-owner author denies (it would open the MR under the owner's credential
+# instead, and a forge bars an author from approving their own MR); the same create on a repo
+# no overlay declares a distinct credential for allows — including a merely-MANAGED one (managed-ness
+# alone is not this gate's scope) — since it has no such credential to lose.
+
+
+class _BotAuthoredOverlay(OverlayBase):
+    """Declares ``attacker-org/acme-product`` written under a resolvable non-owner credential."""
+
+    def __init__(self) -> None:
+        self.config = _BotAuthoredConfig()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
+        _ = worktree
+        return []
+
+
+class _BotAuthoredConfig(OverlayConfig):
+    def get_gitlab_token(self) -> str:
+        return "owner-token"
+
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        return "bot-token" if "acme-product" in remote else "owner-token"
+
+
+def _raw_create_deny(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "acme-product"
+    _init_repo(repo, "main", "attacker-org/acme-product")
+    ctx.monkeypatch.setattr(
+        "teatree.core.authoring_credential.get_all_overlays",
+        lambda: {"acme": _BotAuthoredOverlay()},
+    )
+    return {"tool_name": "Bash", "tool_input": {"command": "glab mr create --title x"}, "cwd": str(repo)}
+
+
+def _raw_create_allow(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "unmanaged-create"
+    _init_repo(repo, "main", "someone-else/public")
+    return {"tool_name": "Bash", "tool_input": {"command": "glab mr create --title x"}, "cwd": str(repo)}
+
+
+# block-unknown-repo-push (PreToolUse Bash): a ``git push`` to a repo NO
+# registered overlay owns HOLDS for approval; a push to an OWNED repo allows.
+# The gate ships INERT (``require_owned_repo_approval`` defaults False), so the
+# corpus injects an opted-in overlay set (``owned_repos={"github.com":
+# ["souliane"]}``, flag True) to exercise the gate LOGIC. ``souliane/teatree``
+# is then owned; ``randomuser/randomrepo`` is unknown.
+
+
+class _OptedInScopeOverlay(OverlayBase):
+    def __init__(self) -> None:
+        self.config = OverlayConfig()
+        self.config.owned_repos = {"github.com": ["souliane"]}
+        self.config.require_owned_repo_approval = True
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
+        _ = worktree
+        return []
+
+
+def _opt_in_scope_gate(ctx: GateContext) -> None:
+    ctx.monkeypatch.setattr(
+        "teatree.core.overlay_loader.get_all_overlays",
+        lambda: {"t3-teatree": _OptedInScopeOverlay()},
+    )
+
+
+def _unknown_push_deny(ctx: GateContext) -> dict:
+    _opt_in_scope_gate(ctx)
+    repo = ctx.tmp_path / "unknown-target"
+    _init_repo(repo, "main", "randomuser/randomrepo")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
+def _unknown_push_allow(ctx: GateContext) -> dict:
+    _opt_in_scope_gate(ctx)
+    repo = ctx.tmp_path / "owned-target"
+    _init_repo(repo, "main", "souliane/teatree")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
+# block-raw-review-post (PreToolUse Bash): a raw forge REST WRITE to a review
+# endpoint denies; a bare GET read allows.
+
+
+def _raw_review_deny(_ctx: GateContext) -> dict:
+    return _bash("glab api projects/1/merge_requests/1/discussions -X POST -f body=lgtm")
+
+
+def _raw_review_allow(_ctx: GateContext) -> dict:
+    return _bash("glab api projects/1/merge_requests/1/discussions")
+
+
+# block-raw-issue-write (PreToolUse Bash): a raw `gh issue comment` bypassing the
+# #162 issue-hygiene facade denies; the read-only `issue view` allows.
+
+
+def _raw_issue_write_deny(_ctx: GateContext) -> dict:
+    return _bash("gh issue comment 12 --body 'a requirement'")
+
+
+def _raw_issue_write_allow(_ctx: GateContext) -> dict:
+    return _bash("gh issue view 12")
+
+
+# block-raw-pid-kill (PreToolUse Bash): a raw `kill <pid>` of a guessed pid
+# denies; the `kill -0` no-op liveness probe allows.
+
+
+def _raw_pid_kill_deny(_ctx: GateContext) -> dict:
+    return _bash("kill -9 4242")
+
+
+def _raw_pid_kill_allow(_ctx: GateContext) -> dict:
+    return _bash("kill -0 4242")
+
+
+# block-unbounded-wait (PreToolUse Bash): an `until`/`while … sleep` with no
+# deadline denies; the same wait under a `timeout` wrapper allows.
+
+
+def _unbounded_wait_deny(_ctx: GateContext) -> dict:
+    return _bash("until gh pr checks 3882 | grep -q pass; do sleep 180; done")
+
+
+def _unbounded_wait_allow(_ctx: GateContext) -> dict:
+    return _bash("timeout 1800 bash -c 'until gh pr checks 3882 | grep -q pass; do sleep 180; done'")
+
+
+# block-secret-file-print (PreToolUse Bash): printing a credential file to the
+# transcript denies; capturing the value into a variable allows.
+
+
+def _secret_print_deny(_ctx: GateContext) -> dict:
+    return _bash("cat ~/.netrc")
+
+
+def _secret_print_allow(_ctx: GateContext) -> dict:
+    return _bash("TOKEN=$(pass show infra/api-key)")
+
+
+# classifier-deny stop gate (Stop): a pending classifier-deny marker emits the
+# STOP-and-explain systemMessage; no marker allows the Stop chain to proceed.
+
+
+def _classifier_stop_deny(ctx: GateContext) -> dict:
+    ctx.write_state("classifier-deny", json.dumps({"tool_name": "Bash", "action": "git push"}))
+    return {"session_id": ctx.session_id}
+
+
+def _classifier_stop_allow(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id}
+
+
+# ── the registry ──────────────────────────────────────────────────────────
+
+# The two PreToolUse `Agent` arms (`dispatch-prompt-quote-scanner` and
+# `enforce-orchestrator-boundary-agent`) are now REACHABLE: #1646 wired the
+# `Agent` PreToolUse matcher in hooks.json (the registered PreToolUse matchers
+# are `Bash|Edit|Write`, `AskUserQuestion`, `mcp__.*[Ss]lack.*`,
+# `mcp__glab__glab_mr_.*`, `Agent`). The orchestrator-boundary Agent deny is
+# additionally default-ON (#1733). The SEPARATE task-LIST tools bypass
+# PreToolUse and carry TaskCreated, whose ONE producer is the TaskCreate tool
+# body (verified against the Claude Code binary, docs/claude-code-internals.md
+# §9) — that arm governs task-list entries and never a dispatch (#4216).
+
+
+GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
+    GateRow(
+        gate_id="visible-plan-before-tools",
+        handler=router.handle_enforce_visible_plan_before_tools,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_visible_plan_deny,
+        allow_input=_visible_plan_allow,
+    ),
+    GateRow(
+        gate_id="enforce-skill-loading",
+        handler=router.handle_enforce_skill_loading,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=lambda _c: _bash("uv run pytest -q"),
+        allow_input=lambda _c: {
+            "session_id": "sess-liveness",
+            "tool_name": "Bash",
+            "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
+        },
+        arrange=_arrange_skill_loading,
+    ),
+    GateRow(
+        gate_id="block-general-purpose-agent",
+        handler=router.handle_block_general_purpose_agent,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_general_purpose_deny,
+        allow_input=_general_purpose_allow,
+        arrange=_arrange_general_purpose_gate,
+    ),
+    GateRow(
+        gate_id="block-edit-before-planned",
+        handler=router.handle_block_edit_before_planned,
+        event="PreToolUse",
+        matched="Edit",
+        deny_input=_block_edit_before_planned_deny,
+        allow_input=_block_edit_before_planned_allow,
+        arrange=_arrange_block_edit_before_planned,
+    ),
+    GateRow(
+        gate_id="block-config-overwrite",
+        handler=router.handle_block_config_overwrite,
+        event="PreToolUse",
+        matched="Write",
+        deny_input=_block_config_overwrite_deny,
+        allow_input=_block_config_overwrite_allow,
+    ),
+    GateRow(
+        gate_id="block-cron-loop-shell",
+        handler=router.handle_block_cron_loop_shell,
+        event="PreToolUse",
+        matched="CronCreate",
+        deny_input=_cron_loop_shell_deny,
+        allow_input=_cron_loop_shell_allow,
+    ),
+    GateRow(
+        gate_id="block-standing-grant-ask",
+        handler=router.handle_block_standing_grant_ask,
+        event="PreToolUse",
+        matched="AskUserQuestion",
+        deny_input=_standing_grant_ask_deny,
+        allow_input=_standing_grant_ask_allow,
+        arrange=_arrange_standing_grant,
+    ),
+    GateRow(
+        gate_id="protect-default-branch",
+        handler=router.handle_protect_default_branch,
+        event="PreToolUse",
+        matched="Edit",
+        deny_input=_protect_branch_deny,
+        allow_input=_protect_branch_allow,
+    ),
+    GateRow(
+        gate_id="block-main-clone-mutation",
+        handler=router.handle_block_main_clone_mutation,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_main_clone_bash_deny,
+        allow_input=_main_clone_bash_allow,
+    ),
+    GateRow(
+        gate_id="block-interactive-authoring",
+        handler=router.handle_block_interactive_authoring,
+        event="PreToolUse",
+        matched="Edit",
+        deny_input=_headless_authoring_deny,
+        allow_input=_headless_authoring_allow,
+    ),
+    GateRow(
+        gate_id="block-undelegated-investigation",
+        handler=router.handle_block_undelegated_investigation,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_delegation_deny,
+        allow_input=_delegation_allow,
+    ),
+    GateRow(
+        gate_id="validate-mr-metadata-bash",
+        handler=router.handle_validate_mr_metadata,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_mr_meta_bash_deny,
+        allow_input=_mr_meta_bash_allow,
+    ),
+    GateRow(
+        gate_id="validate-mr-metadata-mcp",
+        handler=router.handle_validate_mr_metadata,
+        event="PreToolUse",
+        matched="mcp__glab__glab_mr_create",
+        deny_input=_mr_meta_mcp_deny,
+        allow_input=_mr_meta_mcp_allow,
+    ),
+    GateRow(
+        gate_id="block-self-reviewer-assign-bash",
+        handler=router.handle_block_self_reviewer_assign,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_reviewer_assign_bash_deny,
+        allow_input=_reviewer_assign_bash_allow,
+    ),
+    GateRow(
+        gate_id="block-self-reviewer-assign-mcp",
+        handler=router.handle_block_self_reviewer_assign,
+        event="PreToolUse",
+        matched="mcp__glab__glab_mr_update",
+        deny_input=_reviewer_assign_mcp_deny,
+        allow_input=_reviewer_assign_mcp_allow,
+    ),
+    GateRow(
+        gate_id="block-ai-signature",
+        handler=router.handle_block_ai_signature,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_ai_sig_deny,
+        allow_input=_ai_sig_allow,
+    ),
+    GateRow(
+        gate_id="quote-scanner-bash",
+        handler=router.handle_quote_scanner_pretool,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_quote_bash_deny,
+        allow_input=_quote_bash_allow,
+        arrange=_pin_public_probe,
+    ),
+    GateRow(
+        gate_id="quote-scanner-slack-mcp",
+        handler=router.handle_quote_scanner_pretool,
+        event="PreToolUse",
+        matched="mcp__slack__slack_send_message",
+        deny_input=_quote_slack_deny,
+        allow_input=_quote_slack_allow,
+    ),
+    GateRow(
+        gate_id="block-self-dm-via-mcp",
+        handler=router.handle_block_self_dm_via_mcp,
+        event="PreToolUse",
+        matched="mcp__slack__slack_send_message",
+        deny_input=_self_dm_deny,
+        allow_input=_self_dm_allow,
+        arrange=_arrange_self_dm_gate,
+    ),
+    GateRow(
+        gate_id="block-mcp-slack-write",
+        handler=router.handle_block_mcp_slack_write,
+        event="PreToolUse",
+        matched="mcp__slack__slack_send_message",
+        deny_input=_mcp_slack_write_deny,
+        allow_input=_mcp_slack_write_allow,
+    ),
+    GateRow(
+        gate_id="dispatch-prompt-quote-scanner",
+        handler=router.handle_dispatch_prompt_quote_scanner,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_dispatch_quote_deny,
+        allow_input=_dispatch_quote_allow,
+    ),
+    GateRow(
+        gate_id="dispatch-prompt-quote-scanner-on-task-create",
+        handler=router.handle_dispatch_prompt_quote_scanner_on_task_create,
+        event="TaskCreated",
+        matched="Task",
+        deny_input=_dispatch_quote_task_deny,
+        allow_input=_dispatch_quote_task_allow,
+    ),
+    GateRow(
+        gate_id="dispatch-admission-governor",
+        handler=router.handle_dispatch_admission,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_dispatch_admission_deny,
+        allow_input=_dispatch_admission_allow,
+        arrange=_arrange_dispatch_admission,
+    ),
+    GateRow(
+        gate_id="brief-anchor-lint",
+        handler=router.handle_brief_anchor_lint,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_brief_anchor_deny,
+        allow_input=_brief_anchor_allow,
+    ),
+    GateRow(
+        gate_id="banned-terms-bash",
+        handler=router.handle_banned_terms_pretool,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_banned_bash_deny,
+        allow_input=_banned_bash_allow,
+        arrange=_arrange_banned_terms,
+    ),
+    GateRow(
+        gate_id="block-verbatim-operator-paste",
+        handler=router.handle_block_verbatim_operator_paste,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_verbatim_paste_deny,
+        allow_input=_verbatim_paste_allow,
+        arrange=_arrange_verbatim_paste,
+    ),
+    GateRow(
+        gate_id="block-glab-stale-base-remote",
+        handler=router.handle_block_glab_stale_base_remote,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_glab_base_deny,
+        allow_input=_glab_base_allow,
+        arrange=_arrange_glab_base_remotes,
+    ),
+    GateRow(
+        gate_id="block-second-branch",
+        handler=router.handle_block_second_branch,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_second_branch_deny,
+        allow_input=_second_branch_allow,
+        arrange=_arrange_single_branch_repo,
+    ),
+    GateRow(
+        gate_id="block-uncovered-diff",
+        handler=router.handle_block_uncovered_diff,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_uncovered_deny,
+        allow_input=_uncovered_allow,
+        arrange=_arrange_uncovered_repo,
+    ),
+    GateRow(
+        gate_id="enforce-orchestrator-boundary-bash",
+        handler=router.handle_enforce_orchestrator_boundary,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_orch_bash_deny,
+        allow_input=_orch_bash_allow,
+    ),
+    GateRow(
+        gate_id="enforce-orchestrator-boundary-agent",
+        handler=router.handle_enforce_orchestrator_boundary,
+        event="PreToolUse",
+        matched="Agent",
+        deny_input=_orch_agent_deny,
+        allow_input=_orch_agent_allow,
+        arrange=_arrange_orch_agent_gate,
+    ),
+    GateRow(
+        gate_id="block-direct-commands",
+        handler=router.handle_block_direct_commands,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_direct_deny,
+        allow_input=_direct_allow,
+    ),
+    GateRow(
+        gate_id="block-git-add-all",
+        handler=router.handle_block_git_add_all,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_add_all_deny,
+        allow_input=_add_all_allow,
+    ),
+    GateRow(
+        gate_id="block-out-of-band-merge",
+        handler=router.handle_block_out_of_band_merge,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_oob_merge_deny,
+        allow_input=_oob_merge_allow,
+    ),
+    GateRow(
+        gate_id="block-unapprovable-author-create",
+        handler=router.handle_block_unapprovable_author_create,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_create_deny,
+        allow_input=_raw_create_allow,
+    ),
+    GateRow(
+        gate_id="block-unknown-repo-push",
+        handler=router.handle_block_unknown_repo_push,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_unknown_push_deny,
+        allow_input=_unknown_push_allow,
+    ),
+    GateRow(
+        gate_id="block-foreign-branch-push",
+        handler=router.handle_block_foreign_branch_push,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=lambda _c: _bash("git push --all"),
+        allow_input=lambda _c: _bash("git push --dry-run origin HEAD"),
+    ),
+    GateRow(
+        gate_id="block-raw-review-post",
+        handler=router.handle_block_raw_review_post,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_review_deny,
+        allow_input=_raw_review_allow,
+    ),
+    GateRow(
+        gate_id="block-raw-issue-write",
+        handler=router.handle_block_raw_issue_write,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_issue_write_deny,
+        allow_input=_raw_issue_write_allow,
+    ),
+    GateRow(
+        gate_id="block-raw-pid-kill",
+        handler=router.handle_block_raw_pid_kill,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_pid_kill_deny,
+        allow_input=_raw_pid_kill_allow,
+    ),
+    GateRow(
+        gate_id="block-unbounded-wait",
+        handler=router.handle_block_unbounded_wait,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_unbounded_wait_deny,
+        allow_input=_unbounded_wait_allow,
+    ),
+    GateRow(
+        gate_id="block-secret-file-print",
+        handler=router.handle_block_secret_file_print,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_secret_print_deny,
+        allow_input=_secret_print_allow,
+    ),
+    GateRow(
+        gate_id="classifier-deny-stop-gate",
+        handler=router.handle_classifier_deny_stop_gate,
+        event="Stop",
+        matched="Stop",
+        deny_input=_classifier_stop_deny,
+        allow_input=_classifier_stop_allow,
+    ),
+)
+
+
+# No reachability phantoms remain (#1646 / #1733). PR B (#171) repaired the
+# ``validate-mr-metadata-mcp`` phantom via the ``mcp__glab__glab_mr_.*`` matcher;
+# #1646 then wired the ``Agent`` PreToolUse matcher, making the two PreToolUse
+# ``Agent`` arms — ``dispatch-prompt-quote-scanner`` and
+# ``enforce-orchestrator-boundary-agent`` — genuinely live. The
+# orchestrator-boundary Agent deny is additionally default-ON (#1733) with its
+# never-lockout off-ramps intact. The roster is asserted EMPTY explicitly so a
+# row silently gaining (or losing) phantom status without a deliberate update is
+# caught — the corpus keeps telling the truth either way.
+_EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset()
+_EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
+_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 0
+
+
+# ── fixtures (state isolation — the dev's real config store can't leak) ──
+
+
+@pytest.fixture(autouse=True)
+def gate_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[GateContext]:
+    """Pin STATE_DIR and ``Path.home()`` to tmp dirs for every row.
+
+    Mirrors ``test_hook_router_gate_bypass_class.py``: patch ``router.STATE_DIR``
+    and ``Path.home`` so neither real session state nor the developer's real
+    config store can influence (or be influenced by) a gate under test.
+    """
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    original = router.STATE_DIR
+    router.STATE_DIR = state_dir
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.setenv("HOME", str(home))
+    yield GateContext(tmp_path=tmp_path, monkeypatch=monkeypatch, home=home, state_dir=state_dir)
+    router.STATE_DIR = original
+
+
+def _mark_xfail(request: pytest.FixtureRequest, reason: str | None) -> None:
+    if reason is not None:
+        request.node.add_marker(pytest.mark.xfail(strict=True, reason=reason))
+
+
+_IDS: Final[list[str]] = [row.gate_id for row in GATE_REGISTRY]
+
+
+# ── the three mechanical assertions ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("row", GATE_REGISTRY, ids=_IDS)
+def test_gate_denies_real_must_deny_payload(row: GateRow, gate_ctx: GateContext) -> None:
+    """(a) The gate DENIES its real must-DENY payload.
+
+    Holds for every row INCLUDING the phantoms: a phantom's handler logic is
+    correct (it denies its real bad input when invoked directly) — what makes
+    it a phantom is reachability (c), not its decision logic. So (a) is never
+    xfailed.
+    """
+    row.arrange(gate_ctx)
+    event_input = row.deny_input(gate_ctx)
+    assert _denied(row.handler, event_input), (
+        f"UNDER-FIRE — gate '{row.gate_id}' did not deny its real must-DENY payload.\n  input: {event_input!r}"
+    )
+
+
+@pytest.mark.parametrize("row", GATE_REGISTRY, ids=_IDS)
+def test_gate_allows_real_must_allow_payload(
+    row: GateRow, request: pytest.FixtureRequest, gate_ctx: GateContext
+) -> None:
+    """(b) The gate ALLOWS its real must-ALLOW payload.
+
+    No row is xfailed here anymore: the plan-tracker mismatch (#167) is fixed,
+    so loading a real skill clears both plan gates and every gate's
+    must-ALLOW payload passes through.
+    """
+    _mark_xfail(request, row.allow_phantom_reason)
+    row.arrange(gate_ctx)
+    event_input = row.allow_input(gate_ctx)
+    assert not _denied(row.handler, event_input), (
+        f"OVER-FIRE — gate '{row.gate_id}' denied its real must-ALLOW payload.\n  input: {event_input!r}"
+    )
+
+
+@pytest.mark.parametrize("row", GATE_REGISTRY, ids=_IDS)
+def test_gate_is_reachable_on_dispatch_path(row: GateRow, request: pytest.FixtureRequest) -> None:
+    """(c) REACHABILITY — the gate's matched tool/skill is actually delivered.
+
+    The phantom detector. A handler keyed on a tool/skill that no registered
+    hooks.json matcher delivers to its event fails here.
+    """
+    _mark_xfail(request, row.phantom_reason)
+    assert _gate_is_reachable(row), (
+        f"PHANTOM — gate '{row.gate_id}' keys on '{row.matched}' for event "
+        f"'{row.event}', which no registered hooks.json matcher delivers. The "
+        f"handler logic may be correct but it never fires in production."
+    )
+
+
+# ── loud phantom roster (no silent truncation) ──────────────────────────────
+
+
+def test_phantom_roster_is_explicit_and_loud() -> None:
+    """The known-phantom rows must match the declared rosters.
+
+    Makes the dead-gate roster LOUD: a reader running ``pytest -rsx`` sees each
+    xfail reason, and this test fails if a phantom is silently added/removed
+    from the registry without updating the expected rosters. After #1646 wired
+    the ``Agent`` PreToolUse matcher the roster is EMPTY — the two PreToolUse
+    Agent arms are now reachable, and the one CAUSE-B phantom
+    (``validate-mr-metadata-mcp``) was repaired earlier by a real matcher.
+    """
+    reachability = frozenset(row.gate_id for row in GATE_REGISTRY if row.phantom_reason is not None)
+    allow = frozenset(row.gate_id for row in GATE_REGISTRY if row.allow_phantom_reason is not None)
+    assert reachability == _EXPECTED_REACHABILITY_PHANTOMS, (
+        "Reachability-phantom roster drift — update _EXPECTED_REACHABILITY_PHANTOMS.\n"
+        f"  rows-marked : {sorted(reachability)}\n  expected    : {sorted(_EXPECTED_REACHABILITY_PHANTOMS)}"
+    )
+    assert allow == _EXPECTED_ALLOW_PHANTOMS, (
+        "Allow-phantom roster drift — update _EXPECTED_ALLOW_PHANTOMS.\n"
+        f"  rows-marked : {sorted(allow)}\n  expected    : {sorted(_EXPECTED_ALLOW_PHANTOMS)}"
+    )
+    distinct_phantom_gates = {gate_id.rsplit("-slack-mcp", 1)[0].rsplit("-mcp", 1)[0] for gate_id in reachability}
+    distinct_phantom_gates.update(allow)
+    assert len(distinct_phantom_gates) >= _EXPECTED_PHANTOM_CATEGORY_COUNT, (
+        f"expected at least the {_EXPECTED_PHANTOM_CATEGORY_COUNT} documented phantom categories, "
+        f"got {sorted(distinct_phantom_gates)}"
+    )
+
+
+_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict | None]]] = frozenset(
+    {
+        # Emits ``permissionDecision=allow`` (or ``None``) — it unblocks the
+        # settings.json write, it never denies content.
+        router.handle_allow_classifier_relax_settings_write,
+        # Side-effect-only mirror — always returns ``False`` (posts the
+        # AskUserQuestion to Slack, never denies).
+        router.handle_mirror_question_to_slack,
+        # Responsiveness nudge — advisory only (prints additionalContext once a
+        # turn crosses the tool-call budget), returns ``None``, never denies.
+        router.handle_orchestrator_turn_budget_nudge,
+        # One-decision-per-call advisory — warn-only (stderr nudge on a batched
+        # AskUserQuestion), returns ``None``, never denies.
+        router.handle_warn_batched_questions,
+        # Orchestrator-investigation boundary (#1442) — a WARN-only nudge (stderr
+        # + always returns ``False``); it has no deny path, so no must-deny
+        # corpus payload.
+        router.handle_enforce_orchestrator_investigation_boundary,
+        # Merged-branch-detection probe (#4070) — a WARN-only nudge (stderr +
+        # always returns ``False``); pinned structurally to have no deny path by
+        # ``tests/test_merged_detection_probe_gate.py``.
+        router.handle_warn_merged_detection_probe,
+    }
+)
+
+
+def test_every_pretooluse_deny_handler_has_a_registry_row() -> None:
+    """Coverage guard: every PreToolUse deny gate has a registry row.
+
+    The deny-handler universe is derived from the live registry
+    (``router._HANDLERS['PreToolUse']``) minus an explicit, documented
+    allow-list of the handlers that legitimately have no :class:`GateRow`
+    (``_NON_DENY_PRETOOLUSE_HANDLERS``: allow-emitters, side-effect mirrors,
+    routers, bootstrap enforcers). A future deny gate added to the registry
+    that is in neither the registry rows NOR the allow-list trips this guard —
+    forcing it into the liveness registry rather than slipping in unfired.
+    Exempting a genuinely-non-deny handler requires a deliberate, reviewable
+    addition to the allow-list, not a silent omission.
+    """
+    registry: list[Callable[[dict], bool | Verdict | None]] = router._HANDLERS["PreToolUse"]
+    allowlisted = _NON_DENY_PRETOOLUSE_HANDLERS - set(registry)
+    assert not allowlisted, (
+        "Non-deny allow-list names handlers absent from the live PreToolUse "
+        f"registry (stale exemptions): {sorted(h.__name__ for h in allowlisted)}"
+    )
+    deny_handlers = set(registry) - _NON_DENY_PRETOOLUSE_HANDLERS
+    covered = {row.handler for row in GATE_REGISTRY}
+    missing = deny_handlers - covered
+    assert not missing, (
+        "PreToolUse deny handlers missing a registry row "
+        "(add a GateRow, or add to _NON_DENY_PRETOOLUSE_HANDLERS if genuinely "
+        f"non-deny): {sorted(h.__name__ for h in missing)}"
+    )

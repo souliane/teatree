@@ -1,0 +1,323 @@
+"""FSM phase-transition disposition + wedge escalation for completed phase tasks.
+
+Split out of ``task.py`` (the Task-model lifecycle module): these helpers decide
+a completed phase task's FSM disposition — derive a transition's declared source
+states, auto-ignore an unshippable SELF_REVIEWED ticket, and escalate a genuine FSM
+wedge as a durable ``DeferredQuestion``. None of it is core Task lifecycle
+(claim / lease / complete / route), so it lives in its own concern module.
+"""
+
+import logging
+import re
+from typing import TYPE_CHECKING
+
+from django.db.models import Max
+
+from teatree.core.modelkit.phases import normalize_phase, phase_spellings
+from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.plan_decision import has_plan_decision
+from teatree.core.models.self_review import SelfReview
+from teatree.core.models.ticket import Ticket
+from teatree.core.repair_loop import max_phase_iterations, terminal_reason_fingerprint
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from teatree.core.models.task import Task
+
+logger = logging.getLogger(__name__)
+
+_CAP_QUESTION_FINDINGS_BUDGET = 8_000
+#: The dedupe marker one wedge records under: ``source`` is the completed task's pk, or ``r`` + the
+#: refusal's fingerprint for a sessionless refusal (``execute_retrospect``), one row per distinct refusal.
+PHASE_WEDGE_MARKER = "fsm-wedge:{ticket}:{phase}:{source}"
+#: Also matches the pre-#5030 ``tool_use_id`` key, which had no source part.
+PHASE_WEDGE_MARKER_RE = re.compile(
+    r"^fsm-wedge:(?P<ticket>\d+):(?P<phase>[a-z0-9_]+)(?::(?P<source>\d+|r[0-9a-f]{12}))?$"
+)
+
+#: The lifecycle-FSM target state each phase's completion should reach. A
+#: completed phase task whose ticket sits BEHIND its target with no matching
+#: guard is a genuine wedge (escalate); at-or-past is an idempotent replay
+#: (no-op). A phase absent here is free-form work with no FSM transition.
+_PHASE_TARGET_STATE: dict[str, str] = {
+    "scoping": Ticket.State.WORK_STARTED,
+    "planning": Ticket.State.PLAN_RECORDED,
+    "coding": Ticket.State.CODED,
+    "testing": Ticket.State.TESTED,
+    "reviewing": Ticket.State.SELF_REVIEWED,
+    "shipping": Ticket.State.PR_OPENED,
+}
+#: Lifecycle order used to compare a ticket's position to a phase's target.
+#: The off-ladder terminals IGNORED and REVIEW_DELIVERED are intentionally absent —
+#: a settled ticket is never a wedge (guarded via ``is_settled`` before the lookup).
+_STATE_ORDER: list[str] = [
+    Ticket.State.NOT_STARTED,
+    Ticket.State.SCOPED,
+    Ticket.State.WORK_STARTED,
+    Ticket.State.PLAN_RECORDED,
+    Ticket.State.CODED,
+    Ticket.State.TESTED,
+    Ticket.State.SELF_REVIEWED,
+    Ticket.State.PR_OPENED,
+    Ticket.State.REVIEW_REQUESTED,
+    Ticket.State.MERGED,
+    Ticket.State.RETRO_RECORDED,
+    Ticket.State.DELIVERED,
+]
+
+
+def transition_source_states(name: str) -> set[str]:
+    """The declared source states of the Ticket FSM transition *name* (derived, not hand-listed).
+
+    Reads the ``@transition(source=[…])`` declaration straight off the FSM field
+    so a branch guard can never drift from the transition it mirrors (the #808
+    hand-duplication class). A ``source="*"`` wildcard is excluded — it carries
+    no specific source to mirror.
+    """
+    fsm_field = Ticket._meta.get_field("state")  # noqa: SLF001 — Django's documented Model._meta API
+    transitions = fsm_field.get_all_transitions(Ticket)  # ty: ignore[unresolved-attribute]  # django-fsm dynamic method
+    return {str(t.source) for t in transitions if t.source != "*" and t.name == name}
+
+
+def dispose_unshippable_review(ticket: Ticket) -> None:
+    """Auto-ignore a SELF_REVIEWED ticket ``review()`` found had no shippable diff.
+
+    ``review()`` lands SELF_REVIEWED and stamps ``extra["shipping_skipped"]`` when
+    there is no shippable diff (meta / already-shipped work). Without a
+    disposition that ticket rests at SELF_REVIEWED forever — nothing consumes the
+    marker, it never reaches a terminal state, and it holds its
+    issue-implementer budget marker and its in-flight WIP slot indefinitely.
+    Ignoring it is the explicit disposition: IGNORED is terminal (releasing
+    the marker via the completion signal and freeing the WIP slot), and the
+    ``shipping_skipped`` reason stays recorded in ``extra`` alongside
+    ``ignored_from``.
+    """
+    if ticket.state != Ticket.State.SELF_REVIEWED:
+        return
+    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+    if not extra.get("shipping_skipped"):
+        return
+    logger.info("Ticket %s reviewed with no shippable diff; auto-ignoring (terminal disposition)", ticket.pk)
+    ticket.ignore()
+    ticket.save()
+
+
+def advance_coded_ticket(task: "Task", ticket: Ticket) -> bool:
+    """Fire a completed coding task's transition, or escalate a wedge; ``True`` iff one fired.
+
+    Only the rework parented on a held self-review discharges it: any other coding run on a
+    held ticket queues that rework instead, so the HOLD's own findings always reach a coder.
+    """
+    if ticket.state == Ticket.State.PLAN_RECORDED:
+        ticket.code(parent_task=task)
+    elif ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED} and (
+        has_plan_decision(ticket)
+    ):
+        # A plan recorded off the WORK_STARTED rung (``ticket plan`` / ``skip-planning`` on an
+        # early ticket) legitimately mints coding before PLAN_RECORDED; ``code_direct`` advances it.
+        ticket.code_direct(parent_task=task)
+    elif ticket.state in transition_source_states("address_self_review") and (held := SelfReview.open_hold_for(ticket)):
+        if task.parent_task_id != held.task_pk:  # ty: ignore[unresolved-attribute]
+            queue_self_review_rework(ticket, held, after=task)
+            return False
+        ticket.address_self_review(parent_task=task)
+    else:
+        escalate_unmatched_phase_transition(task, phase="coding", ticket=ticket)
+        return False
+    ticket.save()
+    return True
+
+
+def advance_self_reviewed_ticket(task: "Task", ticket: Ticket) -> bool:
+    """Advance a TESTED ticket on its completed self-review, unless that review held."""
+    if ticket.state != Ticket.State.TESTED:
+        escalate_unmatched_phase_transition(task, phase="reviewing", ticket=ticket)
+        return False
+    if (review := SelfReview.of_task(task)) is not None and review.is_hold:
+        queue_self_review_rework(ticket, review)
+        return False
+    ticket.review(parent_task=task)
+    ticket.save()
+    dispose_unshippable_review(ticket)
+    return True
+
+
+def advance_shipped_ticket(task: "Task", ticket: Ticket) -> bool:
+    """Ship a SELF_REVIEWED ticket on its completed shipping task, through the same gates as ``pr create``.
+
+    #1284 (codex #1282-2): the task-based completion path enforces the visited-phases gate
+    ``_check_shipping_gate`` runs, so a SELF_REVIEWED ticket with missing testing/reviewing
+    attestations cannot reach PR_OPENED through the task path. ``check_gate_across_ticket``
+    raises ``QualityGateError`` when phases are missing, which propagates to the caller. A
+    self-review HOLD the ticket was parked past stops it too, and queues that HOLD's rework.
+    """
+    if ticket.state != Ticket.State.SELF_REVIEWED:
+        escalate_unmatched_phase_transition(task, phase="shipping", ticket=ticket)
+        return False
+    if (held := SelfReview.open_hold_for(ticket)) is not None:
+        queue_self_review_rework(ticket, held, after=task)
+        return False
+    task.session.check_gate_across_ticket("shipping")
+    ticket.ship()
+    ticket.save()
+    return True
+
+
+def queue_self_review_rework(ticket: Ticket, review: SelfReview, *, after: "Task | None" = None) -> None:
+    """Queue *review*'s rework once per triggering completion, or at the cap record why none is queued.
+
+    Keyed on the parent link, and after another coding or shipping completion on reworks newer than it:
+    a replay never re-mints, yet a rework failed or cancelled before that completion is replaced once.
+    """
+    reworks = ticket.tasks.filter(parent_task_id=review.task_pk, phase__in=phase_spellings("coding"))
+    if after is not None:
+        reworks = reworks.filter(pk__gt=after.pk)
+    if reworks.exists():
+        return
+    earlier_laps = SelfReview.held_reviews(ticket) - {review.task_pk}
+    if len(earlier_laps) >= max_phase_iterations():
+        _record_hold_cap(ticket, review, laps=len(earlier_laps) + 1)
+        return
+    ticket.schedule_self_review_rework(ticket.tasks.get(pk=review.task_pk), review)
+
+
+def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
+    """One INTERNAL row per ticket, sticky across answered and dismissed rows: the factory never pages on it."""
+    marker = f"self-review-hold-cap:{ticket.pk}"
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
+        return
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    findings = "\n".join(review.rendered_findings(budget=_CAP_QUESTION_FINDINGS_BUDGET))
+    DeferredQuestion.record(
+        f"[self-review-hold {where}] The self-review held this ticket {laps} times in this delivery cycle, "
+        f"so no rework is queued for the HOLD at {review.reviewed_sha or 'an unrecorded head'} "
+        f"(reviewing task {review.task_pk}). `t3 <overlay> ticket rework-hold {ticket.pk}` queues it by hand. "
+        f"Its findings:\n{findings}",
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
+    )
+
+
+AUTHOR_PHASE_ADVANCES: "dict[str, Callable[[Task, Ticket], bool]]" = {
+    "coding": advance_coded_ticket,
+    "reviewing": advance_self_reviewed_ticket,
+    "shipping": advance_shipped_ticket,
+}
+
+
+def phase_output_reached(ticket: Ticket, phase: str) -> bool:
+    """Whether *ticket* sits at or past the state *phase*'s completion targets.
+
+    The full author ladder, REVIEW_REQUESTED through DELIVERED included — which is what
+    ``Ticket.has_completed_phase`` deliberately does NOT answer (it stops at PR_OPENED, so
+    a shipped ticket in peer review reads as though shipping never happened). An
+    off-ladder state (REVIEW_DELIVERED / IGNORED) and a free-form phase both hold no
+    position to compare, so both answer ``False``.
+    """
+    target = _PHASE_TARGET_STATE.get(normalize_phase(phase))
+    if target is None or ticket.state not in _STATE_ORDER:
+        return False
+    if target == Ticket.State.CODED and ticket.owes_self_review_rework():
+        return False
+    return _STATE_ORDER.index(ticket.state) >= _STATE_ORDER.index(target)
+
+
+def escalate_unmatched_phase_transition(task: "Task", *, phase: str, ticket: Ticket) -> None:
+    """Escalate a genuine FSM wedge instead of the silent ``return False`` (#10).
+
+    The FSM invariant: a lifecycle phase transition must never fail silently.
+    When a completed phase task matches NO guard in
+    :meth:`Task._apply_phase_transition`, the no-op is one of two things — an
+    idempotent replay (the ticket has ALREADY advanced past this phase's
+    target — a parallel child task, or a replay of an already-applied
+    transition — expected, must NOT escalate), or a genuine wedge (the
+    phase's work completed but the ticket is BEHIND the phase's target with
+    no guard able to advance it — the class that left tickets 35/36 with
+    completed coding yet zero transitions — must escalate, never drop).
+
+    The two are told apart by comparing the ticket's state position to the
+    phase's target state: at-or-past target is an idempotent replay; behind
+    target is a wedge. A free-form (non-lifecycle) phase has no target and
+    is expected to no-op. A terminal/abandoned ticket is never a wedge.
+
+    One at-or-past case is not a replay: a pre-merge planning task (a re-plan) that nothing
+    followed owes its plan a coding task, so it queues one or records why it could not.
+    """
+    # REVIEW_DELIVERED/IGNORED are off the author ladder, where phase_output_reached answers False.
+    if _PHASE_TARGET_STATE.get(phase) is None or ticket.state in Ticket.marker_release_states():
+        return
+    if phase_output_reached(ticket, phase):
+        if (
+            normalize_phase(phase) == "planning"
+            and ticket.state not in Ticket.merged_states()
+            and not ticket.tasks.filter(pk__gt=task.pk).exists()
+        ):
+            _queue_planned_work_or_refuse(task, ticket)
+        return
+    record_stuck_transition_question(task, phase=phase, ticket=ticket)
+
+
+def _queue_planned_work_or_refuse(task: "Task", ticket: Ticket) -> None:
+    try:
+        ticket.schedule_planned_work(parent_task=task)
+    except InvalidTransitionError as exc:
+        record_stuck_transition_question(task, phase="planning", ticket=ticket, refusal=f"its plan has no task: {exc}")
+
+
+def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket: Ticket, refusal: str = "") -> None:
+    """Record an FSM wedge once per completed task, INTERNAL, on the box's own health queue (§17.1 inv 9).
+
+    Sticky across every row carrying the marker, answered or dismissed, so the replay sweep
+    re-running the same latest task can never re-raise it; a new completed task is a new
+    wedge and gets its own row. ``lifecycle_incident`` reads these rows as ``phase_wedge``.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM/app-registry
+
+    source = task.pk if task else f"r{(terminal_reason_fingerprint(refusal) or '0' * 12)[:12]}"
+    marker = PHASE_WEDGE_MARKER.format(ticket=ticket.pk, phase=phase, source=source)
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
+        return
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    by_task = f" (task {task.pk})" if task else ""
+    cause = refusal or f"no lifecycle transition matched from state {ticket.state!r}"
+    DeferredQuestion.record(
+        f"FSM wedge on {where}: the {phase!r} phase completed{by_task} but the ticket cannot advance: {cause}",
+        task_session=task.session if task else None,
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
+    )
+
+
+def phase_wedges_healed(questions: "Sequence[DeferredQuestion]") -> dict[int, str]:
+    """Question pk -> reason, for each wedge row whose ticket went terminal or moved past it.
+
+    Positive-only. "Moved past" needs the phase's output reached AND a task newer than the
+    wedged one, so a refusal recorded on a ticket already past the phase stays pending
+    until something acts on it.
+    """
+    wedges = {
+        question.pk: match
+        for question in questions
+        if (match := PHASE_WEDGE_MARKER_RE.match(question.dedupe_marker or question.tool_use_id))
+    }
+    tickets = Ticket.objects.annotate(newest_task=Max("tasks__pk")).in_bulk(
+        {int(match["ticket"]) for match in wedges.values()}
+    )
+    healed: dict[int, str] = {}
+    for question_pk, match in wedges.items():
+        ticket = tickets.get(int(match["ticket"]))
+        if ticket is None:
+            continue
+        if ticket.state in Ticket.marker_release_states():
+            healed[question_pk] = f"ticket {ticket.pk} is terminal ({ticket.state})"
+        elif phase_output_reached(ticket, match["phase"]) and (ticket.newest_task or 0) > _wedged_task_pk(match):
+            healed[question_pk] = f"ticket {ticket.pk} moved past the {match['phase']} wedge ({ticket.state})"
+    return healed
+
+
+def _wedged_task_pk(match: "re.Match[str]") -> int:
+    """The completed task a wedge row was recorded for; 0 (any task is newer) for a refusal or a legacy row."""
+    source = match["source"] or ""
+    return int(source) if source.isdigit() else 0

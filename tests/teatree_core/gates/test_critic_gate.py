@@ -1,0 +1,424 @@
+"""critic_gate (SELFCATCH-5): deterministic blocking teeth + async LLM advisory net.
+
+Proves the rebuilt contract. Deterministic items (done_not_done / spec_not_plan /
+completeness) REUSE the sibling gates, fire on absence, and are the ONLY items that
+block. LLM items are judged by a recorded CriticVerdict (real judgment), never a
+self-declared key — a verdict flagging one is mirrored to a CriticFinding but NEVER
+blocks. On mark_delivered the async LLM critic is ENQUEUED when no fresh verdict covers
+the head. Blocking a deterministic finding keeps the ticket RETRO_RECORDED. Its findings
+SURVIVE the delivery atomic's rollback (execute_retrospect's after-the-block re-record).
+No fixture injects an ``extra['critic']`` key — every producer is real
+(PlanArtifact, MergeAudit, the ticket's graded Rubric, a recorded CriticVerdict).
+"""
+
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.agents.attempt_recorder import record_result_envelope
+from teatree.core import tasks as core_tasks
+from teatree.core.gates.critic_gate import (
+    check_critic,
+    record_critic_findings,
+    record_returned_critic_verdict,
+    run_critic,
+)
+from teatree.core.modelkit import gate_registry
+from teatree.core.models import (
+    CriticDispatch,
+    CriticFinding,
+    CriticGateError,
+    CriticVerdict,
+    MergeAudit,
+    MergeClear,
+    PlanArtifact,
+    Rubric,
+    Session,
+    Task,
+    Ticket,
+)
+from teatree.core.models.plan_adequacy import all_negated_adequacy
+from teatree.core.review import critic_rubric
+from teatree.core.review.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, RubricKind
+from teatree.core.runners.base import RunnerResult
+
+_FORTY_HEX = "a" * 40
+_LLM_SLUGS = ("coherence", "duplication", "deferred", "ignored_input", "unenforced_guarantee")
+
+
+def _critic_envelope() -> dict:
+    return {
+        "summary": "critic done",
+        "critic_verdict": {
+            "grader_identity": "critic-agent-7",
+            "items": [{"slug": "coherence", "status": "fail", "citation": "x conflated with y"}],
+        },
+    }
+
+
+def _merge_critic_envelope() -> dict:
+    return {
+        "summary": "merge critic done",
+        "critic_verdict": {
+            "grader_identity": "critic-agent-7",
+            "items": [
+                {"slug": "test_value", "status": "pass", "citation": "tests/x.py:1 asserts the fix"},
+                {"slug": "cleanliness", "status": "pass", "citation": "src/x.py:1 typed, no bloat"},
+            ],
+        },
+    }
+
+
+def _merge_audit(ticket: Ticket) -> None:
+    clear = MergeClear.objects.create(
+        ticket=ticket,
+        pr_id=42,
+        slug="souliane/teatree",
+        reviewed_sha=_FORTY_HEX,
+        reviewer_identity="cold-reviewer",
+        gh_verify_result=MergeClear.VerifyResult.GREEN,
+        blast_class=MergeClear.BlastClass.LOGIC,
+    )
+    MergeAudit.objects.create(clear=clear, merged_sha=_FORTY_HEX, required_checks_status="green")
+
+
+def _clean_delivered_ticket() -> Ticket:
+    """A RETRO_RECORDED ticket clean on all 3 deterministic items: adequate plan + merge audit + no open ACs.
+
+    The all-negated manifest declares no acceptance criteria, which is the plan-recorded
+    waiver ``completeness`` honours — so the twin is clean without a graded rubric.
+    """
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
+    PlanArtifact.objects.create(
+        ticket=ticket,
+        plan_text="plan body",
+        recorded_by="planner",
+        base_sha=_FORTY_HEX,
+        adequacy=dict(all_negated_adequacy("clean delivery")),
+    )
+    _merge_audit(ticket)
+    return ticket
+
+
+def _strip_merge_evidence(ticket: Ticket) -> None:
+    MergeAudit.objects.filter(clear__ticket=ticket).delete()
+    MergeClear.objects.filter(ticket=ticket).delete()
+
+
+def _record_critic(ticket: Ticket) -> None:
+    """Run the critic and persist its findings (the advisory recording path)."""
+    record_critic_findings(ticket, run_critic(ticket))
+
+
+def _record_verdict(ticket: Ticket, *, slug: str, status: str, citation: str = "cite x.py:1") -> None:
+    CriticVerdict.record_from_envelope(
+        ticket=ticket,
+        transition="mark_delivered",
+        head_sha=_FORTY_HEX,
+        envelope={
+            "grader_identity": "critic-agent-7",
+            "items": [{"slug": slug, "status": status, "citation": citation}],
+        },
+    )
+
+
+class TestDeterministicItemsCaught(TestCase):
+    """Each deterministic item, exhibited alone, produces a finding via the critic; the twin does not."""
+
+    def test_spec_not_plan(self) -> None:
+        ticket = _clean_delivered_ticket()
+        PlanArtifact.objects.filter(ticket=ticket).delete()
+        _record_critic(ticket)
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="spec_not_plan").exists()
+
+    def test_done_not_done(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        _record_critic(ticket)
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+    def test_completeness(self) -> None:
+        ticket = _clean_delivered_ticket()
+        PlanArtifact.objects.filter(ticket=ticket).update(
+            adequacy={
+                **dict(all_negated_adequacy("clean delivery")),
+                "acceptance_criteria": {"content": ["AC-2 is delivered"]},
+            }
+        )
+        Rubric.populate(ticket, ["AC-2 is delivered"])
+        _record_critic(ticket)
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="completeness").exists()
+
+    def test_clean_twin_records_nothing(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _record_critic(ticket)
+        assert CriticFinding.objects.filter(ticket=ticket).count() == 0
+
+
+class TestLlmItemsCaught(TestCase):
+    """Anti-vacuity for the semantic half: a recorded verdict flagging an LLM item is caught; the twin is not."""
+
+    def test_each_flagged_llm_item_is_mirrored_and_the_clean_twin_is_not(self) -> None:
+        for slug in _LLM_SLUGS:
+            with self.subTest(slug=slug):
+                caught = _clean_delivered_ticket()
+                _record_verdict(caught, slug=slug, status="fail")
+                _record_critic(caught)
+                assert CriticFinding.objects.filter(ticket=caught, rubric_item=slug).exists(), f"{slug} not caught"
+
+                twin = _clean_delivered_ticket()
+                _record_verdict(twin, slug=slug, status="pass", citation="inspected, clean")
+                _record_critic(twin)
+                assert not CriticFinding.objects.filter(ticket=twin, rubric_item=slug).exists(), (
+                    f"{slug} false positive"
+                )
+
+
+class TestEnqueue(TestCase):
+    def test_mark_delivered_enqueues_the_async_critic_when_live_and_no_verdict(self) -> None:
+        ticket = _clean_delivered_ticket()
+        check_critic(ticket)
+        dispatch = CriticDispatch.objects.filter(ticket=ticket, transition="mark_delivered").first()
+        assert dispatch is not None
+        assert dispatch.task is not None
+        assert dispatch.task.phase == "critic_reviewing"  # its OWN phase, not "reviewing"
+
+    def test_no_re_enqueue_when_a_verdict_already_covers_the_head(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _record_verdict(ticket, slug="coherence", status="pass", citation="clean")
+        check_critic(ticket)
+        assert not CriticDispatch.objects.filter(ticket=ticket).exists()
+
+
+class TestAlwaysOnCriticGate(TestCase):
+    """The deterministic findings always block delivery."""
+
+    def test_enforcing_blocks_on_a_deterministic_finding(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        with pytest.raises(CriticGateError) as exc:
+            check_critic(ticket)
+        assert "done_not_done" in str(exc.value)
+        assert "resolve the findings and re-run delivery" in str(exc.value)
+
+    def test_enforcing_never_blocks_on_an_llm_finding(self) -> None:
+        # A flagged LLM item is advisory — it records a finding but must NOT block delivery.
+        ticket = _clean_delivered_ticket()
+        _record_verdict(ticket, slug="coherence", status="fail")
+        check_critic(ticket)  # no raise — LLM items never block
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+    def test_enforcing_passes_a_clean_delivery(self) -> None:
+        ticket = _clean_delivered_ticket()
+        check_critic(ticket)  # no raise
+
+
+class TestReturnedVerdictRecording(TestCase):
+    def test_records_the_verdict_and_mirrors_findings(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        envelope = {
+            "critic_verdict": {
+                "grader_identity": "critic-agent-7",
+                "items": [{"slug": "coherence", "status": "fail", "citation": "x conflated with y"}],
+            }
+        }
+        error = record_returned_critic_verdict(dispatch.task, envelope)
+        assert error == ""
+        assert CriticVerdict.objects.filter(ticket=ticket).exists()
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+    def test_refuses_a_maker_graded_verdict(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        envelope = {"critic_verdict": {"grader_identity": "merge-loop", "items": []}}
+        error = record_returned_critic_verdict(dispatch.task, envelope)
+        assert "refused" in error
+        assert not CriticVerdict.objects.filter(ticket=ticket).exists()
+
+    def test_a_delivery_verdict_still_re_runs_the_delivery_rubric(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        assert record_returned_critic_verdict(dispatch.task, _critic_envelope()) == ""
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+    def test_non_critic_task_is_a_noop(self) -> None:
+        ticket = _clean_delivered_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="x")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        assert record_returned_critic_verdict(task, {"critic_verdict": {"grader_identity": "critic-1"}}) == ""
+
+
+class TestInstrumentationGap(TestCase):
+    def test_a_raising_deterministic_predicate_is_recorded_as_instrumentation_gap(self) -> None:
+        ticket = _clean_delivered_ticket()
+        with patch("teatree.core.review.critic_rubric.spec_not_plan", side_effect=RuntimeError("boom")):
+            _record_critic(ticket)
+        finding = CriticFinding.objects.get(ticket=ticket, rubric_item="spec_not_plan")
+        assert finding.status == CriticFinding.Status.INSTRUMENTATION_GAP
+
+
+class TestStaleCleanup(TestCase):
+    def test_a_now_clean_item_has_its_stale_finding_deleted(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        _record_critic(ticket)
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+        _merge_audit(ticket)  # supply the merge evidence
+        _record_critic(ticket)
+        assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+
+class TestCriticFsmGate(TestCase):
+    def test_enforcing_delivery_is_refused_and_stays_retrospected(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        with pytest.raises(CriticGateError):
+            ticket.mark_delivered()
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+
+
+class TestEnforcingBlockFindingsSurviveRollback(TestCase):
+    """Findings survive the delivery atomic the block rolls back.
+
+    Drives the REAL ``execute_retrospect`` task (which wraps mark_delivered in
+    ``transaction.atomic()`` exactly as production does). Under enforcement a flawed
+    delivery blocks, the atomic rolls back — and the CriticFinding rows must still exist
+    because ``_persist_critic_block`` re-records them on a fresh sibling transaction.
+    """
+
+    def test_findings_persist_after_the_enforcing_block(self) -> None:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        with patch.object(core_tasks, "RetroPhaseMarker") as retro:
+            retro.return_value.run.return_value = RunnerResult(ok=True, detail="retro ok")
+            result = core_tasks.execute_retrospect.func(ticket.pk)
+        ticket.refresh_from_db()
+        assert result["ok"] is False
+        assert ticket.state == Ticket.State.RETRO_RECORDED  # the delivery was refused
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()  # survived rollback
+        dispatch = CriticDispatch.objects.get(ticket=ticket, transition="mark_delivered", head_sha="")
+        assert dispatch.task is not None
+
+    def test_retro_phase_marker_survives_the_enforcing_block(self) -> None:
+        """The REAL marker: hoisting it out of the advance atomic is what keeps it durable.
+
+        Moving ``RetroPhaseMarker(ticket).run()`` inside that atomic turns its
+        ``merge_extra`` into a savepoint the ``CriticGateError`` unwinds, and the
+        evidence that the retro phase was reached disappears with the refusal.
+        """
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        result = core_tasks.execute_retrospect.func(ticket.pk)
+        ticket.refresh_from_db()
+        assert result["ok"] is False
+        assert ticket.state == Ticket.State.RETRO_RECORDED
+        assert ticket.extra.get("retro_scheduled") is True
+
+
+class TestProductionRecordingPath(TestCase):
+    """The LLM half must LAND through the REAL record_result_envelope, not only a direct call.
+
+    The subtle production bug: a completed critic task flows through
+    ``record_result_envelope``, which runs ``check_evidence`` BEFORE
+    ``record_returned_critic_verdict``. Under the old ``phase="reviewing"`` wiring a
+    critic result (only ``critic_verdict``) FAILED the reviewing evidence gate →
+    ``_record_failure`` → the verdict was never recorded. The dedicated
+    ``critic_reviewing`` phase (with its own ``critic_verdict`` evidence contract) closes it.
+    """
+
+    def test_verdict_and_finding_land_through_record_result_envelope(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        assert dispatch.task.phase == "critic_reviewing"
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(dispatch.task, _critic_envelope())
+        assert CriticVerdict.objects.filter(ticket=ticket).exists()
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+    def test_red_before_the_reviewing_phase_wiring_records_nothing(self) -> None:
+        # Prove the dedicated phase is load-bearing: on the OLD wiring (phase="reviewing")
+        # the same critic result fails check_evidence("reviewing") -> _record_failure -> the
+        # verdict is NEVER recorded. This is the exact production dead-path the fix closes.
+        ticket = _clean_delivered_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="critic-dispatch")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_reason="c",
+        )
+        CriticDispatch.objects.create(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, task=task)
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(task, _critic_envelope())
+        assert not CriticVerdict.objects.filter(ticket=ticket).exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+
+class TestMergeVerdictBeforeTheMerge(TestCase):
+    """A merge critic's verdict returning before the merge must not judge the delivery rubric (#5075)."""
+
+    def _merge_verdict_returned_before_the_merge(self) -> Ticket:
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        ticket.state = Ticket.State.REVIEW_REQUESTED
+        ticket.save(update_fields=["state"])
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="merge", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(dispatch.task, _merge_critic_envelope())
+        return ticket
+
+    def test_records_the_merge_verdict_and_no_delivery_finding(self) -> None:
+        ticket = self._merge_verdict_returned_before_the_merge()
+        assert CriticVerdict.objects.filter(ticket=ticket, transition="merge").exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, transition="mark_delivered").exists()
+
+    def test_the_ticket_delivers_once_the_merge_lands(self) -> None:
+        ticket = self._merge_verdict_returned_before_the_merge()
+        _merge_audit(ticket)
+        ticket.state = Ticket.State.RETRO_RECORDED
+        ticket.save(update_fields=["state"])
+        result = core_tasks.execute_retrospect.func(ticket.pk)
+        ticket.refresh_from_db()
+        assert result["ok"] is True
+        assert ticket.state == Ticket.State.DELIVERED
+        assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+
+class TestTransitionScoping(TestCase):
+    """check_critic evaluates only the mark_delivered rubric subset (PR-1 transition seam).
+
+    A deterministic item keyed to another transition, injected into the registry, must NOT
+    be run by the mark_delivered gate — otherwise a plan/merge critic's items would fire at
+    the wrong FSM point. Anti-vacuity: the same ticket makes the mark_delivered items fire,
+    so the exclusion is a real filter, not an empty pass.
+    """
+
+    def test_run_critic_ignores_a_foreign_transition_item(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
+        foreign = CriticRubricItem(
+            slug="plan_transition_probe",
+            adversarial_question="a plan-transition item must not run at mark_delivered",
+            kind=RubricKind.DETERMINISTIC,
+            origin="north-star plan critic",
+            predicate_path="teatree.core.review.critic_rubric.spec_not_plan",
+            blocking=True,
+            transition="plan",
+        )
+        with patch.object(critic_rubric, "CRITIC_RUBRIC", (*CRITIC_RUBRIC, foreign)):
+            specs = run_critic(ticket)
+        flagged = {spec.rubric_item for spec in specs}
+        assert "plan_transition_probe" not in flagged
+        assert "spec_not_plan" in flagged  # the mark_delivered items DID run — not a blanket-empty pass
+
+
+class TestRegistration(TestCase):
+    def test_critic_gate_is_registered(self) -> None:
+        assert gate_registry.get_gate("critic") is check_critic

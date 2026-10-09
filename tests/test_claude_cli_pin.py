@@ -1,0 +1,593 @@
+"""Guards the npm-installed Claude CLI pin, per tier (souliane/teatree#3748).
+
+``claude-agent-sdk`` is held at an exact pin with a guard test
+(``tests/test_claude_agent_sdk_pin.py``). The Claude CLI installed via
+``npm install -g`` has no manifest at all: Dependabot cannot see a
+non-manifest-driven install, so without these tests each build would resolve to
+whatever ``latest`` happened to be that day.
+
+The pin is deliberately split into TWO TIERS, because the two consumers are
+pinned to different things and one global version would break whichever tier lost:
+
+**eval/test images** pin the generation the pinned SDK BUNDLES. The eval runner
+never executes the global binary — ``SubprocessCLITransport._find_cli()`` returns
+``_find_bundled_cli()`` first, and ``shutil.which("claude")`` in
+``teatree.eval.api_runner`` is only a provisioning presence-gate. Matching the
+bundle keeps the two CLIs in one image from disagreeing.
+
+**The deployed runtime image** pins a current known-good version, chosen
+independently. That image feeds the paths that DO exec the global binary
+(``teatree.cli.loop.app``'s ``os.execv``, ``teatree.cli.agent``,
+``teatree.agents.web_terminal``, ``teatree.core.management.commands.tasks``), so it
+may LEAD the bundle but never trail it: a generation behind a tier model's floor
+breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``.
+
+Both tiers are additionally held at or above :data:`_CATALOG_CLI_FLOOR`. Every
+other assertion here compares the pins only to EACH OTHER, so they all hold at a version
+the API rejects — which is how the implementation lane 400ed for a day with this file
+green (souliane/teatree#4704).
+
+So these tests assert agreement PER TIER and never one global version across all
+sites — that global equality is precisely the mistake the split exists to avoid.
+The two tiers may happen to name the same version when the SDK's bundle catches up
+with the runtime's choice; that coincidence is not a coupling, and either constant
+moves on its own.
+
+Both tiers reconcile pinned STRINGS, which agree with each other whatever the wheel
+ships. :class:`TestTheBundledCliIsTheBinaryThatActuallyRuns` is the third concern:
+it opens the installed wheel, execs its bundled CLI, and holds that binary to the
+:data:`_CATALOG_CLI_FLOOR` — the gap that let a bundle too old for the frontier
+model sit here for five days with every lane green (#239).
+"""
+# test-path: cross-cutting — scans every Dockerfile/workflow install site plus the SDK's
+# installed wheel, and cross-checks teatree.agents.model_tiering; no single src/teatree/ mirror.
+
+import importlib.metadata
+import importlib.util
+import platform
+import re
+import shutil
+import subprocess
+import tomllib
+from collections.abc import Iterator
+from functools import cache
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from teatree.agents.model_tiering import MODEL_MINIMUM_CLI_VERSIONS, TIER_MODELS
+from tests._git_repo import make_git_repo
+
+_GIT = shutil.which("git") or "git"
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SELF = Path(__file__).resolve()
+_PYPROJECT = _REPO_ROOT / "pyproject.toml"
+_RUNTIME_DOCKERFILE = _REPO_ROOT / "deploy" / "Dockerfile"
+
+_SDK_PACKAGE = "claude-agent-sdk"
+_SDK_MODULE = "claude_agent_sdk"
+
+#: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
+#: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
+#: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
+_PINNED_SDK_VERSION = "0.2.163"
+
+#: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.286 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.286"
+
+#: The deployed runtime's pin: the lowest version the tier assertions allow, the SDK bundle's own.
+_RUNTIME_CLI_VERSION = "2.1.286"
+
+_FRONTIER_MODEL = TIER_MODELS["frontier"]
+_FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
+
+#: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
+_PYRIGHT_VERSION = "1.1.411"
+
+_EVAL_TEST_SITES = frozenset(
+    {
+        "dev/Dockerfile.test",
+        ".github/workflows/eval.yml",
+        ".github/workflows/eval-pr.yml",
+        ".github/workflows/eval-pr-reusable.yml",
+        ".github/workflows/eval-nightly.yml",
+        ".github/workflows/eval-weekly-reusable.yml",
+        ".github/workflows/eval-ci-heal.yml",
+    }
+)
+_RUNTIME_SITES = frozenset({"deploy/Dockerfile"})
+
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        # CI restores the uv package cache INTO the checkout; it never exists locally.
+        ".uv-cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        ".mypy_cache",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "mutants",
+        "staticfiles",
+        "htmlcov",
+    }
+)
+
+_INSTALL_PATTERN = re.compile(r"npm install -g [^\n]*?@anthropic-ai/claude-code(?:@(?P<version>[0-9][^\s\\'\"]*))?")
+_PYRIGHT_PATTERN = re.compile(r"npm install -g [^\n]*?\bpyright(?:@(?P<version>[0-9][^\s\\'\"]*))?")
+
+#: ``claude --version`` prints ``<version> (Claude Code)``.
+_CLI_VERSION_PATTERN = re.compile(r"(\d+\.\d+\.\d+)")
+
+
+def _is_skipped_dir(name: str) -> bool:
+    """Whether the walk descends into *name*.
+
+    Virtualenvs are matched by PREFIX, not by an exact name. A venv holds installed
+    third-party code, so a pinned CLI found inside one is the SDK's own vendored copy
+    rather than a site this repo controls — and the repo creates more than one venv, so
+    enumerating each exact name means the scan breaks again the next time one is added
+    under a new name.
+    """
+    return name.startswith(".venv") or name in _SKIP_DIRS
+
+
+@cache
+def _checkout_root(start: Path) -> Path:
+    """The checkout owning *start* — the fork's root when core is vendored inside one.
+
+    A fork vendors core as a plain subdirectory, so its own install sites sit ABOVE
+    core's tree, where a walk rooted there cannot see them at all and this guard reads
+    as covering CLI pinning while leaving them entirely unguarded.
+    """
+    try:
+        toplevel = subprocess.run(
+            [_GIT, "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return start
+    if toplevel.returncode != 0 or not toplevel.stdout.strip():
+        return start
+    root = Path(toplevel.stdout.strip()).resolve()
+    return root if root in {start, *start.parents} else start
+
+
+def _core_site(name: str) -> str:
+    """A core-relative site *name* as a scan-root-relative key."""
+    prefix = _REPO_ROOT.relative_to(_checkout_root(_REPO_ROOT)).as_posix()
+    return name if prefix == "." else f"{prefix}/{name}"
+
+
+def _tracked_files(root: Path) -> list[Path] | None:
+    """Paths git tracks under *root*, or ``None`` when *root* is not a checkout.
+
+    The tracked tree IS the set of install sites this repo controls. A filesystem walk
+    also reads whatever a build drops inside the checkout — CI points ``UV_CACHE_DIR``
+    at ``$CI_PROJECT_DIR/.uv-cache``, so the unpacked ``claude_agent_sdk`` wheel's own
+    error-message text ("npm install -g @anthropic-ai/claude-code") is read as an
+    unpinned site of ours. Keying on tracking rather than on directory names means the
+    next cache a runner drops in the project dir is out without another name to add.
+    """
+    try:
+        listed = subprocess.run(
+            [_GIT, "-C", str(root), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if listed.returncode != 0:
+        return None
+    return [root / name for name in listed.stdout.split("\0") if name]
+
+
+def _walked_files(root: Path) -> Iterator[Path]:
+    stack = [root]
+    while stack:
+        for entry in sorted(stack.pop().iterdir()):
+            # A symlinked directory here points back into the tree (a plugin checkout
+            # linking its own root), so following one never ends.
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                if not _is_skipped_dir(entry.name):
+                    stack.append(entry)
+            elif entry.is_file():
+                yield entry
+
+
+def _scannable_files(root: Path) -> Iterator[Path]:
+    """The files under *root* this repo answers for — tracked, or walked off a non-checkout."""
+    tracked = _tracked_files(root)
+    candidates = tracked if tracked is not None else _walked_files(root)
+    for path in candidates:
+        if path.is_symlink() or not path.is_file() or path.resolve() == _SELF:
+            continue
+        yield path
+
+
+def _scan_sites(root: Path) -> dict[str, str | None]:
+    """Root-relative path → the pinned version, or ``None`` when unpinned."""
+    sites: dict[str, str | None] = {}
+    for path in _scannable_files(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for match in _INSTALL_PATTERN.finditer(text):
+            sites[path.relative_to(root).as_posix()] = match.group("version")
+    return sites
+
+
+@cache
+def _install_sites() -> dict[str, str | None]:
+    """Scan-root-relative path → the pinned version, or ``None`` when unpinned."""
+    return _scan_sites(_checkout_root(_REPO_ROOT))
+
+
+def _sdk_pin() -> str:
+    deps = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
+    matches = [d.replace(" ", "") for d in deps if d.replace(" ", "").startswith("claude-agent-sdk")]
+    assert len(matches) == 1, f"expected exactly one claude-agent-sdk dependency, got {matches}"
+    return matches[0].removeprefix("claude-agent-sdk==")
+
+
+def _as_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+#: The oldest CLI that serves every tier model. The tier assertions below only compare the
+#: pins to EACH OTHER, which is how both tiers once sat under the API's floor with this
+#: suite green (souliane/teatree#4704).
+_CATALOG_CLI_FLOOR = max(
+    (MODEL_MINIMUM_CLI_VERSIONS[model] for model in TIER_MODELS.values() if model in MODEL_MINIMUM_CLI_VERSIONS),
+    key=_as_tuple,
+)
+
+
+def _bundled_cli_binary() -> Path:
+    """The CLI inside the installed wheel, located the way ``_find_bundled_cli`` locates it."""
+    spec = importlib.util.find_spec(_SDK_MODULE)
+    assert spec is not None, f"{_SDK_MODULE} is not installed"
+    assert spec.submodule_search_locations, f"{_SDK_MODULE} exposes no package directory"
+    name = "claude.exe" if platform.system() == "Windows" else "claude"
+    return Path(next(iter(spec.submodule_search_locations))) / "_bundled" / name
+
+
+def _probe_cli_version(binary: Path) -> str:
+    """*binary*'s reported version, or a raised CAUSE — never a value standing in for one.
+
+    A bundle this venue cannot read is an UNVERIFIED pin, not a passing one, and the two are
+    indistinguishable once a probe is allowed to degrade to a skip or a default.
+    """
+    if not binary.is_file():
+        absent = (
+            f"no bundled CLI at {binary}: the pinned wheel is not installed here, "
+            "or the SDK came from an sdist with no bundled binary"
+        )
+        raise RuntimeError(absent)
+    try:
+        probed = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=120, check=False)
+    except OSError as error:
+        unrunnable = (
+            f"cannot execute {binary} here ({error}). The wheel is platform-specific, so run the "
+            "suite in the venue whose venv matches this platform."
+        )
+        raise RuntimeError(unrunnable) from error
+    if probed.returncode != 0:
+        refused = f"{binary} --version exited {probed.returncode}: {probed.stderr.strip()!r}"
+        raise RuntimeError(refused)
+    reported = _CLI_VERSION_PATTERN.match(probed.stdout.strip())
+    if reported is None:
+        unparsable = f"{binary} --version printed {probed.stdout.strip()!r}, which carries no version"
+        raise RuntimeError(unparsable)
+    return reported.group(1)
+
+
+@cache
+def _bundled_cli_version() -> str:
+    """``--version`` from the bundled CLI of the installed wheel, which must BE the pinned one."""
+    installed = importlib.metadata.version(_SDK_PACKAGE)
+    if installed != _PINNED_SDK_VERSION:
+        unpinned = (
+            f"this environment has {_SDK_PACKAGE}=={installed}, not the pinned {_PINNED_SDK_VERSION}; "
+            "run `uv sync` so the probe reads the wheel the pin actually names."
+        )
+        raise RuntimeError(unpinned)
+    return _probe_cli_version(_bundled_cli_binary())
+
+
+class TestTheScanRootSpansTheWholeCheckout:
+    """The walk must start at the checkout that OWNS core, standalone or vendored."""
+
+    def test_a_vendored_core_is_scanned_from_the_forks_root(self, tmp_path: Path) -> None:
+        core = tmp_path / "fork" / "vendor" / "teatree"
+        core.mkdir(parents=True)
+        make_git_repo(tmp_path / "fork")
+
+        assert _checkout_root(core) == (tmp_path / "fork").resolve()
+
+    def test_a_standalone_checkout_is_scanned_from_itself(self, tmp_path: Path) -> None:
+        core = make_git_repo(tmp_path / "teatree")
+
+        assert _checkout_root(core) == core.resolve()
+
+    def test_no_checkout_at_all_still_scans_cores_own_tree(self, tmp_path: Path) -> None:
+        # An sdist or an unpacked tarball has no git metadata; the guard must keep
+        # covering core rather than resolve to nothing.
+        loose = tmp_path / "loose"
+        loose.mkdir()
+
+        assert _checkout_root(loose) == loose
+
+
+class TestOnlySitesThisRepoControlsAreScanned:
+    @pytest.mark.parametrize("name", [".venv-3.13", ".uv-cache", "node_modules"])
+    def test_a_dependency_tree_is_not_walked(self, name: str) -> None:
+        assert _is_skipped_dir(name)
+
+    def test_a_directory_this_repo_owns_is_walked(self) -> None:
+        assert not _is_skipped_dir("src")
+
+
+class TestTheScanCoversTrackedSourceOnly:
+    """The walk answers for the tree git tracks — not for what a build unpacks inside it."""
+
+    @staticmethod
+    def _repo_with(tmp_path: Path, files: dict[str, str], *, tracked: list[str]) -> Path:
+        repo = tmp_path / "fork"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "main", str(repo)], check=True)
+        for name, text in files.items():
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(text, encoding="utf-8")
+        subprocess.run([_GIT, "-C", str(repo), "add", "--", *tracked], check=True)
+        return repo
+
+    def test_an_unpinned_install_in_tracked_source_is_still_flagged(self, tmp_path: Path) -> None:
+        repo = self._repo_with(
+            tmp_path,
+            {"deploy/Dockerfile": "RUN npm install -g @anthropic-ai/claude-code\n"},
+            tracked=["deploy/Dockerfile"],
+        )
+
+        assert _scan_sites(repo) == {"deploy/Dockerfile": None}
+
+    def test_a_pinned_install_in_tracked_source_reports_its_version(self, tmp_path: Path) -> None:
+        repo = self._repo_with(
+            tmp_path,
+            {"deploy/Dockerfile": "RUN npm install -g @anthropic-ai/claude-code@2.1.220\n"},
+            tracked=["deploy/Dockerfile"],
+        )
+
+        assert _scan_sites(repo) == {"deploy/Dockerfile": "2.1.220"}
+
+    def test_an_unpacked_wheel_in_an_untracked_build_cache_is_not_a_site(self, tmp_path: Path) -> None:
+        # CI points UV_CACHE_DIR inside the project dir; the SDK's own error text carries
+        # a bare `npm install -g @anthropic-ai/claude-code` under a per-run hash segment.
+        cache = ".uv-cache/archive-v0/3fcd8f2b9a1e/claude_agent_sdk/_internal/transport/subprocess_cli.py"
+        repo = self._repo_with(
+            tmp_path,
+            {
+                "deploy/Dockerfile": "RUN npm install -g @anthropic-ai/claude-code@2.1.220\n",
+                cache: '    "  npm install -g @anthropic-ai/claude-code\\n"\n',
+            },
+            tracked=["deploy/Dockerfile"],
+        )
+
+        assert _scan_sites(repo) == {"deploy/Dockerfile": "2.1.220"}
+
+    def test_a_tree_with_no_checkout_falls_back_to_walking_it(self, tmp_path: Path) -> None:
+        # An sdist or unpacked tarball has no index to read; the guard must keep covering it.
+        loose = tmp_path / "loose"
+        (loose / "deploy").mkdir(parents=True)
+        (loose / "deploy" / "Dockerfile").write_text("RUN npm install -g @anthropic-ai/claude-code\n")
+
+        assert _scan_sites(loose) == {"deploy/Dockerfile": None}
+
+
+class TestEveryInstallSiteIsPinned:
+    def test_no_install_resolves_to_whatever_latest_is_today(self) -> None:
+        unpinned = sorted(path for path, version in _install_sites().items() if version is None)
+        assert not unpinned, (
+            "every `npm install -g @anthropic-ai/claude-code` must carry an `@<version>` "
+            "suffix — a bare install resolves to whatever `latest` is on build day, which "
+            "no lockfile, guard, or bot can see. Unpinned: " + ", ".join(unpinned)
+        )
+
+    def test_every_core_site_is_classified_into_a_tier(self) -> None:
+        # A new workflow that copies an existing install step lands here unclassified,
+        # so it cannot silently inherit the wrong tier's version. Only CORE's own sites
+        # are classified: a downstream checkout's tiers are its own to declare, and the
+        # pinned-at-all assertion above already covers them.
+        known = {_core_site(name) for name in _EVAL_TEST_SITES | _RUNTIME_SITES}
+        core_prefix = _core_site("")
+        discovered = {path for path in _install_sites() if path.startswith(core_prefix)}
+        assert discovered == known, (
+            "every Claude CLI install site must be classified as eval/test (pins the SDK-bundled "
+            f"generation) or runtime (pins a current known-good version). New: {sorted(discovered - known)}; "
+            f"gone: {sorted(known - discovered)}."
+        )
+
+
+class TestTheEvalTestTierTracksTheSdkBundle:
+    def test_every_eval_test_site_pins_the_bundled_generation(self) -> None:
+        sites = _install_sites()
+        disagreeing = {
+            name: sites.get(_core_site(name))
+            for name in sorted(_EVAL_TEST_SITES)
+            if sites.get(_core_site(name)) != _SDK_BUNDLED_CLI_VERSION
+        }
+        assert not disagreeing, (
+            f"every eval/test image must install claude-code@{_SDK_BUNDLED_CLI_VERSION} — the generation "
+            f"`claude-agent-sdk=={_PINNED_SDK_VERSION}` bundles and actually executes — so the global binary "
+            f"and the bundle in one image cannot disagree. Got: {disagreeing}"
+        )
+
+    def test_the_sdk_pin_the_tier_tracks_has_not_moved(self) -> None:
+        assert _sdk_pin() == _PINNED_SDK_VERSION, (
+            f"the eval/test tier pins the CLI generation bundled by claude-agent-sdk=={_PINNED_SDK_VERSION}. "
+            f"The SDK pin is now {_sdk_pin()!r}, so its bundled CLI version must be re-derived by running "
+            f"`claude_agent_sdk/_bundled/claude --version` from the NEW wheel, and every eval/test site "
+            "re-pinned to it."
+        )
+
+
+class TestTheRuntimeTierIsPinnedIndependently:
+    def test_every_runtime_site_pins_one_current_known_good_version(self) -> None:
+        sites = _install_sites()
+        disagreeing = {
+            name: sites.get(_core_site(name))
+            for name in sorted(_RUNTIME_SITES)
+            if sites.get(_core_site(name)) != _RUNTIME_CLI_VERSION
+        }
+        assert not disagreeing, (
+            f"the deployed runtime image must install claude-code@{_RUNTIME_CLI_VERSION}: it execs the GLOBAL "
+            "binary (t3 loop start's os.execv, the agent command, the ttyd web terminal, the tasks command). "
+            f"Got: {disagreeing}"
+        )
+
+    def test_the_runtime_is_never_rolled_back_behind_the_eval_bundle(self) -> None:
+        # The tiers are pinned separately, but only in one direction: the deployed CLI
+        # may lead the bundle, never trail it. Pinning the runtime back to the bundled
+        # generation would take it behind a tier model's floor, breaking model
+        # selection in production.
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_SDK_BUNDLED_CLI_VERSION), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} trails the SDK-bundled {_SDK_BUNDLED_CLI_VERSION}."
+        )
+
+    def test_the_runtime_clears_the_frontier_models_floor_too(self) -> None:
+        # The runtime tier is the one that execs the GLOBAL binary, so it needs the floor on
+        # its own account — the ordering assertion above only chains it to the bundle.
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_FRONTIER_MODEL_CLI_FLOOR), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} is older than {_FRONTIER_MODEL_CLI_FLOOR}, so every "
+            f"`{_FRONTIER_MODEL}` call the deployed box makes is refused."
+        )
+
+    def test_pyright_is_pinned_in_the_runtime_image(self) -> None:
+        # Installed in the same `npm install -g` line, with the same unpinned-drift
+        # exposure: it provides the `pyright-langserver` the pyright-lsp plugin execs.
+        text = _RUNTIME_DOCKERFILE.read_text(encoding="utf-8")
+        versions = {match.group("version") for match in _PYRIGHT_PATTERN.finditer(text)}
+        assert versions == {_PYRIGHT_VERSION}, (
+            f"deploy/Dockerfile must install pyright@{_PYRIGHT_VERSION}; got {versions or 'no install'}."
+        )
+
+
+class TestTheBundledCliIsTheBinaryThatActuallyRuns:
+    """The third concern: the version INSIDE the wheel, which neither tier above reads.
+
+    Both tiers agree pinned STRINGS with each other, and a string agrees with a string whatever
+    the wheel ships. So a bundle below what a tier model needs keeps every lane green
+    while ``_find_cli()`` — which returns this binary before any ``shutil.which`` fallback —
+    execs a CLI that refuses every call (#239).
+    """
+
+    def test_the_bundled_constant_is_what_the_wheel_actually_ships(self) -> None:
+        assert _bundled_cli_version() == _SDK_BUNDLED_CLI_VERSION, (
+            f"claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude {_bundled_cli_version()}, but "
+            f"_SDK_BUNDLED_CLI_VERSION says {_SDK_BUNDLED_CLI_VERSION}. Re-derive the constant from the "
+            "wheel and re-pin every eval/test site to it — the eval tier tracks the bundle, and a "
+            "hand-copied constant is the one thing in this file nothing else measures."
+        )
+
+    def test_the_bundled_cli_serves_every_tier_model(self) -> None:
+        assert _as_tuple(_bundled_cli_version()) >= _as_tuple(_CATALOG_CLI_FLOOR), (
+            f"the wheel of claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude {_bundled_cli_version()}, "
+            f"older than the {_CATALOG_CLI_FLOOR} the tier models need. Every SDK-driven "
+            "agent execs this binary, so dispatch is down factory-wide until the SDK pin moves."
+        )
+
+
+class TestTheProbeRefusesRatherThanReportAClean:
+    """The controls: a probe that degraded on unreadable input would pass both assertions above."""
+
+    def test_an_absent_bundle_raises_its_cause(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            RuntimeError,
+            match="not installed here, or the SDK came from an sdist with no bundled binary",
+        ):
+            _probe_cli_version(tmp_path / "claude")
+
+    def test_a_binary_that_reports_no_version_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.write_text("#!/bin/sh\necho 'Claude Code'\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+        with pytest.raises(RuntimeError, match="carries no version"):
+            _probe_cli_version(binary)
+
+    def test_a_binary_that_exits_non_zero_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.write_text("#!/bin/sh\necho boom >&2\nexit 3\n", encoding="utf-8")
+        binary.chmod(0o755)
+
+        with pytest.raises(RuntimeError, match="exited 3"):
+            _probe_cli_version(binary)
+
+    def test_an_os_error_raises_its_cause(self, tmp_path: Path) -> None:
+        binary = tmp_path / "claude"
+        binary.touch()
+
+        with (
+            patch.object(subprocess, "run", side_effect=OSError("Exec format error")),
+            pytest.raises(RuntimeError, match=r"cannot execute.*wheel is platform-specific"),
+        ):
+            _probe_cli_version(binary)
+
+    def test_an_installed_sdk_version_mismatch_raises_its_cause(self) -> None:
+        _bundled_cli_version.cache_clear()
+        with (
+            patch.object(importlib.metadata, "version", return_value="0.2.151"),
+            pytest.raises(
+                RuntimeError, match=rf"has claude-agent-sdk==0\.2\.151, not the pinned {re.escape(_PINNED_SDK_VERSION)}"
+            ),
+        ):
+            _bundled_cli_version()
+        _bundled_cli_version.cache_clear()
+
+
+class TestEveryPinClearsTheApiFloor:
+    """Agreeing with each other is not enough — both tiers must clear the API's own floor.
+
+    Every other assertion here is INTERNAL: sites match their tier's constant, the runtime
+    does not trail the bundle. All of them hold at a version the API rejects, which is
+    exactly what happened — the whole implementation lane 400ed for a day with this file
+    green. This is the one assertion that reads the outside world's requirement.
+    """
+
+    def test_no_install_site_ships_a_cli_the_model_rejects(self) -> None:
+        below = {
+            name: version
+            for name, version in sorted(_install_sites().items())
+            if version is not None and _as_tuple(version) < _as_tuple(_CATALOG_CLI_FLOOR)
+        }
+        assert not below, (
+            f"every `npm install -g @anthropic-ai/claude-code` must pin >= {_CATALOG_CLI_FLOOR}, "
+            "the oldest CLI the API accepts for the dispatched models — under it every dispatch dies "
+            f"with an API 400 before the task is ever claimed. Below the floor: {below}"
+        )
+
+    def test_the_runtime_tier_clears_the_floor(self) -> None:
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_CATALOG_CLI_FLOOR), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} is under the API floor {_CATALOG_CLI_FLOOR}: "
+            "the deployed image execs the global binary, so every dispatched task would 400."
+        )
+
+    def test_the_eval_test_tier_clears_the_floor(self) -> None:
+        # The fix when this reds is the SDK pin, never this file: the eval lane execs the
+        # bundle, so only a release bundling a newer CLI can lift the tier off the floor.
+        assert _as_tuple(_SDK_BUNDLED_CLI_VERSION) >= _as_tuple(_CATALOG_CLI_FLOOR), (
+            f"claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude-code@{_SDK_BUNDLED_CLI_VERSION}, "
+            f"under the API floor {_CATALOG_CLI_FLOOR}. The eval lane execs that bundle, so it "
+            "would 400 on every scenario — bump the SDK pin to a release bundling a CLI at or above it."
+        )

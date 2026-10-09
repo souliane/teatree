@@ -1,0 +1,109 @@
+<section class="band">
+  <h2>Loops</h2>
+  <p class="muted">Whether a loop runs is decided top-down and shown here, never edited here: the
+    <a href="{% url 'dash:presets' %}">schedule and preset editor</a> is the handle, and a manual
+    override beats it and says why. Break glass in
+    <a href="/admin/core/loopstate/">django-admin</a> when neither is reachable.</p>
+  {% comment %}
+  The cadence rule is GLOBAL, so it is stated once here rather than repeated on every row —
+  a per-row copy of the same sentence says nothing about that row. Only a loop whose OWN
+  bounds differ (a registry maximum) still carries a note beside its field.
+  {% endcomment %}
+  <p class="muted">Cadence runs on a {{ control.cadence_step_seconds }}s grid: every interval is a
+    multiple of {{ control.cadence_step_seconds }}s, and nothing may fire faster. That is the loop
+    timer chain's own poll floor, so a value off the grid would not be the interval you observe.</p>
+  {% if control.off_grid %}
+    <p class="banner-amber">These loops were set before the grid and are left exactly as they are —
+      change one only if you meant to:
+      {% for name, seconds in control.off_grid %}<span class="mono">{{ name }} {{ seconds }}s</span>{% if not forloop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  <table class="dash">
+    <thead>
+      <tr>
+        <th>loop</th><th>effective</th><th>deciding layer</th><th>cadence</th>
+        <th>last run</th><th>next due</th><th>status</th><th>override reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for loop in control.loops %}
+        <tr>
+          <td>
+            <div class="mono">{{ loop.name }}</div>
+            {% if loop.tags %}
+              <div class="row-tags">
+                {% for tag in loop.tags %}<span class="chip small">{{ tag }}</span>{% endfor %}
+              </div>
+            {% endif %}
+            <div class="muted">{{ loop.description }}</div>
+          </td>
+          <td>
+            <span class="state-cell">
+              <span class="dot {% if loop.effective %}running{% else %}stopped{% endif %}"></span>
+              <span class="{% if loop.effective %}eff-yes{% else %}eff-no{% endif %}">{{ loop.effective|yesno:"running,held" }}</span>
+            </span>
+          </td>
+          <td>{{ loop.deciding_layer }}</td>
+          <td>
+            <div class="mono">{{ loop.cadence_label }}</div>
+            <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+              {% csrf_token %}
+              <input type="hidden" name="name" value="{{ loop.name }}">
+              {% if loop.is_daily %}
+                <input type="time" name="daily_at" value="{{ loop.daily_at }}" aria-label="{{ loop.name }} daily time">
+              {% else %}
+                <input type="number" name="delay_seconds" value="{{ loop.delay_seconds|default_if_none:'' }}"
+                  min="{{ loop.bounds.min_interval_seconds }}" step="{{ control.cadence_step_seconds }}"
+                  {% if loop.bounds.max_interval_seconds %}max="{{ loop.bounds.max_interval_seconds }}"{% endif %}
+                  aria-label="{{ loop.name }} interval seconds">
+              {% endif %}
+              <button class="dash-btn" type="submit">set</button>
+            </form>
+            {% if loop.bounds.note %}<div class="muted">{{ loop.bounds.note }}</div>{% endif %}
+            {% if loop.bounds.daily_allowed %}
+              <form class="row-actions" method="post" action="{% url 'dash:loop_cadence' %}" hx-post="{% url 'dash:loop_cadence' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
+                {% csrf_token %}
+                <input type="hidden" name="name" value="{{ loop.name }}">
+                {% if loop.is_daily %}
+                  <input type="number" name="delay_seconds" min="{{ loop.bounds.min_interval_seconds }}"
+                    step="{{ control.cadence_step_seconds }}"
+                    placeholder="interval s" aria-label="{{ loop.name }} switch to an interval">
+                {% else %}
+                  <input type="time" name="daily_at" aria-label="{{ loop.name }} switch to a daily time">
+                {% endif %}
+                <button class="dash-btn" type="submit">switch</button>
+              </form>
+            {% endif %}
+          </td>
+          <td>{{ loop.last_run_at|default:"never" }}</td>
+          <td>{{ loop.next_run_at|default:"—" }}</td>
+          <td>{{ loop.status }}</td>
+          <td>
+            {% if loop.override_reason %}<div class="muted">{{ loop.override_reason }}</div>{% else %}—{% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="8">No loops configured.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="band">
+  <h3>Infra slots</h3>
+  <table class="dash">
+    <thead><tr><th>slot</th><th>held</th><th class="num">cadence (s)</th><th>last</th><th>next</th></tr></thead>
+    <tbody>
+      {% for slot in control.infra_slots %}
+        <tr>
+          <td class="mono">{{ slot.name }}</td>
+          <td class="{% if slot.held %}held{% endif %}">{{ slot.held|yesno:"held,–" }}</td>
+          <td class="num">{{ slot.cadence_seconds }}</td>
+          <td>{{ slot.last_fired_at|default:"never" }}</td>
+          <td>{{ slot.next_fire_at|default:"—" }}</td>
+        </tr>
+      {% empty %}
+        <tr class="empty-row"><td colspan="5">No infra slots.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

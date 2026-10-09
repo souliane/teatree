@@ -1,0 +1,843 @@
+# test-path: cross-cutting
+"""``t3 worker`` group — bare-run alias + status/ensure/drain/stop/restart controls (#1796).
+
+``status`` reports the live flock holder + the resolved kill-switch tier + timer
+counts; ``ensure`` spawns a detached worker iff enabled AND the flock is free, and
+refuses (with the reason) otherwise; ``stop`` drains then signals the flock holder and
+verifies the exit; ``restart`` proves a NEW holder took the flock. The DB-touching
+paths run under a real test DB; no test signals a real process.
+"""
+
+import datetime as dt
+import json
+import threading
+from collections.abc import Callable
+from pathlib import Path
+from unittest import mock
+
+import django.test
+import pytest
+from django.utils import timezone
+from typer.testing import CliRunner
+
+import teatree.cli.worker as worker_cli
+from teatree.cli.doctor.checks_runtime import _check_singletons, _check_worker_running
+from teatree.cli.worker import DrainPayload, _drain_payload, worker_app
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, Prompt, WorkerGeneration
+from teatree.loop import worker_lifecycle
+from teatree.loop.drain import QUIESCING_SETTING, DrainOutcome, DrainProgress, DrainReport, set_worker_quiescing
+from teatree.loop.worker_lifecycle import StartReport, StopOutcome, StopReport, WorkerStopper
+from teatree.loops.loop_staleness import Admission, LoopHealth
+from teatree.utils import singleton as singleton_mod
+from tests.factories import TaskFactory
+
+runner = CliRunner()
+
+#: This deployment's own worker service — the sanctioned holder of the worker singleton.
+_IN_CONTAINER = singleton_mod.ExecutionContext(pid_namespace="pid:[2]", hostname="svc", role="worker")
+
+
+def _healthy_loop_health() -> LoopHealth:
+    """A green loop-fleet reading, stubbed so ``status`` exercises its OWN exit logic.
+
+    ``status_command`` folds ``loop_health(now)`` into its exit code, and that read
+    reflects ambient fleet health in the shared DB — fresh locally, stale on a
+    populated CI shard. Pinning a healthy reading here keeps each running-state test
+    asserting the flock/pid-file logic under test, not the shard's loop staleness.
+    """
+    return LoopHealth(
+        admission=Admission(mode="standard", source="default", admitted=("tickets",), admitted_total=1),
+        stale=(),
+        considered=1,
+    )
+
+
+class TestWorkerStatus(django.test.TestCase):
+    def test_status_reports_not_running_and_enabled_by_default(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "NOT running" in result.stdout
+        # The preset admits work, so a not-running worker is surfaced as actionable.
+        assert "admits work" in result.stdout
+        assert "t3 worker ensure" in result.stdout
+
+    def test_status_json_shape(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["running"] is True
+        assert payload["holder_pid"] == 4242
+        assert payload["fleet_admits"] is True
+        assert isinstance(payload["timers"], dict)
+
+    def test_status_shows_how_the_agent_ceiling_is_derived(self) -> None:
+        ConfigSetting.objects.set_value("admission_write_concurrency_per_core", 1.0)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            text = runner.invoke(worker_app, ["status"])
+            as_json = runner.invoke(worker_app, ["status", "--json"])
+        assert text.exit_code == 0
+        assert "agent admission: ceiling 8 = 8 cores x 1 per core (8) x weekly pace unread" in text.stdout
+        assert "lanes 8 expensive + 2 cheap (review lane outside the ceiling)" in text.stdout
+        assert "occupied 0 expensive + 0 cheap" in text.stdout
+        admission = json.loads(as_json.stdout)["agent_admission"]
+        assert (admission["ceiling"], admission["cores"], admission["per_core"]) == (8, 8, 1.0)
+        assert (admission["expensive_lane"], admission["cheap_lane"]) == (8, 2)
+
+    def test_an_unreadable_admission_still_reports_the_worker(self) -> None:
+        # deploy.sh certifies a deploy by grepping `"running": true` out of `--json`.
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+            mock.patch(
+                "teatree.core.agent_admission.read_quota_signal", side_effect=RuntimeError("probe down\n  at line 2")
+            ),
+            self.assertNoLogs("teatree.cli.worker", "WARNING"),
+        ):
+            text = runner.invoke(worker_app, ["status"])
+            as_json = runner.invoke(worker_app, ["status", "--json"])
+        assert text.exit_code == 0
+        assert "worker: RUNNING (pid 4242)" in text.stdout
+        assert "agent admission: unavailable (RuntimeError: probe down)\n" in text.stdout
+        assert "at line 2" not in text.stdout
+        assert as_json.exit_code == 0
+        payload = json.loads(as_json.stdout)
+        assert payload["running"] is True
+        assert payload["agent_admission"] is None
+
+    def test_status_reports_running_via_flock_when_pid_file_absent(self) -> None:
+        # The flock is HELD by a live worker but the pid file is missing/stale, so
+        # `read_pid` returns None — status must not print a false "NOT running" (#3571).
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "NOT running" not in result.stdout
+        assert "RUNNING" in result.stdout
+        assert "t3 worker ensure" not in result.stdout
+
+    def test_status_json_flock_fallback_marks_running(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["running"] is True
+        assert payload["holder_pid"] is None
+        assert payload["flock_held"] is True
+
+    def test_status_not_running_when_flock_free(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "NOT running" in result.stdout
+
+    def test_status_names_where_the_holder_is(self) -> None:
+        # `worker: RUNNING` is true of a singleton held from OUTSIDE the deployment too,
+        # which is exactly how #3976 stayed invisible — so status names the holder.
+        outside = singleton_mod.HolderRecord(
+            pid=4321,
+            context=singleton_mod.ExecutionContext(pid_namespace="pid:[1]", hostname="box", role=""),
+        )
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=outside),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert "pid:[1]" in result.stdout
+        assert "t3 doctor check" in result.stdout
+
+    def test_status_json_carries_the_holder_context(self) -> None:
+        deployed = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4321),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=deployed),
+            mock.patch("teatree.utils.singleton.current_context", return_value=_IN_CONTAINER),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] == _IN_CONTAINER.as_json()
+
+    def test_status_json_holder_is_null_with_no_live_holder(self) -> None:
+        # The record a dead worker left describes nobody — the next acquire reuses the
+        # file in place, so reporting it against a FREE flock would name a ghost.
+        stale = singleton_mod.HolderRecord(pid=4321, context=_IN_CONTAINER)
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=None),
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.utils.singleton.read_holder", return_value=stale),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert json.loads(result.stdout)["holder"] is None
+
+    def test_status_reports_the_resolved_mode_and_admitted_count(self) -> None:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 0
+        assert "admitted loop(s) due" in result.stdout
+
+    @staticmethod
+    def _frozen_loop() -> None:
+        """One enabled loop whose anchor stopped seven hours ago, on an otherwise empty table."""
+        Loop.objects.all().delete()
+        prompt, _ = Prompt.objects.get_or_create(name="demo-prompt", defaults={"body": "do x"})
+        Loop.objects.create(
+            name="tickets",
+            prompt=prompt,
+            delay_seconds=300,
+            last_run_at=timezone.now() - dt.timedelta(hours=7),
+        )
+
+    def test_status_fails_when_a_live_worker_ticks_nothing(self) -> None:
+        # The seven-hour silent freeze: flock held, kill-switch ON, timers READY —
+        # and a mode mask that admits no loop, so no anchor moves. Status must FAIL.
+        self._frozen_loop()
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_table.admitted_loop_names", return_value=[]),
+        ):
+            result = runner.invoke(worker_app, ["status"])
+        assert result.exit_code == 1
+        assert "RUNNING (pid 4242)" in result.stdout
+        assert "admits work" in result.stdout
+        assert "ticking NOTHING" in result.stdout
+        assert "tickets" in result.stdout
+
+    def test_status_json_fails_and_carries_the_stale_set(self) -> None:
+        self._frozen_loop()
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_table.admitted_loop_names", return_value=[]),
+        ):
+            result = runner.invoke(worker_app, ["status", "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        # `deploy.sh` greps this key out of the body, so a failing exit must not
+        # cost it the running signal it converges on.
+        assert payload["running"] is True
+        assert payload["admitted"] == []
+        assert [entry["name"] for entry in payload["stale"]] == ["tickets"]
+
+
+class TestWorkerStatusShowsTheDeployDrain(django.test.TestCase):
+    """A quiesced worker says for how long and which runs it is waiting on (#5089)."""
+
+    def _status(self, *args: str) -> str:
+        with (
+            mock.patch.object(worker_cli, "_flock_holder_pid", return_value=4242),
+            mock.patch("teatree.loops.loop_staleness.loop_health", return_value=_healthy_loop_health()),
+        ):
+            result = runner.invoke(worker_app, ["status", *args])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    def _quiesced_twelve_minutes_ago_with_two_runs_in_flight(self) -> list[int]:
+        set_worker_quiescing(value=True)
+        ConfigSetting.objects.filter(key=QUIESCING_SETTING).update(updated_at=timezone.now() - dt.timedelta(minutes=12))
+        tasks = [TaskFactory(), TaskFactory()]
+        for task in tasks:
+            task.claim(claimed_by="worker-A", lease_seconds=900)
+        return sorted(task.pk for task in tasks)
+
+    def test_json_carries_the_quiesce_age_and_the_runs_in_flight(self) -> None:
+        in_flight = self._quiesced_twelve_minutes_ago_with_two_runs_in_flight()
+
+        quiescing = json.loads(self._status("--json"))["quiescing"]
+
+        assert 700 <= quiescing["age_seconds"] <= 780
+        assert quiescing["in_flight"] == in_flight
+
+    def test_text_names_the_runs_that_will_checkpoint(self) -> None:
+        in_flight = self._quiesced_twelve_minutes_ago_with_two_runs_in_flight()
+
+        out = self._status()
+
+        line = next(line for line in out.splitlines() if line.startswith("deploy drain:"))
+        assert "(12m)" in line
+        assert ", ".join(str(pk) for pk in in_flight) in line
+        assert "checkpoint" in line
+
+    def test_an_open_gate_reports_no_drain(self) -> None:
+        assert json.loads(self._status("--json"))["quiescing"] is None
+        assert "deploy drain:" not in self._status()
+
+
+class TestWorkerEnsure(django.test.TestCase):
+    def test_ensure_reports_already_running(self) -> None:
+        with mock.patch("teatree.utils.singleton.flock_is_held", return_value=True):
+            result = runner.invoke(worker_app, ["ensure"])
+        assert result.exit_code == 0
+        assert "already-running" in result.stdout
+
+    def test_ensure_spawns_when_the_flock_is_free(self) -> None:
+        spawns: list[bool] = []
+        with (
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch(
+                "teatree.utils.worker_spawn.spawn_detached_worker", side_effect=lambda: spawns.append(True) or True
+            ),
+            mock.patch(
+                "teatree.loop.worker_lifecycle.wait_for_new_holder",
+                return_value=StartReport(started=True, holder_pid=999, waited_seconds=2.0),
+            ),
+        ):
+            result = runner.invoke(worker_app, ["ensure", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["action"] == "spawned"
+        assert spawns == [True]
+
+    def test_ensure_reports_a_spawn_that_never_took_the_flock(self) -> None:
+        # The defect this closes: the spawner returns True as soon as the `t3` binary
+        # exists and the child's streams go to DEVNULL, so a startup crash read as
+        # "spawned". The verdict now rests on the flock, and the child's output is shown.
+        with (
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.utils.worker_spawn.spawn_detached_worker", return_value=True),
+            mock.patch(
+                "teatree.loop.worker_lifecycle.wait_for_new_holder",
+                return_value=StartReport(started=False, holder_pid=None, waited_seconds=60.0),
+            ),
+            mock.patch(
+                "teatree.utils.worker_spawn.read_spawn_log_tail",
+                return_value="ModuleNotFoundError: No module named 'teatree'",
+            ),
+        ):
+            result = runner.invoke(worker_app, ["ensure"])
+        assert result.exit_code == 1
+        assert "unverified" in result.stdout
+        assert "ModuleNotFoundError" in result.stdout
+        assert "t3 worker status" in result.stdout
+
+    def test_ensure_errors_when_t3_absent(self) -> None:
+        with (
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.utils.worker_spawn.spawn_detached_worker", return_value=False),
+        ):
+            result = runner.invoke(worker_app, ["ensure"])
+        assert result.exit_code == 1
+        assert "error" in result.stdout
+
+
+def test_ensure_is_a_no_op_for_a_live_flock_holder_with_a_stale_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The end-to-end #3617 bug: a live worker holds the flock, its lock file records
+    # a dead pid, and a prior diagnostic `read_pid` reap (status/doctor) ran. `ensure`
+    # must still detect the live holder via the flock and spawn NOTHING.
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+
+    ready, release = threading.Event(), threading.Event()
+
+    def _hold() -> None:
+        with singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=path):
+            ready.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=_hold)
+    holder.start()
+    try:
+        assert ready.wait(timeout=5), "holder never acquired the flock"
+        path.write_text("999999999\n", encoding="utf-8")  # stale pid clobbers the live holder's file
+        singleton_mod.read_pid(path)  # a prior status/doctor reap — must NOT orphan the flock
+
+        spawns: list[bool] = []
+        with (
+            mock.patch(
+                "teatree.utils.worker_spawn.spawn_detached_worker",
+                side_effect=lambda: spawns.append(True) or True,
+            ),
+        ):
+            result = runner.invoke(worker_app, ["ensure", "--json"])
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["action"] == "already-running"
+    assert spawns == []
+
+
+def test_check_singletons_reports_a_stale_idle_lock_file_without_unlinking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+    path.write_text("999999999\n", encoding="utf-8")  # dead pid, no flock held
+
+    echoed: list[str] = []
+    with mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append):
+        assert _check_singletons() is True
+    assert path.is_file()  # never unlinked
+    assert any("stale but idle" in line for line in echoed)
+
+
+def test_check_singletons_leaves_a_live_flock_holders_file_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+    path = singleton_mod.default_pid_path(singleton_mod.WORKER_SINGLETON)
+
+    ready, release = threading.Event(), threading.Event()
+
+    def _hold() -> None:
+        with singleton_mod.singleton(singleton_mod.WORKER_SINGLETON, pid_path=path):
+            ready.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=_hold)
+    holder.start()
+    try:
+        assert ready.wait(timeout=5), "holder never acquired the flock"
+        path.write_text("999999999\n", encoding="utf-8")  # stale pid, but the flock IS held
+        echoed: list[str] = []
+        with mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append):
+            assert _check_singletons() is True
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert path.is_file()
+    assert not any("stale but idle" in line for line in echoed)  # a live holder is never flagged
+
+
+def _quiescing_drain(report: DrainReport) -> "object":
+    """A ``drain_worker`` stand-in that closes the admission gate the way the real one does."""
+
+    def _drain(**_kwargs: object) -> DrainReport:
+        set_worker_quiescing(value=True)
+        return report
+
+    return _drain
+
+
+class TestWorkerDrain(django.test.TestCase):
+    """`t3 worker drain` — quiesce + wait, exit 0 on drained, 3 on grace-exceeded."""
+
+    def test_drain_payload_maps_a_report_to_the_stop_json_shape(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.0, still_claimed=[7, 9])
+        payload: DrainPayload | None = _drain_payload(report)
+        assert payload == {"outcome": "grace_exceeded", "still_claimed": [7, 9]}
+
+    def test_drain_payload_is_none_without_a_report(self) -> None:
+        assert _drain_payload(None) is None
+
+    def test_drained_exits_zero(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=1.0)
+        with mock.patch("teatree.loop.drain.drain_worker", return_value=report):
+            result = runner.invoke(worker_app, ["drain", "--timeout", "30"])
+        assert result.exit_code == 0
+        assert "drained" in result.stdout
+
+    def test_grace_exceeded_exits_distinct_code_and_lists_tasks(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.0, still_claimed=[7, 9])
+        with mock.patch("teatree.loop.drain.drain_worker", return_value=report):
+            result = runner.invoke(worker_app, ["drain", "--timeout", "30"])
+        assert result.exit_code == worker_cli._GRACE_EXCEEDED_EXIT
+        assert result.exit_code != 0
+        assert "7, 9" in result.stdout
+
+    def test_json_shape(self) -> None:
+        report = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.5, still_claimed=[7])
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=_quiescing_drain(report)):
+            result = runner.invoke(worker_app, ["drain", "--json"])
+        payload = json.loads(result.stdout)
+        assert payload["outcome"] == "grace_exceeded"
+        assert payload["still_claimed"] == [7]
+        assert payload["waited_seconds"] == pytest.approx(30.5)
+        # Read BACK from the store, not asserted from intent.
+        assert payload["worker_quiescing"] is True
+
+    def test_names_what_clears_the_quiesce_it_leaves_behind(self) -> None:
+        # The drain leaves the box admitting ZERO work and stops nothing — the recovery
+        # must be discoverable from the command's own output, not from the source.
+        report = DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=0.0)
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=_quiescing_drain(report)):
+            result = runner.invoke(worker_app, ["drain"])
+        assert "worker_quiescing" in result.stdout
+        assert "config_setting set worker_quiescing false" in result.stdout
+        assert "t3 worker restart" in result.stdout
+
+    def test_help_names_what_clears_the_quiesce(self) -> None:
+        result = runner.invoke(worker_app, ["drain", "--help"])
+        rendered = " ".join(result.stdout.split())
+        assert "config_setting set worker_quiescing false" in rendered
+
+
+class TestWorkerDrainOneGeneration(django.test.TestCase):
+    _SHA = "5" * 40
+
+    def test_drains_only_the_named_generation(self) -> None:
+        WorkerGeneration.objects.boot(self._SHA)
+
+        result = runner.invoke(worker_app, ["drain", "--generation", self._SHA, "--timeout", "30"])
+
+        assert result.exit_code == 0, result.output
+        assert WorkerGeneration.objects.state_of(self._SHA) == WorkerGeneration.State.DRAINING
+        assert "worker_quiescing" not in result.stdout
+
+    def test_an_unregistered_generation_is_refused_by_name(self) -> None:
+        result = runner.invoke(worker_app, ["drain", "--generation", self._SHA])
+
+        assert result.exit_code == 2
+        assert "555555555555 is not registered" in result.output
+
+    def test_a_malformed_sha_is_refused_before_touching_anything(self) -> None:
+        result = runner.invoke(worker_app, ["drain", "--generation", "main"])
+
+        assert result.exit_code == 2
+        assert "40-hex" in result.output
+        assert not ConfigSetting.objects.filter(key=QUIESCING_SETTING).exists()
+
+
+class TestWorkerDrainHeartbeat(django.test.TestCase):
+    """The drain speaks while it waits, so its transport never sees an idle session (#3983)."""
+
+    @staticmethod
+    def _drain_emitting(samples: list[DrainProgress]) -> Callable[..., DrainReport]:
+        """A ``drain_worker`` stand-in that replays *samples* through the caller's callback."""
+
+        def _drain(*, on_progress: Callable[[DrainProgress], None] | None = None, **_kwargs: object) -> DrainReport:
+            assert on_progress is not None, "drain_command must hand drain_worker a progress sink"
+            for sample in samples:
+                on_progress(sample)
+            return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=samples[-1].waited_seconds)
+
+        return _drain
+
+    def test_the_wait_emits_a_heartbeat_naming_the_elapsed_time_and_in_flight_count(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7, 9])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        assert result.exit_code == 0
+        assert "2 task(s) still in flight after 5s" in result.stderr
+
+    def test_heartbeats_are_throttled_but_stay_well_inside_the_idle_window(self) -> None:
+        # Three failed deploys tore down at ~278s of silence; the throttle must keep the
+        # gap between heartbeats far below that, and must not emit one line per 5s poll.
+        samples = [DrainProgress(waited_seconds=float(t), still_claimed=[7]) for t in range(5, 305, 5)]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain"])
+
+        beats = [line for line in result.stderr.splitlines() if "still in flight" in line]
+        assert 1 < len(beats) < len(samples), "every poll must not echo, but the wait must not go silent"
+        assert worker_cli._PROGRESS_ECHO_INTERVAL_SECONDS < worker_cli.OBSERVED_SSH_IDLE_TIMEOUT_SECONDS / 2
+
+    def test_json_output_stays_parseable_while_the_wait_heartbeats(self) -> None:
+        samples = [DrainProgress(waited_seconds=5.0, still_claimed=[7])]
+        with mock.patch("teatree.loop.drain.drain_worker", side_effect=self._drain_emitting(samples)):
+            result = runner.invoke(worker_app, ["drain", "--json"])
+
+        assert json.loads(result.stdout)["outcome"] == "drained"
+        assert "still in flight" in result.stderr
+
+
+class TestWorkerStop(django.test.TestCase):
+    """`t3 worker stop` — drain, signal the flock holder, verify the exit, report the gate."""
+
+    def test_stopped_exits_zero_and_names_the_pid(self) -> None:
+        report = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242, waited_seconds=2.0)
+        with mock.patch.object(WorkerStopper, "stop", return_value=report):
+            result = runner.invoke(worker_app, ["stop"])
+        assert result.exit_code == 0
+        assert "stopped" in result.stdout
+        assert "4242" in result.stdout
+
+    def test_not_running_is_not_a_failure(self) -> None:
+        with mock.patch.object(WorkerStopper, "stop", return_value=StopReport(outcome=StopOutcome.NOT_RUNNING)):
+            result = runner.invoke(worker_app, ["stop"])
+        assert result.exit_code == 0
+        assert "not-running" in result.stdout
+
+    def test_a_worker_that_refuses_to_exit_exits_non_zero(self) -> None:
+        report = StopReport(outcome=StopOutcome.STILL_RUNNING, holder_pid=4242, waited_seconds=60.0)
+        with mock.patch.object(WorkerStopper, "stop", return_value=report):
+            result = runner.invoke(worker_app, ["stop"])
+        assert result.exit_code == worker_cli._STOP_FAILED_EXIT
+        assert result.exit_code != 0
+        assert "still-running" in result.stdout
+        assert "4242" in result.stdout
+
+    def test_a_missing_holder_pid_is_reported_never_guessed(self) -> None:
+        with mock.patch.object(WorkerStopper, "stop", return_value=StopReport(outcome=StopOutcome.NO_HOLDER_PID)):
+            result = runner.invoke(worker_app, ["stop"])
+        assert result.exit_code == worker_cli._STOP_FAILED_EXIT
+        assert "no pid" in result.stdout
+
+    def test_a_left_on_quiesce_is_stated_in_plain_words_with_the_recovery(self) -> None:
+        report = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242, quiescing=True)
+        with mock.patch.object(WorkerStopper, "stop", return_value=report):
+            result = runner.invoke(worker_app, ["stop"])
+        assert "admits ZERO new work" in result.stdout
+        assert "config_setting set worker_quiescing false" in result.stdout
+        assert "t3 worker restart" in result.stdout
+
+    def test_json_shape(self) -> None:
+        drain = DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.0, still_claimed=[7])
+        report = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242, drain=drain, waited_seconds=1.5)
+        with mock.patch.object(WorkerStopper, "stop", return_value=report):
+            result = runner.invoke(worker_app, ["stop", "--json"])
+        payload = json.loads(result.stdout)
+        assert payload["outcome"] == "stopped"
+        assert payload["holder_pid"] == 4242
+        assert payload["waited_seconds"] == pytest.approx(1.5)
+        assert payload["worker_quiescing"] is False
+        assert payload["drain"] == {"outcome": "grace_exceeded", "still_claimed": [7]}
+
+    def test_no_drain_is_passed_through_to_the_stopper(self) -> None:
+        seen: list[object] = []
+
+        def _capture(self: WorkerStopper) -> StopReport:
+            seen.append(self._request)
+            return StopReport(outcome=StopOutcome.STOPPED, holder_pid=1)
+
+        with mock.patch.object(WorkerStopper, "stop", _capture):
+            result = runner.invoke(worker_app, ["stop", "--no-drain", "--timeout", "7", "--exit-timeout", "9"])
+        assert result.exit_code == 0
+        (request,) = seen
+        assert request.drain is False
+        assert request.drain_timeout == 7
+        assert request.exit_timeout == pytest.approx(9.0)
+
+
+class TestWorkerRestart(django.test.TestCase):
+    """`t3 worker restart` — stop, respawn, and PROVE a new holder took the flock."""
+
+    def test_reports_success_only_when_a_new_pid_holds_the_flock(self) -> None:
+        stopped = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242)
+        started = StartReport(started=True, holder_pid=999, waited_seconds=3.0)
+        with (
+            mock.patch.object(WorkerStopper, "stop", return_value=stopped),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("spawned", "spawned a detached worker")),
+            mock.patch("teatree.loop.worker_lifecycle.wait_for_new_holder", return_value=started),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+        assert result.exit_code == 0
+        assert "restarted" in result.stdout
+        assert "4242" in result.stdout
+        assert "999" in result.stdout
+
+    def test_a_spawn_that_never_takes_the_flock_is_a_failure(self) -> None:
+        # `ensure` reports "spawned" as soon as the `t3` binary exists (the child's
+        # streams go to DEVNULL), so a startup crash is invisible in its verdict — the
+        # restart must verify independently and fail loudly.
+        stopped = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242)
+        never = StartReport(started=False, holder_pid=None, waited_seconds=60.0)
+        with (
+            mock.patch.object(WorkerStopper, "stop", return_value=stopped),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("spawned", "spawned a detached worker")),
+            mock.patch("teatree.loop.worker_lifecycle.wait_for_new_holder", return_value=never),
+            mock.patch(
+                "teatree.utils.worker_spawn.read_spawn_log_tail", return_value="django.db.utils.OperationalError"
+            ),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+        assert result.exit_code == worker_cli._STOP_FAILED_EXIT
+        assert "no worker holds the flock" in result.stdout
+        assert "t3 worker status" in result.stdout
+        # The crashed child's own output — the reason, not just the symptom.
+        assert "OperationalError" in result.stdout
+
+    def test_never_spawns_when_the_stop_failed(self) -> None:
+        report = StopReport(outcome=StopOutcome.STILL_RUNNING, holder_pid=4242, waited_seconds=60.0)
+        ensures: list[object] = []
+        with (
+            mock.patch.object(WorkerStopper, "stop", return_value=report),
+            mock.patch.object(worker_cli, "_ensure_worker", side_effect=lambda: ensures.append(True)),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+        assert result.exit_code == worker_cli._STOP_FAILED_EXIT
+        assert ensures == []
+
+    def test_clears_a_stuck_quiesce_gate_before_spawning(self) -> None:
+        # The one-command recovery from the drain trap: whatever the gate was, the fresh
+        # worker must come up admitting work.
+        set_worker_quiescing(value=True)
+        stopped = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242, quiescing=True)
+        quiescing_at_spawn: list[bool] = []
+
+        def _spawn() -> tuple[str, str]:
+            quiescing_at_spawn.append(bool(ConfigSetting.objects.get_effective(QUIESCING_SETTING)))
+            return "spawned", "spawned a detached worker"
+
+        with (
+            mock.patch.object(WorkerStopper, "stop", return_value=stopped),
+            mock.patch.object(worker_cli, "_ensure_worker", side_effect=_spawn),
+            mock.patch(
+                "teatree.loop.worker_lifecycle.wait_for_new_holder",
+                return_value=StartReport(started=True, holder_pid=999, waited_seconds=1.0),
+            ),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+        assert result.exit_code == 0
+        assert quiescing_at_spawn == [False]
+        assert ConfigSetting.objects.get_effective(QUIESCING_SETTING) is False
+
+    def test_refuses_when_the_fresh_worker_cannot_be_verified(self) -> None:
+        stopped = StopReport(outcome=StopOutcome.STOPPED, holder_pid=4242)
+        with (
+            mock.patch.object(WorkerStopper, "stop", return_value=stopped),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("error", "`t3` not found on PATH")),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+        assert result.exit_code == 1
+        assert "error" in result.stdout
+
+
+class TestDoctorWorkerCheck(django.test.TestCase):
+    """The `t3 doctor` warn: enabled worker + free flock ⇒ actionable ensure nudge (PR-28)."""
+
+    def test_warns_when_enabled_but_flock_free(self) -> None:
+        echoed: list[str] = []
+        with (
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=False),
+            mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append),
+        ):
+            assert _check_worker_running() is True  # a WARN, never a hard FAIL
+        assert any("t3 worker ensure" in line for line in echoed)
+
+    def test_silent_when_a_worker_holds_the_flock(self) -> None:
+        echoed: list[str] = []
+        with (
+            mock.patch("teatree.utils.singleton.flock_is_held", return_value=True),
+            mock.patch("teatree.cli.doctor.checks_runtime.typer.echo", side_effect=echoed.append),
+        ):
+            assert _check_worker_running() is True
+        assert echoed == []
+
+
+def test_emit_restart_json_shape(capsys: pytest.CaptureFixture[str]) -> None:
+    worker_cli._emit_restart(json_output=True, action="restarted", detail="ok", previous_pid=10, new_pid=20)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"action": "restarted", "detail": "ok", "previous_pid": 10, "holder_pid": 20}
+
+
+def test_emit_stop_warns_when_the_drain_grace_lapsed(capsys: pytest.CaptureFixture[str]) -> None:
+    report = StopReport(
+        outcome=StopOutcome.STOPPED,
+        holder_pid=1,
+        waited_seconds=2.0,
+        drain=DrainReport(outcome=DrainOutcome.GRACE_EXCEEDED, waited_seconds=30.0, still_claimed=[7, 9]),
+    )
+    worker_cli._emit_stop(report, json_output=False)
+    out = capsys.readouterr().out
+    assert "WARNING the drain grace lapsed" in out
+    assert "7, 9" in out
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestTimerCountsCoverTheChainSet(django.test.TestCase):
+    """The per-loop chain diagnostic counts the loops that SHOULD carry a chain (#4185).
+
+    Keyed on ``Loop.enabled`` it silently omitted every preset-admitted loop — the exact
+    set whose missing chains the diagnostic existed to surface. The row carries no manual
+    override, so the preset is what decides.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(name="inbox", script="src/teatree/loops/inbox/loop.py", delay_seconds=60)
+        Mode.objects.create(name="preset-4185", entries={"inbox": True})
+        ModeOverride.objects.set_override("preset-4185", reason="test override")
+
+    def test_a_preset_admitted_loop_is_counted(self) -> None:
+        assert "inbox" in worker_cli._timer_counts()
+
+    def test_a_preset_masked_off_loop_is_not_counted(self) -> None:
+        Mode.objects.filter(name="preset-4185").update(entries={"inbox": False})
+        assert "inbox" not in worker_cli._timer_counts()
+
+    def test_a_manual_override_outranks_the_preset(self) -> None:
+        Loop.objects.set_manual_override("inbox", runs=False, reason="chain is broken")
+        assert "inbox" not in worker_cli._timer_counts()
+
+
+class TestStopAndRestartHeartbeat(django.test.TestCase):
+    """`stop` / `restart` speak while they drain — the silence that read as a hung restart.
+
+    `t3 worker restart` on the running box produced ZERO bytes over 7m21s and never
+    reached its SIGTERM: `WorkerStopper` dropped the `on_progress` sink that #3983 gave
+    `t3 worker drain`, so the wait went silent for its full 1800s budget with two live
+    CLAIMED agent runs in flight. A restart that neither restarts nor reports is
+    indistinguishable from a wedged one, so the operator kills it and reaches for docker.
+    """
+
+    @staticmethod
+    def _drain_emitting(samples: list[DrainProgress]) -> Callable[..., DrainReport]:
+        def _drain(*, on_progress: Callable[[DrainProgress], None] | None = None, **_kwargs: object) -> DrainReport:
+            assert on_progress is not None, "the stopper must hand drain_worker a progress sink"
+            for sample in samples:
+                on_progress(sample)
+            return DrainReport(outcome=DrainOutcome.DRAINED, waited_seconds=samples[-1].waited_seconds)
+
+        return _drain
+
+    @staticmethod
+    def _seams() -> object:
+        held = [True]
+
+        def _terminate(_pid: int) -> None:
+            held[0] = False
+
+        return worker_lifecycle.LifecycleSeams(
+            flock_held=lambda: held[0],
+            holder_pid=lambda: 4242 if held[0] else None,
+            terminate=_terminate,
+            sleep=lambda _s: None,
+            monotonic=lambda: 0.0,
+        )
+
+    def test_stop_reports_the_drain_wait_instead_of_going_silent(self) -> None:
+        samples = [DrainProgress(waited_seconds=120.0, still_claimed=[7, 9])]
+        with (
+            mock.patch("teatree.loop.worker_lifecycle.drain_worker", side_effect=self._drain_emitting(samples)),
+            mock.patch.object(worker_lifecycle, "LifecycleSeams", return_value=self._seams()),
+        ):
+            result = runner.invoke(worker_app, ["stop"])
+
+        assert "2 task(s) still in flight after 120s" in result.stderr
+
+    def test_restart_reports_the_drain_wait_instead_of_going_silent(self) -> None:
+        samples = [DrainProgress(waited_seconds=120.0, still_claimed=[7])]
+        started = StartReport(started=True, holder_pid=999, waited_seconds=1.0)
+        with (
+            mock.patch("teatree.loop.worker_lifecycle.drain_worker", side_effect=self._drain_emitting(samples)),
+            mock.patch.object(worker_lifecycle, "LifecycleSeams", return_value=self._seams()),
+            mock.patch.object(worker_cli, "_ensure_worker", return_value=("spawned", "spawned a detached worker")),
+            mock.patch("teatree.loop.worker_lifecycle.wait_for_new_holder", return_value=started),
+        ):
+            result = runner.invoke(worker_app, ["restart"])
+
+        assert result.exit_code == 0
+        assert "1 task(s) still in flight after 120s" in result.stderr

@@ -1,0 +1,123 @@
+"""Only-shrinks ratchet for declared import cycles + core fan-in freeze (#1922).
+
+Pins the PR-3 acyclic invariant at the *declaration* level so a regression
+redeclaring a cross-module cycle, re-adding a back-edge into ``teatree.core``,
+or flipping the gate off fails here instead of silently rotting (the #195 → #315
+creep-back is exactly what this prevents).
+
+Dual role with ``uv run tach check``: tach parses the actual import graph and is
+the runtime cycle gate; this test guards the ``tach.toml`` declaration so a
+maintainer cannot re-open the door (drop the flag, re-add the dead edge, grow
+core fan-in) without a red test, even with no code edge. Both run in CI.
+"""
+
+import tomllib
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parents[1]
+_TACH = _REPO / "tach.toml"
+
+# Frozen baseline: number of modules that may depend on teatree.core.
+# Re-baseline ONLY by lowering (more inversion) — never raising.
+# Bumped 12 → 13 (#1993 PR7a): the reviewed cli/eval subpackage split adds
+# teatree.cli.eval as a core-dependent. Same logical coupling as its parent
+# teatree.cli (the eval commands were already core-dependent before the split);
+# the split just promotes them to their own tach node — one new fan-in entry,
+# not new coupling.
+# Bumped 13 → 17 (D7 backends split): teatree.backends is split into the
+# aggregator parent + the concrete backend submodules (github / gitlab / slack)
+# and the shared forge_merge_rpc primitive, so the gitlab -> slack coupling
+# becomes a declared edge instead of being hidden inside one node. Each of the
+# four new nodes already imported teatree.core inside the monolithic
+# teatree.backends node — the split makes that pre-existing coupling visible as
+# four separate fan-in entries; it adds no new coupling.
+# Bumped 17 → 18 (#1838): teatree.teams was promoted from a foundation leaf to a
+# domain-layer consumer of teatree.core. Superseded — see the #3734 entry below.
+# Bumped 18 → 19 (#2413 PR-2): teatree.loop.scanners is split out of the
+# teatree.loop monolith into its own tach node so the scanner → review_claim
+# back-edges become declared (and severable) instead of hidden inside one node.
+# The new node already imported teatree.core inside the monolithic teatree.loop
+# node — the split makes that pre-existing coupling visible as one more fan-in
+# entry in the correct lower→higher direction; it adds no new coupling.
+# Bumped 19 → 20 (#2413 PR-4): the teatree.loop rendering cluster is carved into
+# six tach nodes (rendering_items / rendering_dms / rendering_classification /
+# rendering_permalinks / rendering_zones + the rendering facade). Only the
+# facade teatree.loop.rendering touches teatree.core — its cost_chip_lines()
+# reads CostReport / TaskAttempt (teatree.core.cost, teatree.core.models.task),
+# an import identical on origin/main, previously hidden inside the teatree.loop
+# node. The carve already minimizes core contact to that one facade node (the
+# five leaf nodes touch no core), and teatree.loop retains its own independent
+# core coupling, so it does not drop out to offset the addition. One new fan-in
+# entry (teatree.loop.rendering) in the correct lower→higher direction; it is a
+# pure carve artifact and adds no new coupling.
+# Bumped 20 → 21 (#2413 slack_answer): the reactive Slack-answer subpackage is
+# carved out of the teatree.loop monolith into its own tach node
+# (teatree.loop.slack_answer) so a future slack_answer → orchestration-top
+# back-edge becomes a declared tach failure instead of an invisible cycle. The
+# node touches teatree.core because cycle.py / thread_readback.py import
+# teatree.core.backend_protocols + cycle.py imports teatree.core.backend_factory
+# (no more-specific declared core sub-node, so they resolve to teatree.core) —
+# imports identical on origin/main, previously hidden inside the teatree.loop
+# node. teatree.loop retains its own independent core coupling, so it does not
+# drop out to offset. One new fan-in entry (teatree.loop.slack_answer) in the
+# correct lower→higher direction; it is a pure carve artifact and adds no new
+# coupling.
+# Bumped 21 → 22 (PR-27): teatree.overlay_sdk is the surface-frozen overlay-
+# authoring facade node. It re-exports OverlayBase / ProvisionStep / Variant /
+# the probe + config helpers from teatree.core (and teatree.types / .config /
+# .utils / .docker / .visual_qa), so it legitimately depends on teatree.core —
+# an integration-layer facade over the domain layer, the correct lower→higher
+# direction. One new fan-in entry; nothing in core imports it back.
+# Bumped 22 → 23 (#2413 review-claim outcome stratum): the review-DONE reaction
+# poster is carved out of the orchestration-top teatree.loop.review_claim into
+# its own leaf node (teatree.loop.review_done_reactions) so the review_done_ack
+# scanner reaches it without the scanners → orchestration back-edge tach rejects.
+# The carved code's `teatree.core.on_behalf_egress` import is unchanged — it was
+# already core-coupled inside the teatree.loop node — and teatree.loop keeps its
+# own independent core coupling, so it does not drop out to offset. One new
+# fan-in entry in the correct lower→higher direction; a pure carve artifact that
+# adds no new coupling.
+# Lowered 23 -> 22 (#3734): the agent-teams pane layer is retired, so the
+# teatree.teams node and its core fan-in entry are gone. The reduction is banked
+# rather than left as headroom, so a future fan-in still needs its own review.
+# Bumped 22 -> 23: disk_consumers is a separate domain node because its
+# registered-worktree-root probe needs core ORM state; utils stays foundation.
+_CORE_FANIN_BASELINE = 23
+_MAX_DECLARED_TWO_CYCLES = 0
+
+
+def _config() -> dict:
+    return tomllib.loads(_TACH.read_text(encoding="utf-8"))
+
+
+def _modules() -> list[dict]:
+    return _config()["modules"]
+
+
+def _depends(mods: list[dict], path: str) -> list[str]:
+    return next(m for m in mods if m["path"] == path).get("depends_on", [])
+
+
+class TestForbidCircularStaysOn:
+    def test_flag_is_true(self) -> None:
+        assert _config().get("forbid_circular_dependencies") is True
+
+
+class TestNoDeclaredTwoCycles:
+    def test_no_mutual_edge_between_any_pair(self) -> None:
+        mods = _modules()
+        dep = {m["path"]: set(m.get("depends_on", [])) for m in mods}
+        cycles = {tuple(sorted((a, b))) for a in dep for b in dep[a] if b in dep and a in dep[b]}
+        assert len(cycles) <= _MAX_DECLARED_TWO_CYCLES, sorted(cycles)
+
+    def test_core_does_not_depend_on_agents_or_backends(self) -> None:
+        deps = set(_depends(_modules(), "teatree.core"))
+        assert "teatree.agents" not in deps
+        assert "teatree.backends" not in deps
+
+
+class TestCoreFanInFrozen:
+    def test_core_fanin_not_grown(self) -> None:
+        mods = _modules()
+        fanin = [m["path"] for m in mods if "teatree.core" in m.get("depends_on", []) and m["path"] != "teatree.core"]
+        assert len(fanin) <= _CORE_FANIN_BASELINE, sorted(fanin)

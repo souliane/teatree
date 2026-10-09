@@ -1,0 +1,321 @@
+"""Tests for ``t3 <overlay> notify send`` management command (#1030).
+
+Wraps :func:`teatree.core.notify.notify_user` so sub-agent identities can DM
+the user directly from the shell instead of relaying through the parent
+turn. Only the unstoppable Slack HTTP boundary
+(:func:`messaging_from_overlay`) is mocked — the rest of the notify path
+runs for real.
+"""
+
+import os
+from io import StringIO
+from unittest.mock import MagicMock, patch
+
+from django.core.management import call_command
+from django.test import TestCase
+
+from teatree.core.models import BotPing
+
+
+def _backend() -> MagicMock:
+    b = MagicMock()
+    b.open_dm.return_value = "D-USER"
+    b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+    b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+    return b
+
+
+def _call(*args: str) -> tuple[str, int]:
+    buf = StringIO()
+    code = 0
+    try:
+        call_command(*args, stdout=buf)
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    return buf.getvalue(), code
+
+
+class TestNotifySendSubcommand(TestCase):
+    def test_send_invokes_notify_path_and_records_audit(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            out, code = _call(
+                "notify",
+                "send",
+                "PR #1016 merged.",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "info",
+                "--idempotency-key",
+                "watchdog:doctor-unreachable:session=s;turn=1",
+            )
+
+        assert code == 0
+        backend.open_dm.assert_called_once_with("U_ME")
+        backend.post_message.assert_called_once()
+        text = backend.post_message.call_args.kwargs["text"]
+        assert "PR #1016 merged." in text
+        row = BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:session=s;turn=1")
+        assert row.status == BotPing.Status.SENT
+        assert row.kind == BotPing.Kind.INFO
+        assert "sent" in out.lower()
+
+    def test_overlay_flag_sets_env_for_bot_routing(self) -> None:
+        backend = _backend()
+        seen: dict[str, str] = {}
+
+        def _capture() -> MagicMock:
+            seen["overlay"] = os.environ.get("T3_OVERLAY_NAME", "")
+            return backend
+
+        with patch("teatree.core.notify.messaging_from_overlay", side_effect=_capture):
+            _call(
+                "notify",
+                "send",
+                "routed",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "info",
+                "--idempotency-key",
+                "watchdog:doctor-unreachable:k-overlay",
+                "--overlay",
+                "teatree",
+            )
+
+        assert seen["overlay"] == "teatree"
+
+    def test_body_dash_reads_stdin(self) -> None:
+        backend = _backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("sys.stdin", StringIO("piped *mrkdwn* body")),
+        ):
+            _out, code = _call(
+                "notify",
+                "send",
+                "-",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "info",
+                "--idempotency-key",
+                "watchdog:doctor-unreachable:k-stdin",
+            )
+
+        assert code == 0
+        assert "piped *mrkdwn* body" in backend.post_message.call_args.kwargs["text"]
+
+    def test_failed_delivery_exits_one(self) -> None:
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
+            _out, code = _call(
+                "notify",
+                "send",
+                "no backend",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "info",
+                "--idempotency-key",
+                "watchdog:doctor-unreachable:k-fail",
+            )
+
+        assert code == 1
+        assert BotPing.objects.get(idempotency_key="watchdog:doctor-unreachable:k-fail").status == BotPing.Status.NOOP
+
+    def test_failed_delivery_surfaces_recorded_reason_on_stderr(self) -> None:
+        """rc=1 carries *why* delivery failed, not a bare key (#1181)."""
+        err = StringIO()
+        code = 0
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
+            try:
+                call_command(
+                    "notify",
+                    "send",
+                    "no backend",
+                    "--user-id",
+                    "U_ME",
+                    "--kind",
+                    "info",
+                    "--idempotency-key",
+                    "watchdog:doctor-unreachable:k-reason",
+                    stderr=err,
+                )
+            except SystemExit as exc:
+                code = int(exc.code or 0)
+
+        assert code == 1
+        message = err.getvalue()
+        assert "watchdog:doctor-unreachable:k-reason" in message
+        # The NOOP reason recorded on the BotPing row is echoed verbatim — the
+        # typed NotifyReason names itself instead of the old conflated string.
+        assert "no_messaging_backend" in message
+
+    def test_missing_idempotency_key_is_required(self) -> None:
+        # The option carries a default so `call_command` kwargs reach the body, so an
+        # OMITTED key is refused by the same runtime check a blank one hits, not by
+        # typer's missing-parameter error.
+        _out, code = _call("notify", "send", "body", "--user-id", "U_ME", "--kind", "info")
+        assert code == 2
+
+    def test_blank_idempotency_key_exits_two(self) -> None:
+        _out, code = _call(
+            "notify",
+            "send",
+            "body",
+            "--user-id",
+            "U_ME",
+            "--kind",
+            "info",
+            "--idempotency-key",
+            "   ",
+        )
+
+        assert code == 2
+
+    def test_unknown_kind_exits_two(self) -> None:
+        _out, code = _call(
+            "notify",
+            "send",
+            "body",
+            "--user-id",
+            "U_ME",
+            "--kind",
+            "bogus",
+            "--idempotency-key",
+            "watchdog:doctor-unreachable:k-kind",
+        )
+
+        assert code == 2
+
+    def test_overlay_flag_restores_previous_env(self) -> None:
+        backend = _backend()
+        os.environ["T3_OVERLAY_NAME"] = "pre-existing"
+        try:
+            with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+                _call(
+                    "notify",
+                    "send",
+                    "routed",
+                    "--user-id",
+                    "U_ME",
+                    "--kind",
+                    "info",
+                    "--idempotency-key",
+                    "watchdog:doctor-unreachable:k-restore-prev",
+                    "--overlay",
+                    "teatree",
+                )
+            assert os.environ["T3_OVERLAY_NAME"] == "pre-existing"
+        finally:
+            os.environ.pop("T3_OVERLAY_NAME", None)
+
+    def test_overlay_flag_restores_unset_env(self) -> None:
+        backend = _backend()
+        os.environ.pop("T3_OVERLAY_NAME", None)
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            _call(
+                "notify",
+                "send",
+                "routed",
+                "--user-id",
+                "U_ME",
+                "--kind",
+                "info",
+                "--idempotency-key",
+                "watchdog:doctor-unreachable:k-restore",
+                "--overlay",
+                "teatree",
+            )
+
+        assert "T3_OVERLAY_NAME" not in os.environ
+
+    def test_empty_body_exits_non_zero(self) -> None:
+        _out, code = _call(
+            "notify",
+            "send",
+            "   ",
+            "--user-id",
+            "U_ME",
+            "--kind",
+            "info",
+            "--idempotency-key",
+            "watchdog:doctor-unreachable:k-empty",
+        )
+
+        assert code == 2
+
+
+class TestAOneOffDmIsDeliveredWhenAskedFor(TestCase):
+    """The measured swallow: two one-off notes, recorded and never delivered.
+
+    ``mr172-progress-20260828-0930`` and ``mr172-surface-green-20260828`` went through
+    ``send`` and landed on the pulled surface — an unregistered key read as an unearned
+    alarm — while the command exited 0. The recurring signals around them
+    (``watchdog:red``, ``reconciliation:*``) were correctly withheld, so the default must
+    not move; the asked-for DM gets its own command instead of a flag on this one.
+    """
+
+    _ONE_OFF = "mr172-progress-20260828-0930"
+
+    def test_the_alarm_surface_still_records_rather_than_sends(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            out, code = _call(
+                "notify", "send", "surface is green", "--user-id", "U_ME", "--idempotency-key", self._ONE_OFF
+            )
+
+        assert code == 0
+        assert "recorded, not DM'd" in out
+        backend.post_message.assert_not_called()
+        assert BotPing.objects.get(idempotency_key=self._ONE_OFF).status == BotPing.Status.PULLED
+
+    def test_the_withheld_message_names_the_asked_for_surface(self) -> None:
+        err = StringIO()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=_backend()):
+            call_command(
+                "notify",
+                "send",
+                "surface is green",
+                "--user-id",
+                "U_ME",
+                "--idempotency-key",
+                self._ONE_OFF,
+                stderr=err,
+            )
+
+        assert "notify dm" in err.getvalue()
+
+    def test_the_asked_for_surface_reaches_the_owner(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            out, code = _call(
+                "notify", "dm", "surface is green", "--user-id", "U_ME", "--idempotency-key", self._ONE_OFF
+            )
+
+        assert code == 0
+        assert "sent" in out
+        backend.post_message.assert_called_once()
+        assert "surface is green" in backend.post_message.call_args.kwargs["text"]
+        assert BotPing.objects.get(idempotency_key=self._ONE_OFF).status == BotPing.Status.SENT
+
+    def test_a_recurring_status_signal_is_still_withheld_on_the_alarm_surface(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            _out, code = _call(
+                "notify", "send", "box red", "--user-id", "U_ME", "--idempotency-key", "watchdog:red:abc:0:20260901"
+            )
+
+        assert code == 0
+        backend.post_message.assert_not_called()
+
+    def test_the_asked_for_surface_keeps_every_other_guard(self) -> None:
+        """A new command is a new place for the shared preconditions to go missing."""
+        _out, blank_key = _call("notify", "dm", "body", "--user-id", "U_ME", "--idempotency-key", "   ")
+        _out, bad_kind = _call(
+            "notify", "dm", "body", "--user-id", "U_ME", "--idempotency-key", "k-dm-kind", "--kind", "nonsense"
+        )
+
+        assert blank_key == 2
+        assert bad_kind == 2

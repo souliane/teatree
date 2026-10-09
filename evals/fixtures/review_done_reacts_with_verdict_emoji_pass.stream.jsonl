@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_done_reacts_with_verdict_emoji-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Review finished and clean; emitting the done+clean verdict reaction."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 slack react C_REVIEW 171.5 white_check_mark"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

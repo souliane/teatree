@@ -1,0 +1,288 @@
+"""Assertion helpers for :class:`EvalRun` results.
+
+Each matcher raises ``AssertionError`` with the captured tool calls in the
+message so a failed eval shows what the agent actually did, not just that
+it didn't match.
+"""
+
+import dataclasses
+import json
+import re
+from collections.abc import Callable, Mapping
+
+from teatree.eval.command_span import executed_span
+from teatree.eval.models import EvalRun, EvalToolCall, canonicalize_tool
+from teatree.eval.text_normalization import normalize_match_text
+
+
+class UnknownArgViewError(LookupError):
+    """A matcher named a declared derived view that has no transform registered."""
+
+
+@dataclasses.dataclass(frozen=True)
+class CallPattern:
+    """A ``(tool, arg_path, regex)`` triple naming one tool-call shape to look for.
+
+    Groups the forbidden call and the order guard of an order-aware negative into
+    one cohesive value, so :func:`assert_no_tool_call_before` takes two patterns
+    instead of six loose strings.
+    """
+
+    tool: str
+    arg_path: str
+    regex: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ArgPattern:
+    """An ``(arg_path, regex)`` predicate on one argument of the call under test."""
+
+    arg_path: str
+    regex: str
+
+
+def without_exempt_calls(run: EvalRun, exempt: ArgPattern) -> EvalRun:
+    """Return *run* with every tool call satisfying *exempt* dropped.
+
+    Applied before a negative assertion, this is the ``unless`` clause: the excused
+    calls are invisible to the negative, so "forbidden UNLESS the same call also does
+    Y" needs no second matcher kind.
+    """
+    pattern = re.compile(exempt.regex)
+    kept = tuple(call for call in run.tool_calls if not pattern.search(_as_text(_get_arg(call, exempt.arg_path)) or ""))
+    return dataclasses.replace(run, tool_calls=kept)
+
+
+def _get_arg(call: EvalToolCall, arg_path: str) -> object:
+    value: object = call.input
+    for part in arg_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _as_text(value: object) -> str | None:
+    """Comparable string form of an arg value, or ``None`` if not matchable.
+
+    A string compares as itself. A boolean / number (e.g. Bash's
+    ``run_in_background: true``) compares as its ``str()`` form so a matcher
+    can pin it. A list/dict argument (e.g. ``AskUserQuestion``'s structured
+    ``questions`` list, ``TaskCreate``'s structured fields) is JSON-serialized so
+    a regex matcher can search its contents — without this a structured-arg tool
+    is unmatchable and the scenario silently vacuous. ``None`` is not matchable.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool | int | float):
+        return str(value)
+    if isinstance(value, list | dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return None
+
+
+#: Derived arg views, keyed by the ``<arg>`` a matcher names: the REAL arg to read and
+#: the transform to apply. Opt-in per matcher — a matcher naming ``command`` still grades
+#: the raw string, because for a large class the quoted payload IS the graded artifact
+#: (``git commit -m 'Co-Authored-By: …'``, ``gh issue create --body '…'``).
+_ARG_VIEWS: Mapping[str, tuple[str, Callable[[str], str]]] = {"command_span": ("command", executed_span)}
+
+#: The view vocabulary a matcher may name, declared apart from the transforms above so a
+#: view whose implementation is dropped fails LOUD rather than degrading to a missing arg
+#: — a negative that can never fire, read as a green.
+DERIVED_VIEW_NAMES = frozenset({"command_span"})
+
+
+def _arg_text(call: EvalToolCall, arg_path: str) -> str | None:
+    """Matchable text for *arg_path*, through its derived view when one is registered."""
+    view = _ARG_VIEWS.get(arg_path)
+    if view is None:
+        if arg_path in DERIVED_VIEW_NAMES:
+            msg = (
+                f"{arg_path!r} is a declared derived view with no transform in _ARG_VIEWS: "
+                "a matcher naming it would grade a missing arg and never fire"
+            )
+            raise UnknownArgViewError(msg)
+        return _as_text(_get_arg(call, arg_path))
+    source_arg, derive = view
+    text = _as_text(_get_arg(call, source_arg))
+    return None if text is None else derive(text)
+
+
+def _format_calls(run: EvalRun) -> str:
+    if not run.tool_calls:
+        return "  (no tool calls captured)"
+    return "\n".join(f"  - {c.name}({c.input!r})" for c in run.tool_calls)
+
+
+def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, substring: str) -> None:
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != tool_name:
+            continue
+        # An absent arg compares as "" so a tool-presence matcher (substring "")
+        # passes when the agent calls the tool with no/omitted arg — e.g. a
+        # correct ``TaskList()`` that reads the whole live list. A specific
+        # substring still fails against "", so value-pinning matchers are unchanged.
+        value = _arg_text(call, arg_path) or ""
+        if substring in value:
+            return
+    msg = (
+        f"Expected a {tool_name} tool call with {arg_path} containing {substring!r}, "
+        f"but captured tool calls were:\n{_format_calls(run)}"
+    )
+    raise AssertionError(msg)
+
+
+def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
+    pattern = re.compile(regex)
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != tool_name:
+            continue
+        # An absent arg compares as "" so a tool-presence matcher (``~ ".*"``)
+        # passes when the agent calls the tool with no/omitted arg — e.g. a
+        # correct ``TaskList()`` reading the whole live list. A value-pinning
+        # regex (``~ "in_progress"``) still fails against "", so it is unchanged.
+        value = _arg_text(call, arg_path) or ""
+        if pattern.search(value):
+            return
+    msg = (
+        f"Expected a {tool_name} tool call with {arg_path} matching regex {regex!r}, "
+        f"but captured tool calls were:\n{_format_calls(run)}"
+    )
+    raise AssertionError(msg)
+
+
+def assert_no_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, substring: str) -> None:
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != tool_name:
+            continue
+        value = _arg_text(call, arg_path)
+        if value is not None and substring in value:
+            msg = (
+                f"Did not expect any {tool_name} tool call with {arg_path} containing {substring!r}, "
+                f"but found:\n  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"
+            )
+            raise AssertionError(msg)
+
+
+def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
+    pattern = re.compile(regex)
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != tool_name:
+            continue
+        value = _arg_text(call, arg_path)
+        if value is not None and pattern.search(value):
+            msg = (
+                f"Did not expect any {tool_name} tool call with {arg_path} matching {regex!r}, "
+                f"but found:\n  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"
+            )
+            raise AssertionError(msg)
+
+
+def _first_matching_call(run: EvalRun, target: CallPattern) -> EvalToolCall | None:
+    """The FIRST tool call matching *target*, or ``None``."""
+    pattern = re.compile(target.regex)
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != target.tool:
+            continue
+        value = _arg_text(call, target.arg_path)
+        if value is not None and pattern.search(value):
+            return call
+    return None
+
+
+def assert_no_tool_call_before(run: EvalRun, forbidden: CallPattern, guard: CallPattern) -> None:
+    """Assert no *forbidden* call precedes the FIRST *guard* call (order-aware negative).
+
+    A different forbidden call on the guard's turn is unsafe: tool calls on one
+    turn may run in parallel. The guard call itself is exempt even if it matches
+    both patterns. Later turns are permitted. With no guard, every forbidden
+    call fails.
+    """
+    guard_call = _first_matching_call(run, guard)
+    pattern = re.compile(forbidden.regex)
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != forbidden.tool:
+            continue
+        value = _arg_text(call, forbidden.arg_path)
+        if value is None or not pattern.search(value):
+            continue
+        if guard_call is None or (call is not guard_call and call.turn <= guard_call.turn):
+            guard_desc = f"{guard.tool}.{guard.arg_path} matching {guard.regex!r}"
+            msg = (
+                f"Did not expect any {forbidden.tool} tool call with {forbidden.arg_path} "
+                f"matching {forbidden.regex!r} BEFORE the first {guard_desc}, but found:\n"
+                f"  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"
+            )
+            raise AssertionError(msg)
+
+
+def _final_assistant_message(run: EvalRun) -> str | None:
+    """The run's terminal assistant text — the END STATE of the scenario.
+
+    The last ``text_blocks`` entry is the agent's final message (after every tool
+    call resolved). ``None`` when the run emitted no assistant text at all, so the
+    final-state matchers can report "no final assistant message" rather than
+    matching a phantom empty string.
+    """
+    return run.text_blocks[-1] if run.text_blocks else None
+
+
+def assert_final_state_matching(run: EvalRun, regex: str) -> None:
+    """Assert the run's FINAL assistant message matches *regex* (end-state check)."""
+    final = _final_assistant_message(run)
+    if final is None:
+        msg = f"Expected a final assistant message matching regex {regex!r}, but there was no final assistant message."
+        raise AssertionError(msg)
+    if not re.search(regex, normalize_match_text(final)):
+        msg = f"Expected the final assistant message to match regex {regex!r}, but it was:\n  {final!r}"
+        raise AssertionError(msg)
+
+
+def assert_final_state_contains(run: EvalRun, substring: str) -> None:
+    """Assert the run's FINAL assistant message contains *substring* (end-state check)."""
+    final = _final_assistant_message(run)
+    if final is None:
+        msg = f"Expected a final assistant message containing {substring!r}, but there was no final assistant message."
+        raise AssertionError(msg)
+    if substring not in normalize_match_text(final):
+        msg = f"Expected the final assistant message to contain {substring!r}, but it was:\n  {final!r}"
+        raise AssertionError(msg)
+
+
+def _assistant_response(run: EvalRun) -> str:
+    """Everything the agent SAID, in order — the subject of "in your response".
+
+    Joined rather than searched block by block, so a plan the agent laid out across
+    two messages reads as one response, which is how its author meant it.
+    """
+    return "\n".join(run.text_blocks)
+
+
+def _require_response(run: EvalRun, expectation: str) -> str:
+    """The response text, refusing a run that said nothing.
+
+    A silent run must not satisfy a positive matcher — ``""`` matches a permissive
+    regex, which would let this kind be counted as a positive anchor while a do-nothing
+    agent passed it. Mirrors :func:`assert_final_state_matching`'s no-message refusal.
+    """
+    if not run.text_blocks:
+        msg = f"Expected an agent response {expectation}, but the agent emitted no text at all."
+        raise AssertionError(msg)
+    return _assistant_response(run)
+
+
+def assert_assistant_text_matching(run: EvalRun, regex: str) -> None:
+    """Assert the agent's response — anywhere in it — matches *regex*."""
+    response = _require_response(run, f"matching regex {regex!r}")
+    if not re.search(regex, normalize_match_text(response)):
+        msg = f"Expected the agent's response to match regex {regex!r}, but it was:\n  {response!r}"
+        raise AssertionError(msg)
+
+
+def assert_assistant_text_contains(run: EvalRun, substring: str) -> None:
+    """Assert the agent's response — anywhere in it — contains *substring*."""
+    response = _require_response(run, f"containing {substring!r}")
+    if substring not in normalize_match_text(response):
+        msg = f"Expected the agent's response to contain {substring!r}, but it was:\n  {response!r}"
+        raise AssertionError(msg)

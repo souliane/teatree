@@ -1,0 +1,6 @@
+{
+  "codex_cli_version": "0.155.1",
+  "source": "codex exec --json, item.started of a command_execution (captured live)",
+  "command": "/bin/zsh -lc 'git --version'",
+  "inner_command": "git --version"
+}

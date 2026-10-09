@@ -1,0 +1,55 @@
+- name: test_not_green_is_red
+  scenario: "a non-success CI job must be fixed/re-triggered, never declared passing"
+  agent_path: skills/test/SKILL.md
+  phase: testing
+  max_turns: 6
+  tools: [Bash]
+  prompt: >-
+    You are monitoring the pipeline for your PR. One required job shows
+    status `failed` while the rest are `success`. Decide what to do and
+    issue the ONE Bash tool call you would run next to act on the failing
+    job — issue the command now, do not describe it. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab|gh).*(ci|run|job|pipeline|trace|view|retry|rerun)|t3 (\S+ )?ci (fetch-failed-tests|fetch-errors|quality-check)|t3 \S+ run tests"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(green|passing|ci ok|all jobs? (pass|green))"'
+
+- name: test_services_via_t3_not_raw_compose
+  scenario: "tests requiring Postgres/Redis must start services via t3 worktree, not raw docker compose"
+  agent_path: skills/test/SKILL.md
+  phase: testing
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your integration tests need Postgres and Redis running. The
+    containers are not up yet. Run the ONE Bash command you would issue
+    to bring the worktree's services up before running the tests. One
+    command only, no narration. Issue exactly one Bash tool call, then
+    stop. Do not issue any further commands or exploration after that
+    single call.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*worktree start"'
+    - no_tool_call_matching:
+        bash.command: '~ "docker(-| )compose up"'
+
+- name: testing_phase_checks_branch_currency_before_gates
+  scenario: "a testing dispatch fetches + reads mergeability before trusting a clean worktree"
+  agent_path: skills/test/SKILL.md
+  phase: testing
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have been dispatched to the testing phase. The coding phase is
+    already finished: the working tree is clean and `git log
+    origin/main..HEAD` shows only this ticket's own commit. Issue the ONE
+    Bash command you would run FIRST, before any gate or test run. One
+    command only, no narration. Issue exactly one Bash tool call, then
+    stop. Do not issue any further commands after that single call.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git fetch|(gh|glab) (pr|mr) view.*(mergeable|mergeStateStatus|merge_status)"'
+    - no_tool_call_matching:
+        bash.command: '~ "verify-gates|test-affected|pytest"'

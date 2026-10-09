@@ -1,0 +1,646 @@
+"""A failed ``ConfigSetting`` override read must not resolve like an absent override (#3873).
+
+The defect: :func:`teatree.config.resolution._load_global_rows` caught every read
+exception and returned ``{}`` — the SAME value the success-with-no-rows path returns. So
+"there is no override" and "I could not determine whether there is an override" reached
+every call site as one answer, and the safety gates resolved to their SHIPPED defaults
+(``autonomy = full``, ``mode = auto``) rather than to whatever the operator configured.
+
+Each case below pins one half of the distinction. The paired foils matter as much as the
+assertions: a resolver that degraded EVERYTHING would satisfy the fail-closed cases while
+being useless, so every fail-closed case has an absent-override twin that must still
+resolve to the shipped default.
+"""
+
+import json
+import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+import pytest
+from django.apps import apps
+from django.core.exceptions import AppRegistryNotReady, SynchronousOnlyOperation
+from django.db.utils import OperationalError
+from django.test import TestCase
+
+from teatree.config import get_effective_settings
+from teatree.config.enums import Autonomy, Mode
+from teatree.config.override_read_health import (
+    MARKER_FILENAME,
+    MAX_RECORDED_CALLERS,
+    SAFETY_FAIL_CLOSED_STORED_VALUES,
+    ConfigOverrideReadError,
+    clear_degraded_read,
+    degraded_read_report,
+    fallback_marker_path,
+    marker_path,
+    marker_paths,
+    note_healthy_read,
+    record_degraded_read,
+)
+from teatree.config.provenance import ValueSource, resolve_settings
+from teatree.config.resolution import fail_closed_overrides, read_setting_layers
+from teatree.core.models import ConfigSetting, ModeOverride
+from teatree.core.models import Mode as Posture
+from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict
+from teatree.paths import ControlDb, data_dir_root
+
+_GLOBAL = "global"
+
+
+class _RaisingOverrides:
+    """A ``ConfigSetting.objects`` stand-in whose scope reads raise *exc* the first *times* calls."""
+
+    def __init__(self, exc: BaseException, *, times: int = 10**6, rows: dict[str, Any] | None = None) -> None:
+        self._exc = exc
+        self._remaining = times
+        self._rows = rows or {}
+        self.calls = 0
+
+    def overrides_for_scope(self, scope: str) -> dict[str, Any]:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc
+        return dict(self._rows)
+
+    def exclude(self, **_kwargs: object) -> "_RaisingOverrides":
+        return self
+
+    def values_list(self, *_fields: str) -> list[tuple[str, str, Any]]:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc
+        return []
+
+
+def _with_failing_reads(exc: BaseException, **kwargs: object) -> Any:
+    """Patch the app-registry model lookup so every ``ConfigSetting`` scope read raises *exc*."""
+    manager = _RaisingOverrides(exc, **kwargs)
+    model = mock.Mock(objects=manager)
+    patcher = mock.patch("django.apps.apps.get_model", return_value=model)
+    return patcher, manager
+
+
+def _with_failing_config_setting_reads(exc: BaseException) -> Any:
+    """Fail ONLY the ``ConfigSetting`` lookup, leaving every other model readable.
+
+    :func:`_with_failing_reads` replaces the whole registry, so the posture's own tables
+    go down with the config tier and the two faults become one observation. Separating
+    them is what makes "the posture answered" distinguishable from "nothing was readable".
+    """
+    real_get_model = apps.get_model
+
+    def selective(app_label: str, model_name: str = "", *args: object, **kwargs: object) -> Any:
+        if "configsetting" in f"{app_label}.{model_name}".lower():
+            raise exc
+        return real_get_model(app_label, model_name, *args, **kwargs)
+
+    return mock.patch("django.apps.apps.get_model", side_effect=selective)
+
+
+def _pin_posture(name: str, egress: str) -> None:
+    Posture.objects.update_or_create(name=name, defaults={"entries": {}, "egress": egress})
+    ModeOverride.objects.set_override(name, reason=f"pinning {name!r} for this test")
+
+
+class TestAFailedReadIsNotAnAbsentOverride(TestCase):
+    def test_a_runtime_read_fault_marks_the_scope_degraded(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert _GLOBAL in layers.degraded_scopes
+
+    def test_a_clean_read_with_no_rows_is_not_degraded(self) -> None:
+        # The foil for the case above: an EMPTY table must stay indistinguishable from
+        # today's behaviour, or every install would resolve as if its config were broken.
+        assert read_setting_layers("").degraded_scopes == frozenset()
+
+    def test_a_bootstrap_state_is_not_reported_as_degraded(self) -> None:
+        # Django not yet set up is a genuine no-op, not a fault — degrading here would
+        # fail-close every cold-start read.
+        patcher, _ = _with_failing_reads(AppRegistryNotReady("apps aren't loaded yet"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert layers.degraded_scopes == frozenset()
+
+
+class TestSafetyGatesFailClosedRatherThanToAShippedDefault(TestCase):
+    def test_autonomy_fails_closed_when_the_override_read_fails(self) -> None:
+        # The shipped default is FULL. A read fault must NOT resolve to it: the operator
+        # may have stored `babysit`, and a gate cannot tell the two apart today.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.autonomy is Autonomy.BABYSIT
+
+    def test_autonomy_still_resolves_to_the_shipped_default_when_the_read_succeeds(self) -> None:
+        # The foil. Without it, a resolver that always fail-closed would pass the case above.
+        assert get_effective_settings("t3-teatree").autonomy is Autonomy.FULL
+
+    def test_the_merge_approval_gate_fails_closed(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.require_human_approval_to_merge is True
+        assert settings.require_human_approval_to_answer is True
+
+    def test_a_stored_restrictive_tier_is_not_replaced_by_the_permissive_shipped_one(self) -> None:
+        # The sharpest shape, and the reason the shipped default is the wrong fallback:
+        # `autonomy` ships as FULL, so an operator who deliberately stored BABYSIT has
+        # their restraint UPGRADED to full autonomy by a read that merely failed. The
+        # stored value and the failure are indistinguishable at the call site today.
+        ConfigSetting.objects.set_value("autonomy", "babysit")
+        assert get_effective_settings("t3-teatree").autonomy is Autonomy.BABYSIT
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.autonomy is Autonomy.BABYSIT
+
+    def test_the_mode_gate_fails_closed(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            settings = get_effective_settings("t3-teatree")
+        assert settings.mode is Mode.INTERACTIVE
+
+    def test_an_env_override_still_wins_over_the_fail_closed_value(self) -> None:
+        # `T3_*` is process state the failed DB read cannot have affected, so it is a
+        # readable operator intent and must not be overridden by the degradation.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher, mock.patch.dict(os.environ, {"T3_MODE": "auto"}):
+            settings = get_effective_settings()
+        assert settings.mode is Mode.AUTO
+
+    def test_every_fail_closed_value_names_a_real_settings_field(self) -> None:
+        settings = get_effective_settings("t3-teatree")
+        for key in SAFETY_FAIL_CLOSED_STORED_VALUES:
+            assert hasattr(settings, key), f"{key!r} is not a UserSettings field"
+
+
+class TestTheOwnersVoiceFollowsThePostureNotTheConfigTier(TestCase):
+    """What replaced the on-behalf half of the fail-closed set.
+
+    ``on_behalf_post_mode`` was a ``ConfigSetting`` row, so a degraded override read used
+    to reach the owner's voice and pin it shut. The control is now ``Mode.egress``, which
+    lives in its own tables — a config-tier fault says nothing about it, and re-pinning
+    the old polarity would pin a coupling that no longer exists.
+
+    The floor did not move, and the last case is where it now sits: a store unreadable
+    all the way down cannot name a posture either, and an unnameable posture is not
+    permission to speak as someone else.
+    """
+
+    def setUp(self) -> None:
+        ModeOverride.objects.all().delete()
+
+    def test_a_config_tier_fault_leaves_a_permitting_posture_permitting(self) -> None:
+        _pin_posture("present", "allow")
+
+        with _with_failing_config_setting_reads(OperationalError("database is locked")):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.PROCEED
+
+    def test_a_config_tier_fault_leaves_a_forbidding_posture_forbidding(self) -> None:
+        """The foil: the verdict tracks the posture, it is not a blanket permit."""
+        _pin_posture("afk", "forbid")
+
+        with _with_failing_config_setting_reads(OperationalError("database is locked")):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
+
+    def test_a_store_unreadable_all_the_way_down_still_refuses_the_owners_voice(self) -> None:
+        # No override row, so naming the posture falls through to the setting read too —
+        # and with that failing as well, nothing establishes a posture at all.
+        failing = OperationalError("database is locked")
+        with (
+            _with_failing_config_setting_reads(failing),
+            mock.patch.object(ConfigSetting.objects, "get_effective", side_effect=failing),
+        ):
+            assert resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
+
+
+class TestATransientLockIsRetriedRatherThanDegradedStraightAway(TestCase):
+    def test_a_read_that_succeeds_on_retry_resolves_the_stored_override(self) -> None:
+        # Reproduces the MECHANISM (a transient SQLite lock), not the load: one contended
+        # read raises, the next succeeds. Today the first exception ends the read.
+        patcher, manager = _with_failing_reads(
+            OperationalError("database is locked"),
+            times=1,
+            rows={"require_human_approval_to_merge": False},
+        )
+        with patcher:
+            layers = read_setting_layers("")
+        assert manager.calls > 1, "the read was not retried"
+        assert layers.degraded_scopes == frozenset()
+        assert layers.global_db["require_human_approval_to_merge"] is False
+
+    def test_a_persistently_failing_read_degrades_rather_than_retrying_forever(self) -> None:
+        patcher, manager = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert _GLOBAL in layers.degraded_scopes
+        assert manager.calls < 10, "the retry budget is unbounded"
+
+
+class TestADeterministicFaultIsNotSpentOnTheContentionBudget(TestCase):
+    """#3980: the retry exists for CONTENTION; a deterministic fault must skip it entirely.
+
+    ``SynchronousOnlyOperation`` is a property of WHERE the read was called from, so it fails
+    identically on every attempt. Retrying it adds the full backoff to a failure that was
+    certain, and makes a programming error read like a flaky one.
+    """
+
+    def test_a_synchronous_only_operation_is_attempted_exactly_once(self) -> None:
+        patcher, manager = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with patcher:
+            layers = read_setting_layers("")
+        assert manager.calls == 1, "a deterministic fault was retried under the contention budget"
+        assert _GLOBAL in layers.degraded_scopes
+
+    def test_a_contended_read_still_spends_the_budget(self) -> None:
+        # The foil: narrowing the retry must not disarm it for the fault it was built for.
+        patcher, manager = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            read_setting_layers("")
+        assert manager.calls > 1, "the contention retry was disarmed"
+
+
+class TestTheRecordedFailureNamesTheCallingContext(TestCase):
+    """#3980: the traceback holds only the ORM frames, which is the same for every fault.
+
+    The one fact that makes the failure actionable — which call site read the config tier — is
+    ABOVE this module in the stack, so it has to be captured deliberately and recorded where an
+    operator reads it, not only in a log line nobody tails.
+    """
+
+    def test_the_marker_records_the_frame_that_asked_for_the_read(self) -> None:
+        patcher, _ = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=self._tmp_marker()), patcher:
+            read_setting_layers("")
+            report = degraded_read_report()
+        assert report is not None
+        assert any(__name__.rsplit(".", 1)[-1] in caller for caller in report.callers), report.callers
+
+    def test_the_loud_log_names_the_caller_and_says_it_was_not_retried(self) -> None:
+        patcher, _ = _with_failing_reads(SynchronousOnlyOperation("You cannot call this from an async context"))
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=self._tmp_marker()),
+            patcher,
+            self.assertLogs("teatree.config", level="ERROR") as logs,
+        ):
+            read_setting_layers("")
+        message = "\n".join(logs.output)
+        assert __name__.rsplit(".", 1)[-1] in message
+        assert "not retried" in message.lower()
+
+    def test_the_recorded_callers_are_bounded(self) -> None:
+        # A degraded read repeats at whatever rate its caller runs at, so an unbounded record
+        # would grow the marker file for as long as the fault lasts.
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            for index in range(MAX_RECORDED_CALLERS + 4):
+                record_degraded_read("global", caller=f"caller_{index}.py:1 in f")
+            report = degraded_read_report()
+        assert report is not None
+        assert len(report.callers) == MAX_RECORDED_CALLERS
+        assert report.occurrences == MAX_RECORDED_CALLERS + 4
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
+
+
+class TestTheDivergenceIsObservable(TestCase):
+    def test_provenance_names_the_unresolved_tier_instead_of_crediting_a_shipped_one(self) -> None:
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            resolved = resolve_settings(["autonomy"])["autonomy"]
+        assert resolved.source is ValueSource.UNRESOLVED
+
+    def test_provenance_still_credits_the_declared_default_on_a_clean_read(self) -> None:
+        assert resolve_settings(["autonomy"])["autonomy"].source is ValueSource.CODE_DEFAULT
+
+    def test_a_degraded_read_is_recorded_outside_the_database_it_could_not_read(self) -> None:
+        # The record cannot live in the DB — the DB is the thing that failed.
+        with mock.patch("teatree.config.override_read_health.marker_path") as marker:
+            marker.return_value = self._tmp_marker()
+            record_degraded_read("global")
+            report = degraded_read_report()
+        assert report is not None
+        assert report.scopes == ("global",)
+        assert report.occurrences == 1
+
+    def test_no_report_when_nothing_degraded(self) -> None:
+        with mock.patch("teatree.config.override_read_health.marker_path") as marker:
+            marker.return_value = self._tmp_marker()
+            assert degraded_read_report() is None
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
+
+
+class TestTheFailClosedTableIsAppliedRatherThanAssumed(TestCase):
+    def test_nothing_is_forced_when_no_scope_degraded(self) -> None:
+        # Inert on every healthy read — the resolution stays byte-identical to before.
+        assert fail_closed_overrides(frozenset(), supplied_by_env=set()) == {}
+
+    def test_a_degraded_scope_forces_every_safety_key(self) -> None:
+        forced = fail_closed_overrides(frozenset({"global"}), supplied_by_env=set())
+        assert set(forced) == set(SAFETY_FAIL_CLOSED_STORED_VALUES)
+        # Coerced through the SAME registry parsers a stored row goes through, so a
+        # fail-closed value can never be a type the resolver would reject.
+        assert forced["autonomy"] is Autonomy.BABYSIT
+        assert forced["mode"] is Mode.INTERACTIVE
+
+    def test_a_key_supplied_by_env_is_left_alone(self) -> None:
+        forced = fail_closed_overrides(frozenset({"global"}), supplied_by_env={"mode"})
+        assert "mode" not in forced
+        assert "autonomy" in forced
+
+
+class TestAnExportRefusesRatherThanPersistingAnUnverifiedAbsence(TestCase):
+    def test_a_persisted_walk_raises_while_the_tier_is_degraded(self) -> None:
+        # A file export writes what it believes the stored tiers hold. Doing that from a
+        # tier it could not read would record an absence it never verified — turning a
+        # transient read fault into permanent, silent config loss.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher, pytest.raises(ConfigOverrideReadError):
+            resolve_settings(["autonomy"], persisted_only=True)
+
+    def test_the_dashboard_walk_does_not_raise(self) -> None:
+        # The foil: the read-only view RENDERS the degradation (that is the point of
+        # surfacing it) instead of refusing to render at all.
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            resolved = resolve_settings(["autonomy"], persisted_only=False)
+        assert resolved["autonomy"].source is ValueSource.UNRESOLVED
+
+    def test_a_healthy_export_still_walks(self) -> None:
+        assert resolve_settings(["autonomy"], persisted_only=True)["autonomy"].key == "autonomy"
+
+
+class TestTheMarkerCanBeAcknowledged(TestCase):
+    def test_clearing_drops_a_live_record(self) -> None:
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            record_degraded_read("global")
+            assert degraded_read_report() is not None
+            clear_degraded_read()
+            assert degraded_read_report() is None
+
+    def test_clearing_an_absent_marker_is_not_an_error(self) -> None:
+        tmp = self._tmp_marker()
+        with mock.patch("teatree.config.override_read_health.marker_path", return_value=tmp):
+            clear_degraded_read()  # must not raise
+
+    def test_the_marker_sits_beside_the_primary_control_db(self) -> None:
+        # Beside the DB, never inside it: the store that failed is the one place a record
+        # of the failure is guaranteed not to reach.
+        assert marker_path().parent == ControlDb(os.environ).primary().parent
+
+    def _tmp_marker(self) -> Path:
+        tmp = Path(tempfile.mkdtemp()) / "config-read-degraded.json"
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return tmp
+
+
+class TestTheMarkerIsRecordedWhereTheFaultWasObserved(TestCase):
+    """The record has to land in the venue that SAW the fault, not only in the canonical one (#4041).
+
+    The canonical marker sits inside the container's control-DB volume. A HOST process hits
+    the very read failure this records, then cannot create ``/var/lib/teatree`` to write it
+    down — so ``record_degraded_read`` fell into its own ``except OSError`` and logged that
+    the fault "is visible only in this log". A health marker that cannot be written where
+    the fault happens cannot do its job, and the degradation stayed invisible by
+    construction while every consumer resolved against a shipped default.
+
+    The unwritable canonical dir here is one whose PARENT is a regular file, so ``mkdir``
+    raises for root as well — a permission-bit foil would go vacuous under a root test run.
+    """
+
+    def _unwritable_canonical(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        return root / "blocking-file" / "control-db" / MARKER_FILENAME
+
+    def _writable_fallback(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / MARKER_FILENAME
+
+    def test_the_fallback_resolves_into_this_venues_own_data_dir(self) -> None:
+        # The fallback is only useful if it lands where the venue that observed the fault
+        # can write AND where its operator already looks — the same root the host
+        # projection is published into. A fallback pointing back inside the control-DB
+        # volume would satisfy every other case here while fixing nothing.
+        assert fallback_marker_path() == data_dir_root() / MARKER_FILENAME
+        assert fallback_marker_path() != marker_path()
+
+    def test_the_marker_is_written_when_the_canonical_path_is_unwritable(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global", caller="hook.py:1 in f")
+            report = degraded_read_report()
+        assert fallback.is_file(), "the fault was observed here and recorded nowhere"
+        assert not canonical.exists()
+        assert report is not None
+        assert report.scopes == ("global",)
+        assert report.path == fallback, "the operator must be told the file that exists"
+
+    def test_recording_a_failure_emits_no_traceback(self) -> None:
+        # C: this runs under the statusline and `t3 loop status`, whose output must stay
+        # quiet. Exhausting every candidate is one WARNING line naming the paths tried.
+        canonical = self._unwritable_canonical()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=canonical),
+            self.assertLogs("teatree.config", level="WARNING") as logs,
+        ):
+            record_degraded_read("global")
+        assert len(logs.records) == 1, logs.output
+        assert logs.records[0].exc_info is None, "a handled OSError dumped its frames into the bar"
+        assert str(canonical) in logs.output[0]
+
+    def test_a_writable_canonical_venue_keeps_exactly_one_marker(self) -> None:
+        # The foil: offering the per-user path unconditionally would let a stale host
+        # marker outvote a healthy container record — the same defect one layer up.
+        canonical, fallback = self._writable_fallback(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert marker_paths() == (canonical,)
+        assert canonical.is_file()
+        assert not fallback.exists()
+
+    def test_clearing_drops_the_fallback_record_too(self) -> None:
+        canonical, fallback = self._unwritable_canonical(), self._writable_fallback()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            record_degraded_read("global")
+            assert degraded_read_report() is not None
+            clear_degraded_read()
+            assert degraded_read_report() is None
+        assert not fallback.exists()
+
+
+class TestReadingTheHealthRecordWritesNothing(TestCase):
+    """Asking whether the tier is degraded must not touch the filesystem (#4205).
+
+    ``marker_paths`` decided "can this venue write here?" by ATTEMPTING the directory —
+    ``mkdir(parents=True)`` — so ``degraded_read_report``, ``clear_degraded_read`` and the
+    doctor check each materialised a directory tree on a pure read. A health probe that
+    creates the venue it is inspecting reports on its own side effect.
+    """
+
+    def _absent_tree(self) -> tuple[Path, Path]:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root / "control-db" / "nested" / MARKER_FILENAME, root / MARKER_FILENAME
+
+    def test_a_report_read_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert degraded_read_report() is None
+        assert not canonical.parent.exists(), "a pure read materialised the marker directory"
+
+    def test_clearing_creates_no_directory(self) -> None:
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            clear_degraded_read()
+        assert not canonical.parent.exists(), "acknowledging a fault materialised the marker directory"
+
+    def test_a_creatable_canonical_dir_is_still_the_only_candidate(self) -> None:
+        # Foil: probing without creating must not start reporting a writable venue as
+        # unwritable — that would offer the per-user path unconditionally, the very
+        # stale-marker-outvotes-a-healthy-venue defect `marker_paths` guards against.
+        canonical, fallback = self._absent_tree()
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical,)
+
+    def test_an_uncreatable_canonical_dir_still_offers_the_fallback(self) -> None:
+        # The other foil: the write path must keep both candidates when the canonical
+        # directory cannot be created here, which is the whole point of the fallback.
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        (root / "blocking-file").write_text("not a directory")
+        canonical = root / "blocking-file" / "control-db" / MARKER_FILENAME
+        fallback = root / MARKER_FILENAME
+        with (
+            mock.patch("teatree.config.override_read_health.marker_path", return_value=canonical),
+            mock.patch("teatree.config.override_read_health.fallback_marker_path", return_value=fallback),
+        ):
+            assert marker_paths() == (canonical, fallback)
+
+
+class TestTheFreshestRecordDecides(TestCase):
+    """Recency, not candidate order, answers "is the tier degraded NOW?" (#4205).
+
+    The candidates are venue-local files that never see each other's writes, so a
+    canonical-first read answers "did it ever degrade in this one directory?" instead.
+    That was documented as load-bearing and pinned by nothing: `found[0]` left the whole
+    degradation lane green.
+
+    `marker_paths` is patched rather than reconstructed from an unwritable canonical dir:
+    the ordering inside `_read_marker` is the property under test, and a permission-bit
+    fixture would couple the assertion to a filesystem mechanism it is not about.
+    """
+
+    def _marker(self, *, scope: str, last_seen: float) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        path = root / MARKER_FILENAME
+        path.write_text(
+            json.dumps(
+                {
+                    "scopes": [scope],
+                    "callers": [],
+                    "occurrences": 1,
+                    "first_seen": last_seen,
+                    "last_seen": last_seen,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _both(self) -> tuple[Path, Path]:
+        now = time.time()
+        # Both well inside MARKER_TTL_SECONDS, so this is about ordering, not staleness.
+        return self._marker(scope="stale", last_seen=now - 3600), self._marker(scope="fresh", last_seen=now - 5)
+
+    def _report_over(self, candidates: tuple[Path, ...]) -> Any:
+        with mock.patch("teatree.config.override_read_health.marker_paths", return_value=candidates):
+            return degraded_read_report()
+
+    def test_the_newest_record_wins_when_it_is_last(self) -> None:
+        stale, fresh = self._both()
+        report = self._report_over((stale, fresh))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)
+
+    def test_the_newest_record_wins_when_it_is_first(self) -> None:
+        # The paired foil: "always take the last candidate" passes the case above.
+        stale, fresh = self._both()
+        report = self._report_over((fresh, stale))
+        assert report is not None
+        assert (report.scopes, report.path) == (("fresh",), fresh)
+
+
+class TestAHealedTierClearsItsOwnMarker(TestCase):
+    """Nothing in `src/` cleared the marker, so a repaired box reported a fault for a day.
+
+    The 24h TTL was the only thing that ever retired one — a stale throttle standing in for
+    a clear that was never wired. A process that PROVES it can read the tier is the evidence
+    the fault is gone, so the first healthy read of a process reconciles it. Once per
+    process, not once per read: the clear is an unlink, and the read path is hot.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        note_healthy_read.cache_clear()
+        self.addCleanup(note_healthy_read.cache_clear)
+        self.addCleanup(clear_degraded_read)
+
+    def test_a_successful_read_retires_a_marker_an_earlier_fault_left(self) -> None:
+        record_degraded_read("", caller="test")
+        assert degraded_read_report() is not None
+        read_setting_layers("")
+        assert degraded_read_report() is None
+
+    def test_the_reconcile_costs_one_unlink_per_process_not_one_per_read(self) -> None:
+        read_setting_layers("")
+        record_degraded_read("", caller="a fault recorded AFTER this process reconciled")
+        read_setting_layers("")
+        assert degraded_read_report() is not None, "a later fault was silently swallowed by the reconcile"
+
+    def test_a_still_failing_read_leaves_the_marker_alone(self) -> None:
+        # The control: the clear keys on a read that SUCCEEDED, never on merely running.
+        record_degraded_read("", caller="test")
+        patcher, _ = _with_failing_reads(OperationalError("database is locked"))
+        with patcher:
+            read_setting_layers("")
+        assert degraded_read_report() is not None

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-workflow_spawned_review_loads_overlay_skill_set-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll read the diff right away."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git diff origin/main...HEAD", "description": "read the diff"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

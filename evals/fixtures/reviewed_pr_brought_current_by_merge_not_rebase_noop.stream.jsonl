@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-reviewed_pr_brought_current_by_merge_not_rebase-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Deciding merge vs rebase; no tool calls yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

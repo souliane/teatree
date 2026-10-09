@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h0-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record candidate e2e-review --reviewed-sha aabbccddeeff00112233445566778899aabbccdd --verdict hold --reviewer-identity reviewer-bot --findings-json /tmp/findings.json", "description": "record HOLD for non-final BDD source"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded hold"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
