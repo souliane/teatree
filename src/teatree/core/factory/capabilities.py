@@ -239,6 +239,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
     ),
     Capability(
+        "teatree ticket rework-hold",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the held review and its rework task; 1 when the ticket holds no HOLD to rework",
+    ),
+    Capability(
         "teatree review record",
         json_output=True,
         exit_codes=("0", "1"),

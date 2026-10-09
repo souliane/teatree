@@ -106,6 +106,8 @@ dependencies = [
   # A RUNTIME command path, so it must be in the installed tool env, not only
   # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
   "pillow>=12.3",
+  # `t3 browser` and the visual-QA gate drive headless Chromium through it on a runtime path.
+  "playwright>=1.63,<2",
   # ``teatree.agents.harness.PydanticAiHarness``
   # ([#2885](https://github.com/souliane/teatree/issues/2885)) is a headless
   # dispatch RUNTIME command path (``agent_harness=pydantic_ai``), so — same
@@ -328,7 +330,6 @@ lint.per-file-ignores."src/teatree/core/overlay.py" = [
   "PLR6301", # overlay hook defaults are instance methods by contract
 ]
 lint.per-file-ignores."src/teatree/core/overlays/connectors.py" = [
-  "ARG002",
   "PLR6301", # overlay hook defaults are instance methods by contract
 ]
 lint.per-file-ignores."src/teatree/core/views/*.py" = [
@@ -742,6 +743,8 @@ unresolved-attribute = "ignore"
 [tool.uv]
 managed = true
 package = true
+# A new release is locked only once it is seven days old; dated escapes and their routine: BLUEPRINT §15.
+exclude-newer = "7 days"
 
 # Floor a transitive dependency above a published advisory without promoting it
 # to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions

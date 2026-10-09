@@ -13,6 +13,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       python-deps:
         patterns:
@@ -26,6 +28,12 @@ updates:
     ignore:
       - dependency-name: "click"
         versions: [">=8.5"]
+      # Held until the django-typer 4 migration: 4.1 needs typer 0.27, which vendors click.
+      - dependency-name: "django-typer"
+        versions: [">=4"]
+      # Held until the django-typer 4 migration: django-typer 3.9 needs typer<0.26.
+      - dependency-name: "typer"
+        versions: [">=0.26"]
       - dependency-name: "ruff"
         versions: [">0.15.1"]
     # `claude-agent-sdk` is watched here like any other dependency. It used to carry an
@@ -71,6 +79,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns:

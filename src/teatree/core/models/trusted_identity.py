@@ -96,6 +96,7 @@ class TrustedIdentity(models.Model):
 
     class Meta:
         db_table = "teatree_trusted_identity"
+        verbose_name_plural = "trusted identities"
         ordering: ClassVar = ["platform", "handle"]
         constraints: ClassVar = [
             models.UniqueConstraint(

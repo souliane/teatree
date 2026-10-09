@@ -1,11 +1,13 @@
 """Unit tests for the pre-push browser sanity gate."""
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from teatree import visual_qa
+from teatree.browser.evidence import BrowserEvent
 from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
@@ -117,6 +119,17 @@ class TestEvaluate:
         assert f"did not run: {message}" in visual_qa.format_report(report)
 
 
+class TestRunCheckWithoutPlaywright:
+    def test_a_missing_playwright_is_the_handled_did_not_run(self, monkeypatch) -> None:
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+
+        report = visual_qa.evaluate(read_diff=lambda: ["a.html"], overlay=None, base_url="http://127.0.0.1:9")
+
+        assert report.not_run_reason.startswith("Playwright is not importable in the environment running `t3`")
+        assert "t3 doctor check --repair" in report.not_run_reason
+        assert report.has_errors
+
+
 class TestChangedFilesReadsTheResolvedBase:
     def test_an_unresolvable_base_raises_rather_than_reading_no_changes(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv("T3_DIFF_COVERAGE_BASE", raising=False)
@@ -154,6 +167,39 @@ class TestRunCheckLaunchesHeadless:
         visual_qa.run_check([], base_url="http://x", screenshot_dir=str(tmp_path))
 
         assert launcher.call_args.kwargs.get("headless") is True
+
+
+class TestFindingRules:
+    """The gate's findings: console errors, page errors, and HTTP errors other than 401/403."""
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            (BrowserEvent("console", text="boom", level="error"), ("console", "boom")),
+            (BrowserEvent("pageerror", text="TypeError: x"), ("page", "TypeError: x")),
+            (BrowserEvent("response", url="http://h/a.js", status=404), ("http", "HTTP 404: http://h/a.js")),
+            (BrowserEvent("response", url="http://h/api", status=500), ("http", "HTTP 500: http://h/api")),
+        ],
+    )
+    def test_a_finding_keeps_its_kind_and_message(self, event: BrowserEvent, expected: tuple[str, str]) -> None:
+        error = visual_qa._page_error("http://h/", event)
+
+        assert error is not None
+        assert (error.kind, error.message) == expected
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            BrowserEvent("console", text="hello", level="warning"),
+            BrowserEvent("response", url="http://h/me", status=401),
+            BrowserEvent("response", url="http://h/admin", status=403),
+            BrowserEvent("response", url="http://h/", status=200),
+            BrowserEvent("requestfailed", text="net::ERR_ABORTED", url="http://h/x", method="GET"),
+            BrowserEvent("navigation", url="http://h/"),
+        ],
+    )
+    def test_everything_else_is_not_a_finding(self, event: BrowserEvent) -> None:
+        assert visual_qa._page_error("http://h/", event) is None
 
 
 class TestVisualQAReport:

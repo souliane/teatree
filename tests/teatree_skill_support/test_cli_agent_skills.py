@@ -6,10 +6,16 @@ free-text scan of a task description. A launch with none of those asks the user.
 
 from pathlib import Path
 
+import pytest
+
+from teatree.skill_support import index as skill_index
 from teatree.skill_support.loading import SkillLoadingPolicy
+
+_THIS_CHECKOUT_SKILLS = Path(__file__).resolve().parents[2] / "skills"
 
 
 def _launch(tmp_path: Path, **overrides):
+    """Selection only: an explicit empty index keeps the ``requires`` closure out of these assertions."""
     policy = SkillLoadingPolicy()
     defaults = {
         "cwd": tmp_path,
@@ -18,9 +24,19 @@ def _launch(tmp_path: Path, **overrides):
         "explicit_phase": "",
         "explicit_skills": [],
         "overlay_active": False,
+        "skill_index": [],
     }
     defaults.update(overrides)
     return policy.select_for_agent_launch(**defaults)
+
+
+def test_agent_launch_without_an_index_loads_the_requires_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", _THIS_CHECKOUT_SKILLS)
+    result = _launch(tmp_path, explicit_phase="debugging", skill_index=None)
+    assert result.skills[-1] == "debug"
+    assert {"workspace", "systematic-debugging", "rules"} <= set(result.skills)
 
 
 def test_agent_without_status_phase_or_skill_asks_user(tmp_path: Path) -> None:

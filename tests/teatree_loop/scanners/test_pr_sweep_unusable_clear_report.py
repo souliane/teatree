@@ -17,6 +17,7 @@ from teatree.loop.scanners.pr_sweep import CLEAR_PRESENT_UNUSABLE_REASON, PrSumm
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, NullMergeNotifier, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.types import RawAPIDict
+from tests._pr_ledger import own_pr
 
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
@@ -79,6 +80,7 @@ def _green_check() -> RawAPIDict:
 
 
 def _pr(*, pr_id: int = 6230) -> PrSummary:
+    own_pr(SLUG, pr_id)
     return PrSummary(
         slug=SLUG,
         number=pr_id,

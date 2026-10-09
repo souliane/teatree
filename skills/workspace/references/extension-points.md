@@ -27,7 +27,7 @@ OverlayBase
   ├── runtime: OverlayRuntime             (run_commands, verify_endpoints, readiness_probes, ...)
   ├── e2e: OverlayE2E                     (env_extras, playwright_args, scenarios, ...)
   ├── review: OverlayReview               (can_auto_merge, classify_customer_display_impact, ...)
-  ├── connectors: OverlayConnectors       (preflight, mcp_provider_expectations, manifest, mcp_tool_group)
+  ├── connectors: OverlayConnectors       (preflight, mcp_tool_group)
   └── mandatory hooks             (on OverlayBase)
         ├── get_repos()
         └── get_provision_steps()

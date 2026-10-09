@@ -97,6 +97,7 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
     is most needed.
     """
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.models import TaskAttempt  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     observation = observation or UsageObservation()
     skills = list(observation.skills_loaded)
@@ -122,7 +123,8 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = dominant_model(message.model_usage) or ""
     served = message.model_usage.get(model) if isinstance(message.model_usage, dict) else None
-    cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
+    managed = observation.lane == TaskAttempt.Lane.MANAGED
+    cost_usd, estimated = (0.0, False) if managed else _resolve_cost_usd(message, usage=usage, model=model)
     return AttemptUsage(
         agent_session_id=message.session_id or "",
         model=model,

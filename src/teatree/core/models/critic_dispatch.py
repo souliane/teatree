@@ -74,6 +74,7 @@ class CriticDispatch(models.Model):
 
     class Meta:
         db_table = "teatree_critic_dispatch"
+        verbose_name_plural = "critic dispatches"
         ordering: ClassVar = ["-dispatched_at"]
         constraints: ClassVar = [
             models.UniqueConstraint(

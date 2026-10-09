@@ -5,7 +5,7 @@ The skill cache is a cross-tier artifact of the #3499 / #3819 / #3826 shape.
 ``requires:`` closure, the SKILL.md mtimes and the package version);
 :mod:`scripts.lib.skill_loader` — stdlib-only by design, because it runs at
 every SessionStart before any Django bootstrap — reads it back with its
-own duplicated resolver and its own validity rules.
+own validity rules.
 
 Every existing test sits on one side of that seam, and the failure mode is
 invisible from either: a cache the reader rejects (wrong directory, a version
@@ -28,6 +28,7 @@ import teatree
 from scripts.lib import skill_loader
 from teatree.core import skill_cache
 from teatree.paths import resolve_data_dir
+from teatree.skill_support import index as skill_index
 
 #: A repo root that is definitionally not a worktree — the venue the SessionStart
 #: suggester runs in, and the only one whose data dir the stdlib-only reader can resolve.
@@ -63,8 +64,14 @@ def seam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
     writer_data_dir = resolve_data_dir(env={"XDG_DATA_HOME": str(xdg)}, home=home, repo_root=_PRIMARY_CLONE).path
     monkeypatch.setattr(skill_cache, "DATA_DIR", writer_data_dir)
-    monkeypatch.setattr(skill_cache, "_CLAUDE_SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_index, "DEFAULT_SKILLS_DIR", tmp_path / "no-repo-skills")
     return skills_dir
+
+
+def _read_back_index() -> list[dict]:
+    index = skill_loader._read_skill_index()
+    assert index is not None, "the reader rejected the cache the writer just wrote"
+    return index
 
 
 class TestSkillMetadataCacheRoundTrip:
@@ -73,14 +80,14 @@ class TestSkillMetadataCacheRoundTrip:
     def test_the_written_skill_set_is_the_read_skill_set(self, seam: Path) -> None:
         skill_cache.write_skill_metadata_cache()
 
-        read_back = [entry["skill"] for entry in skill_loader._read_skill_index()]
+        read_back = [entry["skill"] for entry in _read_back_index()]
 
         assert read_back == sorted(_SKILLS)
 
     def test_the_requires_closure_survives_the_round_trip(self, seam: Path) -> None:
         skill_cache.write_skill_metadata_cache()
 
-        by_skill = {entry["skill"]: entry for entry in skill_loader._read_skill_index()}
+        by_skill = {entry["skill"]: entry for entry in _read_back_index()}
 
         assert by_skill["alpha"]["requires"] == ["beta"]
         assert by_skill["beta"]["companions"] == ["gamma"]
@@ -97,7 +104,7 @@ class TestSkillMetadataCacheRoundTrip:
 
     def test_a_freshly_written_cache_is_never_rejected_as_stale(self, seam: Path) -> None:
         # The mtime map is written by one tier and validated by the other. They
-        # must key it identically (skill-directory name) and read the same tree,
+        # must key it identically (SKILL.md path) and read the same roots,
         # or a cache written a millisecond ago reads as stale — indistinguishable
         # from no cache at all.
         skill_cache.write_skill_metadata_cache()
@@ -118,7 +125,7 @@ class TestSkillMetadataCacheRoundTrip:
 
         skill_cache.write_skill_metadata_cache()
 
-        assert [entry["skill"] for entry in skill_loader._read_skill_index()] == sorted([*_SKILLS, "delta"])
+        assert [entry["skill"] for entry in _read_back_index()] == sorted([*_SKILLS, "delta"])
 
 
 class TestSkillMetadataCacheLocationParity:

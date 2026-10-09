@@ -502,7 +502,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
     def test_clean_slack_mcp_send_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
             "session_id": "sess-corpus",
-            "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+            "tool_name": "mcp__slack__slack_send_message",
             "tool_input": {"text": "Routine status update; the sweep is green."},
         }
         verdict = handle_quote_scanner_pretool(data)

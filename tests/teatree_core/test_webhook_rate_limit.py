@@ -67,51 +67,30 @@ class TestWebhookRateLimiter:
             assert limiter.allow(source) is True
 
 
-SIGNING_SECRET = "test-signing-secret"
+TOKEN = "test-gitlab-token"
 
 
-def _slack_post(client: Client, body: bytes):
-    import hashlib  # noqa: PLC0415
-    import hmac  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
-    ts = str(int(time.time()))
-    sig = "v0=" + hmac.new(SIGNING_SECRET.encode(), b"v0:" + ts.encode() + b":" + body, hashlib.sha256).hexdigest()
+def _gitlab_status(client: Client, n: int) -> int:
     return client.post(
-        reverse("teatree:slack_webhook"),
-        data=body,
+        reverse("teatree:gitlab_webhook"),
+        data=json.dumps({"object_kind": "note", "object_attributes": {"iid": n}}).encode(),
         content_type="application/json",
-        HTTP_X_SLACK_REQUEST_TIMESTAMP=ts,
-        HTTP_X_SLACK_SIGNATURE=sig,
-    )
+        HTTP_X_GITLAB_TOKEN=TOKEN,
+    ).status_code
 
 
 @override_settings(
-    TEATREE_SLACK_SIGNING_SECRET=SIGNING_SECRET,
+    TEATREE_GITLAB_WEBHOOK_TOKEN=TOKEN,
     TEATREE_WEBHOOK_RATE_CAPACITY=2,
     TEATREE_WEBHOOK_RATE_REFILL_PER_SECOND=0.0,
 )
-class TestSlackWebhookRateLimited(TestCase):
+class TestGitLabWebhookRateLimited(TestCase):
     # The limiter is reset between tests by the autouse
     # _reset_webhook_rate_limiter fixture in tests/conftest.py.
 
     def test_storm_is_throttled_with_429(self) -> None:
-        statuses = []
-        for i in range(4):
-            payload = json.dumps(
-                {"type": "event_callback", "event_id": f"Ev{i}", "event": {"type": "message"}}
-            ).encode()
-            statuses.append(_slack_post(self.client, payload).status_code)
+        statuses = [_gitlab_status(self.client, i) for i in range(4)]
 
         assert statuses == [200, 200, 429, 429]
         # only the two accepted events were persisted — the storm did not fill the DB
         assert IncomingEvent.objects.count() == 2
-
-    def test_url_verification_challenge_not_rate_limited(self) -> None:
-        for _ in range(5):
-            resp = _slack_post(
-                self.client,
-                json.dumps({"type": "url_verification", "challenge": "abc"}).encode(),
-            )
-            assert resp.status_code == 200
-            assert resp.json() == {"challenge": "abc"}

@@ -20,8 +20,7 @@ on:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: lock-refresh-scope-${{ github.event.pull_request.number }}
@@ -31,11 +30,15 @@ jobs:
   scope:
     if: startsWith(github.head_ref, 'chore/uv-lock-upgrade')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Disarm auto-merge when the refresh changes more than lock/generated paths

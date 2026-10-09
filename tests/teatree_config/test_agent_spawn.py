@@ -19,6 +19,7 @@ from teatree.config.agent_spawn import (
     EFFORT_SCALE,
     AgentConfig,
     AgentRouteCandidate,
+    InvalidAgentConfigError,
     parse_effort,
     resolve_agent_config,
 )
@@ -166,7 +167,7 @@ class TestSkillModelsParse:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_skill_models", {"code-review": "opus"})
         _point_at(monkeypatch, db)
-        with pytest.raises(TypeError, match="must be a list"):
+        with pytest.raises(InvalidAgentConfigError, match="must be a list"):
             resolve_agent_config()
 
     def test_ordered_route_candidates_are_typed_and_keep_order(

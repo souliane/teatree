@@ -1669,7 +1669,7 @@ class TestExternalE2eBrowsers(TestCase):
     def _run(self, playwright_root: Path, *, browsers: Path) -> list[list[str]]:
         calls: list[list[str]] = []
         with (
-            patch.object(e2e_runners_mod, "_playwright_browsers_dir", return_value=browsers),
+            patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": str(browsers)}),
             patch.object(e2e_runners_mod, "run_checked", side_effect=lambda cmd, **_kw: calls.append(list(cmd))),
         ):
             e2e_runners_mod.ensure_external_e2e_dependencies(playwright_root)
@@ -1694,15 +1694,16 @@ class TestExternalE2eBrowsers(TestCase):
             assert not any(call[:1] == ["npm"] for call in calls)
             assert ["npx", "playwright", "install", "chromium"] in calls
 
-    def test_an_installed_browser_is_not_reinstalled(self) -> None:
+    def test_an_image_baked_headless_shell_still_installs_the_clones_pinned_browser(self) -> None:
+        """The image-baked headless shell is not the clone's pin; the clone's install is a no-op on a match."""
         with tempfile.TemporaryDirectory() as tmp:
             playwright_root = self._clone(tmp, node_modules=True)
             browsers = Path(tmp) / "browsers"
-            (browsers / "chromium_headless_shell-1200").mkdir(parents=True)
+            (browsers / "chromium_headless_shell-9999").mkdir(parents=True)
 
             calls = self._run(playwright_root, browsers=browsers)
 
-            assert calls == []
+            assert calls == [["npx", "playwright", "install", "chromium"]]
 
     def test_a_project_without_playwright_installs_no_browser(self) -> None:
         """A managed clone that is not a Playwright project must not download one."""

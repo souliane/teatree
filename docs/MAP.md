@@ -20,7 +20,7 @@ lightweight entry-point packages. The Python source lives under
 | `src/teatree/core/models/` | FSM and supporting models (`Ticket`, `Worktree`, `Session`, `Task`, `TaskAttempt`) split into domain modules, plus shared errors/types | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/core/runners/` | Transition runners — the long I/O for each lifecycle transition (provision, ship, retro, teardown, worktree start/verify), run by `@task` workers | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/core/selectors/` | Read-only queries for tickets, sessions, tasks, and worktrees, consumed by loop scanners and the CLI without bypassing the FSM | [§4](../BLUEPRINT.md#4-domain-models) |
-| `src/teatree/core/views/` | Django views for the inbound webhook receivers (GitHub, GitLab, Slack) with per-source rate limiting | [§4](../BLUEPRINT.md#4-domain-models) |
+| `src/teatree/core/views/` | Django views for the inbound webhook receivers (GitHub, GitLab) with per-source rate limiting | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/core/management/` | django-typer management commands (lifecycle, workspace, worktree, db, ticket, pr, followup, loop_tick, ...) — the DB-touching command tier | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/management/commands/` | The command modules themselves, one file per command group | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/migrations/` | Django schema migrations for the core app | [§4](../BLUEPRINT.md#4-domain-models) |

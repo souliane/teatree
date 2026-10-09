@@ -31,8 +31,8 @@ import os
 import shutil
 import tarfile
 from collections import defaultdict
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.harness_skills import SkillsHarness
@@ -49,6 +49,14 @@ _MAX_NAMED = 8
 
 
 @dataclass(frozen=True, slots=True)
+class InstallPolicy:
+    """What narrows a source's demanded skills: harness exclusions and the apm pins it may not install over."""
+
+    harness_exclusions: list[str] = field(default_factory=list)
+    pinned: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class CloneInstall:
     """What one declared source contributed to a runtime skills dir."""
 
@@ -58,9 +66,18 @@ class CloneInstall:
     already_loadable: tuple[str, ...] = ()
     excluded: tuple[str, ...] = ()
     unavailable: str = ""
+    refused_pins: tuple[str, ...] = ()
 
     def render(self) -> str:
-        """The one line ``t3 setup`` prints for this source."""
+        if not self.refused_pins:
+            return self._outcome()
+        pins = ", ".join(f"`{spec}`" for spec in self.refused_pins)
+        return (
+            f"{self._outcome()}\nWARN  Skill source {self.label} at {self.ref} publishes {pins}, which apm pins, so "
+            f"it was not installed over them. Fix: remove it from the source, or bump the pin."
+        )
+
+    def _outcome(self) -> str:
         if self.unavailable:
             return f"WARN  Skill source {self.label} not provisioned: {self.unavailable}."
         where = f"Skill source {self.label} at {self.ref}"
@@ -192,10 +209,10 @@ def install_published_skills(
     *,
     cache_root: Path,
     demand_names: set[str],
-    harness_exclusions: list[str],
+    policy: InstallPolicy,
     cli: SkillsCli | None = None,
 ) -> CloneInstall:
-    selected_by_harness, applied_exclusions = _selection_by_harness(demand_names, harness_exclusions)
+    selected_by_harness, applied_exclusions = _selection_by_harness(demand_names, policy.harness_exclusions)
     if not any(selected_by_harness.values()):
         return CloneInstall(label=clone.label or "skill source", excluded=applied_exclusions)
 
@@ -204,12 +221,15 @@ def install_published_skills(
         return CloneInstall(label=published.label, ref=published.ref, unavailable=published.unmeasurable)
 
     published_names = {name.casefold(): name for name in published.names.values()}
+    pins = {name.casefold(): spec for name, spec in policy.pinned.items()}
+    demanded = {name for selected in selected_by_harness.values() for name in selected}
+    refused = tuple(sorted(pins[name] for name in demanded & published_names.keys() & pins.keys()))
     selected_by_harness = {
-        harness: tuple(published_names[name] for name in selected if name in published_names)
+        harness: tuple(published_names[name] for name in selected if name in published_names and name not in pins)
         for harness, selected in selected_by_harness.items()
     }
     if not any(selected_by_harness.values()):
-        return CloneInstall(label=published.label, ref=published.ref, excluded=applied_exclusions)
+        return CloneInstall(label=published.label, ref=published.ref, excluded=applied_exclusions, refused_pins=refused)
 
     export = cache_root / _cache_name(published.label, published.repo, published.ref)
     if not _export_ref(published.repo, published.ref, export):
@@ -227,6 +247,7 @@ def install_published_skills(
             already_loadable=already,
             excluded=applied_exclusions,
             unavailable=unavailable,
+            refused_pins=refused,
         )
     return CloneInstall(
         label=published.label,
@@ -234,4 +255,5 @@ def install_published_skills(
         installed=installed,
         already_loadable=already,
         excluded=applied_exclusions,
+        refused_pins=refused,
     )

@@ -64,6 +64,9 @@ on:
         default: "subscription_oauth"
         type: string
 
+permissions:
+  contents: read
+
 concurrency:
   group: eval-nightly-${{ github.ref }}
   cancel-in-progress: true
@@ -76,14 +79,19 @@ jobs:
   # 1-day window (`merged_prs_since.py --days 1`).
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       run_eval: ${{ steps.gate.outputs.run_eval }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Sync dependencies (retry on transient network failure)
@@ -133,10 +141,10 @@ jobs:
         with:
           # The agent under test runs in this job: leave no token on disk for it to read.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Sync dependencies (retry on transient network failure)
@@ -252,7 +260,7 @@ jobs:
       # email to the maintainer (no extra secret, no bot).
       - name: Upload the per-trial transcript report (private)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-nightly-transcripts
           path: ${{ runner.temp }}/eval-transcripts.html

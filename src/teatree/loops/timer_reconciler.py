@@ -10,8 +10,8 @@ healthy set is a no-op.
 
 It runs at three moments: at worker startup, on its own ~5-minute self-rescheduling
 chain (:func:`reconcile_timers`), and from the loop enable/disable chokepoint so a
-newly-enabled loop gets its head at once and a disabled one is pruned at once. A
-daily :func:`prune_task_results` chain caps DBTaskResult table growth, and an hourly
+newly-enabled loop gets its head at once and a disabled one is pruned at once. An
+hourly :func:`prune_task_results` chain runs the bounded control-DB retention pass, and an hourly
 :func:`expire_stale_jobs` chain keeps the ``default``-queue backlog swept for a
 long-lived worker (so it never blind-fires days-old provision/ship jobs even without
 the front-end drain loop). A :func:`drain_queue` chain keeps the headless
@@ -54,9 +54,8 @@ logger = logging.getLogger(__name__)
 
 #: The reconciler's own cadence — it re-runs every ~5 minutes off its own chain.
 RECONCILE_INTERVAL_SECONDS = 300
-#: The result-prune cadence. How long a finished result is kept is the
-#: ``task_result_retention_days`` setting, not a constant here.
-PRUNE_INTERVAL_SECONDS = 86400
+#: The retention-pass cadence; each pass is bounded by ``SCHEDULED_MAX_BATCHES``.
+PRUNE_INTERVAL_SECONDS = 3600
 #: The stale-job expiry cadence — hourly, so a long-lived worker keeps the
 #: ``default``-queue backlog swept without depending on the front-end drain loop.
 EXPIRE_INTERVAL_SECONDS = 3600
@@ -197,32 +196,29 @@ def reconcile_timers() -> dict[str, int]:
 
 @task(queue_name=LOOPS_QUEUE)
 def prune_task_results() -> dict[str, int]:
-    """Re-schedule daily, THEN delete finished DBTaskResults older than the retention window.
+    """Re-schedule hourly, THEN run one bounded control-DB retention pass.
 
-    Caps unbounded growth of the results table the timer chains churn. The delete is
-    :func:`teatree.core.retention.task_results.prune_finished_task_results` — the same
-    seam ``t3 <overlay> retention prune`` uses, so the scheduled pass and the operator's
-    pass cannot disagree about which rows are disposable, and neither hand-writes a
-    prune over ``django_tasks_db``'s table. Only FINISHED (successful/failed) rows past
-    the window go; a READY or RUNNING row is never touched. The window is the
-    ``task_result_retention_days`` setting (a ``0`` disables the chain's delete, leaving
-    the reconciler's own surplus/stranded pruning untouched). Successor-FIRST (F6): the
-    next fire is queued before the delete runs, in a try that records-but-never-propagates,
-    so a body fault cannot orphan the chain.
+    The pass is :func:`teatree.core.retention.prune.apply_retention` — the lane table
+    ``t3 <overlay> retention prune`` also reads, so the scheduled pass and the operator's
+    cannot disagree about which rows are disposable. It spends at most
+    ``SCHEDULED_MAX_BATCHES`` short batches in lane order (stale parks, then failed before
+    completed task history) and returns its per-lane counts. The name predates the wider
+    pass and stays, because the pending READY row holds this module path. Successor-FIRST
+    (F6): the next fire is queued before the pass runs, in a try that
+    records-but-never-propagates, so a body fault cannot orphan the chain.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: config read at call time
-    from teatree.core.retention.task_results import prune_finished_task_results  # noqa: PLC0415 — deferred: heavy dep
+    from teatree.core.retention import prune  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     if _pending_for_path(prune_task_results.module_path):
         return {"deduped": 1}
     prune_task_results.using(run_after=timezone.now() + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
     try:
-        days = int(get_effective_settings().task_result_retention_days)
-        deleted = prune_finished_task_results(days=days) if days > 0 else 0
+        counts = prune.apply_retention(max_batches=prune.SCHEDULED_MAX_BATCHES).counts()
     except Exception:
         logger.exception("prune_task_results body failed; successor already queued, the chain survives")
         return {"error": 1}
-    return {"pruned": deleted}
+    logger.info("prune_task_results: %s", counts)
+    return counts
 
 
 @task(queue_name=LOOPS_QUEUE)

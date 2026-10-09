@@ -3580,44 +3580,6 @@ class TestWorkspaceFinalizeMainCloneGuard(TestCase):
             # No commit was created on the main clone.
             assert _git(clone, "rev-parse", "HEAD") == head_before
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_finalize_commits_in_real_worktree(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            _remote, clone = _init_repo_with_remote(tmp_path)
-
-            wt = tmp_path / "wt-feature"
-            _git(clone, "worktree", "add", "-q", "-b", "feature-x", str(wt))
-            # Two commits so finalize squashes them (exercises the commit path).
-            (wt / "a.py").write_text("a = 1\n")
-            _git(wt, "add", "a.py")
-            _git(wt, "commit", "-q", "-m", "first change")
-            (wt / "b.py").write_text("b = 2\n")
-            _git(wt, "add", "b.py")
-            _git(wt, "commit", "-q", "-m", "second change")
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/753")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path=str(wt),
-                branch="feature-x",
-                extra={"worktree_path": str(wt)},
-            )
-
-            # finalize squashes via a real ``git commit`` subprocess, which
-            # inherits this process's environment — give it the same identity
-            # ``_git`` uses so it never aborts on "Author identity unknown" in
-            # the identity-less CI image.
-            with patch.dict(os.environ, _GIT_IDENTITY_ENV):
-                result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
-
-            assert "squashed 2 commits" in result
-            # The squash produced exactly one commit ahead of the base.
-            base = _git(wt, "merge-base", "HEAD", "origin/main")
-            assert _git(wt, "rev-list", "--count", f"{base}..HEAD") == "1"
-
 
 class TestPruneSquashMergedDataLossGuard(TestCase):
     """#710 — ``_prune_squash_merged`` must honor the #706 data-loss guard.

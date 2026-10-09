@@ -1,15 +1,19 @@
 """Neutral option translation for the Codex App Server harness."""
 
-import os
+import json
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cache
+from pathlib import Path
 from typing import Any, Never
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents.codex_sandbox import CONTAINER_IS_SANDBOX_ENV, container_is_the_sandbox
 from teatree.agents.harness_options import HarnessOptions
 from teatree.utils.ports import running_in_container
+
+logger = logging.getLogger(__name__)
 
 _MUTATION_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
@@ -20,7 +24,6 @@ _CLAUDE_ONLY_TOOLS = frozenset(
     {"AskUserQuestion", "Monitor", "PushNotification", "RemoteTrigger", "SendMessage", "WebFetch", "WebSearch"}
 )
 _CONTAINER_READ_ONLY_UNENFORCEABLE = "read-only inside a container: its sandbox cannot create a user namespace there"
-CONTAINER_IS_SANDBOX_ENV = "TEATREE_CODEX_CONTAINER_IS_SANDBOX"
 _TEATREE_CODEX_PLUGIN_ID = "t3@souliane"
 _SUPPORTED_PERMISSION_MODES = frozenset(
     {None, "default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto"}
@@ -103,11 +106,6 @@ def _raise_unsupported(detail: str) -> Never:
     raise CodexAppServerError.unsupported_policy(detail)
 
 
-@cache
-def container_is_the_sandbox() -> bool:
-    return os.environ.get(CONTAINER_IS_SANDBOX_ENV) == "1" and running_in_container()
-
-
 def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> str | None:
     """Explain a Claude deny policy Codex 0.155.1 cannot faithfully enforce."""
     denied = set(disallowed_tools)
@@ -116,6 +114,29 @@ def codex_phase_policy_unavailable_reason(disallowed_tools: Iterable[str]) -> st
     if denied & _MUTATION_TOOLS and container_is_the_sandbox():
         return f"Codex cannot enforce {_CONTAINER_READ_ONLY_UNENFORCEABLE}"
     return None
+
+
+def codex_login_unavailable_reason(code_home: Path) -> str | None:
+    """Stat the private home's ``auth.json`` without opening it; ``t3 codex auth check`` is what creates it."""
+    if (code_home / "auth.json").is_file():
+        return None
+    return "no Codex login in the private home: run `t3 codex auth import`, then `t3 codex auth check`"
+
+
+def codex_model_unavailable_reason(code_home: Path, model: str) -> str | None:
+    """Fail open on a catalog this Codex release no longer writes in the shape read here."""
+    if not model:
+        return None
+    catalog_path = code_home / "models_cache.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        slugs = {entry["slug"] for entry in catalog["models"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.warning("Codex model catalog %s is unreadable; not checking %r against it", catalog_path, model)
+        return None
+    if model in slugs:
+        return None
+    return f"model {model!r} is not in the Codex catalog ({catalog_path}, fetched {catalog.get('fetched_at', '?')})"
 
 
 def codex_container_unavailable_reason() -> str | None:

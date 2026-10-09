@@ -15,7 +15,6 @@ from pathlib import Path
 import typer
 from django.core.management import call_command
 
-from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
 from teatree.cli.account_switch_recover import recover_account_switch
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
@@ -43,6 +42,8 @@ from teatree.provisioning.skill_clone_install import CloneInstall
 from teatree.provisioning.skill_pin import default_record_path
 from teatree.provisioning.skills_cli import SkillsCli, SkillsCliError, refresh_inventory_receipt
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.pin_shadow import SkillPinRefusalError
 from teatree.utils.django_bootstrap import ensure_django
 
 setup_app = typer.Typer(
@@ -68,15 +69,18 @@ def _assess_dispatched_skills(
     directories = search_dirs if search_dirs is not None else harness_skills_dirs()
     missing: list[str] = []
     for name in sorted(set(demands)):
-        bare = _bare_skill_name(name)
-        body = _resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
+        bare = bare_skill_name(name)
         try:
+            body = resolve_skill_md(name, directories) if _SAFE_SKILL_NAME.fullmatch(bare) else None
             if body is None or not body.read_text(encoding="utf-8").strip():
                 missing.append(name)
+        except SkillPinRefusalError as exc:
+            typer.echo(f"WARN  {exc}")
+            missing.append(name)
         except (OSError, UnicodeError):
             missing.append(name)
     safe_missing = sorted(
-        {_bare_skill_name(name) for name in missing if _SAFE_SKILL_NAME.fullmatch(_bare_skill_name(name))}
+        {bare_skill_name(name) for name in missing if _SAFE_SKILL_NAME.fullmatch(bare_skill_name(name))}
     )
     # An unsafe name cannot be reported by the boot marker, but still fails ready.
     status = "missing-skills" if missing else "ready"
@@ -136,6 +140,7 @@ def _provision_agent_skills(
             cache_root=get_data_dir("skill-sources"),
             demand_names=set(demanded_skill_names()),
             harness_exclusions=harness_exclusions,
+            manifest=repo / "apm.yml",
             cli=skills_cli,
         )
         for outcome in source_outcomes:
@@ -225,8 +230,9 @@ def _report_statusline_install(settings_json: Path, repo: Path) -> None:
         typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
 
 
-def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
-    """Sync overlay skill symlinks into every plugin-backed runtime."""
+def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str], manifest: Path) -> bool:
+    """Sync overlay skill symlinks into every plugin-backed runtime; ``False`` when no link could be synced."""
+    refused: dict[str, str] = {}
     for label, skills_dir in agent_skill_dirs():
         if not skills_dir.is_dir():
             continue
@@ -235,12 +241,20 @@ def _sync_runtime_skill_links(workspace_dir: Path, excluded: list[str]) -> None:
         if removed:
             typer.echo(f"OK    {label}: removed {removed} excluded skill(s).")
 
-        created, fixed = linker.sync(sync_core=False)
+        try:
+            created, fixed = linker.sync(sync_core=False, manifest=manifest)
+        except SkillPinRefusalError as error:
+            typer.echo(f"ERROR Skill links were not synced: {error}", err=True)
+            return False
+        refused.update(linker.refused)
         typer.echo(f"OK    {label}: {created} created, {fixed} fixed (core skills via plugin).")
 
         broken = linker.clean_broken()
         if broken:
             typer.echo(f"OK    {label}: removed {broken} broken symlink(s).")
+    for name, spec in refused.items():
+        typer.echo(f"WARN  Overlay skill {name!r} not linked: apm pins it as `{spec}`. Rename the skill or the pin.")
+    return True
 
 
 def _install_checkout_git_config(repo: Path) -> None:
@@ -340,7 +354,7 @@ def run(
     for _label, skills_dir in agent_skill_dirs():
         skills_dir.mkdir(parents=True, exist_ok=True)
 
-    _sync_runtime_skill_links(workspace_dir, all_excluded)
+    skill_links_ready = _sync_runtime_skill_links(workspace_dir, all_excluded, repo / "apm.yml")
 
     agent_skills_ready = _provision_agent_skills(
         repo,
@@ -351,7 +365,7 @@ def run(
     _complete_strict_skills_setup(
         skills_ready_marker,
         strict=strict_agent_skills,
-        ready=agent_skills_ready,
+        ready=agent_skills_ready and skill_links_ready,
     )
 
     # Per-overlay Slack-bot IM provisioning (#1342) — open ``conversations.open``

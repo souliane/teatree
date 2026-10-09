@@ -48,7 +48,9 @@ requirements. The dashboard never rewrites it. Setup enumerates those individual
 requirements and any active overlay runtime demands, then calls the installed
 exact `skills@1.7.0` CLI for only that set on Claude Code and Codex. It does not
 install an entire skills repository merely because one skill is needed, and it
-never downloads an implicit `npx` version at runtime.
+never downloads an implicit `npx` version at runtime. Every entry
+must name a full 40-hex commit that no branch or tag on its source is named after;
+setup refuses anything else and leaves the installed copy unchanged.
 
 Optional harness skills can be kept absent during headless setup with the
 DB-backed `harness_skill_exclusions` list:

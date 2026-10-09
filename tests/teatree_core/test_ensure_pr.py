@@ -22,6 +22,7 @@ from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands._ensure_pr import (
     AUTHOR_UNRESOLVABLE_DEFERRAL,
     _ticket_extra_for_branch,
+    _ticket_for_branch,
     create_or_defer_pr,
 )
 from teatree.core.merge.pr_url_record import record_pr_url
@@ -46,6 +47,11 @@ class TestTicketExtraForBranch(TestCase):
     ``more_prs_coming`` opt-out even though it has no ticket handle.
     """
 
+    def setUp(self) -> None:
+        remote = patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git")
+        remote.start()
+        self.addCleanup(remote.stop)
+
     def test_returns_none_when_no_worktree_for_branch(self) -> None:
         assert _ticket_extra_for_branch("no-such-branch") is None
 
@@ -58,18 +64,32 @@ class TestTicketExtraForBranch(TestCase):
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
-            repo_path="/tmp/repo873",
+            repo_path="souliane/teatree",
             branch="fix/873-x",
             extra={"worktree_path": "/tmp/repo873"},
         )
         assert _ticket_extra_for_branch("fix/873-x") == {"more_prs_coming": True}
 
     def test_returns_latest_worktree_when_branch_reused(self) -> None:
-        old = Ticket.objects.create(overlay="test", issue_url="https://x/1", extra={"more_prs_coming": True})
+        old = Ticket.objects.create(
+            overlay="test", issue_url="https://x/1", extra={"more_prs_coming": True}, state=Ticket.State.MERGED
+        )
         new = Ticket.objects.create(overlay="test", issue_url="https://x/2", extra={})
-        Worktree.objects.create(ticket=old, overlay="test", repo_path="/tmp/a", branch="shared")
-        Worktree.objects.create(ticket=new, overlay="test", repo_path="/tmp/b", branch="shared")
+        Worktree.objects.create(ticket=old, overlay="test", repo_path="souliane/teatree", branch="shared")
+        Worktree.objects.create(ticket=new, overlay="test", repo_path="souliane/teatree", branch="shared")
         assert _ticket_extra_for_branch("shared") == {}
+
+    def test_another_repos_row_on_the_branch_owns_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", extra={"more_prs_coming": True})
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/private-skills", branch="shared")
+
+        assert _ticket_for_branch("shared") is None
+
+    def test_a_merged_ticket_on_the_branch_owns_nothing(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://x/4", state=Ticket.State.MERGED)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="shared")
+
+        assert _ticket_for_branch("shared") is None
 
 
 def _orphan_repo(tmp_path: Path) -> Path:
@@ -252,7 +272,7 @@ class TestEnsurePrRecordsTheVerifiedUrl(TestCase):
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
-            repo_path=str(repo),
+            repo_path=repo.name,
             branch=self.BRANCH,
             extra={"worktree_path": str(repo)},
         )

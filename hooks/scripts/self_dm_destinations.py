@@ -1,11 +1,9 @@
-"""Self-DM destination-id resolution for the MCP self-DM gate.
+"""The MCP self-DM gate and the destination ids it refuses.
 
-The DB-only assembly behind ``hook_router.handle_block_self_dm_via_mcp``: read the
-DB-home ``overlays`` registry and the global ``slack_user_id`` setting via the
-Django-free ``teatree.config.cold_reader``, then compute the operator's own
-bot<->user DM destination ids. Extracted from ``hook_router`` (the shrink-only
-god-module) so the router keeps only the thin call site and this sibling owns the
-testable logic — the same bare-sibling pattern ``managed_repo`` /
+:func:`handle_block_self_dm_via_mcp` refuses a Slack MCP write to the operator's own
+bot<->user DM. The ids come DB-only: the DB-home ``overlays`` registry and the global
+``slack_user_id`` setting, read via the Django-free ``teatree.config.cold_reader``. The
+router keeps only the registration — the same bare-sibling pattern ``managed_repo`` /
 ``deny_circuit_breaker`` use.
 
 The overlay ids come from the DB-home ``overlays`` row; the global ``slack_user_id``
@@ -18,9 +16,10 @@ the id reads beside it, counts the published host projection as a readable store
 import dataclasses
 import sys
 from types import ModuleType
-from typing import Any, cast
+from typing import Any
 
 from hooks.scripts.managed_repo import teatree_src_on_path
+from hooks.scripts.mcp_slack_write_guard import is_slack_mcp_write
 
 # Alias both identities so a bare ``from self_dm_destinations import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.self_dm_destinations``
@@ -61,7 +60,7 @@ def overlay_slack_ids(overlays: dict[str, Any] | None) -> set[str]:
         if not isinstance(cfg, dict):
             continue
         for key in ("slack_dm_channel_id", "slack_user_id"):
-            value = cast("dict[str, object]", cfg).get(key)
+            value = cfg.get(key)
             if isinstance(value, str) and value:
                 ids.add(value)
     return ids
@@ -117,11 +116,6 @@ def read_self_dm_destinations() -> SelfDmDestinations:
 _CHANNEL_FIELDS: tuple[str, ...] = ("channel", "channel_id")
 
 
-def slack_tool_suffix(tool_name: str) -> str:
-    """The bare Slack tool name behind an MCP-qualified ``mcp__<server>__<tool>``."""
-    return tool_name.rsplit("__", 1)[-1]
-
-
 def self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
     """The self-DM destination *tool_input* targets, or ``""`` when it targets none.
 
@@ -133,3 +127,68 @@ def self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
         if isinstance(value, str) and value in dm_ids:
             return value
     return ""
+
+
+_UNREADABLE_REASON = (
+    "SELF-DM REFUSED (fail-closed): could not read the bot↔user DM destination ids "
+    "from the config store (the DB is missing, locked, or unreadable), so this gate "
+    "cannot confirm the Slack MCP write is not a self-DM under the USER's token. "
+    "Declare the per-overlay slack_dm_channel_id / slack_user_id keys via "
+    "`t3 <overlay> config_setting set`, or disable this gate with "
+    "`t3 <overlay> config_setting set self_dm_gate_enabled false`. "
+    "To DM the user now, use the bot-token path: "
+    "`t3 teatree notify send -` (reads the body from stdin)."
+)
+
+
+def _gate_enabled() -> bool:
+    try:
+        from hooks.scripts.hook_router import _teatree_bool_setting  # noqa: PLC0415 deferred back-import
+
+        return _teatree_bool_setting("self_dm_gate_enabled", default=True)
+    except Exception:  # noqa: BLE001 — a config-read error must never wedge the tool call.
+        return True
+
+
+def handle_block_self_dm_via_mcp(data: dict) -> bool:
+    """Refuse a Slack MCP write to the operator's own bot↔user DM under the user's token.
+
+    A Slack MCP server other than teatree's writes under the USER's token, so a post or
+    reaction in the operator's self-IM renders as user-authored and the loop's scanners
+    react to the agent's own message as if the owner wrote it. teatree's egress
+    chokepoints never see an MCP call, so this deny is the only place to stop it.
+
+    What counts as a write is the Slack write guard's default-deny classifier
+    (:func:`~hooks.scripts.mcp_slack_write_guard.is_slack_mcp_write`), so the two agree.
+    Unlike that guard, nothing on the call lifts this deny — no ``[slack-mcp-ok: …]``
+    token (which an agent can add itself), no ``danger_gate_fail_open``, and not the
+    guard's own kill-switch, the setting under which a self-DM write would otherwise
+    pass. Only the operator's ``self_dm_gate_enabled = false`` does, for a misfiring
+    registry. Mirroring ``SlackBotBackend._is_self_dm``, a self-DM id is a configured
+    ``[overlays.*].slack_dm_channel_id`` (``D…``) or ``slack_user_id`` / global
+    ``slack_user_id`` (``U…``, which Slack opens as the self-IM).
+
+    FAIL-CLOSED (user decision): an unreachable config store denies, because the hook
+    cannot identify the author without it; a readable store declaring no ids allows.
+    """
+    if not is_slack_mcp_write(data.get("tool_name", "")):
+        return False
+    tool_input = data.get("tool_input", {}) or {}
+    if not isinstance(tool_input, dict) or not _gate_enabled():
+        return False
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
+
+    destinations = read_self_dm_destinations()
+    if not destinations.resolved:
+        return emit_pretooluse_deny(_UNREADABLE_REASON, gate_id="self_dm")
+    destination = self_dm_destination(tool_input, destinations.ids)
+    if not destination:
+        return False
+    return emit_pretooluse_deny(
+        f"SELF-DM REFUSED: this Slack MCP write targets the operator's own bot↔user DM "
+        f"({destination}) under the USER's token, so it renders as user-authored and the "
+        f"loop's scanners will react to the agent's own message. Use the bot-token path "
+        f"instead: `t3 teatree notify send -` (reads the body from stdin). Posts to "
+        f"colleague channels are unaffected by this gate.",
+        gate_id="self_dm",
+    )

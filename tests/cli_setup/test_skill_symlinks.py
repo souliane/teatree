@@ -11,10 +11,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import typer
 from django.test import TestCase
 
+from teatree.cli.setup import command as setup_command
+from teatree.cli.setup.command import _sync_runtime_skill_links
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker, _ensure_skill_link
 from teatree.config import UserSettings
+from teatree.skill_support.pin_shadow import SkillPinsUnreadableError
 
 
 class TestRemoveExcludedSkills:
@@ -290,7 +294,7 @@ class TestSetupSyncsHarnessSkillDirectories(TestCase):
 
         repo = self.tmp_path / "teatree"
         repo.mkdir()
-        (repo / "apm.yml").touch()
+        (repo / "apm.yml").write_text("dependencies:\n  apm: []\n", encoding="utf-8")
         (repo / ".git").mkdir()
 
         with (
@@ -334,7 +338,7 @@ class TestSetupSyncsHarnessSkillDirectories(TestCase):
 
         repo = self.tmp_path / "teatree"
         repo.mkdir()
-        (repo / "apm.yml").touch()
+        (repo / "apm.yml").write_text("dependencies:\n  apm: []\n", encoding="utf-8")
         (repo / ".git").mkdir()
 
         with (
@@ -372,7 +376,7 @@ class TestSetupSyncsHarnessSkillDirectories(TestCase):
 
         repo = self.tmp_path / "teatree"
         repo.mkdir()
-        (repo / "apm.yml").touch()
+        (repo / "apm.yml").write_text("dependencies:\n  apm: []\n", encoding="utf-8")
         (repo / ".git").mkdir()
 
         with (
@@ -521,3 +525,173 @@ class TestCoreExcludedSkills:
     def test_default_exclusions_present(self) -> None:
         assert "using-superpowers" in CORE_EXCLUDED_SKILLS
         assert "using-git-worktrees" in CORE_EXCLUDED_SKILLS
+
+
+_PIN_SHA = "d0008a3c1e5f4b2a9d8e7f6a5b4c3d2e1f0a9b8c"
+
+
+class TestDeclaredPinsAreNeverLinkedOver:
+    @staticmethod
+    def _manifest(tmp_path: Path, *names: str) -> Path:
+        manifest = tmp_path / "apm.yml"
+        entries = "".join(f"    - souliane/skills/{name}#{_PIN_SHA}\n" for name in names)
+        manifest.write_text(f"dependencies:\n  apm:\n{entries}", encoding="utf-8")
+        return manifest
+
+    @staticmethod
+    def _sync(runtime: Path, tmp_path: Path, overlay: list[tuple[Path, str]], **kwargs: object) -> SkillLinker:
+        core = tmp_path / "core_skills"
+        core.mkdir(exist_ok=True)
+        linker = SkillLinker(runtime, tmp_path / "workspace")
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", core),
+            patch("teatree.cli.setup.skill_linker.DoctorService") as service,
+        ):
+            service.collect_overlay_skills.return_value = overlay
+            linker.sync(sync_core=False, **kwargs)
+        return linker
+
+    def test_an_existing_pinned_link_keeps_its_target_and_the_name_is_refused(self, tmp_path: Path) -> None:
+        installed = tmp_path / "agents" / "ac-django"
+        installed.mkdir(parents=True)
+        overlay_copy = tmp_path / "overlay" / "ac-django"
+        overlay_copy.mkdir(parents=True)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        (runtime / "ac-django").symlink_to(installed)
+        manifest = self._manifest(tmp_path, "ac-django")
+
+        linker = self._sync(runtime, tmp_path, [(overlay_copy, "ac-django")], manifest=manifest)
+
+        assert (runtime / "ac-django").resolve() == installed.resolve()
+        assert linker.refused == {"ac-django": f"souliane/skills/ac-django#{_PIN_SHA}"}
+
+    def test_an_absent_pinned_link_is_not_created_while_an_undeclared_overlay_skill_is(self, tmp_path: Path) -> None:
+        pinned = tmp_path / "overlay" / "ac-django"
+        free = tmp_path / "overlay" / "my-skill"
+        pinned.mkdir(parents=True)
+        free.mkdir(parents=True)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+
+        self._sync(
+            runtime,
+            tmp_path,
+            [(pinned, "ac-django"), (free, "my-skill")],
+            manifest=self._manifest(tmp_path, "ac-django"),
+        )
+
+        assert not (runtime / "ac-django").exists()
+        assert (runtime / "my-skill").is_symlink()
+
+    def test_the_manifest_argument_wins_over_the_running_codes_own(self, tmp_path: Path) -> None:
+        overlay_a = tmp_path / "overlay" / "only-in-given"
+        overlay_b = tmp_path / "overlay" / "ac-python"
+        overlay_a.mkdir(parents=True)
+        overlay_b.mkdir(parents=True)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+
+        linker = self._sync(
+            runtime,
+            tmp_path,
+            [(overlay_a, "only-in-given"), (overlay_b, "ac-python")],
+            manifest=self._manifest(tmp_path, "only-in-given"),
+        )
+
+        assert set(linker.refused) == {"only-in-given"}
+        assert (runtime / "ac-python").is_symlink()
+
+    def test_an_unreadable_manifest_links_nothing(self, tmp_path: Path) -> None:
+        overlay = tmp_path / "overlay" / "my-skill"
+        overlay.mkdir(parents=True)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        broken = tmp_path / "apm.yml"
+        broken.write_text("dependencies: [oh: no\n", encoding="utf-8")
+
+        with pytest.raises(SkillPinsUnreadableError):
+            self._sync(runtime, tmp_path, [(overlay, "my-skill")], manifest=broken)
+
+        assert list(runtime.iterdir()) == []
+
+
+class TestSetupLinkStep:
+    @staticmethod
+    def _run(tmp_path: Path, manifest: Path) -> tuple[bool, str]:
+        overlay = tmp_path / "overlay" / "only-in-the-given-manifest"
+        free = tmp_path / "overlay" / "my-skill"
+        overlay.mkdir(parents=True)
+        free.mkdir(parents=True)
+        claude, codex = tmp_path / "claude", tmp_path / "codex"
+        claude.mkdir()
+        codex.mkdir()
+        core = tmp_path / "core_skills"
+        core.mkdir()
+        runner_output: list[str] = []
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", core),
+            patch("teatree.cli.setup.skill_linker.DoctorService") as service,
+            patch("teatree.cli.setup.command.agent_skill_dirs", return_value=[("claude", claude), ("codex", codex)]),
+            patch(
+                "teatree.cli.setup.command.typer.echo", side_effect=lambda text, **_kw: runner_output.append(str(text))
+            ),
+        ):
+            service.collect_overlay_skills.return_value = [(overlay, "only-in-the-given-manifest"), (free, "my-skill")]
+            ready = _sync_runtime_skill_links(tmp_path / "workspace", [], manifest)
+        return ready, "\n".join(runner_output)
+
+    def test_a_refused_name_gets_one_warn_across_both_runtimes(self, tmp_path: Path) -> None:
+        manifest = TestDeclaredPinsAreNeverLinkedOver._manifest(tmp_path, "only-in-the-given-manifest")
+
+        ready, output = self._run(tmp_path, manifest)
+
+        assert ready
+        assert output.count("WARN") == 1
+        assert "only-in-the-given-manifest" in output
+        assert not (tmp_path / "claude" / "only-in-the-given-manifest").exists()
+        assert (tmp_path / "codex" / "my-skill").is_symlink()
+
+    def test_an_unreadable_manifest_is_an_error_links_nothing_and_is_not_ready(self, tmp_path: Path) -> None:
+        manifest = tmp_path / "apm.yml"
+        manifest.write_text("dependencies: [oh: no\n", encoding="utf-8")
+
+        ready, output = self._run(tmp_path, manifest)
+
+        assert not ready
+        assert "ERROR" in output
+        assert f"git -C {tmp_path} checkout HEAD -- apm.yml" in output
+        assert list((tmp_path / "claude").iterdir()) == []
+        assert list((tmp_path / "codex").iterdir()) == []
+
+
+class TestStrictSetupNeedsTheLinkStep:
+    def test_a_failed_link_step_leaves_strict_setup_not_ready_even_when_skills_provisioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        home = tmp_path / "home"
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: home))
+        repo = tmp_path / "teatree"
+        repo.mkdir()
+        (repo / "apm.yml").write_text("dependencies:\n  apm: []\n", encoding="utf-8")
+        (repo / ".git").mkdir()
+        marker_dir = tmp_path / "data"
+
+        with (
+            patch.object(setup_command, "find_main_clone", return_value=repo),
+            patch.object(setup_command, "get_data_dir", return_value=marker_dir),
+            patch.object(setup_command, "ensure_self_db_migrated", return_value=False),
+            patch.object(setup_command, "provision_declared_notion_routing"),
+            patch.object(setup_command, "provision_all_overlay_dm_channels"),
+            patch.object(setup_command, "report_notion_connections"),
+            patch.object(setup_command, "seed_default_loops"),
+            patch.object(setup_command, "_provision_agent_skills", return_value=True),
+            patch.object(setup_command, "_sync_runtime_skill_links", return_value=False),
+            patch("teatree.config.load_config") as mock_load,
+        ):
+            mock_load.return_value.user = UserSettings(workspace_dir=str(tmp_path / "workspace"))
+            with pytest.raises(typer.Exit):
+                setup_command.run(SimpleNamespace(invoked_subcommand=None), strict_agent_skills=True, skip_plugin=False)
+
+        assert "refusing strict headless setup" in capsys.readouterr().err
+        assert not (marker_dir / "ready").exists()

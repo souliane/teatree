@@ -519,27 +519,28 @@ class ADisposableCheckoutOwesNothingTestCase(TestCase):
         assert PendingPullRequest.objects.filter(branch=branch).exists()
 
 
-class TestTheHookEntrySeesEveryOverlay:
-    """A member-dir uv invocation installs only that member, so a sibling overlay's declared bot is invisible.
+class TestTheHookEntryRunsTheInstalledT3:
+    """A checkout's own ``uv run`` resolves a per-worktree isolated DB and installs only its own member's overlays.
 
-    Nothing then reads as unreachable, the ambient overlay's owner token is the only credential in
-    sight, and the MR is opened as the owner. The entry has to install every workspace member.
+    The ledger row and obligation it wrote were invisible to the merge gates, and a sibling overlay's
+    declared bot read as unreachable, so the MR opened as the owner. The installed ``t3`` reaches the
+    canonical DB and every overlay the stack carries, so the entry must never ``uv run``.
     """
 
-    _CONFIG = Path(__file__).resolve().parents[4] / ".pre-commit-config.yaml"
+    _ROOT = Path(__file__).resolve().parents[4]
 
-    def _entry(self) -> list[str]:
-        repos = yaml.safe_load(self._CONFIG.read_text(encoding="utf-8"))["repos"]
-        entries = [hook["entry"] for repo in repos for hook in repo["hooks"] if hook["id"] == "ensure-pr"]
-        assert len(entries) == 1, "the ensure-pr hook must exist exactly once"
-        argv = shlex.split(entries[0])
-        return argv[1:] if argv[:1] == ["scripts/hooks/branch-push-only.sh"] else argv
+    def _hook(self) -> dict[str, object]:
+        repos = yaml.safe_load((self._ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))["repos"]
+        hooks = [hook for repo in repos for hook in repo["hooks"] if hook["id"] == "ensure-pr"]
+        assert len(hooks) == 1, "the ensure-pr hook must exist exactly once"
+        return hooks[0]
 
-    def test_the_entry_installs_every_workspace_member_before_running_the_cli(self) -> None:
-        argv = self._entry()
+    def test_the_entry_runs_the_installed_t3_wrapper_and_never_uv_run(self) -> None:
+        assert shlex.split(str(self._hook()["entry"])) == [
+            "scripts/hooks/branch-push-only.sh",
+            "scripts/hooks/ensure-pr-installed-t3.sh",
+        ]
 
-        assert argv[:2] == ["uv", "run"]
-        assert "--all-packages" in argv[: argv.index("t3")]
-
-    def test_the_entry_still_runs_ensure_pr_through_the_teatree_prefix(self) -> None:
-        assert self._entry()[-4:] == ["t3", "teatree", "pr", "ensure-pr"]
+    def test_the_hook_is_verbose_so_a_skip_warning_reaches_the_pusher(self) -> None:
+        """Prek prints a PASSING hook's output only when asked; the skip exits 0, so it is otherwise silent."""
+        assert self._hook().get("verbose") is True

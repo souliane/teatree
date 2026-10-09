@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.cleanup.isolated_roots import reap_orphan_isolated_worktree_roots
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.management.commands._workspace.broken_worktrees import report_unresolvable_worktree_dirs
@@ -23,7 +24,6 @@ from teatree.core.management.commands._workspace.cleanup import (
     prune_branches,
 )
 from teatree.core.management.commands._workspace.docker import reap_orphan_worktree_docker
-from teatree.core.management.commands._workspace.isolated_roots import reap_orphan_isolated_worktree_roots
 from teatree.core.management.commands._workspace.orphan_worktrees import reap_orphan_raw_worktrees
 from teatree.core.management.commands._workspace.stash import drop_orphaned_stashes
 from teatree.core.worktree.worktree_done import reap_done_worktrees
@@ -58,7 +58,7 @@ def run_clean_all(
     only the mutation, so a would-be line and its live counterpart cannot
     disagree about scope: the done-worktree reaper names WIPE/KEPT with its
     done-signal source, and each secondary pass renders its candidates through
-    :func:`~teatree.core.management.commands._workspace.preview.preview_line`. A
+    :func:`~teatree.core.cleanup.preview.preview_line`. A
     preview that under-reports what a destructive command will do is worse than
     no preview at all. A failed teardown line exits 1 via
     :func:`_raise_on_cleanup_failures` (the #932 failure contract).

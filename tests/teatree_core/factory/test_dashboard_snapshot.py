@@ -8,13 +8,17 @@ catches the same drift via ``git diff --exit-code docs/generated`` after regener
 See: souliane/teatree#12
 """
 
+import re
 from pathlib import Path
 
+import yaml
+from django.apps import apps
 from django.test import TestCase
 
 from teatree.core.factory.dashboard_snapshot import _canonical_html, render_dashboard_snapshot
 
-_CANONICAL = Path(__file__).resolve().parents[3] / "docs/generated/dashboard/admin-index.html"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CANONICAL = _REPO_ROOT / "docs/generated/dashboard/admin-index.html"
 
 
 class DashboardSnapshotTests(TestCase):
@@ -32,6 +36,26 @@ class DashboardSnapshotTests(TestCase):
         html = render_dashboard_snapshot()
         for href in ("/core/ticket/", "/core/worktree/", "/core/loop/", "/core/configsetting/"):
             assert href in html
+
+    def test_snapshot_lists_every_core_model(self) -> None:
+        html = render_dashboard_snapshot()
+        missing = [
+            model._meta.label
+            for model in apps.get_app_config("core").get_models()
+            if f'href="/core/{model._meta.model_name}/"' not in html
+        ]
+        assert missing == []
+
+    def test_hook_refires_on_the_files_that_shape_the_snapshot(self) -> None:
+        config = yaml.safe_load((_REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+        hook = next(
+            hook
+            for repo in config["repos"]
+            for hook in repo.get("hooks", [])
+            if hook["id"] == "generate-dashboard-snapshot"
+        )
+        for path in ("src/teatree/core/factory/dashboard_snapshot.py", "src/teatree/core/admin.py"):
+            assert re.search(hook["files"], path), path
 
     def test_volatile_csrf_token_is_frozen(self) -> None:
         assert 'name="csrfmiddlewaretoken" value="CSRF"' in render_dashboard_snapshot()

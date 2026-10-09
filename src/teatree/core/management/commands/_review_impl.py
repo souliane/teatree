@@ -268,6 +268,8 @@ def trigger_sweep(recorded: ReviewVerdict) -> list[str]:
     )
     if attempt is not None and attempt.merged:
         return [f"  pr_sweep merged {attempt.slug}#{attempt.pr_id} @ {attempt.merged_sha[:8]}"]
+    if attempt is not None and attempt.decision == "blocked":
+        return [f"  pr_sweep blocked {attempt.slug}#{attempt.pr_id}: {attempt.reason}"]
     return []
 
 

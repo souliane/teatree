@@ -26,6 +26,8 @@ from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
     CodexAppServerOptions,
     codex_container_unavailable_reason,
+    codex_login_unavailable_reason,
+    codex_model_unavailable_reason,
     codex_phase_policy_unavailable_reason,
     container_is_the_sandbox,
 )
@@ -448,7 +450,7 @@ class CodexAppServerHarness:
 
             session = SharedCodexSession(
                 translated,
-                manager=shared_codex_app_server(self.code_home),
+                manager=shared_codex_app_server(self.code_home, translated.core.env),
                 resume=options.resume,
             )
             try:
@@ -530,7 +532,8 @@ def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
 
         if starts_in_managed_main_clone(context.task):
             return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
-    return None
+    home = resolve_codex_home()
+    return codex_login_unavailable_reason(home) or codex_model_unavailable_reason(home, context.model)
 
 
 def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:

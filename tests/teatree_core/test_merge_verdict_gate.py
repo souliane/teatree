@@ -31,6 +31,7 @@ from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
 from tests._forge_stub import merge_path_stdout
+from tests._pr_ledger import own_pr
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 from tests.teatree_loop.test_pr_sweep_scanner import FakeKeystone, FakePrApiClient
@@ -238,6 +239,7 @@ def _solo_scanner(prs: list[PrSummary]) -> tuple[PrSweepScanner, FakePrApiClient
 
 
 def _solo_pr() -> PrSummary:
+    own_pr(_SLUG, _PR)
     return PrSummary(
         slug=_SLUG,
         number=_PR,

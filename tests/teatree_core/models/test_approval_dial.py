@@ -6,6 +6,7 @@ clean. The taint floor and the never-fades set are dial-independent hard floors.
 """
 
 import pytest
+from django.core.management import call_command
 
 from teatree.core.models import ConfigSetting, DeferredQuestion, DeferredQuestionAudit, SendAudit
 from teatree.core.models.approval_dial import (
@@ -105,6 +106,14 @@ class TestAutoReTighten:
         question = DeferredQuestion.record("keep it?", options_hash="outer_loop_keep:9")
         DeferredQuestion.consume(question.pk, answer="no, revert it")  # a human decline in-window
         assert policy_dial(OUTER_LOOP_KEEP) is Decision.ASK  # breach → re-tightened
+
+    def test_a_command_line_decline_re_tightens_a_graduated_keep_class(self) -> None:
+        _graduate(OUTER_LOOP_KEEP)
+        question = DeferredQuestion.record("keep it?", options_hash="outer_loop_keep:10")
+        call_command("questions", "answer", question.pk, "no, revert it")
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
+        assert policy_dial(OUTER_LOOP_KEEP) is Decision.ASK
 
     def test_a_send_defect_escape_re_tightens_on_behalf(self) -> None:
         _graduate(ON_BEHALF_POST)

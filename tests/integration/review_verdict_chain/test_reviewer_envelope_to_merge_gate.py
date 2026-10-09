@@ -32,6 +32,7 @@ from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
+from tests._pr_ledger import own_pr
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -176,6 +177,7 @@ class TestReviewerEnvelopeUnblocksTheMergeSweep:
         assert recorded.reviewer_identity == _REVIEWER
 
         assert has_independent_cold_review(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        own_pr(_SLUG, _PR_ID)
         assert _run_sweep(sweep) == "pr_sweep.merged"
         assert sweep.merge_calls == [(_SLUG, _PR_ID, _HEAD)]
 

@@ -161,7 +161,7 @@ class TestAPerOverlaySettingReturnsToItsOwnRow(TestCase):
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("overlays", {"demo": {"path": "~/demo"}})
         # Predates the seam refusing this overlay scope; the box keeps such rows, so they must round-trip.
-        ConfigSetting.objects.create(key="agent_phase_harness", value={"coding": "codex"}, scope="demo")
+        ConfigSetting.objects.create(key="agent_phase_harness", value={"coding": "pydantic_ai"}, scope="demo")
 
     def _round_trip(self, *, dry_run: bool) -> ConfigImport:
         return import_toml_to_db(
@@ -170,7 +170,7 @@ class TestAPerOverlaySettingReturnsToItsOwnRow(TestCase):
 
     def test_the_scoped_setting_is_emitted_under_its_overlay(self) -> None:
         emitted = tomllib.loads(export_db_to_toml(scan_terms=()).toml)["overlays"]["demo"]
-        assert emitted["agent_phase_harness"] == {"coding": "codex"}
+        assert emitted["agent_phase_harness"] == {"coding": "pydantic_ai"}
 
     def test_the_scoped_setting_round_trips_as_no_change_at_all(self) -> None:
         result = self._round_trip(dry_run=True)
@@ -180,7 +180,7 @@ class TestAPerOverlaySettingReturnsToItsOwnRow(TestCase):
     def test_an_applied_import_never_folds_the_setting_into_the_registry(self) -> None:
         self._round_trip(dry_run=False)
         assert ConfigSetting.objects.overrides_for_scope("")["overlays"] == {"demo": {"path": "~/demo"}}
-        assert ConfigSetting.objects.overrides_for_scope("demo") == {"agent_phase_harness": {"coding": "codex"}}
+        assert ConfigSetting.objects.overrides_for_scope("demo") == {"agent_phase_harness": {"coding": "pydantic_ai"}}
 
 
 class TestDashboardImportPreviewRoundTrip(TestCase):

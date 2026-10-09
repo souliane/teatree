@@ -1,12 +1,11 @@
 import asyncio
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-from teatree.agents import codex_app_server_options, skill_assurance, skill_injection
+from teatree.agents import codex_app_server_options
+from teatree.skill_support import index as skill_index
 from teatree.utils import secrets
 
 
@@ -48,16 +47,9 @@ def no_real_codex_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def installed_agent_test_skills() -> Iterator[None]:
-    # Real fixture bodies satisfy strict preflight without depending on the developer's installed stack skills.
+def installed_agent_test_skills(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Real fixture bodies satisfy strict preflight without the developer's installed stack skills; registered as an
+    # install root because a folder no installer manages may not satisfy a declared apm pin.
     fixture_skills = Path(__file__).parents[1] / "fixtures" / "agent_skills"
-    original_roots = skill_injection.harness_skills_dirs
-
-    def skill_dirs() -> list[Path]:
-        return [fixture_skills, *original_roots()]
-
-    with (
-        patch.object(skill_injection, "harness_skills_dirs", side_effect=skill_dirs),
-        patch.object(skill_assurance, "harness_skills_dirs", side_effect=skill_dirs),
-    ):
-        yield
+    original_roots = skill_index.install_roots
+    monkeypatch.setattr(skill_index, "install_roots", lambda: [fixture_skills, *original_roots()])

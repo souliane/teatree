@@ -1,5 +1,6 @@
 """Core-side provider for the import-safe forge credential seam."""
 
+import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -10,6 +11,7 @@ from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource,
 from teatree.core.overlay_name_resolution import overlay_name_of
 from teatree.core.overlays.overlay_namespace import namespace_owner
 from teatree.forge_credentials import (
+    ROUTED_GH_KEY_ENV,
     ForgeCredentialRequest,
     ForgeCredentialTarget,
     ForgeTokenResolution,
@@ -175,6 +177,7 @@ def _read_routed_token(
             route_source=route.source,
             detail=f"{route.setting} routes to {route.value!r}, but the secret store is unreadable: {exc}",
         )
+    token = token or _dispatch_token(credential, route.value)
     if not token:
         return ForgeTokenResolution(
             credential,
@@ -192,3 +195,10 @@ def _read_routed_token(
         pass_key=route.value,
         route_source=route.source,
     )
+
+
+def _dispatch_token(credential: str, pass_key: str) -> str:
+    """The token a dispatch handed a child it withholds the secret store from, when it names this very pass key."""
+    if credential != "github_token" or os.environ.get(ROUTED_GH_KEY_ENV) != pass_key:
+        return ""
+    return os.environ.get("GH_TOKEN", "")

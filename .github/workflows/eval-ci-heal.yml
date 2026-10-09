@@ -84,6 +84,9 @@ on:
         default: ""
         type: string
 
+permissions:
+  contents: read
+
 concurrency:
   group: eval-ci-heal-${{ github.ref }}
   cancel-in-progress: true
@@ -101,8 +104,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.pr_ref || github.ref }}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       # Resolve the ACTUAL checked-out SHA (pr_ref may differ from github.sha) so
@@ -138,10 +142,10 @@ jobs:
           # The agent under test runs in this job: leave no token on disk for it to read.
           persist-credentials: false
           ref: ${{ needs.prepare.outputs.sha }}
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Sync dependencies (retry on transient network failure)
@@ -258,7 +262,7 @@ jobs:
       # the reds must be triaged). The per-shard suffix keeps parallel legs distinct.
       - name: Upload this shard's publish-safe per-scenario JSON
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-heal-shard-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-heal*.json
@@ -268,7 +272,7 @@ jobs:
       # a red shard still captures it (the transcript is exactly what a fix diagnoses).
       - name: Upload this shard's private per-trial transcript
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-heal-transcript-${{ needs.prepare.outputs.sha }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/heal/eval-transcripts*.html
@@ -289,11 +293,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ needs.prepare.outputs.sha }}
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
       - name: Sync dependencies (retry on transient network failure)
@@ -370,7 +375,7 @@ jobs:
       # sharded run indistinguishable from a single-invocation run to every consumer.
       - name: Upload the merged publish-safe eval-heal JSON
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-heal-${{ needs.prepare.outputs.sha }}
           path: ${{ runner.temp }}/combined/eval-heal-*.json

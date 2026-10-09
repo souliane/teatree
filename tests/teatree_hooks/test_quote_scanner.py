@@ -483,7 +483,7 @@ class TestHookHandlerEndToEnd:
 
     def test_slack_mcp_send_message_is_scanned(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
-            "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+            "tool_name": "mcp__slack__slack_send_message",
             "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nplease ship"},
         }
         blocked = handle_quote_scanner_pretool(data)
@@ -502,7 +502,7 @@ class TestHookHandlerEndToEnd:
     ) -> None:
         monkeypatch.setenv("QUOTE_OK", "1")
         data = {
-            "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+            "tool_name": "mcp__slack__slack_send_message",
             "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nplease ship"},
         }
 
@@ -766,11 +766,11 @@ class TestRound2BypassClosures:
     @pytest.mark.parametrize(
         ("tool_name", "field"),
         [
-            ("mcp__claude_ai_Slack__slack_send_message", "text"),
-            ("mcp__claude_ai_Slack__slack_send_message_draft", "text"),
-            ("mcp__claude_ai_Slack__slack_schedule_message", "text"),
-            ("mcp__claude_ai_Slack__slack_create_canvas", "document_content"),
-            ("mcp__claude_ai_Slack__slack_update_canvas", "document_content"),
+            ("mcp__slack__slack_send_message", "text"),
+            ("mcp__slack__slack_send_message_draft", "text"),
+            ("mcp__slack__slack_schedule_message", "text"),
+            ("mcp__slack__slack_create_canvas", "document_content"),
+            ("mcp__slack__slack_update_canvas", "document_content"),
         ],
     )
     def test_slack_mcp_write_tool_body_is_scanned(self, tool_name: str, field: str) -> None:
@@ -796,7 +796,7 @@ class TestRound2BypassClosures:
 
         tool_input = cast("ToolInput", {"content": "## User mandate\nship"})
         payload = extract_publish_payload(
-            "mcp__claude_ai_Slack__slack_create_canvas",
+            "mcp__slack__slack_create_canvas",
             tool_input,
         )
         assert payload is not None
@@ -805,10 +805,10 @@ class TestRound2BypassClosures:
     @pytest.mark.parametrize(
         "tool_name",
         [
-            "mcp__claude_ai_Slack__slack_read_channel",
-            "mcp__claude_ai_Slack__slack_read_thread",
-            "mcp__claude_ai_Slack__slack_search_public",
-            "mcp__claude_ai_Slack__slack_list_channel_members",
+            "mcp__slack__slack_read_channel",
+            "mcp__slack__slack_read_thread",
+            "mcp__slack__slack_search_public",
+            "mcp__slack__slack_list_channel_members",
         ],
     )
     def test_slack_mcp_read_only_tools_are_not_publish_surfaces(self, tool_name: str) -> None:
@@ -819,7 +819,7 @@ class TestRound2BypassClosures:
 
     def test_slack_schedule_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
-            "tool_name": "mcp__claude_ai_Slack__slack_schedule_message",
+            "tool_name": "mcp__slack__slack_schedule_message",
             "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)
@@ -969,7 +969,7 @@ class TestRound3BypassClosures:
 
         tool_input = cast("ToolInput", {"text": "## User mandate\nship"})
         payload = extract_publish_payload(
-            "mcp__claude_ai_Slack__slack_edit_message",
+            "mcp__slack__slack_edit_message",
             tool_input,
         )
         assert payload is not None
@@ -977,7 +977,7 @@ class TestRound3BypassClosures:
 
     def test_slack_edit_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         data = {
-            "tool_name": "mcp__claude_ai_Slack__slack_edit_message",
+            "tool_name": "mcp__slack__slack_edit_message",
             "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nfoo"},
         }
         blocked = handle_quote_scanner_pretool(data)

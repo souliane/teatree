@@ -39,7 +39,12 @@ from teatree.config.cold_defaults import DEFAULTS_TOML as _DEFAULTS_TOML
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Autonomy, Mode, PrReviewBackend, Wip
 from teatree.config.mr_reminder import parse_mr_reminder_setting
-from teatree.config.registries import ColdHookSetting, _parse_agent_skill_models, _parse_registry_dict
+from teatree.config.registries import (
+    ColdHookSetting,
+    _parse_agent_phase_harness,
+    _parse_agent_skill_models,
+    _parse_registry_dict,
+)
 from teatree.config.setting_parsers import (
     _parse_handover_mirror_path,
     _parse_harness_skill_exclusions,
@@ -311,7 +316,7 @@ class TeatreeSettingsSchema(BaseSettings):
     ] = {}
     agent_honesty_model: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""
     agent_shell_max_output_bytes: Annotated[int, BeforeValidator(_parse_strict_int), _PERSONAL_COLD] = 16384
-    agent_phase_harness: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
+    agent_phase_harness: Annotated[dict[str, Any], BeforeValidator(_parse_agent_phase_harness), _PERSONAL_COLD] = {}
     agent_phase_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_pydantic_ai_tier_models: Annotated[dict[str, Any], BeforeValidator(_parse_registry_dict), _PERSONAL_COLD] = {}
     agent_session_effort: Annotated[str, BeforeValidator(_parse_strict_str), _PERSONAL_COLD] = ""

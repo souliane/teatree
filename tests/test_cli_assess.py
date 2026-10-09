@@ -27,6 +27,8 @@ class TestAssessRun:
             result = runner.invoke(app, ["assess", "run"])
             assert result.exit_code == 1
             assert "skill not found" in result.output
+            assert "t3 setup" in result.output
+            assert "apm install" not in result.output
 
     def test_subprocess_failure(self, tmp_path):
         """Fails when the skill CLI returns non-zero."""

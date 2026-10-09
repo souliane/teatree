@@ -365,8 +365,8 @@ disable` self-rescue CLIs, and the master `danger_gate_fail_open` switch — see
 | `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `sweeping-tickets`) |
 | `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep row retirements (default `true`). When on, the dispatched skill records each fold proposal with its citation and surfaces the batch for explicit approval instead of mass-closing, and routes every retirement through the gated `ticket bulk-close`. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (default `1`, the headless-safe single in-flight stack; `0` = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay can relax to `0`; enforced by `t3 <overlay> worktree start` / `workspace start` |
-| `task_attempt_retention_days` | #3693: retention window (days) for `TaskAttempt` rows (default `30`, `0` disables). `t3 <overlay> retention prune` deletes attempts OLDER than this window whose owning task AND ticket are TERMINAL — never a live/in-flight row. Dry-run by default (`--apply` deletes). Per-overlay overridable; enforced by `teatree.core.retention`. |
-| `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the daily `prune_task_results` maintenance chain, through one seam (`teatree.core.retention.task_results`). Per-overlay overridable. |
+| `task_attempt_retention_days` | #3693: how long a finished ticket's task history is kept once the ticket goes quiet (default `30`, `0` disables the two task-history lanes). The effective window is never below `FACTORY_LOOKBACK_DAYS` (56), the reach of the factory-signal baseline, so the default resolves to 56; `0` is checked first, so it still switches the lanes off. A quiescent ticket (`teatree.core.retention.ticket_history`) is finished (`Ticket.finished_states()`), not a synthetic loop ticket, has no active task, no task created, attempt started or transition written inside the window, no PENDING review broadcast naming one of its tasks as the reviewer, and no open question parked on one of its tasks. The FAILED-task lane runs before the COMPLETED-task lane, each deleting its tasks with their attempts by CASCADE; both run after the stale limit-park lane. `t3 <overlay> retention prune` previews the lanes (`--apply` drains them). Per-overlay overridable: both the operator command and the hourly pass resolve it for the active overlay, so an overlay-scoped row beats the global one, and switching the lanes off means writing `0` in the scope that governs (`config_setting set task_attempt_retention_days 0 --overlay <name>` when that overlay has its own row). |
+| `task_result_retention_days` | #3871: retention window (days) for `django_tasks`' `DBTaskResult` table (default `1`, `0` disables the lane). The DELETE is the library's OWN shipped `prune_db_task_results` command — teatree configures the dependency rather than writing a second prune over its table — passed `--queue-name '*'` so the `loops` chain rows are in scope. Short because nothing in teatree reads a FINISHED result row (every consumer filters READY or RUNNING) and the table takes ~400k finished rows a day. Consumed by both `t3 <overlay> retention prune` and the hourly `prune_task_results` retention pass, through one seam (`teatree.core.retention.task_results`); that lane runs on every pass, outside the batch budget. Per-overlay overridable. |
 | `scratch_retention_days` | #4165: retention window (days) for agent scratch under the temp root (default `0` — the lane ships OFF, as every destructive lever does; set a positive window to arm it). On a RAM-backed `/tmp` this is MEMORY, not idle disk — the measured box carried 8.8 GB of week-old sqlite/venv scratch inside a 15 GB tmpfs on 31 GB of RAM, 28% of the working pool. `t3 <overlay> retention scratch` reclaims a top-level entry only when it is older than the window, owned by this uid, held open (fd or cwd) by no live process the probe can see, not a registered worktree checkout nor a parent/child of one, and not protected by name. Every guard that cannot be answered KEEPS the entry with its reason printed; an unreadable process table or worktree read makes the whole plan removable-empty. Dry-run by default (`--apply` reclaims). Per-overlay overridable; enforced by `teatree.core.retention.scratch`. |
 
 | `scratch_sweep_root` | #4165: temp root the scratch sweep reclaims from (default `""` = auto-resolve). Blank resolves to the HOST view `/host-tmp` when the deployment mounts it paired with the host process table at `/host-proc`, else to this venue's own `/tmp`. The pairing is the point: containers do not share the host temp root, so a container-scoped sweep of the container's own `/tmp` reclaims nothing of what fills the box — and sweeping one namespace's files while reading another's process table is exactly what blinds the open-file guard. An explicitly configured root that is not the host mount is swept against this venue's own `/proc`. Per-overlay overridable. |
@@ -579,7 +579,17 @@ t3 <overlay> config_setting set agent_skill_models \
 
 The list is authoritative and ordered. Each candidate requires `harness` and
 `model`; `provider`, capability-comparison `tier`, and reasoning `effort` are
-optional. Effort uses `low | medium | high | xhigh | max`; when omitted, the
+optional. `config_setting set` checks the SHAPE only: it refuses a candidate
+missing `harness` or `model`, an unknown key, or an off-scale `effort`, and names
+the entry (`agent_skill_models['code'][0].model`). A row stored before that check
+fails its dispatch once, as a recorded attempt. The write does NOT check that
+`harness` names a registered backend (Codex and overlay harnesses register in the
+agents layer, which the config layer cannot read), that `provider` is valid under
+it, or that the model is catalogued: each of those rejects the candidate at
+dispatch, naming the reason, and the next candidate runs. `agent_phase_harness`
+is refused unless each value is an `AgentHarness` or an inherit sentinel. A Codex
+candidate's model must also appear in the private home's `models_cache.json`
+catalog, or the candidate is skipped before dispatch. Effort uses `low | medium | high | xhigh | max`; when omitted, the
 normal phase/harness effort applies. A candidate whose explicit effort is not
 supported by its harness is rejected before dispatch, so the next route is used
 and provenance never records an effort the backend dropped. A Codex App
@@ -596,14 +606,20 @@ dispatch refuses the ambiguity instead of choosing by load order. The older
 `factory_phase_harness_candidates` route and a skill-owned route are mutually
 exclusive for the same dispatch.
 
-TeaTree resolves the first registered and available candidate. Availability is
+TeaTree resolves the first registered and available candidate that has not already failed on this
+task through its own fault (`harness_crash`, `landing_unverified`, `result_error` since the last usage-window
+park); when every eligible candidate has failed it retries the last one, so a one-candidate route is unchanged.
+A route reached through a skill the phase merely loads never captures a phase that bars write tools, and a
+candidate on a phase pinned to another harness is rejected naming the pin. Availability is
 keyed by overlay, harness, provider, and model, persisted in
 `AgentRouteAvailability`, and held in process memory: healthy results are reused
 for ten minutes and unavailable results for two. A worker therefore does not
 query the DB on every request. Cached unavailability also avoids repeating a
 known-dead lane; cached health repeats only the cheap local capability probe so a
 durable observation from a Codex-equipped worker cannot make a Claude-only
-worker select a missing binary. A runtime failure immediately updates the cache.
+worker select a missing binary. A runtime failure immediately updates the cache. A quota or authentication
+failure holds its candidate unavailable for an hour, and parks the task for as long once side effects started
+or an outcome made tool calls; other failures keep the two-minute hold.
 
 Automatic runtime fallback is deliberately narrow: authentication, quota/rate
 limit, model access, transport, and provider-5xx failures may try the next

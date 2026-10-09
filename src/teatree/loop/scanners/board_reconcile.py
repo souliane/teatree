@@ -17,9 +17,10 @@ state is the reviewer terminal, so they are correctly not merge candidates.)
 
 Six rules, one path, applied in cheapest-first order:
 
-Rule A — a linked ``PullRequest`` row is MERGED (no forge call). The #3540 sweep:
-    a ticket entered via a non-ladder phase whose PR merged outside the keystone has
-    no automatic exit from its entry state.
+Rule A — a linked ``PullRequest`` row is MERGED, unless the ticket was reopened over
+    every such row (#5031). The #3540 sweep: a ticket entered via a non-ladder phase
+    whose PR merged outside the keystone has no automatic exit from its entry state.
+    The scan reads no forge, but the merge-evidence gate does when none is stored.
 Rule B — the ticket's OWN ``issue_url`` names a PR the forge says MERGED. The
     load-bearing rule: the gap rule A cannot see is a ticket with no ``PullRequest``
     row at all, which is the shape of every card the board rendered as NOT STARTED
@@ -74,6 +75,7 @@ from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
+from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
@@ -156,6 +158,9 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
     transition's source membership — which pointedly refuses the post-merged /
     abandoned states so the FSM is never dragged backward — stays enforced per row by
     the ``can_proceed`` guards, keeping the FSM the single source of truth.
+
+    A reopened ticket keeps its MERGED rows, so without the ``all_merges_reopened_over``
+    skip this rule re-merged it within a tick and re-enqueued its worktree teardown.
     """
     from teatree.core.models import PullRequest, Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
@@ -165,7 +170,14 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
         ),
         overlay,
     ).distinct()
-    return collect(candidates, lambda ticket: _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run))
+    return collect(
+        candidates,
+        lambda ticket: (
+            None
+            if all_merges_reopened_over(ticket)
+            else _on_merge_signal(ticket, reason="merged PR row", dry_run=dry_run)
+        ),
+    )
 
 
 def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) -> tuple[list[BoardTransition], int]:

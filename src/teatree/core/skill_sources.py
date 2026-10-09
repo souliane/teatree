@@ -12,12 +12,13 @@ from pathlib import Path
 
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.provisioning.skill_clone_install import CloneInstall, install_published_skills
+from teatree.provisioning.skill_clone_install import CloneInstall, InstallPolicy, install_published_skills
 from teatree.provisioning.skill_drift import SkillSourceClone
 from teatree.provisioning.skills_cli import SkillsCli
 from teatree.skill_support.agent_declarations import declared_skills_for_agent
 from teatree.skill_support.demands import SkillDemand, enumerate_skill_demands, skill_demand_names
 from teatree.skill_support.loading import SkillLoadingPolicy
+from teatree.skill_support.pin_shadow import declared_pin_specs
 
 
 def declared_skill_sources() -> list[SkillSourceClone]:
@@ -60,14 +61,16 @@ def install_declared_sources(
     cache_root: Path,
     demand_names: set[str],
     harness_exclusions: list[str],
+    manifest: Path,
     cli: SkillsCli | None = None,
 ) -> list[CloneInstall]:
+    policy = InstallPolicy(harness_exclusions, declared_pin_specs(manifest))
     return [
         install_published_skills(
             clone,
             cache_root=cache_root,
             demand_names=demand_names,
-            harness_exclusions=harness_exclusions,
+            policy=policy,
             cli=cli,
         )
         for clone in declared_skill_sources()

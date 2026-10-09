@@ -35,6 +35,7 @@ from teatree.core.models import (
     PullRequest,
     Task,
     Ticket,
+    Worktree,
 )
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
@@ -51,6 +52,7 @@ from teatree.loop.scanners.pr_sweep_branch_update import MAX_BRANCH_UPDATES_PER_
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.types import RawAPIDict
+from tests._pr_ledger import own_pr
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -186,7 +188,10 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     behind_main: bool = False,
     author: str = SELF_LOGIN,
     same_repo: bool | None = None,
+    owned: bool = True,
 ) -> PrSummary:
+    if owned:
+        own_pr(SLUG, pr_id)
     return PrSummary(
         slug=SLUG,
         number=pr_id,
@@ -1506,7 +1511,7 @@ class TestAutoReviewDispatch:
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
 
-        pr = _open_pr()
+        pr = _open_pr(owned=False)
         author_ticket = Ticket.objects.create(
             overlay="teatree",
             issue_url=f"https://github.com/{SLUG}/issues/2104",
@@ -2621,3 +2626,123 @@ class TestSoloOverlayNoClearIsNeverSilent:
                 record_sweep_outcomes(scanner.scan(), notify=_notify)
 
         assert announced, "a solo-overlay skip must age into an announcement"
+
+
+class TestUnownedOwnPrIsNeverMerged:
+    """An own PR no ticket owns is refused at the sweep, never merged on a bare verdict.
+
+    Reproduces 2026-10-08: a PR-keyed ticket (``workspace ticket <PR url> --adopt``) with a
+    worktree on the branch, no ``PullRequest`` ledger row and no CLEAR yet. Every ticket-scoped
+    merge gate resolves its ticket from the ledger, so each silently no-opped and the sweep merged
+    on a hand-recorded ``merge_safe`` verdict plus green CI, three seconds after it was recorded.
+    """
+
+    BRANCH = "5145-merge-gate-a-installed-t3-hook"
+
+    def _pr_keyed_ticket(self, *, pr_id: int = 6230) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="teatree", issue_url=f"https://github.com/{SLUG}/pull/{pr_id}", state=Ticket.State.WORK_STARTED
+        )
+        Worktree.objects.create(ticket=ticket, overlay="teatree", repo_path=SLUG, branch=self.BRANCH)
+        return ticket
+
+    def _sweep(self, pr: PrSummary) -> tuple[list[ScanSignal], FakePrApiClient, FakeKeystone, NullMergeNotifier]:
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+        return scanner.scan(), api, keystone, notifier
+
+    def test_unowned_own_pr_with_a_recorded_verdict_and_green_ci_is_refused(self) -> None:
+        self._pr_keyed_ticket()
+        _record_cold_review()
+
+        signals, api, keystone, notifier = self._sweep(_open_pr(owned=False))
+
+        assert api.merge_pr_calls == []
+        assert keystone.calls == []
+        assert [(s.kind, s.payload["reason"]) for s in signals] == [("pr_sweep.blocked", "no_owning_ticket")]
+        assert notifier.flag_calls == [(SLUG, 6230, "no_owning_ticket", f"https://github.com/{SLUG}/pull/6230")]
+        assert notifier.calls == []
+
+    def test_unowned_own_pr_is_refused_again_on_the_next_tick(self) -> None:
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(owned=False)]})
+        scanner, _ = _scanner(api=api, keystone=FakeKeystone(), solo_overlay=True)
+
+        scanner.scan()
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert signals[0].payload["reason"] == "no_owning_ticket"
+
+    def test_unowned_own_pr_without_a_cold_review_is_flagged_for_review_not_refused(self) -> None:
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(owned=False)]})
+        scanner, notifier = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["pr_sweep.flag_no_review"]
+        assert [call[2] for call in notifier.flag_calls] == ["no_independent_review"]
+        assert len(dispatcher.calls) == 1
+
+    def test_owned_pr_with_a_ledger_row_still_merges(self) -> None:
+        _record_cold_review()
+
+        signals, api, _, notifier = self._sweep(_open_pr())
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert [s.payload["reason"] for s in signals] == ["solo_overlay_no_clear"]
+        assert notifier.flag_calls == []
+
+    def test_owned_pr_whose_clear_was_issued_first_still_merges_through_the_keystone(self) -> None:
+        ticket = self._pr_keyed_ticket()
+        MergeClear.issue(
+            ClearRequest(
+                pr_id=6230,
+                slug=SLUG,
+                reviewed_sha=HEAD,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                ticket=ticket,
+            )
+        )
+
+        signals, api, keystone, notifier = self._sweep(_open_pr(owned=False))
+
+        assert len(keystone.calls) == 1
+        assert api.merge_pr_calls == []
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert notifier.flag_calls == []
+
+    def test_owned_pr_whose_clear_is_for_another_head_still_resolves_its_ticket(self) -> None:
+        ticket = self._pr_keyed_ticket()
+        MergeClear.issue(
+            ClearRequest(
+                pr_id=6230,
+                slug=SLUG,
+                reviewed_sha=STALE,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                ticket=ticket,
+            )
+        )
+        _record_cold_review()
+
+        signals, api, _, _ = self._sweep(_open_pr(owned=False))
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+
+    def test_dependabot_same_repo_pr_without_a_ledger_row_still_merges(self) -> None:
+        _record_cold_review(reviewer="cold-reviewer")
+
+        signals, api, _, notifier = self._sweep(_open_pr(owned=False, author="app/dependabot", same_repo=True))
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert [s.payload["reason"] for s in signals] == ["solo_overlay_no_clear"]
+        assert notifier.flag_calls == []

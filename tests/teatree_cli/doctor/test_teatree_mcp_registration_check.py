@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.cli.doctor.checks_mcp import _check_teatree_mcp_registration
-from teatree.core.mcp_connectivity import McpServerStatus
 
 
 class TestTeatreeMcpRegistrationDoctorCheck:
@@ -30,76 +29,16 @@ class TestTeatreeMcpRegistrationDoctorCheck:
         assert "FAIL" not in out
         assert "does not declare" in out
 
-    def test_registered_and_connected_is_ok_silent(self, tmp_path: Path, capsys) -> None:
+    def test_a_well_formed_registration_is_ok_silent(self, tmp_path: Path, capsys) -> None:
         (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        connected = [McpServerStatus(name="teatree", url="", connected=True)]
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", return_value=connected),
-        ):
+        with patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path):
             assert _check_teatree_mcp_registration() is True
         assert capsys.readouterr().out == ""
 
-    def test_registered_but_disconnected_warns(self, tmp_path: Path, capsys) -> None:
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        disconnected = [McpServerStatus(name="teatree", url="", connected=False)]
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", return_value=disconnected),
-        ):
+    def test_a_registration_with_the_wrong_command_warns(self, tmp_path: Path, capsys) -> None:
+        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp"]}}}')
+        with patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path):
             assert _check_teatree_mcp_registration() is True
         out = capsys.readouterr().out
-        assert "WARN" in out
-        assert "not" in out
-
-    def test_plugin_scoped_connected_with_pending_project_entry_is_silent(self, tmp_path: Path, capsys) -> None:
-        """#3255: ``plugin:t3:teatree`` Connected + a pending project ``teatree`` → no WARN.
-
-        Both entries load the same shipped ``.mcp.json`` under two CC scopes; the
-        plugin-scoped one being connected means the MCP is live.
-        """
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        statuses = [
-            McpServerStatus(name="plugin:t3:teatree", url="", connected=True),
-            McpServerStatus(name="teatree", url="", connected=False),
-        ]
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", return_value=statuses),
-        ):
-            assert _check_teatree_mcp_registration() is True
-        assert capsys.readouterr().out == ""
-
-    def test_no_teatree_entry_connected_still_warns(self, tmp_path: Path, capsys) -> None:
-        """Regression intact: when neither scope is connected, the WARN still fires."""
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        statuses = [
-            McpServerStatus(name="plugin:t3:teatree", url="", connected=False),
-            McpServerStatus(name="teatree", url="", connected=False),
-        ]
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", return_value=statuses),
-        ):
-            assert _check_teatree_mcp_registration() is True
-        out = capsys.readouterr().out
-        assert "WARN" in out
-        assert "not" in out
-
-    def test_registered_but_absent_from_probe_is_silent(self, tmp_path: Path, capsys) -> None:
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", return_value=[]),
-        ):
-            assert _check_teatree_mcp_registration() is True
-        assert capsys.readouterr().out == ""
-
-    def test_probe_failure_is_ok_best_effort(self, tmp_path: Path, capsys) -> None:
-        (tmp_path / ".mcp.json").write_text('{"mcpServers": {"teatree": {"command": "t3", "args": ["mcp", "serve"]}}}')
-        with (
-            patch("teatree.cli.doctor.plugin_repair._resolve_main_clone", return_value=tmp_path),
-            patch("teatree.core.mcp_connectivity.probe_mcp_servers", side_effect=FileNotFoundError("no claude")),
-        ):
-            assert _check_teatree_mcp_registration() is True
-        assert capsys.readouterr().out == ""
+        assert out.startswith("WARN")
+        assert "expected 't3' ['mcp', 'serve']" in out

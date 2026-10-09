@@ -19,6 +19,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.pending_chat_injection import DmContext
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_SLACK_ID
 
 _CHANNEL = "D-user"
 _OPTIONS = [{"label": "Yes"}, {"label": "No"}]
@@ -30,6 +31,7 @@ class FakeMessaging:
 
     route_token: str = "self"
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    user_id: str = OWNER_SLACK_ID
 
     def _is_self_dm(self, channel: str) -> bool:
         _ = channel
@@ -67,7 +69,7 @@ class TestClaimReleasedWhenApplyRaises(TestCase):
             slack_ts="100.0",
         )
         reply = PendingChatInjection.record(
-            channel=_CHANNEL, slack_ts="200.0", text="1", context=DmContext(user_id="U1")
+            channel=_CHANNEL, slack_ts="200.0", text="1", context=DmContext(user_id=OWNER_SLACK_ID)
         )
         assert reply is not None
         self.reply = reply

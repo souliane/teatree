@@ -21,10 +21,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from teatree.backends.types import Service
-from teatree.core.backend_factory import notion_client_from_overlay
 from teatree.core.backend_registry import NotionPageClient
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import NOTION
 from teatree.utils.expanded_params import expand_dataclass_params
 
 
@@ -131,7 +129,7 @@ INSTRUCTIONS = (
 
 
 def _client() -> NotionPageClient:
-    return resolve_declaring_overlay_client(Service.NOTION, notion_client_from_overlay, description="Notion client")
+    return NOTION.resolve()
 
 
 def _live_page_status(page_id: str, property_name: str) -> str | None:

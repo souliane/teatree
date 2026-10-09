@@ -28,7 +28,7 @@ from teatree.agents.result_schema import AgentResultBlob
 from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_failure_taxonomy import MODEL_FALLBACK_SUBTYPE, TURN_CEILING_SUBTYPE, is_context_exhaustion
 from teatree.agents.runner_usage import context_size
-from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
+from teatree.skill_support.index import bare_skill_name, harness_skills_dirs, resolve_skill_md
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -170,7 +170,7 @@ class StreamCapture:
                 return
             if isinstance(reference, str) and reference:
                 self.pending_skill_loads[block.id] = (
-                    _bare_skill_name(reference),
+                    bare_skill_name(reference),
                     Path(reference) if block.name in {"Read", "read_file", "Bash"} else None,
                 )
 
@@ -209,7 +209,7 @@ async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture 
 def _complete_skill_read(skill: str, read_path: Path, content: object) -> bool:
     """A successful Read counts only if it returned the full configured skill body."""
     try:
-        expected = _resolve_skill_md(skill, harness_skills_dirs())
+        expected = resolve_skill_md(skill, harness_skills_dirs())
         if expected is None or read_path.resolve() != expected.resolve() or not isinstance(content, str):
             return False
         body = expected.read_text(encoding="utf-8")

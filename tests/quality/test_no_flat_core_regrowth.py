@@ -337,7 +337,8 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # 130: +question_heal.py (#4904) — the withdraw-a-healed-question seam shared by every
 # question surfacing drain (the flat notify_question_drains.py) and the tick sweep. No
 # subpackage owns the DeferredQuestion lifecycle, and its checks span provision/ today.
-PINNED_FLAT_CORE_MODULES = 130
+# 128: -mcp_connectivity.py / -connector_manifest.py (#5116) — the third-party MCP connector layer, retired.
+PINNED_FLAT_CORE_MODULES = 128
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

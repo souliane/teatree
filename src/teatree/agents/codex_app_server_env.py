@@ -1,11 +1,13 @@
 """Private process environment and command resolution for Codex App Server."""
 
+import hashlib
 import os
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.agents.codex_app_server_options import CodexAppServerError
+from teatree.forge_credentials import ROUTED_GH_KEY_ENV
 
 _PROCESS_ENV_KEYS = frozenset(
     {
@@ -35,20 +37,27 @@ def codex_command() -> tuple[str, ...]:
     return (executable,)
 
 
-def codex_process_env(code_home: Path, *, ambient: Mapping[str, str] = os.environ) -> dict[str, str]:
-    """Build a private-home environment with controlled factory runtime paths."""
+_DISPATCH_ENV_KEYS = ("GH_TOKEN", ROUTED_GH_KEY_ENV, "PYTEST_XDIST_AUTO_NUM_WORKERS")
+
+
+def forge_token_fingerprint(dispatch_env: Mapping[str, str] | None) -> str:
+    """A short, non-reversible handle on the routed forge token, never logged; empty without one."""
+    token = (dispatch_env or {}).get("GH_TOKEN", "")
+    return hashlib.sha256(token.encode()).hexdigest()[:12] if token else ""
+
+
+def codex_process_env(
+    code_home: Path, dispatch_env: Mapping[str, str] | None = None, *, ambient: Mapping[str, str] = os.environ
+) -> dict[str, str]:
+    """Build a private-home environment with controlled factory runtime paths.
+
+    Of *dispatch_env* only the routed forge token, the pass key it came from and the pytest worker cap cross.
+    """
     retained = {key: value for key, value in ambient.items() if key in _PROCESS_ENV_KEYS}
+    retained.update({key: value for key, value in (dispatch_env or {}).items() if key in _DISPATCH_ENV_KEYS})
     if author_name := retained.get("GIT_AUTHOR_NAME"):
         retained.setdefault("GIT_COMMITTER_NAME", author_name)
     if author_email := retained.get("GIT_AUTHOR_EMAIL"):
         retained.setdefault("GIT_COMMITTER_EMAIL", author_email)
-    retained.update(
-        {
-            "GIT_CONFIG_GLOBAL": str(code_home / ".gitconfig"),
-            "GIT_CONFIG_SYSTEM": os.devnull,
-            "GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "credential.helper",
-            "GIT_CONFIG_VALUE_0": "",
-        }
-    )
+    retained["GIT_CONFIG_GLOBAL"] = str(code_home / ".gitconfig")
     return {**retained, "CODEX_HOME": str(code_home), "HOME": str(code_home)}

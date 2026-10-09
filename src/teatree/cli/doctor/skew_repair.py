@@ -95,24 +95,24 @@ def clear_repair_receipt() -> None:
     receipt_path().unlink(missing_ok=True)
 
 
-def _remedy(skews: "list[VersionSkew]") -> str | None:
-    """The command that clears *skews* in the running env, or ``None`` when there is none."""
+def remedy(names: "Iterable[str]") -> str | None:
+    """The command that clears the skew of *names* in the running env, or ``None`` when there is none."""
     from teatree.cli.dep_drift_repair import (  # noqa: PLC0415 — deferred: repair path only
         RepairPlan,
         resolve_repair_plan,
     )
 
-    plan = resolve_repair_plan([skew.name for skew in skews])
+    plan = resolve_repair_plan(list(names))
     return plan.label if isinstance(plan, RepairPlan) else None
 
 
 def report_version_skew(skews: "list[VersionSkew]") -> None:
     """Print the exact remedy for *skews* and run nothing — the read-only default."""
-    remedy = _remedy(skews)
-    if remedy is None:
+    command = remedy(skew.name for skew in skews)
+    if command is None:
         typer.echo("      No self-repair applies to this install — reinstall teatree into the running env.")
         return
-    typer.echo(f"      Fix it by running: `{remedy}`")
+    typer.echo(f"      Fix it by running: `{command}`")
     typer.echo("      Or re-run as `t3 doctor check --repair` to have the doctor run that for you.")
 
 

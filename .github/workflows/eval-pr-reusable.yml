@@ -108,6 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: true
           # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
           fetch-depth: 0
       # An overlay caller checks out the teatree HOST and symlinks it where
@@ -119,16 +120,17 @@ jobs:
         if: inputs.teatree-repo != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
           path: teatree-upstream
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -206,10 +208,10 @@ jobs:
       - name: Symlink the teatree host where uv.sources resolves it
         if: inputs.teatree-repo != ''
         run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: ${{ inputs.python-version }}
       - name: Sync dependencies (retry on transient network failure)
@@ -380,7 +382,7 @@ jobs:
       # warn` then made every run, red or green, upload nothing at all.
       - name: Upload the per-trial transcript report (private)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-pr-transcripts
           path: ${{ runner.temp }}/eval-transcripts-*.html
@@ -393,7 +395,7 @@ jobs:
       # collected by a publish job.
       - name: Upload the raw run log (private)
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: eval-run-log-pr
           path: ${{ runner.temp }}/eval-run-pr.log

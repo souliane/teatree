@@ -9,7 +9,8 @@ facade.
 """
 
 from teatree.skill_support.deps import companion_suggestions, resolve_all, resolve_requires
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy, SkillSelectionResult
+from teatree.skill_support.index import DEFAULT_SKILLS_DIR
+from teatree.skill_support.loading import SkillLoadingPolicy, SkillSelectionResult
 from teatree.skill_support.map import load_skill_delegation, parse_skill_delegation_map, render_skill_delegation_map
 from teatree.skill_support.ref_validator import validate_skill_refs
 from teatree.skill_support.schema import validate_directory, validate_skill_md

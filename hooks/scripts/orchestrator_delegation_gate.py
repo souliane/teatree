@@ -175,7 +175,7 @@ def refusal(shape: str, tool_name: str = "Bash") -> str:
         f"Or BOUND it, if this is one fact you need to ROUTE: {_TOOL_BOUNDS.get(tool_name, _BASH_BOUNDS)}. "
         "A bounded read is a routing read and is never gated.\n"
         "Orchestration is untouched — this gate reads the three READING tools only, so Agent/Task "
-        "dispatch, Read, TaskCreate/TaskUpdate, SendMessage, AskUserQuestion and every MCP connector "
+        "dispatch, Read, TaskCreate/TaskUpdate, SendMessage, AskUserQuestion and every MCP tool "
         "always pass, as do `git status`, `docker ps`, `gh pr view`, `t3 ... list --json`, and a `grep` "
         "used as a downstream filter.\n"
         "Note `run_in_background: true` is NOT an escape here: this gate guards context, not "

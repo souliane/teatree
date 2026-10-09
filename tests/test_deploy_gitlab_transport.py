@@ -140,8 +140,8 @@ class TestExecVenueResolvesTheToken:
         """
         wedge = prologue[prologue.index('"$rc" -eq 124') :]
 
-        assert "exit 1" in wedge, "a store that did not ANSWER must stop here, not export an empty value"
-        assert wedge.index("exit 1") < wedge.index("GITLAB_TOKEN=")
+        assert "exit 69" in wedge, "a store that did not ANSWER must stop here, not export an empty value"
+        assert wedge.index("exit 69") < wedge.index("GITLAB_TOKEN=")
 
     def test_an_absent_store_is_not_treated_as_a_wedged_one(self, prologue: str) -> None:
         """CI and a laptop that never set `pass` up are not outages — they must not be refused."""

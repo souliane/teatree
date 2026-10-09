@@ -248,6 +248,10 @@ _FIXTURES: dict[str, tuple[list[Any], list[Any]]] = {
     "aliases": ([[], ["a"], ["a", "a"]], ["a", 5]),
     "registry_dict": ([{}, {"a": 1}], ["x", [], True, 5]),
     "agent_skill_models": ([{}, {"code": []}, {"review": [{"floor": "haiku"}]}], ["x", [], {"code": "haiku"}]),
+    "agent_phase_harness": (
+        [{}, {"testing": "inherit"}, {"reviewing": "claude_sdk"}],
+        ["x", [], {"coding": "codex_app_server"}, {"testing": 5}],
+    ),
     "private_repos": (
         [[], ["gitlab.com/group/repo"], ["GitHub.com/Owner"]],
         ["gitlab.com/group/repo", ["owner/repo"], ["gitlab.com//repo"], ["gitlab.com/o/r*"]],
@@ -276,6 +280,7 @@ _KIND_BY_QUALNAME = {
     "_parse_user_identity_aliases": "aliases",
     "_parse_registry_dict": "registry_dict",
     "_parse_agent_skill_models": "agent_skill_models",
+    "_parse_agent_phase_harness": "agent_phase_harness",
     "_parse_private_repos": "private_repos",
     "_parse_header_map": "header_map",
     "parse_harness_name": "harness",

@@ -200,10 +200,10 @@ def required_skill_delivery(
     stack skill is a forced directive in every phase unless it is embedded in full.
     """
     stack = {name for name in skills if _is_stack_skill(name)}
-    if not lifecycle_skill:
+    if not lifecycle_skill and not stage_skills:
         # build_system_context takes its all-inline path without a lifecycle
-        # skill, including reactive phases with no _PHASE_TO_SKILL mapping.
-        return (set(skills) | set(stage_skills)) - stack, stack
+        # or stage skill, including reactive phases with no _PHASE_TO_SKILL mapping.
+        return set(skills) - stack, stack
     full = ({lifecycle_skill} if lifecycle_skill else set()) | set(stage_skills)
     full |= {name for name in skills if _explicit_load_name(name) in _ALWAYS_FULL_SKILLS}
     explicit: set[str] = set()
@@ -238,9 +238,9 @@ def build_system_context(
 ) -> str:
     """Build the system context for headless (SDK) execution.
 
-    When *lifecycle_skill* is provided, only the lifecycle skill and rules
-    are embedded in full; companion skills get a one-line summary to save
-    tokens. On the reviewing phase the active overlay's primary review skill
+    When *lifecycle_skill* or a stage skill is present, only those, the stage
+    skills' direct ``requires`` and rules are embedded in full; companion skills
+    get a one-line summary to save tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
     overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a reviewer reviews WITH the overlay's conventions.
@@ -264,10 +264,10 @@ def build_system_context(
 
     skill_content = ""
     if skills:
-        if lifecycle_skill:
+        if lifecycle_skill or stage_present:
             # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
             # by reference, so they are primary alongside the lifecycle skill.
-            primary_skills = {lifecycle_skill, *stage_present}
+            primary_skills = {lifecycle_skill, *stage_present} - {""}
             explicit_load_skills: set[str] | None = None
             suppress_names: set[str] | None = None
             phase = normalize_phase(task.phase)

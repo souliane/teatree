@@ -42,6 +42,7 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_backends._gitlab_wire import GitLabWire
 
 _GATE = "teatree.core.gates.review_request_batch_gate"
@@ -261,6 +262,15 @@ class TestPauseStateFailsClosed(TestCase):
             verdict = work_group_ready(mr_url=_url(1))
         assert verdict.ready, verdict
 
+    def test_an_unposted_claim_reads_no_pause_either(self) -> None:
+        """A claim whose post never landed broadcast nothing, so it holds nothing."""
+        ReviewRequestPost.objects.create(mr_url=_url(1), slack_channel_id="C_REVIEW", slack_thread_ts="")
+        host = _Host(mrs=[_mr(1, "feat(billing): add the sweep")])
+        messaging = _Messaging(error=AssertionError("an unposted claim has no thread to read"))
+        with _forge(host, messaging=messaging):
+            verdict = work_group_ready(mr_url=_url(1))
+        assert verdict.ready, verdict
+
 
 class TestOversizeGroupFailsClosed(TestCase):
     """Past the bound the shared signal is likelier a coincidence than one unit of work."""
@@ -473,6 +483,7 @@ class TestPostChokepoint(_ChokepointCase):
 
     @contextmanager
     def _post_path(self, backend: _Backend) -> Iterator[None]:
+        allow_slack_channels(_TARGET.channel_id)
         OnBehalfApproval.record(target=_url(1), action="review_request_post", approver_id="souliane")
         with ExitStack() as stack:
             stack.enter_context(patch(f"{_POST_CMD}.resolve_guard_target", return_value=_TARGET))

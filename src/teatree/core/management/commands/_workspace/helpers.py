@@ -12,8 +12,8 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, TypedDict
 
+from teatree.core.cleanup.preview import preview_line
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
-from teatree.core.management.commands._workspace.preview import preview_line
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 from teatree.core.runners import heal_missing_provisioned_db

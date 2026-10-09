@@ -20,11 +20,9 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from teatree.backends.types import Service
-from teatree.core.backend_factory import configured_messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.mcp.service_resolver import SLACK
 from teatree.types import ChannelReadRefusedError
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
@@ -48,12 +46,7 @@ INSTRUCTIONS = (
 
 
 def _client() -> MessagingBackend:
-    # ``configured_messaging_from_overlay`` (not ``messaging_from_overlay``) so a
-    # noop-messaging overlay that declares ``Service.SLACK`` without credentials
-    # is skipped and the resolver reaches the overlay that has them (#3299).
-    return resolve_declaring_overlay_client(
-        Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
-    )
+    return SLACK.resolve()
 
 
 class MentionQueueUnreadableError(ToolError):

@@ -6,11 +6,15 @@ from pathlib import Path
 import pytest
 
 from teatree.provisioning.declared import (
+    TEATREE_REPOSITORY,
+    DeclarationMalformedError,
     DeclarationUnreadableError,
+    apm_entries,
     binaries_declared_in_pyproject,
     declared_dependencies,
     integrations_declared_in_claude_settings,
     skills_declared_in_apm_manifest,
+    unpinned_apm_entries,
 )
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
@@ -100,6 +104,21 @@ class TestSkillsDeclaredInApmManifest:
         with pytest.raises(DeclarationUnreadableError):
             skills_declared_in_apm_manifest(_write_manifest(tmp_path, "dependencies: [oh: no\n"))
 
+    @pytest.mark.parametrize(
+        "body",
+        ["dependencies: [oh: no\n", "- just\n- a list\n", "dependencies:\n  pip: []\n"],
+        ids=["unparsable", "not-a-mapping", "no-apm-list"],
+    )
+    def test_a_manifest_that_exists_in_the_wrong_shape_is_malformed(self, tmp_path: Path, body: str) -> None:
+        with pytest.raises(DeclarationMalformedError):
+            apm_entries(_write_manifest(tmp_path, body))
+
+    def test_an_absent_manifest_is_unreadable_not_malformed(self, tmp_path: Path) -> None:
+        with pytest.raises(DeclarationUnreadableError) as excinfo:
+            apm_entries(tmp_path / "apm.yml")
+
+        assert not isinstance(excinfo.value, DeclarationMalformedError)
+
 
 class TestBinariesDeclaredInPyproject:
     def test_required_binaries_are_read_from_the_declared_table(self, tmp_path: Path) -> None:
@@ -169,3 +188,48 @@ class TestDeclaredDependencies:
 
         assert "ac-python" in {dep.name for dep in enumeration.dependencies}
         assert any("pyproject.toml" in reason for reason in enumeration.unreadable)
+
+    def test_a_malformed_manifest_is_reported_apart_from_an_unreadable_surface(
+        self, tmp_path: Path, home: Path
+    ) -> None:
+        _write_manifest(tmp_path, "- just\n- a list\n")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.teatree.provisioning]\nrequired_binaries = ["jq"]\n', encoding="utf-8"
+        )
+
+        enumeration = declared_dependencies(project_root=tmp_path, home=home)
+
+        assert [reason for reason in enumeration.malformed if str(tmp_path / "apm.yml") in reason]
+        assert enumeration.unreadable == []
+        assert {dep.kind for dep in enumeration.dependencies} == {"binary", "integration"}
+
+
+class TestUnpinnedApmEntries:
+    def test_every_entry_without_a_full_commit_is_returned_whole_repo_bundles_included(self, tmp_path: Path) -> None:
+        manifest = _write_manifest(
+            tmp_path,
+            _manifest_body(
+                f"obra/superpowers#{_SUPERPOWERS_SHA}",
+                f"owner/repo/skills/upper#{_SUPERPOWERS_SHA.upper()}",
+                "obra/superpowers",
+                "owner/repo/skills/floating#main",
+                "owner/repo/skills/short#1f20bef",
+                "souliane/teatree/skills/in-repo",
+            ),
+        )
+
+        assert unpinned_apm_entries(manifest) == [
+            "obra/superpowers",
+            "owner/repo/skills/floating#main",
+            "owner/repo/skills/short#1f20bef",
+        ]
+
+    def test_an_unreadable_manifest_raises_instead_of_reporting_nothing_unpinned(self, tmp_path: Path) -> None:
+        with pytest.raises(DeclarationUnreadableError):
+            unpinned_apm_entries(tmp_path / "nope.yml")
+
+    def test_the_shipped_manifest_pins_every_entry_and_does_not_list_its_own_repository(self) -> None:
+        manifest = Path(__file__).resolve().parents[2] / "apm.yml"
+
+        assert unpinned_apm_entries(manifest) == []
+        assert TEATREE_REPOSITORY not in apm_entries(manifest)

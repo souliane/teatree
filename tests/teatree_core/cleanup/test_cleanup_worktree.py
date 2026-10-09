@@ -8,6 +8,8 @@ mock; the shared module-level ``_patch_*`` decorators and the
 """
 
 import contextlib
+import os
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +22,7 @@ from teatree.core.cleanup.cleanup import WorktreeBusyError, _ref_captured_by_mer
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
+from teatree.paths import PathHelpers
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
 from tests.teatree_core.cleanup._shared import _run_git, corrupt_index, forge_reporting, squash_then_base_evolved
@@ -114,6 +117,33 @@ class TestCleanupWorktree(TestCase):
         assert "org/repo" in result.label
         assert "fix-99" in result.label
         assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_removes_the_browser_session_of_the_torn_down_worktree_only(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(os.environ, {"T3_DATA_DIR": data_dir}):
+            torn_down = PathHelpers.browser_session_dir(Path("/tmp/wt/org/repo"))
+            neighbour = PathHelpers.browser_session_dir(Path("/tmp/wt/org/other"))
+            for session in (torn_down, neighbour):
+                session.mkdir(parents=True)
+                (session / "last-used").touch()
+
+            cleanup_worktree(wt)
+
+            assert not torn_down.exists()
+            assert neighbour.is_dir()
 
     @_patch_overlay
     @_patch_git

@@ -94,8 +94,6 @@ python_prose:
   - teatree.core.review.diff_scope_gate
   src/teatree/core/review/diff_scope_probe.py:
   - teatree.core.review.diff_scope_gate
-  src/teatree/core/views/github_webhook.py:
-  - settings.TEATREE_GITHUB_WEBHOOK_SECRET
   src/teatree/core/views/gitlab_webhook.py:
   - settings.TEATREE_GITLAB_WEBHOOK_TOKEN
   src/teatree/eval/corpus_models.py:

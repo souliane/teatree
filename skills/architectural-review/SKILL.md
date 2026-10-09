@@ -3,8 +3,7 @@ name: architectural-review
 description: Periodic holistic architectural review — the third of teatree's three review tiers (design-time `architecture-design`, per-PR deterministic `check_antipatterns.py`, periodic holistic `architectural-review`). Walks the whole tree for judgement-tier anti-patterns and BLUEPRINT.md staleness that no single diff can catch, implements what it finds, and pushes one PR. Dispatched automatically by `ArchitecturalReviewScanner` on a time or merge-count cadence — not user-invoked.
 eval_exempt: whole-tree periodic synthesis with no fixed input/output pair to grade per-turn; correctness is judged by the merged fixes it produces over time, mirroring retro (#837)
 requires:
-  - architecture-design
-  - review
+  - ac-reviewing-codebase
 compatibility: macOS/Linux, any teatree-managed repo.
 metadata:
   version: 0.0.1
@@ -24,11 +23,35 @@ Three review tiers cover different scopes and cadences (BLUEPRINT.md § 17.2):
 
 The first two tiers see one diff. This one sees **drift that accumulates across individually-fine changes** — a module that crept past the health threshold, a BLUEPRINT section that went stale, a pattern fine twice and a repo-wide anti-pattern the third time. It does not re-litigate architecture-design's ten checks on old decisions.
 
+## The method is `ac-reviewing-codebase`; this skill holds the teatree tier rules
+
+`ac-reviewing-codebase` (the pinned `souliane/skills` skill, embedded beside this one) is the review method. This skill adds only what is specific to teatree's periodic tier: the catalog, the three hunted shapes, BLUEPRINT, the cadence prioritisation, the worktree and one-PR mechanics, and maker≠checker. On any conflict, this skill wins.
+
 You are dispatched by `ArchitecturalReviewScanner` (`src/teatree/loop/scanners/architectural_review.py`) as a headless `architectural_review`-phase Task, firing after `architectural_review_cadence_hours` (default 168h) or `architectural_review_after_merge_count` (default 25) merges, whichever comes first. There is no user prompt to parse — the trigger IS the instruction. Anchor to `Ticket.issue_url == "architectural-review://<overlay>"`, the synthetic per-overlay tracking ticket the scanner creates.
 
 ## The standing bar — the project is in salvage mode
 
-Judge the tree by architecture-design § "Standing bar" (loaded via `requires`). Net LoC is the first metric: report the PR's net lines, and treat unearned lines, a concept owned in N places, a parallel path beside the one it should have replaced, a setting on an always-on feature, and a mock-heavy test of internals as findings. A fix that deletes more than it adds is the default shape.
+Judge the tree by `skills/architecture-design/SKILL.md` § "Standing bar" — Read it; it is not embedded. Net LoC is the first metric: report the PR's net lines, and treat unearned lines, a concept owned in N places, a parallel path beside the one it should have replaced, a setting on an always-on feature, and a mock-heavy test of internals as findings. A fix that deletes more than it adds is the default shape.
+
+## Headless: the generic skill's confirmation steps
+
+`ac-reviewing-codebase` assumes a user who answers. This run has none, so each step that asks resolves to a fixed rule:
+
+| Generic step | Headless rule |
+|---|---|
+| No `~/.ac-reviewing-codebase` config; scope from `MAINTAINED_SKILLS` / `MANAGED_REPOS` | The scope is this overlay's main clone. The maintained skills are this repo's `skills/`; pinned external skills are read-only. |
+| Configuration fallback — ask before modifying any skill | No question: this repo's `skills/` may be edited, a pinned external skill never is (the Phase 5.3 row). |
+| Phase 0.3 — commit or rescue a dirty main clone | Never mutate or rescue it. Report the dirty state in the envelope. |
+| Phase 0.4 — open-PR sweep, or ask how to sweep | Skip it: the factory's sweep loops own open PRs. Deduplicate findings against open PRs and the backlog instead. |
+| Phase 0.5 — confirm or narrow the scope | No question. Rank by § 5. |
+| Phase 0.6 — memory discovery | Skip it. |
+| Rule 4 and Phase 5.2 — ask when ambiguous | Ambiguity is the § 8 path: record it with `t3 <overlay> questions record` and continue the pass. |
+| Rule 10 — ask when unsure whether duplication is intentional | Merge the copies only when one replaces the rest with no behaviour lost; otherwise it is contested and takes the Rule 4 path. |
+| Phase 5.3 — ownership check before each edit | Edit teatree paths only. A finding in an external skill becomes a question, never an edit. |
+| Phase 6.6 — squash own commits | One commit per unit (§ 7), no squash. |
+| Phase 6.7 — offer to push | Push is mandatory: one PR through `ensure-pr` (§ 7). |
+| Phase 6.8 — retro and iteration | No iteration. The result envelope is the report. |
+| `review-checklist` / `review-verify` | Run them when they run here, and report their exit status as coverage; a partial checklist is reported as partial. |
 
 ## Environment
 
@@ -127,6 +150,9 @@ In the worktree you cut in § Environment:
 1. Implement each confirmed unit of work from § 1 through § 4, plus any new catalog entry § 3 owes. Follow `skills/code/SKILL.md` — a failing test first wherever the behaviour is testable, observed RED before the fix; a BLUEPRINT/appendix staleness fix is a prose change with no test.
 2. Commit per unit, so the history reads as one coherent change per root cause. Cite the catalog entry id (and the ticket, where one exists) in the commit body.
 3. Run the affected-tests lane (`bash dev/test-affected.sh`) and `uv run ruff check`, both green, and prove each behavioural fix on the real surface it changes — tests green alone is not proof.
+
+   **3a.** Before the first push, give the pass its own ticket — a PR no ticket owns is refused by the merge sweep and its critic, rubric and anti-vacuity gates never bind: `t3 <overlay> worktree adopt <abs path> --json` (the JSON carries `ticket_id`; the checkout adopts onto its own `auto:<branch>` ticket — never pass `--ticket`, which would put the PR on the standing anchor or the `auto:HEAD` catch-all and bind the gates to the wrong rubric), then `mcp__teatree__ticket_visit_phase <ticket_id> coding` with `agent_id` `architectural-review-<overlay>`, which seeds the `coding` criterion the cold reviewer grades. The PR body's per-finding table carries the RED test id per behavioural unit, or `docs only`.
+
 4. Push the branch — never `--no-verify`. The pre-push hook runs `t3 <overlay> pr ensure-pr`, which on a first push owes a durable `PendingPullRequest` instead of opening a PR against a remote ref that does not exist yet; re-run it once the push lands — `t3 <overlay> pr ensure-pr --branch <branch> --repo <absolute-worktree-path>` — so this pass discharges its own obligation rather than leaving it for the dispatch loop. **`--repo` is not optional from a host worktree, and omitting it fails on exit 0**: `t3` execs into a container whose cwd is the image's `WORKDIR`, so the `.` default is not a checkout, the refusal names that cwd, and it still **exits 0** — `ensure-pr` is exempt from the loud-refusal contract because it runs inside the pre-push hook (#792). It also has no `--base`/`--target` and opens against the default branch, so a stack layer must be retargeted straight after creation (`skills/ship/SKILL.md` § "Stacked Delivery"). Raw `gh pr create` stays forbidden (`skills/ship/SKILL.md` § "pr create is mandatory").
 5. Report the branch, the pushed SHA, the PR url, the net LoC, and the per-finding disposition in your result envelope.
 

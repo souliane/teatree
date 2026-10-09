@@ -20,7 +20,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
-from django.utils import timezone
 
 from teatree.agents._runner_env import (
     DispatchCredential,
@@ -39,6 +38,7 @@ from teatree.agents.harness_registry import (
     HarnessFallbackError,
     HarnessFallbackKind,
     InvalidHarnessProviderError,
+    NoAvailableHarnessError,
     UnknownHarnessError,
 )
 from teatree.agents.model_tiering import resolve_spawn_effort
@@ -66,27 +66,32 @@ from teatree.agents.runner_route_recording import NO_ROUTE_FALLBACK as _NO_ROUTE
 from teatree.agents.runner_route_recording import RouteFailureRecord as _RouteFailureRecord
 from teatree.agents.runner_route_recording import RouteFallback as _RouteFallback
 from teatree.agents.runner_route_recording import dispatch_provider_name as _dispatch_provider_name
+from teatree.agents.runner_route_recording import fail_routed_crash as _fail_routed_crash
 from teatree.agents.runner_route_recording import fallback_reason_for_outcome as _fallback_reason_for_outcome
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
+from teatree.agents.runner_route_recording import park_after_route_failure as _park_after_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
-from teatree.agents.runner_skill_staging import stage_skills_or_refusal
+from teatree.agents.runner_skill_staging import staged_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.skill_routing import (
     AmbiguousSkillRouteError,
     ConflictingHarnessRoutingError,
     runtime_fallback_reason,
 )
 from teatree.agents.spawn_payload import AgentSpawnError
-from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_all_exhausted
+from teatree.agents.usage_window import (
+    maybe_park_for_active_window,
+    park_on_timed_rejections,
+    park_task_on_all_exhausted,
+)
 from teatree.config import AgentHarnessProvider
+from teatree.config.agent_spawn import InvalidAgentConfigError
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
-from teatree.core.worktree.clone_paths import dispatch_detection_root
 from teatree.core.worktree.occupancy import (
     WorktreeOccupiedError,
     occupy_ticket_checkout,
@@ -142,9 +147,9 @@ class _RouteRetry:
         if record.outcome is not None:
             release_finished_thread(self.task)
             if record.outcome.tool_calls:
-                self.task.park(not_before=timezone.now())
+                _park_after_route_failure(self.task, self.dispatch, record, phase=self.phase)
                 return attempt
-        _learn_route_failure(self.task, self.dispatch, record.reason, phase=self.phase)
+        _learn_route_failure(self.task, self.dispatch, record, phase=self.phase)
         return _run_agent(
             self.task,
             phase=self.phase,
@@ -189,10 +194,11 @@ def _retry_route_exception(
         preflight.skills,
         fallback=fallback,
         agent_session_id=exc.agent_session_id if isinstance(exc, HarnessFallbackError) else "",
+        kind=exc.kind if isinstance(exc, HarnessFallbackError) else None,
     )
     if isinstance(exc, HarnessFallbackError) and exc.side_effects_started:
         attempt = _record_route_failure_attempt(task, preflight.dispatch, record)
-        task.park(not_before=timezone.now())
+        _park_after_route_failure(task, preflight.dispatch, record, phase=route_retry.phase)
         return attempt
     if preflight.dispatch.route_candidate_index is None:
         return None
@@ -375,26 +381,28 @@ def _run_agent(
         # thread as a side effect of BUILDING the harness — restore it, since
         # a run that never opened never actually consumed it (#2916).
         _restore_unconsumed_resume_thread(harness)
-        retry = _retry_route_exception(
+        attempt = _retry_route_exception(
             exc,
             task=task,
             preflight=preflight,
             route_retry=route_retry,
             route_fallback=route_fallback,
         )
-        if retry is not None:
-            return retry
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: the harness never opened, so no turn was billed
+        if attempt is None:
+            logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+            attempt = _record_failure(task, error=str(exc))  # no-usage: the harness never opened, so no turn was billed
+        return attempt
     except Exception:
         # AH-3 / #2916: a NON-CredentialError ``open()`` (or drive) failure must not
         # irrecoverably destroy a resumed task's parked thread either. ``resolve_dispatch_harness``
         # popped it when BUILDING the harness, and an escaping exception yields no outcome,
         # so the retain below never runs. Restore it so the resumed conversation survives for
-        # a retry, then let the failure propagate: the caller (``tasks.py``) records the
-        # durable failed attempt with the full traceback exactly as before.
+        # a retry. An unrouted failure then propagates to the caller (``tasks.py``), which records
+        # the durable failed attempt with the full traceback; a routed one is recorded here.
         _restore_unconsumed_resume_thread(harness)
-        raise
+        if preflight.dispatch.route_candidate_index is None:
+            raise
+        return _fail_routed_crash(task, preflight.dispatch, preflight.skills)
 
     # Retained before any outcome write, since the requeue sweep can see the row from that write on.
     retain_run_thread(task, outcome.thread)
@@ -462,16 +470,10 @@ def _preflight(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, refusal)
         return _record_failure(task, error=refusal)  # no-usage: refused before the harness opened — no turn billed
 
-    stage_skills = _stage_skills_or_refusal(task, phase=phase)
-    if isinstance(stage_skills, TaskAttempt):
-        return stage_skills
-
-    skills = resolve_skill_bundle(
-        phase=phase,
-        overlay_skill_metadata=overlay_skill_metadata,
-        detection_root=dispatch_detection_root(task.ticket),
-        stage_skills=stage_skills,
-    )
+    staged = staged_skills_or_refusal(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    if isinstance(staged, TaskAttempt):
+        return staged
+    stage_skills, skills = staged
     dispatch = _resolve_backend_or_failure(task, phase=phase, skills=skills)
     if isinstance(dispatch, TaskAttempt):
         return dispatch
@@ -486,16 +488,15 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
         restore()
 
 
-def _stage_skills_or_refusal(task: Task, *, phase: str) -> list[str] | TaskAttempt:
-    return stage_skills_or_refusal(task, phase=phase, stage_skills=stage_skills_for_dispatch)
-
-
 def _resolve_backend_or_failure(
     task: Task, *, phase: str = "", skills: list[str] | None = None
 ) -> DispatchHarness | TaskAttempt:
     """Resolve the headless transport ONCE, or a recorded failure for an unresolvable backend."""
     try:
         return resolve_dispatch_harness(task, phase=phase or None, skills=skills)
+    except NoAvailableHarnessError as exc:
+        parked = park_on_timed_rejections(task, exc.rejected)
+        return parked or _record_failure(task, error=str(exc))  # no-usage: no candidate opened, so no turn billed
     except (
         NotImplementedError,
         UnknownHarnessError,
@@ -503,6 +504,7 @@ def _resolve_backend_or_failure(
         CredentialError,
         AmbiguousSkillRouteError,
         ConflictingHarnessRoutingError,
+        InvalidAgentConfigError,
     ) as exc:
         return _record_failure(task, error=str(exc))  # no-usage: an unimplemented/unresolvable backend never ran
 
@@ -531,7 +533,7 @@ def _resolve_child_env_or_failure(
 ) -> DispatchCredential | TaskAttempt:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch."""
     if not harness.capabilities.spawns_cli_child:
-        return DispatchCredential()
+        return DispatchCredential(env=_capped_forge_env(task, None) if harness.capabilities.managed_lane else None)
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:
@@ -556,8 +558,12 @@ def _resolve_child_env_or_failure(
             raise HarnessFallbackError(str(exc), kind=kind) from exc
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
-    capped = with_test_worker_cap(resolved.env, active_agents=_active_agent_count())
-    return replace(resolved, env=with_routed_github_token(capped, overlay=_overlay_scope(task)))
+    return replace(resolved, env=_capped_forge_env(task, resolved.env))
+
+
+def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str] | None:
+    capped = with_test_worker_cap(env, active_agents=_active_agent_count())
+    return with_routed_github_token(capped, overlay=_overlay_scope(task))
 
 
 def _active_agent_count() -> int:

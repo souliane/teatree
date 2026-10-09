@@ -309,6 +309,17 @@ every virtualenv and the `plugins/t3 -> ..` loop. A failed or timed-out add has
 its `plugins/cache/*/plugin-install-*` staging removed, and setup prints the Codex
 CLI's exit code and stderr.
 
+Codex gets the `teatree` MCP server (`t3 mcp serve`) from the plugin's
+`.mcp.json`, and setup confirms it with `codex mcp get teatree --json`. Where the
+container is the Codex sandbox, setup also checks that
+`codex -c 'plugins={"t3@souliane"={enabled=false}}' mcp list --json` lists
+nothing, because worker threads switch the plugin off and refuse any MCP server
+still loaded. Setup writes no `[mcp_servers]` table: one added to `config.toml` by
+hand survives that switch-off, and the worker then refuses every Codex thread. A
+miss on either check withholds the single ready marker, so the worker admits no
+work at all, not only Codex work. A laptop Codex beside a Docker deployment gets
+nothing from setup, which reconciles only the container's volume home.
+
 ### The GPG home off-box: a container-local copy
 
 `gpg-agent` and `keyboxd` bind their `S.*` sockets **inside** `GNUPGHOME`. On the
@@ -431,6 +442,12 @@ if a deploy is in flight, waits up to `TEATREE_UPDATE_WAIT_SECONDS` (default 180
 `0` disables) for a route to return — then either dispatches or exits **75**
 (`EX_TEMPFAIL`) saying an update is in progress. It never reports docker's bare
 `service "…" is not running`, which is the text a genuine outage produces.
+
+**A venue that cannot run `t3` is distinguishable from a refusal.** A checkout outside
+every translatable root, an unreachable Docker daemon, a stack never built here and a
+wedged secret store each exit **69** (`EX_UNAVAILABLE`), where the CLI itself returns 1
+for a refusal. The no-orphan pre-push hook (`scripts/hooks/ensure-pr-installed-t3.sh`)
+skips with a warning on 69, 75, 126, 127 and 137 and fails the push on anything else.
 
 ### Worker sizing: derived from the host
 
@@ -1253,6 +1270,16 @@ re-run `t3 setup` — when a piece is missing. The launcher check runs inside
 the container through the host bin mount. Override the preferred service with
 `TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
 `TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
+
+**The host hook tool env follows the checkout (#4988).** The plugin hooks run on the host under
+`${UV_TOOL_DIR:-~/.local/share/uv/tools}/teatree/bin/python`, which the container cannot reach, so once
+the stack converges `deploy/deploy.sh` runs `deploy/sync-hook-env.sh <checkout>`. It re-syncs that env to
+the checkout's lock (`uv sync --frozen --no-default-groups --inexact`, never `uv tool install --reinstall`,
+which would replace the `t3` launcher) and verifies it with `python -m teatree.utils.dep_skew`. No env, or
+one installed from another checkout, is left alone with one line. A failed or unverifiable re-sync fails the
+deploy with `deploy: FATAL` and the exact command to run by hand, and an unreadable receipt or no uv at
+`~/.local/bin/uv` or on the ssh `PATH` fails it with a `deploy: FATAL` naming the cause; the stack has already
+converged by then.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 

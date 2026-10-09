@@ -103,8 +103,18 @@ class TestQuestionsListShowsTheAnswer(TestCase):
         assert {entry["id"]: entry for entry in json.loads(out.getvalue())}[row.pk]["answer"] == ""
 
 
-class TestQuestionsAnswerStampsTheChannel(TestCase):
-    """An answer records whether a human's terminal or an agent surface gave it."""
+class TestAnswerStamp(TestCase):
+    """The CLI records which surface answered, never an owner channel, whatever process calls it."""
+
+    _CALLING_PROCESSES: tuple[Mapping[str, str], ...] = (
+        {},
+        HEADLESS_AGENT_ENV,
+        {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"},
+        {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"},
+        {"T3_LOOP_RUNNER_SESSION": "runner"},
+        {"CLAUDE_CODE_SESSION_ID": "sess-abc"},
+        {"TERM": "xterm-256color", "SSH_TTY": "/dev/pts/0"},
+    )
 
     def _answered_via(self, *, env: Mapping[str, str], **options: object) -> str:
         row = DeferredQuestion.record("Ratify?")
@@ -113,15 +123,11 @@ class TestQuestionsAnswerStampsTheChannel(TestCase):
         row.refresh_from_db()
         return row.resolved_via
 
-    def test_an_answer_from_a_terminal_is_local(self) -> None:
-        assert self._answered_via(env={}) == DeferredQuestion.ResolvedVia.LOCAL
-
-    def test_an_answer_from_an_interactive_session_is_local(self) -> None:
-        env = {"CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDECODE": "1"}
-        assert self._answered_via(env=env) == DeferredQuestion.ResolvedVia.LOCAL
-
-    def test_an_answer_from_a_headless_agent_is_agent(self) -> None:
-        assert self._answered_via(env=HEADLESS_AGENT_ENV) == DeferredQuestion.ResolvedVia.AGENT
-
-    def test_an_answer_from_the_agent_surface_is_agent_whatever_the_env(self) -> None:
-        assert self._answered_via(env={}, agent_surface=True) == DeferredQuestion.ResolvedVia.AGENT
+    def test_the_stamp_does_not_depend_on_the_calling_process(self) -> None:
+        for agent_surface, expected in (
+            (False, DeferredQuestion.ResolvedVia.LOCAL),
+            (True, DeferredQuestion.ResolvedVia.AGENT),
+        ):
+            stamps = {self._answered_via(env=env, agent_surface=agent_surface) for env in self._CALLING_PROCESSES}
+            assert stamps == {expected}
+            assert expected not in DeferredQuestion.OWNER_CHANNELS

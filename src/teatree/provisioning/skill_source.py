@@ -1,6 +1,8 @@
+import re
 from dataclasses import dataclass
 
 _MIN_SPEC_SEGMENTS = 3
+_FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,3 +33,13 @@ def parse_skill_source(spec: str) -> SkillSource | None:
         subpath="/".join(segments[2:]),
         ref=ref.strip(),
     )
+
+
+def owner_repo(spec: str) -> str:
+    return "/".join(spec.partition("#")[0].strip("/").split("/")[:2])
+
+
+def pinned_commit(spec: str) -> str:
+    """The lowercase 40-hex ref of *spec*, or ``""``; lowercased so the CLI gets the string the pin check read."""
+    ref = spec.partition("#")[2].strip().lower()
+    return ref if _FULL_COMMIT.fullmatch(ref) else ""

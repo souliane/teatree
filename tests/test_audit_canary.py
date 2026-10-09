@@ -11,6 +11,7 @@ being reachable, and stubbing is what lets a blind surface be simulated at all.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -158,7 +159,7 @@ class TestCiWiring:
     def test_canary_runs_in_the_audit_job_before_the_gate(self) -> None:
         runs = [str(step.get("run", "")) for step in self._audit_steps()]
         canary = next(i for i, run in enumerate(runs) if "scripts/ci/audit_canary.py" in run)
-        gate = next(i for i, run in enumerate(runs) if "pip-audit --strict" in run)
+        gate = next(i for i, run in enumerate(runs) if re.search(r"pip-audit\S* --strict", run))
         assert canary < gate, "the canary must prove the surface can see BEFORE the gate's green is trusted"
 
     def test_canary_needs_no_uv_sync(self) -> None:
@@ -173,7 +174,9 @@ class TestCiWiring:
 
     def test_the_gate_itself_is_unchanged(self) -> None:
         # Behaviour preservation: the canary is additive, it never relaxes the gate.
-        gate = next(step for step in self._audit_steps() if "pip-audit --strict" in str(step.get("run", "")))
+        gate = next(
+            step for step in self._audit_steps() if re.search(r"pip-audit\S* --strict", str(step.get("run", "")))
+        )
         run = str(gate["run"])
         assert "--vulnerability-service osv" in run
         assert "--disable-pip" in run

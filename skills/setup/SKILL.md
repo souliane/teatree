@@ -190,7 +190,7 @@ enumerates ([#3652](https://github.com/souliane/teatree/issues/3652)):
 
 | Surface | Declares | Provisioned by |
 | --- | --- | --- |
-| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …) | `t3 setup` (`MandatedSkillProvisioner`) |
+| `apm.yml` → `dependencies.apm` | mandated skills (`ac-python`, `ac-django`, …), each pinned to a 40-hex commit | `t3 setup` (`MandatedSkillProvisioner`) |
 | `pyproject.toml` → `[tool.teatree.provisioning].required_binaries` | required tools (`direnv`, `git`, `jq`) | the operator's package manager |
 | `~/.claude/settings.json` → `enabledPlugins` | enabled agent plugins | `t3 setup` (plugin registrars) |
 
@@ -202,7 +202,10 @@ up with no edit to the check.
 
 `t3 setup` installs every enumerable manifest dependency for Claude Code and Codex
 through the pinned skills CLI. It selects the declared names explicitly and remains
-idempotent when the container entrypoint runs setup on every start.
+idempotent when the container entrypoint runs setup on every start. It refuses any entry
+that is not a 40-hex commit (`pinned_commit`), and any pin that is also a branch or tag
+name on its source or cannot be read there, before the CLI runs; overlay skill sources
+and skill links never replace a pinned skill.
 
 The hooks cover these events:
 
@@ -222,7 +225,7 @@ All hook scripts live in `$T3_REPO/hooks/scripts/`. The `hooks.json` at `$T3_REP
 
 Teatree ships a plugin-bundled `.mcp.json` at the repo root declaring the `teatree` stdio MCP server (`t3 mcp serve`, built under [#1023](https://github.com/souliane/teatree/issues/1023)) — the same convention official Claude Code plugins use. Claude Code starts a plugin-bundled MCP server automatically once the plugin is enabled, so once `t3 setup` has registered and enabled the plugin (Step 4), the `mcp__teatree__*` tools are reachable — no separate `claude mcp add` step. The surface is **read + gate-preserving writes**: ~13 read tools (`ticket_search`, `ticket_get`, `ticket_list`, `worktree_status`, `pr_for_ticket`, `task_list`, `loop_stats`, `command_search`, `config_setting_get`, `gate_status`, `factory_signals`, …) PLUS the write suite (`pr_create`, `pr_merge`, `notify_user`, `config_setting_set`, `task_create`, the review-post and per-service forge/slack writes). The writes are **not** an escape hatch: each wraps the exact seam the `t3` CLI calls, so the shipping-phase FSM, sanctioned-merge keystone, on-behalf verdict, and leak-scrub gates all fire identically. Per-service groups (forge/slack/notion/sentry) register only when an overlay declares the service. Use `command_search` to discover which tool covers a task rather than enumerating them here.
 
-`t3 setup` confirms the file is intact (`OK`/`WARN` line naming `.mcp.json`); `t3 doctor check` re-verifies it and, when `claude` is on PATH, live-probes visibility via `claude mcp list` too ([#2863](https://github.com/souliane/teatree/issues/2863)). Prefer these tools over shelling out to `t3 ... list` and parsing text wherever a tool already covers the query — see `/t3:ship` § 4b step 5 for a worked example.
+`t3 setup` confirms the file is intact (`OK`/`WARN` line naming `.mcp.json`); `t3 doctor check` re-verifies it and exercises the registered server with a real `initialize`, naming the cause when it does not answer ([#2863](https://github.com/souliane/teatree/issues/2863)). It is the only MCP server teatree depends on. Prefer these tools over shelling out to `t3 ... list` and parsing text wherever a tool already covers the query — see `/t3:ship` § 4b step 5 for a worked example.
 
 ## Step 4b: Recommended Global Agent Config
 

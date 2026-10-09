@@ -5,7 +5,13 @@ import pytest
 
 from teatree.harness_skills import SkillsHarness
 from teatree.provisioning import skill_clone_install
-from teatree.provisioning.skill_clone_install import CloneInstall, _cache_name, _export_ref, install_published_skills
+from teatree.provisioning.skill_clone_install import (
+    CloneInstall,
+    InstallPolicy,
+    _cache_name,
+    _export_ref,
+    install_published_skills,
+)
 from teatree.provisioning.skill_drift import PublishedSkills, SkillSourceClone
 from teatree.provisioning.skills_cli import SkillAddResult, SkillAddStatus, SkillsCliCommandError
 from tests._git_repo import make_git_repo, run_git
@@ -119,7 +125,7 @@ def test_only_demanded_published_skills_are_added_to_both_harnesses(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha", "not-published"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=cli,
     )
 
@@ -143,7 +149,7 @@ def test_per_harness_exclusions_do_not_split_required_selected_sets(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha", "beta"},
-        harness_exclusions=["claude-code:beta"],
+        policy=InstallPolicy(harness_exclusions=["claude-code:beta"]),
         cli=cli,
     )
 
@@ -164,7 +170,7 @@ def test_required_skill_is_installed_for_an_excluded_harness(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha"},
-        harness_exclusions=["claude-code:alpha"],
+        policy=InstallPolicy(harness_exclusions=["claude-code:alpha"]),
         cli=cli,
     )
 
@@ -187,7 +193,7 @@ def test_exclusions_cannot_disable_demanded_runtime_skills(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"Alpha"},
-        harness_exclusions=["claude-code:alpha"],
+        policy=InstallPolicy(harness_exclusions=["claude-code:alpha"]),
         cli=cli,
     )
 
@@ -215,7 +221,7 @@ def test_empty_demand_does_no_source_or_cli_work(
         SkillSourceClone(label="team/skills"),
         cache_root=tmp_path / "cache",
         demand_names=set(),
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=cli,
     )
 
@@ -231,7 +237,7 @@ def test_cli_failure_is_rendered_as_unavailable(tmp_path: Path, published: Publi
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=cli,
     )
 
@@ -250,7 +256,7 @@ def test_unmeasurable_source_is_unavailable(tmp_path: Path, monkeypatch: pytest.
         SkillSourceClone(label="team"),
         cache_root=tmp_path,
         demand_names={"alpha"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=FakeSkillsCli(),
     )
 
@@ -272,7 +278,7 @@ def test_source_with_no_matching_demand_does_not_export(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path,
         demand_names={"other"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=FakeSkillsCli(),
     )
 
@@ -290,7 +296,7 @@ def test_export_failure_is_unavailable(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path,
         demand_names={"alpha"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=FakeSkillsCli(),
     )
 
@@ -312,7 +318,7 @@ def test_skipped_and_failed_add_results_are_not_reported_as_installed(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha", "beta"},
-        harness_exclusions=["claude-code:alpha"],
+        policy=InstallPolicy(harness_exclusions=["claude-code:alpha"]),
         cli=cli,
     )
 
@@ -332,7 +338,7 @@ def test_default_cli_factory_is_used_when_not_injected(
         SkillSourceClone(label=published.label),
         cache_root=tmp_path / "cache",
         demand_names={"alpha"},
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
     )
 
     assert result.installed == ("claude-code:alpha", "codex:alpha")
@@ -343,8 +349,71 @@ def test_empty_label_gets_a_readable_no_work_result(tmp_path: Path) -> None:
         SkillSourceClone(),
         cache_root=tmp_path,
         demand_names=set(),
-        harness_exclusions=[],
+        policy=InstallPolicy(harness_exclusions=[]),
         cli=FakeSkillsCli(),
     )
 
     assert result.label == "skill source"
+
+
+_PIN = "team/skills/alpha#1f20bef3f59b85ad7b52718f822e37c4478a3ff5"
+
+
+def test_a_source_publishing_a_pinned_name_is_not_installed_over_it_and_the_warn_names_everything(
+    tmp_path: Path,
+    published: PublishedSkills,
+) -> None:
+    cli = FakeSkillsCli()
+
+    result = install_published_skills(
+        SkillSourceClone(label=published.label),
+        cache_root=tmp_path / "cache",
+        demand_names={"alpha", "beta"},
+        policy=InstallPolicy(pinned={"alpha": _PIN}),
+        cli=cli,
+    )
+
+    assert [call[2] for call in cli.calls] == [("beta",)]
+    assert result.refused_pins == (_PIN,)
+    warn = result.render().splitlines()[-1]
+    assert warn.startswith("WARN")
+    assert all(part in warn for part in (published.label, published.ref, _PIN, "bump the pin"))
+
+
+def test_a_pinned_name_that_is_the_only_demand_installs_nothing_and_still_warns(
+    tmp_path: Path,
+    published: PublishedSkills,
+) -> None:
+    cli = FakeSkillsCli()
+
+    result = install_published_skills(
+        SkillSourceClone(label=published.label),
+        cache_root=tmp_path / "cache",
+        demand_names={"alpha"},
+        policy=InstallPolicy(pinned={"ALPHA": _PIN}),
+        cli=cli,
+    )
+
+    assert cli.calls == []
+    assert result.refused_pins == (_PIN,)
+    assert result.render().startswith("OK")
+    assert "WARN" in result.render()
+
+
+def test_a_pin_this_source_does_not_publish_or_nobody_demands_is_silent(
+    tmp_path: Path,
+    published: PublishedSkills,
+) -> None:
+    cli = FakeSkillsCli()
+
+    result = install_published_skills(
+        SkillSourceClone(label=published.label),
+        cache_root=tmp_path / "cache",
+        demand_names={"alpha", "gamma"},
+        policy=InstallPolicy(pinned={"gamma": "team/skills/gamma#abc", "beta": "team/skills/beta#abc"}),
+        cli=cli,
+    )
+
+    assert result.refused_pins == ()
+    assert "WARN" not in result.render()
+    assert [call[2] for call in cli.calls] == [("alpha",)]

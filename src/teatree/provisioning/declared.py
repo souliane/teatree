@@ -26,8 +26,11 @@ from typing import Literal
 
 import yaml
 
+from teatree.provisioning.skill_source import owner_repo, pinned_commit
+
 type DependencyKind = Literal["skill", "binary", "integration"]
 
+TEATREE_REPOSITORY = "souliane/teatree"
 _APM_MANIFEST = "apm.yml"
 _PYPROJECT = "pyproject.toml"
 _CLAUDE_SETTINGS = (".claude", "settings.json")
@@ -53,6 +56,10 @@ def project_root_for_running_code() -> Path | None:
 
 class DeclarationUnreadableError(RuntimeError):
     """A declaration surface could not be read, so its mandates are unknown."""
+
+
+class DeclarationMalformedError(DeclarationUnreadableError):
+    """``apm.yml`` exists but is not the declared shape; every skill dispatch parks on it, so doctor FAILs it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,12 +101,11 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
 
     An entry of shape ``<owner>/<repo>/<subpath>[#<ref>]`` names ONE skill (its
     last path segment). A two-segment entry is a whole-repo bundle that names no
-    single skill, so it declares nothing enumerable here — and therefore nothing
-    the pin surface can measure either, which is why
-    :func:`pinned_specs_in_apm_manifest` exists alongside this.
+    single skill, so it declares nothing enumerable here — which is why
+    :func:`unpinned_apm_entries` reads every entry instead.
     """
     declared: list[DeclaredDependency] = []
-    for spec in _apm_entries(manifest):
+    for spec in apm_entries(manifest):
         segments = spec.split("#", 1)[0].strip("/").split("/")
         if len(segments) < _MIN_SKILL_SPEC_SEGMENTS:
             continue
@@ -115,41 +121,36 @@ def skills_declared_in_apm_manifest(manifest: Path) -> list[DeclaredDependency]:
     return declared
 
 
-def pinned_specs_in_apm_manifest(manifest: Path) -> list[str]:
-    """EVERY ``dependencies.apm`` entry carrying a ``#<ref>``, whatever its shape.
+def unpinned_apm_entries(manifest: Path) -> list[str]:
+    """Every ``dependencies.apm`` entry, whole-repo bundles included, that names no 40-hex commit.
 
-    The pin surface's counterpart to :func:`skills_declared_in_apm_manifest`, and
-    deliberately a different question. That one enumerates entries naming ONE
-    installable skill, so it drops a two-segment whole-repo bundle — right for "is this
-    skill present", wrong for "is this pin current": a bundle pin mandates a commit
-    like any other.
-
-    Returns raw specs rather than :class:`DeclaredDependency` rows precisely so this
-    cannot be mistaken for an install mandate and handed to the provisioner, which would
-    try to install a skill named after the repo and fail the very gate it feeds.
+    This repository's own in-repo skills are exempt: they install from the running checkout.
     """
-    return [spec for spec in _apm_entries(manifest) if spec.partition("#")[2].strip()]
+    return [
+        spec for spec in apm_entries(manifest) if owner_repo(spec) != TEATREE_REPOSITORY and not pinned_commit(spec)
+    ]
 
 
-def _apm_entries(manifest: Path) -> list[str]:
+def apm_entries(manifest: Path) -> list[str]:
     """The ``dependencies.apm`` list as trimmed non-empty strings.
 
-    Raises :class:`DeclarationUnreadableError` when the surface cannot be read: "I could
-    not read the mandate" and "nothing is mandated" must never collapse into each other.
+    Raises :class:`DeclarationUnreadableError` when the surface cannot be read, and its
+    :class:`DeclarationMalformedError` subclass when it was read but is not the declared shape:
+    "I could not read the mandate" and "nothing is mandated" must never collapse into each other.
     """
     try:
         data = yaml.safe_load(_read_text(manifest, _APM_MANIFEST))
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, UnicodeError) as exc:
         msg = f"{_APM_MANIFEST} is not parsable at {manifest}: {exc}"
-        raise DeclarationUnreadableError(msg) from exc
+        raise DeclarationMalformedError(msg) from exc
     if not isinstance(data, dict):
         msg = f"{_APM_MANIFEST} at {manifest} is not a mapping"
-        raise DeclarationUnreadableError(msg)
+        raise DeclarationMalformedError(msg)
     dependencies = data.get("dependencies")
     entries = dependencies.get("apm") if isinstance(dependencies, dict) else None
     if not isinstance(entries, list):
         msg = f"{_APM_MANIFEST} at {manifest} declares no dependencies.apm list"
-        raise DeclarationUnreadableError(msg)
+        raise DeclarationMalformedError(msg)
     return [entry.strip() for entry in entries if isinstance(entry, str) and entry.strip()]
 
 
@@ -207,15 +208,16 @@ def integrations_declared_in_claude_settings(settings: Path) -> list[DeclaredDep
 
 @dataclass(frozen=True, slots=True)
 class Enumeration:
-    """What the declaration surfaces mandate, plus the ones that could not be read.
+    """What the declaration surfaces mandate, plus the ones that could not be read or are malformed.
 
-    The two halves are kept apart on purpose: one unreadable surface must not
+    The halves are kept apart on purpose: one unreadable surface must not
     suppress the mandates of the others, and it must not pass as "nothing is
     mandated" either — it is reported as its own unverified-surface finding.
     """
 
     dependencies: list[DeclaredDependency]
     unreadable: list[str]
+    malformed: list[str]
 
 
 def declared_dependencies(*, project_root: Path, home: Path) -> Enumeration:
@@ -227,9 +229,12 @@ def declared_dependencies(*, project_root: Path, home: Path) -> Enumeration:
     )
     dependencies: list[DeclaredDependency] = []
     unreadable: list[str] = []
+    malformed: list[str] = []
     for read in readers:
         try:
             dependencies.extend(read())
+        except DeclarationMalformedError as exc:
+            malformed.append(str(exc))
         except DeclarationUnreadableError as exc:
             unreadable.append(str(exc))
-    return Enumeration(dependencies=dependencies, unreadable=unreadable)
+    return Enumeration(dependencies=dependencies, unreadable=unreadable, malformed=malformed)

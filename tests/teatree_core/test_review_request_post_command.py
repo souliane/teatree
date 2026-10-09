@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
@@ -26,6 +27,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.core.backend_protocols import DraftState
+from teatree.core.egress_transport import EgressKind, suppress_on_behalf_egress
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import (
     ConfigSetting,
@@ -33,9 +35,13 @@ from teatree.core.models import (
     OnBehalfAudit,
     ReviewEvidence,
     ReviewRequestPost,
+    SendAudit,
     Ticket,
 )
-from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
+from teatree.core.on_behalf_egress import EgressAttempt, observe_on_behalf_egress
+from teatree.core.send_proxy import REDACTION_PLACEHOLDER
+from tests._send_gate import TEST_TERM_REGISTRY, allow_slack_channels
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="review-channel", token="xoxp")
@@ -111,6 +117,19 @@ class _BodyReturningBackend:
         return ""
 
 
+class _RaisingBackend:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
+        _ = (channel, text, thread_ts)
+        raise self.error
+
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        _ = (channel, ts)
+        return ""
+
+
 @pytest.fixture(autouse=True)
 def _cli_overlay_pin() -> Iterator[None]:
     """Run every case as the ``t3 <overlay>`` bridge does, with the overlay pinned.
@@ -170,6 +189,7 @@ class _DataDirMixin:
 
     def setUp(self) -> None:
         super().setUp()
+        allow_slack_channels(_TARGET.channel_id)
         self._tmp = Path(tempfile.mkdtemp())
         self._prev_data_dir = os.environ.get("T3_DATA_DIR")
         os.environ["T3_DATA_DIR"] = str(self._tmp)
@@ -775,6 +795,36 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert data[_MR_URL]["channel"] == "C_REVIEW"
         assert data[_MR_URL]["permalink"].startswith("https://team.slack.com/archives/C_REVIEW/")
 
+    def test_a_preview_decides_the_same_post_and_makes_none_of_it(self) -> None:
+        """The control is the case above: the same gates, a real post and a persisted permalink."""
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.REVIEW_REQUESTED,
+            issue_url="https://gitlab.com/org/repo/-/issues/385",
+        )
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        attempts: list[EgressAttempt] = []
+
+        def _preview(_target: str, _action: str, _kind: EgressKind) -> dict[str, object]:
+            return {"ok": True, "ts": "dry-run"}
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+            suppress_on_behalf_egress(_preview),
+            observe_on_behalf_egress(attempts.append),
+        ):
+            code, payload = _run("--title", "fix(scope): thing", "--ticket-id", str(ticket.pk))
+
+        assert (code, payload["action"]) == (0, "post")
+        assert backend.posts == []
+        assert [(a.action, a.outcome.value, a.channel) for a in attempts] == [
+            ("review_request_post", "posted", "C_REVIEW")
+        ]
+        assert not list(self._tmp.rglob("mr_review_messages.json"))
+
     def test_draft_mr_refused_before_claim(self) -> None:
         """A draft MR refuses ``draft_mr`` (exit 2) BEFORE any dedup claim row is taken."""
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
@@ -1049,6 +1099,45 @@ class TestReviewRequestPostSlackApiFailure(_DataDirMixin, TestCase):
         assert OnBehalfAudit.objects.count() == 1
         assert ReviewRequestPost.objects.get(mr_url=_MR_URL).slack_thread_ts == "1.23"
 
+    def test_a_transport_that_raises_leaves_no_claim_and_keeps_the_approval(self) -> None:
+        with pytest.raises(httpx.ConnectError):
+            self._post_via(_RaisingBackend(httpx.ConnectError("connection refused")))
+
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=True).count() == 1
+
+    def test_no_messaging_backend_leaves_no_claim(self) -> None:
+        code, payload = self._post_via(None)
+
+        assert (code, payload["reason"]) == (0, "no_messaging_backend")
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_a_permalink_read_that_raises_leaves_the_landed_post_finalized(self) -> None:
+        backend = _FakeBackend()
+
+        with (
+            patch.object(backend, "get_permalink", side_effect=RuntimeError("permalink read failed")),
+            pytest.raises(RuntimeError, match="permalink read failed"),
+        ):
+            self._post_via(backend)
+
+        assert len(backend.posts) == 1
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).slack_thread_ts == "1.23"
+
+    def test_a_blocked_channel_is_audited_even_though_the_approval_rolls_back(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [])
+        backend = _FakeBackend()
+
+        code, payload = self._post_via(backend)
+
+        assert (code, payload["reason"]) == (2, "send_blocked")
+        assert backend.posts == []
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=True).count() == 1
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+        assert list(SendAudit.objects.values_list("destination", "allowlist_verdict")) == [
+            ("C_REVIEW", SendAudit.Verdict.DENIED.value)
+        ]
+
     def test_a_registered_noop_backend_suppresses_before_the_gate(self) -> None:
         """A noop transport drops the post silently, so it must not read as a failure."""
         from teatree.backends.messaging_noop import NoopMessagingBackend  # noqa: PLC0415 — deferred: backends import
@@ -1066,3 +1155,43 @@ class TestReviewRequestPostSlackApiFailure(_DataDirMixin, TestCase):
         assert payload["reason"] == "no_messaging_backend"
         assert OnBehalfAudit.objects.count() == 0
         assert OnBehalfApproval.objects.filter(consumed_at__isnull=False).count() == 0
+
+
+class TestTheReviewPostGoesThroughTheSendProxy(_DataDirMixin, TestCase):
+    """The command's post is a colleague-surface send, so the #117 allowlist and redaction apply."""
+
+    @pytest.fixture(autouse=True)
+    def _gate_permits(self) -> Iterator[None]:
+        with posture_permits_cm():
+            yield
+
+    def _post_via(self, backend: _FakeBackend, *, title: str = "fix(scope): thing") -> tuple[int, dict[str, object]]:
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", side_effect=TestReviewRequestPostSlackApiFailure._real_claim),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            return _run("--title", title)
+
+    def test_a_channel_off_the_allowlist_is_refused_audited_and_leaves_no_claim(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", [])
+        backend = _FakeBackend()
+
+        code, payload = self._post_via(backend)
+
+        assert (code, payload["action"], payload["reason"]) == (2, "refused", "send_blocked")
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+        assert list(SendAudit.objects.values_list("destination", "allowlist_verdict")) == [
+            ("C_REVIEW", SendAudit.Verdict.DENIED.value)
+        ]
+
+    def test_a_private_term_in_the_title_is_posted_redacted(self) -> None:
+        term = TEST_TERM_REGISTRY["leak"][0]
+        backend = _FakeBackend()
+
+        with patch("teatree.core.send_proxy._redact_terms", return_value=[term]):
+            code, payload = self._post_via(backend, title=f"fix(scope): {term} thing")
+
+        assert (code, payload["action"]) == (0, "post")
+        assert [post["text"] for post in backend.posts] == [f"fix(scope): {REDACTION_PLACEHOLDER} thing {_MR_URL}"]

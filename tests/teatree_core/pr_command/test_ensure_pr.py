@@ -23,7 +23,8 @@ from teatree.core.management.commands._ensure_pr import (
 )
 from teatree.core.models import ConfigSetting, PendingPullRequest, PullRequest, Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME
+from teatree.core.provision import db_anchor
+from teatree.paths import CONTROL_DB_DIR_ENV, DB_FILENAME, auto_isolated_worktrees_dir
 from teatree.utils import git
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -414,7 +415,7 @@ class TestEnsurePr(TestCase):
     def test_refuses_when_ticket_is_at_its_open_pr_budget(self) -> None:
         """North-star PR-2: the orphan path refuses before creating when at budget."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-q")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="feat-q")
         PullRequest.objects.create(
             ticket=ticket,
             url="https://github.com/souliane/teatree/pull/1",
@@ -451,7 +452,7 @@ class TestEnsurePr(TestCase):
     def test_refuses_when_branch_introduces_net_new_debt(self) -> None:
         """North-star PR-3: the orphan path refuses before creating on unwaived debt."""
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-d")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="feat-d")
         host = MagicMock()
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
@@ -635,7 +636,9 @@ class TestAutoCreatedPrBodySatisfiesDescriptionGate(_RealGitOrphanBranch):
         """#4424: the branch's ``Worktree`` row names the ticket — a reference, never a closing keyword."""
         issue_url = "https://github.com/souliane/teatree/issues/1534"
         ticket = Ticket.objects.create(overlay="test", issue_url=issue_url, state=Ticket.State.REVIEW_REQUESTED)
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="1534-fix-the-real-work")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="souliane/teatree", branch="1534-fix-the-real-work"
+        )
 
         spec = cast("PullRequestSpec", self._created_spec())
 
@@ -772,8 +775,8 @@ class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
                 }
             },
         )
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-a", branch="feat-a")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="/repo-b", branch="feat-b")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="acme/repo-a", branch="feat-a")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="acme/repo-b", branch="feat-b")
 
         spec_a = self._created_spec(repo_slug="acme/repo-a", branch="feat-a")
         spec_b = self._created_spec(repo_slug="acme/repo-b", branch="feat-b")
@@ -893,3 +896,63 @@ class TestAnUnreadableProbeNeverCreates(TestCase):
         report = BranchReport(repo="org/repo", branch="feature", status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
 
         assert skip_for_classified(report, "/tmp/repo", "feature") is None
+
+
+class TestEnsurePrRefusesAnIsolatedControlDb(_RealGitOrphanBranch):
+    """A hook run by the checkout's own code resolves a per-worktree DB the merge gates never read.
+
+    The refusal is a returned ``error``, not a raise: ``ensure-pr`` is the one
+    ``soft_refusal_commands`` entry, so the push it gates still goes through.
+    """
+
+    BRANCH = "1534-fix-the-real-work"
+
+    def _clone_with_unpushed_work(self) -> Path:
+        clone = self._origin_and_feature([])
+        _run_git("checkout", "-q", self.BRANCH, cwd=clone)
+        (clone / "work.py").write_text("value = 1\n", encoding="utf-8")
+        _run_git("add", "work.py", cwd=clone)
+        _run_git("commit", "-q", "-m", "fix(y): the real work", cwd=clone)
+        _run_git("checkout", "-q", "main", cwd=clone)
+        return clone
+
+    def _isolate_the_active_db(self) -> None:
+        isolated = auto_isolated_worktrees_dir() / "deadbeef1234" / "db.sqlite3"
+        self._monkeypatch.setattr(db_anchor, "_active_db_path", lambda: str(isolated))
+
+    def _ensure_pr(self, clone: Path) -> dict[str, object]:
+        return cast("dict[str, object]", call_command("pr", "ensure-pr", repo=str(clone), branch=self.BRANCH))
+
+    def test_isolated_db_refuses_naming_the_installed_t3_and_writes_nothing(self) -> None:
+        clone = self._clone_with_unpushed_work()
+        self._isolate_the_active_db()
+
+        with patch.object(pr_command, "create_or_defer_pr") as create_or_defer:
+            result = self._ensure_pr(clone)
+
+        assert "installed `t3`" in str(result["error"])
+        assert f"t3 <overlay> pr ensure-pr --repo {clone.resolve()} --branch {self.BRANCH}" in str(result["error"])
+        create_or_defer.assert_not_called()
+        assert not PendingPullRequest.objects.exists()
+        assert not PullRequest.objects.exists()
+
+    def test_isolated_db_refusal_still_lets_the_push_through(self) -> None:
+        clone = self._clone_with_unpushed_work()
+        self._isolate_the_active_db()
+        argv = ["manage.py", "pr", "ensure-pr", "--repo", str(clone), "--branch", self.BRANCH]
+
+        assert pr_command.Command().run_from_argv(argv) is None
+        assert "installed `t3`" in self._capsys.readouterr().out
+
+    def test_a_canonical_db_still_owes_the_pr(self) -> None:
+        """The control: without it a refusal that fired for every DB would pass the tests above."""
+        clone = self._clone_with_unpushed_work()
+
+        result = self._ensure_pr(clone)
+
+        assert result["owed"] is True
+        assert PendingPullRequest.objects.filter(branch=self.BRANCH).exists()
+
+    @pytest.fixture(autouse=True)
+    def _inject_capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._capsys = capsys

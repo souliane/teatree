@@ -27,7 +27,7 @@ from teatree.agents.coding_result_salvage import salvage_coding_result
 from teatree.agents.envelope_aliases import normalize_envelope_aliases
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.fix_record_recorder import record_returned_fix_record
-from teatree.agents.landing_verification import landing_verification_error
+from teatree.agents.landing_verification import blocked_before_edits_error, landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
@@ -356,7 +356,9 @@ def _check_before_recording(
             return _PreRecordCheck(evidence_error if envelope_parsed else NO_ENVELOPE_ERROR, result)
         result = salvaged
 
-    return _PreRecordCheck(landing_verification_error(task, phase=phase), result)
+    routed = usage.route_candidate_index is not None or usage.selected_harness not in {"", "claude_sdk"}
+    blocked = blocked_before_edits_error(task, result, phase=phase, routed=routed)
+    return _PreRecordCheck(blocked or landing_verification_error(task, phase=phase), result)
 
 
 def _answering_work_item_error(task: Task, result: AgentResultBlob, phase: str) -> str:

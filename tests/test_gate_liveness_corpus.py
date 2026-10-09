@@ -625,14 +625,14 @@ def _quote_bash_allow(ctx: GateContext) -> dict:
 
 
 def _quote_slack_deny(ctx: GateContext) -> dict:
-    return _slack_send("mcp__claude_ai_Slack__slack_send_message", _HIGH_QUOTE)
+    return _slack_send("mcp__slack__slack_send_message", _HIGH_QUOTE)
 
 
 def _quote_slack_allow(ctx: GateContext) -> dict:
-    return _slack_send("mcp__claude_ai_Slack__slack_send_message", "Routine status update.")
+    return _slack_send("mcp__slack__slack_send_message", "Routine status update.")
 
 
-# self-DM gate (mcp__*slack* send/react): a write to a configured bot↔user DM
+# self-DM gate (mcp__*slack* write): a write to a configured bot↔user DM
 # channel denies (renders as user-authored under the personal token); a write to
 # a colleague channel allows. The arrange step declares the DM channel id under
 # an overlay table so the gate can resolve it.
@@ -672,7 +672,7 @@ def _general_purpose_allow(_ctx: GateContext) -> dict:
 def _self_dm_deny(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_name": "mcp__slack__slack_send_message",
         "tool_input": {"channel": _SELF_DM_CHANNEL, "text": "Full-day review report"},
     }
 
@@ -680,7 +680,7 @@ def _self_dm_deny(ctx: GateContext) -> dict:
 def _self_dm_allow(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_name": "mcp__slack__slack_send_message",
         "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
     }
 
@@ -690,7 +690,7 @@ def _self_dm_allow(ctx: GateContext) -> dict:
 def _mcp_slack_write_deny(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_name": "mcp__slack__slack_send_message",
         "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
     }
 
@@ -698,7 +698,7 @@ def _mcp_slack_write_deny(ctx: GateContext) -> dict:
 def _mcp_slack_write_allow(ctx: GateContext) -> dict:
     return {
         "session_id": "sess-liveness",
-        "tool_name": "mcp__claude_ai_Slack__slack_get_channel_history",
+        "tool_name": "mcp__slack__slack_get_channel_history",
         "tool_input": {"channel": "C0COLLEAGUE9"},
     }
 
@@ -1326,7 +1326,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         gate_id="quote-scanner-slack-mcp",
         handler=router.handle_quote_scanner_pretool,
         event="PreToolUse",
-        matched="mcp__claude_ai_Slack__slack_send_message",
+        matched="mcp__slack__slack_send_message",
         deny_input=_quote_slack_deny,
         allow_input=_quote_slack_allow,
     ),
@@ -1334,7 +1334,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         gate_id="block-self-dm-via-mcp",
         handler=router.handle_block_self_dm_via_mcp,
         event="PreToolUse",
-        matched="mcp__claude_ai_Slack__slack_send_message",
+        matched="mcp__slack__slack_send_message",
         deny_input=_self_dm_deny,
         allow_input=_self_dm_allow,
         arrange=_arrange_self_dm_gate,
@@ -1343,7 +1343,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         gate_id="block-mcp-slack-write",
         handler=router.handle_block_mcp_slack_write,
         event="PreToolUse",
-        matched="mcp__claude_ai_Slack__slack_send_message",
+        matched="mcp__slack__slack_send_message",
         deny_input=_mcp_slack_write_deny,
         allow_input=_mcp_slack_write_allow,
     ),

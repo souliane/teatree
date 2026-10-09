@@ -1,86 +1,45 @@
-"""In-session Claude account-switch detection and connector recovery (#1916).
+"""In-session Claude account-switch detection and recovery (#1916).
 
-When the user runs ``/login`` to switch the active Claude Code account mid
-session, the in-process MCP/backend token cache keeps routing to the *old*
-account: outbound Slack/Notion calls return ``ok`` but land in a workspace the
-new account no longer reads, so the user sees nothing (souliane/teatree#1176,
-#1239). This module handles the in-session side: detect the switch, invalidate
-the backend cache and the per-account token-health cache, re-probe connector
-reachability, and surface the result.
+When the user runs ``/login`` to switch the active Claude Code account mid session, two
+caches keep answering for the OLD account: the in-process backend cache, and the cached
+per-account token-health verdicts — an exhausted verdict is trusted until its blocking
+window resets, so the governor would keep denying every dispatch on the old account's
+exhaustion (#4736). This module detects the switch, invalidates both, and records the new
+account so the switch is handled once.
 
 The account identity is the ``oauthAccount.accountUuid`` in ``~/.claude.json``.
 This module is the single reader of that value (``current_account_fingerprint``
 from :mod:`teatree.core.account_fingerprint`). The recorded fingerprint of the
 last-recovered account lives in a durable JSON sidecar so the check survives
-compaction and a token-broken bridge.
+compaction.
 
 Consumed by the ``SessionStart`` hook (heartbeat every session) and the
-``t3 doctor`` / ``t3 setup recover-account-switch`` CLI surfaces. The
-reachability probe re-reads each connector's live ``auth.test`` *after* the
-cache reset (verify-by-re-read) so a stale cached token cannot mask a broken
-bridge.
+``t3 doctor`` / ``t3 setup recover-account-switch`` CLI surfaces.
 """
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.core.account_fingerprint import current_account_fingerprint, load_recorded_fingerprint, record_fingerprint
-from teatree.core.backend_factory import iter_overlay_backends, reset_backend_caches
-from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.mcp_connectivity import McpConnectivityOutcome
+from teatree.core.backend_factory import reset_backend_caches
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 
 logger = logging.getLogger(__name__)
 
 type CacheReset = Callable[[], None]
-type BackendsProvider = Callable[[], list[MessagingBackend]]
-type McpConnectivityProbe = Callable[[], McpConnectivityOutcome]
 type TokenHealthExpiry = Callable[[], int]
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectorProbeResult:
-    """One connector's post-switch reachability, from a live ``auth.test``."""
-
-    name: str
-    reachable: bool
-    detail: str = ""
-
-
-@dataclass(frozen=True, slots=True)
 class AccountSwitchOutcome:
-    """The result of one detect-and-recover cycle.
-
-    ``switched`` is ``True`` only when a previously-recorded fingerprint
-    differs from the now-active one (a genuine ``/login``). ``all_reachable``
-    reflects the post-reset messaging probe: ``True`` when no connectors were
-    probed or every probed connector answered ``ok``. ``mcp_ok`` is the other
-    half of the same bridge — the enabled-MCP connectivity verdict.
-    """
+    """``switched`` is ``True`` only when a recorded fingerprint differs from the active one (a genuine ``/login``)."""
 
     current_fingerprint: str
     previous_fingerprint: str
     switched: bool
-    probes: tuple[ConnectorProbeResult, ...] = field(default_factory=tuple)
-    mcp_ok: bool = True
-    mcp_findings: tuple[str, ...] = field(default_factory=tuple)
     token_health_rows_expired: int = 0
-
-    @property
-    def all_reachable(self) -> bool:
-        return all(probe.reachable for probe in self.probes)
-
-    @property
-    def recovered(self) -> bool:
-        """Both halves of the bridge answered — the one predicate for recording."""
-        return self.all_reachable and self.mcp_ok
-
-
-def overlay_messaging_backends() -> list[MessagingBackend]:
-    """Every registered overlay's messaging backend, built fresh from config."""
-    return [b.messaging for b in iter_overlay_backends() if b.messaging is not None]
 
 
 def expire_token_health_cache() -> int:
@@ -93,43 +52,17 @@ def expire_token_health_cache() -> int:
     return AnthropicTokenUsage.objects.expire_all()
 
 
-def probe_connectors(backends: list[MessagingBackend]) -> list[ConnectorProbeResult]:
-    """Live-probe each backend's ``auth.test`` and classify reachability.
-
-    Called *after* the cache reset so each probe reads the connector's current
-    truth, not a stale cached token. A backend whose ``auth.test`` raises or
-    returns falsy ``ok`` is unreachable with the error in ``detail``.
-    """
-    results: list[ConnectorProbeResult] = []
-    for backend in backends:
-        name = getattr(backend, "name", backend.__class__.__name__)
-        try:
-            response = backend.auth_test()
-        except Exception as exc:  # noqa: BLE001 — any transport failure is "unreachable", never a crash
-            results.append(ConnectorProbeResult(name=name, reachable=False, detail=f"{type(exc).__name__}: {exc}"))
-            continue
-        if response.get("ok"):
-            results.append(ConnectorProbeResult(name=name, reachable=True))
-        else:
-            results.append(
-                ConnectorProbeResult(name=name, reachable=False, detail=str(response.get("error", "unknown error"))),
-            )
-    return results
-
-
 @dataclass(frozen=True, slots=True)
 class AccountSwitchRecovery:
-    """The detect-invalidate-reprobe cycle, with injectable I/O seams.
+    """The detect-and-invalidate cycle, with injectable I/O seams.
 
-    ``reset_caches``, ``backends`` and ``expire_token_health`` default to the
-    production overlay factory / health cache; tests and the deterministic eval
-    pass stubs so the cycle runs with no network, DB or ``pass`` store. The class
-    owns the policy (when a switch counts, what to invalidate, what to probe);
-    the seams own only the I/O.
+    ``reset_caches`` and ``expire_token_health`` default to the production backend
+    factory / health cache; tests and the deterministic eval pass stubs so the cycle
+    runs with no DB or ``pass`` store. The class owns the policy (when a switch counts,
+    what to invalidate); the seams own only the I/O.
     """
 
     reset_caches: CacheReset = reset_backend_caches
-    backends: BackendsProvider = overlay_messaging_backends
     expire_token_health: TokenHealthExpiry = expire_token_health_cache
 
     def run(self, *, home: Path | None = None) -> AccountSwitchOutcome:
@@ -138,7 +71,6 @@ class AccountSwitchRecovery:
         previous = load_recorded_fingerprint(home=home)
         switched = bool(current) and bool(previous) and current != previous
 
-        probes: tuple[ConnectorProbeResult, ...] = ()
         expired = 0
         if switched:
             logger.info(
@@ -146,35 +78,26 @@ class AccountSwitchRecovery:
             )
             self.reset_caches()
             expired = self.expire_token_health()
-            probes = tuple(probe_connectors(self.backends()))
 
-        outcome = AccountSwitchOutcome(
+        if current:
+            record_fingerprint(current, home=home)
+
+        return AccountSwitchOutcome(
             current_fingerprint=current,
             previous_fingerprint=previous,
             switched=switched,
-            probes=probes,
             token_health_rows_expired=expired,
         )
 
-        if current and (not switched or outcome.all_reachable):
-            record_fingerprint(current, home=home)
-
-        return outcome
-
 
 def detect_and_recover_account_switch(*, home: Path | None = None) -> AccountSwitchOutcome:
-    """Detect a ``/login`` switch, invalidate the cache, and re-probe connectors.
+    """Detect a ``/login`` switch, invalidate the caches, and record the new account.
 
-    Compares the active account fingerprint against the last-recorded one. On a
-    genuine switch (both non-empty and different): reset the backend cache, expire
-    the cached per-account token health, and re-probe each messaging connector's
-    live reachability. The new fingerprint is recorded only when recovery genuinely
-    succeeded — a no-switch run (first run or unchanged account) or a switch where
-    every connector probed reachable. A switch that left a connector unreachable does NOT record, so
-    the next session re-detects the switch and the heartbeat keeps surfacing
-    until the bridge is actually fixed. An empty active fingerprint ("cannot
-    tell") never claims a switch and never records. Thin convenience wrapper
-    around :class:`AccountSwitchRecovery` with production seams.
+    Compares the active account fingerprint against the last-recorded one. On a genuine
+    switch (both non-empty and different) the backend cache is reset and the cached
+    per-account token health expired. The active fingerprint is then recorded, so the
+    next session no longer reports the switch. An empty active fingerprint ("cannot
+    tell") never claims a switch and never records.
     """
     return AccountSwitchRecovery().run(home=home)
 
@@ -182,12 +105,9 @@ def detect_and_recover_account_switch(*, home: Path | None = None) -> AccountSwi
 __all__ = [
     "AccountSwitchOutcome",
     "AccountSwitchRecovery",
-    "ConnectorProbeResult",
     "current_account_fingerprint",
     "detect_and_recover_account_switch",
     "expire_token_health_cache",
     "load_recorded_fingerprint",
-    "overlay_messaging_backends",
-    "probe_connectors",
     "record_fingerprint",
 ]

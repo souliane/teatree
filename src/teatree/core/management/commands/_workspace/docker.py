@@ -24,7 +24,7 @@ from either:
 from collections.abc import Callable
 
 from teatree.config import get_effective_settings
-from teatree.core.management.commands._workspace.preview import preview_line
+from teatree.core.cleanup.preview import preview_line
 from teatree.core.models import Worktree
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.core.worktree.worktree_roots import canonical_worktree_root, scanned_worktree_roots

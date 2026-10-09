@@ -52,7 +52,7 @@ repos:
 
   # Phase 1 - Init
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 5ab6bd930e86ba0e929eedcee2be458f6b8e4936  # 0.8.16
+    rev: a1785f8e81fe9936d828bef574e6db07e8c8c374  # 0.12.23
     hooks:
       - id: uv-lock
       - id: uv-sync
@@ -335,7 +335,7 @@ repos:
         # FSM-diagram hook keys on its model modules the same way). The /admin/
         # re-skin adds two HTML-affecting inputs: the base_site.html override
         # (injects the token <link>s the snapshot captures) and admin-theme.css.
-        files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
+        files: ^src/teatree/(core/(admin\.py|factory/dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
       - id: generate-defaults-toml
         name: Render defaults.toml from the settings declarations
         language: system
@@ -566,10 +566,10 @@ repos:
       - id: ensure-pr
         name: ensure PR exists (no-orphan invariant)
         language: system
-        # --all-packages: a member-dir `uv run` registers only t3-teatree, so no overlay's bot declaration is visible.
-        entry: scripts/hooks/branch-push-only.sh uv run --all-packages t3 teatree pr ensure-pr
+        entry: scripts/hooks/branch-push-only.sh scripts/hooks/ensure-pr-installed-t3.sh
         pass_filenames: false
         always_run: true
+        verbose: true
         stages: [push]
 
   # Phase 9a - Named regression-detector rules (blocking; zero-findings on main).

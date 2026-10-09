@@ -80,6 +80,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             MCP server exposing teatree's structured search and          │
 │                 gate-preserving writes (stdio).                              │
+│ browser         Drive a headless browser held open for this worktree         │
+│                 (Playwright): open, act, inspect, close.                     │
 │ notion          Headless Notion access (integration token) — read            │
 │                 pages/comments/properties, write scoped.                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
@@ -735,6 +737,8 @@ Usage: t3 codex auth [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ import  Store a locally authenticated ``auth.json`` as one base64 pass       │
 │         entry.                                                               │
+│ check   Run one OK-turn through the stored login; it refreshes only what a   │
+│         real turn would.                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -748,6 +752,19 @@ Usage: t3 codex auth import [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --from        PATH|-  [default: ~/.codex/auth.json]                          │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 codex auth check`
+
+```
+Usage: t3 codex auth check [OPTIONS]
+
+ Run one OK-turn through the stored login; it refreshes only what a real turn
+ would.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4112,8 +4129,8 @@ Usage: t3 setup [OPTIONS] [COMMAND] [ARGS]...
 │                         it via ``pass``.                                     │
 │ slack-provision         Run the full Slack app lifecycle (manifest, scopes,  │
 │                         channels, tokens) idempotently.                      │
-│ recover-account-switch  Detect a Claude account switch, invalidate the       │
-│                         backend cache, re-probe connectors.                  │
+│ recover-account-switch  Detect a Claude account switch and invalidate the    │
+│                         backend and token-health caches.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4183,12 +4200,10 @@ Usage: t3 setup slack-provision [OPTIONS]
 ```
 Usage: t3 setup recover-account-switch [OPTIONS]
 
- Detect a Claude account switch, invalidate the backend cache, re-probe
- connectors.
+ Detect a Claude account switch and invalidate the backend and token-health
+ caches.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each connector reconnect URL in a browser   │
-│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5737,12 +5752,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve              Run the structured-search MCP server over stdio (blocks   │
-│                    until stdin closes).                                      │
-│ reconnect          Reconnect (or print exact steps for) every                │
-│                    declared-but-down claude.ai connector.                    │
-│ browser-diagnosis  Report the chrome-devtools-mcp registration (the default  │
-│                    browser tool, default on).                                │
+│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
+│        closes).                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5776,41 +5787,92 @@ Usage: t3 mcp serve [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp reconnect`
+### `t3 browser`
 
 ```
-Usage: t3 mcp reconnect [OPTIONS]
+Usage: t3 browser [OPTIONS] COMMAND [ARGS]...
 
- Reconnect (or print exact steps for) every declared-but-down claude.ai
- connector.
-
- claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
- via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
- per down connector across every registered overlay's manifest, and exits
- non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
+ Drive a headless browser held open for this worktree (Playwright): open, act,
+ inspect, close.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --open          Best-effort open each reconnect URL in a browser             │
-│                 (fail-open).                                                 │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ open     Load URL in this worktree's headless browser, launching the browser │
+│          on first use.                                                       │
+│ act      Perform one interaction on the open page: click, fill, type, press, │
+│          upload, wait, or eval.                                              │
+│ inspect  Save the page's accessibility snapshot, HTML and screenshot; print  │
+│          what it did since it loaded.                                        │
+│ close    End this worktree's browser session.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser open`
+
+```
+Usage: t3 browser open [OPTIONS] URL
+
+ Load URL in this worktree's headless browser, launching the browser on first
+ use.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --timeout        FLOAT  Seconds to wait for the page's load event.           │
+│                         [default: 30.0]                                      │
+│ --json                  Print the step as one JSON object.                   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser act`
+
+```
+Usage: t3 browser act [OPTIONS] VERB:{click|fill|type|press|upload|wait|eval}
+                       [ARGUMENTS]...
+
+ Perform one interaction on the open page: click, fill, type, press, upload,
+ wait, or eval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    verb           VERB:{click|fill|type|press  [required]                  │
+│                     |upload|wait|eval}                                       │
+│      arguments      [ARGUMENTS]...               SELECTOR                    │
+│                                                  [VALUE|TEXT|KEY|FILE...],   │
+│                                                  or EXPRESSION               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 mcp browser-diagnosis`
+#### `t3 browser inspect`
 
 ```
-Usage: t3 mcp browser-diagnosis [OPTIONS]
+Usage: t3 browser inspect [OPTIONS]
 
- Report the chrome-devtools-mcp registration (the default browser tool, default
- on).
-
- Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
- exact ``claude mcp add`` line that registers it — so an agent can drive and
- inspect a deployed page (navigate/click/fill, network/console/DOM) before
- proposing a root cause for browser-visible breakage. No enforcement; a
- diagnostic and interaction aid only.
+ Save the page's accessibility snapshot, HTML and screenshot; print what it did
+ since it loaded.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 browser close`
+
+```
+Usage: t3 browser close [OPTIONS]
+
+ End this worktree's browser session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Print the step as one JSON object.                           │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -11075,7 +11137,7 @@ Usage: t3 teatree retention [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ artifacts  Reclaim dormant rebuildable build artifacts (dry-run unless       │
 │            --apply).                                                         │
-│ prune      Prune terminal-owned rows past the retention window (dry-run      │
+│ prune      Preview or drain the hourly control-DB retention pass (dry-run    │
 │            unless --apply).                                                  │
 │ scratch    Reclaim stale agent scratch under the temp root (dry-run unless   │
 │            --apply, #4165).                                                  │
@@ -11124,14 +11186,16 @@ Usage: t3 teatree retention prune [OPTIONS]
  Prune old rows from the high-churn tables, then reclaim the disk (dry-run
  unless --apply).
 
- Conservative: the terminal-owned lane deletes only rows past the retention
- window whose owning task AND ticket are terminal, so a live/in-flight row is
- never touched; the park lane deletes only aged limit-park audit rows that
- carry no billed telemetry.
+ The lanes run in order: aged limit-park attempts; the failed, then
+ the completed tasks of finished tickets quiet for the task-history
+ window, with their attempts; old notification payloads, blanked so
+ dedup holds; settled inbound events; transitions that record no edge;
+ finished task results. The same pass runs hourly on its own under a
+ batch budget; ``--apply`` drains it with no budget.
 
  On ``--apply`` the deleted pages are handed back to the filesystem with a
- ``VACUUM``, which runs after the prune's transaction has committed because
- it rebuilds the file and so cannot run inside one.
+ ``VACUUM``, which runs after every batch transaction has committed
+ because it rebuilds the file and so cannot run inside one.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --apply          Actually delete the prunable rows. Without it, this is a    │
@@ -12049,6 +12113,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              a ticket (#88).                                 │
 │ set-target-branch            Set one repo's stacked-delivery parent branch   │
 │                              for this ticket.                                │
+│ rework-hold                  Re-queue the findings of a self-review HOLD a   │
+│                              ticket was parked past.                         │
 │ clear                        Issue a per-diff CLEAR — the orchestrator's     │
 │                              only merge output (BLUEPRINT §17.4.2).          │
 │ backfill-clears              Recover the ticket link on consumed CLEARs      │
@@ -12106,9 +12172,9 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 
  Transition a ticket to a new state. Allowed transition names: scope, start,
  plan, code, code_direct, test, review, ship, request_review, mark_merged,
- retrospect, mark_delivered, rework, reopen, reopen_for_followup,
- mark_review_no_action, mark_reviewed_externally, reconcile_reviewed,
- reconcile_merged, ignore, unignore.
+ retrospect, mark_delivered, rework, address_self_review, reopen,
+ reopen_for_followup, mark_review_no_action, mark_reviewed_externally,
+ reconcile_reviewed, reconcile_merged, ignore, unignore.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id            INTEGER  [required]                                │
@@ -12383,6 +12449,24 @@ Usage: t3 teatree ticket set-target-branch [OPTIONS] TICKET_ID REPO BRANCH
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket rework-hold`
+
+```
+Usage: t3 teatree ticket rework-hold [OPTIONS] TICKET_ID
+
+ Supersede the ticket's active tasks and queue one coding task carrying its
+ held self-review's findings.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run          Report the rework without writing it.                     │
+│ --json             Emit the outcome as JSON.                                 │
+│ --help             Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

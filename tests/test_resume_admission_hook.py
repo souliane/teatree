@@ -160,7 +160,6 @@ class TestWiring:
         monkeypatch.setattr(router, "_claim_session_handover", lambda _s, _c: None)
         monkeypatch.setattr(router, "_autocompact_kill_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_account_switch_advisory", lambda: "")
-        monkeypatch.setattr(router, "_mcp_connectivity_advisory", lambda: "")
 
         merged = router._merge_session_start_context("orientation", _SESSION, "resume", router.StartClaims())
         router.StartClaims().deliver(merged)
@@ -176,7 +175,6 @@ class TestWiring:
         monkeypatch.setattr(router, "_claim_session_handover", lambda _s, _c: None)
         monkeypatch.setattr(router, "_autocompact_kill_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_account_switch_advisory", lambda: "")
-        monkeypatch.setattr(router, "_mcp_connectivity_advisory", lambda: "")
         assert (
             router._merge_session_start_context("orientation", _SESSION, "startup", router.StartClaims())
             == "orientation"

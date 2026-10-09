@@ -144,4 +144,4 @@ def _location(row: FindingDict) -> str:
 
 
 def _line(row: FindingDict) -> str:
-    return f"[{row['severity']}] {_location(row)} — {row['summary']}"
+    return Finding.from_dict(dict(row)).describe()

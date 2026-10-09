@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
@@ -12,7 +13,12 @@ from teatree.agents.prompt import (
     _parent_result_summary,
     build_system_context,
     build_task_prompt,
+    required_skill_delivery,
 )
+from teatree.agents.skill_assurance import SkillDispatchError, assess_skill_dispatch
+from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
+from teatree.agents.stage_skill_prompt import stage_skills_present
+from teatree.config.settings import UserSettings
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedule_resume
@@ -427,7 +433,7 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(task, skills=["my-skill"])
         assert "# Loaded Skills" in ctx
         assert "# Loaded Skill" in ctx
@@ -435,7 +441,7 @@ class TestBuildSystemContext(TestCase):
     def test_with_lifecycle_skill_scopes_loading(self) -> None:
         """When lifecycle_skill is set, only that skill + rules get full content."""
         tmp_dir = Path(tempfile.mkdtemp())
-        for name in ("rules", "test", "ac-django", "workspace"):
+        for name in ("rules", "test", "workspace"):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
@@ -444,7 +450,7 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="testing")
 
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
                 skills=["ac-django", "workspace", "rules", "test"],
@@ -453,7 +459,7 @@ class TestBuildSystemContext(TestCase):
 
         assert "# test instructions" in ctx
         assert "# rules instructions" in ctx
-        assert "# ac-django instructions" not in ctx
+        assert "--- SKILL: ac-django ---" not in ctx
         assert "REQUIRED: Load /ac-django via the Skill tool before you start" in ctx
         assert "# workspace instructions" not in ctx
         assert "COMPANION SKILLS" in ctx
@@ -767,7 +773,7 @@ class TestCodingPhaseHeadStateInjection(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
                 skills=["code", "rules", "architecture-design"],
@@ -860,7 +866,7 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 self._coding_task(),
                 skills=["ac-django", "t3:demo-overlay", "code", "rules", "architecture-design"],
@@ -877,7 +883,7 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
         for name in ("rules", "code", "architecture-design"):
             (tmp_dir / name).mkdir()
             (tmp_dir / name / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 self._coding_task(),
                 skills=["ac-django", "ac-python", "code", "rules", "architecture-design"],
@@ -932,7 +938,7 @@ class TestCacheablePrefixStability(TestCase):
             issue="https://example.com/issues/202", phase="coding", parent_summary="prior work on the other ticket"
         )
 
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", skills_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", skills_dir):
             ctx_first = build_system_context(first, skills=["code"], lifecycle_skill="code", stage_skills=[])
             ctx_second = build_system_context(second, skills=["code"], lifecycle_skill="code", stage_skills=[])
 
@@ -943,7 +949,7 @@ class TestCacheablePrefixStability(TestCase):
         skills_dir = self._skill_dir("# code\n\n## Only\nbody")
         task = self._task(issue="https://example.com/issues/303", phase="coding")
 
-        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", skills_dir):
+        with patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", skills_dir):
             ctx = build_system_context(task, skills=["code"], lifecycle_skill="code", stage_skills=[])
 
         assert ctx.index("# Loaded Skills") < ctx.index(f"Task ID: {task.pk}")
@@ -997,3 +1003,65 @@ class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
     def test_a_review_answerable_for_no_pr_still_renders(self) -> None:
         context = self._system_context(issue_url="https://github.com/souliane/teatree/issues/2663")
         assert "reviewer_identity" in context
+
+
+#: ``find_project_root`` redirects a worktree to its main clone; a test of this tree's skills pins them here.
+_THIS_CHECKOUT_SKILLS = Path(__file__).resolve().parents[2] / "skills"
+
+
+class TestTheReviewRunEmbedsItsRequiredCompanion(TestCase):
+    """#4769: a stage skill's ``requires`` is delivered in full, with a receipt, or the dispatch refuses."""
+
+    _BODY = "# Reviewing Codebase\n\nGENERIC-REVIEW-METHOD-SENTINEL\n"
+
+    def setUp(self) -> None:
+        self.enterContext(patch("teatree.skill_support.index.DEFAULT_SKILLS_DIR", _THIS_CHECKOUT_SKILLS))
+
+    def _dispatch(self) -> tuple[str, list[str], set[str], set[str]]:
+        ticket = Ticket.objects.create(issue_url="architectural-review://t3-teatree")
+        task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket), phase="architectural_review"
+        )
+        with (
+            tempfile.TemporaryDirectory() as worktree,
+            patch("teatree.agents.skill_bundle.active_overlay_stage_skills", return_value=[]),
+            patch("teatree.agents.skill_bundle.active_overlay_companion_skills", return_value=["internals"]),
+            patch("teatree.config.get_effective_settings", return_value=UserSettings()),
+        ):
+            stage = stage_skills_for_dispatch(task.phase)
+            skills = resolve_skill_bundle(
+                phase=task.phase, overlay_skill_metadata={}, detection_root=Path(worktree), stage_skills=stage
+            )
+            context = build_system_context(task, skills=skills, lifecycle_skill="", stage_skills=stage)
+            inline, explicit = required_skill_delivery(
+                task.phase,
+                skills,
+                lifecycle_skill="",
+                stage_skills=stage_skills_present(task, skills, configured=stage),
+            )
+        return context, skills, inline, explicit
+
+    def test_the_companion_body_is_embedded_and_receipted(self) -> None:
+        installed = Path.home() / ".agents" / "skills" / "ac-reviewing-codebase" / "SKILL.md"
+        installed.parent.mkdir(parents=True)
+        installed.write_text(self._BODY, encoding="utf-8")
+
+        context, skills, inline, explicit = self._dispatch()
+        assurance = assess_skill_dispatch(
+            skills=skills, required_inline=inline, required_explicit=explicit, rendered_context=context
+        )
+
+        assert f"--- SKILL: ac-reviewing-codebase ---\n{self._BODY}" in context
+        assert set(assurance["injected"]) == {"ac-reviewing-codebase", "architectural-review"}
+        assert "- internals: not embedded" in context
+
+    def test_an_absent_required_companion_refuses_the_dispatch(self) -> None:
+        context, skills, inline, explicit = self._dispatch()
+
+        with pytest.raises(SkillDispatchError) as excinfo:
+            assess_skill_dispatch(
+                skills=skills, required_inline=inline, required_explicit=explicit, rendered_context=context
+            )
+
+        assert excinfo.value.assurance["status"] == "missing"
+        assert excinfo.value.assurance["missing"] == ["ac-reviewing-codebase"]

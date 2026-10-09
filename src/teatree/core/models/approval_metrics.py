@@ -10,8 +10,9 @@ from the two ledgers a graduated class actually touches:
     without approving is a *decline* (distrust of the auto-graduation), read through
     the one shared :func:`classify_ratification_answer` so an approval the loop admits
     is never scored as one; a policy auto-answer (``resolved_via='policy'``) is never
-    a decline, and an agent-surface answer (``resolved_via='agent'``) is no human
-    touchpoint at all.
+    a decline, an agent-surface answer (``resolved_via='agent'``) is no human
+    touchpoint at all, and an approval counts only on an owner channel
+    (``DeferredQuestion.OWNER_CHANNELS``) while a decline on any other channel still does.
 * the :class:`~teatree.core.models.send_audit.SendAudit` ledger (#117) — the
     outbound posts for the on-behalf / public-issue classes. An ``enforce``-mode
     ``DENIED`` verdict is a *defect escape* (the class authorized a send the
@@ -123,9 +124,11 @@ def _question_metrics(action_class: str, cutoff: datetime) -> tuple[int, int, in
     interventions = rows.count()
     resolved = declines = 0
     for row in rows.filter(answered_at__isnull=False).exclude(resolved_via=DeferredQuestion.ResolvedVia.AGENT):
-        resolved += 1
         if _is_decline(row):
+            resolved += 1
             declines += 1
+        elif row.resolved_via in DeferredQuestion.OWNER_CHANNELS:
+            resolved += 1
     return interventions, resolved, declines
 
 

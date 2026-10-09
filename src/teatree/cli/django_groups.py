@@ -189,7 +189,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Age-based pruning of the high-churn control-DB tables (#3693).",
         [
             ("artifacts", "Reclaim dormant rebuildable build artifacts (dry-run unless --apply)."),
-            ("prune", "Prune terminal-owned rows past the retention window (dry-run unless --apply)."),
+            ("prune", "Preview or drain the hourly control-DB retention pass (dry-run unless --apply)."),
             ("scratch", "Reclaim stale agent scratch under the temp root (dry-run unless --apply, #4165)."),
         ],
         # Reads/deletes rows in the teatree-core control DB — dispatch via
@@ -316,6 +316,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("fix-record-override", "Record the audited exception for the fix-ticket FixRecord DoD gate."),
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("set-target-branch", "Set one repo's stacked-delivery parent branch for this ticket."),
+            ("rework-hold", "Re-queue the findings of a self-review HOLD a ticket was parked past."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
             ("list-clears", "List every unconsumed merge authorisation, tagged live / superseded / incomplete."),

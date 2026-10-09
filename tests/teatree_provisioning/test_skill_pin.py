@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from teatree.provisioning.declared import skills_declared_in_apm_manifest
-from teatree.provisioning.skill_pin import measure_skill_pins, pin_advisory_lines
+from teatree.provisioning.skill_pin import measure_skill_pins, pin_advisory_lines, refs_named
 from tests._git_repo import make_git_repo, run_git
 
 _SKILL = "ac-python"
@@ -160,3 +160,34 @@ class TestSymbolicPinsAreNotShaPins:
 
         assert status.is_behind
         assert not status.is_current
+
+
+class TestRefsNamed:
+    """``refs_named`` answers whether a ref (branch or tag) carries a pin's NAME on the source."""
+
+    @pytest.fixture
+    def name(self, source: Path) -> str:
+        return run_git(source, "rev-parse", "HEAD")
+
+    def test_a_source_without_such_a_ref_names_none(self, source: Path, name: str) -> None:
+        assert refs_named(str(source), name) == ()
+
+    def test_a_branch_named_like_the_pin_is_named(self, source: Path, name: str) -> None:
+        run_git(source, "update-ref", f"refs/heads/{name}", "HEAD")
+
+        assert refs_named(str(source), name) == (f"refs/heads/{name}",)
+
+    def test_a_lightweight_tag_named_like_the_pin_is_named(self, source: Path, name: str) -> None:
+        run_git(source, "update-ref", f"refs/tags/{name}", "HEAD")
+
+        assert refs_named(str(source), name) == (f"refs/tags/{name}",)
+
+    def test_an_annotated_tag_named_like_the_pin_is_named_by_its_unpeeled_line(self, source: Path, name: str) -> None:
+        run_git(source, "tag", "-a", "-m", "annotated", "scratch")
+        run_git(source, "update-ref", f"refs/tags/{name}", run_git(source, "rev-parse", "refs/tags/scratch"))
+        run_git(source, "tag", "-d", "scratch")
+
+        assert refs_named(str(source), name) == (f"refs/tags/{name}",)
+
+    def test_an_unreachable_source_is_unknown_not_clean(self, tmp_path: Path, name: str) -> None:
+        assert refs_named(str(tmp_path / "nowhere"), name) is None

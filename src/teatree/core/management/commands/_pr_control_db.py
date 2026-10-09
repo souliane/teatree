@@ -19,6 +19,7 @@ from typing import TypedDict
 
 from django.conf import settings
 
+from teatree.core.provision.db_anchor import active_db_is_worktree_isolated
 from teatree.db.boundary import control_db_unreachable_reason
 
 
@@ -43,6 +44,17 @@ def configured_db_path() -> Path:
 def unreachable_control_db_reason() -> str | None:
     """Why this process cannot reach the DB it is configured for, or ``None`` when it can."""
     return control_db_unreachable_reason(configured_db_path(), env=os.environ)
+
+
+def isolated_control_db_reason(repo_path: str, branch: str) -> str | None:
+    """Why ``ensure-pr`` must not write on this DB: a worktree-isolated copy no merge gate reads."""
+    if not active_db_is_worktree_isolated():
+        return None
+    return (
+        "`pr ensure-pr` is running on a worktree-isolated control DB, so the PR ledger row and the "
+        "PendingPullRequest it would write are invisible to the merge gates. Run the installed `t3`, not "
+        f"`uv run`: `t3 <overlay> pr ensure-pr --repo {Path(repo_path).resolve()} --branch {branch}`."
+    )
 
 
 def control_db_unreachable_error(reason: str) -> ControlDbUnreachableError:

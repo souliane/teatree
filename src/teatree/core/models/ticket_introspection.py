@@ -100,7 +100,7 @@ class TicketIntrospectionModel(TicketFacet):
         """
         return next((phase for phase, produces in cls._PHASE_PRODUCES_STATE.items() if produces == state), "")
 
-    def has_completed_phase(self, phase: str) -> bool:
+    def has_completed_phase(self: "Ticket", phase: str) -> bool:
         """True when the FSM state has already reached the state *phase* produces.
 
         A FAILED task for such a phase is SUPERSEDED: the ticket's own FSM advanced
@@ -116,7 +116,13 @@ class TicketIntrospectionModel(TicketFacet):
         order = self._WORK_STATE_ORDER
         if produces is None or self.state not in order:
             return False
+        if produces == self.State.CODED and self.owes_self_review_rework():
+            return False
         return order.index(self.state) >= order.index(produces)
+
+    def owes_self_review_rework(self: "Ticket") -> bool:
+        """Whether a held self-review still waits on its rework, so coding is not over at this state."""
+        return can_proceed(self.address_self_review)
 
     def may_expedite(self) -> bool:
         """True iff this ticket may carry a human-authorized PENDING-checks waiver (PR-07).

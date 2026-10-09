@@ -61,7 +61,7 @@ def _finalize_one(worktree: Worktree, *, message: str, write: Callable[[str], No
     """Squash + rebase ONE worktree; return its report lines and whether it failed."""
     repo = worktree.repo_path
     repo_dir = (worktree.extra or {}).get("worktree_path") or repo
-    default_br = git.default_branch(repo)
+    default_br = git.default_branch(repo_dir)
     results: list[str] = []
     try:
         status = git.status_porcelain(repo_dir)

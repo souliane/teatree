@@ -71,6 +71,7 @@ _PUBLIC_API: frozenset[str] = frozenset(
 # reviewed addition pinned here (e.g. reopen_for_followup, #3327; reopen's
 # delivered source, #4152).
 _FSM_GRAPH: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "address_self_review": (("self_reviewed", "tested"), ("coded",)),
     "code": (("plan_recorded",), ("coded",)),
     "code_direct": (("not_started", "scoped", "work_started"), ("coded",)),
     "ignore": (

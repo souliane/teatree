@@ -22,6 +22,7 @@ import pytest
 
 from teatree.config import (
     COLD_HOOK_SETTINGS,
+    COLD_SETTINGS,
     OVERLAY_OVERRIDABLE_SETTINGS,
     SETTING_HOMES,
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
@@ -90,9 +91,14 @@ def _toml_home_user_settings_fields() -> set[str]:
 
 
 def _recognised_homes() -> set[str]:
-    """Every registry a cold-read ``[teatree]`` key may legitimately live in."""
+    """Every registry a cold-read ``[teatree]`` key may legitimately live in.
+
+    ``COLD_SETTINGS`` holds the cold keys the CLI reads as well as the hooks (the master
+    ``danger_gate_fail_open`` switch is one), so it is a home as much as ``COLD_HOOK_SETTINGS``.
+    """
     return (
         set(COLD_HOOK_SETTINGS)
+        | set(COLD_SETTINGS)
         | set(OVERLAY_OVERRIDABLE_SETTINGS)
         | set(TOML_OVERLAY_OVERRIDABLE_SETTINGS)
         | _toml_home_user_settings_fields()
@@ -129,8 +135,9 @@ def test_cold_bool_flag_defaults_match_the_hook_default() -> None:
     for script in _HOOK_SCRIPTS.rglob("*.py"):
         for key, value in _BOOL_FLAG_DEFAULT.findall(script.read_text(encoding="utf-8")):
             declared[key] = value == "True"
-    registered = {key: want for key, want in declared.items() if key in COLD_HOOK_SETTINGS}
-    drifted = sorted(key for key, want in registered.items() if COLD_HOOK_SETTINGS[key].default is not want)
+    homes = {**COLD_SETTINGS, **COLD_HOOK_SETTINGS}
+    registered = {key: want for key, want in declared.items() if key in homes}
+    drifted = sorted(key for key, want in registered.items() if homes[key].default is not want)
     assert drifted == [], f"registered cold-hook default disagrees with the hook: {drifted}"
     assert len(registered) >= 10
 

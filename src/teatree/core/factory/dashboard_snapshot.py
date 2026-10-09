@@ -2,9 +2,10 @@
 
 The user-facing HTML dashboard was removed in #541; the Django admin index is the
 remaining server-rendered HTML surface and a faithful "always-fresh screenshot" of
-teatree's domain models — register a model in ``core/admin.py`` and this snapshot
-gains a row. The render is the role ``core/diagrams.py`` plays for the FSM diagrams:
-pure-output logic that the generator hook and the drift gate both call.
+teatree's domain models — ``core/admin.py`` registers every core model (a new one
+read-only by default), so a new model gains a row here. The render is the role
+``core/diagrams.py`` plays for the FSM diagrams: pure-output logic that the
+generator hook and the drift gate both call.
 
 Determinism is the whole contract (a flapping snapshot reds CI), so every volatile
 input is frozen rather than captured live. A dedicated ``AdminSite`` carries only

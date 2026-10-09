@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.worktree import Worktree
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.scanners.base import ScanSignal
 
@@ -185,3 +186,51 @@ class TestReconcileManualPrsSignalFilter(TestCase):
             issue_url="https://github.com/souliane/teatree/issues/855",
             state="work_started",
         )
+
+
+class TestReconcileAdoptsByHeadBranch(TestCase):
+    """A PR whose body only cites its ticket (``Refs #N``) is adopted through its head branch's worktree."""
+
+    _BRANCH = "5145-merge-gate-b"
+
+    def _ticket_with_worktree(self, *, repo_path: str = "souliane/teatree", state: str = "work_started") -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree", issue_url="https://github.com/souliane/teatree/issues/5145", state=state
+        )
+        Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path=repo_path, branch=self._BRANCH)
+        return ticket
+
+    def _reconcile(self, *, branch: str | None = _BRANCH) -> int:
+        raw = {"source_branch": branch} if branch is not None else {}
+        return reconcile_manual_prs([_signal(description="Refs #5145", raw_extra=raw)])
+
+    def test_a_refs_only_body_is_adopted_by_the_live_worktree_on_its_head_branch(self) -> None:
+        ticket = self._ticket_with_worktree()
+
+        assert self._reconcile() == 1
+
+        row = PullRequest.objects.get(url=_PR_URL)
+        assert row.ticket_id == ticket.pk
+        assert row.create_verification == PullRequest.CreateVerification.CONFIRMED
+
+    def test_no_worktree_on_the_head_branch_creates_no_row(self) -> None:
+        self._ticket_with_worktree()
+
+        assert self._reconcile(branch="some-other-branch") == 0
+        assert not PullRequest.objects.filter(url=_PR_URL).exists()
+
+    def test_a_signal_without_a_head_branch_creates_no_row(self) -> None:
+        self._ticket_with_worktree()
+
+        assert self._reconcile(branch=None) == 0
+        assert not PullRequest.objects.filter(url=_PR_URL).exists()
+
+    def test_another_repos_worktree_on_the_branch_creates_no_row(self) -> None:
+        self._ticket_with_worktree(repo_path="souliane/private-skills")
+
+        assert self._reconcile() == 0
+
+    def test_a_merged_tickets_worktree_on_the_branch_creates_no_row(self) -> None:
+        self._ticket_with_worktree(state="merged")
+
+        assert self._reconcile() == 0

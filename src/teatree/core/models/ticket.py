@@ -14,7 +14,7 @@ from teatree.core.models.ticket_evidence import (
     recorded_anti_vacuity_attestation,
 )
 from teatree.core.models.ticket_introspection import TicketIntrospectionModel
-from teatree.core.models.ticket_ledger import retire_phase_ledger
+from teatree.core.models.ticket_ledger import retire_phase_ledger, stamp_reopened_over
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.models.ticket_overlay import TicketOverlayModel
 from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from teatree.core.managers import TaskQuerySet
     from teatree.core.models.task import Task
+    from teatree.core.models.transition import TicketTransition
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
@@ -64,6 +65,10 @@ def _anti_vacuity_satisfied(ticket: object) -> bool:
         or not row.has_shippable_diff()
         or anti_vacuity_is_complete(recorded_anti_vacuity_attestation(row))
     )
+
+
+def _has_open_self_review_hold(ticket: object) -> bool:
+    return bool(get_gate("self_review_hold")(ticket))
 
 
 def _reviewer_with_completed_review(ticket: object) -> bool:
@@ -100,6 +105,7 @@ class Ticket(
         # exposes exactly this queryset's methods, which is what callers use.
         tasks: "TaskQuerySet"
         worktrees: "models.Manager[Worktree]"
+        transitions: "models.Manager[TicketTransition]"
 
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
@@ -383,6 +389,18 @@ class Ticket(
 
     @transition(
         field="state",
+        source=[State.TESTED, State.SELF_REVIEWED],
+        target=State.CODED,
+        conditions=[_has_open_self_review_hold],
+    )
+    def address_self_review(self, *, parent_task: "Task | None" = None) -> None:
+        """Land the rework of a held self-review at CODED so it is re-tested and re-reviewed."""
+        self._refuse_if_worktree_dirty("coding")
+        self._consume_pending_phase_tasks("coding")
+        self.schedule_testing(parent_task=parent_task)
+
+    @transition(
+        field="state",
         source=_RECONCILE_SOURCE_STATES,
         target=State.SELF_REVIEWED,
     )
@@ -502,6 +520,7 @@ class Ticket(
     @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.SELF_REVIEWED)
     def reopen_for_followup(self) -> None:
         """Reopen a terminally-shipped ticket to SELF_REVIEWED for a follow-up PR (#3327)."""
+        stamp_reopened_over(self)
 
     @transition(field="state", source=[State.CODED, State.TESTED, State.SELF_REVIEWED], target=State.WORK_STARTED)
     def rework(self) -> None:
@@ -532,6 +551,7 @@ class Ticket(
         self.extra = extra
         self._cancel_pending_tasks()
         retire_phase_ledger(self)
+        stamp_reopened_over(self)
 
     @transition(
         field="state",

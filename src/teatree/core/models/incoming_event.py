@@ -37,6 +37,7 @@ class IncomingEvent(models.Model):
         CI = "ci", "CI"
 
     source = models.CharField(max_length=16, choices=Source.choices)
+    event_name = models.CharField(max_length=64, blank=True)
     actor = models.CharField(max_length=255, blank=True)
     channel_ref = models.CharField(max_length=255, blank=True)
     thread_ref = models.CharField(max_length=255, blank=True)

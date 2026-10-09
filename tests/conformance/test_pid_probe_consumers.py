@@ -41,6 +41,7 @@ _ATTRIBUTION_HOME = "core/loop_lease_liveness.py"
 #: new one is worth one deliberate line here plus a look at whose namespace it reads.
 EXPECTED_CONSUMERS = frozenset(
     {
+        "browser/session.py",
         "core/claim_liveness.py",
         "core/loop_lease_manager.py",
         "eval/regression_corpus_fixtures.py",

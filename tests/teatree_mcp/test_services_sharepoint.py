@@ -8,6 +8,9 @@ the only mock, so no ``rclone`` runs.
 """
 
 import asyncio
+import contextlib
+import dataclasses
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +22,15 @@ from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import services_sharepoint
 from teatree.mcp.server import build_server
+
+
+@contextlib.contextmanager
+def _builder(**mock_kwargs: object) -> Iterator[MagicMock]:
+    build = MagicMock(**mock_kwargs)
+    with patch.object(
+        services_sharepoint, "SHAREPOINT", dataclasses.replace(services_sharepoint.SHAREPOINT, build=build)
+    ):
+        yield build
 
 
 class _SharePointOverlay:
@@ -34,7 +46,7 @@ class TestSharePointClientResolution(TestCase):
         built = MagicMock()
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SharePointOverlay()}),
-            patch("teatree.mcp.services_sharepoint.sharepoint_client_from_overlay", return_value=built) as build,
+            _builder(return_value=built) as build,
         ):
             client = services_sharepoint._client()
 
@@ -46,7 +58,7 @@ class TestSharePointClientResolution(TestCase):
         # client (TEATREE_SHAREPOINT_REMOTE unset) — the resolver falls through.
         with (
             patch("teatree.mcp.service_resolver.get_all_overlays", return_value={"a": _SharePointOverlay()}),
-            patch("teatree.mcp.services_sharepoint.sharepoint_client_from_overlay", return_value=None),
+            _builder(return_value=None),
             pytest.raises(ToolError, match="SharePoint document library"),
         ):
             services_sharepoint._client()
