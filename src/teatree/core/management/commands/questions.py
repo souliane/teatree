@@ -32,13 +32,8 @@ from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
-from teatree.core.models.deferred_question import (
-    DeferredQuestion,
-    DeferredQuestionAudit,
-    DeferredQuestionError,
-    question_fingerprint,
-)
-from teatree.core.models.question_text import options_digest
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_text import options_digest, question_fingerprint
 from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.core.table_output import print_table
 

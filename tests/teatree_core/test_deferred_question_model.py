@@ -20,12 +20,8 @@ from teatree import answer_handback
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
-from teatree.core.models.deferred_question import (
-    DeferredQuestion,
-    DeferredQuestionAudit,
-    DeferredQuestionError,
-    question_fingerprint,
-)
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_text import question_fingerprint
 from teatree.instance_id import instance_id
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

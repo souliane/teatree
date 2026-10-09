@@ -57,10 +57,8 @@ class StaleControlDbQuestionScanner:
     name: str = "stale_control_db_questions"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.models.deferred_question import (  # noqa: PLC0415 — deferred: ORM
-            DeferredQuestion,
-            question_fingerprint,
-        )
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM
+        from teatree.core.models.question_text import question_fingerprint  # noqa: PLC0415 — deferred: ORM
 
         paths = self.artifacts()
         total = sum(path.stat().st_size for path in paths)

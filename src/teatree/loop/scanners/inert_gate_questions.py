@@ -50,10 +50,8 @@ class InertGateQuestionScanner:
 
     def scan(self) -> list[ScanSignal]:
         from teatree.core.factory.feature_inertness import feature_inertness  # noqa: PLC0415 — deferred: ORM-backed
-        from teatree.core.models.deferred_question import (  # noqa: PLC0415 — deferred: ORM/app-registry
-            DeferredQuestion,
-            question_fingerprint,
-        )
+        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.question_text import question_fingerprint  # noqa: PLC0415 — deferred: ORM/app-registry
 
         undecided = sorted((f for f in feature_inertness(self.registry) if f.is_fault), key=lambda f: f.setting)
 

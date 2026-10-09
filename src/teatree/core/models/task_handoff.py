@@ -12,10 +12,11 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 import logging
 
 from teatree.core.modelkit.owner_decision import owner_decision
-from teatree.core.models.deferred_question import DeferredQuestion, question_fingerprint
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.question_subject import finished_subject_reason
+from teatree.core.models.question_text import question_fingerprint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 

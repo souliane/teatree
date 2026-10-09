@@ -152,11 +152,18 @@ def _heal_resolver(name: str) -> Resolver:
 def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Decision | None:
     states = context.index.states_for(question)
     if question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
-        if reason := finished_subject_reason(question):
-            return Decision(Verdict.DRAIN, reason)
-    elif states and all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
+        return _owner_subject_finished(question, has_subject=bool(states))
+    if not states:
+        return None
+    if all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
         return Decision(Verdict.DRAIN, f"every subject ticket is terminal ({', '.join(sorted(set(states)))})")
-    return Decision(Verdict.KEEP, "a subject ticket is still live") if states else None
+    return Decision(Verdict.KEEP, "a subject ticket is still live")
+
+
+def _owner_subject_finished(question: DeferredQuestion, *, has_subject: bool) -> Decision | None:
+    if reason := finished_subject_reason(question):
+        return Decision(Verdict.DRAIN, reason)
+    return Decision(Verdict.KEEP, "a subject ticket is still live") if has_subject else None
 
 
 def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision | None:
