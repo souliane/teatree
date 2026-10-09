@@ -34,7 +34,7 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.models.deferred_question import (
     DeferredQuestion,
     DeferredQuestionAudit,
@@ -129,7 +129,6 @@ class Command(MachineOutputCommand):
             str,
             typer.Option("--options", help="Verbatim JSON-encoded ``AskUserQuestion`` options."),
         ] = "",
-        session_id: Annotated[str, typer.Option("--session", help="Originating session id.")] = "",
         dedupe_marker: Annotated[
             str,
             typer.Option(
@@ -144,19 +143,24 @@ class Command(MachineOutputCommand):
                 help=f"Only for a decision the owner alone makes: {', '.join(OwnerDecision)}. Absent: internal.",
             ),
         ] = "",
+        checked: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--checked", help="A fact you checked before asking; repeat per fact. Required with --decision."
+            ),
+        ] = None,
     ) -> str:
         """Record a deferred question by hand — the agent-facing capture surface.
 
         ``--dedupe-marker`` is the column the scanners set, so a row recorded here
         collapses onto the scanner's row for one underlying signal. ``--decision`` is
-        the deny-by-default allowlist (#5096): only a named owner decision reaches the
-        owner's DM, and its marker defaults to ``<decision>:<question fingerprint>`` so
+        the deny-by-default allowlist (#5096): only a named owner decision with a ``--checked``
+        fact reaches the owner's DM, and its marker defaults to ``<decision>:<question fingerprint>`` so
         the same question is never asked twice.
 
-        There is no ``--tool-use-id``: that identifier is assigned by the harness
-        and nobody at a shell can know it. The away-mode ``AskUserQuestion``
-        PreToolUse hook records its own rows through
-        :meth:`DeferredQuestion.record` directly and sets it there.
+        There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
+        and the ``AskUserQuestion`` PreToolUse hook records its own rows through
+        :meth:`DeferredQuestion.record` directly and sets them there.
         """
         kind = owner_decision(decision) if decision else None
         if decision and kind is None:
@@ -173,13 +177,19 @@ class Command(MachineOutputCommand):
                 question,
                 options_json=options_json,
                 options_hash=options_digest(options) if isinstance(options, list) else "",
-                session_id=session_id,
                 dedupe_marker=dedupe_marker,
                 decision=kind,
+                checked=checked or (),
             )
         except DeferredQuestionError as exc:
-            self.stderr.write(str(exc))
+            self.stderr.write(f"{exc}. {OWNER_QUESTION_ROUTE}" if kind else str(exc))
             raise SystemExit(2) from exc
+        if kind is None:
+            return f"recorded #{row.pk} internal, not sent to the owner; decide it yourself. {OWNER_QUESTION_ROUTE}"
+        if row.answered_at is not None:
+            return f"#{row.pk} was already answered: {row.answer_text}"
+        if row.dismissed_at is not None:
+            return f"#{row.pk} was already dismissed: {row.dismissed_reason}"
         return f"recorded #{row.pk}."
 
     @command(name="list")

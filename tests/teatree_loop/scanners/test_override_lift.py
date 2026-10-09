@@ -122,7 +122,28 @@ class TestProposingIsNotLifting(django.test.TestCase):
         raise_override_lift_questions(_NOW)
         raise_override_lift_questions(_NOW)
 
-        assert DeferredQuestion.objects.filter(dedupe_marker="override-lift:standing").count() == 1
+        assert DeferredQuestion.objects.filter(dedupe_marker__startswith="override-lift:standing").count() == 1
+
+    def test_the_question_carries_its_evidence(self) -> None:
+        _loop("standing", runs=False, reason="waiting on the vendor", age=dt.timedelta(days=30))
+
+        raise_override_lift_questions(_NOW)
+
+        evidence = DeferredQuestion.objects.get().evidence
+        assert evidence["decision"] == "product_scope"
+        assert any("waiting on the vendor" in fact for fact in evidence["checked"])
+
+    def test_new_override_set_at_asked_once(self) -> None:
+        _loop("standing", runs=False, reason="waiting on the vendor", age=dt.timedelta(days=30))
+        raise_override_lift_questions(_NOW)
+        DeferredQuestion.consume(DeferredQuestion.objects.get().pk, answer="leave it standing")
+        Loop.objects.filter(name="standing").update(override_set_at=_NOW - dt.timedelta(days=20))
+
+        raise_override_lift_questions(_NOW)
+        raise_override_lift_questions(_NOW)
+
+        assert DeferredQuestion.objects.count() == 2
+        assert DeferredQuestion.pending().count() == 1
 
     def test_the_scan_emits_one_signal_per_proposal(self) -> None:
         _loop("standing", runs=False, reason="waiting on the vendor", age=dt.timedelta(days=30))

@@ -14025,15 +14025,15 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 
  ``--dedupe-marker`` is the column the scanners set, so a row recorded here
  collapses onto the scanner's row for one underlying signal. ``--decision`` is
- the deny-by-default allowlist (#5096): only a named owner decision reaches the
- owner's DM, and its marker defaults to ``<decision>:<question fingerprint>``
- so
+ the deny-by-default allowlist (#5096): only a named owner decision with a
+ ``--checked``
+ fact reaches the owner's DM, and its marker defaults to ``<decision>:<question
+ fingerprint>`` so
  the same question is never asked twice.
 
- There is no ``--tool-use-id``: that identifier is assigned by the harness
- and nobody at a shell can know it. The away-mode ``AskUserQuestion``
- PreToolUse hook records its own rows through
- :meth:`DeferredQuestion.record` directly and sets it there.
+ There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
+ and the ``AskUserQuestion`` PreToolUse hook records its own rows through
+ :meth:`DeferredQuestion.record` directly and sets them there.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question      TEXT  The question text. [required]                       │
@@ -14041,13 +14041,14 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --options              TEXT  Verbatim JSON-encoded ``AskUserQuestion``       │
 │                              options.                                        │
-│ --session              TEXT  Originating session id.                         │
 │ --dedupe-marker        TEXT  Escalate-once scope; an open question already   │
 │                              carrying it is returned unchanged.              │
 │ --decision             TEXT  Only for a decision the owner alone makes:      │
 │                              credentials, money_or_plan, public_post,        │
 │                              irreversible, product_scope, architecture.      │
 │                              Absent: internal.                               │
+│ --checked              TEXT  A fact you checked before asking; repeat per    │
+│                              fact. Required with --decision.                 │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

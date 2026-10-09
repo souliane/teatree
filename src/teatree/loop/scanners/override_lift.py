@@ -51,10 +51,13 @@ class OverrideProposal:
     runs: bool
     reason: str
     question: str
+    set_at: dt.datetime | None
+    checked: tuple[str, ...]
 
     @property
     def dedupe_marker(self) -> str:
-        return f"override-lift:{self.loop_name}"
+        stamp = f"{self.set_at.timestamp():.0f}" if self.set_at else ""
+        return f"override-lift:{self.loop_name}@{stamp}"
 
 
 def override_lift_proposals(now: dt.datetime | None = None) -> list[OverrideProposal]:
@@ -79,8 +82,8 @@ def override_lift_proposals(now: dt.datetime | None = None) -> list[OverrideProp
 def raise_override_lift_questions(now: dt.datetime | None = None) -> int:
     """Ask about each liftable override exactly once; return how many questions are open.
 
-    Deduped per loop, so an override that stands for months costs one question rather than
-    one per pass — and answering it is what makes the next one possible.
+    Deduped per override (its loop and when it was set), so an override that stands for months
+    costs one question rather than one per pass, and only a newly set override is asked again.
     """
     from teatree.core.models.deferred_question import (  # noqa: PLC0415 — deferred: ORM needs the app registry
         DeferredQuestion,
@@ -93,6 +96,7 @@ def raise_override_lift_questions(now: dt.datetime | None = None) -> int:
                 proposal.question,
                 dedupe_marker=proposal.dedupe_marker,
                 decision=OwnerDecision.PRODUCT_SCOPE,
+                checked=proposal.checked,
             )
         except Exception:
             logger.exception("override-lift question failed for %r — the override is untouched", proposal.loop_name)
@@ -112,7 +116,10 @@ def _proposal_for(
             f"The manual override forcing {loop_name!r} {forced} says {reason!r}, and that condition "
             f"now reads as resolved. Lift the override so the preset decides again?"
         )
-        return OverrideProposal(loop_name=loop_name, runs=runs, reason=reason, question=question)
+        checked = (f"the override reason {reason!r} reads as resolved on this box",)
+        return OverrideProposal(
+            loop_name=loop_name, runs=runs, reason=reason, question=question, set_at=set_at, checked=checked
+        )
     if set_at is None or now - set_at < PROSE_REMINDER_AGE:
         return None
     days = (now - set_at).days
@@ -120,7 +127,10 @@ def _proposal_for(
         f"The manual override forcing {loop_name!r} {forced} has stood for {days} days ({reason!r}). "
         f"Nothing here can judge whether it still applies — lift it, or leave it standing?"
     )
-    return OverrideProposal(loop_name=loop_name, runs=runs, reason=reason, question=question)
+    checked = (f"the prose reason {reason!r} cannot be checked here", f"it has stood {days} days")
+    return OverrideProposal(
+        loop_name=loop_name, runs=runs, reason=reason, question=question, set_at=set_at, checked=checked
+    )
 
 
 def _reason_is_machine_checkable(reason: str) -> bool:

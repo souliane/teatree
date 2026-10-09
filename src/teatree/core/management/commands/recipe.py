@@ -59,6 +59,7 @@ def _queue_recipe_approval(recipe_sha: str, overlay: str) -> bool:
         options_json=json.dumps(["approve", "reject"]),
         options_hash=dedup_key,
         decision=OwnerDecision.PRODUCT_SCOPE,
+        checked=[f"recipe sha {recipe_sha[:12]} is not the approved_recipe_sha for {scope}"],
     )
     return True
 

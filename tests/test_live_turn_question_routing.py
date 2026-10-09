@@ -16,11 +16,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.core.management import call_command
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_mirror_question_to_slack
 from teatree.core import notify as notify_module
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 
@@ -254,6 +255,33 @@ class TestALoopDrivenQuestionNeverReachesTheOwner:
         owner.refresh_from_db()
         assert captured.slack_ts == ""
         assert owner.slack_ts == "1700.0001"
+
+    def test_loop_driven_question_internal_and_deny_reason_names_checked(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-16"))
+
+        reason = _stdout(capsys)["permissionDecisionReason"]
+        assert DeferredQuestion.objects.get().audience == DeferredQuestion.Audience.INTERNAL
+        assert OWNER_QUESTION_ROUTE in reason
+
+    def test_loop_driven_allow_rule_ask_recorded_with_credentials_is_posted(self) -> None:
+        """The route the deny names is the one that reaches the owner."""
+        backend = _slack_backend()
+        call_command(
+            "questions",
+            "record",
+            "Grant the allow rule Bash(gh api repos/*)?",
+            "--decision",
+            "credentials",
+            "--checked",
+            "the classifier denied gh api twice this run",
+        )
+
+        _drain_to(backend)
+
+        assert backend.post_message.call_count == 1
+        assert "Bash(gh api repos/*)" in backend.post_message.call_args.kwargs["text"]
 
     def test_a_retry_of_the_same_denied_question_keeps_one_row(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-3", tool_use_id="t-11"))

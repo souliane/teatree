@@ -96,6 +96,7 @@ def _record_clarifications(directive: Directive, questions: list[str]) -> str:
             f"Clarify directive #{directive.pk}: {question}",
             options_hash=f"directive_clarify:{directive.pk}:{directive.generation}:{index}",
             decision=OwnerDecision.PRODUCT_SCOPE,
+            checked=[f"the interpreter could not sketch directive #{directive.pk} as worded: {directive.raw_text}"],
         )
     try:
         directive.mark_clarifying()

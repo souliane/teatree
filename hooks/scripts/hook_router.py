@@ -3418,7 +3418,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 #
 # This handler records the durable row INTERNAL (#5096): a loop-driven question reaches
-# the owner only when the agent re-records it with ``questions record --decision``.
+# the owner only when the agent re-records it with ``questions record --decision --checked``.
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
@@ -3444,13 +3444,13 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     if queue_id is None:
         # Teatree unavailable, or nothing to record — fail open so the in-client modal renders.
         return False
-    from teatree.core.modelkit.owner_decision import OwnerDecision  # noqa: PLC0415 — teatree is optional in a hook
+    from teatree.core.modelkit.owner_decision import (  # noqa: PLC0415 — teatree is optional in a hook
+        OWNER_QUESTION_ROUTE,
+    )
 
     reason = (
         f"Your question was recorded as internal DeferredQuestion #{queue_id}; it is NOT sent to the user. "
-        "A loop-driven AskUserQuestion cannot block here: decide it yourself and proceed. Only a decision the "
-        f"user alone makes ({', '.join(OwnerDecision)}) goes to them, via "
-        '`t3 <overlay> questions record --decision <kind> "<question>"`.'
+        f"A loop-driven AskUserQuestion cannot block here: decide it yourself and proceed. {OWNER_QUESTION_ROUTE}"
     )
     return emit_pretooluse_deny(reason, gate_id="deferred_question")
 

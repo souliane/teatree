@@ -16,7 +16,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import hooks.scripts.hook_router as router
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 
 
@@ -142,7 +142,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         assert out["permissionDecision"] == "deny"
         row = DeferredQuestion.objects.latest("created_at")
         assert f"#{row.pk}" in out["permissionDecisionReason"]
-        assert "questions record --decision" in out["permissionDecisionReason"]
+        assert OWNER_QUESTION_ROUTE in out["permissionDecisionReason"]
         assert "credentials" in out["permissionDecisionReason"]
         assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert row.generation == 1

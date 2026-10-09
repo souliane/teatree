@@ -41,6 +41,9 @@ class TestRecipeScoreReadOnly(TestCase):
         _score("--record")
         assert FactoryScoreSnapshot.objects.count() == 1
         assert DeferredQuestion.objects.count() == 1
+        evidence = DeferredQuestion.objects.get().evidence
+        assert evidence["decision"] == "product_scope"
+        assert any(recipe_sha()[:12] in fact for fact in evidence["checked"])
         _score("--record")
         assert FactoryScoreSnapshot.objects.count() == 2
         assert DeferredQuestion.objects.count() == 1

@@ -42,7 +42,17 @@ class TestAskUserQuestionRoundtrip:
         _own_loop("s-loop", monkeypatch, tmp_path)
         backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
 
-        call_command("questions", "record", "Which env?", "--decision", "product_scope", "--options", _OPTIONS)
+        call_command(
+            "questions",
+            "record",
+            "Which env?",
+            "--decision",
+            "product_scope",
+            "--checked",
+            "the ticket names no target env",
+            "--options",
+            _OPTIONS,
+        )
         drain_unmirrored_deferred_questions(user_id="U_HUMAN", backend=backend)
         question = DeferredQuestion.objects.get()
         assert question.slack_ts != "", "the first-post drain did not deliver the question"
