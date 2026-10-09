@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.loop.scanners.base import ScanSignal
 
 #: One marker, not one per file: the decision is "reclaim this space or keep it", asked once.
@@ -67,7 +68,7 @@ class StaleControlDbQuestionScanner:
         DeferredQuestion.record(
             question,
             dedupe_marker=MARKER,
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            decision=OwnerDecision.IRREVERSIBLE,
         )
         return [
             ScanSignal(

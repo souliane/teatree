@@ -24,6 +24,7 @@ from teatree.agents.result_payloads import (
     verdict_carries_payload,
 )
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
@@ -173,6 +174,7 @@ class AgentResult(TypedDict, total=False):
     ticket_sweep: TicketSweepEvidence
     needs_user_input: bool
     user_input_reason: str
+    user_input_kind: str
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -473,6 +475,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
+        "user_input_kind": {"type": "string", "enum": [decision.value for decision in OwnerDecision]},
         "next_steps": {
             "type": "array",
             "items": {"type": "string"},

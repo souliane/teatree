@@ -117,7 +117,6 @@ class TestRepairHaltReconcile(TestCase):
         DeferredQuestion.record(
             "Repair-loop stall on ticket (phase 'coding'): identical failures.",
             dedupe_marker=f"repair-stall:{ticket.pk}:coding",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
 
         resolved = drain_pending_questions().drained
@@ -132,7 +131,6 @@ class TestRepairHaltReconcile(TestCase):
         DeferredQuestion.record(
             "Repair-loop cap on ticket (phase 'coding'): iteration cap hit.",
             dedupe_marker=f"repair-cap:{ticket.pk}:coding",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
 
         resolved = drain_pending_questions().drained
@@ -147,7 +145,6 @@ class TestRepairHaltReconcile(TestCase):
         DeferredQuestion.record(
             "Repair-loop stall on a vanished ticket.",
             dedupe_marker="repair-stall:999999:coding",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
 
         assert drain_pending_questions().drained == 0

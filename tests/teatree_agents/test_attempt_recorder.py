@@ -13,6 +13,7 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import (
     DeferredQuestion,
@@ -67,6 +68,15 @@ class TestValidateResultKeys(TestCase):
 
     def test_rejects_unknown_keys(self) -> None:
         assert "unexpected keys" in validate_result_keys({"bogus": 1})
+
+    def test_accepts_each_owner_decision_kind(self) -> None:
+        for kind in OwnerDecision:
+            assert validate_result_keys({"summary": "x", "needs_user_input": True, "user_input_kind": kind}) == ""
+
+    def test_refuses_a_kind_naming_no_owner_decision(self) -> None:
+        error = validate_result_keys({"summary": "x", "needs_user_input": True, "user_input_kind": "gate_refusal"})
+        assert "user_input_kind" in error
+        assert "credentials" in error
 
 
 class TestRecordResultEnvelope(TestCase):

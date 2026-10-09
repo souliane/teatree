@@ -100,7 +100,6 @@ class TestTheBumpRidesTheExistingRow(TestCase):
             session_id="s",
             slack_channel=_CHANNEL,
             slack_ts="100.0",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
         backend = _backend()
 

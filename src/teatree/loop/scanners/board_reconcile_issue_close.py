@@ -28,6 +28,7 @@ from django_fsm import can_proceed
 from teatree.backends.issue_close import IssueCloseVerdict
 from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
@@ -158,11 +159,9 @@ def _escalate_unshipped_work_once(ticket: "Ticket", *, paths: list[str]) -> None
     if not paths:
         return
     marker = _UNSHIPPED_WORK_MARKER.format(pk=ticket.pk)
-    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
-        return
     question = (
         f"{ticket.issue_url or f'Ticket {ticket.pk}'} was retired because the forge closed its "
         f"issue, and its worktree still holds uncommitted changes ({', '.join(paths)}). "
         "How should that work proceed — salvage it to a PR, or discard it?"
     )
-    DeferredQuestion.record(question, session_id="", dedupe_marker=marker)
+    DeferredQuestion.record(question, session_id="", dedupe_marker=marker, decision=OwnerDecision.IRREVERSIBLE)

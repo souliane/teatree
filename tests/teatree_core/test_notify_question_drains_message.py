@@ -13,6 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
 from teatree.core.notify_types import DELIVERED
@@ -52,7 +53,6 @@ class TestDrainExcludesInternalAudience(TestCase):
     def test_internal_only_backlog_drains_nothing(self) -> None:
         DeferredQuestion.record(
             "This session lacks any shell/write tool to run record_candidate.",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
         with patch("teatree.core.notify_question_drains.notify_user_outcome") as notify:
             delivered, total = drain_deferred_questions()
@@ -61,10 +61,11 @@ class TestDrainExcludesInternalAudience(TestCase):
         assert (delivered, total) == (0, 0)
 
     def test_owner_row_drains_but_internal_peer_is_excluded(self) -> None:
-        owner = DeferredQuestion.record("Should I merge PR #7?")
+        owner = DeferredQuestion.record(
+            "Should I merge PR #7?", decision=OwnerDecision.IRREVERSIBLE, checked=["CI is green"]
+        )
         DeferredQuestion.record(
             "I run shell-denied and cannot file the issue.",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
         with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
             delivered, total = drain_deferred_questions()

@@ -31,7 +31,7 @@ class TestOpenOwnerThreads(TestCase):
         assert open_owner_threads() == ()
 
     def test_an_internal_question_is_never_an_owner_thread(self) -> None:
-        _question(audience=DeferredQuestion.Audience.INTERNAL)
+        _question()
         assert open_owner_threads() == ()
 
     def test_a_young_thread_is_included_even_before_the_watermark(self) -> None:

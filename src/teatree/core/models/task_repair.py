@@ -134,7 +134,6 @@ def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
         question,
         task_session=task.session,
         dedupe_marker=f"reoffer-budget:{ticket.pk}:{phase}",
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -158,7 +157,6 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
         question,
         task_session=task.session,
         dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -182,5 +180,4 @@ def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
         question,
         task_session=task.session,
         dedupe_marker=f"repair-cap:{ticket.pk}:{phase}",
-        audience=DeferredQuestion.Audience.INTERNAL,
     )

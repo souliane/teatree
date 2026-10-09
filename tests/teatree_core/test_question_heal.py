@@ -5,6 +5,7 @@ from pathlib import Path
 
 from django.test import TestCase
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.provision.failure_question import record_provision_failure_question
@@ -75,8 +76,10 @@ class TestLiveOwnerQuestions(TestCase):
         Worktree.objects.create(
             ticket=ticket, repo_path="backend", branch="x", extra={"worktree_path": str(make_git_repo(root / "b"))}
         )
-        owner = DeferredQuestion.record("Which DB host?")
-        DeferredQuestion.record("Repair stall", audience=DeferredQuestion.Audience.INTERNAL)
+        owner = DeferredQuestion.record(
+            "Which DB host?", decision=OwnerDecision.PRODUCT_SCOPE, checked=["the ticket names no host"]
+        )
+        DeferredQuestion.record("Repair stall")
 
         assert live_owner_questions() == [owner]
         healed.refresh_from_db()

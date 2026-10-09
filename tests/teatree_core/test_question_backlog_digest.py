@@ -109,7 +109,7 @@ class TestResurfaceQuestionBacklog(TestCase):
         assert (posted, pending) == (False, 0)
 
     def test_internal_rows_never_reach_the_owner_digest(self) -> None:
-        DeferredQuestion.record("I lack the shell tool to proceed.", audience=DeferredQuestion.Audience.INTERNAL)
+        DeferredQuestion.record("I lack the shell tool to proceed.")
 
         with patch("teatree.core.notify_question_drains.notify_user") as notify:
             posted, pending = resurface_question_backlog()

@@ -8,6 +8,7 @@ single-use consume, scope of queryset, audit row).
 import os
 import tempfile
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,7 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree import answer_handback
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import (
@@ -57,7 +59,7 @@ class TestDedupeMarker:
         DeferredQuestion.record("q")
         assert DeferredQuestion.pending().count() == 2
 
-    def test_resolved_marker_row_does_not_block_a_new_record(self) -> None:
+    def test_internal_marker_stays_pending_only(self) -> None:
         first = DeferredQuestion.record("stall", dedupe_marker="m")
         DeferredQuestion.consume(first.pk, answer="handled")
         second = DeferredQuestion.record("stall again", dedupe_marker="m")
@@ -93,24 +95,92 @@ class TestDeferredQuestionRecord:
 
 
 class TestDeferredQuestionAudience:
-    """Audience separates owner questions from the box's internal escalations (Phase 2)."""
+    """Only a named owner decision with checked evidence reaches the owner; every other question is internal."""
 
-    def test_record_defaults_to_owner_audience(self) -> None:
-        row = DeferredQuestion.record("Ship it?")
+    def test_record_without_decision_is_internal(self) -> None:
+        row = DeferredQuestion.record("Repair-loop stall on ticket 1")
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.evidence == {}
+
+    @pytest.mark.parametrize("decision", list(OwnerDecision))
+    def test_a_named_decision_makes_an_owner_row(self, decision: OwnerDecision) -> None:
+        row = DeferredQuestion.record("Ship it?", decision=decision, checked=["the issue is silent"])
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
-    def test_record_accepts_internal_audience(self) -> None:
-        row = DeferredQuestion.record(
-            "Repair-loop stall on ticket 1",
-            audience=DeferredQuestion.Audience.INTERNAL,
+    def test_owner_row_stores_kind_and_checked(self) -> None:
+        DeferredQuestion.record(
+            "Rotate the deploy token?",
+            decision=OwnerDecision.CREDENTIALS,
+            checked=["  the token expired 10-08 ", "", "no standing answer in memory"],
         )
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        row = DeferredQuestion.objects.get()
+        assert row.evidence == {
+            "decision": "credentials",
+            "checked": ["the token expired 10-08", "no standing answer in memory"],
+        }
+
+    @pytest.mark.parametrize("checked", [(), ["", "   "]])
+    def test_decision_without_checked_is_refused_and_writes_no_row(self, checked: list[str]) -> None:
+        with pytest.raises(DeferredQuestionError, match="checked"):
+            DeferredQuestion.record("Ship it?", decision=OwnerDecision.PUBLIC_POST, checked=checked)
+        assert not DeferredQuestion.objects.exists()
+
+    def test_unknown_decision_is_refused(self) -> None:
+        with pytest.raises(DeferredQuestionError, match="whim"):
+            DeferredQuestion.record("Ship it?", decision=cast("OwnerDecision", "whim"), checked=["looked"])
+        assert not DeferredQuestion.objects.exists()
+
+    def test_architecture_kind_exists(self) -> None:
+        assert {kind.value for kind in OwnerDecision} == {
+            "credentials",
+            "money_or_plan",
+            "public_post",
+            "irreversible",
+            "product_scope",
+            "architecture",
+        }
+        row = DeferredQuestion.record(
+            "Split the model?", decision=OwnerDecision.ARCHITECTURE, checked=["BLUEPRINT §4 is silent"]
+        )
+        assert row.evidence["decision"] == "architecture"
+
+    def test_owner_pending_lists_only_pending_owner_rows(self) -> None:
+        owner = DeferredQuestion.record("Rotate it?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
+        answered = DeferredQuestion.record("Pay it?", decision=OwnerDecision.MONEY_OR_PLAN, checked=["invoice"])
+        DeferredQuestion.consume(answered.pk, answer="yes")
+        DeferredQuestion.record("internal stall")
+        assert [r.pk for r in DeferredQuestion.owner_pending()] == [owner.pk]
 
     def test_unmirrored_pending_excludes_internal_rows(self) -> None:
-        owner = DeferredQuestion.record("Owner decision?")
-        DeferredQuestion.record("internal stall", audience=DeferredQuestion.Audience.INTERNAL)
+        owner = DeferredQuestion.record("Owner decision?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
+        DeferredQuestion.record("internal stall")
         unmirrored = list(DeferredQuestion.unmirrored_pending())
         assert [r.pk for r in unmirrored] == [owner.pk]
+
+
+class TestAnOwnerQuestionIsNeverReAsked:
+    """An owner marker is sticky across answered and dismissed rows."""
+
+    @pytest.mark.parametrize("resolution", [{"answer": "keep them"}, {"dismissed_reason": "not now"}])
+    def test_owner_marker_sticky_answered_and_dismissed(self, resolution: dict[str, str]) -> None:
+        first = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        DeferredQuestion.consume(first.pk, **resolution)
+        again = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        assert again.pk == first.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 1
+
+    def test_a_resolved_internal_row_does_not_mute_an_owner_record(self) -> None:
+        internal = DeferredQuestion.record("stall", dedupe_marker="m")
+        DeferredQuestion.consume(internal.pk, answer="handled")
+        owner = DeferredQuestion.record(
+            "Ship it?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["review is green"]
+        )
+        assert owner.pk != internal.pk
+        assert owner.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
 
 class TestToolLackSelfReport:

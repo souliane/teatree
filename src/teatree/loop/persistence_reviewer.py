@@ -130,7 +130,6 @@ def _escalate_unrecordable_review(ticket: Ticket, *, reason: str) -> None:
         f"{reason} Nothing is scheduled for it. Should the head be supplied, or the reviewer ticket closed?",
         session_id="",
         dedupe_marker=marker,
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 

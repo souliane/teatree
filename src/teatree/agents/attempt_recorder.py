@@ -39,6 +39,7 @@ from teatree.agents.ticket_sweep_recorder import verify_returned_ticket_sweep
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
+from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX
 from teatree.core.models import NoCurrentPlanError, Task, TaskAttempt
@@ -129,16 +130,21 @@ def parse_result_envelope(raw: str) -> AgentResultBlob:
 
 
 def validate_result_keys(result: AgentResultBlob) -> str:
-    """Return an error message if *result* carries keys outside the schema.
+    """Return an error message if *result* carries keys outside the schema, or an unknown ``user_input_kind``.
 
     The single validation seam for every agent result — the headless driver and
-    ``record-attempt`` both land here. Only the ``additionalProperties: false``
-    rule is enforced (no full JSON-Schema dependency).
+    ``record-attempt`` both land here. The ``additionalProperties: false`` rule and
+    the one closed enum are enforced (no full JSON-Schema dependency).
     """
     allowed = set(cast("JSONSchema", RESULT_JSON_SCHEMA.get("properties", {})).keys())
     unexpected = set(result) - allowed
     if unexpected:
         return f"Agent result contains unexpected keys: {', '.join(sorted(unexpected))}"
+    if "user_input_kind" in result and owner_decision(result["user_input_kind"]) is None:
+        kinds = ", ".join(OwnerDecision)
+        return (
+            f"user_input_kind {result['user_input_kind']!r} names no owner decision ({kinds}); omit it for factory work"
+        )
     return ""
 
 

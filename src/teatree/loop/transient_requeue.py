@@ -566,5 +566,4 @@ def _escalate_once(task: Task, *, reason: str) -> None:
             question,
             task_session=task.session,
             dedupe_marker=escalation_marker(task),
-            audience=DeferredQuestion.Audience.INTERNAL,
         )

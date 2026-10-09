@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from teatree.config.gate_evidence import GateEvidence
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ class InertGateQuestionScanner:
         DeferredQuestion.record(
             question,
             dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(settings))}",
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            decision=OwnerDecision.PRODUCT_SCOPE,
         )
         return [
             ScanSignal(

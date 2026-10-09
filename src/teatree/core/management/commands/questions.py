@@ -26,6 +26,7 @@ on its next turn.
 """
 
 import io
+import json
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
@@ -33,8 +34,15 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
-from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.models.deferred_question import (
+    DeferredQuestion,
+    DeferredQuestionAudit,
+    DeferredQuestionError,
+    question_fingerprint,
+)
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.question_text import options_digest
 from teatree.core.models.task_handoff import schedule_resume
 from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.table_output import print_table
@@ -129,34 +137,45 @@ class Command(MachineOutputCommand):
                 help="Escalate-once scope; an open question already carrying it is returned unchanged.",
             ),
         ] = "",
-        audience: Annotated[
+        decision: Annotated[
             str,
-            typer.Option("--audience", help="owner_question (DM'd to the owner) or internal (logged only)."),
-        ] = DeferredQuestion.Audience.OWNER_QUESTION,
+            typer.Option(
+                "--decision",
+                help=f"Only for a decision the owner alone makes: {', '.join(OwnerDecision)}. Absent: internal.",
+            ),
+        ] = "",
     ) -> str:
         """Record a deferred question by hand — the agent-facing capture surface.
 
-        ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
-        already set, exposed so a question recorded here carries the SAME shape:
-        its row collapses onto the scanner's row for one underlying signal, and
-        an agent's self-report about its own tooling can be marked internal
-        instead of reaching the owner's DM.
+        ``--dedupe-marker`` is the column the scanners set, so a row recorded here
+        collapses onto the scanner's row for one underlying signal. ``--decision`` is
+        the deny-by-default allowlist (#5096): only a named owner decision reaches the
+        owner's DM, and its marker defaults to ``<decision>:<question fingerprint>`` so
+        the same question is never asked twice.
 
         There is no ``--tool-use-id``: that identifier is assigned by the harness
         and nobody at a shell can know it. The away-mode ``AskUserQuestion``
         PreToolUse hook records its own rows through
         :meth:`DeferredQuestion.record` directly and sets it there.
         """
-        if audience not in DeferredQuestion.Audience.values:
-            self.stderr.write(f"unknown audience {audience!r} — expected one of {DeferredQuestion.Audience.values}")
+        kind = owner_decision(decision) if decision else None
+        if decision and kind is None:
+            self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OwnerDecision)}")
             raise SystemExit(2)
+        if kind is not None and not dedupe_marker:
+            dedupe_marker = f"{kind}:{question_fingerprint(question)}"
+        try:
+            options = json.loads(options_json) if options_json else None
+        except ValueError:
+            options = None
         try:
             row = DeferredQuestion.record(
                 question,
                 options_json=options_json,
+                options_hash=options_digest(options) if isinstance(options, list) else "",
                 session_id=session_id,
                 dedupe_marker=dedupe_marker,
-                audience=audience,
+                decision=kind,
             )
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))

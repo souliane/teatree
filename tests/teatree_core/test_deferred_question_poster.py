@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 
@@ -74,7 +75,6 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
         DeferredQuestion.record(
             "Repair-loop stall on ticket 1",
             session_id="s",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
         backend = _backend()
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
@@ -84,11 +84,12 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
 
     def test_owner_question_row_is_still_dmed(self) -> None:
         # The owner-audience row alongside an internal one is the only one posted.
-        owner = DeferredQuestion.record("Owner decision?", session_id="s")
+        owner = DeferredQuestion.record(
+            "Owner decision?", session_id="s", decision=OwnerDecision.CREDENTIALS, checked=["no stored token"]
+        )
         DeferredQuestion.record(
             "internal stall",
             session_id="s",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
         backend = _backend()
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):

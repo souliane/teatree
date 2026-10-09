@@ -26,6 +26,7 @@ from teatree.agents.result_schema import (
     conditional_evidence_for_phase,
     required_evidence_for_phase,
 )
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION
@@ -182,7 +183,8 @@ def envelope_contract_lines(phase: str, *, reviewer_identity: str = "") -> tuple
         "- Plain JSON — no markdown code fence, no trailing commentary, no explanation.",
         "- `summary` (string) is required on every phase.",
         "- `needs_user_input` is a boolean; when true, also set `user_input_reason` (string)",
-        "  and stop rather than guessing.",
+        "  and stop. Set `user_input_kind` only for a decision the owner alone makes:",
+        f"  {', '.join(OwnerDecision)}. Without a kind it is factory work: you are resumed to decide it.",
         "- If skills were required for this dispatch, include `skill_application`: one",
         '  `{"skill": "name", "evidence": "short concrete reference"}` per skill.',
         "  Only describe skill use that actually happened; omission is recorded as unverified.",

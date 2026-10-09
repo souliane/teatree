@@ -110,7 +110,7 @@ def record_round_handoff(task: Task, outcome: HarnessOutcome, *, phase: str, usa
         "needs_user_input": True,
         "user_input_reason": (
             f"Round ceiling reached: {outcome.round_handoff}. That round's command may have partially run "
-            "(a push may already have landed), so check the branch and its pipeline, then decide how to continue."
+            "(a push may already have landed), so check the branch and its pipeline, then continue the work."
         ),
     }
     return record_result_envelope(task, result, phase=phase, usage=usage)

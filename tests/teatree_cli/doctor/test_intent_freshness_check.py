@@ -231,7 +231,7 @@ class TestCheckIntentFreshness(TestCase):
         # Only OWNER_QUESTION rows are owner intent; INTERNAL (self-health) rows never
         # reach the owner and must not gate the check.
         Loop.objects.filter(name="dispatch").update(enabled=False)
-        DeferredQuestion.record("repair stalled", session_id="s1", audience=DeferredQuestion.Audience.INTERNAL)
+        DeferredQuestion.record("repair stalled", session_id="s1")
         ok, out = _run()
         assert ok is True
         assert out == ""

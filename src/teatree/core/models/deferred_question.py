@@ -26,14 +26,16 @@ question) as the same primitive.
 """
 
 import logging
+from collections.abc import Sequence
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import DatabaseError, models, transaction
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.utils import timezone
 
 from teatree import answer_handback
+from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
 from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
     is_tool_lack_selfreport,
     question_fingerprint,
@@ -83,16 +85,15 @@ class DeferredQuestion(models.Model):
         INTERNAL = "internal", "Internal"
 
     question = models.TextField()
-    # Who the question is for. OWNER_QUESTION rows are DM'd to the owner; INTERNAL
-    # rows (repair-loop stalls, dispatch-health escalations synthesized by the box
-    # about its OWN health) are logged/statusline-only and never reach the owner
-    # feed — mirroring ``NotifyAudience`` so the two queues share one audience model.
+    # Derived at record time: OWNER_QUESTION only for a named OwnerDecision, else INTERNAL
+    # (logged/statusline-only, never DM'd) — mirroring ``NotifyAudience``.
     audience = models.CharField(
         max_length=16,
         default=Audience.OWNER_QUESTION,
         choices=Audience.choices,
         db_index=True,
     )
+    evidence = models.JSONField(default=dict, blank=True)
     options_json = models.TextField(blank=True, default="")
     session_id = models.CharField(max_length=255, blank=True, default="")
     tool_use_id = models.CharField(max_length=255, blank=True, default="")
@@ -200,27 +201,17 @@ class DeferredQuestion(models.Model):
         dedupe_marker: str = "",
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
-        audience: str = Audience.OWNER_QUESTION,
+        decision: OwnerDecision | None = None,
+        checked: Sequence[str] = (),
     ) -> "DeferredQuestion":
-        """The single guarded factory for a queued question.
+        """The single guarded factory: a refused record raises and writes no row.
 
-        Enforces the contract before any row is written and raises
-        :class:`DeferredQuestionError` with a precise reason on the first
-        violation: non-empty ``question`` after stripping. Construction is
-        atomic so a rejected record leaves no partial row. The mirror
-        kwargs (``slack_ts`` / ``slack_channel`` / ``options_hash`` /
-        ``generation`` / ``run_id``) link the row to its Slack DM so a
-        later Slack reply can resolve exactly the live generation (#1174).
-        ``parked_task`` correlates a headless-lane question back to the SDK
-        task that emitted ``needs_user_input`` so the reply re-queues a
-        headless resume of that task (the SDK lane has no Slack DM yet — the
-        tick-level poster scanner mirrors it later).
-
-        ``dedupe_marker`` is the escalate-once guard: when non-empty, an existing
-        PENDING row already carrying that marker is returned instead of writing a
-        duplicate — so two consecutive repair-loop stalls, or eight identical
-        "I lack tools" review-failure parks, collapse to a single queued question
-        rather than flooding the backlog.
+        The mirror kwargs link the row to its Slack DM so a reply resolves the live generation;
+        ``parked_task`` lets that reply re-queue the headless task that asked.
+        ``decision`` is deny-by-default: only a known :class:`OwnerDecision` with a
+        non-blank ``checked`` fact makes an owner row, stored as ``evidence``; no decision is INTERNAL.
+        ``dedupe_marker`` collapses repeats onto the PENDING row; an owner marker is sticky, so an
+        answered or dismissed owner row is returned too and the owner is never asked twice.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -229,12 +220,20 @@ class DeferredQuestion(models.Model):
         if session_id.isdigit():
             msg = f"session_id {session_id!r} names a teatree Session; pass it as task_session"
             raise DeferredQuestionError(msg)
+        evidence = {} if decision is None else owner_evidence(decision, checked)
+        if evidence is None:
+            msg = f"owner decision '{decision}' needs one of {', '.join(OwnerDecision)} and a non-blank checked fact"
+            raise DeferredQuestionError(msg)
 
         with transaction.atomic():
             if dedupe_marker:
+                held = Q(answered_at__isnull=True, dismissed_at__isnull=True)
+                if decision is not None:
+                    held |= Q(audience=cls.Audience.OWNER_QUESTION)
                 existing = (
                     cls.objects.select_for_update()
-                    .filter(dedupe_marker=dedupe_marker, answered_at__isnull=True, dismissed_at__isnull=True)
+                    .filter(held, dedupe_marker=dedupe_marker)
+                    .order_by("-created_at", "-pk")
                     .first()
                 )
                 if existing is not None:
@@ -252,7 +251,8 @@ class DeferredQuestion(models.Model):
                 dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
                 task_session=task_session,
-                audience=audience or cls.Audience.OWNER_QUESTION,
+                audience=cls.Audience.INTERNAL if decision is None else cls.Audience.OWNER_QUESTION,
+                evidence=evidence,
             )
             transaction.on_commit(
                 partial(
@@ -273,12 +273,7 @@ class DeferredQuestion(models.Model):
         so a reply can later bind. A row already mirrored (``slack_ts != ""``)
         or resolved is excluded.
         """
-        return cls.objects.filter(
-            answered_at__isnull=True,
-            dismissed_at__isnull=True,
-            slack_ts="",
-            audience=cls.Audience.OWNER_QUESTION,
-        ).order_by("created_at")
+        return cls.owner_pending().filter(slack_ts="")
 
     @classmethod
     def supersedable(
@@ -492,6 +487,10 @@ class DeferredQuestion(models.Model):
         """
         manager = cls.objects.using(using) if using else cls.objects
         return manager.filter(answered_at__isnull=True, dismissed_at__isnull=True).order_by("created_at")
+
+    @classmethod
+    def owner_pending(cls) -> models.QuerySet["DeferredQuestion"]:
+        return cls.pending().filter(audience=cls.Audience.OWNER_QUESTION)
 
     @classmethod
     def consume(

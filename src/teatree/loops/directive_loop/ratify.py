@@ -17,6 +17,7 @@ ratifies the inert verbatim source excerpt + its provenance + the concrete facts
 mechanism changes, never a lossy summary. The trusted CLI path is byte-identical.
 """
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion, Directive
 from teatree.core.models.approval_dial import auto_answer_by_policy, policy_dial
 from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, Decision, approval_policy
@@ -68,6 +69,7 @@ def ask_ratification(directive: Directive) -> DeferredQuestion:
     question = DeferredQuestion.record(
         body,
         options_hash=f"directive_ratify:{directive.pk}:{directive.generation}",
+        decision=OwnerDecision.PRODUCT_SCOPE,
     )
     directive.attach_ratification(question)
     # #119 graduation: an owner-taint directive whose ``directive_admit`` class the
@@ -165,4 +167,5 @@ def _reask_question(directive: Directive, answered: DeferredQuestion, *, reason:
         f"Proposed mechanism: {mechanism}\n\n"
         f"Answer 'approve' to admit, or 'reject' to deny.",
         options_hash=f"directive_ratify:{directive.pk}:{directive.generation}:reask",
+        decision=OwnerDecision.PRODUCT_SCOPE,
     )

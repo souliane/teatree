@@ -14023,11 +14023,12 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 
  Record a deferred question by hand — the agent-facing capture surface.
 
- ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
- already set, exposed so a question recorded here carries the SAME shape:
- its row collapses onto the scanner's row for one underlying signal, and
- an agent's self-report about its own tooling can be marked internal
- instead of reaching the owner's DM.
+ ``--dedupe-marker`` is the column the scanners set, so a row recorded here
+ collapses onto the scanner's row for one underlying signal. ``--decision`` is
+ the deny-by-default allowlist (#5096): only a named owner decision reaches the
+ owner's DM, and its marker defaults to ``<decision>:<question fingerprint>``
+ so
+ the same question is never asked twice.
 
  There is no ``--tool-use-id``: that identifier is assigned by the harness
  and nobody at a shell can know it. The away-mode ``AskUserQuestion``
@@ -14043,9 +14044,10 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │ --session              TEXT  Originating session id.                         │
 │ --dedupe-marker        TEXT  Escalate-once scope; an open question already   │
 │                              carrying it is returned unchanged.              │
-│ --audience             TEXT  owner_question (DM'd to the owner) or internal  │
-│                              (logged only).                                  │
-│                              [default: owner_question]                       │
+│ --decision             TEXT  Only for a decision the owner alone makes:      │
+│                              credentials, money_or_plan, public_post,        │
+│                              irreversible, product_scope, architecture.      │
+│                              Absent: internal.                               │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

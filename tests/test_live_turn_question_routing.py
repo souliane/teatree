@@ -11,8 +11,6 @@ converted at the PreToolUse layer.
 """
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,6 +20,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_mirror_question_to_slack
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 
@@ -46,18 +45,10 @@ def _slack_backend() -> MagicMock:
     return backend
 
 
-@contextmanager
-def _kick_drains_through(backend: MagicMock) -> Iterator[None]:
-    """Run the detached kick INLINE against *backend* — the real drain, no subprocess."""
-
-    def _drain(ref: str) -> None:
-        drain_unmirrored_deferred_questions(user_id="U1", only_ref=ref, backend=backend)
-
-    with (
-        patch.object(router, "_kick_question_drain", _drain),
-        patch.object(notify_module, "messaging_from_overlay", return_value=backend),
-    ):
-        yield
+def _drain_to(backend: MagicMock) -> None:
+    """Run the real first-post drain against *backend* — what the tick poster does."""
+    with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+        drain_unmirrored_deferred_questions(user_id="U1", backend=backend)
 
 
 def _transcript(tmp_path: Path, *entries: dict) -> str:
@@ -105,7 +96,7 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
 
     An autonomous / loop-driven turn carries no recent owner prompt in its transcript, so
     the real predicate returns ``False`` and the question is denied in favour of the
-    durable row plus its Slack mirror.
+    durable internal row.
     """
 
     def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -192,27 +183,23 @@ class TestAttendedTurnNeverReachesSlack:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         live = {"session_id": "s-2", "transcript_path": _transcript(tmp_path, _owner_typed("ask me something"))}
-        with patch.object(router, "_kick_question_drain") as kick:
-            first = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-1", **live))
-            capsys.readouterr()
-            second = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-2", **live))
-            capsys.readouterr()
+        first = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-1", **live))
+        capsys.readouterr()
+        second = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-2", **live))
+        capsys.readouterr()
 
         assert first is False, "a live turn must render in-client, not deny"
         assert second is False, "a live turn must render in-client, not deny"
-        assert kick.call_count == 0
         assert DeferredQuestion.objects.count() == 0, "an attended row would be drained to Slack next tick"
 
     def test_attended_non_owner_turn_posts_nothing_and_records_nothing(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
-        with patch.object(router, "_kick_question_drain") as kick:
-            verdict = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-20"))
-            capsys.readouterr()
+        verdict = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-7", tool_use_id="t-20"))
+        capsys.readouterr()
 
         assert verdict is False
-        assert kick.call_count == 0
         assert DeferredQuestion.objects.count() == 0
 
     def test_an_attended_ask_supersedes_the_loop_row_it_replaces(
@@ -223,12 +210,13 @@ class TestAttendedTurnNeverReachesSlack:
         The re-ask is a DISTINCT harness call (its own ``tool_use_id``) inside the same
         run, which is the shape supersession is scoped to.
         """
-        with patch.object(router, "_kick_question_drain"):
-            handle_mirror_question_to_slack(
-                _ask_payload("Ship it?", session_id="s-8", run_id="r-1", tool_use_id="t-21")
-            )
-            capsys.readouterr()
-        stranded = DeferredQuestion.objects.get()
+        stranded = DeferredQuestion.record(
+            "Ship it?",
+            session_id="s-8",
+            run_id="r-1",
+            decision=OwnerDecision.PRODUCT_SCOPE,
+            checked=["the ticket is silent"],
+        )
         assert stranded.dismissed_at is None
 
         monkeypatch.setattr(router, "_session_drives_loop", lambda _session: False)
@@ -240,102 +228,68 @@ class TestAttendedTurnNeverReachesSlack:
         assert DeferredQuestion.objects.count() == 1, "the attended re-ask must not record its own row"
 
 
-class TestLoopDeniedRetryDoesNotDoubleDeliver:
-    """A harness retry of the SAME denied ``AskUserQuestion`` reaches Slack once.
+class TestALoopDrivenQuestionNeverReachesTheOwner:
+    """A loop-driven ``AskUserQuestion`` is recorded internal and never DM'd (#5096).
 
-    A denied tool call is the one the harness can plausibly retry with the identical
-    payload (there is no other way for the agent to "try again"). Driven end to end
-    through the real drain, so the property proven is "the owner sees it once", not
-    "the hook called something once".
+    Driven through the real first-post drain, so the property proven is "the owner never
+    sees it", with an owner-decision row in the same drain as the control that IS posted.
     """
 
-    def test_retry_with_identical_question_delivers_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_the_captured_question_is_not_posted_while_an_owner_decision_is(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         backend = _slack_backend()
-        with _kick_drains_through(backend):
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
-            capsys.readouterr()
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
-            capsys.readouterr()
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+        capsys.readouterr()
+        captured = DeferredQuestion.objects.get()
+        owner = DeferredQuestion.record(
+            "Rotate the deploy token?", decision=OwnerDecision.CREDENTIALS, checked=["the ticket is silent"]
+        )
+
+        _drain_to(backend)
+
         assert backend.post_message.call_count == 1
+        assert "Rotate the deploy token?" in backend.post_message.call_args.kwargs["text"]
+        captured.refresh_from_db()
+        owner.refresh_from_db()
+        assert captured.slack_ts == ""
+        assert owner.slack_ts == "1700.0001"
 
-    def test_a_genuinely_different_question_still_delivers(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Control: the guard keys on the question, not on blanket session suppression."""
-        backend = _slack_backend()
-        with _kick_drains_through(backend):
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
-            capsys.readouterr()
-            handle_mirror_question_to_slack(_ask_payload("Merge it?", session_id="s-1", tool_use_id="t-10"))
-            capsys.readouterr()
-        assert backend.post_message.call_count == 2
+    def test_a_retry_of_the_same_denied_question_keeps_one_row(self, capsys: pytest.CaptureFixture[str]) -> None:
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-3", tool_use_id="t-11"))
+        capsys.readouterr()
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-3", tool_use_id="t-11"))
+        capsys.readouterr()
 
-
-class TestLoopDeniedRetryKeepsOneBindableRow:
-    """A harness retry of the SAME denied question leaves ONE row the reply can bind.
-
-    Suppressing only the delivery is not enough: ``live_for_reply`` needs a row that is
-    both mirrored (``slack_ts``) and undismissed, so superseding the mirrored row and
-    recording an unmirrored twin satisfies neither and drops the operator's answer as
-    stale — while ``unmirrored_pending`` re-drains the twin and double-posts anyway.
-    """
-
-    def test_retry_leaves_the_mirrored_row_live_and_bindable(self, capsys: pytest.CaptureFixture[str]) -> None:
-        backend = _slack_backend()
-        with _kick_drains_through(backend):
-            first_id = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-3", tool_use_id="t-11"))
-            capsys.readouterr()
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-3", tool_use_id="t-11"))
-            capsys.readouterr()
-
-        assert first_id is True, "a loop-driven question must deny, not render in-client"
         assert DeferredQuestion.objects.count() == 1, "the retry must not fork a second row"
-        row = DeferredQuestion.objects.get()
-        assert row.slack_ts == "1700.0001", "the drain did not stamp the mirror coordinates"
-        assert row.dismissed_at is None, "the retry superseded the only mirrored row"
-        bound = DeferredQuestion.live_for_reply(channel="D1", after_ts="1700.0002")
-        assert bound is not None, "the operator's Slack answer has no live row to bind"
-        assert bound.pk == row.pk
+        assert DeferredQuestion.objects.get().dismissed_at is None
 
     @pytest.mark.parametrize(
         ("resolution", "label"),
         [({"answer": "ship it"}, "answered"), ({"dismissed_reason": "stale"}, "dismissed")],
     )
-    def test_a_reask_after_the_operator_resolved_gets_a_fresh_row(
+    def test_a_reask_after_the_row_resolved_gets_a_fresh_row(
         self, capsys: pytest.CaptureFixture[str], resolution: dict[str, str], label: str
     ) -> None:
-        """The dedupe lookup reads ``pending()``, so a RESOLVED row can never be reused.
+        """The dedupe lookup reads ``pending()``, so a RESOLVED internal row is never reused."""
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14"))
+        capsys.readouterr()
+        resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, **resolution)
+        assert resolved is not None
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-15"))
+        capsys.readouterr()
 
-        Reused, the hook returns the resolved row's pk, delivers nothing, and the re-ask
-        is swallowed forever — the operator is asked once and never hears about it again.
-        """
-        backend = _slack_backend()
-        with _kick_drains_through(backend):
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-14"))
-            capsys.readouterr()
-            resolved = DeferredQuestion.consume(DeferredQuestion.objects.get().pk, **resolution)
-            assert resolved is not None
-            backend.post_message.return_value = {"ok": True, "ts": "1700.0003"}
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-6", tool_use_id="t-15"))
-            capsys.readouterr()
-
-            assert backend.post_message.call_count == 2, f"the re-ask after a {label} row was swallowed"
-
-        assert DeferredQuestion.objects.count() == 2
-        fresh = DeferredQuestion.pending().get()
-        assert fresh.pk != resolved.pk
-        assert fresh.slack_ts == "1700.0003"
-        bound = DeferredQuestion.live_for_reply(channel="D1", after_ts="1700.0004")
-        assert bound is not None
-        assert bound.pk == fresh.pk
+        assert DeferredQuestion.objects.count() == 2, f"the re-ask after a {label} row was swallowed"
+        assert DeferredQuestion.pending().get().pk != resolved.pk
 
     def test_a_second_session_asking_the_same_question_gets_its_own_row(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Control: the guard is scoped per session, so two sessions never share a row."""
-        with patch.object(router, "_kick_question_drain"):
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-4", tool_use_id="t-12"))
-            capsys.readouterr()
-            handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-5", tool_use_id="t-13"))
-            capsys.readouterr()
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-4", tool_use_id="t-12"))
+        capsys.readouterr()
+        handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id="s-5", tool_use_id="t-13"))
+        capsys.readouterr()
         assert sorted(DeferredQuestion.objects.values_list("session_id", flat=True)) == ["s-4", "s-5"]
 
 
@@ -370,32 +324,3 @@ class TestSection807InteropGate:
         """Control: without this, the test above could pass on a §807 gate broken in general."""
         transcript = self._transcript(tmp_path, with_tool_use=False)
         assert handle_enforce_structured_question({"transcript_path": str(transcript)}) is True
-
-
-class TestKickQuestionDrainArgvUsesTheCanonicalGroup:
-    """The kick's argv must be a REAL ``t3`` command, not just correctly triggered.
-
-    ``T3_OVERLAY_NAME`` carries the entry name (e.g. ``t3-teatree``), but the CLI
-    group registers under the canonical short name with the ``t3-`` prefix
-    stripped (``t3 teatree ...``) — ``OverlayEntry.canonical_overlay_name``. Passing
-    the raw entry name as the GROUP makes the whole spawn exit 2 at the root
-    ("No such command 't3-teatree'") before subcommand resolution is even reached,
-    silently dropping every loop-driven question back to the capped tick drain.
-    """
-
-    def test_argv_group_is_canonicalised_and_carries_overlay_option(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
-        with patch.object(router, "spawn_t3_detached") as spawn:
-            router._kick_question_drain("toolu_abc123")
-
-        spawn.assert_called_once()
-        argv = spawn.call_args.args[0]
-        assert argv[1] == "teatree", "the group must be the canonical short name, not the raw entry name"
-        assert "t3-teatree" not in argv[:2], "the entry name must never be passed as the CLI group"
-        assert argv[-2:] == ["--overlay", "t3-teatree"], "the full entry name still routes --overlay bot config"
-
-    def test_no_overlay_env_skips_the_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        with patch.object(router, "spawn_t3_detached") as spawn:
-            router._kick_question_drain("toolu_abc123")
-        spawn.assert_not_called()

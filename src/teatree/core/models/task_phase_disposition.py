@@ -196,7 +196,6 @@ def _record_hold_cap(ticket: Ticket, review: SelfReview, *, laps: int) -> None:
         f"(reviewing task {review.task_pk}). `t3 <overlay> ticket rework-hold {ticket.pk}` queues it by hand. "
         f"Its findings:\n{findings}",
         dedupe_marker=marker,
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -286,7 +285,6 @@ def record_stuck_transition_question(task: "Task | None", *, phase: str, ticket:
         f"FSM wedge on {where}: the {phase!r} phase completed{by_task} but the ticket cannot advance: {cause}",
         task_session=task.session if task else None,
         dedupe_marker=marker,
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 

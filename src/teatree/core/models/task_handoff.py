@@ -9,12 +9,23 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 ``Task`` so they stay free of model-class state, mirroring ``task_repair.py``.
 """
 
+from teatree.core.forge_url import is_synthetic_ticket_url
+from teatree.core.modelkit.owner_decision import OwnerDecision, owner_decision
+from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import DeferredQuestion, is_tool_lack_selfreport, question_fingerprint
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.repair_loop import RepairLoopError
 
 _DEFAULT_REASON = "Agent needs human input"
+
+#: The standing answer to a stop that names no owner decision (#5096).
+FACTORY_WORK_ANSWER = (
+    "this is factory work, not an owner decision. Decide it yourself under the standing rules and carry on; "
+    "set user_input_kind only for " + ", ".join(OwnerDecision)
+)
 
 #: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
 #: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
@@ -40,47 +51,50 @@ def dispatch_reason(task: Task) -> str:
 
 
 def park_for_user_input(task: Task) -> None:
-    """Park a ``needs_user_input`` STOP as a durable, user-reachable question.
+    """Park a ``needs_user_input`` STOP: an owner question only when it names an owner decision.
 
-    There is no terminal to ask at, so record a mirror-pending
-    :class:`DeferredQuestion` correlated to this task; the tick-level poster
-    scanner posts it to Slack and the reply re-queues a resume from the captured
-    session.
+    A stop naming one of the :class:`OwnerDecision` kinds is recorded for the owner; an
+    answer already given to the same question on this ticket resumes the task at once.
+    Any other stop is factory work (#5096): its row is answered by policy and the task
+    resumes under the repair-loop budget, which leaves the row pending once spent. A
+    tool-lack self-report is a dispatch fault and never resumes.
     """
-    record_deferred_question(task)
+    row = record_deferred_question(task)
+    if row.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+        if row.parked_task_id != task.pk and not row.is_pending:
+            schedule_resume(task, answer=row.answer_text or FACTORY_WORK_ANSWER)
+        return
+    if is_tool_lack_selfreport(row.question) or is_synthetic_ticket_url(task.ticket.issue_url):
+        return
+    try:
+        task.check_requeue_allowed()
+        schedule_resume(task, answer=FACTORY_WORK_ANSWER)
+    except (RepairLoopError, NoPlanArtifactError):
+        return
+    auto_answer_by_policy(row, FACTORY_WORK_ANSWER)
 
 
 def record_deferred_question(task: Task) -> DeferredQuestion:
     """Record a mirror-pending DeferredQuestion correlated to *task*.
 
-    The headless-lane STOP record: ``slack_ts``/``slack_channel`` are left empty
-    (un-mirrored) so the tick-level poster scanner posts it to the user's Slack
-    DM and stamps the mirror coordinates. ``run_id`` carries the resumable agent
-    session for traceability; ``parked_task`` is the canonical correlation the
-    reply scanner walks back to re-queue a headless resume.
-
-    A reason that is the agent's own "I lack the shell/gh/toolset to do my job"
-    self-report is a DISPATCH fault, not an owner decision, so it is recorded
-    ``INTERNAL`` (logged / statusline-only, never DM'd) — a mis-provisioned phase
-    must never nag the owner to compensate for its own missing tools.
+    ``slack_ts``/``slack_channel`` stay empty so the tick-level poster scanner can mirror
+    an owner row; ``run_id`` carries the resumable agent session and ``parked_task`` is the
+    correlation a reply walks back to re-queue a headless resume. The audience comes from
+    the envelope's ``user_input_kind``: without an owner decision the row is internal. An
+    owner question is keyed per ticket, so its answer is never asked for twice there.
     """
     last = task.attempts.order_by("-pk").first()
-    reason = str(last.result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
-    agent_session_id = last.agent_session_id if last else ""
-    audience = (
-        DeferredQuestion.Audience.INTERNAL
-        if is_tool_lack_selfreport(reason)
-        else DeferredQuestion.Audience.OWNER_QUESTION
-    )
-    # Collapse identical needs-input reasons (e.g. the eight "I lack tools" review
-    # failures) to one queued question via a normalized-text fingerprint.
+    result = last.result if last else {}
+    reason = str(result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
+    decision = owner_decision(result.get("user_input_kind"))
+    scope = f"{task.ticket.pk}:" if decision is not None else ""
     return DeferredQuestion.record(
         reason,
         task_session=task.session,
-        run_id=agent_session_id or "",
-        dedupe_marker=f"needs-input:{question_fingerprint(reason)}",
+        run_id=last.agent_session_id if last else "",
+        dedupe_marker=f"needs-input:{scope}{question_fingerprint(reason)}",
         parked_task=task,
-        audience=audience,
+        decision=decision,
     )
 
 

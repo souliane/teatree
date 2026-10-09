@@ -110,7 +110,6 @@ def ask_mr_state(
             text,
             options_json=_options_json(options),
             dedupe_marker=marker,
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
         )
     if (observer := _OWNER_QUESTION_OBSERVER.get()) is not None:
         observer(mr_url)

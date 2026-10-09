@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ def raise_override_lift_questions(now: dt.datetime | None = None) -> int:
             DeferredQuestion.record(
                 proposal.question,
                 dedupe_marker=proposal.dedupe_marker,
-                audience=DeferredQuestion.Audience.OWNER_QUESTION,
+                decision=OwnerDecision.PRODUCT_SCOPE,
             )
         except Exception:
             logger.exception("override-lift question failed for %r — the override is untouched", proposal.loop_name)

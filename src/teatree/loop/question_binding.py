@@ -25,7 +25,6 @@ Every rung binds only a reply whose recorded author is the owner's Slack user id
 any other reply, or an unknown owner id, binds nothing and is left for the DM path.
 """
 
-import hashlib
 import json
 import logging
 import re
@@ -33,6 +32,7 @@ from dataclasses import dataclass
 
 from teatree.core.models import NoPlanArtifactError, PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.question_text import options_digest
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
 
 # The digest's instructed form, ``#<id> <your answer>``. At least one separator
@@ -189,8 +189,7 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
         return None
     if not isinstance(options, list):
         return None
-    blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
-    if hashlib.sha256(blob.encode("utf-8")).hexdigest() != question.options_hash:
+    if options_digest(options) != question.options_hash:
         return None
     return options
 

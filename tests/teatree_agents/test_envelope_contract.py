@@ -20,6 +20,7 @@ from teatree.agents.envelope_contract import (
 )
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.review_contract import VERDICT_CHECKS_RULE
 from teatree.core.models import Session, Task, Ticket
 
@@ -50,6 +51,12 @@ class TestEnvelopeContractText(SimpleTestCase):
             assert "no_result_envelope" in text, phase
             for field in required_evidence_for_phase(phase):
                 assert f"`{field}`" in text, (phase, field)
+
+    def test_every_phase_names_the_five_owner_decision_kinds(self) -> None:
+        text = "\n".join(envelope_contract_lines(_WORK_PHASE))
+        assert "`user_input_kind`" in text
+        for decision in OwnerDecision:
+            assert decision.value in text
 
     def test_final_output_reminder_names_the_phase_evidence_key(self) -> None:
         line = final_output_reminder_line(_WORK_PHASE)
