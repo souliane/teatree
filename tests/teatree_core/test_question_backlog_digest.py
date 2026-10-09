@@ -26,6 +26,7 @@ from teatree.core.notify_question_drains import (
     format_backlog_digest,
     resurface_question_backlog,
 )
+from tests._owner_channel import OWNER_DECISION
 
 
 class TestBacklogDigestText(TestCase):
@@ -118,9 +119,9 @@ class TestResurfaceQuestionBacklog(TestCase):
         assert (posted, pending) == (False, 0)
 
     def test_one_digest_covers_the_whole_backlog(self) -> None:
-        DeferredQuestion.record("First?")
-        DeferredQuestion.record("Second?")
-        DeferredQuestion.record("Third?")
+        DeferredQuestion.record("First?", **OWNER_DECISION)
+        DeferredQuestion.record("Second?", **OWNER_DECISION)
+        DeferredQuestion.record("Third?", **OWNER_DECISION)
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
             posted, pending = resurface_question_backlog()
@@ -129,7 +130,7 @@ class TestResurfaceQuestionBacklog(TestCase):
         assert (posted, pending) == (True, 3)
 
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
-        DeferredQuestion.record("Merge it?")
+        DeferredQuestion.record("Merge it?", **OWNER_DECISION)
         now = timezone.now()
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
@@ -145,7 +146,7 @@ class TestResurfaceQuestionBacklog(TestCase):
         assert key_next_bucket != key_first
 
     def test_a_failed_delivery_reports_not_posted(self) -> None:
-        DeferredQuestion.record("Merge it?")
+        DeferredQuestion.record("Merge it?", **OWNER_DECISION)
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=False):
             posted, pending = resurface_question_backlog()

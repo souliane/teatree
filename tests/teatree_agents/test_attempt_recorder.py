@@ -375,9 +375,8 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
 
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_recorded_batch_surfaces_one_owner_approval_dm(self, check_url: object) -> None:
-        # The shell-denied agent cannot post the approval DM itself, so the server
-        # DMs ONE owner-audience batch listing the candidates it just recorded.
+    def test_recorded_batch_is_one_internal_question(self, check_url: object) -> None:
+        # An undecided question is internal: the batch names no owner decision, so it is never DMed.
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
         task = self._claimed()
         record_result_envelope(
@@ -389,7 +388,7 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         )
         question = DeferredQuestion.objects.get()
         assert question.is_pending
-        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.audience == DeferredQuestion.Audience.INTERNAL
         assert question.parked_task_id is None
         assert "https://ex.com/a" in question.question
 

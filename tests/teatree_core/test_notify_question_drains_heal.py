@@ -17,8 +17,9 @@ from teatree.core.notify_question_drains import (
     reask_escalated_questions,
     resurface_question_backlog,
 )
-from teatree.core.provision.failure_question import record_provision_failure_question
+from teatree.core.provision.failure_question import provision_failure_marker
 from tests._git_repo import make_git_repo
+from tests._owner_channel import OWNER_DECISION
 
 
 def _backend() -> MagicMock:
@@ -33,8 +34,10 @@ class _HealedProvisionQuestion(TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ticket = Ticket.objects.create(overlay="test", repos=[], state=Ticket.State.WORK_STARTED)
-        self.question = record_provision_failure_question(ticket, "no repos on ticket", retries=6)
-        self.live = DeferredQuestion.record("Which DB host?")
+        self.question = DeferredQuestion.record(
+            "Provision failed: no repos on ticket", dedupe_marker=provision_failure_marker(ticket.pk), **OWNER_DECISION
+        )
+        self.live = DeferredQuestion.record("Which DB host?", **OWNER_DECISION)
         self.ticket = ticket
 
     def _heal(self) -> None:

@@ -7,10 +7,14 @@ from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads, resolve_owner_thread
+from tests._owner_channel import OWNER_DECISION
 
 
-def _question(*, text: str = "ship it?", age: timedelta = timedelta(), **kw: object) -> DeferredQuestion:
-    row = DeferredQuestion.record(text, slack_channel="D0OWNER", slack_ts="1779990001.000001", **kw)
+def _question(
+    *, text: str = "ship it?", age: timedelta = timedelta(), owner: bool = True, **kw: object
+) -> DeferredQuestion:
+    decision = OWNER_DECISION if owner else {}
+    row = DeferredQuestion.record(text, slack_channel="D0OWNER", slack_ts="1779990001.000001", **decision, **kw)
     if age:
         DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - age)
         row.refresh_from_db()
@@ -31,7 +35,7 @@ class TestOpenOwnerThreads(TestCase):
         assert open_owner_threads() == ()
 
     def test_an_internal_question_is_never_an_owner_thread(self) -> None:
-        _question()
+        _question(owner=False)
         assert open_owner_threads() == ()
 
     def test_a_young_thread_is_included_even_before_the_watermark(self) -> None:

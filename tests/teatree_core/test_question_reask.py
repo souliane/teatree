@@ -23,6 +23,7 @@ from teatree.core import notify as notify_module
 from teatree.core.modelkit.fibonacci import fibonacci_bump_index
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _REASK_BATCH, RESURFACE_INTERVAL_HOURS, reask_escalated_questions
+from tests._owner_channel import OWNER_DECISION
 
 _CHANNEL = "D-USER"
 
@@ -36,7 +37,7 @@ def _backend(*, ts: str = "1800000000.000000") -> MagicMock:
 
 
 def _mirrored(question: str, *, slack_ts: str, escalated: bool = False, age_days: int = 3) -> DeferredQuestion:
-    row = DeferredQuestion.record(question, session_id="s", slack_channel=_CHANNEL, slack_ts=slack_ts)
+    row = DeferredQuestion.record(question, session_id="s", slack_channel=_CHANNEL, slack_ts=slack_ts, **OWNER_DECISION)
     DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - dt.timedelta(days=age_days))
     if escalated:
         row.mark_escalated("pending past the ceiling")
@@ -86,7 +87,7 @@ class TestTheBumpRidesTheExistingRow(TestCase):
     def test_an_unmirrored_row_is_not_a_candidate(self) -> None:
         # No thread to bump into. The first post is the mirror drain's job — it posts at
         # root and stamps the ts this function then rides.
-        DeferredQuestion.record("Which DB host?", session_id="s")
+        DeferredQuestion.record("Which DB host?", session_id="s", **OWNER_DECISION)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):

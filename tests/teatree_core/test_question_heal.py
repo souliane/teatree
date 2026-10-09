@@ -8,10 +8,11 @@ from django.test import TestCase
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
-from teatree.core.provision.failure_question import record_provision_failure_question
+from teatree.core.provision.failure_question import provision_failure_marker, record_provision_failure_question
 from teatree.core.question_heal import live_owner_questions, withdraw_healed
 from teatree.loop.question_drain import drain_pending_questions
 from tests._git_repo import make_git_repo
+from tests._owner_channel import OWNER_DECISION
 
 
 class TestWithdrawHealed(TestCase):
@@ -72,7 +73,9 @@ class TestLiveOwnerQuestions(TestCase):
     def test_internal_rows_are_excluded_and_healed_rows_withdrawn(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ticket = Ticket.objects.create(overlay="test", repos=["backend"], state=Ticket.State.WORK_STARTED)
-        healed = record_provision_failure_question(ticket, "failed to create worktrees for: backend")
+        healed = DeferredQuestion.record(
+            "Provision failed: backend", dedupe_marker=provision_failure_marker(ticket.pk), **OWNER_DECISION
+        )
         Worktree.objects.create(
             ticket=ticket, repo_path="backend", branch="x", extra={"worktree_path": str(make_git_repo(root / "b"))}
         )

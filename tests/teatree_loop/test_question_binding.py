@@ -39,7 +39,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
-from tests._owner_channel import OWNER_SLACK_ID
+from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -91,6 +91,7 @@ def _question(text: str, *, slack_ts: str, generation: int = 1) -> DeferredQuest
         generation=generation,
         slack_channel=_CHANNEL,
         slack_ts=slack_ts,
+        **OWNER_DECISION,
     )
 
 
@@ -268,8 +269,8 @@ def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
 
 
 def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[str, str]]:
-    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1)
-    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2)
+    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, **OWNER_DECISION)
+    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, **OWNER_DECISION)
     backend, roots = _threading_slack()
     with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
         drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
@@ -425,7 +426,7 @@ class TestAResurfacedQuestionIsAnswerable:
 
     def test_an_unmirrored_row_is_resurfaced_at_root_and_stamped(self) -> None:
         _owner_is_mid_conversation()
-        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r")
+        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", **OWNER_DECISION)
         roots: dict[str, str] = {}
         backend, posted = _recording_slack(8000, roots)
 

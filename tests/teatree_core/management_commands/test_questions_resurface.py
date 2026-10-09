@@ -19,6 +19,7 @@ from django.core.management import call_command
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text
+from tests._owner_channel import OWNER_DECISION
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -44,8 +45,8 @@ def _call(*args: str) -> tuple[str, int]:
 
 class TestResurfaceDrainsPending:
     def test_reposts_each_pending_question_to_slack(self) -> None:
-        DeferredQuestion.record("First?", session_id="s-1")
-        DeferredQuestion.record("Second?", session_id="s-2")
+        DeferredQuestion.record("First?", session_id="s-1", **OWNER_DECISION)
+        DeferredQuestion.record("Second?", session_id="s-2", **OWNER_DECISION)
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
             out, code = _call("questions", "resurface", "--user-id", "U_ME")
@@ -56,8 +57,8 @@ class TestResurfaceDrainsPending:
         assert "2" in out
 
     def test_skips_answered_and_dismissed(self) -> None:
-        pending = DeferredQuestion.record("Pending?", session_id="s-1")
-        answered = DeferredQuestion.record("Answered?", session_id="s-2")
+        pending = DeferredQuestion.record("Pending?", session_id="s-1", **OWNER_DECISION)
+        answered = DeferredQuestion.record("Answered?", session_id="s-2", **OWNER_DECISION)
         DeferredQuestion.consume(answered.pk, answer="done")
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
@@ -69,7 +70,7 @@ class TestResurfaceDrainsPending:
         assert any(f"#{pending.pk}" in t for t in posted)
 
     def test_idempotent_across_two_runs(self) -> None:
-        DeferredQuestion.record("Once?", session_id="s-1")
+        DeferredQuestion.record("Once?", session_id="s-1", **OWNER_DECISION)
         backend = _backend()
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
             _call("questions", "resurface", "--user-id", "U_ME")
@@ -86,7 +87,7 @@ class TestResurfaceDrainsPending:
         assert "no" in out.lower()
 
     def test_slack_failure_is_swallowed_and_exits_zero(self) -> None:
-        DeferredQuestion.record("Fails?", session_id="s-1")
+        DeferredQuestion.record("Fails?", session_id="s-1", **OWNER_DECISION)
         with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
             _out, code = _call("questions", "resurface", "--user-id", "U_ME")
         assert code == 0
@@ -95,7 +96,7 @@ class TestResurfaceDrainsPending:
 
 class TestOverlayRouting:
     def test_overlay_flag_sets_env_for_bot_routing(self) -> None:
-        DeferredQuestion.record("Routed?", session_id="s-1")
+        DeferredQuestion.record("Routed?", session_id="s-1", **OWNER_DECISION)
         backend = _backend()
         seen: dict[str, str] = {}
 
@@ -108,7 +109,7 @@ class TestOverlayRouting:
         assert seen["overlay"] == "teatree"
 
     def test_overlay_flag_restores_previous_env(self) -> None:
-        DeferredQuestion.record("Routed?", session_id="s-1")
+        DeferredQuestion.record("Routed?", session_id="s-1", **OWNER_DECISION)
         backend = _backend()
         os.environ["T3_OVERLAY_NAME"] = "pre-existing"
         try:
@@ -119,7 +120,7 @@ class TestOverlayRouting:
             os.environ.pop("T3_OVERLAY_NAME", None)
 
     def test_overlay_flag_restores_unset_env(self) -> None:
-        DeferredQuestion.record("Routed?", session_id="s-1")
+        DeferredQuestion.record("Routed?", session_id="s-1", **OWNER_DECISION)
         backend = _backend()
         os.environ.pop("T3_OVERLAY_NAME", None)
         with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):

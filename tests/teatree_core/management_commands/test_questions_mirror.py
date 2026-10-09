@@ -14,6 +14,7 @@ from django.core.management import call_command
 
 from teatree.core import notify as notify_module
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._owner_channel import OWNER_DECISION
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -39,7 +40,7 @@ def _call(*args: str) -> tuple[str, int]:
 
 class TestQuestionsMirror:
     def test_delivers_the_targeted_row_and_stamps_it(self) -> None:
-        row = DeferredQuestion.record("Which env?", session_id="s-loop", tool_use_id="toolu-1")
+        row = DeferredQuestion.record("Which env?", session_id="s-loop", tool_use_id="toolu-1", **OWNER_DECISION)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
@@ -53,8 +54,8 @@ class TestQuestionsMirror:
 
     def test_jumps_a_backlog_bigger_than_the_per_tick_cap(self) -> None:
         for i in range(5):
-            DeferredQuestion.record(f"older #{i}", session_id="s", tool_use_id=f"older-{i}")
-        fresh = DeferredQuestion.record("the blocker", session_id="s-loop", tool_use_id="toolu-fresh")
+            DeferredQuestion.record(f"older #{i}", session_id="s", tool_use_id=f"older-{i}", **OWNER_DECISION)
+        fresh = DeferredQuestion.record("the blocker", session_id="s-loop", tool_use_id="toolu-fresh", **OWNER_DECISION)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
@@ -78,7 +79,7 @@ class TestQuestionsMirror:
         assert backend.post_message.call_count == 0
 
     def test_blank_ref_is_refused_rather_than_draining_the_backlog(self) -> None:
-        DeferredQuestion.record("older", session_id="s", tool_use_id="older-1")
+        DeferredQuestion.record("older", session_id="s", tool_use_id="older-1", **OWNER_DECISION)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):

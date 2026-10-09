@@ -18,6 +18,7 @@ from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
 from teatree.loop.self_improve.persistence import record_firing
 from teatree.loop.self_improve.schedule import DeliveryRoutes, Tier, TierResult, detectors_for_tier, run_tier
+from tests._owner_channel import OWNER_DECISION
 from tests.factories import TaskFactory, TicketFactory
 
 
@@ -133,8 +134,10 @@ class LifecycleIncidentTests(TestCase):
         assert not [report for report in self._reports() if report.payload["kind"] == "inbound_unanswered"]
 
     def test_old_unposted_question_is_delivery_failure_and_posted_question_waits(self) -> None:
-        unposted = DeferredQuestion.record("Which option?", session_id="s")
-        posted = DeferredQuestion.record("Can you approve?", session_id="s", slack_ts="200.1", slack_channel="D1")
+        unposted = DeferredQuestion.record("Which option?", session_id="s", **OWNER_DECISION)
+        posted = DeferredQuestion.record(
+            "Can you approve?", session_id="s", slack_ts="200.1", slack_channel="D1", **OWNER_DECISION
+        )
         DeferredQuestion.objects.filter(pk__in=[unposted.pk, posted.pk]).update(
             created_at=timezone.now() - timedelta(hours=2)
         )
@@ -402,7 +405,7 @@ class LifecycleIncidentTests(TestCase):
         assert [action.rung for action in alerted.actions] == [ActionRung.SLACK]
 
     def test_unattributed_outbound_alert_retries_deduplicates_and_recovers_without_ticket(self) -> None:
-        question = DeferredQuestion.record("Which option?", session_id="unknown")
+        question = DeferredQuestion.record("Which option?", session_id="unknown", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=question.pk).update(created_at=timezone.now() - timedelta(hours=2))
         delivered = False
         attempts: list[str] = []
@@ -436,7 +439,7 @@ class LifecycleIncidentTests(TestCase):
         assert SelfImproveFiring.objects.get(dedup_key=attempts[0]).resolved_at is not None
         assert len(attempts) == 2
 
-        recurrence = DeferredQuestion.record("Which next option?", session_id="unknown")
+        recurrence = DeferredQuestion.record("Which next option?", session_id="unknown", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=recurrence.pk).update(created_at=timezone.now() - timedelta(hours=2))
         assert [action.rung for action in scan().actions] == [ActionRung.SLACK]
         assert len(attempts) == 3

@@ -20,7 +20,6 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.approval_dial import DIAL_CONFIG_KEY
-from teatree.core.models.approval_policy import Decision
 from teatree.loops.outer_loop.keep import ask_keep, resolve_keep
 
 
@@ -84,12 +83,10 @@ class TestKeepFlow(TestCase):
         resolve_keep(exp)
         assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEPT
 
-    def test_auto_approve_dial_answers_the_keep_question(self) -> None:
-        # The #119 seam: a permissive owner-taint dial auto-answers the recorded
-        # question (resolved_via policy) WITHOUT bypassing the record_kept guard —
-        # the guard still sees a consumed answer, only recorded by policy.
+    def test_policy_answers_the_keep_question(self) -> None:
+        # An undecided question is internal: the standing answer keeps it by policy, with no dial to inject.
         exp = _keep_pending()
-        question = ask_keep(exp, dial=lambda _action_class: Decision.AUTO_APPROVE)
+        question = ask_keep(exp)
         answered = DeferredQuestion.objects.get(pk=question.pk)
         assert answered.answered_at is not None
         # Graduation is AUDITED: resolved_via=policy + a DeferredQuestionAudit receipt.
