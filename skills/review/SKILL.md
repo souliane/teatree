@@ -117,7 +117,7 @@ It extracts the merge result to a **plain directory** and git-inits it with the 
 
 **Before filing a finding whose evidence is a difference between two trees, enumerate what differs between them besides the diff.** Origin URL, presence of `.git`, working directory, data dir, installed venv, and ambient credentials have each produced a false result here. "Fails on the branch, passes on main" is a claim about a *difference*; the diff is only one candidate for it.
 
-**A recorded verdict's findings are READ, never re-derived (#4476).** Findings are persisted on the verdict and rendered by two surfaces, so an author fixes what the reviewer actually found and a later reviewer CHECKS the findings were addressed rather than reaching a fresh judgment:
+**A recorded HOLD is READ, never re-derived (#4476).** Findings are persisted on the verdict and rendered by two surfaces, so an author fixes what the reviewer actually found and a later reviewer CHECKS the findings were addressed rather than reaching a fresh judgment:
 
 ```bash
 t3 <overlay> review findings <pr-url>            # the findings, rendered; --json for the machine shape, --sha to pin a tree
@@ -125,7 +125,7 @@ t3 <overlay> review status <pr-url> --json       # the full status record, findi
 t3 <overlay> review publish-findings <pr-url>    # post them to the PR (idempotent) — `review record` already tries
 ```
 
-`review record` routes a verdict's findings by PR author, on the forge the running clone or an overlay's `owned_repos` declares (none: withheld). An own PR, or one whose author cannot be read, gets nothing — no comment, no DM. A colleague PR whose live head is the reviewed SHA gets ONE submitted inline review (#4968), WITHHELD whole with no DM when any body fails the `t3 review post-comment` checks. It is colleague-visible, so the on-behalf pre-gate applies: a forbidding posture WITHHOLDS it, reports why on the record result, and DMs the findings. Clear it — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings`. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
+`review record` posts a HOLD's findings to the PR itself, so the author sees them where the work is. That post is colleague-visible, so it passes the on-behalf pre-gate: under a forbidding posture it is WITHHELD and the reason is reported on the record result (plus a DM carrying the findings). Clear it the solution-oriented way — `t3 <overlay> config_setting set on_behalf_auto_actions '["post_e2e_evidence","post_review_findings"]'` to enable it durably for this overlay, or `t3 review approve-on-behalf <slug>#<pr> post_review_findings --approver <user-id>` for one post — then `review publish-findings` to deliver it. A payload that cannot be rendered is a loud refusal, never a `findings_count` with nothing behind it.
 
 Discharging a hold needs no new state: verdicts are newest-wins, so a later `merge_safe` recorded at the same head supersedes the HOLD.
 
