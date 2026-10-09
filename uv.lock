@@ -12,10 +12,6 @@ resolution-markers = [
 exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
-[options.exclude-newer-package]
-pydantic-ai-slim = "2026-10-02T03:18:10Z"
-pydantic-graph = "2026-10-02T03:18:13Z"
-
 [manifest]
 constraints = [{ name = "pydantic-settings", specifier = ">=2.14.2" }]
 
