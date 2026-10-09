@@ -180,7 +180,7 @@ def test_concurrent_cold_lookups_against_a_failing_store_make_one_read() -> None
     assert reads == [KEY]
 
 
-def test_a_wedged_read_holds_one_thread_while_the_others_answer_at_once() -> None:
+def test_a_wedged_read_holds_one_thread_while_the_others_give_up_within_the_wait_bound() -> None:
     reads: list[str] = []
     started = threading.Event()
     release = threading.Event()

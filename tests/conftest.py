@@ -368,13 +368,19 @@ def _inert_ambient_process_table() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _reset_webhook_rate_limiter() -> Iterator[None]:
-    """Drop the process-singleton webhook limiter and secret cache so neither leaks across tests."""
+    """Drop the process-singleton webhook limiter so buckets don't leak across tests."""
     from teatree.core.views._rate_limit import reset_webhook_rate_limiter  # noqa: PLC0415
 
     reset_webhook_rate_limiter()
-    reset_webhook_secrets()
     yield
     reset_webhook_rate_limiter()
+
+
+@pytest.fixture(autouse=True)
+def _reset_webhook_secrets() -> Iterator[None]:
+    """Drop the GitHub receiver's cached secrets and read outcomes so they don't leak across tests."""
+    reset_webhook_secrets()
+    yield
     reset_webhook_secrets()
 
 
