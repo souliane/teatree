@@ -207,7 +207,7 @@ class DeferredQuestion(models.Model):
         Only a known :class:`OwnerDecision` with a non-blank ``checked`` fact makes an owner row (``evidence``),
         stored dismissed when its subject has already finished; no decision is INTERNAL. ``dedupe_marker``
         collapses repeats onto the PENDING row; an owner marker also returns its answer, or this question dismissed
-        (compared by :func:`question_fingerprint`).
+        (compared by :func:`question_fingerprint`), and supersedes a pending internal row.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -254,7 +254,7 @@ class DeferredQuestion(models.Model):
 
     @classmethod
     def _held(cls, marker: str, question: str, *, owner: bool) -> "DeferredQuestion | None":
-        """The row a record under *marker* returns instead of asking."""
+        """The row a record under *marker* returns instead of asking; an owner record retires a pending internal row."""
         rows = cls.objects.select_for_update().filter(dedupe_marker=marker).order_by("-created_at", "-pk")
         pending = rows.filter(answered_at__isnull=True, dismissed_at__isnull=True)
         if not owner:
@@ -263,7 +263,9 @@ class DeferredQuestion(models.Model):
         for row in rows.filter(audience=cls.Audience.OWNER_QUESTION):
             if row.dismissed_at is None or question_fingerprint(row.question) == fingerprint:
                 return row
-        return pending.first()
+        for internal in pending:
+            internal.mark_stale("superseded by an owner question", resolver_id="record_owner_supersedes")
+        return None
 
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:

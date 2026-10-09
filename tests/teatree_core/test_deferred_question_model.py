@@ -212,6 +212,33 @@ class TestAnOwnerQuestionIsNeverReAsked:
         assert owner.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
 
+class TestAnOwnerRecordSupersedesAPendingInternalRow:
+    def _ask_owner(self) -> DeferredQuestion:
+        return DeferredQuestion.record(
+            "Which credential?", dedupe_marker="m", decision=OwnerDecision.CREDENTIALS, checked=["the vault is empty"]
+        )
+
+    def test_the_owner_is_asked_and_the_internal_row_is_retired(self) -> None:
+        internal = DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        owner = self._ask_owner()
+        internal.refresh_from_db()
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [owner.pk]
+        assert internal.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_repeat_of_the_owner_question_is_still_held(self) -> None:
+        DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        first = self._ask_owner()
+        again = self._ask_owner()
+        assert again.pk == first.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 2
+
+    def test_an_internal_record_never_retires_a_pending_owner_row(self) -> None:
+        owner = self._ask_owner()
+        internal = DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        assert internal.pk == owner.pk
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [owner.pk]
+
+
 class TestDeferredQuestionPending:
     def test_pending_returns_only_unresolved_rows_oldest_first(self) -> None:
         first = DeferredQuestion.record("first?")

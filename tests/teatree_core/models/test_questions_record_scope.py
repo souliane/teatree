@@ -38,6 +38,14 @@ class TestRecordDedupeMarker:
         assert rows[0].dedupe_marker == "mr-state:mr-41"
         assert rows[0].question == "Is MR 41 ready?"
 
+    def test_an_owner_record_under_a_scanner_marker_asks_the_owner(self) -> None:
+        DeferredQuestion.record("repair halted on task 9", dedupe_marker="repair-halt:9")
+
+        out = _record("Which credential?", "--decision", "credentials", *_CHECKED, "--dedupe-marker", "repair-halt:9")
+
+        [row] = list(DeferredQuestion.owner_pending())
+        assert f"recorded #{row.pk}." in out
+
     def test_distinct_markers_stay_distinct(self) -> None:
         """The control: a command that dropped the marker would also pass a same-marker test."""
         call_command("questions", "record", "Is MR 41 ready?", "--dedupe-marker", "mr-state:mr-41")
