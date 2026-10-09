@@ -11,7 +11,11 @@ The sweep runs in two stages, and the split is the whole design:
     state. ``DRAIN`` only when every subject ticket is terminal (the answer could then
     only ever be "ignore"); ``KEEP`` when one is still live; no decision at all when no
     subject is derivable. The conservatism guard #3692 established is unchanged — a live
-    or undeterminable subject is never dropped. Two later resolvers read facts the FSM
+    or undeterminable subject is never dropped. "Terminal" differs by audience: an internal
+    row uses ``Ticket._SETTLED_STATES``, the same population ``transient_requeue`` stops
+    retrying, so PR_OPENED ends it; an owner row drains only on
+    :func:`~teatree.core.models.question_subject.finished_subject_reason`, because a
+    PR_OPENED review is still the owner's to decide. Two later resolvers read facts the FSM
     state cannot carry — a subject whose pull requests have all settled, and a parked
     lane that has since re-run to completion — and both are POSITIVE-ONLY: short of
     proof they answer nothing at all, so they add drains without ever suppressing one.
@@ -37,7 +41,7 @@ model with the subject derivation and the effective-settings read, and it is dri
 the tick recovery sweep.
 """
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -47,6 +51,7 @@ from django.utils import timezone
 
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.question_heal import HEAL_CHECKS
 from teatree.loop.question_subjects import SubjectIndex
 
@@ -146,11 +151,12 @@ def _heal_resolver(name: str) -> Resolver:
 
 def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Decision | None:
     states = context.index.states_for(question)
-    if not states:
-        return None
-    if all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
+    if question.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+        if reason := finished_subject_reason(question):
+            return Decision(Verdict.DRAIN, reason)
+    elif states and all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
         return Decision(Verdict.DRAIN, f"every subject ticket is terminal ({', '.join(sorted(set(states)))})")
-    return Decision(Verdict.KEEP, "a subject ticket is still live")
+    return Decision(Verdict.KEEP, "a subject ticket is still live") if states else None
 
 
 def _age_ceiling(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -329,7 +335,12 @@ SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
 BACKSTOP_RESOLVERS: tuple[tuple[str, Resolver], ...] = (("age_ceiling", _age_ceiling),)
 
 
-def drain_pending_questions() -> DrainReport:
+def sweep_owner_questions() -> DrainReport:
+    """The send-time sweep: settle the owner backlog in the same scan that would post it."""
+    return drain_pending_questions(DeferredQuestion.owner_pending())
+
+
+def drain_pending_questions(rows: Iterable[DeferredQuestion] | None = None) -> DrainReport:
     """Resolve what is mechanically decidable in the pending backlog; escalate the rest.
 
     Drains a row on a ``DRAIN`` verdict from either stage — the subject stage's, or the
@@ -339,7 +350,7 @@ def drain_pending_questions() -> DrainReport:
     Idempotent: ``mark_stale`` and ``mark_escalated`` are single-use CAS writes, and the
     escalation window keeps a re-tick inside the ceiling from re-stamping.
     """
-    pending = list(DeferredQuestion.pending())
+    pending = list(DeferredQuestion.pending() if rows is None else rows)
     if not pending:
         return DrainReport(drained=0, escalated=0)
     context = SweepContext.build(pending)

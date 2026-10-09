@@ -24,10 +24,17 @@ from django.utils import timezone
 from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.provision.failure_question import record_provision_failure_question
-from teatree.loop.question_drain import DrainReport, Verdict, drain_pending_questions, question_reachability
+from teatree.loop.question_drain import (
+    DrainReport,
+    Verdict,
+    drain_pending_questions,
+    question_reachability,
+    sweep_owner_questions,
+)
 from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 from tests._git_repo import make_git_repo
+from tests._owner_channel import OWNER_DECISION
 
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
@@ -611,3 +618,47 @@ class TestProvisionHealedDrain(TestCase):
         reach = next(r for r in question_reachability() if r.question_id == self.question.pk)
 
         assert reach.decisions["provision_healed"] == Verdict.DRAIN
+
+
+def _owner_question_on(state: str) -> tuple[DeferredQuestion, Ticket]:
+    ticket = _ticket(state)
+    session = Session.objects.create(ticket=ticket, agent_id="coding")
+    return DeferredQuestion.record("May I post it?", task_session=session, **OWNER_DECISION), ticket
+
+
+class TestOwnerRowsDrainOnlyOnAFinishedSubject(TestCase):
+    """PR_OPENED is settled for the factory but its review is still the owner's to decide."""
+
+    def test_owner_row_with_pr_opened_subject_survives_sweep(self) -> None:
+        question, ticket = _owner_question_on(Ticket.State.PR_OPENED)
+        _pull_request(ticket, state=PullRequest.State.OPEN)
+
+        assert drain_pending_questions().drained == 0
+        question.refresh_from_db()
+        assert question.is_pending
+
+    def test_internal_row_with_pr_opened_subject_still_drains(self) -> None:
+        question = _session_keyed_question(ticket_state=Ticket.State.PR_OPENED)
+
+        assert drain_pending_questions().drained == 1
+        question.refresh_from_db()
+        assert not question.is_pending
+
+    def test_owner_row_drains_once_its_subject_reaches_retro_recorded(self) -> None:
+        question, ticket = _owner_question_on(Ticket.State.CODED)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED)
+
+        assert drain_pending_questions().drained == 1
+        audit = DeferredQuestionAudit.objects.get(question=question)
+        assert audit.resolver_id == "subject_terminal"
+        assert audit.dismissed_reason == "the subject ticket is retro_recorded"
+
+    def test_the_owner_sweep_leaves_internal_rows_alone(self) -> None:
+        internal = _session_keyed_question(ticket_state=Ticket.State.MERGED)
+        owner, ticket = _owner_question_on(Ticket.State.CODED)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+
+        assert sweep_owner_questions().drained == 1
+        internal.refresh_from_db()
+        owner.refresh_from_db()
+        assert (internal.is_pending, owner.is_pending) == (True, False)

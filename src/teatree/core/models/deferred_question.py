@@ -36,6 +36,7 @@ from django.utils import timezone
 
 from teatree import answer_handback
 from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
+from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
     is_tool_lack_selfreport,
     question_fingerprint,
@@ -206,12 +207,9 @@ class DeferredQuestion(models.Model):
     ) -> "DeferredQuestion":
         """The single guarded factory: a refused record raises and writes no row.
 
-        The mirror kwargs link the row to its Slack DM so a reply resolves the live generation;
-        ``parked_task`` lets that reply re-queue the headless task that asked.
-        ``decision`` is deny-by-default: only a known :class:`OwnerDecision` with a
-        non-blank ``checked`` fact makes an owner row, stored as ``evidence``; no decision is INTERNAL.
-        ``dedupe_marker`` collapses repeats onto the PENDING row; an owner marker is sticky, so an
-        answered or dismissed owner row is returned too and the owner is never asked twice.
+        Only a known :class:`OwnerDecision` with a non-blank ``checked`` fact makes an owner row (``evidence``),
+        stored dismissed when its subject has already finished; no decision is INTERNAL. ``dedupe_marker``
+        collapses repeats onto the PENDING row; a sticky owner marker also returns an answered or dismissed one.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -262,6 +260,8 @@ class DeferredQuestion(models.Model):
                     ticket_id=parked_task.ticket.pk if parked_task is not None else 0,
                 )
             )
+            if decision is not None and (reason := finished_subject_reason(row)):
+                row.mark_stale(reason, resolver_id="record_subject_settled")
             return row
 
     @classmethod
