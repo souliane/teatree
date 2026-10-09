@@ -21,13 +21,13 @@ from functools import cache
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview
-from teatree.core.checking import build_pr_url
 from teatree.core.modelkit.forge_readability import head_sha_unreadable
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.review.comment_checks import review_refusal
 from teatree.core.review.review_candidate import is_self_authored
 from teatree.core.review.verdict_findings import findings_payload, marker_for, render_findings_text, review_for
 from teatree.core.self_forge_identities import confirmed_self_identity_set, self_identity_set
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -61,22 +61,23 @@ class PublishOutcome:
 def publish_verdict_findings(
     verdict: ReviewVerdict,
     *,
-    host_kind: str,
+    pr_url: str,
     backend: "CodeHostBackend | None" = None,
 ) -> PublishOutcome:
-    """Submit *verdict*'s findings as one inline review on its colleague PR, or report why not.
+    """Submit *verdict*'s findings as one inline review on its colleague PR at *pr_url*, or report why not.
 
     Idempotent by the hidden marker: a re-run finds the verdict's own review and skips.
-    An empty *host_kind* withholds: a bare slug names no forge, and a guessed one misreads the author.
+    An empty *pr_url* withholds: a bare slug names no host, and a guessed one misreads the author.
     """
     if not findings_payload(verdict):
         return PublishOutcome(note=f"verdict {verdict.pk} carries no findings — nothing to publish")
-    if not host_kind:
+    ref = pr_ref_from_url(pr_url)
+    if ref is None:
         return PublishOutcome(blocked_reason=f"the forge hosting {verdict.slug} is unknown — findings withheld")
 
     host = backend if backend is not None else _resolve_backend(verdict)
     target = f"{verdict.slug}#{verdict.pr_id}"
-    stop = _stop_before_posting(host, verdict, host_kind=host_kind, target=target)
+    stop = _stop_before_posting(host, verdict, pr_url=pr_url, target=target)
     if stop is not None:
         return stop
 
@@ -84,16 +85,16 @@ def publish_verdict_findings(
     refusal = review_refusal(review, file_diffs=_diff_reader(host, verdict, target=target))
     if refusal:
         return PublishOutcome(blocked_reason=f"comment check — {refusal}")
-    outcome = _submit_gated(host, verdict, review=review, host_kind=host_kind)
+    outcome = _submit_gated(host, verdict, review=review, host_kind=ref.host_kind)
     if outcome.published:
         _confirm_landed(host, verdict, target=target)
     return outcome
 
 
 def _stop_before_posting(
-    host: "CodeHostBackend", verdict: ReviewVerdict, *, host_kind: str, target: str
+    host: "CodeHostBackend", verdict: ReviewVerdict, *, pr_url: str, target: str
 ) -> PublishOutcome | None:
-    stop = _authorship_stop(host, verdict, host_kind=host_kind, target=target)
+    stop = _authorship_stop(host, pr_url=pr_url, target=target)
     if stop is not None:
         return stop
     if _already_published(host, verdict):
@@ -108,17 +109,11 @@ def _stop_before_posting(
     return None
 
 
-def _authorship_stop(
-    host: "CodeHostBackend", verdict: ReviewVerdict, *, host_kind: str, target: str
-) -> PublishOutcome | None:
-    unread = PublishOutcome(blocked_reason=f"the author of {target} could not be read — findings withheld")
-    url = build_pr_url(slug=verdict.slug, pr_id=int(verdict.pr_id), code_host=host_kind)
-    if not url:
-        return unread
-    ours = confirmed_self_identity_set(url, host=host)
-    own = is_self_authored(url, host, self_identity_set(url) if ours is None else ours)
+def _authorship_stop(host: "CodeHostBackend", *, pr_url: str, target: str) -> PublishOutcome | None:
+    ours = confirmed_self_identity_set(pr_url, host=host)
+    own = is_self_authored(pr_url, host, self_identity_set(pr_url) if ours is None else ours)
     if own is None:
-        return unread
+        return PublishOutcome(blocked_reason=f"the author of {target} could not be read — findings withheld")
     if own:
         return PublishOutcome(
             self_review=True, note=f"self-authored PR {target} — findings are fix work, nothing posted"

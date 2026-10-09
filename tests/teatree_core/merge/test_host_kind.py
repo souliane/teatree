@@ -25,7 +25,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import DraftState
 from teatree.core.merge import merge_ticket_pr
 from teatree.core.merge.errors import MergePreconditionError
-from teatree.core.merge.host_kind import resolve_host_kind
+from teatree.core.merge.host_kind import pr_web_url_for_repo_slug, resolve_host_kind
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear, Ticket
 from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
@@ -206,6 +206,30 @@ class TestDeclaredScopeForge(TestCase):
             pytest.raises(MergePreconditionError, match="could not resolve the forge"),
         ):
             resolve_host_kind(_ticketless_clear(), repo_slug=_GITLAB_SLUG)
+
+
+class TestPrWebUrlForRepoSlug(TestCase):
+    """The PR URL is built on the host the repo lives on, never a guessed public forge."""
+
+    def test_the_url_names_the_host_that_serves_the_repo(self) -> None:
+        cases = [
+            (
+                "git@gitlab.selfhost.example:acme-eng/widget-api.git",
+                {"github.com": ["acme-eng"]},
+                f"https://gitlab.selfhost.example/{_GITLAB_SLUG}/-/merge_requests/{_MR_IID}",
+            ),
+            ("", {"github.com": ["acme-eng"]}, f"https://github.com/{_GITLAB_SLUG}/pull/{_MR_IID}"),
+            ("", {"gitlab.selfhost.example": ["acme-eng"], "gitlab.com": ["acme-eng"]}, ""),
+            ("", {"github.com": ["souliane"]}, ""),
+        ]
+        for origin, owned, expected in cases:
+            with (
+                self.subTest(origin=origin, owned=owned),
+                patch("teatree.core.merge.host_kind.find_project_root", return_value=Path("/tmp/clone")),
+                patch("teatree.core.merge.host_kind.remote_url", return_value=origin),
+                patch("teatree.core.merge.host_kind.get_all_overlays", return_value={"acme": _overlay_owning(owned)}),
+            ):
+                assert pr_web_url_for_repo_slug(_GITLAB_SLUG, _MR_IID) == expected
 
 
 class TestTicketlessGitLabKeystone(TestCase):

@@ -59,7 +59,7 @@ type ChangeEntry = dict[str, object]
 def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: str) -> str:
     """Return the unified diff for ``file`` in the MR, or ``""`` when it cannot be read.
 
-    Independent of :func:`teatree.backends.gitlab.inline_position.fetch_file_diff` to keep
+    Independent of :meth:`teatree.backends.gitlab.inline_position.MrDiff.file_diff` to keep
     the failure mode fail-open — the gate proceeds to allow the post rather
     than refuse every post whenever the forge is unreachable. The fail-open is
     the caller's deliberate choice; the SILENCE was the bug (#3509), so the read

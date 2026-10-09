@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
@@ -1886,12 +1887,26 @@ class TestFetchOpenPrUrlForBranch:
         client.get_json.assert_not_called()
 
 
-def _position(head_sha: str = "h" * 40) -> dict[str, object]:
-    return {"position_type": "text", "head_sha": head_sha, "new_path": "a.py", "new_line": 9}
+_REVIEWED_HEAD = "h" * 40
+_DIFF_REFS = {"base_sha": "b" * 40, "head_sha": _REVIEWED_HEAD, "start_sha": "s" * 40}
+_MR = "projects/42/merge_requests/10"
+
+
+def _mr_reads(*, head_sha: str = _REVIEWED_HEAD) -> Callable[[str], dict[str, object]]:
+    def get_json(endpoint: str) -> dict[str, object]:
+        if endpoint == f"{_MR}/changes?access_raw_diffs=true":
+            return {"changes": [{"old_path": "a.py", "new_path": "a.py", "diff": "@@ -8,0 +9,3 @@\n+x\n+y\n+z\n"}]}
+        return {"diff_refs": {**_DIFF_REFS, "head_sha": head_sha}}
+
+    return get_json
+
+
+def _position(line: int = 9) -> dict[str, object]:
+    return {"position_type": "text", **_DIFF_REFS, "old_path": "a.py", "new_path": "a.py", "new_line": line}
 
 
 def _review(body: str, *comments: PrReviewComment) -> PrReview:
-    return PrReview(commit_sha="h" * 40, body=body, comments=comments, marker="<!-- m -->")
+    return PrReview(commit_sha=_REVIEWED_HEAD, body=body, comments=comments, marker="<!-- m -->")
 
 
 def _gitlab_host() -> tuple[GitLabCodeHost, MagicMock]:
@@ -1900,69 +1915,84 @@ def _gitlab_host() -> tuple[GitLabCodeHost, MagicMock]:
     return GitLabCodeHost(client=client), client
 
 
-def test_submit_pr_review_posts_inline_discussions_then_the_summary_last_with_the_marker() -> None:
+def _reviewed_gitlab_host(*, head_sha: str = _REVIEWED_HEAD) -> tuple[GitLabCodeHost, MagicMock]:
     host, client = _gitlab_host()
+    client.get_json.side_effect = _mr_reads(head_sha=head_sha)
+    return host, client
+
+
+def test_submit_pr_review_posts_inline_discussions_then_the_summary_last_with_the_marker() -> None:
+    host, client = _reviewed_gitlab_host()
     review = _review("- log the retry", PrReviewComment(path="a.py", line=9, body="Nit: rename"))
 
-    with patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")):
-        host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
+    host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
 
     assert [call.args for call in client.post_json.call_args_list] == [
-        ("projects/42/merge_requests/10/discussions", {"body": "Nit: rename", "position": _position()}),
-        ("projects/42/merge_requests/10/notes", {"body": "- log the retry\n\n<!-- m -->"}),
+        (f"{_MR}/discussions", {"body": "Nit: rename", "position": _position()}),
+        (f"{_MR}/notes", {"body": "- log the retry\n\n<!-- m -->"}),
+    ]
+
+
+def test_a_review_reads_the_mr_and_its_changes_once_whatever_its_comment_count() -> None:
+    host, client = _reviewed_gitlab_host()
+    review = _review("s", *(PrReviewComment(path="a.py", line=line, body=f"c{line}") for line in (9, 10, 11)))
+
+    host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
+
+    assert [call.args[0] for call in client.get_json.call_args_list] == [_MR, f"{_MR}/changes?access_raw_diffs=true"]
+    assert [call.args[1].get("position") for call in client.post_json.call_args_list] == [
+        _position(9),
+        _position(10),
+        _position(11),
+        None,
     ]
 
 
 def test_with_no_summary_the_marker_rides_the_last_inline_comment() -> None:
-    host, client = _gitlab_host()
+    host, client = _reviewed_gitlab_host()
     review = _review("", PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=9, body="y"))
 
-    with patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")):
-        host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
+    host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
 
     bodies = [call.args[1]["body"] for call in client.post_json.call_args_list]
     assert bodies == ["x", "y\n\n<!-- m -->"]
     assert all(call.args[0].endswith("/discussions") for call in client.post_json.call_args_list)
 
 
+def test_a_summary_only_review_reads_no_diff() -> None:
+    host, client = _reviewed_gitlab_host()
+
+    host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s"))
+
+    client.get_json.assert_not_called()
+
+
 def test_submit_pr_review_posts_nothing_when_a_line_cannot_anchor() -> None:
-    host, client = _gitlab_host()
+    host, client = _reviewed_gitlab_host()
     review = _review(
         "s", PrReviewComment(path="a.py", line=9, body="x"), PrReviewComment(path="a.py", line=99, body="y")
     )
 
-    with (
-        patch(
-            "teatree.backends.gitlab.pr_notes.resolve_inline_position",
-            side_effect=[(_position(), ""), (None, "not an added line")],
-        ),
-        pytest.raises(ValueError, match="not an added line"),
-    ):
+    with pytest.raises(ValueError, match=r"Line 99 in a\.py is not an added"):
         host.submit_pr_review(repo="org/repo", pr_iid=10, review=review)
 
     client.post_json.assert_not_called()
 
 
 def test_submit_pr_review_refuses_a_moved_head() -> None:
-    host, client = _gitlab_host()
+    host, client = _reviewed_gitlab_host(head_sha="n" * 40)
 
-    with (
-        patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position("n" * 40), "")),
-        pytest.raises(ValueError, match="head moved"),
-    ):
+    with pytest.raises(ValueError, match="head moved"):
         host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s", PrReviewComment("a.py", 9, "x")))
 
     client.post_json.assert_not_called()
 
 
 def test_a_failure_after_a_post_landed_is_a_partial_publish() -> None:
-    host, client = _gitlab_host()
+    host, client = _reviewed_gitlab_host()
     client.post_json.side_effect = [{"id": 1}, RuntimeError("502")]
 
-    with (
-        patch("teatree.backends.gitlab.pr_notes.resolve_inline_position", return_value=(_position(), "")),
-        pytest.raises(PartialReviewPublishError) as exc,
-    ):
+    with pytest.raises(PartialReviewPublishError) as exc:
         host.submit_pr_review(repo="org/repo", pr_iid=10, review=_review("s", PrReviewComment("a.py", 9, "x")))
 
     assert (exc.value.landed, exc.value.total) == (1, 2)

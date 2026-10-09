@@ -17,7 +17,7 @@ executing against the wrong forge.
 
 import logging
 
-from teatree.core.intake.repo_scope import host_aware_owns, identity_from_host_and_slug
+from teatree.core.intake.repo_scope import host_aware_owns, identity_from_host_and_slug, normalize_host
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
@@ -56,8 +56,8 @@ def _ticket_issue_forge(clear: object) -> str:
     return forge_from_remote(str(getattr(ticket, "issue_url", "") or ""))
 
 
-def _running_clone_forge(repo_slug: str) -> str:
-    """The forge of the running clone when that clone IS *repo_slug*, else ``""``.
+def _running_clone_origin(repo_slug: str) -> str:
+    """The running clone's ``origin`` remote when that clone IS *repo_slug*, else ``""``.
 
     Identity, not inference: the project root's ``origin`` remote URL carries
     both the slug and the host, so a CLEAR naming the very repo the command runs
@@ -73,7 +73,11 @@ def _running_clone_forge(repo_slug: str) -> str:
     origin = remote_url(repo=str(root))
     if git_remote.slug_from_remote(origin).lower() != repo_slug.strip().lower():
         return ""
-    return forge_from_remote(origin)
+    return origin
+
+
+def _running_clone_forge(repo_slug: str) -> str:
+    return forge_from_remote(_running_clone_origin(repo_slug))
 
 
 def _declared_scope_hosts(repo_slug: str) -> list[str]:
@@ -181,3 +185,19 @@ def forge_for_repo_slug(repo_slug: str) -> str:
     undeclared namespace answers ``""`` and the caller refuses rather than guessing.
     """
     return _running_clone_forge(repo_slug) or declared_scope_forge(repo_slug)
+
+
+def pr_web_url_for_repo_slug(repo_slug: str, pr_id: int) -> str:
+    """*repo_slug*'s PR *pr_id* on the host that serves it, from :func:`forge_for_repo_slug`'s evidence, or ``""``.
+
+    A namespace two declared hosts both claim names no single host, so it answers ``""`` rather than picking one.
+    """
+    origin = _running_clone_origin(repo_slug)
+    declared = [git_remote.host_from_remote(origin)] if origin else _declared_scope_hosts(repo_slug)
+    hosts = {normalize_host(host) for host in declared}
+    host = hosts.pop() if len(hosts) == 1 else ""
+    forge = forge_from_host(host)
+    if not forge:
+        return ""
+    path = "-/merge_requests" if forge == "gitlab" else "pull"
+    return f"https://{host}/{repo_slug.strip().strip('/')}/{path}/{pr_id}"

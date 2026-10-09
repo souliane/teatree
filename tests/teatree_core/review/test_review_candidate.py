@@ -60,6 +60,13 @@ class TestForgeAuthorshipProof:
         assert _is_self_authored("https://gitlab.com/group/repo/-/merge_requests/1", host, ("owner-alias",))
         assert host.current_user_calls == 0
 
+    def test_an_author_login_differing_only_in_case_is_self(self, monkeypatch) -> None:
+        monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {"github.com": ["Factory-Bot"]})
+        url = "https://github.com/group/repo/pull/1"
+
+        assert _is_self_authored(url, _Host(author="Owner-Login"), ("owner-login",)) is True
+        assert _is_self_authored(url, _Host(author="factory-bot"), ()) is True
+
     def test_undeclared_current_credential_is_not_self(self, monkeypatch) -> None:
         monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
         host = _Host(current="credential-owner", author="credential-owner")

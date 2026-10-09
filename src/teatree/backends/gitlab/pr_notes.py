@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
-from teatree.backends.gitlab.inline_position import InlinePosition, resolve_inline_position
+from teatree.backends.gitlab.inline_position import InlinePosition, MrDiff
 from teatree.core.backend_protocols import PartialReviewPublishError, PrReview, PrReviewComment
 from teatree.types import RawAPIDict
 
@@ -48,10 +48,13 @@ class GitLabMrNotes:
         if project is None:
             return {"error": f"Could not resolve project: {repo}"}
         mr = f"projects/{project.project_id}/merge_requests/{pr_iid}"
-        posts: list[tuple[str, RawAPIDict]] = [
-            (f"{mr}/discussions", {"body": item.body, "position": self._position(project, pr_iid, item, review)})
-            for item in review.comments
-        ]
+        posts: list[tuple[str, RawAPIDict]] = []
+        if review.comments:
+            diff = self._reviewed_diff(project, pr_iid, review)
+            posts = [
+                (f"{mr}/discussions", {"body": item.body, "position": self._position(diff, item)})
+                for item in review.comments
+            ]
         if review.body.strip():
             posts.append((f"{mr}/notes", {"body": review.body}))
         if not posts:
@@ -60,13 +63,21 @@ class GitLabMrNotes:
         posts[-1] = (endpoint, {**last, "body": f"{last['body']}\n\n{review.marker}"})
         return self._post_all(posts)
 
-    def _position(self, project: ProjectInfo, pr_iid: int, item: PrReviewComment, review: PrReview) -> InlinePosition:
-        position, error = resolve_inline_position(self._client, str(project.project_id), pr_iid, item.path, item.line)
+    def _reviewed_diff(self, project: ProjectInfo, pr_iid: int, review: PrReview) -> MrDiff:
+        diff, error = MrDiff.fetch(self._client, str(project.project_id), pr_iid)
+        if diff is None:
+            raise ValueError(error)
+        head = diff.diff_refs["head_sha"]
+        if head != review.commit_sha:
+            msg = f"MR head moved to {head[:8]} while the review was reached on {review.commit_sha[:8]}"
+            raise ValueError(msg)
+        return diff
+
+    @staticmethod
+    def _position(diff: MrDiff, item: PrReviewComment) -> InlinePosition:
+        position, error = diff.position(item.path, item.line)
         if position is None:
             raise ValueError(error)
-        if position["head_sha"] != review.commit_sha:
-            msg = f"MR head moved to {position['head_sha'][:8]} while the review was reached on {review.commit_sha[:8]}"
-            raise ValueError(msg)
         return position
 
     def _post_all(self, posts: list[tuple[str, RawAPIDict]]) -> RawAPIDict:
