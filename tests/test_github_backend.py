@@ -10,6 +10,7 @@ import pytest
 
 import teatree.backends.github.api as github_api_mod
 import teatree.backends.github.client as github_mod
+import teatree.backends.github.pr_notes as github_pr_notes_mod
 import teatree.backends.github.pr_reads as github_pr_reads_mod
 import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
@@ -832,20 +833,20 @@ class TestGitHubCodeHost:
         mock_patch.assert_not_called()
 
     def test_post_pr_comment(self) -> None:
-        with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
+        with patch.object(github_pr_notes_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
             host = GitHubCodeHost()
             result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="LGTM")
         assert result == {"id": 42}
         mock_post.assert_called_once()
 
     def test_post_pr_comment_returns_empty_for_non_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_post", return_value="error"):
+        with patch.object(github_pr_notes_mod, "_gh_api_post", return_value="error"):
             host = GitHubCodeHost()
             result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="test")
         assert result == {}
 
     def test_update_pr_comment(self) -> None:
-        with patch.object(github_mod, "_gh_api_patch", return_value={"id": 42}) as mock_patch:
+        with patch.object(github_pr_notes_mod, "_gh_api_patch", return_value={"id": 42}) as mock_patch:
             host = GitHubCodeHost()
             result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="Updated")
         assert result == {"id": 42}
@@ -857,7 +858,7 @@ class TestGitHubCodeHost:
         )
 
     def test_update_pr_comment_returns_empty_for_non_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_patch", return_value=[]):
+        with patch.object(github_pr_notes_mod, "_gh_api_patch", return_value=[]):
             host = GitHubCodeHost()
             result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=42, body="x")
         assert result == {}
@@ -865,13 +866,13 @@ class TestGitHubCodeHost:
     def test_list_pr_comments(self) -> None:
         # ``--slurp`` wraps each page in an outer array; one page → one inner list.
         notes = [{"id": 1, "body": "comment"}]
-        with patch.object(github_mod, "_gh_api_get_paginated", return_value=notes):
+        with patch.object(github_pr_notes_mod, "_gh_api_get_paginated", return_value=notes):
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == notes
 
     def test_list_pr_comments_returns_empty_for_non_list(self) -> None:
-        with patch.object(github_mod, "_gh_api_get_paginated", return_value=[]):
+        with patch.object(github_pr_notes_mod, "_gh_api_get_paginated", return_value=[]):
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == []
@@ -1175,7 +1176,7 @@ class TestGitHubCommentOutboundClaim:
 
     def test_post_pr_comment_records_github_note_claim(self) -> None:
         with patch.object(
-            github_mod,
+            github_pr_notes_mod,
             "_gh_api_post",
             return_value={"id": 42, "html_url": "https://github.com/org/repo/pull/5#issuecomment-42"},
         ):
@@ -1192,7 +1193,7 @@ class TestGitHubCommentOutboundClaim:
 
     def test_post_pr_comment_idempotent_on_repeated_post(self) -> None:
         """A retried POST that the API collapsed to the same id no-ops at the ledger."""
-        with patch.object(github_mod, "_gh_api_post", return_value={"id": 99}):
+        with patch.object(github_pr_notes_mod, "_gh_api_post", return_value={"id": 99}):
             host = GitHubCodeHost()
             host.post_pr_comment(repo="org/repo", pr_iid=7, body="thanks")
             host.post_pr_comment(repo="org/repo", pr_iid=7, body="thanks")
@@ -1201,13 +1202,13 @@ class TestGitHubCommentOutboundClaim:
 
     def test_post_pr_comment_without_id_records_no_claim(self) -> None:
         """A 4xx/5xx-shaped response that lacks ``id`` does not write a phantom claim."""
-        with patch.object(github_mod, "_gh_api_post", return_value={"error": "boom"}):
+        with patch.object(github_pr_notes_mod, "_gh_api_post", return_value={"error": "boom"}):
             host = GitHubCodeHost()
             host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITHUB_NOTE).exists()
 
     def test_post_pr_comment_non_dict_response_records_no_claim(self) -> None:
-        with patch.object(github_mod, "_gh_api_post", return_value="error string"):
+        with patch.object(github_pr_notes_mod, "_gh_api_post", return_value="error string"):
             host = GitHubCodeHost()
             result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
         assert result == {}
@@ -1215,7 +1216,7 @@ class TestGitHubCommentOutboundClaim:
 
     def test_post_pr_comment_post_raises_records_no_claim_and_propagates(self) -> None:
         """Transport error on POST: claim never written, exception propagates to caller."""
-        with patch.object(github_mod, "_gh_api_post", side_effect=RuntimeError("network down")):
+        with patch.object(github_pr_notes_mod, "_gh_api_post", side_effect=RuntimeError("network down")):
             host = GitHubCodeHost()
             with pytest.raises(RuntimeError, match="network down"):
                 host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
@@ -1252,7 +1253,7 @@ class TestGitHubCommentOutboundClaim:
     def test_record_failure_does_not_break_publish_path(self) -> None:
         """Even if claim recording somehow raises, the publish's return value is unchanged."""
         with (
-            patch.object(github_mod, "_gh_api_post", return_value={"id": 5}),
+            patch.object(github_pr_notes_mod, "_gh_api_post", return_value={"id": 5}),
             patch(
                 "teatree.core.models.OutboundClaim.objects",
                 new_callable=lambda: MagicMock(get_or_create=MagicMock(side_effect=RuntimeError("DB down"))),
