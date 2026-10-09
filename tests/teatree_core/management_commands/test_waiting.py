@@ -14,6 +14,7 @@ from teatree.core.management.commands.waiting import WaitingPayload
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.waiting import WaitingKind
+from tests._owner_channel import OWNER_DECISION
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -37,7 +38,7 @@ class TestList:
         assert "nothing waiting" in _call("waiting", "list").lower()
 
     def test_lists_every_kind(self) -> None:
-        DeferredQuestion.record("what region?")
+        DeferredQuestion.record("what region?", **OWNER_DECISION)
         WaitingItem.objects.add("chase finance")
         out = _call("waiting", "list")
         assert "question" in out

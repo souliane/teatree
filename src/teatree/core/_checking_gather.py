@@ -242,17 +242,22 @@ def motion_for_overlay(
 
 
 def deferred_questions(*, overlay_slug: str) -> list:
-    """Return pending :class:`DeferredQuestion` rows as :class:`CheckItem` list."""
+    """Pending owner questions as :class:`CheckItem` rows, plus one line counting the internal escalations."""
     from teatree.core.checking import CheckItem  # noqa: PLC0415 — deferred: breaks _checking_gather ↔ checking cycle
 
     items: list = []
-    for question in DeferredQuestion.pending():
+    for question in DeferredQuestion.owner_pending():
         snippet = question.question.strip().replace("\n", " ")[:60]
         items.append(
             CheckItem(
                 label=f"Q{question.pk}: {snippet}",
                 url="",
-                detail=f"t3 {overlay_slug} questions answer {question.pk} <text>",
+                detail=(
+                    f"answer in its Slack thread, or t3 {overlay_slug} questions dismiss {question.pk} "
+                    "--reason '<evidence>'"
+                ),
             )
         )
+    if internal := DeferredQuestion.pending().filter(audience=DeferredQuestion.Audience.INTERNAL).count():
+        items.append(CheckItem(label=f"{internal} internal escalations: factory work, not questions", url=""))
     return items

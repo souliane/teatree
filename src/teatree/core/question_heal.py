@@ -33,4 +33,4 @@ def withdraw_healed(rows: Iterable[DeferredQuestion]) -> list[DeferredQuestion]:
 
 def live_owner_questions() -> list[DeferredQuestion]:
     """The pending owner-audience backlog, healed rows withdrawn."""
-    return withdraw_healed(DeferredQuestion.pending().exclude(audience=DeferredQuestion.Audience.INTERNAL))
+    return withdraw_healed(DeferredQuestion.owner_pending())

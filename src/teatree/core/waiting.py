@@ -103,7 +103,7 @@ def _question_entries(now: datetime) -> list[WaitingEntry]:
             ref=question.question.strip().replace("\n", " ")[:_QUESTION_REF_LEN],
             age=now - question.created_at,
         )
-        for question in DeferredQuestion.pending()
+        for question in DeferredQuestion.owner_pending()
     ]
 
 

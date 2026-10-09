@@ -42,8 +42,8 @@ def _task_list_status(task: int) -> str:
 def _offline_message(task: int, reason: str) -> str:
     return (
         f"offline: {reason} (task {task} in the task list: {_task_list_status(task)}). Live control reaches only "
-        "running sessions; hand work over durably instead — answer a parked question with "
-        "`t3 <overlay> questions answer`, or queue work through `t3 <overlay> tasks create`.\n"
+        "running sessions; hand work over durably instead — answer a parked owner question in its "
+        "Slack thread, or queue work through `t3 <overlay> tasks create`.\n"
     )
 
 
