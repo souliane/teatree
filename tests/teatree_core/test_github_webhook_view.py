@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -111,6 +113,7 @@ class TestAcceptedDelivery(GitHubWebhookTestCase):
         row = IncomingEvent.objects.get()
         assert (row.source, row.idempotency_key, row.event_name) == ("github", "github:abc-123", "pull_request_review")
         assert (row.actor, row.channel_ref, row.thread_ref) == ("bob", "owner/repo", "17")
+        assert row.payload_json == json.loads(body)
 
     def test_row_is_stored_settled_so_the_drain_never_dispatches_it(self) -> None:
         body = _payload(pull_request={"number": 4, "title": "Handle the case where the cache is cold"})
@@ -339,6 +342,42 @@ class TestBoundedStoreCost(GitHubWebhookTestCase):
         assert self.deliver(headers={"X-GitHub-Delivery": "d-3"}).status_code == 401
         assert self.deliver(secret=SECRET_B, headers={**TARGET_B, "X-GitHub-Delivery": "d-4"}).status_code == 503
         assert IncomingEvent.objects.count() == 2
+
+
+class TestWarmTargetUnderStoreFaults(GitHubWebhookTestCase):
+    def test_a_warm_target_still_verifies_while_the_listing_fails(self) -> None:
+        clock = [1000.0]
+        store = _webhook_secrets.WebhookSecrets(now=lambda: clock[0])
+        self.enterContext(patch.object(github_webhook, "webhook_secrets", lambda: store))
+        assert self.deliver().status_code == 200
+        self.store.list_error = secrets.SecretStoreError("store dir unreadable")
+
+        clock[0] += _webhook_secrets.LISTING_TTL_SECONDS + 1
+
+        assert self.deliver(headers={"X-GitHub-Delivery": "d-2"}).status_code == 200
+
+    def test_a_warm_target_still_verifies_while_a_refresh_read_is_held(self) -> None:
+        assert self.deliver().status_code == 200
+        started = threading.Event()
+        release = threading.Event()
+
+        def held_read(_key: str) -> str:
+            started.set()
+            release.wait(timeout=5)
+            return SECRET_A
+
+        with (
+            patch.object(secrets, "read_pass", held_read),
+            patch.object(_webhook_secrets, "READ_WAIT_SECONDS", 0.2),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            refresh = pool.submit(_webhook_secrets.webhook_secrets().refreshed_secret, "repository-101")
+            assert started.wait(timeout=5)
+            status = self.deliver(headers={"X-GitHub-Delivery": "d-2"}).status_code
+            release.set()
+            assert refresh.result(timeout=5) == SECRET_A
+
+        assert status == 200
 
 
 class TestNothingSecretLeaks(GitHubWebhookTestCase):
