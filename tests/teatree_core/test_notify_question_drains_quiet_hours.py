@@ -144,9 +144,9 @@ class TestAZoneTheScheduleNamesWins(TestCase):
         ModeSchedule.objects.create(name="standard", timezone="America/New_York")
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
 
-        with _at(dt.datetime(2026, 10, 12, 5, 0, tzinfo=dt.UTC)):  # 01:00 New York, 07:00 Paris
+        with _at(dt.datetime(2026, 10, 12, 10, 0, tzinfo=dt.UTC)):  # 06:00 New York (quiet), 12:00 Paris (open)
             assert owner_quiet_now() is True
-        with _at(dt.datetime(2026, 10, 12, 13, 0, tzinfo=dt.UTC)):  # 09:00 New York, 15:00 Paris
+        with _at(dt.datetime(2026, 10, 12, 22, 0, tzinfo=dt.UTC)):  # 18:00 New York (open), 00:00 Paris (quiet)
             assert owner_quiet_now() is False
 
     def test_an_invalid_schedule_zone_falls_back_to_paris_not_to_the_project_zone(self) -> None:
