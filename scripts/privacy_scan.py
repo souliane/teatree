@@ -110,6 +110,12 @@ def _banned_allowlist() -> tuple[str, ...]:
         return ()
 
 
+def _masked(match: str, scan: _Scan) -> str:
+    """A match that is, or holds, a registry term is reported as that term's ``class#index``, never by value."""
+    term = matched_term(match, scan.terms, scan.allowlist)
+    return match if term is None else scan.refs.ref(term)
+
+
 def _generic_findings(line: str) -> list[tuple[str, str]]:
     findings: list[tuple[str, str]] = [
         ("email", m.group())
@@ -126,8 +132,9 @@ def _generic_findings(line: str) -> list[tuple[str, str]]:
 
 
 def _scan_line(line: str, scan: _Scan) -> list[tuple[str, str]]:
-    findings = [] if scan.terms_only or _ALLOW_MARKER in line else _generic_findings(line)
-    findings.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
+    found = [] if scan.terms_only or _ALLOW_MARKER in line else _generic_findings(line)
+    found.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
+    findings = [(category, _masked(match, scan)) for category, match in found]
     if term := matched_term(line, scan.terms, scan.allowlist):
         findings.append(("banned_term", scan.refs.ref(term)))
     return findings
@@ -147,10 +154,17 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
             hits = detector(text)
         except Exception as exc:  # noqa: BLE001 — fail-open: a crashing detector is cannot-evaluate, never a deny.
             name = getattr(detector, "__name__", repr(detector))
-            print(f"privacy scan: detector {name} failed ({exc}) — skipped", file=sys.stderr)
+            print(f"privacy scan: detector {name} failed ({type(exc).__name__}) — skipped", file=sys.stderr)
             continue
         findings.extend({"line": lineno, "category": category, "match": match} for lineno, category, match in hits)
     return findings
+
+
+def _masked_detector_hits(text: str, scan: _Scan) -> list[dict[str, str | int]]:
+    hits = _run_diff_detectors(text)
+    for hit in hits:
+        hit["match"] = _masked(str(hit["match"]), scan)
+    return hits
 
 
 def _scan_text(text: str, scan: _Scan) -> list[dict[str, str | int]]:
@@ -161,7 +175,7 @@ def _scan_text(text: str, scan: _Scan) -> list[dict[str, str | int]]:
             {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, scan)
         )
     if not scan.terms_only:
-        findings.extend(_run_diff_detectors(text))
+        findings.extend(_masked_detector_hits(text, scan))
     return findings
 
 
@@ -232,7 +246,7 @@ def _scan_diff(text: str, scan: _Scan) -> list[dict[str, str | int]]:
             {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, scan)
         )
     if not scan.terms_only:
-        findings.extend(_run_diff_detectors(text))
+        findings.extend(_masked_detector_hits(text, scan))
     return findings
 
 

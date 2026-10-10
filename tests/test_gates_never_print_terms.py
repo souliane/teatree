@@ -1,8 +1,10 @@
 """No gate prints a registry term: a finding is named by ``path:line`` and ``class#index``.
 
-Each gate runs end to end against a file holding a runtime-generated registry term. The
-output of a gate lands in agent transcripts, CI logs and PR threads, so the value must
-never be in it, whatever the gate found.
+Each gate runs end to end against a file holding a runtime-generated registry term, shaped
+as a word, an email address or an opaque id: a term shaped like an address or an id is also
+what the generic detectors report, so it must not leak through them either. The output of a
+gate lands in agent transcripts, CI logs and PR threads, so the value must never be in it,
+whatever the gate found.
 """
 
 import json
@@ -20,16 +22,31 @@ PRIVACY_SCAN = ROOT / "scripts" / "privacy_scan.py"
 OVERLAY_GATE = ROOT / "scripts" / "hooks" / "check_no_overlay_leak.py"
 _PLANTED_LINE = 3
 SCAN_TREE = "from teatree.cli.banned_terms import banned_terms_app; banned_terms_app()"
+#: No vowels and no L, N or T, so no id built from it can spell a synthetic-placeholder word.
+_ID_ALPHABET = "BDFGHJKPQRSVWXZ0123456789"
+
+
+def _new_term(shape: str, prefix: str) -> str:
+    if shape == "email":
+        return f"{prefix}{secrets.token_hex(4)}@qx{secrets.token_hex(3)}.com"
+    if shape == "id":
+        return "C0" + "".join(secrets.choice(_ID_ALPHABET) for _ in range(9))
+    return prefix + secrets.token_hex(5)
+
+
+@pytest.fixture(params=["word", "email", "id"])
+def shape(request: pytest.FixtureRequest) -> str:
+    return request.param
 
 
 @pytest.fixture
-def leak_term() -> str:
-    return "zq" + secrets.token_hex(5)
+def leak_term(shape: str) -> str:
+    return _new_term(shape, "zq")
 
 
 @pytest.fixture
-def overlay_term() -> str:
-    return "ov" + secrets.token_hex(5)
+def overlay_term(shape: str) -> str:
+    return _new_term(shape, "ov")
 
 
 @pytest.fixture
@@ -62,8 +79,8 @@ def _repo_with(tmp_path: Path, relpath: str, term: str) -> Path:
     return repo
 
 
-def _run(argv: list[str], cwd: Path, env: dict[str, str]) -> str:
-    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+def _run(argv: list[str], cwd: Path, env: dict[str, str], stdin: str | None = None) -> str:
+    result = subprocess.run(argv, cwd=cwd, env=env, input=stdin, capture_output=True, text=True, check=False)
     return result.stdout + result.stderr
 
 
@@ -136,4 +153,17 @@ def test_privacy_scan_json_names_the_term_by_class_and_index(
     output = _run([sys.executable, str(PRIVACY_SCAN), "notes.txt", "--json"], repo, registry_env)
 
     assert leak_term not in output
-    assert json.loads(output)[0] == {"line": _PLANTED_LINE, "category": "banned_term", "match": "leak#1"}
+    assert {"line": _PLANTED_LINE, "category": "banned_term", "match": "leak#1"} in json.loads(output)
+
+
+@pytest.mark.parametrize("flags", [[], ["--text"], ["--terms-only", "--text"]], ids=["diff", "text", "terms-only"])
+def test_privacy_scan_stdin_names_the_term_by_class_and_index(
+    tmp_path: Path, leak_term: str, registry_env: dict[str, str], flags: list[str]
+) -> None:
+    header = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,3 @@\n"
+    diff = header + f"+first\n+second\n+the {leak_term} sits here\n"
+
+    output = _run([sys.executable, str(PRIVACY_SCAN), "-", *flags], tmp_path, registry_env, stdin=diff)
+
+    assert leak_term not in output
+    assert "banned_term: leak#1" in output

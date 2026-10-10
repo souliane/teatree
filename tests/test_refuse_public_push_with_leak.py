@@ -2125,5 +2125,48 @@ class TestRootForcedAndTagRangesAreCheckedForRegistryTerms:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+class TestRefusalsNameARegistryTermByClassAndIndexOnly:
+    """A refusal that has to mention an identity or a ref name never prints it when it is, or holds, a registry term."""
+
+    @staticmethod
+    def _public_clone(tmp_path: Path, term: str) -> tuple[Path, dict[str, str]]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = json.dumps({"leak": ["first-term", term]})
+        return work, env
+
+    def test_an_author_email_that_is_a_registry_term_is_not_printed(self, tmp_path: Path) -> None:
+        term = f"zq{secrets.token_hex(4)}@qx{secrets.token_hex(3)}.com"
+        work, env = self._public_clone(tmp_path, term)
+        _commit_as(work, "Real Dev", term, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert term not in result.stdout + result.stderr
+        assert "non-noreply commit identity" in result.stdout
+        assert "registry term leak#1" in result.stdout, result.stdout
+
+    def test_an_ordinary_non_noreply_email_is_still_printed(self, tmp_path: Path) -> None:
+        work, env = self._public_clone(tmp_path, f"zq{secrets.token_hex(4)}")
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert _REAL_EMAIL in result.stdout, result.stdout
+
+    def test_a_local_branch_name_that_holds_a_registry_term_is_not_printed(self, tmp_path: Path) -> None:
+        term = f"zq{secrets.token_hex(4)}"
+        work, env = self._public_clone(tmp_path, term)
+        local_ref = f"refs/heads/feat/{term}-local"
+        _git(work, "checkout", "-b", f"feat/{term}-local")
+        _commit_file(work, "leak.txt", _PLANTED_SECRET, "add config")
+
+        result = _run_hook(work, env, f"{local_ref} {_rev(work, 'HEAD')} refs/heads/feat/clean-name {ZERO_SHA}\n")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert term not in result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

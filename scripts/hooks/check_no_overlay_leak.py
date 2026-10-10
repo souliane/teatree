@@ -143,7 +143,8 @@ def _scan(paths: list[Path], terms: tuple[str, ...], refs: TermRefs) -> list[tup
             if term is not None:
                 findings.append((path, lineno, refs.ref(term)))
             for opaque in find_opaque_ids(line):
-                findings.append((path, lineno, repr(opaque)))  # noqa: PERF401 — two sources
+                found_term = matched_term(opaque, terms)
+                findings.append((path, lineno, repr(opaque) if found_term is None else refs.ref(found_term)))
     return findings
 
 

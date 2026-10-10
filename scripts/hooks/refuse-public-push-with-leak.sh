@@ -282,6 +282,25 @@ _remote_exclusion() {
   printf '%s' "--remotes=${remote_name}"
 }
 
+# Text a refusal has to show (an identity, a ref name) goes through here: when it is, or holds, a
+# registry term it is shown as that term's `class#index`, never by value. A check that cannot run
+# withholds the text, because it could be a term.
+_display() {
+  local text="$1" out refs rc=0
+  out=$(printf '%s\n' "${text}" | _scan --text --terms-only - 2>&1) || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    printf '%s\n' "${text}"
+    return 0
+  fi
+  refs=""
+  [ "${rc}" -ne "${findings_code}" ] || refs=$(printf '%s\n' "${out}" | sed -n 's/.*banned_term: //p' | paste -sd, -)
+  if [ -n "${refs}" ]; then
+    printf '(registry term %s)\n' "${refs}"
+  else
+    printf '(withheld: it holds an id or the term check could not run)\n'
+  fi
+}
+
 # Messages of the commits named by the `git log` args, scanned apart from any patch.
 # A message is published verbatim, never a diff, so it goes to the scanner on stdin in
 # text mode: no file is written, so no temp directory can be missing or unwritable.
@@ -446,10 +465,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
     | grep -v -E "${noreply_re}" | sort -u || true)
   if [ -n "${bad_idents}" ]; then
-    echo "✗ refuse: push to ${target} has a non-noreply commit identity on '${local_ref}'."
+    echo "✗ refuse: push to ${target} has a non-noreply commit identity on '$(_display "${local_ref}")'."
     echo "  A real/deliverable email in public git history is a permanent PII leak."
     echo "  Offending author/committer email(s):"
-    printf '%s\n' "${bad_idents}" | sed 's/^/    /'
+    while IFS= read -r ident; do
+      printf '    %s\n' "$(_display "${ident}")"
+    done <<< "${bad_idents}"
     echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
     echo "  Nothing here has reached the remote yet. Start a new branch from the remote base,"
     echo "  re-apply the work under the noreply identity, and open a merge request on that branch."
@@ -476,7 +497,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   report="${report}${patch_report:+$'\n'}${patch_report}"
   scan_rc=$((message_rc != 0 ? message_rc : patch_rc))
   if [ "${message_rc}" -eq "${findings_code}" ] || [ "${patch_rc}" -eq "${findings_code}" ]; then
-    echo "✗ refuse: push to ${target} carries privacy findings on '${local_ref}'."
+    echo "✗ refuse: push to ${target} carries privacy findings on '$(_display "${local_ref}")'."
     echo "  Findings by commit + file (locate each in the pushed history and scrub it):"
     # Attribute each finding to its commit + file so the operator can find it.
     # Fall back to the whole-range report (a deterministic per-line summary the
@@ -502,7 +523,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   elif [ "${scan_rc}" -ne 0 ]; then
     # Any other non-zero is a scan that could not run (crash, unset registry, usage error,
     # a `git log` that failed). Nothing was shown to be clean, so the push is refused.
-    echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not run (exit ${scan_rc}) on '${local_ref}' (fail closed)."
+    echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not run (exit ${scan_rc}) on '$(_display "${local_ref}")' (fail closed)."
     printf '%s\n' "${report}" | sed 's/^/  /'
     echo "  Nothing was published. Fix the scanner or its registry, then push again."
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
