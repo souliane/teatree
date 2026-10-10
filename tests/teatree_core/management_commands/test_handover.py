@@ -608,6 +608,37 @@ class TestASecondCreateReportsWhatItAbsorbed(_PinnedSessionTestCase):
         assert "absorbed" in out.lower()
 
 
+class TestDanglingClaimsCountOnlyWhatThisHandoffWrote(_PinnedSessionTestCase):
+    def _create(self, body: str) -> dict:
+        return json.loads(_call("handover", "create", body=body, to="target-Z", json_output=True))
+
+    def test_a_first_handoff_reports_its_count(self) -> None:
+        assert self._create("34 pending")["dangling_backlog_claims"] == ["34 pending"]
+
+    def test_a_first_handoff_warns_about_its_count(self) -> None:
+        out = _call_human("handover", "create", body="34 pending", to="target-Z")
+
+        assert "counts a backlog it never locates: 34 pending" in out
+
+    def test_a_second_handoff_without_a_count_reports_none(self) -> None:
+        self._create("34 pending")
+
+        assert self._create("ready for review")["dangling_backlog_claims"] == []
+
+    def test_a_repeated_identical_handoff_reports_none(self) -> None:
+        self._create("34 pending")
+
+        repeat = self._create("34 pending")
+
+        assert repeat["payload_appended"] is False
+        assert repeat["dangling_backlog_claims"] == []
+
+    def test_a_second_handoff_reports_only_its_own_count(self) -> None:
+        self._create("34 pending")
+
+        assert self._create("12 outstanding")["dangling_backlog_claims"] == ["12 outstanding"]
+
+
 class TestCompletenessIsAssertedBeforeAnyOkLine(_PinnedSessionTestCase):
     """Verify-by-re-read: the row is re-fetched from the DB, never trusted in memory (#4194)."""
 
