@@ -20,10 +20,8 @@ suppressible shape of the on-behalf gate
 *   not display-impacting → pass (the gate only governs user-visible work); a
     diff that could not be read is presumed impacting and, if nothing below
     covers the tree, the gate DID NOT RUN rather than refusing on a classification;
-*   the ticket's repo ships no customer display surface at all → pass (a
-    repo-level exemption the overlay declares, for a repo whose every file is
-    non-impacting by construction — a skills/docs repo — so no glob list has to
-    keep up with each new fixture kind it grows);
+*   the ticket's repo is explicitly exempt or outside the overlay's declared
+    mandatory-E2E repo scope → pass without reading the diff;
 *   a green AND posted ``E2eMandatoryRun`` at ``head_sha`` → pass;
 *   an unconsumed ``E2EBypassApproval`` at ``(ticket, head_sha)`` → consume it
     single-use inside one ``transaction.atomic`` block, write an
@@ -80,14 +78,19 @@ class GateInputs:
 
 
 def _repo_has_no_display_surface(overlay: "OverlayBase", ticket: Ticket) -> bool:
-    """Whether *ticket*'s repo is one the overlay declares wholly free of customer display surface.
+    """Whether the overlay excludes *ticket*'s repo from mandatory E2E.
 
     The repo is read off ``ticket.issue_url`` — the only repo identity the gate
     holds at both of its call sites — and an unparsable or absent URL yields no
     slug, which matches no declaration and so keeps the per-path classifier.
     """
     slug = slug_from_issue_or_pr_url(urlparse(ticket.issue_url or "").path)
-    return bool(slug) and slug in overlay.review.mandatory_e2e_exempt_repo_slugs()
+    if not slug:
+        return False
+    if slug in overlay.review.mandatory_e2e_exempt_repo_slugs():
+        return True
+    applicable = overlay.review.mandatory_e2e_applicable_repo_slugs()
+    return bool(applicable) and slug not in applicable
 
 
 def resolve_gate_inputs(ticket: Ticket, *, read_diff: Callable[[], list[str]], head_sha: str) -> GateInputs:
@@ -105,10 +108,9 @@ def resolve_gate_inputs(ticket: Ticket, *, read_diff: Callable[[], list[str]], h
     presumed display-impacting so the gate is never silently skipped by a
     misconfigured ticket. Posted evidence or a user bypass satisfies the gate.
 
-    A repo the overlay declares display-surface-free short-circuits the path
-    classifier, and reads no diff: no file in it can reach a customer screen, so
-    no diff in it can. Every other repo still goes through the fail-closed
-    per-path classifier.
+    A repo the overlay explicitly exempts or leaves outside a nonempty scope
+    short-circuits the path classifier and reads no diff. Every other repo
+    still goes through the fail-closed per-path classifier.
     """
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
