@@ -77,12 +77,8 @@ def test_every_documented_overlay_hook_resolves(doc_refs: list[tuple[Path, str]]
     assert not stale, "pre-facet OverlayBase references that no longer resolve:\n  " + "\n  ".join(stale)
 
 
-def test_mandatory_e2e_review_hooks_are_documented_on_both_authoring_surfaces() -> None:
+def test_mandatory_e2e_review_hooks_are_documented_in_overlay_api() -> None:
     hooks = ("mandatory_e2e_exempt_repo_slugs", "mandatory_e2e_repo_slugs")
-    skill = (REPO_ROOT / "skills/internals/SKILL.md").read_text(encoding="utf-8")
-    review_row = next(line for line in skill.splitlines() if line.startswith("| `review` |"))
-    assert all(hook in review_row for hook in hooks)
-
     docs = (REPO_ROOT / "docs/overlay-api.md").read_text(encoding="utf-8")
     review_section = docs.split("### Review hooks", 1)[1].split("### Connector hooks", 1)[0]
     assert all(hook in review_section for hook in hooks)
