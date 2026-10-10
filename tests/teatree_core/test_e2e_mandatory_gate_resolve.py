@@ -60,8 +60,8 @@ class _RepoScopedReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         return bool(changed_files)
 
-    def mandatory_e2e_applicable_repo_slugs(self) -> tuple[str, ...]:
-        return ("group/web",)
+    def mandatory_e2e_repo_slugs(self) -> tuple[str, ...]:
+        return ("acme/web",)
 
 
 class _RepoScopedOverlay:
@@ -70,7 +70,7 @@ class _RepoScopedOverlay:
 
 class _OverlappingReview(_RepoScopedReview):
     def mandatory_e2e_exempt_repo_slugs(self) -> tuple[str, ...]:
-        return ("group/web",)
+        return ("acme/web",)
 
 
 class _OverlappingOverlay:
@@ -157,7 +157,7 @@ class TestRepoLevelExemption(TestCase):
         assert inputs.display_impacting is True
 
 
-class TestRepoLevelScope(TestCase):
+class TestMandatoryE2EScope(TestCase):
     def _resolve(self, issue_url: str, *, unreadable: bool = False) -> bool:
         ticket = Ticket.objects.create(issue_url=issue_url, overlay="t3-teatree")
         read_diff = _unreadable_diff if unreadable else lambda: ["app/views.py"]
@@ -166,22 +166,39 @@ class TestRepoLevelScope(TestCase):
         return inputs.display_impacting
 
     def test_repo_outside_declared_scope_skips_unreadable_diff(self) -> None:
-        assert self._resolve("https://github.com/group/api/issues/1", unreadable=True) is False
+        assert self._resolve("https://github.com/acme/api/issues/1", unreadable=True) is False
 
     def test_repo_inside_declared_scope_uses_path_classifier(self) -> None:
-        assert self._resolve("https://github.com/group/web/issues/1") is True
+        assert self._resolve("https://github.com/acme/web/issues/1") is True
+
+    def test_gitlab_merge_request_inside_declared_scope_uses_path_classifier(self) -> None:
+        assert self._resolve("https://gitlab.acme.example/acme/web/-/merge_requests/9") is True
 
     def test_unparsable_issue_url_uses_path_classifier(self) -> None:
-        assert self._resolve("https://github.com/group/api") is True
+        assert self._resolve("https://github.com/acme/api") is True
 
     def test_absent_issue_url_uses_path_classifier(self) -> None:
         assert self._resolve("") is True
 
     def test_explicit_exemption_still_wins_inside_declared_scope(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://github.com/group/web/issues/2", overlay="t3-teatree")
+        ticket = Ticket.objects.create(issue_url="https://github.com/acme/web/issues/2", overlay="t3-teatree")
         with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_OverlappingOverlay()):
             inputs = resolve_gate_inputs(ticket, read_diff=_unreadable_diff, head_sha=_SHA)
         assert inputs.display_impacting is False
+
+    def test_missing_slug_never_calls_scope_hook(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://gitlab.acme.example/acme/api", overlay="t3-teatree")
+        overlay = _RepoScopedOverlay()
+        with (
+            patch.object(overlay.review, "mandatory_e2e_repo_slugs", return_value=("acme/web",)) as scope_hook,
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=overlay),
+        ):
+            inputs = resolve_gate_inputs(ticket, read_diff=lambda: ["app/views.py"], head_sha=_SHA)
+        assert inputs.display_impacting is True
+        scope_hook.assert_not_called()
+
+    def test_scope_hook_defaults_empty(self) -> None:
+        assert OverlayReview().mandatory_e2e_repo_slugs() == ()
 
 
 class TestCoreRepoWithoutE2EProducer(TestCase):

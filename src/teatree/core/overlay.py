@@ -595,8 +595,8 @@ class OverlayReview:
         """Repo slugs that ship NO customer display surface — mandatory-E2E cannot apply (#1967)."""
         return ()
 
-    def mandatory_e2e_applicable_repo_slugs(self) -> tuple[str, ...]:
-        """Repos subject to mandatory E2E; empty leaves the existing exemption policy in place."""
+    def mandatory_e2e_repo_slugs(self) -> tuple[str, ...]:
+        """Exact ticket-repo slugs subject to mandatory E2E; empty keeps the existing policy."""
         return ()
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:

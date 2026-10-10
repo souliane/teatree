@@ -64,7 +64,7 @@ class GateInputs:
     """The mandatory-E2E gate's inputs, resolved once and passed as a unit.
 
     ``display_impacting`` is the overlay's verdict over ``changed_files`` —
-    ``False`` when the ticket's repo carries no customer display surface at all,
+    ``False`` when the ticket's repo is explicitly exempt or outside a declared scope,
     otherwise the per-path classifier's answer, and ``True`` when the diff could
     not be read (``unread_diff`` then says why); ``head_sha`` is the reviewed
     tree the evidence/bypass bind to.
@@ -89,7 +89,7 @@ def _repo_is_exempt_from_mandatory_e2e(overlay: "OverlayBase", ticket: Ticket) -
         return False
     if slug in overlay.review.mandatory_e2e_exempt_repo_slugs():
         return True
-    applicable = overlay.review.mandatory_e2e_applicable_repo_slugs()
+    applicable = overlay.review.mandatory_e2e_repo_slugs()
     return bool(applicable) and slug not in applicable
 
 
