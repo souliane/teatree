@@ -195,7 +195,7 @@ def _run_hook(
     placed = hook or default_hook(cwd.parent, env)
     return subprocess.run(
         # `bash <hook>` on PATH is git's real pre-push invocation shape; test-only driver.
-        ["bash", str(placed), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
+        [str(shutil.which("bash")), str(placed), "origin", remote_url],
         cwd=cwd,
         input=stdin,
         capture_output=True,
@@ -840,7 +840,7 @@ def _run_hook_synth(
     synth["PRE_COMMIT_LOCAL_BRANCH"] = remote_branch
     synth["PRE_COMMIT_REMOTE_BRANCH"] = remote_branch
     return subprocess.run(
-        ["bash", str(default_hook(work.parent, synth)), "origin", _REMOTE_URL],  # noqa: S607 — bash on PATH is the hook's real invocation
+        [str(shutil.which("bash")), str(default_hook(work.parent, synth)), "origin", _REMOTE_URL],
         cwd=work,
         input="",
         capture_output=True,

@@ -14,7 +14,7 @@ import pytest
 from hooks.scripts.banned_terms import gate as banned_terms_gate
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
-from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks import _repo_visibility, banned_terms_scanner, public_visibility
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 
 
@@ -1087,6 +1087,22 @@ def test_an_error_before_the_destination_is_known_fails_open_only_for_a_private_
     assert blocked is (verdict == "deny")
     assert ("internal error" in captured.out) is blocked
     assert ("failed open" in captured.err) is not blocked
+
+
+@pytest.mark.parametrize("destination", ["public", "unknown", "private"])
+def test_a_destination_check_that_breaks_with_the_scan_still_denies_a_publish_shaped_command(
+    destination: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    term = _new_term()
+    _arm_gate(tmp_path, monkeypatch, switch="true", term=term)
+    monkeypatch.setattr(public_visibility, "gate_skips_for_visibility", _boom)
+
+    blocked = handle_banned_terms_pretool(_publish_to(destination, term, tmp_path))
+    out = capsys.readouterr().out
+
+    assert blocked is True
+    assert "internal error" in out
+    assert term not in out
 
 
 def test_internal_error_does_not_block_a_command_that_publishes_nothing(

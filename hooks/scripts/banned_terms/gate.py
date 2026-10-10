@@ -36,6 +36,7 @@ the leak gate on a cold host (HLG-1/HLG-5).
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from hooks.scripts.banned_terms.deny import emit_banned_term_deny
@@ -93,27 +94,39 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     pointed the bootstrap at a nonexistent ``hooks/src`` (HLG-1/HLG-5).
     """
     gate_off = not _banned_terms_gate_enabled()
+    return _guarded(
+        lambda: _run_banned_terms_pretool(data, gate_off=gate_off),
+        lambda exc: _on_internal_error(data, exc),
+    )
+
+
+def _guarded(attempt: Callable[[], bool], on_error: Callable[[Exception], bool]) -> bool:
+    """Run *attempt* with ``teatree`` importable; whatever it raises, *on_error* decides the verdict."""
     try:
         with _teatree_src_on_path():
-            return _run_banned_terms_pretool(data, gate_off=gate_off)
-    except Exception as exc:  # noqa: BLE001 — _on_internal_error fails closed for a non-private publish
-        return _on_internal_error(data, exc)
+            return attempt()
+    # *on_error* fails closed for a publish that is not provably private, and open (loudly) for anything else.
+    except Exception as exc:  # noqa: BLE001 — fail-open on ANY error is the never-lockout contract
+        return on_error(exc)
 
 
 def _publishes_to_a_non_private_destination(data: dict) -> bool:
     """Whether *data* publishes somewhere not provably private; the command text decides if ``teatree`` is broken."""
     command = (data.get("tool_input") or {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-    try:
-        with _teatree_src_on_path():
-            from hooks.scripts.hook_router import _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
-            from teatree.hooks import banned_terms_scanner, public_visibility  # noqa: PLC0415 — cold-hook read
+    return _guarded(
+        lambda: _destination_is_not_provably_private(data, command),
+        lambda _exc: _LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None,
+    )
 
-            cwd_repo = _resolve_cwd_repo(data)
-            if banned_terms_scanner.extract_publish_payload("Bash", {"command": command}, cwd_repo) is None:
-                return False
-            return not public_visibility.gate_skips_for_visibility(command, cwd_repo)
-    except Exception:  # noqa: BLE001 — teatree itself is unusable here, so only the command text can say what it publishes
-        return _LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None
+
+def _destination_is_not_provably_private(data: dict, command: str) -> bool:
+    from hooks.scripts.hook_router import _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
+    from teatree.hooks import banned_terms_scanner, public_visibility  # noqa: PLC0415 — cold-hook read
+
+    cwd_repo = _resolve_cwd_repo(data)
+    if banned_terms_scanner.extract_publish_payload("Bash", {"command": command}, cwd_repo) is None:
+        return False
+    return not public_visibility.gate_skips_for_visibility(command, cwd_repo)
 
 
 def _on_internal_error(data: dict, exc: Exception) -> bool:
