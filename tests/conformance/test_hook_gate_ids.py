@@ -19,6 +19,7 @@ _ONE_GATE_SPLIT_OVER_HELPERS = {
         {
             ("banned_terms/deny.py", "emit_banned_term_deny"),
             ("banned_terms/gate.py", "_banned_term_marker_blocks"),
+            ("banned_terms/gate.py", "_on_internal_error"),
             ("banned_terms/gate.py", "_run_banned_terms_pretool"),
         }
     ),
