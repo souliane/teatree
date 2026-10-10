@@ -56,8 +56,10 @@ class FakeBackend:
         _ = user_id
         return _CHANNEL
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
-        _ = (channel, thread_ts)
+    def post_message(
+        self, *, channel: str, text: str, thread_ts: str = "", blocks: list[dict[str, object]] | None = None
+    ) -> dict[str, object]:
+        _ = (channel, thread_ts, blocks)
         self.posted.append(text)
         return {"ok": True, "ts": _QUESTION_TS}
 

@@ -29,6 +29,14 @@ def bump_due(created_at: dt.datetime, *, now: dt.datetime) -> int:
     return fibonacci_bump_index(elapsed)
 
 
+def first_posted_at(slack_ts: str, created_at: dt.datetime) -> dt.datetime:
+    """When a question first reached the owner: its Slack ``ts`` is the post's epoch time, else the row's creation."""
+    try:
+        return dt.datetime.fromtimestamp(float(slack_ts), tz=dt.UTC)
+    except (ValueError, OverflowError, OSError):
+        return created_at
+
+
 def reask_key(notify_ref: str, gap: int) -> str:
     """The bump's idempotency key — the question AND the widening-gap bump it is sending."""
     return f"{REASK_KEY_PREFIX}{notify_ref}:{gap}"

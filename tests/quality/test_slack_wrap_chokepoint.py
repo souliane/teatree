@@ -16,7 +16,7 @@ by remembering. :class:`TestNoBypassingCallSite` turns such a call site red, and
 Slack method for the first checker to key on.
 
 Block Kit ``blocks`` stay outside the guarantee by design — Block Kit owns its
-own layout, and only the ``text`` fallback is wrapped.
+own layout, and a post that carries blocks keeps its ``text`` fallback as written.
 
 The second half guards the escape hatch. ``wrap_exempt_reason`` is deliberately
 reviewable — a reason string is visible in a diff where a bare bool is not — so

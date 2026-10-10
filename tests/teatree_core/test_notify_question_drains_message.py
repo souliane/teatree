@@ -6,25 +6,32 @@ owner to run ``t3 <overlay> questions answer …``; the owner just replies in th
 thread and the reply scanner binds the answer.
 """
 
-import json
+import dataclasses
 from datetime import timedelta
+from typing import cast
 from unittest.mock import patch
 
+import httpx
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption
 from teatree.core.models import BotPing, DeferredQuestion
-from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
+from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
 from teatree.core.notify_types import DELIVERED
-from tests._owner_channel import OWNER_DECISION, owner_card
+from teatree.core.owner_question_message import render_blocks, render_text
+from teatree.slack_mrkdwn import WRAP_WIDTH
+from tests._owner_channel import OWNER_CARD, OWNER_DECISION, owner_card
 
 
-class TestResurfaceMessageHasNoHostCli(TestCase):
+class TestTheCardHasNoHostCli(TestCase):
     def test_message_carries_no_t3_cli_instruction(self) -> None:
-        row = DeferredQuestion.record(question="Should I merge the widget change?", session_id="s1")
+        row = DeferredQuestion.record("Should I merge the widget change?", session_id="s1", **OWNER_DECISION)
 
-        text = _resurface_text(row)
+        text = render_text(row)
 
         # No host-CLI instruction of any kind — the owner cannot run one.
         assert "t3 " not in text
@@ -35,17 +42,74 @@ class TestResurfaceMessageHasNoHostCli(TestCase):
         assert "thread" in text.lower()
 
     def test_message_still_renders_question_and_options(self) -> None:
-        row = DeferredQuestion.record(
-            question="Pick a rollout?",
-            options_json=json.dumps([{"label": "canary", "description": "10% first"}]),
-            session_id="s2",
+        card = dataclasses.replace(
+            OWNER_CARD,
+            options=(
+                CardOption("canary", "I start with ten percent.", recommended=True),
+                CardOption("full", "I ship to all."),
+            ),
         )
+        row = DeferredQuestion.record("Pick a rollout?", card=card, session_id="s2")
 
-        text = _resurface_text(row)
+        text = render_text(row)
 
         assert "Pick a rollout?" in text
-        assert "canary" in text
+        assert "[canary] (recommended) - I start with ten percent." in text
         assert "t3 " not in text
+
+
+class TestTheFirstPostIsTheCardWithButtons(TestCase):
+    """The first post of an owner question goes out through the real Slack backend, byte for byte."""
+
+    LINK = "<https://git.acme.example/widgets/issues/42|the widget issue>"
+
+    def _post_first(self, monkeypatch_calls: list[tuple[str, dict]]) -> DeferredQuestion:
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            method = url.rsplit("/", maxsplit=1)[-1]
+            monkeypatch_calls.append((method, cast("dict", kwargs["json"])))
+            bodies = {
+                "conversations.open": {"ok": True, "channel": {"id": "D0DEMOOWNER"}},
+                "chat.postMessage": {"ok": True, "ts": "1700000000.000100", "channel": "D0DEMOOWNER"},
+            }
+            return httpx.Response(200, json=bodies.get(method, {"ok": True}), request=httpx.Request("POST", url))
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            body = {"ok": True, "permalink": "https://acme.slack.example/archives/D0DEMOOWNER/p1700000000000100"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        row = DeferredQuestion.record(
+            f"Is {self.LINK} ready to be released to the whole acme team, or should it wait a little longer?",
+            card=dataclasses.replace(OWNER_CARD, why="It was filed a week ago and nobody has looked at it since then."),
+        )
+        with patch.object(slack_http.httpx, "post", fake_post), patch.object(slack_http.httpx, "get", fake_get):
+            backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U0DEMOOWNER")
+            drain_unmirrored_deferred_questions(user_id="U0DEMOOWNER", backend=backend)
+        row.refresh_from_db()
+        return row
+
+    def test_the_first_post_is_the_card_with_buttons(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        row = self._post_first(calls)
+
+        [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
+        assert payload["text"] == render_text(row)
+        assert payload["blocks"] == render_blocks(row)
+        assert payload["text"].splitlines()[0].startswith(f"Is {self.LINK} ready to be released")
+        assert "thread_ts" not in payload
+        assert not payload["text"].startswith(":question:")
+        assert "[Yes] (recommended) - I go ahead." in payload["text"]
+        assert row.slack_ts == "1700000000.000100"
+        assert row.slack_channel == "D0DEMOOWNER"
+
+    def test_no_line_of_the_card_is_wrapped_or_split(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        row = self._post_first(calls)
+
+        [(_, payload)] = [call for call in calls if call[0] == "chat.postMessage"]
+        assert payload["text"].splitlines() == render_text(row).splitlines()
+        assert any(len(line) > WRAP_WIDTH for line in payload["text"].splitlines())
 
 
 class TestDrainExcludesInternalAudience(TestCase):

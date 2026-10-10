@@ -218,8 +218,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
         Also the #3809 wrap seam: every in-app ``chat.postMessage`` funnels
         through here, so a new sender inherits the 90-char rule rather than
-        remembering it. *wrap_exempt_reason* is the one sanctioned escape;
-        ``blocks`` are never rewritten (Block Kit lays itself out).
+        remembering it. *wrap_exempt_reason* is the one sanctioned escape; a post
+        carrying ``blocks`` keeps its text as written (the blocks are what is read).
         """
         assert_owner_call(
             method, payload, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
@@ -227,7 +227,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         auth = token or self._bot_token
         if not auth:
             return {}
-        if method == "chat.postMessage" and not wrap_exempt_reason:
+        if method == "chat.postMessage" and not wrap_exempt_reason and "blocks" not in payload:
             payload = {**payload, "text": wrap_slack_message(str(payload.get("text", "")))}
         return self._http.post(method, token=auth, json=payload, idempotent=idempotent)
 

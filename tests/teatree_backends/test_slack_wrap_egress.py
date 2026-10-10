@@ -100,6 +100,17 @@ class TestTransportWrapsEveryEgress:
         _backend().post_message(channel="C_TEAM", text=_LONG_PROSE)
         assert slack_line_violations(_posted_text(captured)) == []
 
+    def test_a_post_with_blocks_keeps_its_fallback_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The blocks are what is read; the text only backs the notification, so it is not re-flowed."""
+        captured: list[_Call] = []
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Hello"}}]
+
+        _backend().post_message(channel="C_TEAM", text=_LONG_PROSE, blocks=blocks)
+
+        assert _posted_text(captured) == _LONG_PROSE
+        assert captured[0].json["blocks"] == blocks
+
     def test_post_reply_wraps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
         monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))

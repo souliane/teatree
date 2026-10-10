@@ -201,7 +201,7 @@ class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
         assert stale.slack_ts in threads, "the row past the age ceiling was crowded out by younger ones"
         assert fresh[-1].slack_ts not in threads
 
-    def test_the_bump_renders_the_age_the_backstop_stamped(self) -> None:
+    def test_the_bump_says_how_long_the_question_has_waited_in_plain_words(self) -> None:
         _mirrored("Which DB host?", slack_ts="100.0", escalated=True, age_days=12)
         backend = _backend()
 
@@ -209,5 +209,6 @@ class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
             reask_escalated_questions(user_id="U_ME", backend=backend)
 
         text = backend.post_message.call_args.kwargs["text"]
-        assert "12d" in text
-        assert "escalated 1x" in text
+        assert text.startswith("Still waiting for your decision; I asked ")
+        assert text.endswith("Tap an option above, or reply here.")
+        assert "escalated" not in text

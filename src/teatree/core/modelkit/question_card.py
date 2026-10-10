@@ -151,16 +151,22 @@ def option_row(option: CardOption) -> str:
     return f"{row} - {option.description}" if option.description else row
 
 
-def plain_text(view: CardView) -> str:
-    """THE text of a card: record time and send time both measure this string."""
+def layout(view: CardView, *, closing: str = "") -> list[list[str]]:
+    """The blocks of lines a card is shown as; *closing* replaces the options and the reply line once answered."""
     blocks = [[view.question, view.why] if view.why else [view.question]]
     if view.quoted:
         blocks.append([f"> {view.quoted}"])
+    ref = f"ref: question {view.ref}"
+    if closing:
+        return [*blocks, [closing, ref]]
     if view.options:
         blocks.append([option_row(option) for option in view.options])
-    reply = REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS
-    blocks.append([reply, f"ref: question {view.ref}"])
-    return "\n\n".join("\n".join(lines) for lines in blocks)
+    return [*blocks, [REPLY_LINE if view.options else REPLY_LINE_WITHOUT_OPTIONS, ref]]
+
+
+def plain_text(view: CardView, *, closing: str = "") -> str:
+    """THE text of a card: record time and send time both measure this string."""
+    return "\n\n".join("\n".join(lines) for lines in layout(view, closing=closing))
 
 
 def _shorthand_problems(where: str, text: str) -> list[str]:
