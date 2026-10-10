@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.hooks.remote_holds import remote_holdings
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import run_allowed_to_fail, spawn_byte_pipe
 
 _REMOTE = "origin"
 
@@ -57,14 +57,55 @@ class PushRange:
         diff = _git_output(repo, ["log", *READ_FLAGS, "--format=", "--patch", "--cc", *rev_args])
         messages = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%B", *rev_args])
         identities = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%ae%n%ce", *rev_args])
-        if diff is None or messages is None or identities is None:
+        stored = _stored_messages(repo, rev_args)
+        if diff is None or messages is None or identities is None or stored is None:
             return None
         return cls(
             public_tips=tips,
             diff_text=diff.rstrip("\n"),
-            commit_messages=messages,
+            commit_messages=_with_stored(messages, stored),
             identities=tuple(line for line in identities.splitlines() if line),
         )
+
+
+def _commit_object(repo: Path, sha: str) -> bytes | None:
+    pipe = spawn_byte_pipe(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "commit", sha])
+    try:
+        pipe.stdin.close()
+        data = pipe.stdout.read()
+    finally:
+        pipe.stdout.close()
+        code = pipe.process.wait()
+    return data if code == 0 else None
+
+
+def _stored_messages(repo: Path, rev_args: list[str]) -> list[str] | None:
+    """Each commit's message exactly as the object stores it, which is what the remote holds.
+
+    The ``encoding`` header travels with the pushed commit, so ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes
+    ``git log`` decode them into noise while the message is still there to read.
+    """
+    shas = _git_output(repo, ["rev-list", *rev_args])
+    if shas is None:
+        return None
+    messages: list[str] = []
+    for sha in shas.split():
+        data = _commit_object(repo, sha)
+        if data is None:
+            return None
+        raw = data.partition(b"\n\n")[2]
+        try:
+            messages.append(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            messages.append(raw.decode("latin-1"))
+    return messages
+
+
+def _with_stored(decoded: str, stored: list[str]) -> str:
+    """*decoded* followed by the stored-message lines it does not already carry."""
+    known = set(decoded.splitlines())
+    extra = [line for message in stored for line in message.splitlines() if line not in known]
+    return decoded + "\n".join(extra) + "\n" if extra else decoded
 
 
 def _remote_tips(repo: Path) -> tuple[str, ...]:

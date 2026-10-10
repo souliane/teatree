@@ -432,8 +432,16 @@ _display() {
 # A message is published verbatim, never a diff, so it goes to the scanner on stdin in
 # text mode: no file is written, so no temp directory can be missing or unwritable.
 # `git log` gets a closed stdin: every caller sits in a `while read` loop it must not drain.
+# Each message is read twice: as git decodes it (UTF-8, which also reads a message stored in another encoding), and as the
+# object stores it. The `encoding` header travels with the pushed commit, so `i18n.commitEncoding=UTF-16LE` on plain bytes
+# makes git decode them into noise while the remote still holds the message, and no CI job reads commit messages.
 _scan_messages_as_text() {
-  git log --encoding=UTF-8 "${git_read_flags[@]}" --format='%B' "$@" 2>/dev/null </dev/null | _scan --text -
+  {
+    git log --encoding=UTF-8 "${git_read_flags[@]}" --format='%B' "$@" 2>/dev/null </dev/null || exit 1
+    git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r raw_sha; do
+      git cat-file commit "${raw_sha}" 2>/dev/null </dev/null | sed '1,/^$/d' || exit 1
+    done
+  } | _scan --text -
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each

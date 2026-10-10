@@ -2088,6 +2088,70 @@ class TestRepoLocalGitStateDoesNotChangeWhatGitFeedsTheHook:
         assert f"commit {tip} (commit message):" in result.stdout, result.stdout
 
 
+class TestACommitMessageIsScannedAsStoredAndAsDecoded:
+    """A commit's ``encoding`` header travels with the pushed object, so what git decodes is not all the remote holds.
+
+    ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes ``git log`` re-decode them into noise while the raw object on
+    the remote still carries the message, and no CI job reads commit messages. The hook scans each message as git
+    decodes it (UTF-8, which also reads a message stored in another encoding) and as the object stores it.
+    """
+
+    @staticmethod
+    def _push(
+        tmp_path: Path,
+        *,
+        registry: str,
+        message: bytes,
+        commit_config: tuple[str, ...] = (),
+        repo_config: tuple[tuple[str, str], ...] = (),
+    ) -> tuple[Path, str, str]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        for key, value in repo_config:
+            _git(work, "config", key, value)
+        env["TEATREE_TERM_REGISTRY"] = registry
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        (work / "a.txt").write_text("a clean line\n", encoding="utf-8")
+        _git(work, "add", "a.txt")
+        message_file = tmp_path / "message.txt"
+        message_file.write_bytes(message)
+        _git(work, *commit_config, "commit", "--cleanup=verbatim", "-F", str(message_file))
+        tip = _rev(work, "HEAD")
+        hook = place_hook(tmp_path / "checkout", registry=registry)
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+        return work, tip, f"{result.returncode}\n{result.stdout}{result.stderr}"
+
+    @pytest.mark.parametrize(
+        "commit_config",
+        [(), ("-c", "i18n.commitEncoding=UTF-16LE")],
+        ids=["no-encoding-header", "wrong-encoding-header"],
+    )
+    def test_a_leaking_message_is_refused_whatever_its_encoding_header(
+        self, tmp_path: Path, commit_config: tuple[str, ...]
+    ) -> None:
+        _work, tip, report = self._push(
+            tmp_path,
+            registry=_REAL_REGISTRY,
+            message=b"release notes mention second-leak-term here\n",
+            commit_config=commit_config,
+        )
+
+        assert report.startswith("1\n"), "the message landed: " + report
+        assert f"commit {tip} (commit message):" in report, report
+
+    def test_a_message_stored_in_another_encoding_is_scanned_as_git_decodes_it(self, tmp_path: Path) -> None:
+        """Shift_JIS stores "ア" as 0x83 0x41: the stored bytes read ``second-leak-A-term``; only UTF-8 matches."""
+        _work, tip, report = self._push(
+            tmp_path,
+            registry=_REAL_REGISTRY,
+            message="notes mention second-leak-ア-term here\n".encode("shift_jis"),
+            repo_config=(("i18n.commitEncoding", "Shift_JIS"),),
+        )
+
+        assert report.startswith("1\n"), "the message landed: " + report
+        assert f"commit {tip} (commit message):" in report, report
+
+
 class TestCommitMessagesRideTheScannersStdin:
     """A message is handed to the scanner on stdin: the scan writes no file, and the hook leaves nothing in ``TMPDIR``.
 

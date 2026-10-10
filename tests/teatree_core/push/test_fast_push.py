@@ -7,7 +7,9 @@ runtime so this test file never contains a literal matchable token.
 
 import json
 import secrets
+import shutil
 import sqlite3
+import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -717,6 +719,54 @@ class TestRepoLocalGitStateDoesNotBlankWhatFastPushReads:
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert not outcome.ok, "the replacement commit hid the leak from the range"
+        assert not outcome.pushed
+
+
+class TestACommitMessageIsReadAsStoredAndAsDecoded:
+    """A commit's ``encoding`` header travels with the pushed object, so what git decodes is not all the remote holds.
+
+    ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes ``git log`` re-decode them into noise while the pushed object
+    still carries the message; a message stored in Shift_JIS is logged in Shift_JIS unless the read asks for UTF-8, and
+    its stored bytes read ``second-leak-A-term`` (0x83 0x41 is "ア"), which only the UTF-8 read matches.
+    """
+
+    @staticmethod
+    def _commit_message(repo: Path, tmp_path: Path, message: bytes, *config: str) -> None:
+        (repo / "a.txt").write_text("a clean line\n")
+        run_checked(["git", "add", "a.txt"], cwd=repo)
+        message_file = tmp_path / "message.txt"
+        message_file.write_bytes(message)
+        subprocess.run(  # bytes, not text: git echoes the subject in the commit's own encoding
+            [str(shutil.which("git")), *config, "commit", "--cleanup=verbatim", "-F", str(message_file)],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_a_wrong_encoding_header_does_not_hide_a_leaking_message(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        self._commit_message(
+            repo, tmp_path, b"release notes mention forbiddenbrand here\n", "-c", "i18n.commitEncoding=UTF-16LE"
+        )
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the message landed behind a wrong encoding header"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_message_stored_in_another_encoding_is_read_as_git_decodes_it(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["second-leak-term"], "prose_collider": []}))
+        run_checked(["git", "config", "i18n.commitEncoding", "Shift_JIS"], cwd=repo)
+        self._commit_message(repo, tmp_path, "notes mention second-leak-ア-term here\n".encode("shift_jis"))
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "git logged the message in Shift_JIS and the read did not ask for UTF-8"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
         assert not outcome.pushed
 
 
