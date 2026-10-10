@@ -331,31 +331,33 @@ if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
     "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
 fi
 
-# What the remote already holds, as commit shas this clone has: the tip of every head the REMOTE lists at the
-# URL git is pushing to, plus the sha git reports for the ref being updated. Never a local remote-tracking
-# ref: those are files the pusher can write (`update-ref`, `packed-refs`, `git fetch . HEAD:refs/remotes/...`,
-# a `set-url` + `fetch` from another repository), and one that says the remote holds the leaking commit
-# empties the range. A head whose commit this clone never fetched is skipped (nothing here depends on it).
-# When the remote cannot be listed nothing but the reported sha is subtracted: the range gets wider, never narrower.
-remote_heads_read=0
-remote_head_shas=""
-_read_remote_heads() {
-  [ "${remote_heads_read}" = 0 ] || return 0
-  remote_heads_read=1
-  local listing
-  if listing=$(GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
-      ls-remote --heads "${remote_url}" 2>/dev/null </dev/null); then
-    remote_head_shas=$(printf '%s\n' "${listing}" | cut -f1)
-  else
-    remote_head_shas=""
-    echo "⚠ push privacy gate: could not list the heads of '${slug:-<remote>}' — scanning every commit reachable from the pushed sha that the reported remote sha does not hold (wider, never narrower)." >&2
-  fi
-}
-
-# Shas on stdin that are commits in this clone, one per line.
-_commits_held_here() {
-  git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null | awk '$2 == "commit" { print $1 }' | sort -u
-}
+# What the remote already holds, as commit shas this clone has (src/teatree/hooks/remote_holds.py, which `t3 fast-push`
+# shares): the tip of every head the REMOTE lists at the URL git is pushing to, plus the sha git reports for each ref
+# being updated. Never a local remote-tracking ref: those are files the pusher can write (`update-ref`, `packed-refs`,
+# `git fetch . HEAD:refs/remotes/...`, a `set-url` + `fetch` from another repository), and one that says the remote
+# holds the leaking commit empties the range. A listing that would not come from the place the push goes (a
+# `url.<base>.insteadOf` aimed elsewhere with an identity `pushInsteadOf`) or that fails counts for nothing: the range
+# gets wider, never narrower. On the prek synthesized path the reported sha is a DERIVED `PRE_COMMIT_FROM_REF` (prek
+# computes it from this clone's remote-tracking refs), so it is not offered.
+reported_shas=()
+if [ "${synthesized}" != "1" ]; then
+  while read -r _ _ _ reported_sha; do
+    if [ -n "${reported_sha:-}" ] && [ "${reported_sha}" != "${ZERO}" ]; then
+      reported_shas+=("${reported_sha}")
+    fi
+  done <<< "${refs_input}"
+fi
+tips_rc=0
+tips_out=$(PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S -m teatree.hooks.remote_holds \
+  "${remote_url}" "${remote_name}" ${reported_shas[@]+"${reported_shas[@]}"} </dev/null) || tips_rc=$?
+if [ "${tips_rc}" -ne 0 ]; then
+  echo "⚠ push privacy gate: could not determine what the remote holds (exit ${tips_rc}) — scanning every commit reachable from the pushed sha (wider, never narrower)." >&2
+  tips_out=""
+fi
+public_tips=()
+while IFS= read -r tip; do
+  [ -z "${tip}" ] || public_tips+=("${tip}")
+done <<< "${tips_out}"
 
 # Text a refusal has to show (an identity, a ref name) goes through here: when it is, or holds, a
 # registry term it is shown as that term's `class#index`, never by value. A check that cannot run
@@ -471,7 +473,7 @@ _scan_tag_object() {
 }
 
 blocked=0
-while read -r local_ref local_sha remote_ref remote_sha; do
+while read -r local_ref local_sha remote_ref _; do
   [ -n "${local_sha:-}" ] || continue
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
 
@@ -479,9 +481,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   _scan_tag_object "${local_sha}" || blocked=1
 
   # The push newly exposes the commits reachable from the pushed sha but from NO commit the remote already
-  # holds: every head the remote lists (`git ls-remote --heads` at the URL git is pushing to), and the sha git
-  # reports for the ref being updated. Both come from the remote, not from this clone's remote-tracking refs, which a
-  # pusher can write (see _read_remote_heads).
+  # holds (`public_tips` above: read from the remote, never from this clone's remote-tracking refs).
   #
   # READ THIS BEFORE "improving" it back to `--not origin/<default>`. That
   # looks more thorough and is not: it is the MERGE-REQUEST range, not the
@@ -502,19 +502,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   #
   # A branch with no upstream yet (a first push) needs no special case: the remote's OTHER heads are still
   # subtracted, so a new branch off an already-pushed base scans only its own new commits, not all of history.
-  #
-  # Git's NATIVE pre-push protocol reports the true remote-side tip of the ref. On the prek synthesized path the
-  # value is a DERIVED `PRE_COMMIT_FROM_REF` (prek computes it from this clone's remote-tracking refs), so it
-  # is not trusted as a base there.
-  _read_remote_heads
-  held=""
-  if [ "${synthesized}" != "1" ] && [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ]; then
-    held="${remote_sha}"
-  fi
-  public_tips=()
-  while IFS= read -r tip; do
-    [ -z "${tip}" ] || public_tips+=("${tip}")
-  done < <(printf '%s\n%s\n' "${remote_head_shas}" "${held}" | _commits_held_here)
 
   # Nothing the remote is known to hold (a brand-new repo, a remote that cannot be listed): fail CLOSED by
   # subtracting nothing, so the whole history reachable from the pushed sha is scanned — wider, never narrower.

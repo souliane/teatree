@@ -79,19 +79,45 @@ def _make_repo(path: Path, branch: str = "main") -> None:
     _git(path, "commit", "-m", "init")
 
 
+#: The forge URL every hook test pushes to; ``_repoint_origin`` gives the clone an ``ssh`` that serves it.
+_FORGE_URL = "git@github.com:acme/widget.git"
+
+_FAKE_SSH = """#!/bin/sh
+repo=$(cat "$(dirname "$0")/repo-path") || exit 1
+case "$2" in
+    git-upload-pack*) exec git upload-pack "$repo" ;;
+    git-receive-pack*) exec git receive-pack "$repo" ;;
+esac
+exit 1
+"""
+
+
 def _repoint_origin(work: Path, origin: Path, url: str) -> None:
-    """Point ``origin`` at *url*, a forge URL no test can reach, and let git resolve that URL to the real *origin* repo.
+    """Point ``origin`` at the forge *url* and serve that URL from the real *origin* repo through a stand-in ``ssh``.
 
-    The hook lists the remote's heads at the URL git pushes to, so the URL has to answer.
+    The hook lists the remote's heads at the URL git pushes to, and git hands a hook the URL it really pushes to, so
+    the URL has to answer as it stands, with no ``insteadOf`` between it and the repository.
     """
+    serve = work.parent / "fake-forge"
+    serve.mkdir(exist_ok=True)
+    (serve / "repo-path").write_text(str(origin), encoding="utf-8")
+    ssh = serve / "ssh"
+    ssh.write_text(_FAKE_SSH, encoding="utf-8")
+    ssh.chmod(ssh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     _git(work, "remote", "set-url", "origin", url)
-    _git(work, "config", f"url.{origin}.insteadOf", url)
+    _git(work, "config", "core.sshCommand", str(ssh))
+    _git(work, "config", "ssh.variant", "simple")
 
 
-def _make_the_remote_unlistable(work: Path, origin: Path) -> None:
-    """Resolve the remote's URL to a path that is no repository, so ``git ls-remote`` fails at once and offline."""
-    _git(work, "config", "--unset-all", f"url.{origin}.insteadOf")
-    _git(work, "config", f"url.{origin.parent / 'no-such-repository'}.insteadOf", "https://github.com/acme/widget.git")
+def _make_the_remote_unlistable(work: Path) -> None:
+    """Make the stand-in ``ssh`` fail, so ``git ls-remote`` fails at once and offline."""
+    (work.parent / "fake-forge" / "repo-path").unlink()
+
+
+def _git_stdout(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        [str(shutil.which("git")), *args], cwd=cwd, check=True, capture_output=True, text=True, env=_hermetic_env()
+    ).stdout
 
 
 def _make_gh_shim(bin_dir: Path, visibility: str) -> None:
@@ -128,7 +154,7 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     _git(work, "config", "user.name", _NOREPLY_NAME)
     # The origin URL is a local path; rewrite it to a github.com-looking
     # URL so the gate has an owner/repo to ask gh about.
-    _repoint_origin(work, origin, "https://github.com/acme/widget.git")
+    _repoint_origin(work, origin, _FORGE_URL)
 
     bin_dir = tmp_path / "bin"
     _make_gh_shim(bin_dir, gh_visibility)
@@ -156,7 +182,7 @@ def _run_hook(
     cwd: Path,
     env: dict[str, str],
     stdin: str,
-    remote_url: str = "https://github.com/acme/widget.git",
+    remote_url: str = _FORGE_URL,
     hook: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the hook the way git does; by default the real one, placed where its fingerprint matches ``env``."""
@@ -769,7 +795,7 @@ def _public_work_clone(tmp_path: Path, origin: Path) -> tuple[Path, dict[str, st
     _git(tmp_path, "clone", str(origin), str(work))
     _git(work, "config", "user.email", _NOREPLY_EMAIL)
     _git(work, "config", "user.name", _NOREPLY_NAME)
-    _repoint_origin(work, origin, "https://github.com/acme/widget.git")
+    _repoint_origin(work, origin, _FORGE_URL)
     bin_dir = tmp_path / "bin"
     _make_gh_shim(bin_dir, "PUBLIC")
     env = _hermetic_env()
@@ -778,7 +804,7 @@ def _public_work_clone(tmp_path: Path, origin: Path) -> tuple[Path, dict[str, st
     return work, env
 
 
-_REMOTE_URL = "https://github.com/acme/widget.git"
+_REMOTE_URL = _FORGE_URL
 
 
 def _run_hook_synth(
@@ -1103,7 +1129,7 @@ class TestLeakGateScansOnlyNewlyPublicCommits:
         work, env = _public_work_clone(tmp_path, origin)
         _git(work, "checkout", "-b", "feature")
         head = _commit_file(work, "feature.txt", "a clean new feature line\n", "add feature")
-        _make_the_remote_unlistable(work, origin)
+        _make_the_remote_unlistable(work)
 
         result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=ZERO_SHA))
 
@@ -1233,7 +1259,7 @@ class TestLeakGateResolvesVisibilityOnTheRemotesOwnForge:
 
 
 _PROBE_FAILURE_MARKER = "probe-exploded-marker-7f3a"
-_PROBE_REMOTE_URL = "https://github.com/acme/widget.git"
+_PROBE_REMOTE_URL = _FORGE_URL
 
 
 def _fake_core_package(src_root: Path, *, verdict: str = "", fail_marker: str = "") -> None:
@@ -2321,7 +2347,7 @@ def _plant_by_fetching_another_url(work: Path, _sha: str) -> None:
     _git(work.parent, "clone", str(work), str(attacker))
     _git(work, "remote", "set-url", "origin", str(attacker))
     _git(work, "fetch", "origin")
-    _git(work, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+    _git(work, "remote", "set-url", "origin", _FORGE_URL)
 
 
 _PLANTINGS = {
@@ -2393,10 +2419,24 @@ class TestThePushRangeNeverTrustsALocalTrackingRef:
 
         assert result.returncode == 1, "the planted ref emptied the update range: " + result.stdout + result.stderr
 
+    def test_a_url_rewrite_that_splits_the_listing_from_the_push_does_not_empty_the_range(self, tmp_path: Path) -> None:
+        work, env, leak = self._leaking_branch(tmp_path)
+        fake = tmp_path / "fake-origin"
+        _git(tmp_path, "clone", str(work), str(fake))
+        _git(work, "config", f"url.{fake}.insteadOf", _FORGE_URL)
+        _git(work, "config", f"url.{_FORGE_URL}.pushInsteadOf", _FORGE_URL)
+        assert leak in _git_stdout(work, "ls-remote", "--heads", _FORGE_URL), "the listing reads the fake repository"
+        assert _git_stdout(work, "remote", "get-url", "--push", "origin").strip() == _FORGE_URL, "the push stays real"
+
+        result = _run_hook(work, env, self._new_branch_push(leak))
+
+        assert result.returncode == 1, "the rewrite emptied the scanned range: " + result.stdout + result.stderr
+        assert "could not list" in (result.stdout + result.stderr).lower()
+
     def test_a_remote_that_cannot_be_listed_widens_the_range_instead_of_emptying_it(self, tmp_path: Path) -> None:
         work, env, leak = self._leaking_branch(tmp_path)
         _plant_with_update_ref(work, leak)
-        _make_the_remote_unlistable(work, tmp_path / "origin")
+        _make_the_remote_unlistable(work)
 
         result = _run_hook(work, env, self._new_branch_push(leak))
 
@@ -2421,7 +2461,7 @@ class TestThePushRangeNeverTrustsALocalTrackingRef:
         work, env = _public_work_clone(tmp_path, origin)
         _git(work, "checkout", "feature")
         head = _commit_file(work, "more.txt", "another clean feature line\n", "extend feature")
-        _make_the_remote_unlistable(work, origin)
+        _make_the_remote_unlistable(work)
 
         result = _run_hook(work, env, f"refs/heads/feature {head} refs/heads/feature {tip}\n")
 
