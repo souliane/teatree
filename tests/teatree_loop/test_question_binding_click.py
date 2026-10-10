@@ -196,6 +196,27 @@ class TestTheTapRoundTrip(TestCase):
         backend.post_message.assert_not_called()
 
 
+class TestACardWhoseProducerKeepsItsOwnKey(TestCase):
+    def test_a_tap_records_the_option_although_the_hash_column_is_the_producers_dedupe_key(self) -> None:
+        row, backend = _posted_card(options_hash="producer_key:7:1")
+
+        assert answer_from_click(_tap(row, 2), backend=backend)
+
+        row.refresh_from_db()
+        assert (row.answer_text, row.resolved_via, row.options_hash) == ("No", "slack", "producer_key:7:1")
+        assert "You chose: No - I leave it as it is." in backend.update_message.call_args.kwargs["text"]
+
+    def test_a_stale_label_still_changes_nothing_on_such_a_card(self) -> None:
+        row, backend = _posted_card(options_hash="producer_key:7:1")
+        payload = _tap(row, 1)
+        payload["actions"][0]["text"]["text"] = "Something else"
+
+        assert not answer_from_click(payload, backend=backend)
+
+        assert DeferredQuestion.objects.get(pk=row.pk).is_pending
+        backend.update_message.assert_not_called()
+
+
 class TestTheTapResumesTheParkedTask(TestCase):
     def test_a_tap_resumes_the_task_waiting_on_the_card(self) -> None:
         ticket = planned_ticket()

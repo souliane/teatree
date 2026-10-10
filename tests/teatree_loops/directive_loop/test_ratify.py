@@ -26,7 +26,7 @@ from teatree.loops.directive_loop.ratify import (
 )
 from teatree.mcp.server import build_server
 from tests._harness_env import HEADLESS_AGENT_ENV, harness_signature
-from tests._owner_channel import answer_on_slack, assert_a_plain_card
+from tests._owner_channel import answer_on_slack, assert_a_plain_card, tap_on_slack
 from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 #: The six ratifications the owner actually recorded against directives #38, #40, #41,
@@ -222,6 +222,32 @@ class TestEachButtonDecidesItsDirective(TestCase):
                     directive.refresh_from_db()
                     assert try_admit(directive) == outcome
                     assert directive.state == state
+
+    def test_each_ratify_button_tapped_admits_or_denies(self) -> None:
+        for make_directive in _DIRECTIVE_SOURCES:
+            for label, outcome, state in (
+                ("Approve", "admitted", Directive.State.ADMITTED),
+                ("Reject", "rejected", Directive.State.REJECTED),
+            ):
+                with self.subTest(source=make_directive.__name__, button=label):
+                    directive = make_directive()
+                    question = ask_ratification(directive)
+                    assert tap_on_slack(question, label)
+                    directive.refresh_from_db()
+                    assert try_admit(directive) == outcome
+                    assert directive.state == state
+
+    def test_a_tapped_re_ask_card_decides_too(self) -> None:
+        directive = _interpreted_directive()
+        answer_on_slack(ask_ratification(directive), "hmm, not sure")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "reasked"
+        directive.refresh_from_db()
+        again = directive.ratify_question
+        assert again is not None
+        assert tap_on_slack(again, "Approve")
+        directive.refresh_from_db()
+        assert try_admit(directive) == "admitted"
 
 
 class TestProseRatification(TestCase):

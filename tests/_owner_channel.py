@@ -1,12 +1,14 @@
 """Shared owner-channel test helpers: ask the owner a genuine decision, answer it through the real Slack seam."""
 
 import dataclasses
+import json
 from typing import TypedDict
+from unittest.mock import MagicMock
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import CardOption, QuestionCard, internal_shorthand, plain_text
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
+from teatree.loop.question_binding import BoundAnswer, answer_from_click, apply_bound_answer
 
 OWNER_SLACK_ID = "U1"
 
@@ -62,6 +64,32 @@ def legacy_owner_row(
 
 def answer_on_slack(question: DeferredQuestion, text: str) -> None:
     assert apply_bound_answer(BoundAnswer(question=question, answer=text))
+
+
+def tap_on_slack(question: DeferredQuestion, label: str) -> bool:
+    """The owner taps the button *label* on *question*'s posted card; ``True`` when the tap answered it."""
+    if not question.slack_ts:
+        DeferredQuestion.objects.filter(pk=question.pk).update(
+            slack_channel="D0DEMOOWNER", slack_ts=f"1800000000.{question.pk:06d}"
+        )
+        question.refresh_from_db()
+    labels = [option["label"] for option in json.loads(question.options_json)]
+    backend = MagicMock()
+    backend.user_id = OWNER_SLACK_ID
+    payload = {
+        "type": "block_actions",
+        "user": {"id": OWNER_SLACK_ID},
+        "channel": {"id": question.slack_channel},
+        "message": {"ts": question.slack_ts},
+        "actions": [
+            {
+                "action_id": f"owner-question-option-{labels.index(label) + 1}",
+                "value": str(labels.index(label) + 1),
+                "text": {"type": "plain_text", "text": label},
+            }
+        ],
+    }
+    return answer_from_click(payload, backend=backend)
 
 
 def shown_text(row: DeferredQuestion) -> str:

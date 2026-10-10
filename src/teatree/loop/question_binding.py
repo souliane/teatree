@@ -194,8 +194,11 @@ def _parse_tap(payload: dict) -> _Tap | None:
 
 
 def _tapped_label(question: DeferredQuestion, tap: _Tap) -> str | None:
-    """The label of the tapped option, or ``None`` when the card no longer offers that option."""
-    options = _live_options(question)
+    """The label of the tapped option, or ``None`` when the card no longer offers that option.
+
+    Not the ``options_hash`` check a typed digit needs: a producer may keep its own dedupe key in that column.
+    """
+    options = _recorded_options(question)
     if options is None or not (1 <= tap.index <= len(options)):
         return None
     label = str(options[tap.index - 1].get("label", ""))
@@ -245,6 +248,16 @@ def _inferred_question(reply: PendingChatInjection) -> DeferredQuestion | None:
     return DeferredQuestion.sole_for_reply(channel=reply.channel, after_ts=reply.slack_ts)
 
 
+def _recorded_options(question: DeferredQuestion) -> list[dict] | None:
+    if not question.options_json:
+        return None
+    try:
+        options = json.loads(question.options_json)
+    except (ValueError, TypeError):
+        return None
+    return options if isinstance(options, list) else None
+
+
 def _live_options(question: DeferredQuestion) -> list[dict] | None:
     """The recorded options when ``options_hash`` still matches, else ``None``.
 
@@ -252,17 +265,8 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
     option set the digit referred to has changed); the caller treats that
     digit as a stale verbatim body rather than risk a wrong-label apply.
     """
-    if not question.options_json:
-        return None
-    try:
-        options = json.loads(question.options_json)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(options, list):
-        return None
-    if options_digest(options) != question.options_hash:
-        return None
-    return options
+    options = _recorded_options(question)
+    return options if options is not None and options_digest(options) == question.options_hash else None
 
 
 __all__ = [
