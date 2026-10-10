@@ -289,7 +289,7 @@ _ALWAYS_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(_PLANTED_REF),
         (
-            "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes the pre-push leak gate "
+            "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes every tool that reads one "
             "believe the remote already has commits it does not — `git fetch` the remote instead."
         ),
     ),

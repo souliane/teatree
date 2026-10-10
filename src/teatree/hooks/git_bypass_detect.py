@@ -48,8 +48,8 @@ _STORE_REDIRECT_REASON = (
     "(equivalent to `--no-verify`) — the gate reads the owner's own store."
 )
 _PLANTED_REF_REASON = (
-    "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes the pre-push leak gate believe the "
-    "remote already has commits it does not — `git fetch` the remote instead."
+    "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes every tool that reads one "
+    "believe the remote already has commits it does not — `git fetch` the remote instead."
 )
 _HOOKS_PATH_CONFIG_REASON = (
     "BLOCKED: `git config core.hooksPath …` redirects git's hooks directory "

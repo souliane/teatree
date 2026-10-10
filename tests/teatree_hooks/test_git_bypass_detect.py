@@ -213,7 +213,7 @@ class TestRedirectsOfTheGatesConfigAndTermStore:
         "XDG_CONFIG_HOME=/tmp/evil git push",
         "env HOME=/tmp/evil git commit -m x",
         "HOME=/tmp/evil t3 push",
-        # a remote-tracking ref written by hand empties the range the pre-push gate scans
+        # a remote-tracking ref written by hand makes every tool that reads one believe the remote has it
         "git update-ref refs/remotes/origin/main HEAD",
         "git -C ../worktree update-ref -m planted refs/remotes/origin/feature HEAD",
         "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",

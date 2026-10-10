@@ -22,6 +22,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,21 @@ def _make_repo(path: Path, branch: str = "main") -> None:
     _git(path, "commit", "-m", "init")
 
 
+def _repoint_origin(work: Path, origin: Path, url: str) -> None:
+    """Point ``origin`` at *url*, a forge URL no test can reach, and let git resolve that URL to the real *origin* repo.
+
+    The hook lists the remote's heads at the URL git pushes to, so the URL has to answer.
+    """
+    _git(work, "remote", "set-url", "origin", url)
+    _git(work, "config", f"url.{origin}.insteadOf", url)
+
+
+def _make_the_remote_unlistable(work: Path, origin: Path) -> None:
+    """Resolve the remote's URL to a path that is no repository, so ``git ls-remote`` fails at once and offline."""
+    _git(work, "config", "--unset-all", f"url.{origin}.insteadOf")
+    _git(work, "config", f"url.{origin.parent / 'no-such-repository'}.insteadOf", "https://github.com/acme/widget.git")
+
+
 def _make_gh_shim(bin_dir: Path, visibility: str) -> None:
     """Write a fake ``gh`` that answers ``repo view --json visibility``."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +128,7 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     _git(work, "config", "user.name", _NOREPLY_NAME)
     # The origin URL is a local path; rewrite it to a github.com-looking
     # URL so the gate has an owner/repo to ask gh about.
-    _git(work, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+    _repoint_origin(work, origin, "https://github.com/acme/widget.git")
 
     bin_dir = tmp_path / "bin"
     _make_gh_shim(bin_dir, gh_visibility)
@@ -753,7 +769,7 @@ def _public_work_clone(tmp_path: Path, origin: Path) -> tuple[Path, dict[str, st
     _git(tmp_path, "clone", str(origin), str(work))
     _git(work, "config", "user.email", _NOREPLY_EMAIL)
     _git(work, "config", "user.name", _NOREPLY_NAME)
-    _git(work, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+    _repoint_origin(work, origin, "https://github.com/acme/widget.git")
     bin_dir = tmp_path / "bin"
     _make_gh_shim(bin_dir, "PUBLIC")
     env = _hermetic_env()
@@ -1075,7 +1091,7 @@ class TestLeakGateScansOnlyNewlyPublicCommits:
         assert "privacy" in (result.stdout + result.stderr).lower()
 
     def test_undeterminable_public_set_fails_closed(self, tmp_path: Path) -> None:
-        """No resolvable ``origin/<default>`` → scan wider, never narrower.
+        """A remote that cannot be listed → scan wider, never narrower.
 
         With no public ref to subtract, the whole history reachable from the
         pushed sha is scanned, so a finding that predates the branch still
@@ -1087,8 +1103,7 @@ class TestLeakGateScansOnlyNewlyPublicCommits:
         work, env = _public_work_clone(tmp_path, origin)
         _git(work, "checkout", "-b", "feature")
         head = _commit_file(work, "feature.txt", "a clean new feature line\n", "add feature")
-        _git(work, "update-ref", "-d", "refs/remotes/origin/HEAD")
-        _git(work, "update-ref", "-d", "refs/remotes/origin/main")
+        _make_the_remote_unlistable(work, origin)
 
         result = _run_hook(work, env, self._FEATURE_STDIN.format(head=head, tip=ZERO_SHA))
 
@@ -2272,3 +2287,191 @@ class TestTheHookHoldsTheLoadedRegistryToTheCommittedFingerprint:
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _plant_with_update_ref(work: Path, sha: str) -> None:
+    subprocess.run(
+        [str(shutil.which("git")), "update-ref", "--stdin"],
+        input=f"update refs/remotes/origin/feature {sha}\n",
+        cwd=work,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_hermetic_env(),
+    )
+
+
+def _plant_in_packed_refs(work: Path, sha: str) -> None:
+    _git(work, "pack-refs", "--all")
+    packed = work / ".git" / "packed-refs"
+    lines = packed.read_text(encoding="utf-8").splitlines()
+    header = [line for line in lines if line.startswith("#")]
+    entries = [line for line in lines if not line.startswith("#") and not line.endswith(" refs/remotes/origin/feature")]
+    entries.append(f"{sha} refs/remotes/origin/feature")
+    entries.sort(key=lambda line: line.split(" ", 1)[1])
+    packed.write_text("\n".join([*header, *entries]) + "\n", encoding="utf-8")
+
+
+def _plant_by_fetching_head(work: Path, _sha: str) -> None:
+    _git(work, "fetch", ".", "HEAD:refs/remotes/origin/feature")
+
+
+def _plant_by_fetching_another_url(work: Path, _sha: str) -> None:
+    attacker = work.parent / "attacker"
+    _git(work.parent, "clone", str(work), str(attacker))
+    _git(work, "remote", "set-url", "origin", str(attacker))
+    _git(work, "fetch", "origin")
+    _git(work, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+
+
+_PLANTINGS = {
+    "update-ref --stdin": _plant_with_update_ref,
+    "packed-refs": _plant_in_packed_refs,
+    "fetch . HEAD:remotes/origin/x": _plant_by_fetching_head,
+    "set-url + fetch": _plant_by_fetching_another_url,
+}
+
+
+class TestThePushRangeNeverTrustsALocalTrackingRef:
+    """A remote-tracking ref is a local file, so a pusher can write one that says the remote holds the leaking commit.
+
+    Four ways to do it need no ``git push`` the PreToolUse guards could see: ``update-ref --stdin``, a line
+    appended to ``packed-refs``, ``git fetch . HEAD:refs/remotes/origin/x`` and a ``set-url`` plus ``fetch`` from
+    a repository of the pusher's own. The commits a push exposes are the ones the REMOTE does not hold, read from
+    the remote itself (``git ls-remote --heads`` at the URL git is pushing to) and from the sha git reports for
+    the ref; when the remote cannot be listed the range gets wider, never narrower.
+    """
+
+    def _leaking_branch(self, tmp_path: Path) -> tuple[Path, dict[str, str], str]:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "-b", "feature")
+        leak = _commit_file(work, "leak.txt", _PLANTED_SECRET, "add config")
+        return work, env, leak
+
+    @staticmethod
+    def _new_branch_push(leak: str) -> str:
+        return f"refs/heads/feature {leak} refs/heads/feature {ZERO_SHA}\n"
+
+    def test_an_honest_clone_refuses_the_leaking_commit(self, tmp_path: Path) -> None:
+        work, env, leak = self._leaking_branch(tmp_path)
+
+        result = _run_hook(work, env, self._new_branch_push(leak))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    @pytest.mark.parametrize("plant", list(_PLANTINGS.values()), ids=list(_PLANTINGS))
+    def test_a_planted_tracking_ref_does_not_empty_the_range(self, tmp_path: Path, plant: Callable[..., None]) -> None:
+        work, env, leak = self._leaking_branch(tmp_path)
+        plant(work, leak)
+        planted = _rev(work, "refs/remotes/origin/feature")
+        assert planted == leak, "the planting must have worked, or this test proves nothing"
+
+        result = _run_hook(work, env, self._new_branch_push(leak))
+
+        assert result.returncode == 1, "the planted ref emptied the scanned range: " + result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    @pytest.mark.parametrize("plant", list(_PLANTINGS.values()), ids=list(_PLANTINGS))
+    def test_a_planted_tracking_ref_does_not_empty_an_update_range_either(
+        self, tmp_path: Path, plant: Callable[..., None]
+    ) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _git(origin, "checkout", "-b", "feature")
+        tip = _commit_file(origin, "feature.txt", "existing feature line\n", "seed feature branch")
+        _git(origin, "checkout", "main")
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "feature")
+        leak = _commit_file(work, "leak.txt", _PLANTED_SECRET, "update feature")
+        plant(work, leak)
+        assert _rev(work, "refs/remotes/origin/feature") == leak
+
+        result = _run_hook(work, env, f"refs/heads/feature {leak} refs/heads/feature {tip}\n")
+
+        assert result.returncode == 1, "the planted ref emptied the update range: " + result.stdout + result.stderr
+
+    def test_a_remote_that_cannot_be_listed_widens_the_range_instead_of_emptying_it(self, tmp_path: Path) -> None:
+        work, env, leak = self._leaking_branch(tmp_path)
+        _plant_with_update_ref(work, leak)
+        _make_the_remote_unlistable(work, tmp_path / "origin")
+
+        result = _run_hook(work, env, self._new_branch_push(leak))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "could not list" in (result.stdout + result.stderr).lower()
+
+    def test_a_from_ref_prek_derived_from_a_planted_ref_is_not_trusted(self, tmp_path: Path) -> None:
+        work, env, leak = self._leaking_branch(tmp_path)
+        _plant_with_update_ref(work, leak)
+
+        result = _run_hook_synth(work, env, to_ref=leak, from_ref=leak, remote_branch="refs/heads/feature")
+
+        assert result.returncode == 1, "prek's FROM_REF came from the planted ref: " + result.stdout + result.stderr
+
+    def test_the_reported_remote_sha_bounds_an_update_when_the_remote_cannot_be_listed(self, tmp_path: Path) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _commit_file(origin, "prior.txt", _PLANTED_HOME_PATH, "a path already public on main")
+        _git(origin, "checkout", "-b", "feature")
+        tip = _commit_file(origin, "feature.txt", "existing feature line\n", "seed feature branch")
+        _git(origin, "checkout", "main")
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "feature")
+        head = _commit_file(work, "more.txt", "another clean feature line\n", "extend feature")
+        _make_the_remote_unlistable(work, origin)
+
+        result = _run_hook(work, env, f"refs/heads/feature {head} refs/heads/feature {tip}\n")
+
+        assert result.returncode == 0, "git reported the remote's tip, so only the new commit is scanned: " + (
+            result.stdout + result.stderr
+        )
+
+    def test_a_head_the_remote_holds_but_this_clone_never_fetched_is_skipped(self, tmp_path: Path) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(origin, "checkout", "-b", "teammate")
+        _commit_file(origin, "theirs.txt", "a teammate's line\n", "teammate work")
+        _git(work, "checkout", "-b", "feature")
+        head = _commit_file(work, "feature.txt", "a clean feature line\n", "add feature")
+
+        result = _run_hook(work, env, f"refs/heads/feature {head} refs/heads/feature {ZERO_SHA}\n")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_commit_the_remote_already_holds_is_not_scanned_again(self, tmp_path: Path) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _commit_file(origin, "prior.txt", _PLANTED_SECRET, "a leak already public on main")
+        work, env = _public_work_clone(tmp_path, origin)
+        _git(work, "checkout", "-b", "feature")
+        head = _commit_file(work, "feature.txt", "a clean feature line\n", "add feature")
+
+        result = _run_hook(work, env, f"refs/heads/feature {head} refs/heads/feature {ZERO_SHA}\n")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestAnExportedRunnerVariableDoesNotRedirectTheHook:
+    """prek exports ``PRE_COMMIT_REMOTE_URL``; a pusher can export one too, so the URL git passes wins."""
+
+    def test_a_private_looking_url_in_the_environment_does_not_stand_in_for_the_pushed_remote(
+        self, tmp_path: Path
+    ) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        work, env = _public_work_clone(tmp_path, origin)
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["github.com/acme/inner-widget"]))
+        env["PRE_COMMIT_REMOTE_URL"] = "https://github.com/acme/inner-widget.git"
+        _git(work, "checkout", "-b", "feature")
+        leak = _commit_file(work, "leak.txt", _PLANTED_SECRET, "add config")
+
+        result = _run_hook(work, env, f"refs/heads/feature {leak} refs/heads/feature {ZERO_SHA}\n")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "inner-widget" not in result.stdout, "the pushed remote is the one git named"
