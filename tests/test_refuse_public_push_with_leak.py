@@ -461,9 +461,25 @@ def _relocated_checkout(tmp_path: Path, *, scanner: str | None) -> Path:
     return hook
 
 
-def _crashing_scanner(exit_code: int) -> str:
-    """A scanner that always exits ``exit_code`` (never the findings code)."""
-    return f"import sys\nsys.stderr.write('scanner blew up\\n')\nsys.exit({exit_code})\n"
+#: Which of the hook's scans a stand-in scanner crashes on; it is clean on the others.
+_CRASH_WHEN = {
+    "always": "True",
+    "ref": "data.strip() == 'main'",
+    "message": "'add feature' in data and 'diff --git' not in data",
+    "patch": "'diff --git' in data",
+}
+
+
+def _crashing_scanner(exit_code: int, *, when: str = "always") -> str:
+    """A scanner that exits ``exit_code`` (never the findings code) on the scan named by ``when``."""
+    return (
+        "import sys\n"
+        "data = sys.stdin.read()\n"
+        f"if {_CRASH_WHEN[when]}:\n"
+        "    sys.stderr.write('scanner blew up\\n')\n"
+        f"    sys.exit({exit_code})\n"
+        "print('Privacy scan: clean (0 findings)')\n"
+    )
 
 
 _FINDING_SCANNER = "import sys\nsys.stdin.read()\nprint('line 1: banned_term: leak#0')\nsys.exit(3)\n"
@@ -485,10 +501,14 @@ class TestLeakGateFailsClosedOnScannerCrash:
         _git(work, "commit", "-m", "add feature")
         return work, env
 
-    @pytest.mark.parametrize("exit_code", [1, 2, 4])
-    def test_scanner_crash_fails_closed(self, tmp_path: Path, exit_code: int) -> None:
+    @pytest.mark.parametrize(
+        ("when", "exit_code"),
+        [("always", 1), ("patch", 1), ("patch", 2), ("patch", 4), ("message", 1), ("message", 4)],
+        ids=str,
+    )
+    def test_scanner_crash_fails_closed(self, tmp_path: Path, when: str, exit_code: int) -> None:
         work, env = self._clean_feature_commit(tmp_path)
-        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(exit_code))
+        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(exit_code, when=when))
 
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
@@ -1886,10 +1906,9 @@ class TestRefusePublicPushWithLeakingRefName:
     def test_scanner_crash_on_the_ref_name_fails_closed(self, tmp_path: Path) -> None:
         """A ref-name scan that cannot run refuses the push: the name is published for good."""
         work, env = self._public_clone_with_banned_term(tmp_path)
-        _git(work, "checkout", "-b", "feat/clean-name")
-        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(1))
+        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(1, when="ref"))
 
-        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/clean-name"), hook=hook)
+        result = _run_hook(work, env, _push_stdin(work, "refs/heads/main"), hook=hook)
 
         assert result.returncode == 1, "ref-name scanner crash must fail CLOSED: " + result.stdout + result.stderr
         assert "ref-name privacy scan could not run" in result.stdout, result.stdout
