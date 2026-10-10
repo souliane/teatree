@@ -85,6 +85,7 @@ _NON_PUBLIC_VERDICTS: Final = frozenset({"PRIVATE", "INTERNAL"})
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _RANGE_MESSAGE_PATH = "<unpushed-commit-messages>"
+_RANGE_OBJECT_PATH = "<unpushed-commit-objects>"
 _REF_NAME_PATH = "<ref-name>"
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
@@ -321,6 +322,8 @@ class LeakGateScan:
         # paths would otherwise lose its own lines before the gates read them.
         by_path.setdefault(_MESSAGE_PATH, []).extend(self._message_text.splitlines())
         by_path.setdefault(_RANGE_MESSAGE_PATH, []).extend(self._range.commit_messages.splitlines())
+        # Whole objects feed the term gates only: the generic scan would flag a noreply address in an author line.
+        by_path.setdefault(_RANGE_OBJECT_PATH, []).extend(self._range.commit_objects.splitlines())
         by_path.setdefault(_REF_NAME_PATH, []).append(self._branch)
         return by_path
 

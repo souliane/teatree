@@ -770,6 +770,82 @@ class TestACommitMessageIsReadAsStoredAndAsDecoded:
         assert not outcome.pushed
 
 
+class TestATermInAPathOrABranchNameIsRefused:
+    """A registry term can also ride out as a file path (new, renamed, deleted) or as the branch name."""
+
+    @pytest.mark.parametrize("change", ["new", "rename", "delete"])
+    def test_a_path_with_a_term_is_refused(self, repo: Path, leak_env: None, change: str) -> None:
+        if change == "new":
+            (repo / "forbiddenbrand.txt").write_text("a clean line\n")
+        elif change == "rename":
+            run_checked(["git", "mv", "README.md", "forbiddenbrand.md"], cwd=repo)
+        else:
+            _commit(repo, "forbiddenbrand.txt", "a clean line\n", "docs: add a file")
+            run_checked(["git", "push", "origin", "feature"], cwd=repo)
+            (repo / "forbiddenbrand.txt").unlink()
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, f"a {change} path with a term landed"
+        assert not outcome.pushed
+
+    def test_a_branch_name_with_a_term_is_refused(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "checkout", "-b", "forbiddenbrand-fix"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "a branch name with a term landed"
+        assert not outcome.pushed
+
+
+def _hand_made_commit(repo: Path, *, author: str = "agent", committer: str = "agent", header: str = "") -> str:
+    """Write a commit object by hand on ``HEAD``'s tree and move the branch onto it; the object may end in a header."""
+    tree = run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip()
+    parent = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+    ident = f"<{run_checked(['git', 'config', 'user.email'], cwd=repo).stdout.strip()}> 1700000000 +0000"
+    text = f"tree {tree}\nparent {parent}\nauthor {author} {ident}\ncommitter {committer} {ident}\n"
+    text += f"{header}\n" if header else "\na clean message\n"
+    sha = run_checked(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, stdin_text=text).stdout.strip()
+    run_checked(["git", "update-ref", "refs/heads/feature", sha], cwd=repo)
+    return sha
+
+
+class TestACommitObjectIsReadWholeNotOnlyItsMessage:
+    """A commit object carries more text than its message: extra headers and the author and committer names.
+
+    Those travel with the pushed object and no CI job reads commit objects, so the registry-term gates read each whole
+    object. Generic detectors stay off the headers: a noreply address there is not a finding.
+    """
+
+    @pytest.mark.parametrize(
+        "plant",
+        [
+            {"header": "x-note mentions forbiddenbrand"},
+            {"author": "forbiddenbrand"},
+            {"committer": "forbiddenbrand"},
+        ],
+        ids=["extra-header", "author-name", "committer-name"],
+    )
+    def test_a_term_in_a_header_is_refused(self, repo: Path, leak_env: None, plant: dict[str, str]) -> None:
+        _hand_made_commit(repo, **plant)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the term landed in a commit header"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_clean_hand_made_commit_passes(self, repo: Path, leak_env: None) -> None:
+        """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""
+        _hand_made_commit(repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+
+
 def _branch_work_lands_on_main_then_merges_back(repo: Path) -> None:
     """The #4429 shape: the branch's content reaches ``main`` under a different SHA.
 

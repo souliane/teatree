@@ -435,13 +435,38 @@ _display() {
 # Each message is read twice: as git decodes it (UTF-8, which also reads a message stored in another encoding), and as the
 # object stores it. The `encoding` header travels with the pushed commit, so `i18n.commitEncoding=UTF-16LE` on plain bytes
 # makes git decode them into noise while the remote still holds the message, and no CI job reads commit messages.
-_scan_messages_as_text() {
+_scan_message_text() {
   {
     git log --encoding=UTF-8 "${git_read_flags[@]}" --format='%B' "$@" 2>/dev/null </dev/null || exit 1
     git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r raw_sha; do
       git cat-file commit "${raw_sha}" 2>/dev/null </dev/null | sed '1,/^$/d' || exit 1
     done
   } | _scan --text -
+}
+
+# The whole commit object, headers included, for registry terms and opaque ids only: an extra header, the author or the
+# committer name travels with the pushed commit like the message does, and no CI job reads commit objects. The generic
+# detectors stay off, as they do for an annotated tag: a noreply address in an `author` line is not a finding.
+_scan_commit_objects() {
+  git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r object_sha; do
+    git cat-file commit "${object_sha}" 2>/dev/null </dev/null || exit 1
+  done | _scan --text --terms-only -
+}
+
+# Both reads, one report: a scan that could not run outranks a finding, and a finding outranks a clean one.
+_scan_messages_as_text() {
+  local message_rc=0 object_rc=0 message_report object_report code worst=0
+  message_report=$(_scan_message_text "$@" 2>&1) || message_rc=$?
+  object_report=$(_scan_commit_objects "$@" 2>&1) || object_rc=$?
+  printf '%s\n' "${message_report}"
+  [ "${object_rc}" -eq 0 ] || printf '%s\n' "${object_report}"
+  for code in "${message_rc}" "${object_rc}"; do
+    if [ "${code}" -ne 0 ] && [ "${code}" -ne "${findings_code}" ]; then
+      return "${code}"
+    fi
+    [ "${code}" -eq 0 ] || worst="${findings_code}"
+  done
+  return "${worst}"
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
@@ -468,11 +493,19 @@ _attribute_findings() {
     # A finding that lives only in the commit MESSAGE (a Co-authored-by line, a
     # banned term in the subject) has no file, so scan the message on its own.
     sub_rc=0
-    sub=$(_scan_messages_as_text -1 "${sha}" 2>&1) || sub_rc=$?
+    sub=$(_scan_message_text -1 "${sha}" 2>&1) || sub_rc=$?
     if [ "${sub_rc}" -eq "${findings_code}" ]; then
       echo "  ${where} (commit message):"
       printf '%s\n' "${sub}" | sed 's/^/    /'
       printed=0
+    elif [ "${sub_rc}" -eq 0 ]; then
+      # Clean message: a term can still sit in an extra header or in the author or committer name.
+      sub=$(_scan_commit_objects -1 "${sha}" 2>&1) || sub_rc=$?
+      if [ "${sub_rc}" -eq "${findings_code}" ]; then
+        echo "  ${where} (commit object headers):"
+        printf '%s\n' "${sub}" | sed 's/^/    /'
+        printed=0
+      fi
     fi
     # Then each changed file's patch in this commit, named individually.
     while read -r f; do

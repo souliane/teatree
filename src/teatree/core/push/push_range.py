@@ -47,6 +47,7 @@ class PushRange:
     public_tips: tuple[str, ...]
     diff_text: str
     commit_messages: str
+    commit_objects: str
     identities: tuple[str, ...]
 
     @classmethod
@@ -57,13 +58,14 @@ class PushRange:
         diff = _git_output(repo, ["log", *READ_FLAGS, "--format=", "--patch", "--cc", *rev_args])
         messages = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%B", *rev_args])
         identities = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%ae%n%ce", *rev_args])
-        stored = _stored_messages(repo, rev_args)
-        if diff is None or messages is None or identities is None or stored is None:
+        objects = _commit_objects(repo, rev_args)
+        if diff is None or messages is None or identities is None or objects is None:
             return None
         return cls(
             public_tips=tips,
             diff_text=diff.rstrip("\n"),
-            commit_messages=_with_stored(messages, stored),
+            commit_messages=_with_stored(messages, [_decoded(obj.partition(b"\n\n")[2]) for obj in objects]),
+            commit_objects="\n".join(_decoded(obj) for obj in objects),
             identities=tuple(line for line in identities.splitlines() if line),
         )
 
@@ -79,26 +81,30 @@ def _commit_object(repo: Path, sha: str) -> bytes | None:
     return data if code == 0 else None
 
 
-def _stored_messages(repo: Path, rev_args: list[str]) -> list[str] | None:
-    """Each commit's message exactly as the object stores it, which is what the remote holds.
+def _commit_objects(repo: Path, rev_args: list[str]) -> list[bytes] | None:
+    """Each commit exactly as the object stores it, headers and message, which is what the remote holds.
 
     The ``encoding`` header travels with the pushed commit, so ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes
-    ``git log`` decode them into noise while the message is still there to read.
+    ``git log`` decode the message into noise while it is still there to read, and an extra header or the author and
+    committer names are text ``git log --format=%B`` never shows.
     """
     shas = _git_output(repo, ["rev-list", *rev_args])
     if shas is None:
         return None
-    messages: list[str] = []
+    objects: list[bytes] = []
     for sha in shas.split():
         data = _commit_object(repo, sha)
         if data is None:
             return None
-        raw = data.partition(b"\n\n")[2]
-        try:
-            messages.append(raw.decode("utf-8"))
-        except UnicodeDecodeError:
-            messages.append(raw.decode("latin-1"))
-    return messages
+        objects.append(data)
+    return objects
+
+
+def _decoded(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
 
 
 def _with_stored(decoded: str, stored: list[str]) -> str:

@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -2150,6 +2151,125 @@ class TestACommitMessageIsScannedAsStoredAndAsDecoded:
 
         assert report.startswith("1\n"), "the message landed: " + report
         assert f"commit {tip} (commit message):" in report, report
+
+
+@dataclass(frozen=True)
+class _CraftedCommit:
+    """What a hand-made commit object carries beyond ``git commit``'s own output."""
+
+    author_name: str = "Dev"
+    committer_name: str = "Dev"
+    extra_header: str = ""
+    message: str = "a clean message\n"
+    blank_line: bool = True
+
+
+def _craft_commit(repo: Path, plant: _CraftedCommit) -> str:
+    """Write a commit object by hand, on ``HEAD``'s tree, so its headers can carry what ``git commit`` would not."""
+    ident = f"<{_NOREPLY_EMAIL}> 1700000000 +0000"
+    lines = [f"tree {_rev(repo, 'HEAD^{tree}')}", f"parent {_rev(repo, 'HEAD')}"]
+    lines += [f"author {plant.author_name} {ident}", f"committer {plant.committer_name} {ident}"]
+    lines += [plant.extra_header] if plant.extra_header else []
+    text = "\n".join(lines) + "\n" + (f"\n{plant.message}" if plant.blank_line else "")
+    return (
+        subprocess.run(
+            [str(shutil.which("git")), "hash-object", "-t", "commit", "-w", "--stdin"],
+            cwd=repo,
+            input=text.encode(),
+            check=True,
+            capture_output=True,
+            env=_hermetic_env(),
+        )
+        .stdout.decode()
+        .strip()
+    )
+
+
+#: How a commit object can carry a term outside its message.
+_HEADER_PLANTS = {
+    "extra-header": _CraftedCommit(extra_header="x-note mentions second-leak-term"),
+    "author-name": _CraftedCommit(author_name="second-leak-term"),
+    "committer-name": _CraftedCommit(committer_name="second-leak-term"),
+    "header-without-a-blank-line": _CraftedCommit(extra_header="x-note second-leak-term", blank_line=False),
+}
+
+
+class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
+    """A commit object carries more text than its message: extra headers and the author and committer names.
+
+    Those travel with the pushed object and no CI job reads commit objects, so the hook feeds the scanner each whole
+    object for registry terms as well. Generic detectors stay off the headers: a noreply address there is not a finding.
+    """
+
+    @staticmethod
+    def _push(tmp_path: Path, plant: _CraftedCommit) -> tuple[str, str]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        crafted = _craft_commit(work, plant)
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+        result = _run_hook(work, env, f"refs/heads/feature {crafted} refs/heads/feature {ZERO_SHA}\n", hook=hook)
+        return crafted, f"{result.returncode}\n{result.stdout}{result.stderr}"
+
+    @pytest.mark.parametrize("plant", list(_HEADER_PLANTS.values()), ids=list(_HEADER_PLANTS))
+    def test_a_term_in_a_header_is_refused(self, tmp_path: Path, plant: _CraftedCommit) -> None:
+        crafted, report = self._push(tmp_path, plant)
+
+        assert report.startswith("1\n"), "the term landed in a commit header: " + report
+        assert f"commit {crafted}" in report, report
+        assert "leak#" in report, report
+        assert "second-leak-term" not in report, "a refusal never prints the term"
+
+    def test_a_clean_hand_made_commit_passes(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""
+        _crafted, report = self._push(tmp_path, _CraftedCommit())
+
+        assert report.startswith("0\n"), report
+
+
+class TestATermInAPathOrAnAnnouncedNameIsRefused:
+    """A registry term can also ride out as a file path (new, renamed, deleted), a tag name or a branch name.
+
+    A path is a line of the diff header (``diff --git``, ``rename to``, ``--- a/``) and the scanner reads the header
+    lines of a diff as well as its hunks; a ref name is scanned apart, as published.
+    """
+
+    @staticmethod
+    def _push(tmp_path: Path, *, local_ref: str, change: str) -> str:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        origin = tmp_path / "origin"
+        if change == "new":
+            (work / "second-leak-term.txt").write_text("a clean line\n", encoding="utf-8")
+        elif change == "rename":
+            _git(work, "mv", "README.md", "second-leak-term.md")
+        elif change == "delete":
+            _commit_file(origin, "second-leak-term.txt", "a clean line\n", "add a file")
+            _git(work, "pull", "-q", "--ff-only", str(origin), "main")
+            _git(work, "rm", "-q", "second-leak-term.txt")
+        _git(work, "add", "-A")
+        _git(work, "commit", "--allow-empty", "-m", "a clean message")
+        sha = _rev(work, "HEAD")
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+        result = _run_hook(work, env, f"{local_ref} {sha} {local_ref} {ZERO_SHA}\n", hook=hook)
+        return f"{result.returncode}\n{result.stdout}{result.stderr}"
+
+    @pytest.mark.parametrize("change", ["new", "rename", "delete"])
+    def test_a_path_with_a_term_is_refused(self, tmp_path: Path, change: str) -> None:
+        report = self._push(tmp_path, local_ref="refs/heads/feature", change=change)
+
+        assert report.startswith("1\n"), f"a {change} path with a term landed: " + report
+        assert "leak#" in report, report
+
+    @pytest.mark.parametrize("local_ref", ["refs/tags/second-leak-term-v1", "refs/heads/second-leak-term-fix"])
+    def test_a_tag_or_branch_name_with_a_term_is_refused(self, tmp_path: Path, local_ref: str) -> None:
+        report = self._push(tmp_path, local_ref=local_ref, change="none")
+
+        assert report.startswith("1\n"), f"{local_ref} landed: " + report
+        assert "second-leak-term" not in report, "a refusal never prints the term"
 
 
 class TestCommitMessagesRideTheScannersStdin:
