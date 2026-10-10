@@ -1,4 +1,4 @@
-"""No owner-question DM is sent 22:00-08:00 in the owner's zone; the first post held overnight goes out at 08:00.
+"""No owner-question DM is sent 22:00-08:00 in the owner's zone; a night-held first post goes out at 08:00 (#4990).
 
 The owner's zone is the active schedule's, else Europe/Paris — never ``settings.TIME_ZONE`` (UTC), which would
 hold the window two hours off.

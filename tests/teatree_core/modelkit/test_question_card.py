@@ -1,3 +1,5 @@
+"""The owner-question card: what it must carry, what it refuses, and how it reads as plain text (#4990)."""
+
 import dataclasses
 import json
 from collections.abc import Callable
