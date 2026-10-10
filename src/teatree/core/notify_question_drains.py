@@ -34,7 +34,7 @@ import datetime as dt
 import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from functools import reduce
 from operator import or_
@@ -49,10 +49,17 @@ from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, RESURFACE_INTERVAL_HOURS, bump_due, reask_key
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
-from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
+from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
-from teatree.core.owner_question_message import bump_text, digest_text, render_blocks, render_text
-from teatree.core.question_heal import live_owner_questions, withdraw_healed
+from teatree.core.owner_question_message import (
+    bump_text,
+    digest_text,
+    render_blocks,
+    render_text,
+    shown_problems_for,
+    withheld_message,
+)
+from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
 # while the owner is away, so an unbounded drain delivers it all in one burst the
@@ -245,7 +252,7 @@ def resurface_question_backlog(
     rows (an agent's own tool-lack self-report) are excluded, as in the two
     first-post drains.
     """
-    rows = live_owner_questions()
+    rows = _checked(live_owner_questions(), backend=backend)
     if not rows:
         return False, 0
 
@@ -266,6 +273,33 @@ def resurface_question_backlog(
     finally:
         _restore_overlay_env(overlay, previous_overlay)
     return posted, len(rows)
+
+
+def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None") -> list[DeferredQuestion]:
+    """The rows whose text passes the owner-message checks; the others are withheld, never posted, bumped or counted.
+
+    A card passes by construction. A row recorded before cards existed must read plainly NOW, so an old
+    snake_case profile name or ``#123`` never reaches the owner; its already-posted root is replaced by a neutral
+    line (best-effort — an edit sends no notification, and a failed one must not stop the drain).
+    """
+    sendable: list[DeferredQuestion] = []
+    for row in rows:
+        if not (problems := shown_problems_for(row)):
+            sendable.append(row)
+        elif withhold(row, problems) and row.slack_ts:
+            _replace_root(row, backend)
+    return sendable
+
+
+def _replace_root(row: DeferredQuestion, backend: "MessagingBackend | None") -> None:
+    target = backend or resolve_owner_dm_backend()[0]
+    if target is None:
+        return
+    message = withheld_message()
+    try:
+        target.update_message(channel=row.slack_channel, ts=row.slack_ts, text=message.text, blocks=message.blocks)
+    except Exception:  # a failed edit must never stop the drain; the row is already withheld
+        logger.warning("Could not replace the root of withheld question %s", row.pk, exc_info=True)
 
 
 def _post(
@@ -348,7 +382,7 @@ def reask_escalated_questions(
     batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
     at all (#4706).
     """
-    rows = [row for row in live_owner_questions() if row.slack_ts]
+    rows = [row for row in _checked(live_owner_questions(), backend=backend) if row.slack_ts]
     if not rows:
         return 0, 0
 
@@ -434,7 +468,7 @@ def drain_deferred_questions(
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    owner_rows = live_owner_questions()
+    owner_rows = _checked(live_owner_questions(), backend=backend)
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -501,7 +535,7 @@ def drain_unmirrored_deferred_questions(
     is re-read every tick, so the backlog drains steadily instead of at once,
     and a question that has waited hours can wait one more cadence.
     """
-    rows = withdraw_healed(DeferredQuestion.unmirrored_pending())[:_MAX_MIRRORS_PER_TICK]
+    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)[:_MAX_MIRRORS_PER_TICK]
     if not rows:
         return 0, 0
 
