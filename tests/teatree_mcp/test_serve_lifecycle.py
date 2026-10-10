@@ -241,7 +241,7 @@ class TestServeWiring:
 class TestOrphanDetectionIsHostOnly:
     """PID 1 proves the client is gone on a host; in a container it is the entrypoint.
 
-    A server started by ``docker compose run --entrypoint t3 … mcp serve`` has
+    A server started by ``docker compose run --entrypoint sh … mcp serve`` has
     ``getppid() == 1`` from its first instant, so the watchdog hard-exited it before it
     answered a single request (exit 0, empty stdout) and the reaper would SIGTERM every
     sibling server in the same container. That is what blocked routing the MCP server
@@ -281,13 +281,13 @@ class TestOrphanDetectionIsHostOnly:
 # the ``t3`` token that carries ``mcp serve`` is preceded neither by argv[0] nor by a
 # python interpreter — the two forms the matcher was written for.
 _WRAPPED_SERVE_COMMAND = (
-    "docker compose -f /srv/deploy/docker-compose.yml exec -T --env GITLAB_TOKEN "
-    'teatree-worker sh -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
+    "docker compose -f /srv/deploy/docker-compose.yml run --rm --no-deps -T --env GITLAB_TOKEN "
+    '--entrypoint sh teatree-worker -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
     "t3-in-container t3 mcp serve"
 )
 _WRAPPED_SERVE_PLUGIN_COMMAND = (
     "/Users/x/.docker/cli-plugins/docker-compose compose -f /srv/deploy/docker-compose.yml "  # privacy-scan:allow
-    'exec -T teatree-worker sh -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
+    'run --rm --no-deps -T --entrypoint sh teatree-worker -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
     "t3-in-container t3 mcp serve"
 )
 
@@ -298,16 +298,12 @@ _PROLOGUE = f"sh -c {_PROLOGUE_BODY}"
 _COMPOSE = "docker compose -f /srv/deploy/docker-compose.yml"
 _SERVE = "t3-in-container t3 mcp serve"
 
-# Every shape ``deploy/t3`` launches: the two dispatch helpers and the
-# non-TTY final hop share the ``exec -T`` form, the TTY hop drops ``-T``, and the
-# last resort is ``run --rm``. All five put ``t3-in-container`` immediately
-# before ``t3``.
+# The MCP stdio path always uses a one-off container without a TTY. The host
+# process matcher must recognize the launcher while the client is connected.
 _LAUNCHER_COMMANDS = [
     _WRAPPED_SERVE_COMMAND,
     _WRAPPED_SERVE_PLUGIN_COMMAND,
-    f"{_COMPOSE} exec -T teatree-worker {_PROLOGUE} {_SERVE}",
-    f"{_COMPOSE} exec teatree-worker {_PROLOGUE} {_SERVE}",
-    f"{_COMPOSE} run --rm --no-deps --entrypoint sh teatree-worker -c {_PROLOGUE_BODY} {_SERVE}",
+    f"{_COMPOSE} run --rm --no-deps -T --entrypoint sh teatree-worker -c {_PROLOGUE_BODY} {_SERVE}",
 ]
 
 # ``ps`` renders argv, and a shell has already CONSUMED an argument's quotes by
@@ -329,7 +325,7 @@ class TestMatchesTheContainerWrappingLauncher:
     """The launcher form is the ONLY one a dockerised install produces on the host.
 
     ``t3 setup`` replaces ``t3`` on PATH with a launcher that execs
-    ``docker compose exec … t3 mcp serve``, so the server process itself lives in the
+    ``docker compose run -T … t3 mcp serve``, so the server process itself lives in a
     container — where PID 1 proves nothing — and the process the host reaper can
     soundly classify is the LAUNCHER. Matching only the bare form left the host sweep
     matching zero rows on every such install.
