@@ -229,7 +229,7 @@ def _identity_gate_target(repo: Path) -> str | None:
     ``refuse-public-push-with-leak.sh``'s rule through its own resolver: an undetermined visibility is public.
     """
     remote = git.remote_url(repo=str(repo))
-    verdict = visibility_for_remote(remote)
+    verdict = visibility_for_remote(remote, live=True)
     if verdict in _NON_PUBLIC_VERDICTS:
         return None
     slug = git_remote.slug_from_remote(remote) or "<remote>"
@@ -474,11 +474,11 @@ class FastPusher:
         guard = self._branch_guard_finding(branch)
         if guard is not None:
             return FastPushOutcome(ok=False, branch=branch, findings=[guard])
-        push_range = PushRange.resolve(self._repo, branch=branch, default_branch=self._default_branch())
+        push_range = PushRange.resolve(self._repo)
         if push_range is None:
             detail = (
                 "refusing to fast-push: could not resolve what this push would newly expose "
-                f"(no reachable origin/{self._default_branch()} tip) — fail closed"
+                "(git could not walk the range) — fail closed"
             )
             return FastPushOutcome(ok=False, branch=branch, findings=[LeakFinding("push-range", "", detail)])
         run_checked(["git", "add", "-A"], cwd=self._repo)

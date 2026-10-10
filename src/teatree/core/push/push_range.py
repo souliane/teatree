@@ -1,4 +1,4 @@
-"""What the next push newly EXPOSES — HEAD minus every already-public tip.
+"""What the next push newly EXPOSES — HEAD minus every commit the remote already holds.
 
 ``t3 fast-push`` pushes with the hook chain bypassed, so ``git push`` delivers every
 committed-but-unpushed commit on the branch. The in-process leak gates it runs instead
@@ -8,39 +8,32 @@ committed in an earlier turn, with nothing staged now, was pushed with ``ok: Tru
 replaces (``scripts/hooks/refuse-public-push-with-leak.sh``) has always judged the whole
 range. This module is the range that closes the gap.
 
-The set is the hook's, ported rather than re-derived, because the obvious spelling is
-wrong in a way that only shows up in production. A linear ``<remote-sha>..HEAD`` span is
-inflated by a merge-forward with the whole of ``main`` — already public, immutable, and
-full of findings and squash-merge identities that are not this branch's to answer for
-(#3523). So the range is HEAD ``--not`` every already-public tip:
-
-``origin/<default>`` always, and the branch's OWN remote-tracking tip when it exists.
-That second tip is the port of the hook's ``_remote_sha_is_trusted_base``: the hook
-trusts a reported remote sha only once it is confirmed to be the current tip of
-``refs/remotes/<remote>/<branch>``, and reading that ref directly IS that confirmation.
-A force-push whose old tip is no longer an ancestor of HEAD still gets scanned — the
-rewritten commits are reachable from no public ref.
+What the remote holds comes from :mod:`teatree.hooks.remote_holds`, the one function the
+hook shares: the heads the remote LISTS at the URL the push goes to, never a local
+remote-tracking ref, which the pusher can write. It is HEAD ``--not`` those tips, not a
+linear ``<remote-sha>..HEAD`` span, which a merge-forward inflates with the whole of
+``main`` — already public, immutable, and full of findings and squash-merge identities
+that are not this branch's to answer for (#3523). A remote that cannot be listed holds
+nothing here, so the range gets wider and never narrower.
 
 The CONTENT is the hook's own ``git log --patch --cc <range>`` over that set, not a
-two-endpoint ``git diff``. A three-dot ``<default-tip>...HEAD`` diff gets the
-merge-forward right (the merge base IS the merged-in ``main`` tip) but re-scans the
-branch's OWN already-pushed commits, so one flagged line in a long-lived branch's
-published history refuses every subsequent push of it forever — observed on
-``test_an_already_pushed_branch_commit_is_not_re_judged``. Per-commit patches over the
-``--not`` set are subtractive on BOTH axes at once. ``--cc`` keeps a merge's conflict
-resolutions — content in neither parent — in scope while leaving the already-public
-content the merge carried over out of it.
+two-endpoint ``git diff``, which would re-scan the branch's OWN already-pushed commits
+and refuse every later push of a long-lived branch over one flagged line forever.
+``--cc`` keeps a merge's conflict resolutions — content in neither parent — in scope while
+leaving the already-public content the merge carried over out of it.
 
 Everything is read ONCE, at resolution, so the gates consume plain data and there is a
-single failure point. An unresolvable range returns ``None`` and the caller refuses —
-never skips. That is the posture ``FastPusher._branch_guard_finding`` already takes on an
-unresolvable default branch: a bypassed hook chain leaves no second net to fail open into.
+single failure point. A range git cannot walk returns ``None`` and the caller refuses —
+never skips: a bypassed hook chain leaves no second net to fail open into.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.hooks.remote_holds import remote_holdings
 from teatree.utils.run import run_allowed_to_fail
+
+_REMOTE = "origin"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,13 +46,9 @@ class PushRange:
     identities: tuple[str, ...]
 
     @classmethod
-    def resolve(cls, repo: Path, *, branch: str, default_branch: str) -> "PushRange | None":
-        default_tip = _commit_sha(repo, f"refs/remotes/origin/{default_branch}")
-        if default_tip is None:
-            return None
-        branch_tip = _commit_sha(repo, f"refs/remotes/origin/{branch}")
-        tips = (default_tip,) if branch_tip is None else (default_tip, branch_tip)
-        rev_args = ["HEAD", "--not", *tips]
+    def resolve(cls, repo: Path) -> "PushRange | None":
+        tips = _remote_tips(repo)
+        rev_args = ["HEAD", "--not", *tips] if tips else ["HEAD"]
 
         diff = _git_output(repo, ["log", "--format=", "--patch", "--cc", *rev_args])
         messages = _git_output(repo, ["log", "--format=%B", *rev_args])
@@ -74,13 +63,11 @@ class PushRange:
         )
 
 
-def _commit_sha(repo: Path, ref: str) -> str | None:
-    result = run_allowed_to_fail(
-        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-        expected_codes=None,
-        cwd=repo,
-    )
-    return result.stdout.strip() or None
+def _remote_tips(repo: Path) -> tuple[str, ...]:
+    push_url = _git_output(repo, ["remote", "get-url", "--push", _REMOTE])
+    if not push_url or not push_url.strip():
+        return ()
+    return remote_holdings(repo, remote_url=push_url.strip(), remote_name=_REMOTE).tips
 
 
 def _git_output(repo: Path, args: list[str]) -> str | None:

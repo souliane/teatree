@@ -121,7 +121,7 @@ def _resolve(url: str, *, live: bool = False) -> _Resolution:
     return _resolve_live(slug) if live else _resolve_declared(slug)
 
 
-def visibility_for_remote(url: str) -> str:
+def visibility_for_remote(url: str, *, live: bool = False) -> str:
     """Return ``url``'s visibility verdict, or ``UNKNOWN_VERDICT``.
 
     The remote is normalized to a HOST-QUALIFIED slug first
@@ -130,9 +130,10 @@ def visibility_for_remote(url: str) -> str:
     would default every remote to the GitHub probe.
 
     A reachable PUBLIC answer wins over a host-qualified declaration. When
-    the forge cannot answer, a matching declaration yields PRIVATE.
+    the forge cannot answer, a matching declaration yields PRIVATE. With *live*
+    only the forge's answer, asked now, counts (see the module docstring).
     """
-    return _resolve(url).verdict
+    return _resolve(url, live=live).verdict
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -8,6 +8,7 @@ runtime so this test file never contains a literal matchable token.
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ from teatree.core.push.fast_push import (
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.hooks import _repo_visibility
+from teatree.hooks._repo_visibility import slug_for_remote_url
 from teatree.utils.run import CommandFailedError, run_checked
 
 
@@ -539,13 +541,11 @@ class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
         assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
         assert not outcome.pushed
 
-    def test_an_unresolvable_push_range_is_a_hard_refusal(self, repo: Path, leak_env: None) -> None:
-        # The default branch NAME resolves but its remote tip does not (a partial fetch).
-        # `_branch_guard_finding` already fails closed on an unresolvable default branch;
-        # a range nothing can bound gets the same posture rather than a silent skip.
+    def test_a_push_range_git_cannot_walk_is_a_hard_refusal(self, repo: Path, leak_env: None) -> None:
+        # A range nothing can bound is refused, never skipped: `git log` failing is a scan that did not happen.
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push.git.default_branch", return_value="development"):
+        with patch("teatree.core.push.push_range._git_output", return_value=None):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -601,6 +601,74 @@ class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
 
         assert outcome.ok, outcome.findings
         assert outcome.pushed
+
+
+class TestThePushRangeNeverTrustsALocalTrackingRef:
+    """``t3 fast-push`` bypasses the hook, so its own range has to be as hard to empty as the hook's.
+
+    A remote-tracking ref is a file the pusher can write, and one that says ``origin/main`` already holds the
+    unpushed leak empties the range. The range is what the remote lists at the URL the push goes to, from the same
+    ``teatree.hooks.remote_holds`` the pre-push hook runs.
+    """
+
+    def _leak_committed(self, repo: Path) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+
+    def test_a_planted_tracking_ref_does_not_empty_the_range(self, repo: Path, leak_env: None) -> None:
+        self._leak_committed(repo)
+        head = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        run_checked(["git", "update-ref", "refs/remotes/origin/main", head], cwd=repo)
+        run_checked(["git", "update-ref", "refs/remotes/origin/feature", head], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the planted refs emptied the range"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_url_rewrite_that_splits_the_listing_from_the_push_does_not_empty_the_range(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        self._leak_committed(repo)
+        origin = tmp_path / "origin.git"
+        fake = tmp_path / "fake.git"
+        run_checked(["git", "clone", "--bare", str(repo), str(fake)])
+        run_checked(["git", "config", f"url.{fake}.insteadOf", str(origin)], cwd=repo)
+        run_checked(["git", "config", f"url.{origin}.pushInsteadOf", str(origin)], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the listing read the fake repository while the push went to the real one"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+
+    def test_a_remote_that_cannot_be_listed_widens_the_range(self, repo: Path, leak_env: None, tmp_path: Path) -> None:
+        _commit(repo, "old.md", "mentions forbiddenbrand here\n", "docs: forbiddenbrand notes")
+        run_checked(["git", "push", "-u", "origin", "feature"], cwd=repo)
+        run_checked(["git", "remote", "set-url", "origin", str(tmp_path / "no-such-repository")], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "history the remote already holds is re-judged when the remote cannot say so"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+
+    def test_a_planted_private_cache_entry_does_not_waive_the_identity_gate(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        origin = tmp_path / "origin.git"
+        run_checked(["git", "remote", "set-url", "origin", "git@github.com:acme/widget.git"], cwd=repo)
+        run_checked(["git", "remote", "set-url", "--push", "origin", str(origin)], cwd=repo)
+        cache = tmp_path / "viscache"
+        cache.mkdir(exist_ok=True)
+        entry = {"ts": time.time(), "visibility": "PRIVATE"}
+        (cache / "repo-visibility-cache.json").write_text(
+            json.dumps({slug_for_remote_url("git@github.com:acme/widget.git"): entry}), encoding="utf-8"
+        )
+        _commit(repo, "clean.py", "x = 1\n", "feat: clean", email="dev@example.com")
+
+        outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok, "a cached PRIVATE waived the identity gate"
+        assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
 
 
 def _branch_work_lands_on_main_then_merges_back(repo: Path) -> None:
