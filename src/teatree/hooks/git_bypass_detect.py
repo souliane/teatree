@@ -33,6 +33,18 @@ _AUTO_MERGE_REASON = (
 )
 _NO_VERIFY_REASON = "BLOCKED: `--no-verify` — fix the hook failure instead of bypassing it."
 _NO_GPG_REASON = "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval."
+_SKIP_REASON = (
+    "BLOCKED: `SKIP=<hook id>` on a command that commits, pushes or runs prek switches that hook off "
+    "(equivalent to `--no-verify`) — fix the hook failure instead."
+)
+_GIT_CONFIG_ENV_REASON = (
+    "BLOCKED: `GIT_CONFIG_*=` on a command that commits, pushes or runs prek redirects git's configuration, "
+    "its hooks directory included (equivalent to `--no-verify`) — fix the hook failure instead."
+)
+_HOOKS_PATH_CONFIG_REASON = (
+    "BLOCKED: `git config core.hooksPath …` redirects git's hooks directory "
+    "(equivalent to `--no-verify`) — fix the hook failure instead."
+)
 
 # ``git`` accepts its own global options between the program word and the
 # subcommand (``git -c push.default=simple push``, ``git -C <dir> push``,
@@ -47,9 +59,17 @@ _GIT_GLOBAL_OPTS: str = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
 # all four schedule the identical auto-merge.
 _AUTO_MERGE_PUSH_OPTION: str = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
 
+# What a hook is attached to: a commit, a push, or prek itself running the hooks.
+_HOOKED_RUN: str = rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b|(?<![\w./-])(?:prek|pre-commit)(?=\s|$))"
+
 # VALUE/CONFIG patterns — scanned against the RAW command (quoting cannot evade).
 _RAW_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE), _HOOKS_PATH_REASON),
+    (re.compile(r"\bgit\b.*\bconfig\b.*\bcore\.hooksPath[ \t]+[^\s;&|]", re.IGNORECASE), _HOOKS_PATH_CONFIG_REASON),
+    (
+        re.compile(rf"(?s)\bGIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)=.*?{_HOOKED_RUN}"),
+        _GIT_CONFIG_ENV_REASON,
+    ),
     (re.compile(rf"\bgit\s+{_GIT_GLOBAL_OPTS}push\b.*{_AUTO_MERGE_PUSH_OPTION}"), _AUTO_MERGE_REASON),
 )
 
@@ -58,6 +78,7 @@ _RAW_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
 _FLAG_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgit\s+\S+.*--no-verify\b"), _NO_VERIFY_REASON),
     (re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"), _NO_GPG_REASON),
+    (re.compile(rf"(?s)(?<!\w)SKIP=.*?{_HOOKED_RUN}"), _SKIP_REASON),
 )
 
 _QUOTED_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")

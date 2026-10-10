@@ -86,6 +86,8 @@ _GIT_GLOBAL_OPTS = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
 # The four spellings git accepts for one push option, all scheduling the same
 # auto-merge: ``-o V``, ``-oV``, ``--push-option V``, ``--push-option=V``.
 _AUTO_MERGE_PUSH_OPTION = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
+# What a hook is attached to: a commit, a push, or prek itself running the hooks.
+_HOOKED_RUN = rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b|(?<![\w./-])(?:prek|pre-commit)(?=\s|$))"
 
 # Forbidden command patterns → deny messages.  Each entry is
 # (compiled regex matching the Bash command, human-readable deny reason).
@@ -104,6 +106,22 @@ _RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
         (
             "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
             "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        # ``git config core.hooksPath <dir>`` sets the same redirect as the ``-c`` form, for good.
+        re.compile(r"\bgit\b.*\bconfig\b.*\bcore\.hooksPath[ \t]+[^\s;&|]", re.IGNORECASE),
+        (
+            "BLOCKED: `git config core.hooksPath …` redirects git's hooks directory "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        # ``GIT_CONFIG_*=`` feeds git the same configuration without a ``-c`` or a ``git config``.
+        re.compile(rf"(?s)\bGIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)=.*?{_HOOKED_RUN}"),
+        (
+            "BLOCKED: `GIT_CONFIG_*=` on a command that commits, pushes or runs prek redirects git's "
+            "configuration, its hooks directory included (equivalent to `--no-verify`) — fix the hook failure instead."
         ),
     ),
     (
@@ -210,6 +228,14 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
+    ),
+    (
+        # prek honours ``SKIP=<hook id>``: the same escape as ``--no-verify``, for one hook.
+        re.compile(rf"(?s)(?<!\w)SKIP=.*?{_HOOKED_RUN}"),
+        (
+            "BLOCKED: `SKIP=<hook id>` on a command that commits, pushes or runs prek switches that hook off "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
     ),
     # NOTE: ``gh pr merge`` / ``glab mr merge`` are NOT static-blocked here.
     # A pure regex cannot tell a teatree-managed repo (must use the keystone

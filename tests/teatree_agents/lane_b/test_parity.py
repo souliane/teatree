@@ -414,6 +414,15 @@ class TestBashHardDenyCorpusParity:
         ("git commit no-verify", "git commit -m x --no-" + "verify", _lane_a_direct_denies),
         ("git push no-verify", "git push --no-" + "verify", _lane_a_direct_denies),
         ("git hooksPath silencer", "git -c core.hooks" + "Path=/dev/null commit -m x", _lane_a_direct_denies),
+        ("git config hooksPath", "git config --global core.hooks" + "Path /dev/null", _lane_a_direct_denies),
+        ("SKIP on a push", "SKIP=refuse-public-push-with-leak git push", _lane_a_direct_denies),
+        ("SKIP on prek", "SKIP=x prek run", _lane_a_direct_denies),
+        (
+            "GIT_CONFIG_COUNT on a push",
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=x GIT_CONFIG_VALUE_0=y git push",
+            _lane_a_direct_denies,
+        ),
+        ("GIT_CONFIG_GLOBAL on a push", "GIT_CONFIG_GLOBAL=/tmp/evil git push", _lane_a_direct_denies),
         ("secret cat netrc", "cat ~/.netrc", _lane_a_secret_denies),
         ("pass show unredirected", "pass show ci/token", _lane_a_secret_denies),
         (
@@ -490,6 +499,12 @@ class TestBashHardDenyCorpusParity:
                 (
                     "git commit -m x --no-" + "verify",
                     "git -c core.hooks" + "Path=/dev/null commit -m x",
+                    "git config core.hooks" + "Path /dev/null",
+                    "git config --get core.hooks" + "Path",
+                    "SKIP=refuse-public-push-with-leak git push",
+                    "SKIP=x make lint",
+                    "GIT_CONFIG_GLOBAL=/tmp/evil git push",
+                    "GIT_CONFIG_GLOBAL=/dev/null git status",
                     "git push -o merge_request.merge_when_pipeline_succeeds",
                     "git -c push.default=simple push -o merge_request.merge_when_pipeline_succeeds",
                     "git --no-pager push --push-option=merge_request.merge_when_pipeline_succeeds",
