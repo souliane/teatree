@@ -171,8 +171,8 @@ class TestMandatoryE2EScope(TestCase):
     def test_repo_inside_declared_scope_uses_path_classifier(self) -> None:
         assert self._resolve("https://github.com/acme/web/issues/1") is True
 
-    def test_gitlab_merge_request_inside_declared_scope_uses_path_classifier(self) -> None:
-        assert self._resolve("https://gitlab.acme.example/acme/web/-/merge_requests/9") is True
+    def test_gitlab_merge_request_outside_declared_scope_skips_unreadable_diff(self) -> None:
+        assert self._resolve("https://gitlab.acme.example/acme/api/-/merge_requests/9", unreadable=True) is False
 
     def test_unparsable_issue_url_uses_path_classifier(self) -> None:
         assert self._resolve("https://github.com/acme/api") is True
