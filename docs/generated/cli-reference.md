@@ -14019,15 +14019,16 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree questions record [OPTIONS] QUESTION
 
- Record a deferred question by hand — the agent-facing capture surface.
+ Record a question by hand — the agent-facing capture surface.
 
  ``--dedupe-marker`` is the column the scanners set, so a row recorded here
  collapses onto the scanner's row for one underlying signal. ``--decision`` is
- the deny-by-default allowlist (#5096): only a named owner decision with a
- ``--checked``
- fact reaches the owner's DM, and its marker defaults to ``<decision>:<question
- fingerprint>`` so
- the same question is never asked twice.
+ the deny-by-default allowlist (#5096): only a named owner decision, with
+ ``--checked`` facts,
+ ``--why`` and ``--blocker``, reaches the owner's DM as a short card
+ (``--options`` become its buttons),
+ and its marker defaults to ``<decision>:<question fingerprint>`` so the same
+ question is never asked twice.
 
  There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
  and the ``AskUserQuestion`` PreToolUse hook records its own rows through
@@ -14037,8 +14038,9 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │ *    question      TEXT  The question text. [required]                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --options              TEXT  Verbatim JSON-encoded ``AskUserQuestion``       │
-│                              options.                                        │
+│ --options              TEXT  JSON list of 2 to 4 options, {"label",          │
+│                              "description", "recommended"}; the recommended  │
+│                              one first.                                      │
 │ --dedupe-marker        TEXT  Escalate-once scope; an open question already   │
 │                              carrying it is returned unchanged.              │
 │ --decision             TEXT  Only for a decision the owner alone makes:      │
@@ -14047,6 +14049,10 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 │                              Absent: internal.                               │
 │ --checked              TEXT  A fact you checked before asking; repeat per    │
 │                              fact. Required with --decision.                 │
+│ --why                  TEXT  One sentence the owner reads: why you ask.      │
+│                              Required with --decision.                       │
+│ --blocker              TEXT  What stops you deciding; kept for operators,    │
+│                              never shown to the owner.                       │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

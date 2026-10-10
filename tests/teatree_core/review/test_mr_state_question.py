@@ -32,7 +32,6 @@ from teatree.core.notify_question_drains import drain_unmirrored_deferred_questi
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.core.review import mr_state_question
 from teatree.core.review.mr_state_question import (
-    OwnerAsk,
     ask_mr_state,
     head_tag,
     mr_state_marker,
@@ -41,7 +40,7 @@ from teatree.core.review.mr_state_question import (
     retire_head_bound_question,
 )
 from teatree.on_behalf_gate import OnBehalfVerdict
-from tests._owner_channel import answer_on_slack
+from tests._owner_channel import answer_on_slack, legacy_owner_row, owner_card
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 _MR = "https://git.example.com/acme/app/-/merge_requests/41"
@@ -50,7 +49,7 @@ _THIRD_MR = "https://git.example.com/acme/app/-/merge_requests/43"
 _REASON = "the forge reports no head pipeline and the branch is behind target."
 _HEAD = "a1b2c3d4e5f6" + "0" * 28
 _NEW_HEAD = "f6e5d4c3b2a1" + "0" * 28
-_CHECKED = ("review_request_post refused: no_ticket",)
+_OWNER = owner_card(OwnerDecision.PUBLIC_POST, "The review request was refused.")
 
 
 def _open_mr_state_questions() -> list[DeferredQuestion]:
@@ -58,9 +57,7 @@ def _open_mr_state_questions() -> list[DeferredQuestion]:
 
 
 def _ask_owner(mr_url: str = _MR, *, reason: str = _REASON, head_sha: str = "") -> DeferredQuestion | None:
-    return ask_mr_state(
-        mr_url=mr_url, reason=reason, head_sha=head_sha, owner=OwnerAsk(OwnerDecision.PUBLIC_POST, _CHECKED)
-    )
+    return ask_mr_state(mr_url=mr_url, reason=reason, head_sha=head_sha, owner=_OWNER)
 
 
 def _owner_dm_backend(*, ts: str = "1700000000.000000") -> MagicMock:
@@ -332,10 +329,10 @@ class TestAnOwnerAskIsNeverAbsorbed(TestCase):
         assert internal.pk in [row.pk for row in _open_mr_state_questions()]
 
     def test_a_retired_owner_question_does_not_absorb_a_different_one_at_its_head(self) -> None:
-        first = _ask_owner(reason="no independent cold review covers its current head yet.", head_sha=_HEAD)
+        first = _ask_owner(reason="awaiting_cold_review", head_sha=_HEAD)
         retire_head_bound_question(_MR, reason="a cold review holds this head")
 
-        second = _ask_owner(reason="sending the review request was refused (pr_metadata_invalid).", head_sha=_HEAD)
+        second = _ask_owner(reason="pr_metadata_invalid", head_sha=_HEAD)
 
         assert first is not None
         assert second is not None
@@ -356,11 +353,10 @@ class TestAnOwnerAskIsNeverAbsorbed(TestCase):
 class TestAPreDeployUrlMarkerIsStillRead(TestCase):
     def _legacy_owner_row(self, *, head_sha: str = "") -> DeferredQuestion:
         subject = f"{_MR} {head_tag(head_sha)}" if head_sha else _MR
-        return DeferredQuestion.record(
+        return legacy_owner_row(
             f"I cannot determine the state of {subject} — {_REASON} How should I treat it?",
-            dedupe_marker=f"mr-state:{canonical_mr_url(_MR)}",
             decision=OwnerDecision.PUBLIC_POST,
-            checked=_CHECKED,
+            dedupe_marker=f"mr-state:{canonical_mr_url(_MR)}",
         )
 
     def test_an_open_legacy_question_is_not_asked_again(self) -> None:
@@ -490,7 +486,8 @@ class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
 
         assert row is not None
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
-        assert row.evidence == {"decision": "public_post", "checked": list(_CHECKED)}
+        assert row.evidence["decision"] == "public_post"
+        assert row.evidence["checked"] == ["The review request was refused."]
 
     def test_an_ask_naming_no_decision_stays_internal(self) -> None:
         row = ask_mr_state(mr_url=_MR, reason=_REASON)

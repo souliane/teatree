@@ -17,12 +17,12 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _resurface_text, drain_deferred_questions
 from teatree.core.notify_types import DELIVERED
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 
 class TestResurfaceMessageHasNoHostCli(TestCase):
     def test_message_carries_no_t3_cli_instruction(self) -> None:
-        row = DeferredQuestion.record(question="Should I merge PR #7?", session_id="s1")
+        row = DeferredQuestion.record(question="Should I merge the widget change?", session_id="s1")
 
         text = _resurface_text(row)
 
@@ -36,14 +36,14 @@ class TestResurfaceMessageHasNoHostCli(TestCase):
 
     def test_message_still_renders_question_and_options(self) -> None:
         row = DeferredQuestion.record(
-            question="Pick a rollout",
+            question="Pick a rollout?",
             options_json=json.dumps([{"label": "canary", "description": "10% first"}]),
             session_id="s2",
         )
 
         text = _resurface_text(row)
 
-        assert "Pick a rollout" in text
+        assert "Pick a rollout?" in text
         assert "canary" in text
         assert "t3 " not in text
 
@@ -63,7 +63,7 @@ class TestDrainExcludesInternalAudience(TestCase):
 
     def test_owner_row_drains_but_internal_peer_is_excluded(self) -> None:
         owner = DeferredQuestion.record(
-            "Should I merge PR #7?", decision=OwnerDecision.IRREVERSIBLE, checked=["CI is green"]
+            "Should I merge the widget change?", card=owner_card(OwnerDecision.IRREVERSIBLE, "CI is green")
         )
         DeferredQuestion.record(
             "I run shell-denied and cannot file the issue.",
@@ -96,7 +96,7 @@ class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
         )
 
     def test_a_delivered_head_does_not_block_the_rest_of_the_backlog(self) -> None:
-        rows = [DeferredQuestion.record(f"Q{i}", **OWNER_DECISION) for i in range(5)]
+        rows = [DeferredQuestion.record(f"Q{i}?", **OWNER_DECISION) for i in range(5)]
         for row in rows[:3]:
             self._delivered(row)
 
@@ -111,7 +111,7 @@ class TestDrainAdvancesPastAlreadyDeliveredRows(TestCase):
 
     def test_total_reports_the_backlog_not_the_capped_slice(self) -> None:
         for i in range(5):
-            DeferredQuestion.record(f"Q{i}", **OWNER_DECISION)
+            DeferredQuestion.record(f"Q{i}?", **OWNER_DECISION)
 
         with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED):
             _delivered, total = drain_deferred_questions()
@@ -136,7 +136,7 @@ class TestOnlyASentPingCountsAsDelivered(TestCase):
         )
 
     def test_a_failed_ping_does_not_mark_the_question_delivered(self) -> None:
-        row = DeferredQuestion.record("Should I merge PR #7?", **OWNER_DECISION)
+        row = DeferredQuestion.record("Should I merge the widget change?", **OWNER_DECISION)
         self._ping(row, BotPing.Status.FAILED)
 
         with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
@@ -147,7 +147,7 @@ class TestOnlyASentPingCountsAsDelivered(TestCase):
         assert row.question in str(notify.call_args.args[0])
 
     def test_a_noop_ping_does_not_mark_the_question_delivered(self) -> None:
-        row = DeferredQuestion.record("Pick a rollout", **OWNER_DECISION)
+        row = DeferredQuestion.record("Pick a rollout?", **OWNER_DECISION)
         self._ping(row, BotPing.Status.NOOP)
 
         with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
@@ -183,7 +183,7 @@ class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
             with self.subTest(status=str(status)):
                 DeferredQuestion.objects.all().delete()
                 BotPing.objects.all().delete()
-                rows = [DeferredQuestion.record(f"Q{i}", **OWNER_DECISION) for i in range(5)]
+                rows = [DeferredQuestion.record(f"Q{i}?", **OWNER_DECISION) for i in range(5)]
                 self._ping(rows[0], status)
 
                 with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:
@@ -195,7 +195,7 @@ class TestARowTheSendPathWillNotRedeliverFreesItsCapSlot(TestCase):
                 assert (delivered, total) == (3, 5)
 
     def test_a_stale_sending_claim_stays_redeliverable(self) -> None:
-        row = DeferredQuestion.record("Should I merge PR #7?", **OWNER_DECISION)
+        row = DeferredQuestion.record("Should I merge the widget change?", **OWNER_DECISION)
         self._ping(row, BotPing.Status.SENDING, age=BotPing.SENDING_STALE_AFTER + timedelta(seconds=1))
 
         with patch("teatree.core.notify_question_drains.notify_user_outcome", return_value=DELIVERED) as notify:

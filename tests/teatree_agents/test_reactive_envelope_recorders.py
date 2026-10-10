@@ -7,7 +7,9 @@ from django.test import TestCase
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
 from teatree.answer_handback import collect
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, Ticket
+from teatree.core.models.deferred_question import DeferredQuestionAudit
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
+from tests._owner_channel import assert_a_plain_card
 
 _SUGGESTIONS = [
     {
@@ -111,3 +113,75 @@ class TestScanningNewsDigestDelivery(TestCase):
 
         notify.assert_not_called()
         assert PendingArticleSuggestion.objects.count() == 2
+
+
+def _task_in(phase: str) -> Task:
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, overlay="acme")
+    return Task.objects.create(
+        ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id=phase), phase=phase
+    )
+
+
+def _draft(text: str) -> dict[str, object]:
+    return {"answer": {"text": text, "thread_ref": "C0DEMOCHAN1/1700000000.000100"}}
+
+
+class TestAnAnswerDraftIsAskedAsACard(TestCase):
+    def test_a_clean_draft_is_quoted_on_a_card_that_recommends_posting_it(self) -> None:
+        task = _task_in("answering")
+
+        record_reactive_envelopes(task, _draft("Thanks, alice. The fix ships on Monday."), phase="answering")
+
+        row = DeferredQuestion.objects.get()
+        text = assert_a_plain_card(row, "C0DEMOCHAN1", "1700000000")
+        assert row.parked_task_id == task.pk
+        assert row.evidence["decision"] == "public_post"
+        assert "> Thanks, alice. The fix ships on Monday." in text
+        assert text.index("[Post it] (recommended)") < text.index("[Do not post]")
+
+    def test_a_draft_that_fails_the_checks_is_withheld_on_its_task(self) -> None:
+        task = _task_in("answering")
+
+        record_reactive_envelopes(task, _draft("See #42 and acme_nightly for details."), phase="answering")
+
+        assert not DeferredQuestion.owner_pending().exists()
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.parked_task_id == task.pk
+        assert row.dedupe_marker == f"answer-draft:{task.pk}"
+        audit = DeferredQuestionAudit.objects.get(question=row, action="withheld")
+        assert "#42" in audit.note
+        assert "acme_nightly" in audit.note
+
+    def test_a_200_word_draft_is_withheld_not_cut_short(self) -> None:
+        task = _task_in("answering")
+
+        record_reactive_envelopes(task, _draft(" ".join(["word"] * 200)), phase="answering")
+
+        assert not DeferredQuestion.owner_pending().exists()
+        assert "words; at most 120" in DeferredQuestionAudit.objects.get(action="withheld").note
+
+    def test_a_second_pass_over_the_same_task_withholds_once(self) -> None:
+        task = _task_in("answering")
+
+        record_reactive_envelopes(task, _draft("See #42."), phase="answering")
+        record_reactive_envelopes(task, _draft("See #42."), phase="answering")
+
+        assert DeferredQuestion.objects.count() == 1
+        assert DeferredQuestionAudit.objects.filter(action="withheld").count() == 1
+
+
+class TestATriageBatchIsAskedAsACard(TestCase):
+    def test_the_card_counts_the_suggestions_and_names_no_task_or_label(self) -> None:
+        task = _task_in("triage_assessing")
+        recommendations = [
+            {"issue_url": "https://git.acme.example/widgets/issues/1", "verdict": "close", "rationale": "dupe"},
+            {"issue_url": "https://git.acme.example/widgets/issues/2", "verdict": "keep", "rationale": "valid"},
+        ]
+
+        record_reactive_envelopes(task, {"triage_recommendations": recommendations}, phase="triage_assessing")
+
+        row = DeferredQuestion.owner_pending().get()
+        text = assert_a_plain_card(row, "needs-triage", "triage-batch", "/t3:")
+        assert "2 open issue(s)" in text
+        assert row.parked_task_id == task.pk

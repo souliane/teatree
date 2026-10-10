@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from teatree.config.gate_evidence import GateEvidence
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
@@ -36,6 +37,17 @@ if TYPE_CHECKING:
 
 #: Namespaces the marker so a gate question can never collide with a repair one.
 MARKER_PREFIX = "inert-gate:"
+
+_CARD = QuestionCard(
+    decision=OwnerDecision.ARCHITECTURE,
+    checked=("Each of them is switched off and nobody recorded a decision to leave it off.",),
+    blocker="Switching a check on or removing it changes how the factory behaves.",
+    why="I would switch each one on, record why it stays off, or remove it.",
+    options=(
+        CardOption("Yes, decide for me", "I make the call for each one and tell you what changed.", recommended=True),
+        CardOption("No, I decide", "I leave them all off until you say what to do."),
+    ),
+)
 
 
 @dataclass(slots=True)
@@ -59,23 +71,21 @@ class InertGateQuestionScanner:
             return []
 
         settings = [finding.setting for finding in undecided]
-        question = _question_text(undecided)
         DeferredQuestion.record(
-            question,
+            f"Can I decide what to do with the {len(undecided)} shipped checks that are switched off?",
             dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(settings))}",
-            decision=OwnerDecision.ARCHITECTURE,
-            checked=[f"{finding.label} (feature_inertness: off, no recorded decision)" for finding in undecided],
+            card=_CARD,
         )
         return [
             ScanSignal(
                 kind="gate.undecided",
-                summary=question,
+                summary=_summary(undecided),
                 payload={"settings": settings, "count": len(settings)},
             )
         ]
 
 
-def _question_text(undecided: list["InertFeature"]) -> str:
+def _summary(undecided: list["InertFeature"]) -> str:
     lines = "\n".join(f"  - {finding.setting}: {finding.detail}" for finding in undecided)
     return (
         f"{len(undecided)} shipped gates are off and nobody recorded a decision to leave them off. "

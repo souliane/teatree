@@ -35,7 +35,7 @@ from teatree.core.models import (
     ReviewVerdict,
     Ticket,
 )
-from teatree.core.review.mr_state_question import OwnerAsk, ask_mr_state, head_tag, mr_state_marker
+from teatree.core.review.mr_state_question import ask_mr_state, mr_state_marker
 from teatree.loop import followup_dry_run
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -47,7 +47,7 @@ from teatree.loop.scanners.review_request_send import (
     ReviewRequestSendScanner,
 )
 from teatree.types import RawAPIDict
-from tests._owner_channel import answer_on_slack
+from tests._owner_channel import answer_on_slack, assert_a_plain_card, owner_card
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 from tests.teatree_loop.test_followup_dry_run import _file_backed_default_database, _InlineThreadPoolExecutor
@@ -284,19 +284,20 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
         assert not ReviewRequestPost.objects.filter(mr_url=_URL).exists()
         assert _verdicts(signals) == [("review_request.send_refused", "awaiting_cold_review")]
         assert signals[0].payload["asked"] is True
-        assert head_tag(_HEAD) in _pending_question().question
+        assert _pending_question().dedupe_marker.endswith(f"@{_HEAD[:12]}")
 
-    def test_post_ask_is_public_post_owner_row_with_checked(self) -> None:
+    def test_post_ask_is_a_public_post_card_that_names_no_internal_state(self) -> None:
         _ready_ticket(verdict_at=_OLD_HEAD)
 
         with _world(self.slack, self.forge):
             _followup_pass(self.forge, self.slack)
 
         question = _pending_question()
-        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
         assert question.evidence["decision"] == "public_post"
-        checked = " | ".join(question.evidence["checked"])
-        assert all(fact in checked for fact in ("awaiting_cold_review", _HEAD[:12], "request_review"))
+        text = assert_a_plain_card(question, "awaiting_cold_review", _HEAD[:12], "request_review", "[head")
+        assert "without an independent review" in text
+        assert f"<{_URL}|this pull request>" in text
+        assert text.index(f"[{_POST}] (recommended)") < text.index(f"[{_IN_PERSON}]") < text.index(f"[{_NOT_READY}]")
 
     def test_a_hold_at_the_head_sends_nothing(self) -> None:
         _ready_ticket(verdict="hold")
@@ -399,12 +400,31 @@ class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
         assert _verdicts(signals) == [("review_request.send_refused", "pr_metadata_invalid")]
         assert _mr_state_questions() == [_ASKED_AT_HEAD]
 
+    def test_a_title_the_owner_can_read_is_quoted_on_the_card(self) -> None:
+        self.forge.my_prs = [_mr(title="thing without a type")]
+        _ready_ticket()
+
+        with _world(self.slack, self.forge):
+            _followup_pass(self.forge, self.slack)
+
+        assert "> thing without a type" in assert_a_plain_card(_pending_question())
+
+    def test_a_title_carrying_an_issue_number_is_left_off_the_card(self) -> None:
+        self.forge.my_prs = [_mr(title="thing without a type (#42)")]
+        _ready_ticket()
+
+        with _world(self.slack, self.forge):
+            _followup_pass(self.forge, self.slack)
+
+        text = assert_a_plain_card(_pending_question(), "#42", "thing without a type")
+        assert "> " not in text
+
     def test_a_refusal_the_cap_keeps_from_the_owner_says_it_did_not_ask(self) -> None:
         for other in (1, 2):
             ask_mr_state(
                 mr_url=_mr(other)["web_url"],
                 reason="another merge request waits on the owner.",
-                owner=OwnerAsk(OwnerDecision.PUBLIC_POST, ["review request refused: no_ticket"]),
+                owner=owner_card(OwnerDecision.PUBLIC_POST, "The review request was refused."),
             )
         _ready_ticket(attested=False)
 
@@ -428,12 +448,20 @@ class TestAnOutcomeTheSenderCannotRetryReachesTheOwner(_SenderCase):
         assert self.slack.posts == []
         assert _verdicts(signals) == [("review_request.send_refused", reason)]
         assert signals[0].payload["asked"] is True
-        assert head_tag(_HEAD) in _pending_question().question
+        assert _pending_question().dedupe_marker.endswith(f"@{_HEAD[:12]}")
 
     def test_a_post_the_transport_did_not_land_asks_the_owner(self) -> None:
         self.slack.refusal = {"ok": False, "error": "channel_not_found"}
 
         self._assert_asked(self._one_pass(), "post_failed")
+
+    def test_a_refusal_of_another_kind_asks_the_generic_question_without_naming_it(self) -> None:
+        self.slack.refusal = {"ok": False, "error": "channel_not_found"}
+
+        self._one_pass()
+
+        text = assert_a_plain_card(_pending_question(), "post_failed", "channel_not_found")
+        assert text.startswith(f"How should I treat <{_URL}|this pull request>?")
 
     def test_a_colleagues_merge_request_asks_the_owner(self) -> None:
         self.forge.author = "mallory"
@@ -654,7 +682,7 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
 
         old.refresh_from_db()
         assert old.dismissed_at is not None
-        assert head_tag(_NEW_HEAD) in _pending_question().question
+        assert _pending_question().dedupe_marker.endswith(f"@{_NEW_HEAD[:12]}")
 
     def test_another_callers_internal_question_gives_way_to_the_owner_ask(self) -> None:
         """The batch gate's question is the factory's own now, so it can no longer stand in for the owner's."""

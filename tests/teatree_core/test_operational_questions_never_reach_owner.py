@@ -34,6 +34,7 @@ from teatree.core.models import DeferredQuestion, OuterLoopExperiment, Session, 
 from teatree.core.models.loop import Loop
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from teatree.core.question_heal import record_withheld
 from teatree.core.repair_loop import MAX_REOFFERS, IterationStalled, MaxIterationsExceeded, max_phase_iterations
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import execute_provision
@@ -54,8 +55,9 @@ from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
 from teatree.loops.outer_loop.revert import ask_revert as ask_experiment_revert
 from teatree.loops.outer_loop.tick import run_tick
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
+from tests._owner_channel import owner_card
 from tests.conformance._src_tree import REPO_ROOT
-from tests.conformance.test_owner_decision_allowlist import _calls, _kind
+from tests.conformance.test_owner_decision_allowlist import _calls
 from tests.factories import planned_ticket
 from tests.teatree_agents.test_runner_review_verdict import _LIVE_RED, _contradiction_envelope, _exhaust_dispatch
 from tests.teatree_core._self_review_helpers import author_ticket, completed_self_review, head
@@ -118,6 +120,17 @@ def _revive_past_the_reopen_cap() -> None:
     )
     with patch.object(issue_reopen, "_reopened_issue_urls", return_value=({url}, 1)), rule_f_inert():
         reconcile_board()
+
+
+def _withhold_an_answer_draft() -> None:
+    task = _task("answering")
+    record_withheld(
+        "Approve this drafted reply?\n\nSee #42.",
+        ["the quoted text carries internal shorthand (#42)"],
+        parked_task=task,
+        task_session=task.session,
+        dedupe_marker=f"answer-draft:{task.pk}",
+    )
 
 
 def _deny_a_loop_driven_ask() -> None:
@@ -320,6 +333,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
     ("src/teatree/core/models/task_repair.py", "_escalate_reoffers"): _spend_the_reoffer_budget,
     ("src/teatree/core/models/task_repair.py", "_escalate_stall"): _stall_a_repair_loop,
     ("src/teatree/core/provision/failure_question.py", "record_provision_failure_question"): _fail_a_provision,
+    ("src/teatree/core/question_heal.py", "record_withheld"): _withhold_an_answer_draft,
     ("src/teatree/core/tasks.py", "_record_attachment_hold_question"): _hold_an_unfetched_attachment,
     ("src/teatree/loop/ci_eval_heal_advance.py", "_escalate_via_deferred_question"): _halt_a_ci_eval_heal,
     ("src/teatree/loop/persistence_reviewer.py", "_escalate_unrecordable_review"): _refuse_an_unrecordable_review,
@@ -344,7 +358,7 @@ _OPERATIONAL_PRODUCERS: dict[Site, Callable[[], object]] = {
 
 @functools.cache
 def _operational_sites() -> list[tuple[str, str, ast.Call]]:
-    records = [site for site in _calls("record") if _kind(site[2]) is None]
+    records = [site for site in _calls("record") if not any(kw.arg == "card" for kw in site[2].keywords)]
     asks = [site for site in _calls("ask_mr_state") if not any(kw.arg == "owner" for kw in site[2].keywords)]
     return records + asks
 
@@ -408,8 +422,7 @@ class OperationalQuestionsNeverReachOwnerTests(TestCase):
                 operational.extend(rows)
         control = DeferredQuestion.record(
             "Which credential source should the eval run use?",
-            decision=OwnerDecision.CREDENTIALS,
-            checked=["t3 eval ci-account show lists zero eligible accounts"],
+            card=owner_card(OwnerDecision.CREDENTIALS, "t3 eval ci-account show lists zero eligible accounts"),
         )
         backend = _owner_dm_backend()
 

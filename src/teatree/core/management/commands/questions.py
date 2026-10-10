@@ -23,7 +23,7 @@ on its next turn.
 """
 
 import io
-import json
+from collections.abc import Mapping
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
@@ -32,8 +32,9 @@ from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.models.question_text import question_fingerprint
 from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.core.table_output import print_table
 
@@ -43,7 +44,10 @@ class DeferredQuestionRow(TypedDict):
 
     id: int
     status: str
+    audience: str
+    dedupe_marker: str
     question: str
+    evidence: Mapping[str, object]
     answer: str
     created_at: str | None
     escalated_at: str | None
@@ -111,13 +115,17 @@ class Command(MachineOutputCommand):
         """``t3 teatree questions`` group root."""
 
     @command()
-    def record(
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def record(  # noqa: PLR0913 — django-typer command: every parameter is one flag of the `questions record` surface
         self,
         question: Annotated[str, typer.Argument(help="The question text.")],
         *,
         options_json: Annotated[
             str,
-            typer.Option("--options", help="Verbatim JSON-encoded ``AskUserQuestion`` options."),
+            typer.Option(
+                "--options",
+                help='JSON list of 2 to 4 options, {"label", "description", "recommended"}; the recommended one first.',
+            ),
         ] = "",
         dedupe_marker: Annotated[
             str,
@@ -139,14 +147,22 @@ class Command(MachineOutputCommand):
                 "--checked", help="A fact you checked before asking; repeat per fact. Required with --decision."
             ),
         ] = None,
+        why: Annotated[
+            str,
+            typer.Option("--why", help="One sentence the owner reads: why you ask. Required with --decision."),
+        ] = "",
+        blocker: Annotated[
+            str,
+            typer.Option("--blocker", help="What stops you deciding; kept for operators, never shown to the owner."),
+        ] = "",
     ) -> str:
-        """Record a deferred question by hand — the agent-facing capture surface.
+        """Record a question by hand — the agent-facing capture surface.
 
         ``--dedupe-marker`` is the column the scanners set, so a row recorded here
         collapses onto the scanner's row for one underlying signal. ``--decision`` is
-        the deny-by-default allowlist (#5096): only a named owner decision with a ``--checked``
-        fact reaches the owner's DM, and its marker defaults to ``<decision>:<question fingerprint>`` so
-        the same question is never asked twice.
+        the deny-by-default allowlist (#5096): only a named owner decision, with ``--checked`` facts,
+        ``--why`` and ``--blocker``, reaches the owner's DM as a short card (``--options`` become its buttons),
+        and its marker defaults to ``<decision>:<question fingerprint>`` so the same question is never asked twice.
 
         There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
         and the ``AskUserQuestion`` PreToolUse hook records its own rows through
@@ -158,21 +174,17 @@ class Command(MachineOutputCommand):
             raise SystemExit(2)
         if kind is not None and not dedupe_marker:
             dedupe_marker = f"{kind}:{question_fingerprint(question)}"
+        card = None
+        if kind is not None:
+            options = CardOption.parse_all(options_json)
+            if options_json and not options:
+                self.stderr.write("--options must be a JSON list of {label, description, recommended}")
+                raise SystemExit(2)
+            card = QuestionCard(decision=kind, checked=tuple(checked or ()), blocker=blocker, why=why, options=options)
         try:
-            options = json.loads(options_json) if options_json else None
-        except ValueError:
-            options = None
-        try:
-            row = DeferredQuestion.record(
-                question,
-                options_json=options_json,
-                options_hash=options_digest(options) if isinstance(options, list) else "",
-                dedupe_marker=dedupe_marker,
-                decision=kind,
-                checked=checked or (),
-            )
+            row = DeferredQuestion.record(question, options_json=options_json, dedupe_marker=dedupe_marker, card=card)
         except DeferredQuestionError as exc:
-            self.stderr.write(f"{exc}. {OWNER_QUESTION_ROUTE}" if kind else str(exc))
+            self.stderr.write(f"{exc}. {OWNER_QUESTION_ROUTE}" if card else str(exc))
             raise SystemExit(2) from exc
         if kind is None:
             return f"recorded #{row.pk} internal, not sent to the owner; decide it yourself. {OWNER_QUESTION_ROUTE}"
@@ -201,7 +213,10 @@ class Command(MachineOutputCommand):
             {
                 "id": row.pk,
                 "status": row.status,
+                "audience": row.audience,
+                "dedupe_marker": row.dedupe_marker,
                 "question": row.question,
+                "evidence": row.evidence,
                 "answer": row.answer_text,
                 "created_at": row.created_at.isoformat() if row.created_at is not None else None,
                 "escalated_at": row.escalated_at.isoformat() if row.escalated_at is not None else None,

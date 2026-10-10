@@ -20,10 +20,12 @@ from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, Articl
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task
 from teatree.core.models.ticket_number import derive_issue_number
 from teatree.core.news_digest import DigestItem, render_digest
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.question_heal import record_withheld
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -38,6 +40,18 @@ _TRIAGE_ASSESSING_PHASE = "triage_assessing"
 _ANSWERING_PHASE = "answering"
 
 logger = logging.getLogger(__name__)
+
+_DRAFT_QUESTION = "May I post this reply for you?"
+_DRAFT_CARD = QuestionCard(
+    decision=OwnerDecision.PUBLIC_POST,
+    checked=("A reply was drafted and it was not delivered in your own direct message thread.",),
+    blocker="Only the owner can approve a post made in their name.",
+    why="A drafted answer is waiting, and nothing is posted until you decide.",
+    options=(
+        CardOption("Post it", "I post the reply as written.", recommended=True),
+        CardOption("Do not post", "I drop the reply."),
+    ),
+)
 
 
 def record_reactive_envelopes(task: Task, result: AgentResultBlob, *, phase: str) -> None:
@@ -182,14 +196,19 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
     if recorded == 0:
         return
     DeferredQuestion.record(
-        question=(
-            f"Triaged {recorded} open needs-triage issue(s). Review and approve/reject each "
-            f"recommendation with /t3:triaging-issues — nothing is acted on until you approve."
-        ),
+        "Do you want to review the new triage suggestions now?",
         parked_task=task,
         dedupe_marker=f"triage-batch-{task.pk}",
-        decision=OwnerDecision.PRODUCT_SCOPE,
-        checked=[f"task {task.pk} recorded {recorded} needs-triage recommendation(s) as pending rows"],
+        card=QuestionCard(
+            decision=OwnerDecision.PRODUCT_SCOPE,
+            checked=(f"{recorded} suggestion(s) are recorded as pending.",),
+            blocker="Only the owner approves or rejects a triage suggestion.",
+            why=f"{recorded} open issue(s) were assessed, and nothing changes until you approve each suggestion.",
+            options=(
+                CardOption("Review now", "I keep them ready for your next session.", recommended=True),
+                CardOption("Later", "I ask you again later."),
+            ),
+        ),
     )
 
 
@@ -301,12 +320,16 @@ def _maybe_record_answer_draft(
     answer = cast("AnswerEnvelope", raw_answer)
     thread_ref = str(answer.get("thread_ref") or "").strip()
     where = f" (thread {thread_ref})" if thread_ref else ""
-    DeferredQuestion.record(
-        question=f"Approve this drafted reply{where}?\n\n{text}",
-        parked_task=task,
-        decision=OwnerDecision.PUBLIC_POST,
-        checked=[f"task {task.pk} drafted a reply{where}, not delivered in the owner's own DM thread"],
-    )
+    if problems := _DRAFT_CARD.quote_problems(_DRAFT_QUESTION, text):
+        record_withheld(
+            f"Approve this drafted reply{where}?\n\n{text}",
+            problems,
+            parked_task=task,
+            task_session=task.session,
+            dedupe_marker=f"answer-draft:{task.pk}",
+        )
+        return
+    DeferredQuestion.record(_DRAFT_QUESTION, parked_task=task, card=_DRAFT_CARD.with_quote(_DRAFT_QUESTION, text))
 
 
 def _post_owner_dm_reply(task: Task, text: str) -> bool:

@@ -5,10 +5,11 @@ the model promises in its docstring is asserted here (guarded factory,
 single-use consume, scope of queryset, audit row).
 """
 
+import dataclasses
+import json
 import os
 import tempfile
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +22,9 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.models.question_text import question_fingerprint
+from teatree.core.models.question_text import options_digest, question_fingerprint
 from teatree.instance_id import instance_id
+from tests._owner_channel import OWNER_CARD, OWNER_DECISION, owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -99,30 +101,43 @@ class TestDeferredQuestionAudience:
 
     @pytest.mark.parametrize("decision", list(OwnerDecision))
     def test_a_named_decision_makes_an_owner_row(self, decision: OwnerDecision) -> None:
-        row = DeferredQuestion.record("Ship it?", decision=decision, checked=["the issue is silent"])
+        row = DeferredQuestion.record("Ship it?", card=owner_card(decision, "the issue is silent"))
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
-    def test_owner_row_stores_kind_and_checked(self) -> None:
+    def test_owner_row_stores_the_card_fields_and_its_options(self) -> None:
         DeferredQuestion.record(
             "Rotate the deploy token?",
-            decision=OwnerDecision.CREDENTIALS,
-            checked=["  the token expired 10-08 ", "", "no standing answer in memory"],
+            card=owner_card(OwnerDecision.CREDENTIALS, "The token expired on Monday.", "No standing answer applies."),
         )
         row = DeferredQuestion.objects.get()
         assert row.evidence == {
             "decision": "credentials",
-            "checked": ["the token expired 10-08", "no standing answer in memory"],
+            "checked": ["The token expired on Monday.", "No standing answer applies."],
+            "blocker": OWNER_CARD.blocker,
+            "why": OWNER_CARD.why,
         }
+        assert json.loads(row.options_json) == OWNER_CARD.option_dicts()
+        assert row.options_hash == options_digest(OWNER_CARD.option_dicts())
 
-    @pytest.mark.parametrize("checked", [(), ["", "   "]])
-    def test_decision_without_checked_is_refused_and_writes_no_row(self, checked: list[str]) -> None:
-        with pytest.raises(DeferredQuestionError, match="checked"):
-            DeferredQuestion.record("Ship it?", decision=OwnerDecision.PUBLIC_POST, checked=checked)
+    def test_a_producers_own_options_hash_is_kept(self) -> None:
+        row = DeferredQuestion.record("Rotate the deploy token?", options_hash="rotation:1", **OWNER_DECISION)
+        assert row.options_hash == "rotation:1"
+
+    @pytest.mark.parametrize("checked", [(), ("",), ("   ",)])
+    def test_a_card_without_a_checked_fact_is_refused_and_writes_no_row(self, checked: tuple[str, ...]) -> None:
+        card = dataclasses.replace(OWNER_CARD, checked=checked)
+        with pytest.raises(DeferredQuestionError, match="checked fact"):
+            DeferredQuestion.record("Ship it?", card=card)
         assert not DeferredQuestion.objects.exists()
 
-    def test_unknown_decision_is_refused(self) -> None:
-        with pytest.raises(DeferredQuestionError, match="whim"):
-            DeferredQuestion.record("Ship it?", decision=cast("OwnerDecision", "whim"), checked=["looked"])
+    def test_a_card_that_fails_a_check_is_refused_with_every_problem(self) -> None:
+        card = dataclasses.replace(OWNER_CARD, blocker="", why="")
+        with pytest.raises(DeferredQuestionError) as refused:
+            DeferredQuestion.record("Ship it", card=card)
+        message = str(refused.value)
+        assert "blocker is required" in message
+        assert "why sentence is required" in message
+        assert 'must end in "?"' in message
         assert not DeferredQuestion.objects.exists()
 
     def test_architecture_kind_exists(self) -> None:
@@ -135,19 +150,19 @@ class TestDeferredQuestionAudience:
             "architecture",
         }
         row = DeferredQuestion.record(
-            "Split the model?", decision=OwnerDecision.ARCHITECTURE, checked=["BLUEPRINT §4 is silent"]
+            "Split the model?", card=owner_card(OwnerDecision.ARCHITECTURE, "BLUEPRINT §4 is silent")
         )
         assert row.evidence["decision"] == "architecture"
 
     def test_owner_pending_lists_only_pending_owner_rows(self) -> None:
-        owner = DeferredQuestion.record("Rotate it?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
-        answered = DeferredQuestion.record("Pay it?", decision=OwnerDecision.MONEY_OR_PLAN, checked=["invoice"])
+        owner = DeferredQuestion.record("Rotate it?", card=owner_card(OwnerDecision.CREDENTIALS, "expired"))
+        answered = DeferredQuestion.record("Pay it?", card=owner_card(OwnerDecision.MONEY_OR_PLAN, "invoice"))
         DeferredQuestion.consume(answered.pk, answer="yes")
         DeferredQuestion.record("internal stall")
         assert [r.pk for r in DeferredQuestion.owner_pending()] == [owner.pk]
 
     def test_unmirrored_pending_excludes_internal_rows(self) -> None:
-        owner = DeferredQuestion.record("Owner decision?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
+        owner = DeferredQuestion.record("Owner decision?", card=owner_card(OwnerDecision.CREDENTIALS, "expired"))
         DeferredQuestion.record("internal stall")
         unmirrored = list(DeferredQuestion.unmirrored_pending())
         assert [r.pk for r in unmirrored] == [owner.pk]
@@ -159,11 +174,11 @@ class TestAnOwnerQuestionIsNeverReAsked:
     @pytest.mark.parametrize("resolution", [{"answer": "keep them"}, {"dismissed_reason": "not now"}])
     def test_owner_marker_sticky_answered_and_dismissed(self, resolution: dict[str, str]) -> None:
         first = DeferredQuestion.record(
-            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+            "Reclaim the leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "3 dirs")
         )
         DeferredQuestion.consume(first.pk, **resolution)
         again = DeferredQuestion.record(
-            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+            "Reclaim the leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "3 dirs")
         )
         assert again.pk == first.pk
         assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 1
@@ -171,33 +186,33 @@ class TestAnOwnerQuestionIsNeverReAsked:
     def test_an_answered_owner_marker_holds_a_differently_worded_question(self) -> None:
         """Regression pin: the owner's answer settles the marker, whatever the wording."""
         first = DeferredQuestion.record(
-            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+            "Reclaim the leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "3 dirs")
         )
         DeferredQuestion.consume(first.pk, answer="keep them")
         again = DeferredQuestion.record(
-            "Reclaim the 4 leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["4 dirs"]
+            "Reclaim the 4 leftovers?", dedupe_marker="m", card=owner_card(OwnerDecision.IRREVERSIBLE, "4 dirs")
         )
         assert again.pk == first.pk
 
     def test_a_dismissed_owner_marker_does_not_hold_a_different_question(self) -> None:
         first = DeferredQuestion.record(
-            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+            "Post the review request?", dedupe_marker="m", card=owner_card(OwnerDecision.PUBLIC_POST, "no review")
         )
         DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
         other = DeferredQuestion.record(
-            "Fix the title, then post?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["bad title"]
+            "Fix the title, then post?", dedupe_marker="m", card=owner_card(OwnerDecision.PUBLIC_POST, "bad title")
         )
         assert other.pk != first.pk
         assert other.is_pending
 
-    @pytest.mark.parametrize("variant", ["post the review request?", "Post  the review\nrequest? "])
+    @pytest.mark.parametrize("variant", ["post the review request?", "Post  the  review request? "])
     def test_a_dismissed_owner_marker_holds_a_cosmetic_rewording(self, variant: str) -> None:
         first = DeferredQuestion.record(
-            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+            "Post the review request?", dedupe_marker="m", card=owner_card(OwnerDecision.PUBLIC_POST, "no review")
         )
         DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
         again = DeferredQuestion.record(
-            variant, dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+            variant, dedupe_marker="m", card=owner_card(OwnerDecision.PUBLIC_POST, "no review")
         )
         assert again.pk == first.pk
         assert not DeferredQuestion.owner_pending().exists()
@@ -206,7 +221,7 @@ class TestAnOwnerQuestionIsNeverReAsked:
         internal = DeferredQuestion.record("stall", dedupe_marker="m")
         DeferredQuestion.consume(internal.pk, answer="handled")
         owner = DeferredQuestion.record(
-            "Ship it?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["review is green"]
+            "Ship it?", dedupe_marker="m", card=owner_card(OwnerDecision.PUBLIC_POST, "review is green")
         )
         assert owner.pk != internal.pk
         assert owner.audience == DeferredQuestion.Audience.OWNER_QUESTION
@@ -215,7 +230,7 @@ class TestAnOwnerQuestionIsNeverReAsked:
 class TestAnOwnerRecordSupersedesAPendingInternalRow:
     def _ask_owner(self) -> DeferredQuestion:
         return DeferredQuestion.record(
-            "Which credential?", dedupe_marker="m", decision=OwnerDecision.CREDENTIALS, checked=["the vault is empty"]
+            "Which credential?", dedupe_marker="m", card=owner_card(OwnerDecision.CREDENTIALS, "the vault is empty")
         )
 
     def test_the_owner_is_asked_and_the_internal_row_is_retired(self) -> None:

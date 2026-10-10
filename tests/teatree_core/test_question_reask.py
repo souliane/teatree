@@ -164,7 +164,7 @@ class TestTheGapIsTheCadence(TestCase):
         # The five slots went to the five most urgent rows every bucket, so row six
         # was never bumped at all while rows one to five were bumped daily.
         for i in range(_REASK_BATCH * 2):
-            _mirrored(f"Question {i}?", slack_ts=f"{100 + i}.0", age_days=40 - i)
+            _mirrored(f"Widget {i}?", slack_ts=f"{100 + i}.0", age_days=40 - i)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
@@ -180,7 +180,7 @@ class TestTheGapIsTheCadence(TestCase):
 class TestTheBatchIsBoundedAndUrgentFirst(TestCase):
     def test_only_the_batch_size_is_bumped_per_bucket(self) -> None:
         for i in range(_REASK_BATCH + 4):
-            _mirrored(f"Question {i}?", slack_ts=f"{100 + i}.0")
+            _mirrored(f"Widget {i}?", slack_ts=f"{100 + i}.0")
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):

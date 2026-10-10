@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models import DeferredQuestion, Directive, DirectiveError
 from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY, MechanismSketchError, sketch_from_envelope
 from teatree.core.overlay_loader import resolve_overlay_name
@@ -89,14 +90,25 @@ def _clarifying_questions(envelope: dict) -> list[str]:
     return [q.strip() for q in raw if isinstance(q, str) and q.strip()]
 
 
+_CLARIFICATION_CARD = QuestionCard(
+    decision=OwnerDecision.PRODUCT_SCOPE,
+    checked=("The interpreter could not turn the directive into one mechanism as worded.",),
+    blocker="Only the owner can say what was meant.",
+    why="The directive can be read more than one way, so nothing is built yet.",
+)
+
+
 def _record_clarifications(directive: Directive, questions: list[str]) -> str:
-    """Record each clarifying question single-use and park the directive in ``CLARIFYING``."""
-    for index, question in enumerate(questions):
+    """Record each clarifying question single-use and park the directive in ``CLARIFYING``.
+
+    Every question is checked before any is recorded, so a refusal leaves no half-asked set behind.
+    """
+    cards = [(question, _CLARIFICATION_CARD.with_quote(question, directive.raw_text)) for question in questions]
+    if problems := [problem for question, card in cards for problem in card.problems(question)]:
+        return f"directive clarification refused: {'; '.join(problems)}"
+    for index, (question, card) in enumerate(cards):
         DeferredQuestion.record(
-            f"Clarify directive #{directive.pk}: {question}",
-            options_hash=f"directive_clarify:{directive.pk}:{directive.generation}:{index}",
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=[f"the interpreter could not sketch directive #{directive.pk} as worded: {directive.raw_text}"],
+            question, options_hash=f"directive_clarify:{directive.pk}:{directive.generation}:{index}", card=card
         )
     try:
         directive.mark_clarifying()
