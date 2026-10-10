@@ -119,6 +119,17 @@ def _record_and_wake_slack_answer(overlay: str, event: dict) -> None:
     wake_slack_answer.enqueue()
 
 
+def _answer_click(overlay: str, payload: dict) -> None:
+    """Record a tapped owner-question option; the receiver has already acknowledged the envelope."""
+    from teatree.loop.question_binding import answer_from_click  # noqa: PLC0415 — deferred: ORM-backed
+
+    backend = messaging_from_overlay(overlay or None)
+    if backend is None:
+        logging.getLogger(__name__).warning("No slack backend for overlay %r — a button tap was dropped", overlay)
+        return
+    answer_from_click(payload, backend=backend)
+
+
 @slack_app.command("listen")
 def listen_command(
     *,
@@ -149,7 +160,9 @@ def listen_command(
                 raise typer.Exit(code=1)
             for name, _app, _bot in overlays:
                 typer.echo(f"OK    Listening on {name}")
-            run_listener(overlays, queue_path=queue_file, on_event=_record_and_wake_slack_answer)
+            run_listener(
+                overlays, queue_path=queue_file, on_event=_record_and_wake_slack_answer, on_action=_answer_click
+            )
     except AlreadyRunningError as exc:
         typer.echo(f"WARN  {exc} Stop it before starting another.")
         raise typer.Exit(code=1) from None

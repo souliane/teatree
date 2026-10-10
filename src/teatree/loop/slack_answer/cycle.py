@@ -455,7 +455,7 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
         return False
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.QUESTION_REPLY):
         return False
-    if not apply_bound_answer(bound):
+    if not apply_bound_answer(bound, backend=backend):
         _unmark_unit_loop_replied(unit)
         return False
     for row in unit.rows:

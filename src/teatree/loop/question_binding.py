@@ -23,21 +23,37 @@ whichever had been posted last, and ✅-acked the owner for it.
 
 Every rung binds only a reply whose recorded author is the owner's Slack user id;
 any other reply, or an unknown owner id, binds nothing and is left for the DM path.
+
+A tap on an option button is the strongest evidence of all: :func:`answer_from_click` joins the
+tapped message onto its question by channel and root ``ts``, and records the option's label.
+Every applied answer, typed or tapped, closes the posted card in place.
 """
 
 import json
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_text import options_digest
+from teatree.core.owner_question_message import (
+    ALREADY_ANSWERED,
+    NO_LONGER_NEEDED,
+    answered_line,
+    closed_message,
+    replace_root,
+)
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 # The digest's instructed form, ``#<id> <your answer>``. At least one separator
 # is required so ``#12abc`` is not read as question 12 answered "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
+OPTION_ACTION_PREFIX = "owner-question-option-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +91,8 @@ def bind_reply(
     return None if answer is None else BoundAnswer(question=question, answer=answer)
 
 
-def apply_bound_answer(bound: BoundAnswer) -> bool:
-    """Resolve the bound question and resume its parked task when the owner may; ``True`` when applied.
+def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None" = None) -> bool:
+    """Resolve the bound question, resume its parked task and close its posted card; ``True`` when applied.
 
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
@@ -87,7 +103,36 @@ def apply_bound_answer(bound: BoundAnswer) -> bool:
     from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
     resume_on_answer(applied, applied.parked_task)
+    if backend is not None and applied.audience == DeferredQuestion.Audience.OWNER_QUESTION:
+        replace_root(applied, closed_message(applied, answered_line(applied)), backend)
     return True
+
+
+def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
+    """Record the option the owner tapped and close the card; ``True`` only when this tap answered it.
+
+    A tap by anyone else, on a message that roots no owner question, or naming an option the
+    card no longer offers changes nothing. A tap on a card that is already closed shows why,
+    in place of its buttons.
+    """
+    tap = _parse_tap(payload)
+    if tap is None or tap.user_id != configured_owner_id(backend):
+        return False
+    question = DeferredQuestion.objects.filter(
+        slack_channel=tap.channel, slack_ts=tap.root_ts, audience=DeferredQuestion.Audience.OWNER_QUESTION
+    ).first()
+    if question is None:
+        return False
+    if question.is_pending:
+        label = _tapped_label(question, tap)
+        if label is None:
+            return False
+        if apply_bound_answer(BoundAnswer(question=question, answer=label), backend=backend):
+            return True
+        question.refresh_from_db()
+    closing = NO_LONGER_NEEDED if question.dismissed_at else f"{ALREADY_ANSWERED}{question.answer_text}"
+    replace_root(question, closed_message(question, closing), backend)
+    return False
 
 
 def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundReader) -> str | None:
@@ -119,6 +164,42 @@ def resolve_answer(text: str, question: DeferredQuestion, *, reader: InboundRead
     if not (1 <= index <= len(options)):
         return text
     return str(options[index - 1].get("label", "")) or text
+
+
+@dataclass(frozen=True, slots=True)
+class _Tap:
+    user_id: str
+    channel: str
+    root_ts: str
+    index: int
+    label: str
+
+
+def _parse_tap(payload: dict) -> _Tap | None:
+    """The owner-question button *payload* reports, or ``None`` for any other interaction."""
+    action = next(
+        (a for a in payload.get("actions") or [] if str(a.get("action_id", "")).startswith(OPTION_ACTION_PREFIX)), None
+    )
+    message = payload.get("message") or {}
+    value = str(action.get("value", "")) if action else ""
+    if action is None or not value.isdigit():
+        return None
+    return _Tap(
+        user_id=str((payload.get("user") or {}).get("id", "")),
+        channel=str((payload.get("channel") or {}).get("id", "")),
+        root_ts=str(message.get("thread_ts") or message.get("ts") or ""),
+        index=int(value),
+        label=str((action.get("text") or {}).get("text", "")),
+    )
+
+
+def _tapped_label(question: DeferredQuestion, tap: _Tap) -> str | None:
+    """The label of the tapped option, or ``None`` when the card no longer offers that option."""
+    options = _live_options(question)
+    if options is None or not (1 <= tap.index <= len(options)):
+        return None
+    label = str(options[tap.index - 1].get("label", ""))
+    return label if label and label == tap.label else None
 
 
 def _addressed(text: str) -> tuple[int, str] | None:
@@ -184,4 +265,11 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
     return options
 
 
-__all__ = ["BoundAnswer", "apply_bound_answer", "bind_reply", "configured_owner_id", "resolve_answer"]
+__all__ = [
+    "BoundAnswer",
+    "answer_from_click",
+    "apply_bound_answer",
+    "bind_reply",
+    "configured_owner_id",
+    "resolve_answer",
+]

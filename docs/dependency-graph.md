@@ -315,6 +315,7 @@ graph TD
     teatree.db --> teatree.utils
     teatree.loop.inbound_reading --> teatree.agents
     teatree.loop.inbound_reading --> teatree.loop.inbound_classifier
+    teatree.loop.question_binding --> teatree.core
     teatree.loop.question_binding --> teatree.core.models
     teatree.loop.question_binding --> teatree.loop.inbound_reading
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager

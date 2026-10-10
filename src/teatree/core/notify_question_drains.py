@@ -63,6 +63,7 @@ from teatree.core.owner_question_message import (
     digest_text,
     render_blocks,
     render_text,
+    replace_root,
     shown_problems_for,
     withheld_message,
 )
@@ -312,11 +313,7 @@ def _replace_root(row: DeferredQuestion, backend: "MessagingBackend | None") -> 
     target = backend or resolve_owner_dm_backend()[0]
     if target is None:
         return
-    message = withheld_message()
-    try:
-        target.update_message(channel=row.slack_channel, ts=row.slack_ts, text=message.text, blocks=message.blocks)
-    except Exception:  # a failed edit must never stop the drain; the row is already withheld
-        logger.warning("Could not replace the root of withheld question %s", row.pk, exc_info=True)
+    replace_root(row, withheld_message(), target)
 
 
 def _post(

@@ -11,6 +11,9 @@ without racing on a shared drain:
 * ``slack-reactions.jsonl`` — ``reaction_added`` events
     (consumed by :class:`SlackReviewIntentScanner`, #1047).
 
+A tap on a Block Kit button arrives as an ``interactive`` envelope; it is acknowledged and
+handed to the ``on_action`` callback, never queued (#4990).
+
 Start with ``t3 slack listen`` (all overlays) or ``t3 slack listen --overlay X``.
 """
 
@@ -45,6 +48,11 @@ _HANDLED_EVENT_TYPES = frozenset({"app_mention", "message", "reaction_added"})
 
 #: Called with ``(overlay_name, event)`` right after an event is durably queued.
 type OnEvent = Callable[[str, dict], None]
+
+#: Called with ``(overlay_name, payload)`` for each button tap, after the envelope is acknowledged.
+type OnAction = Callable[[str, dict], None]
+
+_TAP_PAYLOAD_TYPE = "block_actions"
 
 
 def _data_dir() -> Path:
@@ -88,10 +96,12 @@ class QueuePaths:
     Mentions and messages share one file; reactions get a dedicated file so
     :class:`SlackMentionsScanner` and :class:`SlackReviewIntentScanner` each
     own an atomic-rename drain without racing on a shared inode (#1047).
+    ``heartbeat`` is the liveness file the connected loop restamps.
     """
 
     events: Path
     reactions: Path
+    heartbeat: Path | None = None
 
     def for_event_type(self, event_type: str) -> Path:
         if event_type == "reaction_added":
@@ -250,13 +260,22 @@ def _probe_own_identity(web_client: _AuthTestClient, overlay_name: str) -> OwnSl
     return identity
 
 
+def _hand_over_tap(overlay_name: str, payload: dict, on_action: OnAction | None) -> None:
+    if on_action is None or payload.get("type") != _TAP_PAYLOAD_TYPE:
+        return
+    try:
+        on_action(overlay_name, payload)
+    except Exception:
+        logger.warning("[%s] slack click handler failed", overlay_name, exc_info=True)
+
+
 def _run_single_overlay(
     *,
     overlay: tuple[str, str, str],
     queues: QueuePaths,
     stop_event: threading.Event,
     on_event: OnEvent | None = None,
-    heartbeat_path: Path | None = None,
+    on_action: OnAction | None = None,
 ) -> None:
     overlay_name, app_token, bot_token = overlay
     try:
@@ -276,6 +295,9 @@ def _run_single_overlay(
 
     def _handle(_sm_client: BaseSocketModeClient, req: SocketModeRequest) -> None:
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+        if req.type == "interactive":
+            _hand_over_tap(overlay_name, req.payload or {}, on_action)
+            return
         if req.type != "events_api":
             return
         event = (req.payload or {}).get("event", {})
@@ -308,7 +330,7 @@ def _run_single_overlay(
 
     _serve_until_stopped(
         stop_event=stop_event,
-        heartbeat_path=heartbeat_path,
+        heartbeat_path=queues.heartbeat,
         is_connected=client.is_connected,
     )
 
@@ -322,7 +344,7 @@ def run_listener(
     queue_path: Path | None = None,
     reactions_queue_path: Path | None = None,
     on_event: OnEvent | None = None,
-    heartbeat_path: Path | None = None,
+    on_action: OnAction | None = None,
 ) -> None:
     queues = QueuePaths(
         events=queue_path or default_queue_path(),
@@ -347,7 +369,7 @@ def run_listener(
                 "queues": queues,
                 "stop_event": stop,
                 "on_event": on_event,
-                "heartbeat_path": heartbeat_path,
+                "on_action": on_action,
             },
             daemon=True,
             name=f"slack-{overlay[0]}",

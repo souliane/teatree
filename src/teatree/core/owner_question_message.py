@@ -6,13 +6,20 @@ checks it must pass at send time are the ones every card passes at record time.
 """
 
 import datetime as dt
+import logging
 import re
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.question_card import CardOption, CardView, QuestionCard, layout, plain_text, shown_problems
 from teatree.core.modelkit.reask_cadence import first_posted_at
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
+
+logger = logging.getLogger(__name__)
 
 _LEGACY_CONSEQUENCE = "I record this as your answer."
 _ANSWER_CAP = 300
@@ -109,6 +116,16 @@ def closed_message(row: DeferredQuestion, line: str) -> CardMessage:
 
 def withheld_message() -> CardMessage:
     return CardMessage(WITHHELD_LINE, [_context(WITHHELD_LINE)])
+
+
+def replace_root(row: DeferredQuestion, message: CardMessage, backend: "MessagingBackend") -> None:
+    """Edit the posted card of *row* in place; a failed edit is logged and never undoes what was recorded."""
+    if not (row.slack_channel and row.slack_ts):
+        return
+    try:
+        backend.update_message(channel=row.slack_channel, ts=row.slack_ts, text=message.text, blocks=message.blocks)
+    except Exception:
+        logger.warning("Could not edit the posted card of question %s", row.pk, exc_info=True)
 
 
 def age_phrase(age: dt.timedelta) -> str:
