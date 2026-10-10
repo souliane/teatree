@@ -1299,17 +1299,6 @@ def _relocate_hook(root: Path) -> Path:
     return place_hook(root, registry=_DEFAULT_REGISTRY, scanner=None, with_sources=False)
 
 
-def _make_failing_uv_shim(bin_dir: Path) -> None:
-    """A ``uv`` that always fails, so the interpreter fallback is what runs."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "uv"
-    shim.write_text(
-        "#!/usr/bin/env bash\necho 'uv: no usable environment' >&2\nexit 1\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-
 def _plant_always_finding_scanner(root: Path) -> None:
     """Give a relocated checkout a scanner that reports a finding on ANY input.
 
@@ -1358,10 +1347,8 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         _git(work, "config", "user.name", _NOREPLY_NAME)
         _git(work, "remote", "set-url", "origin", _PROBE_REMOTE_URL)
 
-        bin_dir = tmp_path / "bin"
-        _make_failing_uv_shim(bin_dir)
         env = _hermetic_env()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{_PATH_WITHOUT_GH}"
+        env["PATH"] = _PATH_WITHOUT_GH
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
 
         (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
@@ -1407,26 +1394,6 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         assert "privacy" in (result.stdout + result.stderr).lower()
 
 
-def _make_envless_uv_shim(bin_dir: Path) -> None:
-    """A ``uv`` whose project env runs a modern interpreter that does NOT carry core.
-
-    The shape of ``uv run --project <root> --no-sync`` in a fresh worktree (uv
-    creates an empty ``.venv`` on the spot) or in a vendoring fork whose env never
-    installed core: ``-S`` drops site-packages, so only ``PYTHONPATH`` can supply
-    ``teatree``.
-    """
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "uv"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        'while [ "$#" -gt 0 ] && [ "$1" != python ]; do shift; done\n'
-        "shift\n"
-        f'exec "{sys.executable}" -S "$@"\n',
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-
 def _make_unusable_bare_pythons(bin_dir: Path) -> None:
     """Version-explicit interpreters absent, and a bare ``python3`` too old to import core (the Mac stub)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -1436,28 +1403,24 @@ def _make_unusable_bare_pythons(bin_dir: Path) -> None:
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-class TestResolverRunsInACheckoutWhoseEnvLacksCore:
-    """The resolver must not depend on which checkout's project env happens to carry core.
+class TestResolverNeedsNothingButTheCheckoutsSource:
+    """The resolver runs under ``-S`` from the checkout's ``src`` alone, so no project env decides what it can import.
 
-    ``uv run --project <root> --no-sync`` got no ``PYTHONPATH``, so in a fresh
-    worktree (an empty ``.venv``) it could not import ``teatree``, and on a host whose
-    bare ``python3`` is the old Mac stub every fallback failed too: one allowlisted
-    remote resolved PRIVATE in the worktree that had a venv and UNKNOWN in the one
-    that did not, with no cache involved.
+    It used to run through ``uv run --project <root>``, whose env a fresh worktree has empty and whose site
+    directory runs any ``.pth`` file in it; one allowlisted remote then resolved PRIVATE in the worktree that had a
+    venv and UNKNOWN in the one that did not. Now core is found on ``PYTHONPATH`` in both layouts or not at all.
     """
 
-    def _push(self, tmp_path: Path, *, core_src: str, uv: str) -> subprocess.CompletedProcess[str]:
+    def _push(self, tmp_path: Path, *, core_src: str | None) -> subprocess.CompletedProcess[str]:
         root = tmp_path / "checkout"
         root.mkdir()
         hook = _relocate_hook(root)
         _plant_always_finding_scanner(root)
-        _fake_core_package(root / core_src, verdict="PRIVATE")
+        if core_src is not None:
+            _fake_core_package(root / core_src, verdict="PRIVATE")
         work, _env = _clone_with_remote(tmp_path, "PUBLIC")
-        bin_dir = tmp_path / "bin"
-        (_make_envless_uv_shim if uv == "envless" else _make_failing_uv_shim)(bin_dir)
-        _make_unusable_bare_pythons(bin_dir)
         env = _hermetic_env()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{_PATH_WITHOUT_GH}"
+        env["PATH"] = _PATH_WITHOUT_GH
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
         _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
         return subprocess.run(
@@ -1471,18 +1434,18 @@ class TestResolverRunsInACheckoutWhoseEnvLacksCore:
         )
 
     @pytest.mark.parametrize("core_src", ["src", "vendor/teatree/src"], ids=["standalone", "vendored"])
-    def test_uv_env_without_core_still_resolves_from_the_checkout(self, core_src: str, tmp_path: Path) -> None:
-        result = self._push(tmp_path, core_src=core_src, uv="envless")
+    def test_core_is_found_on_the_checkouts_own_pythonpath(self, core_src: str, tmp_path: Path) -> None:
+        result = self._push(tmp_path, core_src=core_src)
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert "could not" not in (result.stdout + result.stderr).lower()
 
-    def test_a_resolver_that_cannot_start_says_so_and_fails_closed(self, tmp_path: Path) -> None:
-        result = self._push(tmp_path, core_src="src", uv="failing")
+    def test_a_checkout_without_core_says_so_and_fails_closed(self, tmp_path: Path) -> None:
+        result = self._push(tmp_path, core_src=None)
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "could not run the visibility resolver" in result.stdout, result.stdout
-        assert "uv sync" in result.stdout, result.stdout
+        assert "Install Python 3.13+" in result.stdout, result.stdout
         assert "config_setting set private_repos" not in result.stdout, result.stdout
 
 
@@ -2610,6 +2573,32 @@ class TestTheHookRunsOnlyCommittedCode:
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
         assert result.returncode == 1, "the planted bytecode judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize("plant", ["pth in the checkout's venv", "sitecustomize beside the sources"])
+    def test_code_that_runs_at_interpreter_startup_does_not_answer_for_the_resolver(
+        self, tmp_path: Path, plant: str
+    ) -> None:
+        work, env, hook = self._leaking_push(tmp_path)
+        root = hook.parents[2]
+        answer = (
+            "import os, sys\n"
+            'if "--live" in sys.argv:\n'
+            '    sys.stdout.write("PRIVATE\\n")\n'
+            "    sys.stdout.flush()\n"
+            "    os._exit(0)\n"
+        )
+        if plant.startswith("pth"):
+            (root / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0"\nrequires-python = ">=3.13"\n')
+            subprocess.run([str(shutil.which("uv")), "venv", "--python", "3.13", "-q", str(root / ".venv")], check=True)
+            site = next((root / ".venv" / "lib").glob("python3*/site-packages"))
+            (site / "evil.pth").write_text(f"import os, sys; exec({answer!r})\n", encoding="utf-8")
+        else:
+            (root / "src" / "sitecustomize.py").write_text(answer, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "startup code answered private: " + result.stdout + result.stderr
         assert "privacy findings" in result.stdout, result.stdout
 
     def test_committed_sources_run_as_before(self, tmp_path: Path) -> None:

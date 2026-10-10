@@ -164,53 +164,60 @@ pycache_prefix=$(mktemp -d "${TMPDIR:-/tmp}/t3-pycache.XXXXXX" 2>/dev/null) || p
 trap '[ "${pycache_prefix}" = /dev/null/t3-no-pycache ] || rm -rf "${pycache_prefix}"' EXIT
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="${pycache_prefix}"
 
-# The FULL remote URL is passed (never the host-stripped `slug`) because the
-# host segment is what selects the forge tool. Shelling `gh repo view` here
-# hard-coded ONE forge: a gitlab.com remote errored on every push, so
-# visibility was permanently undetermined and this gate re-scanned a PRIVATE
-# repo forever.
-#
-# The interpreter fallback offers core's package root in BOTH supported layouts —
-# `<root>/src/teatree` in a standalone checkout, `<root>/vendor/teatree/src/teatree`
-# in a fork that vendors core — and tries version-explicit interpreters before a
-# bare `python3`, which on a stock Mac is the Command Line Tools 3.9 stub and
-# cannot import core (requires-python >=3.13) whatever PYTHONPATH says.
-#
-# The uv branch gets the same PYTHONPATH. `uv run --project <root> --no-sync` in a
-# checkout whose project env does not carry core (a fresh worktree, where uv creates
-# an EMPTY .venv on the spot, or a vendoring fork whose env never installed it) runs
-# a perfectly good 3.13+ interpreter that cannot import `teatree`; with the bare
-# `python3` being the Mac stub, the same allowlisted remote then resolved PRIVATE in
-# one worktree and UNKNOWN in the next. Core's import chain here is stdlib-only, so
-# the path is all that interpreter lacks.
-#
-# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a
-# PRIVATE repo gets silently downgraded to "assume public" and re-scanned on
-# every push: the verdict is undetermined, the gate says only "could not
-# confirm", and the REASON it could not confirm is invisible forever. A resolver
-# that could not run at all says so (RESOLVER_FAILED) rather than posing as an
-# answer, because its remedy is the checkout, not the repo's declared visibility.
-_resolve_visibility() {
-  local err py probe_path out="" rc=1
-  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX" 2>/dev/null) || err=/dev/null
-  probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src"
+scanner="${repo_root}/scripts/privacy_scan.py"
+scan_pythonpath="${repo_root}/src:${repo_root}/vendor/teatree/src"
+# The dedicated "findings present" exit code of scripts/privacy_scan.py. Any other
+# non-zero exit is a scan that could not run, and refuses the push as well.
+findings_code=3
 
-  if command -v uv >/dev/null 2>&1; then
-    if out=$(PYTHONPATH="${probe_path}" uv run --project "${repo_root}" --no-sync \
-        python -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}"); then
+# A Python 3.13+ to run the stdlib-only scanner. Every PATH match of a version-explicit name is
+# tried before the next name, because a bare `python3` on a stock Mac is the Command Line Tools
+# 3.9 stub and a real interpreter may sit behind it. `uv python find` is the last resort for a
+# host whose only 3.13+ is a uv-managed one.
+_find_python() {
+  local name candidate
+  for name in python3.13 python3.14 python3 python; do
+    while IFS= read -r candidate; do
+      if "${candidate}" -S -c 'import sys; sys.exit(sys.version_info < (3, 13))' >/dev/null 2>&1; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done < <(type -aP "${name}" 2>/dev/null)
+  done
+  command -v uv >/dev/null 2>&1 || return 1
+  candidate=$(uv python find '>=3.13' 2>/dev/null) || return 1
+  [ -n "${candidate}" ] || return 1
+  printf '%s\n' "${candidate}"
+}
+
+# `-S`: no site-packages, no `.pth` file and no `sitecustomize` runs before the scanner does,
+# and PYTHONPATH is this checkout's own source only, so nothing outside the tree can stand in
+# for the gate or end it early. The scanner imports the standard library and `teatree` alone.
+_scan() {
+  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S "${scanner}" "$@"
+}
+
+scan_py=$(_find_python || true)
+
+# The visibility resolver starts exactly as the scanner does: this checkout's interpreter under `-S`, so no `.pth` file
+# of the checkout's own `.venv`, no `sitecustomize` and no site-packages runs before it, and PYTHONPATH is this
+# checkout's source alone (in BOTH supported layouts: `<root>/src/teatree` standalone, `<root>/vendor/teatree/src/teatree`
+# in a fork that vendors core). Its import chain is stdlib-only, so nothing else is needed. The FULL remote URL is
+# passed, never the host-stripped `slug`, because the host segment is what selects the forge tool.
+#
+# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a PRIVATE repo gets silently
+# downgraded to "assume public" and re-scanned on every push: the verdict is undetermined, the gate says only
+# "could not confirm", and the REASON it could not confirm is invisible forever. A resolver that could not run at
+# all says so (RESOLVER_FAILED) rather than posing as an answer, because its remedy is the checkout.
+_resolve_visibility() {
+  local err out="" rc=1
+  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX" 2>/dev/null) || err=/dev/null
+
+  if [ -n "${scan_py}" ]; then
+    if out=$(PYTHONPATH="${scan_pythonpath}" \
+        "${scan_py}" -S -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}" </dev/null); then
       rc=0
     fi
-  fi
-
-  if [ "${rc}" -ne 0 ]; then
-    for py in python3.13 python3.14 python3; do
-      command -v "${py}" >/dev/null 2>&1 || continue
-      if out=$(PYTHONPATH="${probe_path}" \
-          "${py}" -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}"); then
-        rc=0
-        break
-      fi
-    done
   fi
 
   if [ "${rc}" -ne 0 ]; then
@@ -249,7 +256,7 @@ case "${visibility}" in
   RESOLVER_FAILED)
     echo "⚠ push privacy gate: could not run the visibility resolver for '${slug:-<remote>}' (diagnostics above) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
     target="repo '${slug:-<remote>}' (could not run the visibility resolver — visibility unknown, refusing push)"
-    confirm_hint="  The visibility resolver could not start in this checkout (diagnostics above), so the forge was not asked. Run 'uv sync' in ${repo_root}, or install Python 3.13+, and push again."
+    confirm_hint="  The visibility resolver could not start in this checkout (diagnostics above), so the forge was not asked. Install Python 3.13+, or restore this checkout's src/, and push again."
     ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
@@ -262,40 +269,6 @@ case "${visibility}" in
     ;;
 esac
 
-scanner="${repo_root}/scripts/privacy_scan.py"
-scan_pythonpath="${repo_root}/src:${repo_root}/vendor/teatree/src"
-# The dedicated "findings present" exit code of scripts/privacy_scan.py. Any other
-# non-zero exit is a scan that could not run, and refuses the push as well.
-findings_code=3
-
-# A Python 3.13+ to run the stdlib-only scanner. Every PATH match of a version-explicit name is
-# tried before the next name, because a bare `python3` on a stock Mac is the Command Line Tools
-# 3.9 stub and a real interpreter may sit behind it. `uv python find` is the last resort for a
-# host whose only 3.13+ is a uv-managed one.
-_find_python() {
-  local name candidate
-  for name in python3.13 python3.14 python3 python; do
-    while IFS= read -r candidate; do
-      if "${candidate}" -S -c 'import sys; sys.exit(sys.version_info < (3, 13))' >/dev/null 2>&1; then
-        printf '%s\n' "${candidate}"
-        return 0
-      fi
-    done < <(type -aP "${name}" 2>/dev/null)
-  done
-  command -v uv >/dev/null 2>&1 || return 1
-  candidate=$(uv python find '>=3.13' 2>/dev/null) || return 1
-  [ -n "${candidate}" ] || return 1
-  printf '%s\n' "${candidate}"
-}
-
-# `-S`: no site-packages, no `.pth` file and no `sitecustomize` runs before the scanner does,
-# and PYTHONPATH is this checkout's own source only, so nothing outside the tree can stand in
-# for the gate or end it early. The scanner imports the standard library and `teatree` alone.
-_scan() {
-  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S "${scanner}" "$@"
-}
-
-scan_py=$(_find_python || true)
 if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
   echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not start (fail closed)."
   [ -f "${scanner}" ] || echo "  ${scanner} is missing from this checkout."
