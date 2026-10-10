@@ -155,6 +155,15 @@ if [ -n "${differing_sources}" ]; then
   exit 1
 fi
 
+# Bytecode is code too: Python takes a `__pycache__/*.pyc` whose header carries the source's mtime and size for that
+# source's own bytecode, and the checkout's `__pycache__` is untracked and git-ignored, so a planted one would run in
+# place of the committed module the check above just verified. Every Python this hook starts reads and writes its
+# bytecode under a fresh empty directory instead, removed on exit; when none can be made the prefix is a path that
+# cannot exist, which reads nothing.
+pycache_prefix=$(mktemp -d "${TMPDIR:-/tmp}/t3-pycache.XXXXXX" 2>/dev/null) || pycache_prefix=/dev/null/t3-no-pycache
+trap '[ "${pycache_prefix}" = /dev/null/t3-no-pycache ] || rm -rf "${pycache_prefix}"' EXIT
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="${pycache_prefix}"
+
 # The FULL remote URL is passed (never the host-stripped `slug`) because the
 # host segment is what selects the forge tool. Shelling `gh repo view` here
 # hard-coded ONE forge: a gitlab.com remote errored on every push, so

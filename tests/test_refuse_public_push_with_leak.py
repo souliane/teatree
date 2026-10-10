@@ -13,12 +13,15 @@ the ``origin`` remote, and a real ``gh`` shim on ``PATH`` that returns a
 fixed visibility. Nothing about git or the filesystem is mocked.
 """
 
+import importlib.util
 import json
+import marshal
 import os
 import secrets
 import shutil
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -2592,6 +2595,22 @@ class TestTheHookRunsOnlyCommittedCode:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "leak-gate-sources.txt" in result.stdout, result.stdout
+
+    def test_a_planted_pyc_for_a_guarded_module_is_not_loaded(self, tmp_path: Path) -> None:
+        """The pyc carries the committed source's mtime and size, so Python takes it for the source's own bytecode."""
+        work, env, hook = self._leaking_push(tmp_path)
+        source = hook.parents[2] / "src" / "teatree" / "hooks" / "term_match.py"
+        text = source.read_text(encoding="utf-8") + "\ndef matched_term(*args, **kwargs):\n    return None\n"
+        stat = source.stat()
+        header = importlib.util.MAGIC_NUMBER + struct.pack("<III", 0, int(stat.st_mtime), stat.st_size)
+        pyc = Path(importlib.util.cache_from_source(str(source)))
+        pyc.parent.mkdir(parents=True, exist_ok=True)
+        pyc.write_bytes(header + marshal.dumps(compile(text, str(source), "exec")))
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the planted bytecode judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
 
     def test_committed_sources_run_as_before(self, tmp_path: Path) -> None:
         """Anti-vacuity: with nothing edited the same push is judged by the real scanner and refused as a leak."""
