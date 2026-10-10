@@ -20,7 +20,7 @@ Two complementary levers, both wired into ``t3 mcp serve``:
 
 Both levers read PID 1 as "reparented to init", which is a HOST fact, and no
 container reading substitutes for it. In a container PID 1 is the entrypoint, so
-a server started by ``docker compose run --entrypoint t3 … mcp serve`` has
+a server started by ``docker compose run --entrypoint sh … mcp serve`` has
 ``getppid() == 1`` from its first instant: the watchdog fired immediately and the
 server exited 0 without answering a single request. The other PPID a container
 offers is no better — a ``docker exec`` process reports PPID 0 whether or not a
@@ -28,11 +28,11 @@ client is attached (measured against a freshly launched server whose client was
 still connected), so reading PPID 0 as the container's disconnection signature
 SIGTERMs every live server. :func:`orphan_detection_applies` therefore makes both
 inert there, and the container needs neither: killing the host-side client makes
-the exec'd server exit on stdin EOF.
+the one-off server exit on stdin EOF.
 
 Which is why the host process the sweep must classify is the LAUNCHER, not the
 server. ``t3 setup`` replaces ``t3`` on PATH with a wrapper that execs
-``docker compose exec … t3-in-container t3 mcp serve``, so on a dockerised
+``docker compose run … t3-in-container t3 mcp serve``, so on a dockerised
 install the only host-side process is that wrapper — matched by
 :func:`is_serve_command` through the ``t3-in-container`` label under a
 container-CLI argv[0].
