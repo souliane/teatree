@@ -136,3 +136,30 @@ def test_the_kill_switch_only_ever_feeds_the_private_destination_rescue() -> Non
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_banned_terms_gate_enabled"
     ]
     assert len(callers_of_the_flag_reader) == 1
+
+
+def test_the_outer_handler_only_hands_the_switch_to_the_inner_gate() -> None:
+    tree = ast.parse(PUBLISH_GATE.read_text(encoding="utf-8"))
+    outer = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "handle_banned_terms_pretool"
+    )
+    parent = {child: node for node in ast.walk(outer) for child in ast.iter_child_nodes(node)}
+    flag_reads = [
+        node
+        for node in ast.walk(outer)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_banned_terms_gate_enabled"
+    ]
+    assert len(flag_reads) == 1
+    stored = parent[flag_reads[0]]
+    while isinstance(stored, ast.UnaryOp):
+        stored = parent[stored]
+    assert isinstance(stored, ast.Assign), "the flag's value must be stored, not branched on, in the outer handler"
+    assert [target.id for target in stored.targets if isinstance(target, ast.Name)] == ["gate_off"]
+
+    for read in _names_loaded(outer, "gate_off"):
+        keyword = parent[read]
+        assert isinstance(keyword, ast.keyword)
+        assert keyword.arg == "gate_off"
+        assert getattr(parent[keyword].func, "id", "") == "_run_banned_terms_pretool"
