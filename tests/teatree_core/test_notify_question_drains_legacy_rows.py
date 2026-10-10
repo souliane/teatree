@@ -143,6 +143,16 @@ class TestAJargonRowIsNeverSent(TestCase):
         clean.refresh_from_db()
         assert clean.slack_ts
 
+    def test_a_row_recorded_with_no_evidence_at_all_is_checked_too(self) -> None:
+        row = DeferredQuestion.objects.create(question=_JARGON, audience=DeferredQuestion.Audience.OWNER_QUESTION)
+        backend = _backend()
+
+        _run(drain_unmirrored_deferred_questions, backend)
+
+        backend.post_message.assert_not_called()
+        row.refresh_from_db()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
     def test_a_row_that_says_deferred_in_any_case_is_withheld(self) -> None:
         row, backend = legacy_owner_row("Was the widget DEFERRED while you were away?"), _backend()
 

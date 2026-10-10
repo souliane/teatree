@@ -84,6 +84,15 @@ class TestAClearedConditionIsProposed(django.test.TestCase):
         assert "now reads as resolved" in proposals[0].summary
         assert proposals[0].card.options[0].label == "Lift it"
 
+    def test_a_cleared_override_on_an_internal_loop_name_reaches_the_owner_as_a_plain_card(self) -> None:
+        ticket = Ticket.objects.create(overlay="t", issue_url=_ISSUE_URL)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="r", iid="7", state=PullRequest.State.MERGED)
+        _loop("acme_nightly", runs=False, reason=f"pr:{_PR_URL}")
+
+        raise_override_lift_questions(_NOW)
+
+        assert_a_plain_card(DeferredQuestion.objects.get(), "acme_nightly")
+
     def test_an_aged_prose_reason_earns_a_reminder_naming_how_long(self) -> None:
         _loop("standing", runs=True, reason="waiting on the vendor", age=dt.timedelta(days=30))
 
