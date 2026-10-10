@@ -648,6 +648,23 @@ def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterato
 
 
 @pytest.fixture(autouse=True)
+def _owner_is_never_in_quiet_hours(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Let the owner-question drains send at any wall-clock hour unless a test opts in.
+
+    The drains hold every DM from 22:00 to 08:00 in the owner's zone, so without this a drain test would pass
+    or fail with the hour the suite happens to run at. Tests that drive the window carry
+    ``@pytest.mark.real_quiet_hours`` and set the clock themselves.
+    """
+    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
+
+    if "real_quiet_hours" in request.keywords:
+        yield
+        return
+    with patch("teatree.core.notify_question_drains.owner_quiet_at", return_value=False):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _process_freshness_memo_isolated() -> Iterator[None]:
     """Drop the #4387 process-freshness memo around every test.
 

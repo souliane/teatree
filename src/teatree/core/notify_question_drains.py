@@ -47,7 +47,14 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, RESURFACE_INTERVAL_HOURS, bump_due, reask_key
+from teatree.core.modelkit.reask_cadence import (
+    REASK_KEY_PREFIX,
+    RESURFACE_INTERVAL_HOURS,
+    bump_due,
+    first_posted_at,
+    owner_quiet_at,
+    reask_key,
+)
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
 from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
@@ -60,6 +67,7 @@ from teatree.core.owner_question_message import (
     withheld_message,
 )
 from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
+from teatree.loop.preset_resolution import owner_zone
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
 # while the owner is away, so an unbounded drain delivers it all in one burst the
@@ -153,8 +161,17 @@ def _first_post_reserve() -> int:
     return min(DeferredQuestion.unmirrored_pending().count(), _MAX_MIRRORS_PER_TICK)
 
 
+def owner_quiet_now() -> bool:
+    """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
+    return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
+
+
 @contextmanager
 def _question_ping_slot(*, reserved: int = 0) -> Iterator[bool]:
+    if owner_quiet_now():
+        logger.info("Owner question pings are held until 08:00 (quiet hours)")
+        yield False
+        return
     if not _QUESTION_PING_THREAD_GUARD.acquire(blocking=False):
         yield False
         return
@@ -387,7 +404,9 @@ def reask_escalated_questions(
         return 0, 0
 
     stamped_at = now or timezone.now()
-    due = [(row, gap) for row in rows if (gap := bump_due(row.created_at, now=stamped_at))]
+    due = [
+        (row, gap) for row in rows if (gap := bump_due(first_posted_at(row.slack_ts, row.created_at), now=stamped_at))
+    ]
     delivered = BotPing.delivered_keys(reask_key(row.stable_notify_ref, gap) for row, gap in due)
     urgent = sorted(
         ((row, gap) for row, gap in due if reask_key(row.stable_notify_ref, gap) not in delivered),

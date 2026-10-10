@@ -9,8 +9,10 @@ the unstoppable Slack HTTP boundary is mocked.
 """
 
 import dataclasses
+import datetime as dt
 import json
 import os
+import zoneinfo
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +45,25 @@ def _call(*args: str) -> tuple[str, int]:
     except SystemExit as exc:
         code = int(exc.code or 0)
     return buf.getvalue(), code
+
+
+class TestResurfaceInQuietHours:
+    @pytest.mark.real_quiet_hours
+    def test_resurface_says_the_pings_are_held_until_08_00(self) -> None:
+        DeferredQuestion.record("Once?", session_id="s-1", **OWNER_DECISION)
+        backend = _backend()
+        night = dt.datetime(2026, 10, 12, 23, 30, tzinfo=zoneinfo.ZoneInfo("Europe/Paris")).astimezone(dt.UTC)
+
+        with (
+            patch("django.utils.timezone.now", return_value=night),
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+        ):
+            out, code = _call("questions", "resurface", "--user-id", "U_ME")
+
+        assert code == 0
+        assert "held until 08:00 (quiet hours)" in out
+        assert "1 question" in out
+        backend.post_message.assert_not_called()
 
 
 class TestResurfaceDrainsPending:
