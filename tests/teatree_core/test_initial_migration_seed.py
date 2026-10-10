@@ -24,6 +24,7 @@ from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS, script_en
 from tests.teatree_core._migration_graph import core_initial_migration
 
 _migration = importlib.import_module(f"teatree.core.migrations.{core_initial_migration()}")
+_dispatch_rewrite = importlib.import_module("teatree.core.migrations.0009_dispatch_loop_description")
 _LOOP_ROWS = {row["name"]: row for row in _migration._LOOP_ROWS}
 _COLLEAGUE_FACING = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.colleague_facing)
 
@@ -37,10 +38,11 @@ class TestSeedLiteralsMatchTheShippedSeed:
     def test_each_loop_row_carries_its_shipped_spec(self) -> None:
         for spec in DEFAULT_LOOPS:
             row = _LOOP_ROWS[spec.name]
+            as_seeded = _dispatch_rewrite._OLD if spec.description == _dispatch_rewrite._NEW else spec.description
             assert (row["delay_seconds"], row["daily_at"], row["description"], row["colleague_facing"]) == (
                 spec.delay_seconds,
                 spec.daily_at,
-                spec.description,
+                as_seeded,
                 spec.colleague_facing,
             ), spec.name
             if spec.is_prompt_backed:

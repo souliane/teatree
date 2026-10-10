@@ -1,0 +1,30 @@
+"""A withheld owner question hands the task waiting on it to the card that asks it again (#4990).
+
+Beside :class:`DeferredQuestion` because ``record`` carries the task across and a model may not import ``teatree.core``.
+"""
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from teatree.core.models.deferred_question import DeferredQuestion
+    from teatree.core.models.session import Session
+    from teatree.core.models.task import Task
+
+WITHHELD_ACTION = "withheld"
+
+
+def carried_wait(
+    marked: "QuerySet[DeferredQuestion]", parked_task: "Task | None", task_session: "Session | None"
+) -> "tuple[Task | None, Session | None]":
+    """The task and session a new card under *marked* inherits: the caller's, else a pending withheld row's."""
+    if parked_task is not None:
+        return parked_task, task_session
+    withheld = marked.filter(
+        audits__action=WITHHELD_ACTION,
+        audience=marked.model.Audience.INTERNAL,
+        answered_at__isnull=True,
+        dismissed_at__isnull=True,
+    ).first()
+    return (withheld.parked_task, task_session or withheld.task_session) if withheld else (None, task_session)

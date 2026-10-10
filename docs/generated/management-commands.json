@@ -828,7 +828,7 @@
       "name": "questions",
       "subcommands": [
         {
-          "help": "Record a deferred question by hand \u2014 the agent-facing capture surface",
+          "help": "Record a question by hand \u2014 the agent-facing capture surface",
           "name": "record"
         },
         {
@@ -848,7 +848,7 @@
           "name": "resurface"
         },
         {
-          "help": "List pending deferred questions, oldest first",
+          "help": "List open questions, oldest first",
           "name": "list"
         }
       ]

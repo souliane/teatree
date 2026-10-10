@@ -80,6 +80,27 @@ def publish(
     )
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ChatUpdate:
+    """A message to replace in place; *blocks* are required, as Slack keeps the old ones when an update omits them."""
+
+    channel: str
+    ts: str
+    text: str
+    blocks: list[RawAPIDict]
+
+    def payload(self) -> SlackPayload:
+        if not self.blocks:
+            msg = "an update must carry blocks: Slack keeps the previous blocks when an update omits them"
+            raise ValueError(msg)
+        return {"channel": self.channel, "ts": self.ts, "text": self.text, "blocks": self.blocks}
+
+
+def update(poster: Poster, *, token: str, message: ChatUpdate) -> RawAPIDict:
+    """Replace the message at (*message.channel*, *message.ts*) under the Connect-membership-chosen *token*."""
+    return poster("chat.update", message.payload(), token=token)
+
+
 def add_reaction(poster: Poster, *, token: str, channel: str, ts: str, emoji: str) -> RawAPIDict:
     """Add *emoji* to *channel*'s message under the Connect-membership-chosen *token*."""
     return poster("reactions.add", {"channel": channel, "timestamp": ts, "name": emoji}, token=token)

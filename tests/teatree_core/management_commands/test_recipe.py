@@ -11,6 +11,7 @@ from teatree.core.factory.factory_score import FactoryScoreDict, ScoredSignalDic
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
+from tests._owner_channel import tap_on_slack
 
 
 def _score(*args: str) -> str:
@@ -41,12 +42,22 @@ class TestRecipeScoreReadOnly(TestCase):
         _score("--record")
         assert FactoryScoreSnapshot.objects.count() == 1
         assert DeferredQuestion.objects.count() == 1
-        evidence = DeferredQuestion.objects.get().evidence
-        assert evidence["decision"] == "product_scope"
-        assert any(recipe_sha()[:12] in fact for fact in evidence["checked"])
+        row = DeferredQuestion.objects.get()
+        assert row.evidence["decision"] == "product_scope"
+        assert row.question == "Can the factory use the new scoring recipe?"
+        assert recipe_sha()[:12] not in row.question + str(row.evidence)
         _score("--record")
         assert FactoryScoreSnapshot.objects.count() == 2
         assert DeferredQuestion.objects.count() == 1
+
+    def test_the_approve_button_on_the_recipe_question_can_be_tapped(self) -> None:
+        _score("--record")
+        row = DeferredQuestion.objects.get()
+
+        assert tap_on_slack(row, "Approve")
+
+        row.refresh_from_db()
+        assert (row.answer_text, row.resolved_via) == ("Approve", "slack")
 
 
 class TestApprove(TestCase):

@@ -72,6 +72,11 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def update_message(*, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
+        _ = channel, ts, text, blocks
+        return {}
+
+    @staticmethod
     def open_dm(user_id: str) -> str:
         _ = user_id
         return ""

@@ -43,6 +43,11 @@ class TestHelpIsShapedForBothSurfaces(SimpleTestCase):
 
 
 class TestLookup(SimpleTestCase):
+    def test_e2e_repos_describes_playwright_specs_not_gate_scope(self) -> None:
+        help_text = SETTING_HELP["e2e_repos"]
+        assert "Playwright" in help_text
+        assert "gate" not in help_text.lower()
+
     def test_a_known_key_resolves_its_sentence(self) -> None:
         assert setting_help("merge_wip") == SETTING_HELP["merge_wip"]
 

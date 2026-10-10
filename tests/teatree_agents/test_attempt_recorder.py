@@ -30,6 +30,7 @@ from teatree.core.models import (
     Worktree,
 )
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
+from tests._owner_channel import assert_a_plain_card, owner_stop
 from tests.teatree_core.models._shared import _init_repo_with_branch
 
 
@@ -69,19 +70,41 @@ class TestValidateResultKeys(TestCase):
     def test_rejects_unknown_keys(self) -> None:
         assert "unexpected keys" in validate_result_keys({"bogus": 1})
 
-    def test_accepts_each_owner_decision_kind_with_checked_facts(self) -> None:
+    def test_accepts_each_owner_decision_kind_with_a_complete_card(self) -> None:
         for kind in OwnerDecision:
-            stop = {"summary": "x", "needs_user_input": True, "user_input_kind": kind}
-            assert validate_result_keys(stop | {"user_input_checked": ["the vault holds no token"]}) == ""
+            assert validate_result_keys(owner_stop("Rotate the deploy token?", kind) | {"summary": "x"}) == ""
 
     def test_user_input_kind_without_checked_is_refused(self) -> None:
-        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "credentials"}
-        for checked in ({}, {"user_input_checked": []}, {"user_input_checked": ["  "]}, {"user_input_checked": "a"}):
-            assert "user_input_checked" in validate_result_keys(stop | checked), checked
+        stop = owner_stop("Rotate the deploy token?") | {"summary": "x"}
+        for checked in ([], ["  "], "a"):
+            error = validate_result_keys(stop | {"user_input_checked": checked})
+            assert "user_input_checked" in error, checked
+
+    def test_an_incomplete_card_is_refused_naming_each_gap(self) -> None:
+        stop = owner_stop("Rotate the deploy token?") | {"summary": "x", "user_input_card": {}}
+
+        error = validate_result_keys(stop)
+
+        assert "the why sentence is required" in error
+        assert "the blocker is required" in error
+        assert "user_input_card" in error
+
+    def test_an_owner_stop_over_120_words_is_refused(self) -> None:
+        stop = owner_stop("Rotate the deploy token?") | {"summary": "x"}
+        stop["user_input_card"] = {**stop["user_input_card"], "why": " ".join(["word"] * 110) + "."}
+
+        error = validate_result_keys(stop)
+
+        assert "words; at most 120" in error
+
+    def test_internal_shorthand_in_an_owner_stop_is_refused(self) -> None:
+        error = validate_result_keys(owner_stop("Is widget_count ready for ticket 104?") | {"summary": "x"})
+
+        assert "widget_count" in error
+        assert "ticket 104" in error
 
     def test_unknown_user_input_kind_is_refused(self) -> None:
-        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "gate_refusal"}
-        error = validate_result_keys(stop | {"user_input_checked": ["the gate log"]})
+        error = validate_result_keys(owner_stop("Rotate the deploy token?", "gate_refusal") | {"summary": "x"})
         assert "user_input_kind" in error
         assert "credentials" in error
 
@@ -460,7 +483,8 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         assert question.parked_task_id == task.pk
         assert question.is_pending
         assert question.evidence["decision"] == "product_scope"
-        assert any("2 needs-triage recommendation" in fact for fact in question.evidence["checked"])
+        text = assert_a_plain_card(question, "needs-triage", "triage-batch")
+        assert "2 open issue(s)" in text
 
     def test_summary_only_triage_assessing_is_refused(self) -> None:
         task = self._claimed()
@@ -511,11 +535,11 @@ class TestAnsweringEnvelopeChannel(TestCase):
         assert task.status == Task.Status.COMPLETED
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == task.pk
-        assert "Here is the reply." in question.question
-        assert "C123/168.9" in question.question
         assert question.is_pending
         assert question.evidence["decision"] == "public_post"
-        assert any("C123/168.9" in fact for fact in question.evidence["checked"])
+        text = assert_a_plain_card(question, "C123/168.9")
+        assert "> Here is the reply." in text
+        assert text.index("[Post it] (recommended)") < text.index("[Do not post]")
 
     def test_summary_only_answering_is_refused(self) -> None:
         task = self._claimed()

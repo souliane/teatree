@@ -675,3 +675,29 @@ class TestExoticSeparatorsSurviveARealWrap:
     @pytest.mark.parametrize("separator", ["\r", "\x0b", "\x0c", "\u2028", "\u0085"])
     def test_a_separator_survives_when_another_line_is_wrapped(self, separator: str) -> None:
         assert wrap_slack_message(f"short{separator}line\n{_OVER_WIDTH}").startswith(f"short{separator}line\n")
+
+
+_ORDERED_ITEM = "1. Only the blocking ticket — the one that stops the release is worth looking at before anything else."
+
+
+def test_an_ordered_item_stays_on_its_numbered_line() -> None:
+    normalized = normalize_slack_message(f"Two things are open.\n{_ORDERED_ITEM}\n2. The rest can wait.")
+
+    assert normalized.splitlines() == ["Two things are open.", _ORDERED_ITEM, "2. The rest can wait."]
+    assert "1.\n" not in normalized
+
+
+def test_a_wrapped_ordered_item_indents_its_continuation_under_the_text() -> None:
+    wrapped = wrap_slack_message(_ORDERED_ITEM, width=40)
+
+    first, *rest = wrapped.splitlines()
+    assert first.startswith("1. Only the blocking")
+    assert rest
+    assert all(line.startswith("   ") for line in rest)
+    assert " ".join(line.strip() for line in wrapped.splitlines()) == _ORDERED_ITEM
+
+
+def test_a_sentence_that_merely_starts_with_a_number_is_still_split() -> None:
+    text = "2026 was a long year for the widget team. We shipped it twice and then shipped it a third time."
+
+    assert normalize_slack_message(text).count("\n\n") == 1

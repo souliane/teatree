@@ -31,17 +31,17 @@ import logging
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 
 from django.db import transaction
 from django.db.models import Q
 
 from teatree.core.gates.review_request_guard import canonical_mr_url
-from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 
 logger = logging.getLogger(__name__)
 
+AWAITING_COLD_REVIEW = "awaiting_cold_review"
 _MARKER_PREFIX = "mr-state:"
 _HEAD_SEPARATOR = "@"
 _OWNER_QUESTION_OBSERVER: ContextVar[Callable[[str], None] | None] = ContextVar(
@@ -75,21 +75,18 @@ def head_tag(head_sha: str) -> str:
     return f"[head {head_sha[:12]}]"
 
 
-@dataclass(frozen=True, slots=True)
-class OwnerAsk:
-    """What puts a merge-request question to the owner: the decision and the facts checked first."""
-
-    decision: OwnerDecision
-    checked: Sequence[str]
-
-
 def ask_mr_state(
-    *, mr_url: str, reason: str, options: Sequence[str] = (), head_sha: str = "", owner: OwnerAsk | None = None
+    *,
+    mr_url: str,
+    reason: str,
+    options: Sequence[str] = (),
+    head_sha: str = "",
+    owner: QuestionCard | None = None,
 ) -> DeferredQuestion | None:
     """Queue a question about *mr_url*'s state; ``None`` when nothing is asked.
 
-    Only an *owner* ask reaches the owner; any other is the factory's own. Returns
-    the already-open row when one exists for this merge request, so a re-ask is
+    Only an *owner* card reaches the owner, asked as :func:`owner_question_text`; any other ask is the factory's
+    own. Returns the already-open row when one exists for this merge request, so a re-ask is
     idempotent and can never be refused by the cap — a merge request already being
     asked about occupies its slot rather than competing for a new one. An owner ask
     supersedes the factory's own open row instead. A *head_sha* ask differs in two
@@ -100,7 +97,11 @@ def ask_mr_state(
     owner_ask = owner is not None
     if head_sha and _answered_at(mr_url, head_sha=head_sha, owner_only=owner_ask) is not None:
         return None
-    text = _question_text(mr_url=mr_url, reason=reason, head_sha=head_sha)
+    text = (
+        owner_question_text(mr_url, reason)
+        if owner_ask
+        else _question_text(mr_url=mr_url, reason=reason, head_sha=head_sha)
+    )
     open_owner_questions = DeferredQuestion.owner_pending().filter(dedupe_marker__startswith=_MARKER_PREFIX)
     with transaction.atomic():
         already_asked = _open_question(mr_url)
@@ -120,8 +121,7 @@ def ask_mr_state(
             text,
             options_json=_options_json(options),
             dedupe_marker=marker,
-            decision=None if owner is None else owner.decision,
-            checked=() if owner is None else owner.checked,
+            card=owner,
         )
     if not question.is_pending:
         return None
@@ -145,10 +145,10 @@ def _replaces(open_row: DeferredQuestion, *, marker: str, text: str, owner_ask: 
     """
     if owner_ask and open_row.audience != DeferredQuestion.Audience.OWNER_QUESTION:
         return True
-    if not _is_head_bound(marker) or not _is_head_bound(open_row.dedupe_marker) or open_row.question == text:
+    if not _is_head_bound(marker) or not _is_head_bound(open_row.dedupe_marker):
         return False
     if open_row.dedupe_marker != marker:
-        return True
+        return owner_ask or open_row.question != text
     if open_row.audience == DeferredQuestion.Audience.OWNER_QUESTION:
         return False
     return not DeferredQuestion.objects.filter(dedupe_marker=marker, question=text).exists()
@@ -210,6 +210,14 @@ def _is_head_bound(marker: str) -> bool:
 def _question_text(*, mr_url: str, reason: str, head_sha: str) -> str:
     subject = f"{mr_url} {head_tag(head_sha)}" if head_sha else mr_url
     return f"I cannot determine the state of {subject} — {reason} How should I treat it?"
+
+
+def owner_question_text(mr_url: str, reason: str) -> str:
+    """The owner card's question about *mr_url*: one wording per kind of blocker, so a new blocker is a new question."""
+    subject = f"<{mr_url}|this pull request>"
+    if reason == AWAITING_COLD_REVIEW:
+        return f"Can I post the review request for {subject} without an independent review?"
+    return f"How should I treat {subject}?"
 
 
 def _options_json(options: Sequence[str]) -> str:

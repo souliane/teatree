@@ -451,10 +451,11 @@ def maybe_linkify(text: str) -> str:
 
 
 def format_notification(text: str, kind: NotifyKind) -> str:
-    """Prefix the DM with a kind marker for easy scan-reading on mobile."""
+    """Prefix the DM with a kind marker for easy scan-reading on mobile; a question card is sent as rendered."""
+    if kind is NotifyKind.QUESTION:
+        return text
     prefix = {
         NotifyKind.ANSWER: ":speech_balloon: *answer*",
-        NotifyKind.QUESTION: ":question: *question*",
         NotifyKind.INFO: ":information_source: *info*",
     }[kind]
     return f"{prefix}\n{normalize_slack_message(text)}"

@@ -15,7 +15,22 @@ from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.question_text import options_digest
 
-_CHECKED = ("--checked", "the runbook names no rotation owner")
+_OPTIONS = json.dumps(
+    [
+        {"label": "Rotate it", "description": "I rotate the token today.", "recommended": True},
+        {"label": "Leave it", "description": "I keep the current token."},
+    ]
+)
+_CHECKED = (
+    "--checked",
+    "The runbook names no rotation owner.",
+    "--why",
+    "The token expires soon and nobody owns its rotation.",
+    "--blocker",
+    "Only the owner can approve a new credential.",
+    "--options",
+    _OPTIONS,
+)
 
 
 def _record(*args: str) -> str:
@@ -90,24 +105,27 @@ class TestRecordDecision:
             "--decision",
             "credentials",
             "--checked",
-            "the runbook names no rotation owner",
+            "The runbook names no rotation owner.",
             "--checked",
-            "the token expires in 3 days",
+            "The token expires in three days.",
+            *_CHECKED[2:],
         )
 
         [row] = list(DeferredQuestion.pending())
         assert row.evidence == {
             "decision": "credentials",
-            "checked": ["the runbook names no rotation owner", "the token expires in 3 days"],
+            "checked": ["The runbook names no rotation owner.", "The token expires in three days."],
+            "blocker": "Only the owner can approve a new credential.",
+            "why": "The token expires soon and nobody owns its rotation.",
         }
 
-    def test_a_decision_without_checked_is_refused_naming_the_flag(self) -> None:
+    def test_a_decision_without_checked_is_refused_naming_the_gap(self) -> None:
         err = StringIO()
         with pytest.raises(SystemExit) as exc:
             call_command("questions", "record", "Rotate the deploy token?", "--decision", "credentials", stderr=err)
 
         assert exc.value.code == 2
-        assert "--checked" in err.getvalue()
+        assert "0 checked facts" in err.getvalue()
         assert not DeferredQuestion.objects.exists()
 
     def test_an_answered_owner_question_is_not_recorded_again(self) -> None:
@@ -140,20 +158,10 @@ class TestRecordDecision:
         assert "the token was retired" in out
 
     def test_options_carry_the_hash_a_digit_reply_is_checked_against(self) -> None:
-        options = [{"label": "staging"}, {"label": "prod"}]
-        call_command(
-            "questions",
-            "record",
-            "Which env?",
-            "--decision",
-            "product_scope",
-            *_CHECKED,
-            "--options",
-            json.dumps(options),
-        )
+        call_command("questions", "record", "Which env?", "--decision", "product_scope", *_CHECKED)
 
         [row] = list(DeferredQuestion.pending())
-        assert row.options_hash == options_digest(options)
+        assert row.options_hash == options_digest(json.loads(_OPTIONS))
 
     def test_an_unknown_decision_is_refused_rather_than_stored(self) -> None:
         with pytest.raises(SystemExit) as exc:

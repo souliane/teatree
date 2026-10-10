@@ -164,7 +164,7 @@ def build_manifest(*, overlay_name: str, display_name: str = "", scope_profile: 
         "oauth_config": {"scopes": scopes},
         "settings": {
             "event_subscriptions": {"bot_events": bot_events},
-            "interactivity": {"is_enabled": False},
+            "interactivity": {"is_enabled": True},
             "org_deploy_enabled": False,
             "socket_mode_enabled": True,
             "token_rotation_enabled": False,
@@ -278,6 +278,7 @@ def manifests_equivalent(a: SlackManifest, b: SlackManifest) -> bool:
             _scope_set(m, "user"),
             frozenset(settings.get("event_subscriptions", {}).get("bot_events", [])),
             settings.get("socket_mode_enabled"),
+            settings.get("interactivity", {}).get("is_enabled"),
             m.get("display_information", {}).get("name"),
         )
 

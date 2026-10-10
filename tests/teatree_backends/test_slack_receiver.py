@@ -18,8 +18,8 @@ from teatree.backends.slack.receiver import (
 )
 
 
-def _queues(tmp_path: Path) -> QueuePaths:
-    return QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl")
+def _queues(tmp_path: Path, *, heartbeat: Path | None = None) -> QueuePaths:
+    return QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl", heartbeat=heartbeat)
 
 
 class TestDefaultQueuePath:
@@ -388,9 +388,8 @@ class TestRunSingleOverlay:
         ):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path),
+                queues=_queues(tmp_path, heartbeat=heartbeat),
                 stop_event=stop,
-                heartbeat_path=heartbeat,
             )
 
         beat = json.loads(heartbeat.read_text(encoding="utf-8"))
@@ -418,9 +417,8 @@ class TestRunSingleOverlay:
         ):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path),
+                queues=_queues(tmp_path, heartbeat=heartbeat),
                 stop_event=stop,
-                heartbeat_path=heartbeat,
             )
 
         assert not heartbeat.exists()
@@ -434,9 +432,8 @@ class TestRunSingleOverlay:
         with patch.dict("sys.modules", {"slack_sdk": None, "slack_sdk.socket_mode": None}):
             _run_single_overlay(
                 overlay=("ov", "xapp", "xoxb"),
-                queues=_queues(tmp_path),
+                queues=_queues(tmp_path, heartbeat=heartbeat),
                 stop_event=stop,
-                heartbeat_path=heartbeat,
             )
 
         assert not heartbeat.exists()

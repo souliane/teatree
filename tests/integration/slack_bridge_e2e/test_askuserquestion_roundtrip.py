@@ -29,7 +29,12 @@ from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
-_OPTIONS = json.dumps([{"label": "staging"}, {"label": "prod"}])
+_OPTIONS = json.dumps(
+    [
+        {"label": "staging", "description": "I deploy to the test environment first.", "recommended": True},
+        {"label": "prod", "description": "I deploy to the live environment."},
+    ]
+)
 
 
 class TestAskUserQuestionRoundtrip:
@@ -49,7 +54,11 @@ class TestAskUserQuestionRoundtrip:
             "--decision",
             "product_scope",
             "--checked",
-            "the ticket names no target env",
+            "The ticket names no target environment.",
+            "--why",
+            "The deploy needs a target before it can start.",
+            "--blocker",
+            "Only the owner picks the environment.",
             "--options",
             _OPTIONS,
         )

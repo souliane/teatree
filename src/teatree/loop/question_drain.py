@@ -24,8 +24,7 @@ The sweep runs in two stages, and the split is the whole design:
 * **backstop stage** — runs on every row the subject stage did NOT drain, including one
     it explicitly kept, so a KEEP is not a licence to sit forever. Past the age ceiling it
     records an escalation, which is a state transition and not a resolution; the stamp is
-    rendered by :func:`~teatree.core.notify_question_drains.format_backlog_digest` and
-    ``t3 <overlay> questions list``, so the escalation reaches the owner. That ladder is
+    shown by ``t3 <overlay> questions list``. That ladder is
     BOUNDED (#4706): at :data:`MAX_ESCALATIONS` the row is drained STALE
     with the count and age that decided it, because the escalation window rate-limits
     re-asking without ever ending it — a row nobody answered escalated again every window,

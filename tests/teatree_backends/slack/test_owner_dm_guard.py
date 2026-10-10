@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.routing import OwnerDmOnlyError, assert_owner_dm
 from teatree.backends.slack.token_policy import SlackOp
@@ -156,3 +157,44 @@ class TestPostChokepointGuard:
             "conversations.open",
             "chat.postMessage",
         ]
+
+
+_BLOCKS = [{"type": "context", "elements": [{"type": "mrkdwn", "text": "ref: question 7"}]}]
+
+
+class TestChatUpdateReachesOnlyTheOwnerDm:
+    def test_chat_update_reaches_only_the_owner_dm(self) -> None:
+        bot = _dm_only_bot()
+        with patch.object(bot._http, "post", return_value={"ok": True}) as transport:
+            bot.update_message(channel=_OWNER_DM, ts="1.0", text="closed", blocks=_BLOCKS)
+
+            for channel in ("C-public", "D-colleague", "G-private", "U-someone-else", ""):
+                with pytest.raises(OwnerDmOnlyError):
+                    bot.update_message(channel=channel, ts="1.0", text="leak", blocks=_BLOCKS)
+
+        assert [call.args for call in transport.call_args_list] == [("chat.update",)]
+        assert transport.call_args.kwargs["json"] == {
+            "channel": _OWNER_DM,
+            "ts": "1.0",
+            "text": "closed",
+            "blocks": _BLOCKS,
+        }
+
+    def test_the_owner_im_that_conversations_open_returns_is_accepted(self) -> None:
+        bot = SlackBotBackend(bot_token="xoxb-test", user_id=_OWNER_UID, owner_dm_only=True)
+        bodies = {"conversations.open": {"ok": True, "channel": {"id": "D-opened"}}, "chat.update": {"ok": True}}
+        with patch.object(bot._http, "post", side_effect=lambda method, **_kw: bodies[method]) as transport:
+            assert bot.update_message(channel="D-opened", ts="1.0", text="closed", blocks=_BLOCKS)["ok"]
+            with pytest.raises(OwnerDmOnlyError):
+                bot.update_message(channel="D-colleague", ts="1.0", text="leak", blocks=_BLOCKS)
+
+        assert [call.args[0] for call in transport.call_args_list] == ["conversations.open", "chat.update"]
+
+    def test_an_update_without_blocks_is_refused_because_slack_would_keep_the_old_ones(self) -> None:
+        bot = _dm_only_bot()
+        with patch.object(bot._http, "post") as transport, pytest.raises(ValueError, match="blocks"):
+            bot.update_message(channel=_OWNER_DM, ts="1.0", text="closed", blocks=[])
+        transport.assert_not_called()
+
+    def test_a_noop_backend_updates_nothing(self) -> None:
+        assert NoopMessagingBackend().update_message(channel="D1", ts="1.0", text="t", blocks=_BLOCKS) == {}

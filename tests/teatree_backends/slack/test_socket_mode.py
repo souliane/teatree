@@ -108,3 +108,32 @@ class TestOpenAppConnection:
         response.raise_for_status.assert_called_once()
         assert post.call_args.args[0] == "https://slack.com/api/apps.connections.open"
         assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer xapp-1"
+
+
+class TestInteractivityGap:
+    def _manifest(self, *, interactivity: bool) -> dict:
+        manifest = build_manifest(overlay_name="acme")
+        manifest["settings"]["interactivity"] = {"is_enabled": interactivity}
+        return manifest
+
+    def test_interactivity_off_is_a_gap_that_needs_no_reinstall(self) -> None:
+        gaps = manifest_socket_gaps(self._manifest(interactivity=False))
+
+        assert gaps.interactivity_disabled
+        assert not gaps.ok
+        assert not gaps.needs_reinstall
+
+    def test_interactivity_on_leaves_no_gap(self) -> None:
+        assert manifest_socket_gaps(self._manifest(interactivity=True)).ok
+
+    def test_a_manifest_that_never_mentioned_interactivity_has_the_gap(self) -> None:
+        manifest = self._manifest(interactivity=True)
+        del manifest["settings"]["interactivity"]
+
+        assert manifest_socket_gaps(manifest).interactivity_disabled
+
+    def test_socket_mode_events_and_scopes_are_what_need_a_reinstall(self) -> None:
+        manifest = self._manifest(interactivity=True)
+        manifest["settings"]["socket_mode_enabled"] = False
+
+        assert manifest_socket_gaps(manifest).needs_reinstall

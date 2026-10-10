@@ -20,6 +20,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.stale_control_db_questions import MARKER_PREFIX, StaleControlDbQuestionScanner
+from tests._owner_channel import assert_a_plain_card, shown_text
 
 
 def _artifacts(tmp: Path, sizes: dict[str, int]) -> list[Path]:
@@ -42,21 +43,22 @@ class TestTheAskListsWhatItFoundAndDeletesNothing(TestCase):
         found = _artifacts(self.tmp, sizes)
         return StaleControlDbQuestionScanner(artifacts=lambda: found)
 
-    def test_it_files_one_question_naming_the_files_and_the_space(self) -> None:
+    def test_it_files_one_card_with_the_count_and_the_space_but_no_file_name(self) -> None:
         signals = self._scanner({"db.sqlite3.precorrupt-1": 2048, "db.sqlite3-wal": 1024}).scan()
 
         row = DeferredQuestion.objects.get()
+        text = assert_a_plain_card(row, "db.sqlite3", "precorrupt", "wal")
         assert row.dedupe_marker.startswith(MARKER_PREFIX)
-        assert "db.sqlite3.precorrupt-1" in row.question
-        assert "2 file" in row.question
+        assert "2 files" in text
+        assert "MiB" in text
+        assert row.evidence["decision"] == "irreversible"
         assert len(signals) == 1
 
-    def test_the_owner_row_carries_what_was_found_as_evidence(self) -> None:
-        self._scanner({"db.sqlite3.precorrupt-1": 2048, "db.sqlite3-wal": 1024}).scan()
+    def test_the_signal_still_names_what_was_found(self) -> None:
+        (signal,) = self._scanner({"db.sqlite3.precorrupt-1": 2048, "db.sqlite3-wal": 1024}).scan()
 
-        evidence = DeferredQuestion.objects.get().evidence
-        assert evidence["decision"] == "irreversible"
-        assert any("db.sqlite3.precorrupt-1" in fact and "db.sqlite3-wal" in fact for fact in evidence["checked"])
+        assert "db.sqlite3.precorrupt-1" in signal.summary
+        assert "db.sqlite3-wal" in signal.summary
 
     def test_every_named_file_still_exists_afterwards(self) -> None:
         scanner = self._scanner({"db.sqlite3.precorrupt-1": 16})
@@ -87,7 +89,7 @@ class TestTheAskListsWhatItFoundAndDeletesNothing(TestCase):
         grown.scan()
 
         assert DeferredQuestion.objects.count() == 2
-        assert "db.sqlite3.precorrupt-2" in DeferredQuestion.pending().get().question
+        assert "2 files" in shown_text(DeferredQuestion.pending().get())
 
     def test_a_box_with_nothing_to_reclaim_asks_nothing(self) -> None:
         assert StaleControlDbQuestionScanner(artifacts=list).scan() == []

@@ -68,10 +68,10 @@ class TestBuildManifest:
         manifest = build_manifest(overlay_name="acme")
         assert manifest["display_information"]["name"] == "teatree-acme"
 
-    def test_socket_mode_enabled_no_interactivity(self) -> None:
+    def test_socket_mode_enabled_with_interactivity_for_the_question_buttons(self) -> None:
         manifest = build_manifest(overlay_name="acme")
         assert manifest["settings"]["socket_mode_enabled"] is True
-        assert manifest["settings"]["interactivity"]["is_enabled"] is False
+        assert manifest["settings"]["interactivity"]["is_enabled"] is True
 
     def test_required_bot_scopes_present(self) -> None:
         manifest = build_manifest(overlay_name="acme")

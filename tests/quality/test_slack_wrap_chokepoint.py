@@ -16,7 +16,7 @@ by remembering. :class:`TestNoBypassingCallSite` turns such a call site red, and
 Slack method for the first checker to key on.
 
 Block Kit ``blocks`` stay outside the guarantee by design — Block Kit owns its
-own layout, and only the ``text`` fallback is wrapped.
+own layout, and a post that carries blocks keeps its ``text`` fallback as written.
 
 The second half guards the escape hatch. ``wrap_exempt_reason`` is deliberately
 reviewable — a reason string is visible in a diff where a bare bool is not — so
@@ -34,7 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src" / "teatree"
 
 #: Every Slack API method whose payload carries a message body.
-_TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "files.completeUploadExternal"})
+_TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "chat.update", "files.completeUploadExternal"})
 
 #: The only modules that may NAME one of those methods in a call. ``egress``
 #: posts solely through the ``_post`` it is handed (the wrap seam), while

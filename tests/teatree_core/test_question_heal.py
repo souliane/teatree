@@ -9,10 +9,11 @@ from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.core.provision.failure_question import provision_failure_marker, record_provision_failure_question
-from teatree.core.question_heal import live_owner_questions, withdraw_healed
+from teatree.core.question_heal import live_owner_questions, record_withheld, withdraw_healed, withhold
 from teatree.loop.question_drain import drain_pending_questions
 from tests._git_repo import make_git_repo
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_CARD, OWNER_DECISION, answer_on_slack, owner_card
+from tests.factories import planned_ticket
 
 
 class TestWithdrawHealed(TestCase):
@@ -74,13 +75,15 @@ class TestLiveOwnerQuestions(TestCase):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ticket = Ticket.objects.create(overlay="test", repos=["backend"], state=Ticket.State.WORK_STARTED)
         healed = DeferredQuestion.record(
-            "Provision failed: backend", dedupe_marker=provision_failure_marker(ticket.pk), **OWNER_DECISION
+            "Did provisioning fail for the backend?",
+            dedupe_marker=provision_failure_marker(ticket.pk),
+            **OWNER_DECISION,
         )
         Worktree.objects.create(
             ticket=ticket, repo_path="backend", branch="x", extra={"worktree_path": str(make_git_repo(root / "b"))}
         )
         owner = DeferredQuestion.record(
-            "Which DB host?", decision=OwnerDecision.PRODUCT_SCOPE, checked=["the ticket names no host"]
+            "Which DB host?", card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket names no host")
         )
         DeferredQuestion.record("Repair stall")
 
@@ -144,3 +147,121 @@ class TestALegacyWedgeRowDrainsToo(TestCase):
         assert withdraw_healed([healed_row, wedged_row]) == [wedged_row]
         healed_row.refresh_from_db()
         assert not healed_row.is_pending
+
+
+def _parked_task() -> Task:
+    ticket = planned_ticket()
+    return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="shipping")
+
+
+class TestWithhold(TestCase):
+    def test_a_pending_owner_row_moves_to_the_internal_queue_with_an_audit(self) -> None:
+        row = DeferredQuestion.record("Can I ship the widgets?", dedupe_marker="ship:1", **OWNER_DECISION)
+
+        assert withhold(row, ["the question carries internal shorthand (widget_count)"])
+
+        row.refresh_from_db()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.dedupe_marker == "ship:1"
+        assert row.is_pending
+        audit = DeferredQuestionAudit.objects.get(question=row, action="withheld")
+        assert audit.resolver_id == "owner_card_check"
+        assert "widget_count" in audit.note
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_a_row_without_a_marker_gets_one_naming_itself(self) -> None:
+        row = DeferredQuestion.record("Can I ship the widgets?", **OWNER_DECISION)
+
+        withhold(row, ["a problem"])
+
+        row.refresh_from_db()
+        assert row.dedupe_marker == f"withheld:{row.pk}"
+
+    def test_withholding_twice_audits_once(self) -> None:
+        row = DeferredQuestion.record("Can I ship the widgets?", **OWNER_DECISION)
+
+        assert withhold(row, ["a problem"])
+        assert not withhold(row, ["a problem"])
+
+        assert DeferredQuestionAudit.objects.filter(question=row, action="withheld").count() == 1
+
+    def test_an_answered_row_is_never_withheld(self) -> None:
+        row = DeferredQuestion.record("Can I ship the widgets?", **OWNER_DECISION)
+        answer_on_slack(row, "Yes")
+
+        assert not withhold(row, ["a problem"])
+
+        row.refresh_from_db()
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert not DeferredQuestionAudit.objects.filter(action="withheld").exists()
+
+
+class TestRecordWithheld(TestCase):
+    def test_the_draft_is_an_internal_row_parked_on_its_task_with_an_audit(self) -> None:
+        task = _parked_task()
+
+        row = record_withheld(
+            "Approve this reply?\n\nSee #42.",
+            ["the quoted text carries internal shorthand (#42)"],
+            parked_task=task,
+            task_session=task.session,
+            dedupe_marker="answer-draft:9",
+        )
+
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert (row.parked_task_id, row.task_session_id) == (task.pk, task.session_id)
+        assert "#42" in DeferredQuestionAudit.objects.get(question=row, action="withheld").note
+
+    def test_recording_it_again_adds_no_row_and_no_audit(self) -> None:
+        task = _parked_task()
+        kwargs = {"parked_task": task, "task_session": task.session, "dedupe_marker": "answer-draft:9"}
+
+        first = record_withheld("Approve this reply?", ["p"], **kwargs)
+        second = record_withheld("Approve this reply?", ["p"], **kwargs)
+
+        assert second.pk == first.pk
+        assert DeferredQuestionAudit.objects.filter(action="withheld").count() == 1
+
+
+def _ship_question(task: Task | None = None) -> DeferredQuestion:
+    return DeferredQuestion.record(
+        "Can I ship the widgets?",
+        dedupe_marker="ship:1",
+        parked_task=task,
+        task_session=task.session if task else None,
+        card=OWNER_CARD,
+    )
+
+
+class TestAWithheldRowHandsItsWaitingTaskToTheCard(TestCase):
+    def test_a_withheld_row_hands_its_waiting_task_to_the_card(self) -> None:
+        task = _parked_task()
+        old = _ship_question(task)
+        withhold(old, ["a problem"])
+
+        card_row = _ship_question()
+
+        old.refresh_from_db()
+        assert old.dismissed_reason == "superseded by an owner question"
+        assert card_row.pk != old.pk
+        assert card_row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert (card_row.parked_task_id, card_row.task_session_id) == (task.pk, task.session_id)
+
+    def test_answering_the_card_resumes_the_carried_task(self) -> None:
+        task = _parked_task()
+        withhold(_ship_question(task), ["a problem"])
+
+        answer_on_slack(_ship_question(), "Yes")
+
+        assert task.child_tasks.count() == 1
+
+    def test_a_task_the_caller_names_wins_over_the_carried_one(self) -> None:
+        named = _parked_task()
+        withhold(_ship_question(_parked_task()), ["a problem"])
+
+        assert _ship_question(named).parked_task_id == named.pk
+
+    def test_a_marker_held_by_no_withheld_row_carries_nothing(self) -> None:
+        DeferredQuestion.record("Is the repair stuck?", dedupe_marker="ship:1", parked_task=_parked_task())
+
+        assert _ship_question().parked_task_id is None

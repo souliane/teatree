@@ -31,11 +31,10 @@ time vs. no-mirror / away at ask time).
 """
 
 import datetime as dt
-import json
 import logging
 import os
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from functools import reduce
 from operator import or_
@@ -48,11 +47,28 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, RESURFACE_INTERVAL_HOURS, bump_due, reask_key
+from teatree.core.modelkit.reask_cadence import (
+    REASK_KEY_PREFIX,
+    RESURFACE_INTERVAL_HOURS,
+    bump_due,
+    first_posted_at,
+    owner_quiet_at,
+    reask_key,
+)
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
-from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
-from teatree.core.notify_types import NotifyOptions, NotifyReason
-from teatree.core.question_heal import live_owner_questions, withdraw_healed
+from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome, resolve_owner_dm_backend
+from teatree.core.notify_types import NotifyOptions, NotifyOutcome, NotifyReason
+from teatree.core.owner_question_message import (
+    bump_text,
+    digest_text,
+    render_blocks,
+    render_text,
+    replace_root,
+    shown_problems_for,
+    withheld_message,
+)
+from teatree.core.question_heal import live_owner_questions, withdraw_healed, withhold
+from teatree.loop.preset_resolution import owner_zone
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
 # while the owner is away, so an unbounded drain delivers it all in one burst the
@@ -146,8 +162,17 @@ def _first_post_reserve() -> int:
     return min(DeferredQuestion.unmirrored_pending().count(), _MAX_MIRRORS_PER_TICK)
 
 
+def owner_quiet_now() -> bool:
+    """Whether it is 22:00-08:00 in the owner's zone — when no question DM is sent."""
+    return owner_quiet_at(timezone.now().astimezone(owner_zone()).time())
+
+
 @contextmanager
 def _question_ping_slot(*, reserved: int = 0) -> Iterator[bool]:
+    if owner_quiet_now():
+        logger.info("Owner question pings are held until 08:00 (quiet hours)")
+        yield False
+        return
     if not _QUESTION_PING_THREAD_GUARD.acquire(blocking=False):
         yield False
         return
@@ -228,68 +253,6 @@ def _held_question_ping_slot() -> Iterator[bool]:
         LoopLease.objects.release_ownership(_QUESTION_PING_SLOT, session_id=session)
 
 
-def _resurface_text(row: DeferredQuestion) -> str:
-    lines = [f"*Pending question #{row.pk}* (deferred while you were away):", row.question]
-    try:
-        options = json.loads(row.options_json) if row.options_json else []
-    except (ValueError, TypeError):
-        options = []
-    for i, opt in enumerate(options, 1):
-        if not isinstance(opt, dict):
-            continue
-        label = opt.get("label", "")
-        desc = opt.get("description", "")
-        lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
-    lines.append("\n_Reply in this thread — a typed reply is what gets recorded as your answer._")
-    return "\n".join(lines)
-
-
-def _reask_text(row: DeferredQuestion, *, now: dt.datetime) -> str:
-    """The short bump posted into *row*'s OWN Slack thread.
-
-    The question itself is the thread root three messages up, so re-printing it
-    would only push it further away. What the bump adds is the age — the age
-    backstop's stamp is otherwise invisible, which makes "escalated" read exactly
-    like "ignored" — and the reminder that a reply HERE is what binds.
-    """
-    waited = (now - row.created_at).days
-    escalations = f", escalated {row.escalation_count}x" if row.escalation_count else ""
-    return (
-        f"*Still waiting on this one* — unanswered {waited}d{escalations}.\n"
-        f"_Reply in this thread and it lands on question #{row.pk}; nothing else needs typing._"
-    )
-
-
-def format_backlog_digest(rows: Sequence[DeferredQuestion], *, now: dt.datetime | None = None) -> str:
-    """The single recurring nag message covering *rows* — a COUNT, never a list.
-
-    The per-question detail moved into each question's OWN Slack thread
-    (:func:`reask_escalated_questions`), which is the only surface a reply to it
-    can bind on: a reply under the digest carries the DIGEST's thread ts, so the
-    exact ``thread_ts`` → mirror-ts join in :mod:`teatree.loop.question_binding`
-    matches nothing, and with a backlog deeper than one the sole-live-question rung
-    refuses to guess. Ten question lines in a 147-deep digest were therefore ten
-    questions asked where no answer could land.
-
-    What survives is what a count can carry honestly — how many are open, how many
-    the age backstop has stamped, and how long the oldest has waited — plus the
-    ``#<id> <your answer>`` form, which binds from anywhere in the DM.
-    """
-    stamped_at = now or timezone.now()
-    escalated = sum(1 for row in rows if row.escalated_at is not None)
-    oldest = max(((stamped_at - row.created_at).days for row in rows), default=0)
-    header = f"*{len(rows)} open question{'s' if len(rows) != 1 else ''} need decisions, oldest is {oldest}d.*"
-    if escalated:
-        header += f" *{escalated} past the age ceiling.*"
-    return "\n".join(
-        [
-            header,
-            f"I'm bumping the {_REASK_BATCH} most urgent in their own threads — reply there to answer one.",
-            "Anywhere else, address it as `#<id> <your answer>`.",
-        ]
-    )
-
-
 def resurface_question_backlog(
     *,
     user_id: str = "",
@@ -307,7 +270,7 @@ def resurface_question_backlog(
     rows (an agent's own tool-lack self-report) are excluded, as in the two
     first-post drains.
     """
-    rows = live_owner_questions()
+    rows = _checked(live_owner_questions(), backend=backend)
     if not rows:
         return False, 0
 
@@ -317,39 +280,70 @@ def resurface_question_backlog(
     try:
         with _question_ping_slot(reserved=_first_post_reserve()) as open_slot:
             posted = open_slot and notify_user(
-                format_backlog_digest(rows, now=stamped_at),
+                digest_text(rows, now=stamped_at),
                 kind=NotifyKind.QUESTION,
                 idempotency_key=f"{_DIGEST_KEY_PREFIX}{bucket}",
                 audience=NotifyAudience.OWNER_QUESTION,
                 backend=backend,
                 user_id=user_id or None,
+                linkify=False,
             )
     finally:
         _restore_overlay_env(overlay, previous_overlay)
     return posted, len(rows)
 
 
-def _answerable_options(row: DeferredQuestion, *, backend: "MessagingBackend | None", user_id: str) -> NotifyOptions:
-    """Where a post about *row* must land for the owner's reply to bind back to it.
+def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None") -> list[DeferredQuestion]:
+    """The rows that pass the owner-message checks; the others are withheld, never posted, bumped or counted."""
+    sendable: list[DeferredQuestion] = []
+    for row in rows:
+        if not (problems := shown_problems_for(row)):
+            sendable.append(row)
+        elif withhold(row, problems) and row.slack_ts:
+            _replace_root(row, backend)
+    return sendable
+
+
+def _replace_root(row: DeferredQuestion, backend: "MessagingBackend | None") -> None:
+    target = backend or resolve_owner_dm_backend()[0]
+    if target is None:
+        return
+    replace_root(row, withheld_message(), target)
+
+
+def _post(
+    row: DeferredQuestion, key: str, *, backend: "MessagingBackend | None", user_id: str, now: dt.datetime
+) -> NotifyOutcome:
+    """Send what *row* needs next where a reply to it BINDS.
 
     A row that already carries a mirror OWNS a Slack thread, so the post goes INTO
-    it: Slack stamps every reply in a thread with the ROOT's ts, so a reply under
-    this post carries ``row.slack_ts`` and rung (b) of
+    it as a short bump: Slack stamps every reply in a thread with the ROOT's ts, so a
+    reply under this post carries ``row.slack_ts`` and rung (b) of
     :mod:`teatree.loop.question_binding` joins it exactly. A row with no mirror yet
-    has no thread to ride, so the post goes at the DM ROOT and its own ts becomes
+    has no thread to ride, so its card goes at the DM ROOT and its own ts becomes
     the row's mirror (:func:`_stamp_mirror_from`) — the same at-root rule, for the
     same reason.
 
     The one shape that is never right is the default: nesting the post under
     whatever DM thread the owner happens to be in stamps replies with THAT root, so
     the join misses and — at any backlog above one — the sole-question rung refuses
-    too. The answer is acknowledged and dropped.
+    too. The answer is acknowledged and dropped. Nothing here is link-rewritten:
+    the card's text and blocks arrive byte for byte.
     """
-    return NotifyOptions(
-        backend=backend,
-        user_id=user_id or None,
-        thread_ts=row.slack_ts,
-        as_thread_root=not row.slack_ts,
+    mirrored = bool(row.slack_ts)
+    return notify_user_outcome(
+        bump_text(row, now=now) if mirrored else render_text(row),
+        kind=NotifyKind.QUESTION,
+        idempotency_key=key,
+        audience=NotifyAudience.OWNER_QUESTION,
+        options=NotifyOptions(
+            backend=backend,
+            user_id=user_id or None,
+            thread_ts=row.slack_ts,
+            as_thread_root=not mirrored,
+            linkify=False,
+            blocks=None if mirrored else render_blocks(row),
+        ),
     )
 
 
@@ -397,12 +391,14 @@ def reask_escalated_questions(
     batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
     at all (#4706).
     """
-    rows = [row for row in live_owner_questions() if row.slack_ts]
+    rows = [row for row in _checked(live_owner_questions(), backend=backend) if row.slack_ts]
     if not rows:
         return 0, 0
 
     stamped_at = now or timezone.now()
-    due = [(row, gap) for row in rows if (gap := bump_due(row.created_at, now=stamped_at))]
+    due = [
+        (row, gap) for row in rows if (gap := bump_due(first_posted_at(row.slack_ts, row.created_at), now=stamped_at))
+    ]
     delivered = BotPing.delivered_keys(reask_key(row.stable_notify_ref, gap) for row, gap in due)
     urgent = sorted(
         ((row, gap) for row, gap in due if reask_key(row.stable_notify_ref, gap) not in delivered),
@@ -417,12 +413,8 @@ def reask_escalated_questions(
             with _question_ping_slot(reserved=reserved) as open_slot:
                 if not open_slot:
                     break
-                outcome = notify_user_outcome(
-                    _reask_text(row, now=stamped_at),
-                    kind=NotifyKind.QUESTION,
-                    idempotency_key=reask_key(row.stable_notify_ref, gap),
-                    audience=NotifyAudience.OWNER_QUESTION,
-                    options=_answerable_options(row, backend=backend, user_id=user_id),
+                outcome = _post(
+                    row, reask_key(row.stable_notify_ref, gap), backend=backend, user_id=user_id, now=stamped_at
                 )
             # NEW bumps only. ``sent`` is also true for a key the ledger already
             # delivered, so counting it would report a fresh nag on every tick inside
@@ -463,7 +455,7 @@ def drain_deferred_questions(
 
     Each post lands where a reply to it BINDS — into the question's own mirror
     thread when it has one, else at the DM root with the posted ts stamped as the
-    mirror (:func:`_answerable_options`). Nested under the owner's active DM thread
+    mirror (:func:`_post`). Nested under the owner's active DM thread
     — this drain's previous shape, with no ``mark_mirrored`` at all — the resurfaced
     copy carried no bindable identity in either direction: a reply to it matched no
     question by thread, and at a backlog above one the sole-question rung refused,
@@ -487,7 +479,7 @@ def drain_deferred_questions(
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    owner_rows = live_owner_questions()
+    owner_rows = _checked(live_owner_questions(), backend=backend)
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -511,13 +503,7 @@ def drain_deferred_questions(
             with _question_ping_slot() as open_slot:
                 if not open_slot:
                     break
-                sent = notify_user_outcome(
-                    _resurface_text(row),
-                    kind=NotifyKind.QUESTION,
-                    idempotency_key=key,
-                    audience=NotifyAudience.OWNER_QUESTION,
-                    options=_answerable_options(row, backend=backend, user_id=user_id),
-                ).sent
+                sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
             if not sent:
                 continue
             delivered += 1
@@ -560,7 +546,7 @@ def drain_unmirrored_deferred_questions(
     is re-read every tick, so the backlog drains steadily instead of at once,
     and a question that has waited hours can wait one more cadence.
     """
-    rows = withdraw_healed(DeferredQuestion.unmirrored_pending())[:_MAX_MIRRORS_PER_TICK]
+    rows = _checked(withdraw_healed(DeferredQuestion.unmirrored_pending()), backend=backend)[:_MAX_MIRRORS_PER_TICK]
     if not rows:
         return 0, 0
 
@@ -569,7 +555,7 @@ def drain_unmirrored_deferred_questions(
     try:
         for row in rows:
             key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
-            # AT ROOT, never nested — ``_answerable_options`` gives an un-mirrored
+            # AT ROOT, never nested — ``_post`` gives an un-mirrored
             # row exactly that. This ``posted_ts`` becomes the row's ``slack_ts``
             # two lines down, the identity a Slack reply's ``thread_ts`` is joined
             # against by ``teatree.loop.question_binding``. Slack stamps a thread
@@ -579,13 +565,7 @@ def drain_unmirrored_deferred_questions(
             with _question_ping_slot() as open_slot:
                 if not open_slot:
                     break
-                sent = notify_user_outcome(
-                    _resurface_text(row),
-                    kind=NotifyKind.QUESTION,
-                    idempotency_key=key,
-                    audience=NotifyAudience.OWNER_QUESTION,
-                    options=_answerable_options(row, backend=backend, user_id=user_id),
-                ).sent
+                sent = _post(row, key, backend=backend, user_id=user_id, now=timezone.now()).sent
             if not sent:
                 continue
             if _stamp_mirror_from(row, key):

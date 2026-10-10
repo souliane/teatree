@@ -19,12 +19,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.loop.scanners.base import ScanSignal
 
 #: One marker per artifact SET, not per file: an unchanged set is asked once, a changed one again.
 MARKER_PREFIX = "control-db-artifacts:"
 
-#: How many paths the question names before it stops — enough to judge, short enough to read.
+_QUESTION = "Do you want the leftover copies of the control database removed?"
+
+#: How many paths the signal names before it stops — enough to judge, short enough to read.
 _NAMED = 8
 
 _MIB = 1024 * 1024
@@ -37,13 +40,24 @@ def _artifacts() -> list[Path]:
     return list(find_control_db_artifacts(DATA_DIR, canonical=TRUE_CANONICAL_DB))
 
 
-def _question(paths: list[Path], *, total_bytes: int) -> str:
+def _summary(paths: list[Path], *, total_bytes: int) -> str:
     named = ", ".join(path.name for path in paths[:_NAMED])
     more = f" and {len(paths) - _NAMED} more" if len(paths) > _NAMED else ""
     return (
-        f"{len(paths)} file(s) beside the control database are copies or leftovers of it, "
-        f"holding {total_bytes / _MIB:.0f} MiB: {named}{more}. None is the canonical database. "
-        "Reclaim the space, or keep them?"
+        f"{len(paths)} file(s) beside the control database are leftovers ({total_bytes / _MIB:.0f} MiB): {named}{more}."
+    )
+
+
+def _card(paths: list[Path], *, total_bytes: int) -> QuestionCard:
+    return QuestionCard(
+        decision=OwnerDecision.IRREVERSIBLE,
+        checked=("None of these files is the live database.",),
+        blocker="A deleted database copy cannot be brought back.",
+        why=f"{len(paths)} files beside the live database are copies or leftovers, using {total_bytes / _MIB:.0f} MiB.",
+        options=(
+            CardOption("Keep them", "I leave every file where it is.", recommended=True),
+            CardOption("Remove them", "I delete only the leftover copies, never the live database."),
+        ),
     )
 
 
@@ -65,18 +79,16 @@ class StaleControlDbQuestionScanner:
         if not paths:
             return []
 
-        question = _question(paths, total_bytes=total)
         names = sorted(path.name for path in paths)
         DeferredQuestion.record(
-            question,
+            _QUESTION,
             dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(names))}",
-            decision=OwnerDecision.IRREVERSIBLE,
-            checked=[f"find_control_db_artifacts lists {', '.join(names)}", f"{total} bytes, none the canonical DB"],
+            card=_card(paths, total_bytes=total),
         )
         return [
             ScanSignal(
                 kind="disk.reclaimable",
-                summary=question,
+                summary=_summary(paths, total_bytes=total),
                 payload={"files": len(paths), "bytes": total},
             )
         ]

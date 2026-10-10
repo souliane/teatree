@@ -93,7 +93,7 @@ SETTING_HELP: dict[str, str] = {
     "dogfood_smoke_skill": "skill the dogfood smoke loop runs",
     "dream_memory_promote": "let the dream pass promote a core-gap memory to a fix",
     "dream_umbrella_url": "issue whose ticket queues the dream pass's collected gaps for the backlog sweep",
-    "e2e_repos": "repos whose changes are subject to the E2E gate",
+    "e2e_repos": "external repositories containing Playwright test specs and their clone locations",
     "envelope_stop_gate_refusals": "refuse a turn that ends without the required result envelope",
     "eval_local_skill": "skill the local eval loop runs",
     "excluded_skills": "skills never offered to an agent, whatever the loader suggests",

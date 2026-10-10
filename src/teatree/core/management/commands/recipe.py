@@ -1,7 +1,6 @@
 """Recipe score and explicit snapshot recording with deduped approval questions."""
 
 import hashlib
-import json
 import os
 from typing import IO, Annotated, cast
 
@@ -13,6 +12,7 @@ from teatree.core.factory.factory_recipe import load_recipe
 from teatree.core.factory.factory_score import FactoryScore, FactoryScoreDict, score
 from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
@@ -43,7 +43,19 @@ def _render(result: FactoryScore) -> str:
     return "\n".join(lines)
 
 
-def _queue_recipe_approval(recipe_sha: str, overlay: str) -> bool:
+_RECIPE_APPROVAL_CARD = QuestionCard(
+    decision=OwnerDecision.PRODUCT_SCOPE,
+    checked=("The scoring recipe is not the one you approved.",),
+    blocker="Only the owner approves how the factory is scored.",
+    why="The scoring recipe changed, and the factory only trusts a recipe you approved.",
+    options=(
+        CardOption("Approve", "I start scoring with the new recipe.", recommended=True),
+        CardOption("Keep the current recipe", "I keep scoring with the approved one."),
+    ),
+)
+
+
+def _queue_recipe_approval(recipe_sha: str) -> bool:
     """Queue one approval question per unapproved sha; ``True`` if a new row was written.
 
     Deduped on the sha-derived ``options_hash`` so a re-scored read against the
@@ -52,14 +64,8 @@ def _queue_recipe_approval(recipe_sha: str, overlay: str) -> bool:
     dedup_key = _recipe_approval_dedup_key(recipe_sha)
     if DeferredQuestion.objects.filter(options_hash=dedup_key).exists():
         return False
-    scope = overlay or "global"
     DeferredQuestion.record(
-        f"The factory-score recipe (sha {recipe_sha[:12]}) is not yet approved for {scope}. "
-        f"Review the evals/recipe.yaml diff, then run `t3 {overlay or '<overlay>'} recipe approve` to pin it.",
-        options_json=json.dumps(["approve", "reject"]),
-        options_hash=dedup_key,
-        decision=OwnerDecision.PRODUCT_SCOPE,
-        checked=[f"recipe sha {recipe_sha[:12]} is not the approved_recipe_sha for {scope}"],
+        "Can the factory use the new scoring recipe?", options_hash=dedup_key, card=_RECIPE_APPROVAL_CARD
     )
     return True
 
@@ -98,7 +104,7 @@ class Command(MachineOutputCommand):
         )
         if record:
             FactoryScoreSnapshot.objects.record_snapshot(result, tree_sha=_safe_head_sha(), overlay=overlay)
-            if not result.recipe_approved and _queue_recipe_approval(result.recipe_sha, overlay):
+            if not result.recipe_approved and _queue_recipe_approval(result.recipe_sha):
                 self.stderr.write(f"  recipe {result.recipe_sha[:12]} unapproved — queued one approval question.")
         payload = result.to_dict()
         self.print_result = False

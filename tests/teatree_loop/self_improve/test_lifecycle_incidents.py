@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.models.task_phase_disposition import record_stuck_transition_question
+from teatree.core.question_heal import withhold
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
 from teatree.loop.self_improve.detectors.lifecycle_incident import LifecycleIncidentDetector
@@ -647,6 +648,43 @@ class InternalEscalationIncidentTests(TestCase):
 
         assert reports["phase_wedge"].payload["ids"] == [ticket.pk]
         assert reports["internal_escalation"].payload["ids"] == [stall.pk]
+
+    def test_a_withheld_question_is_asked_again_not_dismissed(self) -> None:
+        withheld = self._aged("Is the acme profile right?", dedupe_marker="profile:acme", **OWNER_DECISION)
+        withhold(withheld, ["the question carries internal shorthand (acme_only)"])
+        stall = self._aged(
+            "Repair-loop stall on ticket 1: how should it proceed?", dedupe_marker="repair-stall:1:coding"
+        )
+
+        reports = self._reports()
+
+        report = reports["withheld_owner_question"]
+        assert report.payload["cause"] == "owner_question_failed_plain_language_check"
+        assert report.payload["ids"] == [withheld.pk]
+        assert report.max_rung == ActionRung.TICKET
+        assert report.payload["suggested_action"].startswith(
+            "ask the owner again as a card under the same dedupe marker"
+        )
+        assert "never dismiss it unanswered" in report.payload["suggested_action"]
+        assert reports["internal_escalation"].payload["ids"] == [stall.pk]
+        assert "never ask the owner" not in report.payload["suggested_action"]
+
+    def test_a_withheld_question_is_reported_at_once_not_after_an_hour(self) -> None:
+        fresh = self._aged("Is the acme profile right?", age=timedelta(minutes=1), **OWNER_DECISION)
+        withhold(fresh, ["a problem"])
+
+        reports = self._reports()
+
+        assert reports["withheld_owner_question"].payload["ids"] == [fresh.pk]
+        assert "internal_escalation" not in reports
+
+    def test_a_withheld_question_once_asked_again_is_no_longer_reported(self) -> None:
+        withheld = self._aged("Is the acme profile right?", dedupe_marker="profile:acme", **OWNER_DECISION)
+        withhold(withheld, ["a problem"])
+
+        DeferredQuestion.record("Is the acme profile fine?", dedupe_marker="profile:acme", **OWNER_DECISION)
+
+        assert "withheld_owner_question" not in self._reports()
 
     def test_internal_escalation_names_at_most_100_rows(self) -> None:
         old = timezone.now() - timedelta(hours=2)

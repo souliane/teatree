@@ -77,7 +77,7 @@ class AskUserQuestionReplyScanner:
             reply.unmark_loop_replied()
             return
         try:
-            applied = apply_bound_answer(bound)
+            applied = apply_bound_answer(bound, backend=self.backend)
         except Exception:
             # Nothing was applied, so the claim must go back — otherwise the
             # reply is consumed forever by a failure that never recorded it.

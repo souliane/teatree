@@ -92,7 +92,7 @@ class TestRatifyDecisionRestsOnRecordedProvenance(TestCase):
         assert try_admit(directive) == "reasked"
         directive.refresh_from_db()
         assert directive.ratify_question is not None
-        text = directive.ratify_question.question
-        assert "reply to this Slack DM" in text
-        assert "questions answer" not in text
-        assert "terminal" not in text
+        shown = directive.ratify_question.question + directive.ratify_question.evidence["why"]
+        assert "did not come from you" in shown
+        assert "questions answer" not in shown
+        assert "terminal" not in shown

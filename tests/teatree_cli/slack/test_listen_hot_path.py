@@ -9,11 +9,13 @@ first, so the woken cycle has something to read.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from unittest.mock import patch
 
 import django.test
 from django.tasks import TaskResultStatus
 from django_tasks_db.models import DBTaskResult
+from typer.testing import CliRunner
 
 from teatree.cli.slack import listen
 from teatree.cli.slack.listen import reset_dm_recorders
@@ -163,3 +165,39 @@ class TestRecordThenWake(django.test.TestCase):
         with patch.object(listen, "messaging_from_overlay", return_value=replacement) as resolve:
             listen._record_and_wake_slack_answer("demo", {**_DM, "ts": "2.0"})
         assert resolve.call_count == 1
+
+
+_TAP = {"type": "block_actions", "user": {"id": "U1"}, "channel": {"id": "D1"}, "message": {"ts": "1.0"}, "actions": []}
+
+
+class TestTheClickHandler:
+    def test_listen_wires_the_click_handler(self, tmp_path: Path) -> None:
+        with (
+            patch.object(listen, "default_queue_path", return_value=tmp_path / "events.jsonl"),
+            patch.object(listen, "_resolve_overlays", return_value=[("ov", "xapp", "xoxb")]),
+            patch.object(listen, "run_listener") as run,
+        ):
+            result = CliRunner().invoke(listen.slack_app, ["listen"])
+
+        assert result.exit_code == 0
+        assert run.call_args.kwargs["on_action"] is listen._answer_click
+        assert run.call_args.kwargs["on_event"] is listen._record_and_wake_slack_answer
+
+    def test_a_tap_goes_to_the_binder_with_the_overlays_backend(self) -> None:
+        backend = FakeMessaging()
+        with (
+            patch.object(listen, "messaging_from_overlay", return_value=backend),
+            patch("teatree.loop.question_binding.answer_from_click") as click,
+        ):
+            listen._answer_click("demo", _TAP)
+
+        click.assert_called_once_with(_TAP, backend=backend)
+
+    def test_a_tap_with_no_backend_is_dropped_not_raised(self) -> None:
+        with (
+            patch.object(listen, "messaging_from_overlay", return_value=None),
+            patch("teatree.loop.question_binding.answer_from_click") as click,
+        ):
+            listen._answer_click("demo", _TAP)
+
+        click.assert_not_called()

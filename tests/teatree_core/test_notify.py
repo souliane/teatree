@@ -694,6 +694,11 @@ class TestPublicHelperSurface:
         assert "hello" in out
         assert "info" in out.lower()
 
+    def test_a_question_is_sent_exactly_as_its_card_was_rendered(self) -> None:
+        card = "Can I ship it? Yes, now. 1. One thing.\nA sentence. And a second one.\n\n[Yes] - I go."
+
+        assert notify_module.format_notification(card, NotifyKind.QUESTION) == card
+
 
 class TestResolveUserId(TestCase):
     """``resolve_user_id``: overlay registry → global DB ``slack_user_id`` → empty."""

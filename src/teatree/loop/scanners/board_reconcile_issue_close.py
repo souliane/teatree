@@ -29,6 +29,7 @@ from teatree.backends.issue_close import IssueCloseVerdict
 from teatree.backends.issue_reads import issue_close_verdict
 from teatree.core.backend_protocols import IssueOpenState
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
 
@@ -126,7 +127,7 @@ def _retire(ticket: "Ticket", verdict: IssueCloseVerdict, *, dry_run: bool) -> B
     ticket.extra = extra
     ticket.ignore()
     ticket.save()
-    _escalate_unshipped_work_once(ticket, paths=unshipped, reason=reason)
+    _escalate_unshipped_work_once(ticket, paths=unshipped)
     logger.info("Board reconcile retired ticket %s %s → ignored (%s)", ticket.pk, from_state, reason)
     return BoardTransition(
         ticket_id=int(ticket.pk),
@@ -152,22 +153,24 @@ def _unshipped_work_paths(ticket: "Ticket") -> list[str]:
         return []
 
 
-def _escalate_unshipped_work_once(ticket: "Ticket", *, paths: list[str], reason: str) -> None:
+def _escalate_unshipped_work_once(ticket: "Ticket", *, paths: list[str]) -> None:
     """Hand the operator a retired ticket's uncommitted work, once per ticket ever."""
     from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — ORM import needs the registry
 
     if not paths:
         return
-    marker = _UNSHIPPED_WORK_MARKER.format(pk=ticket.pk)
-    question = (
-        f"{ticket.issue_url or f'Ticket {ticket.pk}'} was retired because the forge closed its "
-        f"issue, and its worktree still holds uncommitted changes ({', '.join(paths)}). "
-        "How should that work proceed — salvage it to a PR, or discard it?"
-    )
     DeferredQuestion.record(
-        question,
+        "Should I save the unfinished work from a closed issue to a pull request?",
         session_id="",
-        dedupe_marker=marker,
-        decision=OwnerDecision.IRREVERSIBLE,
-        checked=[reason, *(f"uncommitted tracked changes in {path}" for path in paths)],
+        dedupe_marker=_UNSHIPPED_WORK_MARKER.format(pk=ticket.pk),
+        card=QuestionCard(
+            decision=OwnerDecision.IRREVERSIBLE,
+            checked=("The forge closed the issue.", "The working copy holds uncommitted tracked changes."),
+            blocker="Only the owner can say whether the work may be thrown away.",
+            why=f"The issue was closed, but {len(paths)} working copy(ies) still hold changes nobody saved.",
+            options=(
+                CardOption("Save it", "I open a pull request so the work is not lost.", recommended=True),
+                CardOption("Discard it", "I delete the changes for good."),
+            ),
+        ),
     )

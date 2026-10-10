@@ -25,12 +25,14 @@ from teatree.core.machine_output import call_command_streamed, last_json_object
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models import DeferredQuestion
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_state_question import (
-    OwnerAsk,
+    AWAITING_COLD_REVIEW,
     ask_mr_state,
     owner_answer_at_head,
+    owner_question_text,
     retire_head_bound_question,
     retire_mr_state_question,
 )
@@ -57,7 +59,14 @@ _RETRIED_QUIETLY = frozenset(
         "draft_state_unknown",
     }
 )
-_ASK_TEXT = {"awaiting_cold_review": "no independent cold review covers its current head yet."}
+_ASK_WHY = {AWAITING_COLD_REVIEW: "It is ready, but no independent review covers its latest changes yet."}
+_ASK_WHY_DEFAULT = "It is ready, but sending the request was refused, so I am asking before trying again."
+_POST, _IN_PERSON, _NOT_READY = MISSING_REVIEW_OPTIONS
+_OWNER_OPTIONS = (
+    CardOption(_POST, "I send the request to the reviewers now.", recommended=True),
+    CardOption(_IN_PERSON, "I leave it and post nothing."),
+    CardOption(_NOT_READY, "I hold it until you say it is ready."),
+)
 
 
 class ReviewRequestPoster(Protocol):
@@ -154,7 +163,7 @@ def _review_blocker(item: TriagedMr, ref: PrRef, sha: str, answer: DeferredQuest
         retire_head_bound_question(item.url, reason="a cold review holds this head")
         return _deferred(item, review.hold_reason, detail=review.hold_detail)
     if review.authorizing_verdict is None and answer is None:
-        return _ask(item, sha, "awaiting_cold_review")
+        return _ask(item, sha, AWAITING_COLD_REVIEW)
     return None
 
 
@@ -171,17 +180,14 @@ def _outcome(item: TriagedMr, sha: str, result: RawAPIDict) -> ScanSignal:
 
 def _ask(item: TriagedMr, sha: str, reason: str) -> ScanSignal:
     """Refuse *item* and put it to the owner; a head they already answered about is not asked again."""
-    text = _ASK_TEXT.get(reason, f"sending the review request was refused ({reason}).")
-    question = ask_mr_state(
-        mr_url=item.url,
-        reason=f"it is ready for review, but {text}",
-        options=MISSING_REVIEW_OPTIONS,
-        head_sha=sha,
-        owner=OwnerAsk(
-            OwnerDecision.PUBLIC_POST,
-            [f"review request refused: {reason}", f"head {sha[:12]}", f"triage verdict: {item.verdict.action}"],
-        ),
-    )
+    card = QuestionCard(
+        decision=OwnerDecision.PUBLIC_POST,
+        checked=("The review request was refused before it was posted.",),
+        blocker="Only the owner can approve a post made in their name.",
+        why=_ASK_WHY.get(reason, _ASK_WHY_DEFAULT),
+        options=_OWNER_OPTIONS,
+    ).with_quote(owner_question_text(item.url, reason), _str_field(item.pr, "title"))
+    question = ask_mr_state(mr_url=item.url, reason=reason, options=MISSING_REVIEW_OPTIONS, head_sha=sha, owner=card)
     asked = question is not None
     return ScanSignal(
         kind="review_request.send_refused",

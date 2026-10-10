@@ -45,7 +45,8 @@ WRAP_WIDTH = 90
 # Bounded: CPython refuses a str->int conversion past 4300 digits, and the
 # conversion runs before any range check could reject the index.
 _PLACEHOLDER_RE = re.compile(r"\x00(\d{1,9})\x00")
-_LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+)")
+_LIST_OR_QUOTE_MARKER_RE = re.compile(r"^([-*]\s+|>\s+|\d+[.)]\s+)")
+_ORDERED_ITEM_RE = re.compile(r"^\s*\d+[.)]\s")
 # Whitespace is what separates a heading from the `#4665` issue ref teatree writes constantly.
 _HEADING_RE = re.compile(r"#{1,6}\s")
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
@@ -284,7 +285,7 @@ def _split_glued_prose(text: str) -> str:
     out: list[str] = []
     for line in text.splitlines(keepends=False):
         stripped = line.lstrip()
-        if not stripped or stripped.startswith(("- ", "* ", "> ", "|", "#")):
+        if not stripped or stripped.startswith(("- ", "* ", "> ", "|", "#")) or _ORDERED_ITEM_RE.match(line):
             out.append(line)
             continue
         sentences = _split_sentences(line)

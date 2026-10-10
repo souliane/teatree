@@ -21,84 +21,46 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion
-from teatree.core.notify_question_drains import (
-    RESURFACE_INTERVAL_HOURS,
-    format_backlog_digest,
-    resurface_question_backlog,
-)
+from teatree.core.notify_question_drains import RESURFACE_INTERVAL_HOURS, resurface_question_backlog
+from teatree.core.owner_question_message import digest_text
 from tests._owner_channel import OWNER_DECISION
 
 
 class TestBacklogDigestText(TestCase):
     def test_digest_counts_the_backlog_rather_than_listing_it(self) -> None:
-        first = DeferredQuestion.record("Unify the worktree output root?")
-        second = DeferredQuestion.record("Which merge target for the coding phase?")
+        first = DeferredQuestion.record("Unify the worktree output root?", **OWNER_DECISION)
+        second = DeferredQuestion.record("Which merge target for the coding phase?", **OWNER_DECISION)
 
-        text = format_backlog_digest([first, second])
+        text = digest_text([first, second], now=timezone.now())
 
-        assert "2 open questions need decisions" in text
+        assert text.startswith("2 decisions are waiting for you")
         assert f"#{first.pk}" not in text, "a question named in the digest cannot be answered from it"
         assert f"#{second.pk}" not in text
         assert "Unify the worktree output root?" not in text
 
     def test_digest_stays_one_message_however_deep_the_backlog(self) -> None:
-        rows = [DeferredQuestion.record(f"Question {i}") for i in range(14)]
+        rows = [DeferredQuestion.record(f"Widget {i}?", **OWNER_DECISION) for i in range(14)]
 
-        text = format_backlog_digest(rows)
+        text = digest_text(rows, now=timezone.now())
 
-        assert "14 open questions need decisions" in text
-        assert len(text.splitlines()) <= 3, "the digest grew a per-question list again"
+        assert text.startswith("14 decisions are waiting for you")
+        assert len(text.splitlines()) == 1, "the digest grew a per-question list again"
 
     def test_digest_reports_how_long_the_oldest_has_waited(self) -> None:
-        old = DeferredQuestion.record("Merge it?")
+        old = DeferredQuestion.record("Merge it?", **OWNER_DECISION)
         DeferredQuestion.objects.filter(pk=old.pk).update(created_at=timezone.now() - dt.timedelta(days=34))
         old.refresh_from_db()
 
-        assert "oldest is 34d" in format_backlog_digest([old])
+        assert "the oldest was asked 34 days ago" in digest_text([old, old], now=timezone.now())
 
-    def test_digest_tells_the_owner_where_an_answer_binds(self) -> None:
-        row = DeferredQuestion.record("Merge it?")
+    def test_digest_names_no_command_and_no_id(self) -> None:
+        row = DeferredQuestion.record("Merge it?", **OWNER_DECISION)
 
-        text = format_backlog_digest([row])
+        text = digest_text([row], now=timezone.now())
 
-        assert "reply" in text.lower()
-        assert "`#<id> <your answer>`" in text, "the one form that binds from outside a question thread"
         assert "t3 " not in text
-
-
-class TestEscalationIsVisibleInTheDigest(TestCase):
-    """The age backstop's stamp has to CHANGE something the owner reads (#4178).
-
-    ``escalated_at``/``escalation_count`` are written by the drain's backstop stage. A
-    stamp nothing renders is write-only: "a KEEP is not a licence to sit forever" would
-    then be satisfied by doing nothing at all. These are the positive criteria — only a
-    rendered escalation can pass them.
-    """
-
-    def test_an_escalated_row_reads_differently_from_the_same_row_unescalated(self) -> None:
-        row = DeferredQuestion.record("Merge it?")
-        before = format_backlog_digest([row])
-
-        assert row.mark_escalated("pending past the 7d ceiling with no resolution")
-
-        assert format_backlog_digest([row]) != before
-
-    def test_the_header_counts_the_escalated_rows(self) -> None:
-        escalated = DeferredQuestion.record("Merge it?")
-        DeferredQuestion.record("And this one?")
-        assert escalated.mark_escalated("pending past the ceiling")
-
-        text = format_backlog_digest([escalated, DeferredQuestion.objects.exclude(pk=escalated.pk).get()])
-
-        assert "1 past the age ceiling" in text
-
-    def test_the_escalated_count_survives_a_deep_backlog(self) -> None:
-        # The digest names no row at any depth, so what has to survive is the COUNT: a
-        # 14-deep backlog with one row past the ceiling still says so.
-        rows = [DeferredQuestion.record(f"Question {i}") for i in range(14)]
-        assert rows[-1].mark_escalated("pending past the ceiling")
-
-        assert "1 past the age ceiling" in format_backlog_digest(rows)
+        assert "#" not in text
+        assert "deferred" not in text.lower()
 
 
 class TestResurfaceQuestionBacklog(TestCase):

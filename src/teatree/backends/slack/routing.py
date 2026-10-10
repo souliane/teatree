@@ -43,12 +43,12 @@ def assert_owner_dm(channel: str, *, owner_dm_only: bool, dm_channel_id: str, us
 def assert_owner_call(
     method: str, payload: Mapping[str, object], *, owner_dm_only: bool, dm_channel_id: str, user_id: str
 ) -> None:
-    """Refuse channel reach outright, and any post or DM open not addressed to the owner."""
+    """Refuse channel reach outright, and any post, edit or DM open not addressed to the owner."""
     if not owner_dm_only:
         return
     if method in _CHANNEL_REACH_METHODS:
         raise OwnerDmOnlyError(str(payload.get("channel") or payload.get("name") or ""), method=method)
-    if method == "chat.postMessage":
+    if method in {"chat.postMessage", "chat.update"}:
         channel = str(payload.get("channel") or "")
         if not is_self_dm(channel, dm_channel_id=dm_channel_id, user_id=user_id):
             raise OwnerDmOnlyError(channel, method=method)

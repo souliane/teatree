@@ -22,6 +22,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.inert_gate_questions import MARKER_PREFIX, InertGateQuestionScanner
+from tests._owner_channel import assert_a_plain_card
 
 _SHIPPED = dt.date(2020, 1, 1)
 #: Real settings explicitly turned off by each fixture — ``enabled_anywhere`` reads the live field, so an invented key
@@ -56,23 +57,21 @@ class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
             ConfigSetting.objects.set_value(key, value=False)
         self.registry = _undecided(_UNDECIDED_SETTING, _SECOND_UNDECIDED_SETTING)
 
-    def test_two_undecided_gates_file_a_single_question_naming_both(self) -> None:
+    def test_two_undecided_gates_file_a_single_card_that_counts_them(self) -> None:
         signals = InertGateQuestionScanner(registry=self.registry).scan()
 
         [question] = DeferredQuestion.objects.all()
-        assert _UNDECIDED_SETTING in question.question
-        assert _SECOND_UNDECIDED_SETTING in question.question
+        text = assert_a_plain_card(question, _UNDECIDED_SETTING, _SECOND_UNDECIDED_SETTING, "config_setting")
+        assert "2 shipped checks" in text
         assert question.dedupe_marker.startswith(MARKER_PREFIX)
         assert question.evidence["decision"] == "architecture"
-        assert [fact.split(":")[0] for fact in question.evidence["checked"]] == sorted(self.registry)
         assert len(signals) == 1
 
-    def test_the_question_carries_every_gate_satisfier(self) -> None:
-        InertGateQuestionScanner(registry=self.registry).scan()
+    def test_the_signal_carries_every_gate_satisfier_while_the_card_shows_none(self) -> None:
+        (signal,) = InertGateQuestionScanner(registry=self.registry).scan()
 
-        [question] = DeferredQuestion.objects.all()
-        assert f"config_setting set {_UNDECIDED_SETTING} true" in question.question
-        assert f"config_setting set {_SECOND_UNDECIDED_SETTING} true" in question.question
+        for setting in (_UNDECIDED_SETTING, _SECOND_UNDECIDED_SETTING):
+            assert f"config_setting set {setting} true" in signal.summary
 
     def test_the_signal_names_every_gate_it_batched(self) -> None:
         (signal,) = InertGateQuestionScanner(registry=self.registry).scan()

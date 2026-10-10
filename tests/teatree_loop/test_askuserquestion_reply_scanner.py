@@ -42,6 +42,7 @@ class FakeMessaging:
 
     permalink: str = "https://slack/permalink"
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    updates: list[dict[str, object]] = field(default_factory=list)
     raise_on_react: bool = False
     route_token: str = "self"
     user_id: str = OWNER_SLACK_ID
@@ -59,6 +60,10 @@ class FakeMessaging:
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = (channel, text, thread_ts)
+        return {"ok": True}
+
+    def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
+        self.updates.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
         return {"ok": True}
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
@@ -89,6 +94,33 @@ def _record_reply(text: str, *, slack_ts: str) -> PendingChatInjection:
 
 def _scan(backend: FakeMessaging) -> None:
     AskUserQuestionReplyScanner(backend=backend, overlay="").scan()
+
+
+class TestATypedAnswerClosesTheRootCard:
+    def test_a_typed_answer_closes_the_root_card(self) -> None:
+        question = DeferredQuestion.record(
+            "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
+        )
+        _record_reply("tomorrow, please", slack_ts="200.0")
+        backend = FakeMessaging()
+
+        _scan(backend)
+
+        question.refresh_from_db()
+        assert question.answer_text == "tomorrow, please"
+        [update] = backend.updates
+        assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
+        assert "You answered: tomorrow, please" in str(update["text"])
+        assert update["blocks"]
+
+    def test_a_reply_sent_before_the_card_was_posted_edits_nothing(self) -> None:
+        DeferredQuestion.record("Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="200.0", **OWNER_DECISION)
+        _record_reply("tomorrow, please", slack_ts="150.0")
+        backend = FakeMessaging()
+
+        _scan(backend)
+
+        assert backend.updates == []
 
 
 class TestDigitReplyResolvesOption:

@@ -54,6 +54,7 @@ class FakeMessaging:
     """Self-DM MessagingBackend: every react/post is ungated (self surface)."""
 
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
+    updates: list[dict[str, object]] = field(default_factory=list)
     route_token: str = "self"
     user_id: str = OWNER_SLACK_ID
 
@@ -67,6 +68,10 @@ class FakeMessaging:
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = (channel, text, thread_ts)
+        return {"ok": True}
+
+    def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
+        self.updates.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
         return {"ok": True}
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
@@ -233,6 +238,23 @@ class TestOptionDigitStillResolves:
 
         older.refresh_from_db()
         assert older.answer_text == "No"
+
+
+class TestADigitRepliesToACardQuestion:
+    def test_a_digit_reply_to_a_card_question_records_that_option(self) -> None:
+        card_row = DeferredQuestion.record(
+            "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
+        )
+        _question("Ship the release?", slack_ts="300.0", generation=2)
+        _reply("2", slack_ts="400.0", thread_ts="100.0")
+
+        backend = _scan()
+
+        card_row.refresh_from_db()
+        assert card_row.answer_text == "No"
+        [update] = backend.updates
+        assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
+        assert "You chose: No - I leave it as it is." in str(update["text"])
 
 
 def _threading_slack() -> tuple[MagicMock, dict[str, str]]:

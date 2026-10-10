@@ -11,7 +11,7 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 
 import logging
 
-from teatree.core.modelkit.owner_decision import owner_decision
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.plan_decision import refuse_unplanned_mint
@@ -86,16 +86,15 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     last = task.attempts.order_by("-pk").first()
     result = last.result if last else {}
     reason = str(result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
-    decision = owner_decision(result.get("user_input_kind"))
-    scope = f"{task.ticket.pk}:" if decision is not None else ""
+    card = QuestionCard.from_envelope(result)
+    scope = f"{task.ticket.pk}:" if card is not None else ""
     return DeferredQuestion.record(
         reason,
         task_session=task.session,
         run_id=last.agent_session_id if last else "",
         dedupe_marker=f"needs-input:{scope}{question_fingerprint(reason)}",
         parked_task=task,
-        decision=decision,
-        checked=result.get("user_input_checked", ()),
+        card=card,
     )
 
 

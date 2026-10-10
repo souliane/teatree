@@ -18,6 +18,7 @@ from django.test import TestCase
 import hooks.scripts.hook_router as router
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._owner_channel import owner_card
 
 
 class _CapturedStdoutTestCase(TestCase):
@@ -185,7 +186,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def _owner_row(self, question: str, *, delivered_ts: str = "", **scope: str) -> DeferredQuestion:
         """A pending owner row from before #5096, when a loop-driven capture still reached the owner."""
         row = DeferredQuestion.record(
-            question, decision=OwnerDecision.PRODUCT_SCOPE, checked=["the ticket is silent"], **scope
+            question, card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"), **scope
         )
         if delivered_ts:
             row.mark_mirrored(channel="D-cached", slack_ts=delivered_ts)
@@ -232,7 +233,7 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
     def test_another_sessions_row_is_never_superseded(self) -> None:
         """Pins the scope as per-session — the guard no test held before #4721."""
         self._pin_state_dir()
-        foreign = self._owner_row("other session", session_id="s-other", run_id="r1")
+        foreign = self._owner_row("Is this another session?", session_id="s-other", run_id="r1")
         self._ask("Ship it?", delivered_ts="", session_id="s-loop", run_id="r1")
 
         foreign.refresh_from_db()
@@ -278,8 +279,7 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
             "Ship it?",
             session_id="s-att",
             run_id="r1",
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=["the ticket is silent"],
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 
@@ -289,11 +289,10 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
 
     def test_another_sessions_row_is_never_superseded(self) -> None:
         foreign = DeferredQuestion.record(
-            "other session",
+            "Is this another session?",
             session_id="s-other",
             run_id="r1",
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=["the ticket is silent"],
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 
@@ -308,8 +307,7 @@ class TestAttendedArmSupersessionKeepsTheSameGuards(_CapturedStdoutTestCase):
             run_id="r1",
             slack_ts="1700.0001",
             slack_channel="D-cached",
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=["the ticket is silent"],
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
         )
         self._attended_ask(session_id="s-att", run_id="r1")
 

@@ -140,7 +140,10 @@ def _fixed_message(gaps: ManifestSocketGaps, app_id: str) -> str:
         parts.append(f"added events {', '.join(sorted(gaps.missing_events))}")
     if gaps.missing_bot_scopes:
         parts.append(f"added bot scopes {', '.join(sorted(gaps.missing_bot_scopes))}")
-    return f"Fixed manifest — {'; '.join(parts)}. Reinstall to consent: {app_install_url(app_id)}."
+    if gaps.interactivity_disabled:
+        parts.append("turned Interactivity on")
+    fixed = f"Fixed manifest — {'; '.join(parts)}."
+    return f"{fixed} Reinstall to consent: {app_install_url(app_id)}." if gaps.needs_reinstall else fixed
 
 
 def _no_config_token_message(app_id: str) -> str:
@@ -197,17 +200,17 @@ def _check_manifest(overlay: str) -> list[SocketModeFinding]:
     else:
         gaps = manifest_socket_gaps(current)
     if gaps.ok:
-        message = "manifest Socket Mode config current (socket mode on, events + scopes present)."
+        message = "manifest Socket Mode config current (socket mode on, events + scopes present, interactivity on)."
         return [SocketModeFinding(overlay, Level.OK, message)]
     desired = build_manifest(overlay_name=overlay, scope_profile=profile)
     try:
         update_manifest(app_id=app_id, manifest=desired, config_token=read_pass(_CONFIG_TOKEN_REF))
     except SlackManifestError as exc:
         return [SocketModeFinding(overlay, Level.WARN, f"manifest update failed: {exc}.")]
-    # The manifest was rewritten, but Socket Mode is NOT live until the operator
-    # reinstalls the app to consent — so this is an ACTION (awaiting reinstall),
-    # not an OK (#3313). The message already names the reinstall URL.
-    return [SocketModeFinding(overlay, Level.ACTION, _fixed_message(gaps, app_id))]
+    # Socket Mode, events and scopes are NOT live until the operator reinstalls the app to consent,
+    # so that fix is an ACTION (#3313); Interactivity alone needs no consent and is done.
+    level = Level.ACTION if gaps.needs_reinstall else Level.OK
+    return [SocketModeFinding(overlay, level, _fixed_message(gaps, app_id))]
 
 
 def check_slack_socket_mode() -> SocketModeOutcome:

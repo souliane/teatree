@@ -35,7 +35,9 @@ class _HealedProvisionQuestion(TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ticket = Ticket.objects.create(overlay="test", repos=[], state=Ticket.State.WORK_STARTED)
         self.question = DeferredQuestion.record(
-            "Provision failed: no repos on ticket", dedupe_marker=provision_failure_marker(ticket.pk), **OWNER_DECISION
+            "Did provisioning fail because the ticket has no repos?",
+            dedupe_marker=provision_failure_marker(ticket.pk),
+            **OWNER_DECISION,
         )
         self.live = DeferredQuestion.record("Which DB host?", **OWNER_DECISION)
         self.ticket = ticket
@@ -55,7 +57,7 @@ class _HealedProvisionQuestion(TestCase):
             row.refresh_from_db()
 
     def _posted_the_provision_question(self, backend: MagicMock) -> bool:
-        return any("Provision failed" in str(call) for call in backend.post_message.call_args_list)
+        return any("Did provisioning fail" in str(call) for call in backend.post_message.call_args_list)
 
     def _assert_withdrawn(self) -> None:
         self.question.refresh_from_db()

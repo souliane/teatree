@@ -24,6 +24,7 @@ from teatree.loop import stuck_ticket_redispatch
 from teatree.loop.scanners import board_reconcile, board_reconcile_issue_close
 from teatree.loop.scanners.board_reconcile import reconcile_board
 from teatree.loop.scanners.board_reconcile_report import BoardAction
+from tests._owner_channel import assert_a_plain_card
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4084"
 _DIRTY_PROBE = "teatree.core.models.ticket_worktree_checks.collect_dirty_worktree_paths"
@@ -289,10 +290,9 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
         assert ticket.state == Ticket.State.IGNORED
         questions = DeferredQuestion.objects.filter(dedupe_marker=f"issue-closed-unshipped-work:{ticket.pk}")
         assert questions.count() == 1
-        assert "/checkouts/4084/teatree" in questions.get().question
-        evidence = questions.get().evidence
-        assert evidence["decision"] == "irreversible"
-        assert any("/checkouts/4084/teatree" in fact for fact in evidence["checked"])
+        assert questions.get().evidence["decision"] == "irreversible"
+        text = assert_a_plain_card(questions.get(), "/checkouts/4084/teatree", _ISSUE)
+        assert "1 working copy" in text
 
     def test_a_clean_worktree_raises_no_question(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=_ISSUE)

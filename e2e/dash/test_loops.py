@@ -14,7 +14,19 @@ from pytest_django.live_server_helper import LiveServer
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_preset import Mode, ModeOverride
 from teatree.loops.registry import iter_loops
+from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.timer_reconciler import ensure_loop_timers
+
+
+@pytest.mark.usefixtures("transactional_db")
+def test_the_dispatch_loop_describes_owner_questions(live_server: LiveServer, page: Page) -> None:
+    seed_default_loops_and_prompts()
+
+    page.goto(f"{live_server.url}/dash/loops/")
+
+    dispatch_row = page.locator("tr").filter(has=page.get_by_text("dispatch", exact=True))
+    expect(dispatch_row).to_contain_text("and posts owner questions.")
+    expect(page.locator("body")).not_to_contain_text("deferred", ignore_case=True, use_inner_text=True)
 
 
 @pytest.mark.usefixtures("seeded_board")

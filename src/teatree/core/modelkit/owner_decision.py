@@ -1,7 +1,6 @@
 """The closed set of decisions that earn an owner DM; everything else is factory work (#5096)."""
 
 import enum
-from collections.abc import Iterable
 
 
 class OwnerDecision(enum.StrEnum):
@@ -15,12 +14,14 @@ class OwnerDecision(enum.StrEnum):
     ARCHITECTURE = "architecture"
 
 
-type OwnerEvidence = dict[str, str | list[str]]
-
 OWNER_QUESTION_ROUTE = (
-    "Ask the owner only via `t3 <overlay> questions record '<question>' --decision <kind> --checked '<fact>'`, "
+    "Ask the owner only via `t3 <overlay> questions record '<one question ending in ?>' --decision <kind> "
+    "--checked '<fact>' --why '<one sentence on why you ask>' --blocker '<what stops you>' "
+    '--options \'[{"label": "<answer>", "description": "<what happens next>", "recommended": true}, ...]\'`, '
     f"<kind> being one of {', '.join(OwnerDecision)} (an access or permission grant is credentials), "
-    "listing every fact you checked first; decide everything else yourself."
+    "listing every fact you checked first and 2 to 4 options with the recommended one first, or none; "
+    "at most 120 words in all; plain English everywhere, quotes included (no ids, snake_case names, paths or "
+    "commands); decide everything else yourself."
 )
 
 OWNER_ANSWER_ROUTE = (
@@ -37,20 +38,9 @@ def owner_decision(value: object) -> OwnerDecision | None:
         return None
 
 
-def owner_evidence(decision: object, checked: Iterable[str]) -> OwnerEvidence | None:
-    """The stored proof an owner row needs, or ``None`` for an unknown kind or no non-blank checked fact."""
-    kind = owner_decision(decision)
-    facts = [fact.strip() for fact in checked if fact.strip()]
-    if kind is None or not facts:
-        return None
-    return {"decision": kind.value, "checked": facts}
-
-
 __all__ = [
     "OWNER_ANSWER_ROUTE",
     "OWNER_QUESTION_ROUTE",
     "OwnerDecision",
-    "OwnerEvidence",
     "owner_decision",
-    "owner_evidence",
 ]

@@ -24,6 +24,7 @@ from teatree.core import notify as notify_module
 from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE, OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -215,8 +216,7 @@ class TestAttendedTurnNeverReachesSlack:
             "Ship it?",
             session_id="s-8",
             run_id="r-1",
-            decision=OwnerDecision.PRODUCT_SCOPE,
-            checked=["the ticket is silent"],
+            card=owner_card(OwnerDecision.PRODUCT_SCOPE, "the ticket is silent"),
         )
         assert stranded.dismissed_at is None
 
@@ -244,7 +244,7 @@ class TestALoopDrivenQuestionNeverReachesTheOwner:
         capsys.readouterr()
         captured = DeferredQuestion.objects.get()
         owner = DeferredQuestion.record(
-            "Rotate the deploy token?", decision=OwnerDecision.CREDENTIALS, checked=["the ticket is silent"]
+            "Rotate the deploy token?", card=owner_card(OwnerDecision.CREDENTIALS, "the ticket is silent")
         )
 
         _drain_to(backend)
@@ -275,7 +275,11 @@ class TestALoopDrivenQuestionNeverReachesTheOwner:
             "--decision",
             "credentials",
             "--checked",
-            "the classifier denied gh api twice this run",
+            "The classifier denied gh api twice this run.",
+            "--why",
+            "The agent keeps stopping on a denied command.",
+            "--blocker",
+            "Only the owner can grant a permission.",
         )
 
         _drain_to(backend)

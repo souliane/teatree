@@ -444,6 +444,7 @@ markers = [
   "real_schema_readiness: opt out of the autouse pending-migration stub so the gate walks the real migration graph",
   "real_banned_terms_scanner: opt out of the in-process banned-terms matcher so the scan really execs check-banned-terms.sh",
   "real_merge_privacy_scan: opt out of the autouse private-target stub so the merge-message gate runs the real public-repo leak scan",
+  "real_quiet_hours: opt out of the autouse never-quiet stub so the owner-question drains really hold 22:00-08:00",
 ]
 
 # --- Coverage ---

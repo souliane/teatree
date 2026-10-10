@@ -16,7 +16,7 @@ from teatree.core import notify as notify_module
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import BotPing, DeferredQuestion, IncomingEvent
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
-from tests._owner_channel import OWNER_DECISION
+from tests._owner_channel import OWNER_DECISION, owner_card
 
 
 def _backend(*, ts: str = "1700000000.000000") -> MagicMock:
@@ -86,7 +86,7 @@ class TestDrainUnmirroredDeferredQuestions(TestCase):
     def test_owner_question_row_is_still_dmed(self) -> None:
         # The owner-audience row alongside an internal one is the only one posted.
         owner = DeferredQuestion.record(
-            "Owner decision?", session_id="s", decision=OwnerDecision.CREDENTIALS, checked=["no stored token"]
+            "Owner decision?", session_id="s", card=owner_card(OwnerDecision.CREDENTIALS, "no stored token")
         )
         DeferredQuestion.record(
             "internal stall",
