@@ -141,13 +141,33 @@ _sources_differing_from_head() {
     return 0
   fi
   have=$(paste <(printf '%s\n' "${hashes}") <(printf '%s\n' "${paths}"))
-  printf '%s\n%s\n' "${want}" "${have}" | LC_ALL=C sort | uniq -u | awk -F'\t' 'NF { print $(NF) }' | LC_ALL=C sort -u
+  {
+    printf '%s\n%s\n' "${want}" "${have}" | LC_ALL=C sort | uniq -u | awk -F'\t' 'NF { print $(NF) }'
+    _import_shadows "${paths}"
+  } | LC_ALL=C sort -u
+}
+
+# Python imports an extension module (`x.so`, `x.pyd`) or a package directory (`x/`) before the module `x.py`, and neither
+# is hashed above, so an untracked one beside a listed module would run in its place. Prints what shadows, by path.
+_import_shadows() {
+  local dir path found
+  while IFS= read -r dir; do
+    while IFS= read -r found; do
+      [ -z "${found}" ] || printf '%s\n' "${found#"${repo_root}"/}"
+    done < <(find "${repo_root}/${dir}" -maxdepth 1 \( -name '*.so' -o -name '*.pyd' \) 2>/dev/null)
+  done < <(printf '%s\n' "$1" | sed 's#/[^/]*$##' | LC_ALL=C sort -u)
+  while IFS= read -r path; do
+    case "${path}" in
+      */__init__.py) ;;
+      *.py) [ ! -d "${repo_root}/${path%.py}" ] || printf '%s/\n' "${path%.py}" ;;
+    esac
+  done <<< "$1"
 }
 
 differing_sources=$(_sources_differing_from_head)
 if [ -n "${differing_sources}" ]; then
   differing_count=$(printf '%s\n' "${differing_sources}" | wc -l | tr -d ' ')
-  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: ${differing_count} file(s) this hook runs differ from HEAD of ${repo_root}, or are not committed there:"
+  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: ${differing_count} file(s) this hook runs differ from HEAD of ${repo_root}, are not committed there, or are shadowed by an extension module or package that is not:"
   printf '%s\n' "${differing_sources}" | head -5 | sed 's/^/    /'
   [ "${differing_count}" -le 5 ] || echo "    ... and $((differing_count - 5)) more"
   echo "  The push gate runs only committed code: an uncommitted edit of it would be the pusher's word that the push is clean."

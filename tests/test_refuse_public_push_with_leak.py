@@ -13,6 +13,7 @@ the ``origin`` remote, and a real ``gh`` shim on ``PATH`` that returns a
 fixed visibility. Nothing about git or the filesystem is mocked.
 """
 
+import importlib.machinery
 import importlib.util
 import json
 import marshal
@@ -585,7 +586,7 @@ class TestLeakGateFailsClosedOnScannerCrash:
         _make_unusable_bare_pythons(bin_dir)
         for tool in (
             *("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"),
-            *("env", "awk", "paste", "uniq", "head", "wc"),
+            *("env", "awk", "paste", "uniq", "head", "wc", "find"),
         ):
             found = shutil.which(tool, path=env["PATH"])
             assert found is not None
@@ -2600,6 +2601,36 @@ class TestTheHookRunsOnlyCommittedCode:
 
         assert result.returncode == 1, "startup code answered private: " + result.stdout + result.stderr
         assert "privacy findings" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize("suffix", [importlib.machinery.EXTENSION_SUFFIXES[0], ".pyd"], ids=["so", "pyd"])
+    def test_an_untracked_extension_module_beside_a_guarded_module_is_refused(
+        self, tmp_path: Path, suffix: str
+    ) -> None:
+        """Python imports ``term_match<suffix>`` before ``term_match.py``, and nothing above hashes it."""
+        work, env, hook = self._leaking_push(tmp_path)
+        shim = hook.parents[2] / "src" / "teatree" / "hooks" / f"term_match{suffix}"
+        shim.write_bytes(b"not a real extension module")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "shadowed" in result.stdout, result.stdout
+        assert f"src/teatree/hooks/term_match{suffix}" in result.stdout, result.stdout
+
+    def test_an_untracked_package_named_like_a_guarded_module_is_refused(self, tmp_path: Path) -> None:
+        """A package directory is imported before a same-named ``.py`` module: here a matcher that finds nothing."""
+        work, env, hook = self._leaking_push(tmp_path)
+        package = hook.parents[2] / "src" / "teatree" / "hooks" / "term_match"
+        package.mkdir()
+        (package / "__init__.py").write_text(
+            "def __getattr__(name):\n    return lambda *args, **kwargs: None\n", encoding="utf-8"
+        )
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the shadowing package judged the push: " + result.stdout + result.stderr
+        assert "shadowed" in result.stdout, result.stdout
+        assert "src/teatree/hooks/term_match/" in result.stdout, result.stdout
 
     def test_committed_sources_run_as_before(self, tmp_path: Path) -> None:
         """Anti-vacuity: with nothing edited the same push is judged by the real scanner and refused as a leak."""
