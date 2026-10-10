@@ -1,13 +1,17 @@
+import contextlib
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from hooks.scripts.banned_terms import gate as banned_terms_gate
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
 from teatree.hooks import _repo_visibility, banned_terms_scanner
@@ -969,38 +973,157 @@ def test_live_hook_allows_workitem_url_inline_commit_in_private_worktree(
 
 # ── #1415: kill-switch ───────────────────────────────────────────────────────
 #
-# A ``[teatree] banned_terms_gate_enabled = false`` config line disables the
-# whole gate (NEVER-LOCKOUT). With it set, a command that would otherwise
-# hard-block -- a banned term toward a PUBLIC repo -- is allowed straight
-# through, and the gate emits no deny.
+# ``banned_terms_gate_enabled = false`` is a lockout rescue for a destination the gate
+# can PROVE private. It never switches the gate off toward a public or an unknown
+# destination: relaxing a leak block there is a privacy regression, not a rescue
+# (hooks/CLAUDE.md: public-surface leak gates fail closed always).
+
+_DESTINATIONS = {
+    "public": "souliane/teatree",
+    "unknown": "someowner/mystery",
+    "private": "privowner/private-svc",
+}
 
 
-_GATE_DISABLED_CONFIG = (
-    '[teatree]\nbanned_term_registry = { leak = [], prose_collider = ["acmewidget"] }\n'
-    "banned_terms_gate_enabled = false\n"
-)
+def _new_term() -> str:
+    return "zq" + secrets.token_hex(4)
 
 
-def test_kill_switch_off_allows_a_would_be_blocked_public_post(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # The SAME public-repo banned-term post that hard-blocks with the gate ON
-    # must be ALLOWED with ``banned_terms_gate_enabled = false`` -- the kill-
-    # switch returns before any scan, so no deny is emitted.
-    home = Path(os.environ["HOME"])
-    _write_home_config(home, _GATE_DISABLED_CONFIG, monkeypatch, tmp_path)
-    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+def _probe_answer(slug: str) -> str | None:
+    if "privowner/private-svc" in slug:
+        return "PRIVATE"
+    return "PUBLIC" if "souliane/teatree" in slug else None
 
-    data = {
+
+def _arm_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, switch: str, term: str) -> None:
+    """Configure the registry term and the kill-switch; the probe answers only for the two known repos."""
+    (Path(os.environ["HOME"]) / "config.sqlite3").unlink(missing_ok=True)
+    _write_home_config(
+        Path(os.environ["HOME"]),
+        f'[teatree]\nbanned_term_registry = {{ leak = [], prose_collider = ["{term}"] }}\n'
+        f"banned_terms_gate_enabled = {switch}\n",
+        monkeypatch,
+        tmp_path,
+    )
+    monkeypatch.delenv("GH_REPO", raising=False)
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", _probe_answer)
+
+
+def _publish_to(destination: str, term: str, tmp_path: Path) -> dict:
+    return {
         "tool_name": "Bash",
-        "tool_input": {"command": 'gh issue comment 5 --repo souliane/teatree --body "rolling out acmewidget"'},
+        "tool_input": {
+            "command": f'gh issue comment 5 --repo {_DESTINATIONS[destination]} --body "rolling out {term}"'
+        },
         "cwd": str(_public_clone(tmp_path)),
     }
-    blocked = handle_banned_terms_pretool(data)
+
+
+@pytest.mark.parametrize(
+    ("destination", "verdict"), [("public", "deny"), ("unknown", "deny"), ("private", "allow")], ids=str
+)
+def test_kill_switch_ignored_for_public_and_unknown_destinations(
+    destination: str, verdict: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    term = _new_term()
+    _arm_gate(tmp_path, monkeypatch, switch="false", term=term)
+
+    blocked = handle_banned_terms_pretool(_publish_to(destination, term, tmp_path))
     captured = capsys.readouterr()
 
+    assert blocked is (verdict == "deny")
+    assert (json.loads(captured.out)["permissionDecision"] == "deny") if blocked else captured.out == ""
+
+
+@pytest.mark.parametrize("destination", ["public", "unknown"])
+def test_switch_on_and_off_agree_for_a_destination_not_proven_private(
+    destination: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    term = _new_term()
+    data = _publish_to(destination, term, tmp_path)
+    verdicts = []
+    for switch in ("true", "false"):
+        _arm_gate(tmp_path, monkeypatch, switch=switch, term=term)
+        verdicts.append(handle_banned_terms_pretool(data))
+
+    assert verdicts == [True, True]
+
+
+def _boom(*_args: object, **_kwargs: object) -> str:
+    msg = "scanner exploded"
+    raise RuntimeError(msg)
+
+
+@pytest.mark.parametrize("destination", ["public", "unknown"])
+def test_internal_error_denies_non_private_destination(
+    destination: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    term = _new_term()
+    _arm_gate(tmp_path, monkeypatch, switch="true", term=term)
+    monkeypatch.setattr(banned_terms_scanner, "scan_text", _boom)
+
+    blocked = handle_banned_terms_pretool(_publish_to(destination, term, tmp_path))
+    out = capsys.readouterr().out
+
+    assert blocked is True
+    assert json.loads(out)["permissionDecision"] == "deny"
+    assert "internal error" in out
+    assert term not in out
+
+
+@pytest.mark.parametrize(
+    ("destination", "verdict"), [("public", "deny"), ("unknown", "deny"), ("private", "allow")], ids=str
+)
+def test_an_error_before_the_destination_is_known_fails_open_only_for_a_private_one(
+    destination: str, verdict: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    term = _new_term()
+    _arm_gate(tmp_path, monkeypatch, switch="true", term=term)
+    monkeypatch.setattr(banned_terms_scanner, "secret_scan_text", _boom)
+
+    blocked = handle_banned_terms_pretool(_publish_to(destination, term, tmp_path))
+    captured = capsys.readouterr()
+
+    assert blocked is (verdict == "deny")
+    assert ("internal error" in captured.out) is blocked
+    assert ("failed open" in captured.err) is not blocked
+
+
+def test_internal_error_does_not_block_a_command_that_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _arm_gate(tmp_path, monkeypatch, switch="true", term=_new_term())
+    monkeypatch.setattr(banned_terms_scanner, "extract_publish_payload", _boom)
+
+    blocked = handle_banned_terms_pretool(
+        {"tool_name": "Bash", "tool_input": {"command": "ls -la"}, "cwd": str(tmp_path)}
+    )
+
     assert blocked is False
-    assert captured.out == ""  # no deny JSON
+    assert capsys.readouterr().out == ""
+
+
+@contextlib.contextmanager
+def _teatree_cannot_be_imported() -> Iterator[None]:
+    msg = "teatree is not importable here"
+    raise ImportError(msg)
+    yield
+
+
+@pytest.mark.parametrize(
+    ("command", "verdict"), [('gh issue comment 5 --repo x/y --body "hi"', "deny"), ("ls -la", "allow")]
+)
+def test_an_unimportable_teatree_still_refuses_a_publish_shaped_command(
+    command: str, verdict: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(banned_terms_gate, "_teatree_src_on_path", _teatree_cannot_be_imported)
+
+    blocked = handle_banned_terms_pretool(
+        {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(tmp_path)}
+    )
+
+    assert blocked is (verdict == "deny")
+    assert ("internal error" in capsys.readouterr().out) is blocked
 
 
 def test_kill_switch_default_on_still_blocks_a_public_post(

@@ -34,6 +34,7 @@ bootstrap from silently pointing at a nonexistent ``hooks/src`` and fail-opening
 the leak gate on a cold host (HLG-1/HLG-5).
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -42,16 +43,21 @@ from hooks.scripts.banned_terms.marker import resolve_marker as _resolve_banned_
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
 
+# What a command that publishes looks like by its text alone, for the moment ``teatree`` cannot be imported.
+_LOOKS_LIKE_A_PUBLISH_RE = re.compile(r"\b(?:gh|glab|curl)\b|\bgit\b[^|;&\n]*\bpush\b")
+
 
 def _banned_terms_gate_enabled() -> bool:
     """Whether the #1415 banned-terms publish gate is enabled (default True).
 
     Fails OPEN to enabled on a missing/broken config so the gate keeps its
-    protective default; an explicit ``[teatree] banned_terms_gate_enabled =
-    false`` is the one-line kill-switch (NEVER-LOCKOUT) the user flips to
-    disable the gate while its body-resolution over-block (an allowlisted
-    private-repo commit hard-blocked because the body could not be read) is
-    fixed properly. See :func:`_teatree_bool_setting` for the shared semantics.
+    protective default. An explicit ``[teatree] banned_terms_gate_enabled =
+    false`` is a lockout rescue (NEVER-LOCKOUT) for a destination the gate can
+    PROVE private, where a body-resolution over-block (an allowlisted private-repo
+    commit hard-blocked because the body could not be read) can lock the owner
+    out. It never relaxes the gate toward a public or an unknown destination: that
+    would be a privacy regression, not a rescue (hooks/CLAUDE.md). See
+    :func:`_teatree_bool_setting` for the shared semantics.
     """
     return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
 
@@ -73,31 +79,60 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     reason naming the matched term and asking for owner review. Public egress
     ignores override tokens.
 
-    Fail-open on any internal error: a crashing hook is worse than no scan
-    (never-lockout). But the fail-open is NOT silent — an unscanned body on the
-    PUBLIC-egress publish path is exactly the leak this gate exists to catch, so an
-    internal error is named loudly on stderr (HLG-3) rather than swallowed into an
-    invisible no-op. The handler puts the sibling ``src/`` on ``sys.path`` via the
+    An internal error fails CLOSED for a publish to a destination that is not
+    provably private (:func:`_on_internal_error`): an unscanned body on the
+    PUBLIC-egress path is exactly the leak this gate exists to catch. A command that
+    publishes nothing, or only to a provably private destination, still fails open
+    (a crashing hook is worse than no scan there), and loudly (HLG-3). The
+    ``banned_terms_gate_enabled`` switch rescues only a provably private destination.
+    The handler puts the sibling ``src/`` on ``sys.path`` via the
     shared :func:`managed_repo.teatree_src_on_path` bootstrap (the hook script runs
     in the user's session shell with no guarantee ``teatree`` is already importable,
     #1314); the shared helper resolves ``src`` relative to its own ``hooks/scripts``
     location, so this deeper-nested caller can never drift into the off-by-one that
     pointed the bootstrap at a nonexistent ``hooks/src`` (HLG-1/HLG-5).
     """
-    if not _banned_terms_gate_enabled():
-        return False
+    gate_off = not _banned_terms_gate_enabled()
     try:
         with _teatree_src_on_path():
-            return _run_banned_terms_pretool(data)
-    except Exception as exc:  # noqa: BLE001 — fail-open on ANY error is the never-lockout contract
-        sys.stderr.write(
-            "[teatree] NOTE: banned-terms publish gate failed open on an internal error "
-            f"({type(exc).__name__}: {exc}); the publish body was NOT scanned for banned terms. "
-            "This is a fail-open safeguard (a crashing hook is worse than no scan), NOT a clean "
-            "scan — fix the underlying error, or verify the body by hand before it reaches a "
-            "public surface.\n"
+            return _run_banned_terms_pretool(data, gate_off=gate_off)
+    except Exception as exc:  # noqa: BLE001 — _on_internal_error fails closed for a non-private publish
+        return _on_internal_error(data, exc)
+
+
+def _publishes_to_a_non_private_destination(data: dict) -> bool:
+    """Whether *data* publishes somewhere not provably private; the command text decides if ``teatree`` is broken."""
+    command = (data.get("tool_input") or {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    try:
+        with _teatree_src_on_path():
+            from hooks.scripts.hook_router import _resolve_cwd_repo  # noqa: PLC0415 deferred back-import
+            from teatree.hooks import banned_terms_scanner, public_visibility  # noqa: PLC0415 — cold-hook read
+
+            cwd_repo = _resolve_cwd_repo(data)
+            if banned_terms_scanner.extract_publish_payload("Bash", {"command": command}, cwd_repo) is None:
+                return False
+            return not public_visibility.gate_skips_for_visibility(command, cwd_repo)
+    except Exception:  # noqa: BLE001 — teatree itself is unusable here, so only the command text can say what it publishes
+        return _LOOKS_LIKE_A_PUBLISH_RE.search(command) is not None
+
+
+def _on_internal_error(data: dict, exc: Exception) -> bool:
+    """Fail closed when the gate broke on a publish to a destination that is not provably private."""
+    from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
+
+    if _publishes_to_a_non_private_destination(data):
+        return emit_pretooluse_deny(
+            f"BLOCKED: banned-terms posting gate hit an internal error ({type(exc).__name__}) and could not scan "
+            "this publish, whose destination is not provably private. Failing closed: an unscanned body must not "
+            "reach a public surface. Fix the underlying error, or have the owner publish it.",
+            gate_id="banned_terms",
         )
-        return False
+    sys.stderr.write(
+        "[teatree] NOTE: banned-terms publish gate failed open on an internal error "
+        f"({type(exc).__name__}); this command publishes nothing, or only to a provably private "
+        "destination, so it was let through unscanned. Fix the underlying error.\n"
+    )
+    return False
 
 
 _BANNED_TERMS_CREDENTIAL_DENY = (
@@ -127,8 +162,12 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: Path | None) -
     return emit_pretooluse_deny(verdict.deny_message or "", gate_id="banned_terms")
 
 
-def _run_banned_terms_pretool(data: dict) -> bool:
-    """Banned-terms inner body — assumes ``teatree`` is already importable."""
+def _run_banned_terms_pretool(data: dict, *, gate_off: bool = False) -> bool:
+    """Banned-terms inner body — assumes ``teatree`` is already importable.
+
+    *gate_off* is the lockout rescue: it lets a provably private destination through before
+    any scan, and changes nothing for a public or an unknown one.
+    """
     from typing import cast  # noqa: PLC0415 — deferred: off the fast hook's load path
 
     from hooks.scripts.hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
@@ -142,16 +181,17 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 
     command = tool_input.get("command", "")
     cwd_repo = _resolve_cwd_repo(data)
+    rescued = gate_off and tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
 
     # A high-confidence secret leaks on EVERY surface -- a title, a short ``-t``
     # flag, a ``gh api -f title=`` field, a ``git -C ... commit`` subject -- not
     # only the description body, and on an internal post the destination gate
     # would SKIP. Scan the WIDE surface set and block before the payload-None
     # early-return and any skip short-circuit (#1672 secrets-always-blocked invariant).
-    if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
+    if not rescued and publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
         return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY, gate_id="banned_terms")
 
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
+    payload = None if rescued else banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
     if payload is None:
         return False
 
