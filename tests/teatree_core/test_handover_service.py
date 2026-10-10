@@ -77,14 +77,18 @@ class TestSnapshotPayloadReuse(TestCase):
 
 class TestResolveTargetSession(TestCase):
     def test_explicit_target_wins(self) -> None:
-        assert handover.resolve_target_session("explicit-id") == "explicit-id"
+        assert handover.resolve_target_session("explicit-id", from_session="writer") == "explicit-id"
 
-    def test_no_target_resolves_to_live_loop_owner(self) -> None:
+    def test_no_target_from_the_loop_owner_still_refuses_self_address(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        assert handover.resolve_target_session("") == "owner-X"
+        assert handover.resolve_target_session("", from_session="owner-X") == "owner-X"
+
+    def test_no_target_from_another_session_parks_for_next(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+        assert handover.resolve_target_session("", from_session="writer") == ""
 
     def test_no_target_no_live_owner_parks_for_next(self) -> None:
-        assert handover.resolve_target_session("") == ""
+        assert handover.resolve_target_session("", from_session="writer") == ""
 
 
 class TestWriteMirror(TestCase):
@@ -153,10 +157,10 @@ class TestCreateHandover(TestCase):
         self.state_dir = Path(self.enterContext(_tmp_env("TEATREE_CLAUDE_STATUSLINE_STATE_DIR")))
         self.enterContext(_tmp_env("XDG_STATE_HOME"))
 
-    def test_create_persists_row_and_mirror_to_loop_owner(self) -> None:
+    def test_create_persists_row_and_mirror_to_explicit_loop_owner(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
         created = handover.create_handover(
-            from_session="hand-er", resolution=resolve_handover(from_session="hand-er", explicit_to="")
+            from_session="hand-er", resolution=resolve_handover(from_session="hand-er", explicit_to="owner-X")
         )
         row, mirror = created.handover, created.mirror
         assert row.to_session == "owner-X"

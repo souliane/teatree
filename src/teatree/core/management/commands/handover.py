@@ -100,7 +100,7 @@ class Command(TyperCommand):
         *,
         to: Annotated[
             str,
-            typer.Option("--to", help="Target session id. Omit to hand to the live loop owner, else park for next."),
+            typer.Option("--to", help="Target session id. Omit to park when another session owns the loop."),
         ] = "",
         from_file: Annotated[
             str,
@@ -129,8 +129,8 @@ class Command(TyperCommand):
         because "hand-off written" over a payload the receiver cannot use is the
         failure this command is supposed to make impossible.
 
-        No ``--to`` → the live ``t3-master`` slot holder; if none, parked
-        for whichever session starts next. Per directive #8, every in-flight
+        No ``--to`` from outside the live ``t3-master`` slot parks for whichever
+        session starts next. Per directive #8, every in-flight
         sub-agent worktree is driven through leak-gated fast-push so their work is
         committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
         barrier runs on the refused path too, since a session with nothing to hand
@@ -180,7 +180,7 @@ class Command(TyperCommand):
         # over, and the receiving session claims a row that does not hold it
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
-        dangling = dangling_backlog_claims(str(handover.payload))
+        dangling = dangling_backlog_claims(created.resolved if created.payload_appended else "")
         ok = source.is_vetted and not failures
         human_lines = self._report_lines(
             created, recipient=recipient, recorded=recorded, pushes=pushes, failures=failures
@@ -257,6 +257,15 @@ class Command(TyperCommand):
                 f"mirror written to {recorded.mirror}."
             )
         ]
+        row = recorded.row
+        if row is None:
+            lines.append("      Claimable by: nobody (row missing).")
+        elif row.to_session:
+            lines.append(f"      Claimable by: {row.to_session}.")
+        else:
+            lines.append(
+                f"      Claimable by: the next session other than {row.from_session} (parked for the next session)."
+            )
         if created.updated_existing:
             lines.append(self._absorb_note(created))
         lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]

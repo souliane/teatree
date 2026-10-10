@@ -320,13 +320,13 @@ class HandoverPayload:
         return ResolvedPayload(text="", source=PayloadSource.EMPTY)
 
 
-def resolve_target_session(explicit_to: str) -> str:
-    """Resolve the hand-off target: explicit id, else the live loop owner, else ``""``.
+def resolve_target_session(explicit_to: str, *, from_session: str) -> str:
+    """Resolve an explicit target or park a hand-off from outside the live loop owner.
 
     ``""`` means "park for the next session to claim". The live loop owner
     is read via the same :class:`~teatree.core.models.LoopLease`
-    ``t3-master`` slot the t3-master CLI uses, so a no-target hand-off
-    lands on whichever session is actively driving the loop.
+    ``t3-master`` slot the t3-master CLI uses. An author outside that slot
+    parks for a later session rather than addressing the current owner.
 
     The ``t3 worker`` holds that slot as its own durable principal
     (:data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID`, the literal
@@ -346,7 +346,7 @@ def resolve_target_session(explicit_to: str) -> str:
     # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
     # importing it here, so the literal is repeated at this read site.
     status = LoopLease.objects.ownership_status("t3-master")
-    if not status.is_live or is_loop_runner_session(status.owner_session):
+    if not status.is_live or is_loop_runner_session(status.owner_session) or status.owner_session != from_session:
         return ""
     return status.owner_session
 
@@ -491,7 +491,7 @@ def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "")
     would leave behind is a delivery nobody can act on.
     """
     return ResolvedHandover(
-        to_session=resolve_target_session(explicit_to),
+        to_session=resolve_target_session(explicit_to, from_session=from_session),
         resolved=HandoverPayload(from_session, authored=authored).resolve(),
     )
 

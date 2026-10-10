@@ -101,16 +101,42 @@ class TestHandoverCreate(_PinnedSessionTestCase):
         assert row.from_session == "this-session"
         assert row.to_session == ""
 
-    def test_no_target_hands_to_live_loop_owner(self) -> None:
-        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
-        out = _call("handover", "create", json_output=True)
-        data = json.loads(out)
-        assert data["to_session"] == "owner-X"
-        assert data["parked_for_next"] is False
+    def test_no_target_from_the_loop_owner_refuses_self_address(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="this-session", owner_pid=os.getpid())
+
+        with pytest.raises(SystemExit) as excinfo:
+            _call("handover", "create", json_output=True)
+
+        assert excinfo.value.code == 1
+        assert SessionHandover.objects.count() == 0
 
     def test_explicit_target(self) -> None:
         out = _call("handover", "create", to="target-Z", json_output=True)
         assert json.loads(out)["to_session"] == "target-Z"
+
+    def test_no_target_parks_when_another_session_owns_the_loop(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+
+        data = json.loads(_call("handover", "create", json_output=True))
+
+        row = SessionHandover.objects.get(pk=data["handover_id"])
+        assert data["parked_for_next"] is True
+        assert row.to_session == ""
+        assert row in SessionHandover.objects.claimable_for("next-session")
+        assert row not in SessionHandover.objects.claimable_for("this-session")
+
+    def test_named_recipient_report_says_who_can_claim(self) -> None:
+        out = _call_human("handover", "create", to="target-Z")
+
+        assert "Claimable by: target-Z" in out
+
+    def test_parked_report_says_who_can_claim(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
+
+        out = _call_human("handover", "create")
+
+        assert "Claimable by: the next session other than this-session" in out
+        assert "parked for the next session" in out
 
     def test_human_output_reports_ok_and_the_mirror(self) -> None:
         # The non-JSON path: durable state present → "OK" status and the mirror path,
@@ -606,6 +632,23 @@ class TestASecondCreateReportsWhatItAbsorbed(_PinnedSessionTestCase):
         out = _call_human("handover", "create", body="SECOND STATE", to="target-Z")
         assert "one row per session" in out
         assert "absorbed" in out.lower()
+
+    def test_duplicate_payload_reports_no_new_dangling_claims(self) -> None:
+        first = json.loads(_call("handover", "create", body="34 pending", json_output=True))
+
+        repeat = json.loads(_call("handover", "create", body="34 pending", json_output=True))
+
+        assert first["dangling_backlog_claims"] == ["34 pending"]
+        assert repeat["payload_appended"] is False
+        assert repeat["dangling_backlog_claims"] == []
+
+    def test_appended_payload_reports_only_its_own_dangling_claims(self) -> None:
+        _call("handover", "create", body="34 pending", json_output=True)
+
+        second = json.loads(_call("handover", "create", body="12 outstanding", json_output=True))
+
+        assert second["payload_appended"] is True
+        assert second["dangling_backlog_claims"] == ["12 outstanding"]
 
 
 class TestCompletenessIsAssertedBeforeAnyOkLine(_PinnedSessionTestCase):
