@@ -402,10 +402,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         core_dispatch=True,
     ),
     "questions": DjangoGroup(
-        "Manage the away-mode deferred-question backlog (#58).",
+        "Manage the open-question backlog (#58).",
         [
-            ("record", "Record a deferred question (used by the PreToolUse away-mode hook)."),
-            ("list", "List pending deferred questions, oldest first."),
+            ("record", "Record a question for the owner as a short card, checked before it is stored."),
+            ("list", "List open questions, oldest first."),
             ("reachability", "Report which automated resolvers can decide each pending question."),
             ("answer", "Resolve a pending question with a user answer."),
             ("dismiss", "Dismiss a pending question without answering it."),

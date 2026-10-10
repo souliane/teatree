@@ -14,6 +14,7 @@ from teatree.core.gates.directive_interpret_gate import (
     validate_setting_key,
 )
 from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch, Session, Task, Ticket
+from tests._owner_channel import assert_a_plain_card
 from tests.teatree_core.models.test_mechanism_sketch import default_behaviour_envelope, valid_envelope
 
 
@@ -136,7 +137,36 @@ class TestRecordClarifications(TestCase):
         assert directive.state == Directive.State.CLARIFYING
         question = DeferredQuestion.objects.get(options_hash__startswith=f"directive_clarify:{directive.pk}:")
         assert question.evidence["decision"] == "product_scope"
-        assert any(directive.raw_text in fact for fact in question.evidence["checked"])
+        text = assert_a_plain_card(question, f"#{directive.pk}", "directive_clarify")
+        assert f"> {directive.raw_text}" in text
+
+    def test_a_directive_text_with_internal_names_is_left_off_the_card(self) -> None:
+        directive = Directive.objects.capture("cap max_open_prs at 2 (#42)", source=Directive.Source.CLI)
+        row = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert row is not None
+        assert row.task is not None
+        envelope = {"directive_interpretation": {"clarifying_questions": ["Does the cap apply per repo?"]}}
+
+        assert record_returned_directive_interpretation(row.task, envelope) == ""
+
+        text = assert_a_plain_card(DeferredQuestion.objects.get(), "max_open_prs", "#42")
+        assert "> " not in text
+
+    def test_a_jargon_question_is_refused_before_any_is_recorded(self) -> None:
+        directive, task = _dispatched_directive()
+        envelope = {
+            "directive_interpretation": {
+                "clarifying_questions": ["Does the cap apply per repo?", "Does max_open_prs also count drafts?"],
+            }
+        }
+
+        error = record_returned_directive_interpretation(task, envelope)
+
+        assert error.startswith("directive clarification refused:")
+        assert "max_open_prs" in error
+        assert not DeferredQuestion.objects.exists()
+        directive.refresh_from_db()
+        assert directive.state != Directive.State.CLARIFYING
 
 
 class TestNoOps(TestCase):

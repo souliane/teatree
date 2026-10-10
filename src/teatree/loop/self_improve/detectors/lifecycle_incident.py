@@ -10,11 +10,13 @@ from operator import itemgetter
 from pathlib import Path
 from typing import ClassVar
 
-from django.db.models import Q
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind, is_causeless
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
+from teatree.core.models.deferred_question import DeferredQuestionAudit
+from teatree.core.models.question_withheld import WITHHELD_ACTION
 from teatree.core.models.task_phase_disposition import PHASE_WEDGE_MARKER_RE
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.loop.scanners.base import ScanSignal
@@ -36,6 +38,10 @@ _SUBSTANTIVE_REPLIES = {
     PendingChatInjection.AnswerKind.SIMPLE,
     PendingChatInjection.AnswerKind.QUESTION_REPLY,
 }
+
+
+def _withheld_rows() -> QuerySet[DeferredQuestionAudit]:
+    return DeferredQuestionAudit.objects.filter(action=WITHHELD_ACTION).values("question_id")
 
 
 @dataclass(slots=True)
@@ -99,6 +105,7 @@ class LifecycleIncidentDetector:
         reports.extend(self._phase_wedges())
         reports.extend(self._inbound_questions(now))
         reports.extend(self._outbound_questions(now))
+        reports.extend(self._withheld_owner_questions())
         reports.extend(self._internal_escalations(now))
         prefix = self._key("attempt_failure_burst", "")
         return DetectorScan(
@@ -421,10 +428,32 @@ class LifecycleIncidentDetector:
             )
         return reports
 
+    def _withheld_owner_questions(self) -> list[DetectorReport]:
+        """Owner questions that failed the plain-language check: asked again as a card, never dismissed."""
+        ids = list(
+            DeferredQuestion.internal_pending().filter(pk__in=_withheld_rows()).values_list("pk", flat=True)[:100]
+        )
+        if not ids:
+            return []
+        return [
+            self._report(
+                kind="withheld_owner_question",
+                cause="owner_question_failed_plain_language_check",
+                ids=ids,
+                rung=ActionRung.TICKET,
+                action=(
+                    "ask the owner again as a card under the same dedupe marker, in plain words "
+                    "(questions record ... --why ... --blocker ... --dedupe-marker <marker>, marker from "
+                    "questions list --json); the waiting task moves to the new card; never dismiss it unanswered"
+                ),
+            )
+        ]
+
     def _internal_escalations(self, now: datetime) -> list[DetectorReport]:
         ids = list(
             DeferredQuestion.internal_pending()
             .exclude(dedupe_marker__startswith=_PHASE_WEDGE_PREFIX)
+            .exclude(pk__in=_withheld_rows())
             .filter(created_at__lt=now - _MESSAGE_WAIT)
             .values_list("pk", flat=True)[:100]
         )

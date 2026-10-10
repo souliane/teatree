@@ -50,10 +50,16 @@ class ManifestSocketGaps:
     socket_mode_disabled: bool
     missing_events: frozenset[str]
     missing_bot_scopes: frozenset[str]
+    interactivity_disabled: bool = False
+
+    @property
+    def needs_reinstall(self) -> bool:
+        """Socket Mode, events and scopes take effect only once the owner consents again; Interactivity does not."""
+        return self.socket_mode_disabled or bool(self.missing_events) or bool(self.missing_bot_scopes)
 
     @property
     def ok(self) -> bool:
-        return not (self.socket_mode_disabled or self.missing_events or self.missing_bot_scopes)
+        return not (self.needs_reinstall or self.interactivity_disabled)
 
 
 def manifest_socket_gaps(
@@ -76,6 +82,7 @@ def manifest_socket_gaps(
         socket_mode_disabled=not bool(settings.get("socket_mode_enabled")),
         missing_events=frozenset(required_events - events),
         missing_bot_scopes=frozenset(required_bot_scopes - bot_scopes),
+        interactivity_disabled=not bool(settings.get("interactivity", {}).get("is_enabled")),
     )
 
 

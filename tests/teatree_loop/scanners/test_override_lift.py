@@ -26,6 +26,7 @@ from teatree.loop.scanners.override_lift import (
     override_lift_proposals,
     raise_override_lift_questions,
 )
+from tests._owner_channel import assert_a_plain_card
 
 _NOW = dt.datetime(2026, 8, 28, 12, 0, tzinfo=dt.UTC)
 _PR_URL = "https://example.test/org/repo/-/merge_requests/7"
@@ -80,7 +81,17 @@ class TestAClearedConditionIsProposed(django.test.TestCase):
         proposals = override_lift_proposals(_NOW)
 
         assert [p.loop_name for p in proposals] == ["waiting"]
-        assert "now reads as resolved" in proposals[0].question
+        assert "now reads as resolved" in proposals[0].summary
+        assert proposals[0].card.options[0].label == "Lift it"
+
+    def test_a_cleared_override_on_an_internal_loop_name_reaches_the_owner_as_a_plain_card(self) -> None:
+        ticket = Ticket.objects.create(overlay="t", issue_url=_ISSUE_URL)
+        PullRequest.objects.create(ticket=ticket, url=_PR_URL, repo="r", iid="7", state=PullRequest.State.MERGED)
+        _loop("acme_nightly", runs=False, reason=f"pr:{_PR_URL}")
+
+        raise_override_lift_questions(_NOW)
+
+        assert_a_plain_card(DeferredQuestion.objects.get(), "acme_nightly")
 
     def test_an_aged_prose_reason_earns_a_reminder_naming_how_long(self) -> None:
         _loop("standing", runs=True, reason="waiting on the vendor", age=dt.timedelta(days=30))
@@ -88,17 +99,19 @@ class TestAClearedConditionIsProposed(django.test.TestCase):
         proposals = override_lift_proposals(_NOW)
 
         assert [p.loop_name for p in proposals] == ["standing"]
-        assert "30 days" in proposals[0].question
-        assert "Nothing here can judge" in proposals[0].question
+        assert "30 days" in proposals[0].card.why
+        assert "Nothing here can judge" in proposals[0].summary
+        assert proposals[0].card.options[0].label == "Keep it"
 
-    def test_the_question_names_which_way_the_override_forces_the_loop(self) -> None:
-        _loop("forced-on", runs=True, reason="incident", age=dt.timedelta(days=30))
-        _loop("forced-off", runs=False, reason="incident", age=dt.timedelta(days=30))
+    def test_the_question_names_which_way_the_override_forces_the_job_but_not_the_job(self) -> None:
+        _loop("forced_on", runs=True, reason="incident", age=dt.timedelta(days=30))
+        _loop("forced_off", runs=False, reason="incident", age=dt.timedelta(days=30))
 
         said = {p.loop_name: p.question for p in override_lift_proposals(_NOW)}
 
-        assert "'forced-on' on" in said["forced-on"]
-        assert "'forced-off' off" in said["forced-off"]
+        assert "forces a background job on" in said["forced_on"]
+        assert "forces a background job off" in said["forced_off"]
+        assert not any("forced_o" in question for question in said.values())
 
 
 class TestProposingIsNotLifting(django.test.TestCase):
@@ -129,9 +142,19 @@ class TestProposingIsNotLifting(django.test.TestCase):
 
         raise_override_lift_questions(_NOW)
 
-        evidence = DeferredQuestion.objects.get().evidence
-        assert evidence["decision"] == "product_scope"
-        assert any("waiting on the vendor" in fact for fact in evidence["checked"])
+        row = DeferredQuestion.objects.get()
+        assert row.evidence["decision"] == "product_scope"
+        text = assert_a_plain_card(row, "standing", "override-lift")
+        assert "> waiting on the vendor" in text
+
+    def test_an_internal_loop_name_and_an_issue_number_never_reach_the_card(self) -> None:
+        _loop("acme_nightly", runs=False, reason="waiting on #42 and acme_only", age=dt.timedelta(days=30))
+
+        raise_override_lift_questions(_NOW)
+
+        text = assert_a_plain_card(DeferredQuestion.objects.get(), "acme_nightly", "#42", "acme_only", "override-lift")
+        assert "> " not in text
+        assert "forces a background job off" in text
 
     def test_new_override_set_at_asked_once(self) -> None:
         _loop("standing", runs=False, reason="waiting on the vendor", age=dt.timedelta(days=30))

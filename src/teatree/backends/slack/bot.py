@@ -139,6 +139,8 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # dm_only profile: refuse every outbound but the owner's own DM (enforced
         # at the ``_channel_token`` / ``_route_token`` funnels and in ``_post``).
         self._owner_dm_only = owner_dm_only
+        # The owner IM ``conversations.open`` returned, so the guard accepts it where no DM channel id is configured.
+        self._owner_im = ""
         self._http = SlackHttpClient()
         # #1395 voice/token gate.
         self._voice_gate = VoiceTokenGate(dm_channel_id=dm_channel_id)
@@ -218,16 +220,16 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
         Also the #3809 wrap seam: every in-app ``chat.postMessage`` funnels
         through here, so a new sender inherits the 90-char rule rather than
-        remembering it. *wrap_exempt_reason* is the one sanctioned escape;
-        ``blocks`` are never rewritten (Block Kit lays itself out).
+        remembering it. *wrap_exempt_reason* is the one sanctioned escape; a post
+        carrying ``blocks`` keeps its text as written (the blocks are what is read).
         """
         assert_owner_call(
-            method, payload, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
+            method, payload, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id
         )
         auth = token or self._bot_token
         if not auth:
             return {}
-        if method == "chat.postMessage" and not wrap_exempt_reason:
+        if method == "chat.postMessage" and not wrap_exempt_reason and "blocks" not in payload:
             payload = {**payload, "text": wrap_slack_message(str(payload.get("text", "")))}
         return self._http.post(method, token=auth, json=payload, idempotent=idempotent)
 
@@ -262,9 +264,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         a transport failure on it would spuriously abort a read the user
         token could serve.
         """
-        assert_owner_dm(
-            channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
-        )
+        assert_owner_dm(channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id)
         if not self._user_token or not self._bot_token or channel.startswith("D") or op is SlackOp.READ:
             return channel_token(
                 channel,
@@ -463,6 +463,20 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
             wrap_exempt_reason=wrap_exempt_reason,
         )
 
+    @property
+    def _guard_dm(self) -> str:
+        return self._dm_channel_id or self._owner_im
+
+    def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
+        """Replace a message the bot posted; its blocks are required (Slack keeps the old ones when omitted)."""
+        if self._owner_dm_only and not self._guard_dm:
+            self.open_dm(self._user_id)
+        return egress.update(
+            self._post,
+            token=self._channel_token(channel, op=SlackOp.WRITE),
+            message=egress.ChatUpdate(channel=channel, ts=ts, text=text, blocks=blocks),
+        )
+
     def post_reply(self, *, channel: str, ts: str, text: str, wrap_exempt_reason: str = "") -> RawAPIDict:
         # A reply is a post threaded under ``ts`` — one payload/guard path, not two.
         return self.post_message(channel=channel, text=text, thread_ts=ts, wrap_exempt_reason=wrap_exempt_reason)
@@ -478,9 +492,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
 
     def _route_token(self, channel: str) -> str:
         """The token a #1750-routed post/react to *channel* goes out under (self-DM→bot, else→xoxp)."""
-        assert_owner_dm(
-            channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
-        )
+        assert_owner_dm(channel, owner_dm_only=self._owner_dm_only, dm_channel_id=self._guard_dm, user_id=self._user_id)
         return select_routed_token(
             channel,
             dm_channel_id=self._dm_channel_id,
@@ -527,7 +539,10 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         """Return the IM channel id for *user_id*; short-circuit to the cached id when set (#1342)."""
         if user_id and user_id == self._user_id and self._dm_channel_id:
             return self._dm_channel_id
-        return open_im_channel(self._post, user_id)
+        channel = open_im_channel(self._post, user_id)
+        if self._owner_dm_only and user_id == self._user_id:
+            self._owner_im = channel
+        return channel
 
     def join_conversation(self, channel: str) -> RawAPIDict:
         """Join the bot to a public channel via ``conversations.join`` (bot token)."""

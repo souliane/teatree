@@ -338,7 +338,11 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # question surfacing drain (the flat notify_question_drains.py) and the tick sweep. No
 # subpackage owns the DeferredQuestion lifecycle, and its checks span provision/ today.
 # 128: -mcp_connectivity.py / -connector_manifest.py (#5116) — the third-party MCP connector layer, retired.
-PINNED_FLAT_CORE_MODULES = 128
+# 129: +owner_question_message.py (#4990) — the owner-question card as plain text and Slack blocks,
+# its closed forms, the re-ping and the digest. Shared by the flat notify_question_drains.py, the
+# flat question_heal.py and loop/question_binding; it reads the DeferredQuestion model, so the
+# dependency-free modelkit cannot own it, and no subpackage owns the DeferredQuestion lifecycle.
+PINNED_FLAT_CORE_MODULES = 129
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
