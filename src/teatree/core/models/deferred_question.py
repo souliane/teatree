@@ -26,7 +26,6 @@ question) as the same primitive.
 """
 
 import logging
-from collections.abc import Sequence
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
@@ -35,9 +34,10 @@ from django.db.models import Max
 from django.utils import timezone
 
 from teatree import answer_handback
-from teatree.core.modelkit.owner_decision import OwnerDecision, owner_evidence
+from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_subject import finished_subject_reason
-from teatree.core.models.question_text import question_fingerprint
+from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.models.question_withheld import carried_wait
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
@@ -199,15 +199,14 @@ class DeferredQuestion(models.Model):
         dedupe_marker: str = "",
         parked_task: "Task | None" = None,
         task_session: "Session | None" = None,
-        decision: OwnerDecision | None = None,
-        checked: Sequence[str] = (),
+        card: QuestionCard | None = None,
     ) -> "DeferredQuestion":
-        """The single guarded factory: a refused record raises and writes no row.
+        """The single guarded factory: a refused record raises, listing every problem, and writes no row.
 
-        Only a known :class:`OwnerDecision` with a non-blank ``checked`` fact makes an owner row (``evidence``),
-        stored dismissed when its subject has already finished; no decision is INTERNAL. ``dedupe_marker``
-        collapses repeats onto the PENDING row; an owner marker also returns its answer, or this question dismissed
-        (compared by :func:`question_fingerprint`), and supersedes a pending internal row.
+        Only a :class:`QuestionCard` that passes every check makes an owner row (its ``evidence``), stored dismissed
+        when its subject has finished; no card is INTERNAL. ``dedupe_marker`` collapses repeats onto the PENDING row;
+        an owner marker also returns its answer, or this question dismissed (:func:`question_fingerprint`), and
+        supersedes a pending internal row, inheriting a withheld one's waiting task.
         """
         clean_question = question.strip()
         if not clean_question:
@@ -216,14 +215,15 @@ class DeferredQuestion(models.Model):
         if session_id.isdigit():
             msg = f"session_id {session_id!r} names a teatree Session; pass it as task_session"
             raise DeferredQuestionError(msg)
-        evidence = {} if decision is None else owner_evidence(decision, checked)
-        if evidence is None:
-            msg = f"owner decision '{decision}' needs one of {', '.join(OwnerDecision)} and a non-blank checked fact"
-            raise DeferredQuestionError(msg)
+        if card is not None and (problems := card.problems(clean_question)):
+            raise DeferredQuestionError("; ".join(problems))
+        if card is not None and card.options:
+            options_json, options_hash = card.options_json(), options_hash or options_digest(card.option_dicts())
 
         with transaction.atomic():
             marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")
-            if dedupe_marker and (held := cls._held(marked, clean_question, owner=decision is not None)):
+            parked_task, task_session = carried_wait(marked, parked_task, task_session)
+            if dedupe_marker and (held := cls._held(marked, clean_question, owner=card is not None)):
                 return held
             row = cls.objects.create(
                 question=clean_question,
@@ -238,8 +238,8 @@ class DeferredQuestion(models.Model):
                 dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
                 task_session=task_session,
-                audience=cls.Audience.INTERNAL if decision is None else cls.Audience.OWNER_QUESTION,
-                evidence=evidence,
+                audience=cls.Audience.INTERNAL if card is None else cls.Audience.OWNER_QUESTION,
+                evidence={} if card is None else card.to_evidence(),
             )
             transaction.on_commit(
                 partial(
@@ -249,7 +249,7 @@ class DeferredQuestion(models.Model):
                     ticket_id=parked_task.ticket.pk if parked_task is not None else 0,
                 )
             )
-            if decision is not None and (reason := finished_subject_reason(row)):
+            if card is not None and (reason := finished_subject_reason(row)):
                 row.mark_stale(reason, resolver_id="record_subject_settled")
             return row
 

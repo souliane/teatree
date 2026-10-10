@@ -7,6 +7,12 @@ class TestOwnerQuestionRoute:
         assert "--decision <kind>" in OWNER_QUESTION_ROUTE
         assert "--checked" in OWNER_QUESTION_ROUTE
 
+    def test_names_the_card_flags_the_option_shape_and_the_plain_language_rules(self) -> None:
+        for fragment in ("--why", "--blocker", "--options", '"recommended": true', "recommended one first"):
+            assert fragment in OWNER_QUESTION_ROUTE, fragment
+        assert "at most 120 words" in OWNER_QUESTION_ROUTE
+        assert "plain English everywhere, quotes included" in OWNER_QUESTION_ROUTE
+
     def test_names_every_kind_and_files_an_access_grant_under_credentials(self) -> None:
         assert all(kind.value in OWNER_QUESTION_ROUTE for kind in OwnerDecision)
         assert "access or permission grant is credentials" in OWNER_QUESTION_ROUTE

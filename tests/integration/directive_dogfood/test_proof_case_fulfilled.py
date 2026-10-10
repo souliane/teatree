@@ -21,7 +21,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.models import DirectiveDispatch, FactoryScoreSnapshot, PullRequest, Ticket
 from teatree.core.models.directive import Directive, DirectiveError
 from teatree.loops.directive_loop.interpret import build_interpreter_contract
-from tests._owner_channel import answer_on_slack
+from tests._owner_channel import answer_on_slack, assert_a_plain_card
 from tests.integration.directive_dogfood.exemplar import EXEMPLAR_ENVELOPE, PROOF_CASE_TEXT, SCOPE, SETTING_KEY, tick
 
 #: The global ``timeout = 60`` budget is sized for a test that does not shell out.
@@ -62,8 +62,8 @@ class TestProofCaseFulfilled(TestCase):
         directive.refresh_from_db()
         question = directive.ratify_question
         assert question is not None
-        for shown in (SETTING_KEY, "pr_budget_gate", f"{SCOPE}=1", "N=2"):
-            assert shown in question.question
+        assert_a_plain_card(question, SETTING_KEY, "pr_budget_gate", f"{SCOPE}=1", "N=2")
+        assert directive.sketch.setting_key == SETTING_KEY
         with pytest.raises(DirectiveError):
             directive.admit()  # an unconsumed ratify question cannot admit
         answer_on_slack(question, "approve")

@@ -27,11 +27,12 @@ scanner package may not import.
 import datetime as dt
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from django.utils import timezone
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -50,9 +51,10 @@ class OverrideProposal:
     loop_name: str
     runs: bool
     reason: str
+    summary: str
     question: str
     set_at: dt.datetime | None
-    checked: tuple[str, ...]
+    card: QuestionCard
 
     @property
     def dedupe_marker(self) -> str:
@@ -95,12 +97,15 @@ def raise_override_lift_questions(now: dt.datetime | None = None) -> int:
             DeferredQuestion.record(
                 proposal.question,
                 dedupe_marker=proposal.dedupe_marker,
-                decision=OwnerDecision.PRODUCT_SCOPE,
-                checked=proposal.checked,
+                card=proposal.card,
             )
         except Exception:
             logger.exception("override-lift question failed for %r — the override is untouched", proposal.loop_name)
     return len(proposals)
+
+
+_LIFT = CardOption("Lift it", "The presets decide again whether the job runs.")
+_KEEP = CardOption("Keep it", "The override stays exactly as it is.")
 
 
 def _proposal_for(
@@ -109,27 +114,39 @@ def _proposal_for(
     if reason.startswith(SYSTEM_REASON_PREFIX):
         return None
     forced = "on" if runs else "off"
-    if _reason_is_machine_checkable(reason):
-        if not _condition_cleared(reason):
-            return None
-        question = (
-            f"The manual override forcing {loop_name!r} {forced} says {reason!r}, and that condition "
-            f"now reads as resolved. Lift the override so the preset decides again?"
-        )
-        checked = (f"the override reason {reason!r} reads as resolved on this box",)
-        return OverrideProposal(
-            loop_name=loop_name, runs=runs, reason=reason, question=question, set_at=set_at, checked=checked
-        )
-    if set_at is None or now - set_at < PROSE_REMINDER_AGE:
+    machine_checkable = _reason_is_machine_checkable(reason)
+    if machine_checkable and not _condition_cleared(reason):
         return None
-    days = (now - set_at).days
-    question = (
-        f"The manual override forcing {loop_name!r} {forced} has stood for {days} days ({reason!r}). "
-        f"Nothing here can judge whether it still applies — lift it, or leave it standing?"
-    )
-    checked = (f"the prose reason {reason!r} cannot be checked here", f"it has stood {days} days")
+    if not machine_checkable and (set_at is None or now - set_at < PROSE_REMINDER_AGE):
+        return None
+    days = (now - set_at).days if set_at else 0
+    if machine_checkable:
+        summary = (
+            f"The manual override forcing {loop_name!r} {forced} says {reason!r}, and that condition "
+            "now reads as resolved. Lift the override so the preset decides again?"
+        )
+        question = f"Can I lift the manual override that forces a background job {forced}?"
+        why = "The reason you gave for the override now reads as resolved."
+        checked = ("The reason given for the override reads as resolved on this box.",)
+        options = (replace(_LIFT, recommended=True), _KEEP)
+    else:
+        summary = (
+            f"The manual override forcing {loop_name!r} {forced} has stood for {days} days ({reason!r}). "
+            "Nothing here can judge whether it still applies — lift it, or leave it standing?"
+        )
+        question = f"Should the manual override that forces a background job {forced} stay in place?"
+        why = f"The override has stood for {days} days, and nothing here can judge whether it still applies."
+        checked = ("The reason given for the override cannot be checked here.", f"It has stood for {days} days.")
+        options = (replace(_KEEP, recommended=True), _LIFT)
+    card = QuestionCard(
+        decision=OwnerDecision.PRODUCT_SCOPE,
+        checked=checked,
+        blocker="Only the owner can say whether the override still applies.",
+        why=why,
+        options=options,
+    ).with_quote(question, reason)
     return OverrideProposal(
-        loop_name=loop_name, runs=runs, reason=reason, question=question, set_at=set_at, checked=checked
+        loop_name=loop_name, runs=runs, reason=reason, summary=summary, question=question, set_at=set_at, card=card
     )
 
 
@@ -195,7 +212,7 @@ class OverrideLiftScanner:
         return [
             ScanSignal(
                 kind="override.lift_candidate",
-                summary=proposal.question,
+                summary=proposal.summary,
                 payload={"loop": proposal.loop_name, "runs": proposal.runs, "reason": proposal.reason},
             )
             for proposal in proposals

@@ -14,6 +14,7 @@ import pytest
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests._owner_channel import owner_card
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -118,11 +119,10 @@ class TestSupersedable:
             "session_id": "s1",
             "run_id": "r1",
             "generation": 1,
-            "decision": OwnerDecision.CREDENTIALS,
-            "checked": ["no stored token"],
+            "card": owner_card(OwnerDecision.CREDENTIALS, "No token is stored."),
         }
         fields.update(kwargs)
-        return DeferredQuestion.record("prior", **fields)
+        return DeferredQuestion.record("Is there a prior token?", **fields)
 
     def test_an_undelivered_same_run_row_is_supersedable(self) -> None:
         row = self._prior()
@@ -141,7 +141,7 @@ class TestSupersedable:
         assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
 
     def test_an_internal_row_is_excluded(self) -> None:
-        self._prior(decision=None)
+        self._prior(card=None)
         assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
 
     def test_a_resolved_row_is_excluded(self) -> None:

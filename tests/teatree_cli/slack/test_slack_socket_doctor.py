@@ -126,6 +126,44 @@ class TestManifestAutoFix:
         assert any("Reinstall" in f.message for f in outcome.findings)
         assert outcome.ok is False
 
+    def test_doctor_turns_interactivity_on_without_a_reinstall(self) -> None:
+        _seed_t3()
+        stale = build_manifest(overlay_name="t3")
+        stale["settings"]["interactivity"] = {"is_enabled": False}
+        mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a", _BOT_SLOT: "xoxb-b"}
+        with (
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor.update_manifest", return_value={"ok": True}) as upd,
+        ):
+            outcome = check_slack_socket_mode()
+        upd.assert_called_once()
+        assert upd.call_args.kwargs["manifest"]["settings"]["interactivity"] == {"is_enabled": True}
+        fixed = [f for f in outcome.findings if "turned Interactivity on" in f.message]
+        assert [f.level for f in fixed] == [Level.OK]
+        assert not any("Reinstall" in f.message for f in outcome.findings)
+        assert outcome.ok
+
+    def test_a_scope_gap_beside_interactivity_still_asks_for_the_reinstall(self) -> None:
+        _seed_t3()
+        stale = build_manifest(overlay_name="t3")
+        stale["settings"]["interactivity"] = {"is_enabled": False}
+        stale["settings"]["event_subscriptions"]["bot_events"] = ["app_mention", "message.im"]
+        mapping = {_CONFIG_TOKEN_REF: "cfg", _APP_SLOT: "xapp-a", _BOT_SLOT: "xoxb-b"}
+        with (
+            patch("teatree.cli.slack.socket_doctor.read_pass", side_effect=_pass(mapping)),
+            patch("teatree.cli.slack.socket_doctor.probe_app_connections", return_value=AppTokenProbe.valid()),
+            patch("teatree.cli.slack.socket_doctor._export_with_rotation", return_value=stale),
+            patch("teatree.cli.slack.socket_doctor.update_manifest", return_value={"ok": True}),
+        ):
+            outcome = check_slack_socket_mode()
+        [fixed] = [f for f in outcome.findings if "turned Interactivity on" in f.message]
+        assert fixed.level is Level.ACTION
+        assert "added events reaction_added" in fixed.message
+        assert "Reinstall" in fixed.message
+        assert outcome.ok is False
+
     def test_no_config_token_degrades_manifest_to_action(self) -> None:
         """With no config token stored, the actionable line must be what the operator sees.
 
@@ -289,6 +327,19 @@ class TestFindingMessages:
         assert "reaction_added" in message
         assert "im:history" in message
         assert "install-on-team" in message
+
+    def test_an_interactivity_only_fix_says_so_and_names_no_reinstall(self) -> None:
+        gaps = ManifestSocketGaps(
+            socket_mode_disabled=False,
+            missing_events=frozenset(),
+            missing_bot_scopes=frozenset(),
+            interactivity_disabled=True,
+        )
+
+        message = _fixed_message(gaps, "A1")
+
+        assert message == "Fixed manifest — turned Interactivity on."
+        assert "Reinstall" not in message
 
     def test_no_config_token_message_names_the_slot_and_the_manual_route(self) -> None:
         """It cannot list the gaps: reading the manifest is what the missing token authorises.

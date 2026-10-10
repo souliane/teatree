@@ -429,12 +429,12 @@ Persist declared Notion pass-key routes without replacing database overrides.
 
 | Subcommand | Description |
 | --- | --- |
-| `record` | Record a deferred question by hand — the agent-facing capture surface |
+| `record` | Record a question by hand — the agent-facing capture surface |
 | `reachability` | Report which automated resolvers can decide each pending question (#4178) |
 | `answer` | Resolve pending internal questions; an owner question is answered only in its Slack thread |
 | `dismiss` | Dismiss pending questions without answering them |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
-| `list` | List pending deferred questions, oldest first |
+| `list` | List open questions, oldest first |
 
 ## `queue`
 

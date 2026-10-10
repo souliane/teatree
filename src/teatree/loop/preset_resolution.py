@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ACTIVE_SCHEDULE_SETTING = "active_loop_schedule"
+OWNER_FALLBACK_ZONE = "Europe/Paris"
 
 # How far back a governing slot start may be — one full week covers the coverage
 # model's week-wrap (a Sunday-evening slot still governs Monday morning).
@@ -297,6 +298,19 @@ def _schedule_zone(name: str) -> dt.tzinfo:
     return timezone.get_current_timezone()
 
 
+def owner_zone() -> dt.tzinfo:
+    """The zone the owner's day runs in: the active schedule's, else Europe/Paris — never the project zone (UTC)."""
+    schedule = _active_schedule()
+    if schedule is not None:
+        try:
+            return zoneinfo.ZoneInfo(schedule.timezone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            logger.warning(
+                "schedule %r timezone %r invalid — using %s", schedule.name, schedule.timezone, OWNER_FALLBACK_ZONE
+            )
+    return zoneinfo.ZoneInfo(OWNER_FALLBACK_ZONE)
+
+
 def _slot_label(slot: "ModeScheduleSlot") -> str:
     days = ",".join(_WEEKDAY_NAMES[day] for day in sorted(slot.weekdays))
     return f"{days} {slot.start_time.strftime('%H:%M')}"
@@ -311,10 +325,12 @@ _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 __all__ = [
     "ACTIVE_SCHEDULE_SETTING",
+    "OWNER_FALLBACK_ZONE",
     "ActivePreset",
     "PresetResolution",
     "consistency_findings",
     "next_boundary",
+    "owner_zone",
     "preset_state_for",
     "resolve_active_preset",
     "resolve_preset_resolution",

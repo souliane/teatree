@@ -8,18 +8,22 @@ egress (idempotent ``BotPing`` ledger, per-overlay bot routing); only
 the unstoppable Slack HTTP boundary is mocked.
 """
 
+import dataclasses
+import datetime as dt
 import json
 import os
+import zoneinfo
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
 
+from teatree.core.modelkit.question_card import CardOption
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.notify_question_drains import _resurface_text
-from tests._owner_channel import OWNER_DECISION
+from teatree.core.owner_question_message import render_text
+from tests._owner_channel import OWNER_CARD, OWNER_DECISION, legacy_owner_row
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -41,6 +45,25 @@ def _call(*args: str) -> tuple[str, int]:
     except SystemExit as exc:
         code = int(exc.code or 0)
     return buf.getvalue(), code
+
+
+class TestResurfaceInQuietHours:
+    @pytest.mark.real_quiet_hours
+    def test_resurface_says_the_pings_are_held_until_08_00(self) -> None:
+        DeferredQuestion.record("Once?", session_id="s-1", **OWNER_DECISION)
+        backend = _backend()
+        night = dt.datetime(2026, 10, 12, 23, 30, tzinfo=zoneinfo.ZoneInfo("Europe/Paris")).astimezone(dt.UTC)
+
+        with (
+            patch("django.utils.timezone.now", return_value=night),
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+        ):
+            out, code = _call("questions", "resurface", "--user-id", "U_ME")
+
+        assert code == 0
+        assert "held until 08:00 (quiet hours)" in out
+        assert "1 question" in out
+        backend.post_message.assert_not_called()
 
 
 class TestResurfaceDrainsPending:
@@ -67,7 +90,7 @@ class TestResurfaceDrainsPending:
         posted = [c.kwargs["text"] for c in backend.post_message.call_args_list]
         assert any("Pending?" in t for t in posted)
         assert not any("Answered?" in t for t in posted)
-        assert any(f"#{pending.pk}" in t for t in posted)
+        assert any(f"ref: question {pending.pk}" in t for t in posted)
 
     def test_idempotent_across_two_runs(self) -> None:
         DeferredQuestion.record("Once?", session_id="s-1", **OWNER_DECISION)
@@ -129,28 +152,35 @@ class TestOverlayRouting:
 
 
 class TestResurfaceText:
-    def test_renders_question_id_and_options(self) -> None:
+    def test_renders_the_question_its_options_and_the_ref(self) -> None:
         row = DeferredQuestion.record(
             "Ship?",
-            options_json=json.dumps([{"label": "Yes", "description": "go"}, {"label": "No"}]),
+            card=dataclasses.replace(
+                OWNER_CARD,
+                options=(CardOption("Yes", "I go.", recommended=True), CardOption("No", "I stop.")),
+            ),
             session_id="s-1",
         )
-        text = _resurface_text(row)
-        assert f"#{row.pk}" in text
-        assert "Ship?" in text
-        assert "Yes — go" in text
-        assert "No" in text
-        # Still guarantees the message says HOW to answer, and now also that a TYPED
-        # reply is the recorded one — an emoji reaction on the question reaches no consumer.
-        assert "Reply in this thread" in text
-        assert "typed reply" in text
+
+        text = render_text(row)
+
+        assert text.startswith("Ship?\n")
+        assert "[Yes] (recommended) - I go." in text
+        assert "[No] - I stop." in text
+        assert "Or reply in this thread." in text
+        assert text.endswith(f"ref: question {row.pk}")
+        assert "typed reply" not in text
+        assert "#" not in text
 
     def test_malformed_options_json_is_tolerated(self) -> None:
-        row = DeferredQuestion.record("Broken?", options_json="{not json", session_id="s-1")
-        text = _resurface_text(row)
-        assert "Broken?" in text
+        row = legacy_owner_row("Broken?", options_json="{not json")
 
-    def test_non_dict_option_entries_skipped(self) -> None:
-        row = DeferredQuestion.record("Mixed?", options_json=json.dumps(["bare", {"label": "Real"}]), session_id="s-1")
-        text = _resurface_text(row)
-        assert "Real" in text
+        assert render_text(row).startswith("Broken?")
+
+    def test_non_dict_option_entries_keep_their_label(self) -> None:
+        row = legacy_owner_row("Mixed?", options_json=json.dumps(["bare", {"label": "Real"}]))
+
+        text = render_text(row)
+
+        assert "[bare]" in text
+        assert "[Real]" in text

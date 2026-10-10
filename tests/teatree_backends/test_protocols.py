@@ -309,6 +309,10 @@ class _FakeMessaging:
         _ = (channel, ts, text)
         return {}
 
+    def update_message(self, *, channel: str, ts: str, text: str, blocks: list[dict[str, object]]) -> dict[str, object]:
+        _ = (channel, ts, text, blocks)
+        return {}
+
     def open_dm(self, user_id: str) -> str:
         _ = user_id
         return ""

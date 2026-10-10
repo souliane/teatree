@@ -649,6 +649,10 @@ class MessagingBackend(Protocol):
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def update_message(  # pragma: no branch
+        self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]
+    ) -> RawAPIDict: ...
+
     def open_dm(self, user_id: str) -> str: ...  # pragma: no branch
 
     def get_permalink(self, *, channel: str, ts: str) -> str: ...  # pragma: no branch

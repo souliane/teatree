@@ -26,6 +26,7 @@ from teatree.core.models.task_handoff import (
     record_deferred_question,
     schedule_resume,
 )
+from tests._owner_channel import OWNER_CARD, owner_stop
 from tests.factories import planned_ticket
 
 
@@ -36,11 +37,7 @@ class TestRecordDeferredQuestionAudience(TestCase):
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
-        result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
-        if kind:
-            result["user_input_kind"] = kind
-        if checked:
-            result["user_input_checked"] = list(checked)
+        result = owner_stop(reason, kind, *checked) if kind else {"needs_user_input": True, "user_input_reason": reason}
         TaskAttempt.objects.create(task=task, result=result)
         return task
 
@@ -123,8 +120,7 @@ class TestRecordDeferredQuestionAudience(TestCase):
 
     def test_a_named_owner_decision_reaches_the_owner(self) -> None:
         task = self._headless_task_with_reason(
-            "Two of the review findings conflict — should I block the PR on the missing migration, "
-            "or accept it and file a follow-up ticket? Which do you prefer?",
+            "Should I block the review on the missing migration, or accept it and file a follow-up?",
             phase="reviewing",
             kind="product_scope",
             checked=("the ticket names neither option",),
@@ -136,11 +132,13 @@ class TestRecordDeferredQuestionAudience(TestCase):
         task = self._headless_task_with_reason(
             "The deploy token expired; mint a new one?",
             kind="credentials",
-            checked=("the vault holds no deploy token", " "),
+            checked=("The vault holds no deploy token.",),
         )
         row = record_deferred_question(task)
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
-        assert row.evidence == {"decision": "credentials", "checked": ["the vault holds no deploy token"]}
+        assert row.evidence["decision"] == "credentials"
+        assert row.evidence["checked"] == ["The vault holds no deploy token."]
+        assert row.evidence["blocker"] == OWNER_CARD.blocker
 
     def test_an_unknown_kind_names_no_owner_decision(self) -> None:
         task = self._headless_task_with_reason("The gate refused the push.", phase="reviewing", kind="gate_refusal")
@@ -153,9 +151,7 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
 
     def _stopped(self, ticket: Ticket, reason: str, *, kind: str = "") -> Task:
         task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
-        result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
-        if kind:
-            result |= {"user_input_kind": kind, "user_input_checked": ["the vault holds no deploy token"]}
+        result = owner_stop(reason, kind) if kind else {"needs_user_input": True, "user_input_reason": reason}
         TaskAttempt.objects.create(task=task, result=result)
         task.complete()
         return task
@@ -204,7 +200,7 @@ class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
                 assert not first.child_tasks.exists()
 
     def test_a_cosmetic_rewording_of_a_dismissed_owner_stop_is_not_asked_again(self) -> None:
-        for variant in ("the deploy token expired; mint a new one?", "The deploy token  expired;\nmint a new one? "):
+        for variant in ("the deploy token expired; mint a new one?", "The deploy token  expired;  mint a new one? "):
             with self.subTest(variant=variant):
                 ticket = planned_ticket()
                 first = self._stopped(ticket, "The deploy token expired; mint a new one?", kind="credentials")

@@ -24,7 +24,7 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.loop.slack_answer.vocabulary import InboundReaction
 from teatree.types import RawAPIDict
-from tests._owner_channel import OWNER_SLACK_ID
+from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -38,6 +38,7 @@ class RecordingBackend:
 
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
+    updates: list[dict[str, object]] = field(default_factory=list)
     user_id: str = OWNER_SLACK_ID
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
@@ -50,6 +51,10 @@ class RecordingBackend:
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))
+        return {"ok": True}
+
+    def update_message(self, *, channel: str, ts: str, text: str, blocks: list[RawAPIDict]) -> RawAPIDict:
+        self.updates.append({"channel": channel, "ts": ts, "text": text, "blocks": blocks})
         return {"ok": True}
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
@@ -102,6 +107,32 @@ def _reply(text: str, *, slack_ts: str, thread_ts: str = "") -> PendingChatInjec
     )
     assert row is not None
     return row
+
+
+class TestCycleClosesTheCardOfATypedAnswer:
+    def test_a_typed_answer_closes_the_root_card(self) -> None:
+        card = DeferredQuestion.record(
+            "Can I ship the widgets?", slack_channel=_CHANNEL, slack_ts="100.0", **OWNER_DECISION
+        )
+        _reply("tomorrow, please", slack_ts="400.0", thread_ts="100.0")
+        backend = RecordingBackend()
+
+        run_slack_answer_cycle(messaging_resolver=lambda _o: backend, reader=CountingReader())
+
+        card.refresh_from_db()
+        assert card.answer_text == "tomorrow, please"
+        [update] = backend.updates
+        assert (update["channel"], update["ts"]) == (_CHANNEL, "100.0")
+        assert "You answered: tomorrow, please" in str(update["text"])
+
+    def test_an_internal_row_has_no_card_to_close(self) -> None:
+        _question("Ship it?", slack_ts="100.0")
+        _reply("2", slack_ts="400.0", thread_ts="100.0")
+        backend = RecordingBackend()
+
+        run_slack_answer_cycle(messaging_resolver=lambda _o: backend, reader=CountingReader())
+
+        assert backend.updates == []
 
 
 class TestCycleAnswersItsBoundQuestion:

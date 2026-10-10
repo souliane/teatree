@@ -25,6 +25,7 @@ from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DeferredQuestion, DmContext, PendingChatInjection, Session, Task
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
+from tests._owner_channel import owner_stop
 from tests.factories import planned_ticket
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
@@ -55,8 +56,10 @@ class FakeBackend:
         _ = user_id
         return _CHANNEL
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
-        _ = (channel, thread_ts)
+    def post_message(
+        self, *, channel: str, text: str, thread_ts: str = "", blocks: list[dict[str, object]] | None = None
+    ) -> dict[str, object]:
+        _ = (channel, thread_ts, blocks)
         self.posted.append(text)
         return {"ok": True, "ts": _QUESTION_TS}
 
@@ -80,10 +83,12 @@ class TestHeadlessQuestionLoop:
         )
         result = {
             "summary": "Blocked on a design decision",
-            "needs_user_input": True,
-            "user_input_reason": "Which DB host should the new connection pool target?",
-            "user_input_kind": "architecture",
-            "user_input_checked": ["settings name no pool host", "the ticket names no pool host"],
+            **owner_stop(
+                "Which DB host should the new connection pool target?",
+                "architecture",
+                "The settings name no pool host.",
+                "The ticket names no pool host.",
+            ),
         }
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),

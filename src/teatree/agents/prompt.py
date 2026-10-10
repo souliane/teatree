@@ -137,7 +137,8 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
             "3. If you can proceed (code, test, fix) — do it",
             f"4. If only the owner can decide ({_OWNER_KINDS}; an access or permission grant is credentials),",
             '   STOP: set "needs_user_input": true, "user_input_kind": "<kind>", "user_input_checked": ["<fact>"]',
-            '   (every fact you checked first) and "user_input_reason": "..." in your JSON result.',
+            '   (every fact you checked first), "user_input_reason": "<one question ending in ?>" and a',
+            '   "user_input_card" (see the envelope contract) in your JSON result.',
             "   Decide everything else yourself: a gate refusal, a red check or a spent budget is yours.",
             f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
             "   It runs the commit-stage, push-stage and manual CI-job hooks; a bare `prek run --all-files`",
@@ -316,10 +317,9 @@ def build_system_context(
             "so emit it yourself whenever /t3:next is unavailable or does not run.",
             *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
             "",
-            f"IMPORTANT: If only the owner can decide ({_OWNER_KINDS}), STOP immediately and emit:",
+            "IMPORTANT: If only the owner can decide, STOP immediately and emit:",
             '  {"summary": "...", "needs_user_input": true, "user_input_kind": "<kind>",',
-            '   "user_input_checked": ["<fact you checked>"], "user_input_reason": "..."}',
-            "Decide everything else yourself.",
+            '   "user_input_checked": ["<fact you checked>"], "user_input_reason": "...", "user_input_card": {...}}',
         ),
     )
 
