@@ -108,6 +108,15 @@ slug=$(printf '%s' "${remote_url}" \
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
+# Repo-local git state changes what git hands this hook without touching a tracked file or the environment: a replace
+# ref (`git replace`) makes git show another object under the same sha, a smudge filter or a textconv driver in
+# `.git/config` and `.git/info/attributes` rewrites a file's bytes as git writes or diffs them, and `i18n.logOutputEncoding`
+# re-encodes a message. So the hook reads history unreplaced, copies sources as raw blobs, and asks `git log`/`git show`
+# for the unconverted text in UTF-8; what no flag reaches (a file marked `-diff` or binary, shown as "Binary files differ")
+# is a named residual of the push hook.
+export GIT_NO_REPLACE_OBJECTS=1
+git_read_flags=(--no-textconv --no-ext-diff --no-color)
+
 # git at THIS checkout, blind to the variables that relocate a repository or its object store (a fleet claim push
 # exports a scratch object directory, and a hook run from another repository would otherwise read that one).
 _checkout_git() {
@@ -192,14 +201,14 @@ fi
 trap 'rm -rf "${work_dir}"' EXIT
 gate_tree="${work_dir}/tree"
 mkdir "${gate_tree}"
-archive_paths=()
-while IFS= read -r archive_path; do
-  archive_paths+=("${archive_path}")
+while IFS= read -r source_path; do
+  mkdir -p "${gate_tree}/${source_path%/*}"
+  # The raw blob, not `git archive`: archive runs the repo-local smudge filter over every file it writes.
+  if ! _checkout_git cat-file blob "HEAD:${source_path}" > "${gate_tree}/${source_path}" 2>/dev/null </dev/null; then
+    echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: ${source_path} could not be copied out of HEAD of ${repo_root} (fail closed). Nothing was published."
+    exit 1
+  fi
 done < <(_listed_sources)
-if ! _checkout_git archive --format=tar HEAD -- "${archive_paths[@]}" </dev/null | tar -x -C "${gate_tree}" 2>/dev/null; then
-  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: the committed sources could not be copied out of HEAD of ${repo_root} (fail closed). Nothing was published."
-  exit 1
-fi
 export PYTHONDONTWRITEBYTECODE=1
 
 scanner="${gate_tree}/scripts/privacy_scan.py"
@@ -424,7 +433,7 @@ _display() {
 # text mode: no file is written, so no temp directory can be missing or unwritable.
 # `git log` gets a closed stdin: every caller sits in a `while read` loop it must not drain.
 _scan_messages_as_text() {
-  git log --format='%B' "$@" 2>/dev/null </dev/null | _scan --text -
+  git log --encoding=UTF-8 "${git_read_flags[@]}" --format='%B' "$@" 2>/dev/null </dev/null | _scan --text -
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
@@ -461,7 +470,7 @@ _attribute_findings() {
     while read -r f; do
       [ -n "${f}" ] || continue
       sub_rc=0
-      sub=$(git show --format= --patch --cc "${sha}" -- "${f}" 2>/dev/null </dev/null | _scan - 2>&1) || sub_rc=$?
+      sub=$(git show "${git_read_flags[@]}" --format= --patch --cc "${sha}" -- "${f}" 2>/dev/null </dev/null | _scan - 2>&1) || sub_rc=$?
       if [ "${sub_rc}" -eq "${findings_code}" ]; then
         echo "  ${where} file ${f}:"
         printf '%s\n' "${sub}" | sed 's/^/    /'
@@ -563,7 +572,7 @@ while read -r local_ref local_sha remote_ref _; do
   # PROVEN-private remote exits above; a remote nobody could classify may be
   # public, and an address that reaches public history cannot be taken back.
   noreply_re='^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$'
-  bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
+  bad_idents=$(git log --encoding=UTF-8 --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
     | grep -v -E "${noreply_re}" | sort -u || true)
   if [ -n "${bad_idents}" ]; then
     echo "✗ refuse: push to ${target} has a non-noreply commit identity on '$(_display "${local_ref}")'."
@@ -594,7 +603,7 @@ while read -r local_ref local_sha remote_ref _; do
   message_rc=0
   report=$(_scan_messages_as_text "${new_commits[@]}" 2>&1) || message_rc=$?
   patch_rc=0
-  patch_report=$(git log --format= --patch --cc "${new_commits[@]}" 2>/dev/null </dev/null | _scan - 2>&1) || patch_rc=$?
+  patch_report=$(git log "${git_read_flags[@]}" --format= --patch --cc "${new_commits[@]}" 2>/dev/null </dev/null | _scan - 2>&1) || patch_rc=$?
   report="${report}${patch_report:+$'\n'}${patch_report}"
   scan_rc=$((message_rc != 0 ? message_rc : patch_rc))
   if [ "${message_rc}" -eq "${findings_code}" ] || [ "${patch_rc}" -eq "${findings_code}" ]; then

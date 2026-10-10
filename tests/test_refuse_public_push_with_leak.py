@@ -586,7 +586,7 @@ class TestLeakGateFailsClosedOnScannerCrash:
         _make_unusable_bare_pythons(bin_dir)
         for tool in (
             *("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"),
-            *("env", "awk", "paste", "uniq", "head", "wc", "find", "tar", "mkdir"),
+            *("env", "awk", "paste", "uniq", "head", "wc", "find", "mkdir"),
         ):
             found = shutil.which(tool, path=env["PATH"])
             assert found is not None
@@ -1985,6 +1985,109 @@ class TestTheHookReadsNoEnvironmentOverride:
         assert "carries privacy findings" in result.stdout, result.stdout
 
 
+class TestRepoLocalGitStateDoesNotChangeWhatGitFeedsTheHook:
+    """Repo-local git state that changes what git hands the hook is one class, and each instance with a flag closes.
+
+    Filters, textconv drivers, replace refs and the log output encoding live in ``.git/config``,
+    ``.git/info/attributes`` or ``.git/refs/replace``, so a pusher can set them with no tracked file changed and no
+    environment variable. The hook reads raw blobs and the unconverted, unreplaced history.
+    """
+
+    @staticmethod
+    def _stdout(cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            [str(shutil.which("git")), *args], cwd=cwd, check=True, capture_output=True, env=_hermetic_env()
+        ).stdout.decode("utf-8", "replace")
+
+    def test_a_smudge_filter_does_not_change_the_copy_of_the_sources_the_hook_runs(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path)
+        root = hook.parents[2]
+        smudge = tmp_path / "smudge.sh"
+        smudge.write_text(
+            "#!/bin/sh\ncat >/dev/null\nprintf 'print(\"Privacy scan: clean (0 findings)\")\\n'\n", encoding="utf-8"
+        )
+        smudge.chmod(0o755)
+        _git(root, "config", "filter.evil.smudge", str(smudge))
+        _git(root, "config", "filter.evil.clean", "cat")
+        (root / ".git" / "info").mkdir(exist_ok=True)
+        (root / ".git" / "info" / "attributes").write_text("scripts/privacy_scan.py filter=evil\n", encoding="utf-8")
+        assert "clean (0 findings)" in self._stdout(root, "archive", "HEAD", "scripts/privacy_scan.py").replace(
+            "\0", ""
+        ), "the plant must reach what git archive writes, or this test proves nothing"
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the smudged copy judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
+
+    def test_a_replaced_source_blob_does_not_change_the_copy_of_the_sources_the_hook_runs(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path)
+        root = hook.parents[2]
+        real = self._stdout(root, "rev-parse", "HEAD:scripts/privacy_scan.py").strip()
+        evil = (
+            subprocess.run(
+                [str(shutil.which("git")), "hash-object", "-w", "--stdin"],
+                cwd=root,
+                input=_CLEAN_SCANNER.encode(),
+                check=True,
+                capture_output=True,
+                env=_hermetic_env(),
+            )
+            .stdout.decode()
+            .strip()
+        )
+        _git(root, "replace", real, evil)
+        assert "clean (0 findings)" in self._stdout(root, "cat-file", "blob", "HEAD:scripts/privacy_scan.py")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the replacement blob judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
+
+    def test_a_textconv_driver_does_not_blank_the_patch_the_scanner_reads(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path)
+        blank = tmp_path / "blank.sh"
+        blank.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        blank.chmod(0o755)
+        _git(work, "config", "diff.blank.textconv", str(blank))
+        (work / ".git" / "info").mkdir(exist_ok=True)
+        (work / ".git" / "info" / "attributes").write_text("leak.txt diff=blank\n", encoding="utf-8")
+        assert "second-leak-term" not in self._stdout(work, "log", "-p"), "the plant must blank what git log shows"
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the converted patch judged the push: " + result.stdout + result.stderr
+        assert "file leak.txt" in result.stdout, "the refusal attributes the finding to its file: " + result.stdout
+
+    def test_a_replaced_commit_does_not_change_what_the_range_shows(self, tmp_path: Path) -> None:
+        work, env, hook = _leaking_hook_push(tmp_path)
+        leak = _rev(work, "HEAD")
+        clean = self._stdout(
+            work, "commit-tree", f"{leak}~1^{{tree}}", "-p", f"{leak}~1", "-m", "a clean stand-in"
+        ).strip()
+        _git(work, "replace", leak, clean)
+        assert "second-leak-term" not in self._stdout(work, "log", "-p", leak), "the plant must hide the leak"
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the replacement commit judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
+
+    def test_a_log_output_encoding_does_not_blind_the_message_scan(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        tip = _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n\nnames second-leak-term\n")
+        _git(work, "config", "i18n.logOutputEncoding", "UTF-16")
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the re-encoded message was not read: " + result.stdout + result.stderr
+        assert f"commit {tip} (commit message):" in result.stdout, result.stdout
+
+
 class TestCommitMessagesRideTheScannersStdin:
     """A message is handed to the scanner on stdin: the scan writes no file, and the hook leaves nothing in ``TMPDIR``.
 
@@ -2500,6 +2603,22 @@ class TestThePushPathTakesOnlyTheForgesPrivateAnswer:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _leaking_hook_push(
+    tmp_path: Path, *, env_registry: str = _REAL_REGISTRY, committed: str | None = None
+) -> tuple[Path, dict[str, str], Path]:
+    """A public push whose only commit names a registry term, and the real hook in a committed scratch checkout."""
+    work, env = _clone_with_remote(tmp_path, "PUBLIC")
+    env["TEATREE_TERM_REGISTRY"] = env_registry
+    _make_unreachable_forge_shims(tmp_path / "offline-bin")
+    env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+    (work / "leak.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
+    _git(work, "add", "leak.txt")
+    _git(work, "commit", "-m", "add config")
+    fingerprint = CommittedFingerprint(registry=committed) if committed else None
+    hook = place_hook(tmp_path / "checkout", registry=env_registry, fingerprint=fingerprint)
+    return work, env, hook
+
+
 _ARGPARSE_THAT_REPORTS_CLEAN = (
     'import os, sys\nsys.stdout.write("Privacy scan: clean (0 findings)\\n")\nsys.stdout.flush()\nos._exit(0)\n'
 )
@@ -2526,16 +2645,7 @@ class TestTheHookRunsOnlyCommittedCode:
     def _leaking_push(
         self, tmp_path: Path, *, env_registry: str = _REAL_REGISTRY, committed: str | None = None
     ) -> tuple[Path, dict[str, str], Path]:
-        work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["TEATREE_TERM_REGISTRY"] = env_registry
-        _make_unreachable_forge_shims(tmp_path / "offline-bin")
-        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
-        (work / "leak.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
-        _git(work, "add", "leak.txt")
-        _git(work, "commit", "-m", "add config")
-        fingerprint = CommittedFingerprint(registry=committed) if committed else None
-        hook = place_hook(tmp_path / "checkout", registry=env_registry, fingerprint=fingerprint)
-        return work, env, hook
+        return _leaking_hook_push(tmp_path, env_registry=env_registry, committed=committed)
 
     @staticmethod
     def _edit(hook: Path, relative: str, appended: str) -> None:
