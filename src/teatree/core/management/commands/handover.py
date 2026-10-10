@@ -180,7 +180,7 @@ class Command(TyperCommand):
         # over, and the receiving session claims a row that does not hold it
         # (#3551, #3888). Only a VETTED source whose row survives the re-read may
         # report OK, and the re-read happens BEFORE the line is written.
-        dangling = dangling_backlog_claims(str(handover.payload))
+        dangling = dangling_backlog_claims(created.resolved if created.payload_appended else "")
         ok = source.is_vetted and not failures
         human_lines = self._report_lines(
             created, recipient=recipient, recorded=recorded, pushes=pushes, failures=failures
