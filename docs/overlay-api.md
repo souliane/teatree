@@ -190,6 +190,8 @@ Running services, tests, and readiness probes. Override by assigning an `Overlay
 | `can_auto_merge(*, target_ref, thread_ref)` | `MergeGuard(allowed=True)` | Verdict on whether an approved merge request may auto-merge. Override to enforce human-approval gates, freeze windows, or policy checks — return `MergeGuard(allowed=False, reason=…)` to block, adding `escalate=True` to raise an escalation instead of a silent block. |
 | `visual_qa_targets(changed_files)` | `[]` | Files whose change warrants a visual-QA pass. |
 | `classify_customer_display_impact(changed_files)` | `True` (fail-closed) | Whether a diff could impact what the customer sees; the mandatory-E2E gate reads it, so the default treats every diff as display-impacting. |
+| `mandatory_e2e_exempt_repo_slugs()` | `()` | Exact ticket-repo slugs exempt from mandatory E2E because they have no customer display surface. |
+| `mandatory_e2e_repo_slugs()` | `()` | Exact, case-sensitive ticket-repo slugs subject to mandatory E2E; a nonempty list exempts unmatched repos, and an empty list keeps the existing exemption policy. |
 
 ### Connector hooks (`overlay.connectors`, `OverlayConnectors`)
 

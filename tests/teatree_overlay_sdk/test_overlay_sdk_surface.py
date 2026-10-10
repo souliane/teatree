@@ -180,6 +180,7 @@ EXPECTED_E2E_SIGNATURES: dict[str, str] = {
 EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
     "can_auto_merge": "(self, *, target_ref: str, thread_ref: str) -> teatree.core.gates.merge_guard.MergeGuard",
     "classify_customer_display_impact": "(self, changed_files: list[str]) -> bool",
+    "mandatory_e2e_repo_slugs": "(self) -> tuple[str, ...]",
     "mandatory_e2e_exempt_repo_slugs": "(self) -> tuple[str, ...]",
     "merge_candidate_repo_slugs": "(self) -> list[str]",
     "repo_owner_for_slug": "(self, slug: str) -> teatree.core.review.mr_triage.RepoOwner",
