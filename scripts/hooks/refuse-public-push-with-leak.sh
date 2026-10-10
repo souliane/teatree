@@ -67,8 +67,14 @@
 #
 # The scanner and the visibility resolver run from THIS checkout's tree
 # (`<repo>/scripts/privacy_scan.py`, `<repo>/src`), never from an installed copy, so a push
-# that fixes the gate is judged by the fixed gate. Nothing in the environment redirects
-# either of them: this hook reads no override variable.
+# that fixes the gate is judged by the fixed gate. The hook reads no override variable of its
+# own. The term registry and the private_repos allowlist still resolve through the environment
+# (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME), and a hook cannot see
+# its caller's environment as an attack, so the PreToolUse guards refuse an inline assignment of
+# any of them, or of SKIP/GIT_CONFIG_*/XDG_CONFIG_HOME, on a command that commits, pushes or runs
+# prek (src/teatree/hooks/git_bypass_detect.py, hooks/scripts/direct_command_guard.py). The local
+# remote-tracking refs that bound the push range are trusted the same way, and the same guards
+# refuse writing one by hand.
 #
 # Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
 # ships with the repo and needs no per-machine bootstrap.
@@ -196,7 +202,7 @@ case "${visibility}" in
     # read, so the hint below sends the operator to that store, not to redeclaring.
     echo "⚠ push privacy gate: could not read private_repos, and no forge probe confirmed '${slug:-<remote>}' — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
     target="repo '${slug:-<remote>}' (could not read private_repos — visibility unknown, refusing push)"
-    confirm_hint="  The private_repos allowlist could not be read from the config DB this hook resolves (the path is printed above). Repair or unlock that store, or point T3_CONFIG_DB at the DB t3 uses; redeclaring the repo does not help while the store is unreadable."
+    confirm_hint="  The private_repos allowlist could not be read from the config DB this hook resolves (the path is printed above). Repair or unlock that store (t3 doctor check names it); redeclaring the repo does not help while the store is unreadable."
     ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
@@ -514,7 +520,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  with generic placeholders so the flagged value is in none of them, and push that branch."
     echo "  A deliberate fake value (a test-fixture email, path, address or key) instead carries an inline"
     echo "  'privacy-scan:allow <reason>' marker on that same line, in the commit that introduces it. The marker"
-    echo "  never silences a registry term or an opaque id."
+    echo "  never silences a registry term, and 'leak-scan:allow' is the only marker that silences an opaque id."
     echo "  Never rewrite a branch that already backs an open merge request: it moves every commit"
     echo "  the reviewers' comments are anchored to, and the whole review has to start again."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"

@@ -38,8 +38,18 @@ _SKIP_REASON = (
     "(equivalent to `--no-verify`) — fix the hook failure instead."
 )
 _GIT_CONFIG_ENV_REASON = (
-    "BLOCKED: `GIT_CONFIG_*=` on a command that commits, pushes or runs prek redirects git's configuration, "
-    "its hooks directory included (equivalent to `--no-verify`) — fix the hook failure instead."
+    "BLOCKED: `GIT_CONFIG_*=`, `HOME=` or `XDG_CONFIG_HOME=` on a command that commits, pushes or runs prek "
+    "redirects git's configuration, its hooks directory included (equivalent to `--no-verify`) — "
+    "fix the hook failure instead."
+)
+_STORE_REDIRECT_REASON = (
+    "BLOCKED: `TEATREE_TERM_REGISTRY=`, `T3_CONFIG_DB=`, `T3_DATA_DIR=` or `XDG_DATA_HOME=` on a command that "
+    "commits, pushes or runs prek aims the leak gate at a term registry of the caller's choosing "
+    "(equivalent to `--no-verify`) — the gate reads the owner's own store."
+)
+_PLANTED_REF_REASON = (
+    "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes the pre-push leak gate believe the "
+    "remote already has commits it does not — `git fetch` the remote instead."
 )
 _HOOKS_PATH_CONFIG_REASON = (
     "BLOCKED: `git config core.hooksPath …` redirects git's hooks directory "
@@ -59,17 +69,35 @@ _GIT_GLOBAL_OPTS: str = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
 # all four schedule the identical auto-merge.
 _AUTO_MERGE_PUSH_OPTION: str = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
 
-# What a hook is attached to: a commit, a push, or prek itself running the hooks.
-_HOOKED_RUN: str = rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b|(?<![\w./-])(?:prek|pre-commit)(?=\s|$))"
+# What a hook is attached to: a commit, a push, prek itself running the hooks, or ``t3`` pushing for the caller.
+_HOOKED_RUN: str = (
+    rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b"
+    r"|(?<![\w./-])(?:prek|pre-commit)(?=\s|$)"
+    r"|(?<![\w./-])t3\s+(?:[\w-]+\s+)?(?:push|pr\s+create)\b)"
+)
+
+# Environment names that point git's configuration, or the term registry the leak gate reads, elsewhere.
+_GIT_CONFIG_REDIRECTS: str = (
+    r"GIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)|HOME|XDG_CONFIG_HOME"
+)
+_STORE_REDIRECTS: str = r"TEATREE_TERM_REGISTRY|T3_CONFIG_DB|T3_DATA_DIR|XDG_DATA_HOME"
+
+# Writing a remote-tracking ref (never deleting one): ``update-ref`` or ``symbolic-ref``, a refspec onto
+# one, or a shell write into the refs directory.
+_PLANTED_REF: str = (
+    r"\bgit\b[^\n;&|]*\b(?:update-ref|symbolic-ref)\b(?![^\n;&|]*\s(?:-d|--delete)\b)[^\n;&|]*\brefs/remotes/"
+    r"|\bgit\b[^\n;&|]*\b(?:fetch|pull|push)\b[^\n;&|]*:\+?refs/remotes/"
+    r"|(?:>>?|\btee\b|\bcp\b|\bmv\b|\bln\b)[^\n;&|]*\brefs/remotes/"
+)
 
 # VALUE/CONFIG patterns — scanned against the RAW command (quoting cannot evade).
 _RAW_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE), _HOOKS_PATH_REASON),
     (re.compile(r"\bgit\b.*\bconfig\b.*\bcore\.hooksPath[ \t]+[^\s;&|]", re.IGNORECASE), _HOOKS_PATH_CONFIG_REASON),
-    (
-        re.compile(rf"(?s)\bGIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)=.*?{_HOOKED_RUN}"),
-        _GIT_CONFIG_ENV_REASON,
-    ),
+    (re.compile(rf"(?s)(?<!\w)(?:{_GIT_CONFIG_REDIRECTS})=.*?{_HOOKED_RUN}"), _GIT_CONFIG_ENV_REASON),
+    (re.compile(rf"(?s)(?<!\w)(?:{_STORE_REDIRECTS})=.*?{_HOOKED_RUN}"), _STORE_REDIRECT_REASON),
+    (re.compile(rf"(?s)(?<!\w)SKIP=.*?{_HOOKED_RUN}"), _SKIP_REASON),
+    (re.compile(_PLANTED_REF), _PLANTED_REF_REASON),
     (re.compile(rf"\bgit\s+{_GIT_GLOBAL_OPTS}push\b.*{_AUTO_MERGE_PUSH_OPTION}"), _AUTO_MERGE_REASON),
 )
 
@@ -78,7 +106,6 @@ _RAW_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
 _FLAG_SCAN: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgit\s+\S+.*--no-verify\b"), _NO_VERIFY_REASON),
     (re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"), _NO_GPG_REASON),
-    (re.compile(rf"(?s)(?<!\w)SKIP=.*?{_HOOKED_RUN}"), _SKIP_REASON),
 )
 
 _QUOTED_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")

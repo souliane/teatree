@@ -176,3 +176,76 @@ class TestEnvAndConfigWaysAroundTheHooks:
     def test_both_lanes_allow(self, command: str) -> None:
         assert git_bypass_deny_reason(command) is None
         assert deny_match(command) is None
+
+
+class TestRedirectsOfTheGatesConfigAndTermStore:
+    """The environment can aim git's configuration, or the registry the leak gate reads, somewhere else.
+
+    A pre-push hook cannot see its own caller's environment as an attack, so the guards refuse the
+    assignment on the commands that run hooks (a commit, a push, prek, ``t3 push``). A quoted
+    assignment, a ``bash -c`` wrapper and ``t3 push`` carry it just the same.
+    """
+
+    DENIED = (
+        # SKIP= through every wrapper that still reaches a hook
+        "SKIP=refuse-public-push-with-leak t3 push",
+        "SKIP=x t3 teatree pr create",
+        "SKIP=x bash -c 'git push'",
+        "bash -c 'SKIP=x git push'",
+        "env 'SKIP=x' git push",
+        'export "SKIP=x"; git push origin HEAD',
+        # the registry and the stores that locate it
+        "TEATREE_TERM_REGISTRY='{}' git push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 git push",
+        "T3_DATA_DIR=/tmp/decoy git push",
+        "XDG_DATA_HOME=/tmp/decoy git push",
+        "export T3_CONFIG_DB=/tmp/decoy.sqlite3 && git push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 t3 push",
+        "TEATREE_TERM_REGISTRY='{}' prek run --hook-stage pre-push",
+        # git's global configuration, found through the home directory
+        "HOME=/tmp/evil git push",
+        "XDG_CONFIG_HOME=/tmp/evil git push",
+        "env HOME=/tmp/evil git commit -m x",
+        "HOME=/tmp/evil t3 push",
+        # a remote-tracking ref written by hand empties the range the pre-push gate scans
+        "git update-ref refs/remotes/origin/main HEAD",
+        "git -C ../worktree update-ref -m planted refs/remotes/origin/feature HEAD",
+        "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+        "git fetch . HEAD:refs/remotes/origin/feature",
+        "git push . HEAD:refs/remotes/origin/feature",
+        "echo abc > .git/refs/remotes/origin/feature",
+        "printf abc | tee .git/refs/remotes/origin/feature",
+    )
+
+    ALLOWED = (
+        "SKIP=x t3 doctor check",
+        "T3_CONFIG_DB=/tmp/x.sqlite3 t3 loop status",
+        "XDG_DATA_HOME=/tmp/x uv run pytest tests/foo.py",
+        "TEATREE_TERM_REGISTRY='{}' uv run pytest -q",
+        "T3_DATA_DIR=/tmp/x uv run pytest -q",
+        "HOME=/tmp/x make test",
+        "echo $HOME",
+        "cd ~ && git status",
+        "git update-ref -d refs/remotes/origin/stale",
+        "git update-ref refs/heads/topic HEAD",
+        "git for-each-ref refs/remotes/",
+        "git rev-parse refs/remotes/origin/main",
+        "git branch -r",
+        "git fetch origin",
+        "cat .git/refs/remotes/origin/main",
+    )
+
+    @pytest.mark.parametrize("command", DENIED)
+    def test_both_lanes_deny(self, command: str) -> None:
+        lane_b = git_bypass_deny_reason(command)
+        lane_a = deny_match(command)
+
+        assert lane_b is not None, "Lane B must refuse it"
+        assert "BLOCKED" in lane_b
+        assert lane_a is not None, "Lane A must refuse what Lane B refuses"
+        assert "BLOCKED" in lane_a
+
+    @pytest.mark.parametrize("command", ALLOWED)
+    def test_both_lanes_allow(self, command: str) -> None:
+        assert git_bypass_deny_reason(command) is None
+        assert deny_match(command) is None
