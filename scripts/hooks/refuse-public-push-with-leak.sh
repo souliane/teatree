@@ -3,7 +3,7 @@
 #
 # Refuses `git push` when the `origin` remote resolves to a PUBLIC
 # repository and the patch OR the message of any commit in the push
-# range fails `t3 tool privacy-scan` (a planted secret, an internal
+# range fails `scripts/privacy_scan.py` (a planted secret, an internal
 # `/Users/`-`/home/` path, a private IP, an API token, an internal
 # hostname, or a configured banned term). Commit messages and trailers reach
 # public history just like file content, so they are scanned too (#703), and so
@@ -58,12 +58,17 @@
 # unparsable remote, no forge CLI for that host, a probe error, or an
 # unrecognised answer — fails CLOSED and the diff is scanned anyway, so a
 # leak never rides out on a tool-less machine or an unparsable remote
-# (§3f #14; was fail-open). "Fail closed" here means "scan anyway", NOT
-# "block anyway": the scan still fails OPEN on a scanner crash and blocks
-# ONLY on a real finding, so a clean push on a machine without a forge CLI
-# is unaffected. An allowlist the resolver could not READ (a locked, corrupt or
+# (§3f #14; was fail-open). A clean push on a machine without a forge CLI is
+# unaffected: the scan passes it. A scan that cannot RUN (no Python 3.13+, a missing or
+# crashing scanner, an unset registry) refuses the push as well: a gate that cannot
+# look has not shown the push is clean. An allowlist the resolver could not READ (a locked, corrupt or
 # absent config DB) is reported as ALLOWLIST_UNREADABLE, enforced the same way but
 # named apart, so the refusal points at the store instead of at redeclaring a repo.
+#
+# The scanner and the visibility resolver run from THIS checkout's tree
+# (`<repo>/scripts/privacy_scan.py`, `<repo>/src`), never from an installed copy, so a push
+# that fixes the gate is judged by the fixed gate. Nothing in the environment redirects
+# either of them: this hook reads no override variable.
 #
 # Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
 # ships with the repo and needs no per-machine bootstrap.
@@ -129,7 +134,7 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 # answer, because its remedy is the checkout, not the repo's declared visibility.
 _resolve_visibility() {
   local err py probe_path out="" rc=1
-  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX")
+  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX" 2>/dev/null) || err=/dev/null
   probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src${PYTHONPATH:+:${PYTHONPATH}}"
 
   if command -v uv >/dev/null 2>&1; then
@@ -160,19 +165,12 @@ _resolve_visibility() {
     # The resolver names WHICH store it could not read; that path is the whole diagnosis.
     grep '^could not read private_repos' "${err}" 2>/dev/null | sed 's/^/    /' >&2 || true
   fi
-  rm -f "${err}"
+  [ "${err}" = /dev/null ] || rm -f "${err}"
   printf '%s\n' "${out}"
   return "${rc}"
 }
 
-# Overridable for testing, mirroring T3_PRIVACY_SCAN_CMD.
-visibility=$(
-  if [ -n "${T3_REPO_VISIBILITY_CMD:-}" ]; then
-    ${T3_REPO_VISIBILITY_CMD} "${remote_url}" 2>/dev/null || true
-  else
-    _resolve_visibility || true
-  fi
-)
+visibility=$(_resolve_visibility || true)
 # Normalise (PUBLIC/PRIVATE/INTERNAL/UNKNOWN); anything else is undetermined.
 visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
 
@@ -202,24 +200,57 @@ case "${visibility}" in
     ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
-    # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. The
-    # scan itself still fails OPEN on a scanner crash and blocks ONLY on a real
-    # finding, so a clean push on a tool-less machine still passes — only an
-    # actual leak is stopped. Warn loudly so the undetermined path shows.
+    # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. A clean
+    # push on a tool-less machine still passes; a leak, or a scan that cannot run,
+    # is stopped. Warn loudly so the undetermined path shows.
     echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
     target="repo '${slug:-<remote>}' (visibility could not be confirmed)"
     confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${entry_slug:-<host>/<owner>/<repo>}\"]'"
     ;;
 esac
 
-scan_cmd=${T3_PRIVACY_SCAN_CMD:-t3 tool privacy-scan}
+scanner="${repo_root}/scripts/privacy_scan.py"
+scan_pythonpath="${repo_root}/src:${repo_root}/vendor/teatree/src"
+# The dedicated "findings present" exit code of scripts/privacy_scan.py. Any other
+# non-zero exit is a scan that could not run, and refuses the push as well.
+findings_code=3
 
-# Dedicated "findings present" exit code from scripts/privacy_scan.py
-# (PRIVACY_FINDINGS_EXIT_CODE). The gate blocks ONLY on this code and fails
-# OPEN on any other non-zero (a scanner crash, a missing script, an argparse
-# usage error). Conflating "findings" with "crash" wedged every push closed
-# whenever the scanner itself failed (#126 gap 3). Overridable for testing.
-findings_code=${T3_PRIVACY_FINDINGS_EXIT_CODE:-3}
+# A Python 3.13+ to run the stdlib-only scanner. Every PATH match of a version-explicit name is
+# tried before the next name, because a bare `python3` on a stock Mac is the Command Line Tools
+# 3.9 stub and a real interpreter may sit behind it. `uv python find` is the last resort for a
+# host whose only 3.13+ is a uv-managed one.
+_find_python() {
+  local name candidate
+  for name in python3.13 python3.14 python3 python; do
+    while IFS= read -r candidate; do
+      if "${candidate}" -S -c 'import sys; sys.exit(sys.version_info < (3, 13))' >/dev/null 2>&1; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    done < <(type -aP "${name}" 2>/dev/null)
+  done
+  command -v uv >/dev/null 2>&1 || return 1
+  candidate=$(uv python find '>=3.13' 2>/dev/null) || return 1
+  [ -n "${candidate}" ] || return 1
+  printf '%s\n' "${candidate}"
+}
+
+# `-S`: no site-packages, no `.pth` file and no `sitecustomize` runs before the scanner does,
+# and PYTHONPATH is this checkout's own source only, so nothing outside the tree can stand in
+# for the gate or end it early. The scanner imports the standard library and `teatree` alone.
+_scan() {
+  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S "${scanner}" "$@"
+}
+
+scan_py=$(_find_python || true)
+if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
+  echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not start (fail closed)."
+  [ -f "${scanner}" ] || echo "  ${scanner} is missing from this checkout."
+  [ -n "${scan_py}" ] || echo "  No Python 3.13+ interpreter was found on PATH (python3.13, python3.14, python3, python, uv)."
+  echo "  Nothing was published. Install Python 3.13+ (or uv) and restore this checkout's scripts/, then push again."
+  [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+  exit 1
+fi
 
 # Ref updates arrive on stdin under git's native pre-push protocol. But when the
 # hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the
@@ -252,17 +283,11 @@ _remote_exclusion() {
 }
 
 # Messages of the commits named by the `git log` args, scanned apart from any patch.
-# A message is published verbatim, never a diff, so the file path selects whole-text mode.
-# Stdin is closed: every caller sits in a `while read` loop the scanner would otherwise drain.
+# A message is published verbatim, never a diff, so it goes to the scanner on stdin in
+# text mode: no file is written, so no temp directory can be missing or unwritable.
+# `git log` gets a closed stdin: every caller sits in a `while read` loop it must not drain.
 _scan_messages_as_text() {
-  local msg rc=0
-  msg=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
-  git log --format='%B' "$@" >"${msg}" 2>/dev/null || true
-  if grep -q '[^[:space:]]' "${msg}"; then
-    ${scan_cmd} "${msg}" </dev/null || rc=$?
-  fi
-  rm -f "${msg}"
-  return "${rc}"
+  git log --format='%B' "$@" 2>/dev/null </dev/null | _scan --text -
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
@@ -272,7 +297,7 @@ _scan_messages_as_text() {
 # cannot find the reported finding learns to distrust (and bypass) the gate. Only
 # the RARE blocked path pays this per-commit cost: a clean push is decided by the
 # whole-range message and patch scans and never enters here. Args are the pushed tip commit, then
-# the `<sha> --not <public-tips>` range; uses the globals ${scan_cmd}/${findings_code}.
+# the `<sha> --not <public-tips>` range; uses the global ${findings_code}.
 # Returns 0 if it attributed at least one finding, 1 if none (caller then prints the raw report).
 _attribute_findings() {
   local tip="$1"
@@ -288,27 +313,23 @@ _attribute_findings() {
     fi
     # A finding that lives only in the commit MESSAGE (a Co-authored-by line, a
     # banned term in the subject) has no file, so scan the message on its own.
-    sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
     sub_rc=0
-    _scan_messages_as_text -1 "${sha}" >"${sub}" 2>&1 || sub_rc=$?
+    sub=$(_scan_messages_as_text -1 "${sha}" 2>&1) || sub_rc=$?
     if [ "${sub_rc}" -eq "${findings_code}" ]; then
       echo "  ${where} (commit message):"
-      sed 's/^/    /' "${sub}"
+      printf '%s\n' "${sub}" | sed 's/^/    /'
       printed=0
     fi
-    rm -f "${sub}"
     # Then each changed file's patch in this commit, named individually.
     while read -r f; do
       [ -n "${f}" ] || continue
-      sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-file.XXXXXX")
       sub_rc=0
-      git show --format= --patch --cc "${sha}" -- "${f}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
+      sub=$(git show --format= --patch --cc "${sha}" -- "${f}" 2>/dev/null </dev/null | _scan - 2>&1) || sub_rc=$?
       if [ "${sub_rc}" -eq "${findings_code}" ]; then
         echo "  ${where} file ${f}:"
-        sed 's/^/    /' "${sub}"
+        printf '%s\n' "${sub}" | sed 's/^/    /'
         printed=0
       fi
-      rm -f "${sub}"
     done < <(git show --no-commit-id --name-only --format= "${sha}" 2>/dev/null)
   done < <(git rev-list --reverse "$@" 2>/dev/null)
   return "${printed}"
@@ -321,21 +342,38 @@ _scan_ref_name() {
   local published="$1" name_report name_rc=0
   published="${published#refs/*/}"
   [ -n "${published}" ] || return 0
-  name_report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-ref.XXXXXX")
-  printf '%s\n' "${published}" | ${scan_cmd} - >"${name_report}" 2>&1 || name_rc=$?
+  name_report=$(printf '%s\n' "${published}" | _scan --text - 2>&1) || name_rc=$?
   if [ "${name_rc}" -eq "${findings_code}" ]; then
-    echo "✗ refuse: push to ${target} publishes the ref name '${published}', which carries privacy findings."
-    sed 's/^/    /' "${name_report}" 2>/dev/null || true
+    echo "✗ refuse: push to ${target} publishes a ref name that carries privacy findings."
+    printf '%s\n' "${name_report}" | sed 's/^/    /'
     echo "  A pushed ref name is permanent: the forge keeps it under refs/pull/* even after the branch is deleted."
     echo "  Push under a clean remote name instead: git push <remote> HEAD:refs/heads/<clean-name>"
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
-    rm -f "${name_report}"
     return 1
   elif [ "${name_rc}" -ne 0 ]; then
-    echo "⚠ ref-name privacy scan could not run (exit ${name_rc}) on '${published}' — failing OPEN (push allowed)." >&2
+    echo "✗ refuse: the ref-name privacy scan could not run (exit ${name_rc}) — refusing (fail closed)."
+    printf '%s\n' "${name_report}" | sed 's/^/    /'
+    return 1
   fi
-  rm -f "${name_report}"
   return 0
+}
+
+# An annotated tag is published with its own message and tagger line, which no commit range
+# contains, so the tag object is read for registry terms and opaque ids as well. A ref that
+# does not point at a tag object has nothing more to read.
+_scan_tag_object() {
+  local sha="$1" tag_report tag_rc=0
+  [ "$(git cat-file -t "${sha}" 2>/dev/null || true)" = "tag" ] || return 0
+  tag_report=$(git cat-file -p "${sha}" 2>/dev/null </dev/null | _scan --text --terms-only - 2>&1) || tag_rc=$?
+  [ "${tag_rc}" -ne 0 ] || return 0
+  if [ "${tag_rc}" -eq "${findings_code}" ]; then
+    echo "✗ refuse: push to ${target} publishes an annotated tag whose message or tagger line carries privacy findings."
+  else
+    echo "✗ refuse: the annotated-tag privacy scan could not run (exit ${tag_rc}) — refusing (fail closed)."
+  fi
+  printf '%s\n' "${tag_report}" | sed 's/^/    /'
+  [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+  return 1
 }
 
 blocked=0
@@ -344,6 +382,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
 
   _scan_ref_name "${remote_ref:-${local_ref}}" || blocked=1
+  _scan_tag_object "${local_sha}" || blocked=1
 
   # The push newly exposes the commits reachable from the pushed sha but from
   # NO ref the remote already has — i.e. `--not --remotes=<remote>`, EVERY
@@ -392,14 +431,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     new_commits+=("--not" "${public_tips[@]}")
   fi
 
-  # The patches alone, with no commit header, so the author/committer emails
-  # below are judged only by the noreply guard and never by the scanner's
-  # generic email matcher. Messages are scanned apart: git puts no separator
-  # between one commit's last hunk and the next commit's subject. `--cc` keeps a
-  # merge's conflict resolutions — content in neither parent — in scope while
-  # leaving the already-public content the merge carried over out of it.
-  patches=$(git log --format= --patch --cc "${new_commits[@]}" 2>/dev/null || true)
-
   # Author / committer email is metadata `git diff` and `%B` never show,
   # yet it lands in public history forever. On a PUBLIC remote every
   # commit's author AND committer email must be a GitHub noreply address
@@ -433,13 +464,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # content does (a `Co-authored-by:` line carrying an internal/customer
   # address is the canonical case), so they are scanned as well as the
   # patches rather than excluded the way `git diff` excludes them (#703).
-  report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
+  # The patches alone carry no commit header, so the author/committer emails
+  # above are judged only by the noreply guard and never by the scanner's
+  # generic email matcher; `--cc` keeps a merge's conflict resolutions — content
+  # in neither parent — in scope while leaving the already-public content the merge
+  # carried over out of it. A `git log` that fails is a scan that did not happen.
   message_rc=0
-  _scan_messages_as_text "${new_commits[@]}" >>"${report}" 2>&1 || message_rc=$?
+  report=$(_scan_messages_as_text "${new_commits[@]}" 2>&1) || message_rc=$?
   patch_rc=0
-  if [ -n "${patches}" ]; then
-    printf '%s\n' "${patches}" | ${scan_cmd} - >>"${report}" 2>&1 || patch_rc=$?
-  fi
+  patch_report=$(git log --format= --patch --cc "${new_commits[@]}" 2>/dev/null </dev/null | _scan - 2>&1) || patch_rc=$?
+  report="${report}${patch_report:+$'\n'}${patch_report}"
   scan_rc=$((message_rc != 0 ? message_rc : patch_rc))
   if [ "${message_rc}" -eq "${findings_code}" ] || [ "${patch_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to ${target} carries privacy findings on '${local_ref}'."
@@ -451,29 +485,29 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # never hidden behind an empty locatable list.
     pushed_tip=$(git rev-parse --verify --quiet "${local_sha}^{commit}" 2>/dev/null || true)
     if ! _attribute_findings "${pushed_tip}" "${new_commits[@]}"; then
-      sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+      printf '%s\n' "${report}" | sed 's/^/  /'
     fi
     echo "  Every commit this push publishes is scanned on its own — patch and message — never just the tip"
     echo "  or the net diff, so a later commit that deletes or annotates a flagged line does not clear it."
     echo "  Nothing was published. Cut a new branch from the remote's tip, re-create the unpushed commits on it"
     echo "  with generic placeholders so the flagged value is in none of them, and push that branch."
-    echo "  A deliberate fake value (a test-fixture email) instead carries an inline 'privacy-scan:allow <reason>'"
-    echo "  marker on that same line, in the commit that introduces it."
+    echo "  A deliberate fake value (a test-fixture email, path, address or key) instead carries an inline"
+    echo "  'privacy-scan:allow <reason>' marker on that same line, in the commit that introduces it. The marker"
+    echo "  never silences a registry term or an opaque id."
     echo "  Never rewrite a branch that already backs an open merge request: it moves every commit"
     echo "  the reviewers' comments are anchored to, and the whole review has to start again."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1
   elif [ "${scan_rc}" -ne 0 ]; then
-    # Any other non-zero is a scanner failure (crash, missing script,
-    # argparse error), NOT a finding. Fail OPEN — the gate is a safety net
-    # layered on top of the retro/contribute privacy scan, and blocking
-    # every push because the scanner itself broke is the over-deny lockout
-    # this gate must not be (#126 gap 3). Warn so the failure is visible.
-    echo "⚠ privacy scan could not run (exit ${scan_rc}) on '${local_ref}' — failing OPEN (push allowed)." >&2
-    sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+    # Any other non-zero is a scan that could not run (crash, unset registry, usage error,
+    # a `git log` that failed). Nothing was shown to be clean, so the push is refused.
+    echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not run (exit ${scan_rc}) on '${local_ref}' (fail closed)."
+    printf '%s\n' "${report}" | sed 's/^/  /'
+    echo "  Nothing was published. Fix the scanner or its registry, then push again."
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+    blocked=1
   fi
-  rm -f "${report}"
 done <<< "${refs_input}"
 
 exit "${blocked}"

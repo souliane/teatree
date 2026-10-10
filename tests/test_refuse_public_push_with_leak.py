@@ -16,6 +16,8 @@ fixed visibility. Nothing about git or the filesystem is mocked.
 import json
 import os
 import re
+import secrets
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -24,8 +26,11 @@ from pathlib import Path
 
 import pytest
 
-HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
-SCAN = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HOOK = REPO_ROOT / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
+SCAN = REPO_ROOT / "scripts" / "privacy_scan.py"
+#: The scanner refuses to run without a registry, so every hook run is given a placeholder one.
+_DEFAULT_REGISTRY = json.dumps({"leak": ["demo-leak-term"], "prose_collider": []})
 ZERO_SHA = "0" * 40
 # Planted fixture values the gate-under-test must flag; annotated so this
 # repo's own pre-push gate does not flag the test source itself.
@@ -36,8 +41,10 @@ _REAL_EMAIL = "real.dev@internal.example"  # privacy-scan:allow fixture
 
 
 def _hermetic_env() -> dict[str, str]:
-    """Env with all GIT_* vars stripped so tmp-repo git calls are hermetic."""
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    """Env with all GIT_* vars stripped so tmp-repo git calls are hermetic, and a placeholder registry set."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["TEATREE_TERM_REGISTRY"] = _DEFAULT_REGISTRY
+    return env
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -56,6 +63,9 @@ def _git(cwd: Path, *args: str) -> None:
 # commits passing the noreply pattern just like a real loop commit.
 _NOREPLY_EMAIL = "21343492+souliane@users.noreply.github.com"
 _NOREPLY_NAME = "souliane"
+
+
+_PATH_WITHOUT_GH = f"{Path(sys.executable).parent}{os.pathsep}/usr/bin:/bin"
 
 
 def _make_repo(path: Path, branch: str = "main") -> None:
@@ -108,9 +118,6 @@ def _clone_with_remote(tmp_path: Path, gh_visibility: str) -> tuple[Path, dict[s
     _make_gh_shim(bin_dir, gh_visibility)
     env = _hermetic_env()
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    # Point the hook at the real privacy_scan script via a known env knob
-    # so it does not depend on a globally-installed `t3`.
-    env["T3_PRIVACY_SCAN_CMD"] = f"python3 {SCAN}"
     env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
     return work, env
 
@@ -134,10 +141,11 @@ def _run_hook(
     env: dict[str, str],
     stdin: str,
     remote_url: str = "https://github.com/acme/widget.git",
+    hook: Path = HOOK,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         # `bash <hook>` on PATH is git's real pre-push invocation shape; test-only driver.
-        ["bash", str(HOOK), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
+        ["bash", str(hook), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
         cwd=cwd,
         input=stdin,
         capture_output=True,
@@ -242,13 +250,9 @@ class TestRefusePublicPushWithLeak:
         gh-less machine (privacy-gate fail-closed hardening, §3f #14).
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        # Keep system bins (bash/git) but drop the gh shim dir so `gh`
-        # is genuinely unavailable. Pin the scan command to this venv's
-        # interpreter by absolute path so the scanner still runs (a bare
-        # `python3` on the stripped PATH would miss the test deps and
-        # crash the scanner, masking the leak behind its fail-open path).
-        env["PATH"] = "/usr/bin:/bin"
-        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        # Keep system bins (bash/git) and the interpreter the hook runs the scanner with,
+        # but drop the gh shim dir so `gh` is genuinely unavailable.
+        env["PATH"] = _PATH_WITHOUT_GH
         (work / "leak.txt").write_text(
             "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
@@ -270,8 +274,7 @@ class TestRefusePublicPushWithLeak:
         machine is unaffected (§3f #14).
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["PATH"] = "/usr/bin:/bin"
-        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
+        env["PATH"] = _PATH_WITHOUT_GH
         (work / "feature.txt").write_text("a clean new feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "add feature")
@@ -444,63 +447,91 @@ class TestRefusePublicPushWithLeak:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
 
-def _crashing_scan_shim(bin_dir: Path, exit_code: int) -> str:
-    """A fake scan command that always exits ``exit_code`` (never the findings code)."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "fake-scan"
-    shim.write_text(
-        f'#!/usr/bin/env bash\necho "scanner blew up" >&2\nexit {exit_code}\n',
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return str(shim)
+def _relocated_checkout(tmp_path: Path, *, scanner: str | None) -> Path:
+    """A scratch checkout holding the real hook, the real ``src`` and a scanner this test authors.
+
+    The hook runs the scanner from the tree it lives in, so replacing
+    ``scripts/privacy_scan.py`` here is the only way to give it another scanner.
+    """
+    root = tmp_path / "scratch-checkout"
+    hook = _relocate_hook(root)
+    (root / "src").symlink_to(REPO_ROOT / "src")
+    if scanner is not None:
+        (root / "scripts" / "privacy_scan.py").write_text(scanner, encoding="utf-8")
+    return hook
 
 
-class TestLeakGateFailsOpenOnScannerCrash:
-    """The gate blocks on a genuine FINDING, never on a scanner CRASH (#126 gap 3).
+def _crashing_scanner(exit_code: int) -> str:
+    """A scanner that always exits ``exit_code`` (never the findings code)."""
+    return f"import sys\nsys.stderr.write('scanner blew up\\n')\nsys.exit({exit_code})\n"
 
-    The pre-push gate previously treated ANY non-zero scan exit as a finding
-    and BLOCKED. So a scanner crash (missing script, import error, argparse
-    usage error) wedged every push closed with no recourse — an over-deny
-    lockout. The fix reserves a dedicated findings exit code and makes the
-    gate block ONLY on that code, failing OPEN (allow) on any other non-zero.
+
+_FINDING_SCANNER = "import sys\nsys.stdin.read()\nprint('line 1: banned_term: leak#0')\nsys.exit(3)\n"
+_CLEAN_SCANNER = "import sys\nsys.stdin.read()\nprint('Privacy scan: clean (0 findings)')\n"
+
+
+class TestLeakGateFailsClosedOnScannerCrash:
+    """A scan that could not run is not a clean scan: the push is refused (hooks/CLAUDE.md: leak gates fail closed).
+
+    The dedicated findings exit code still marks a genuine finding and names the commit and
+    file; every other non-zero exit (a crash, a usage error, an unset registry) refuses with
+    its own wording, so nobody mistakes an outage for a leak.
     """
 
-    def test_scanner_crash_fails_open(self, tmp_path: Path) -> None:
-        """A non-findings, non-zero scan exit (crash) must ALLOW the push."""
+    def _clean_feature_commit(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        # Point the gate at a scan command that crashes with code 1 (generic
-        # exception) — distinct from the dedicated findings code.
-        shim = _crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
-        env["T3_PRIVACY_SCAN_CMD"] = shim
         (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "add feature")
+        return work, env
+
+    @pytest.mark.parametrize("exit_code", [1, 2, 4])
+    def test_scanner_crash_fails_closed(self, tmp_path: Path, exit_code: int) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(exit_code))
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "a scanner crash must refuse the push: " + result.stdout + result.stderr
+        assert "fail closed" in result.stdout.lower(), result.stdout
+        assert f"exit {exit_code}" in result.stdout, result.stdout
+
+    def test_scanner_usage_error_fails_closed(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        hook = _relocated_checkout(tmp_path, scanner="import sys\nsys.exit(2)\n")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "could not run" in result.stdout, result.stdout
+
+    def test_unresolvable_scanner_refuses(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        hook = _relocated_checkout(tmp_path, scanner=None)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "privacy_scan.py is missing" in result.stdout, result.stdout
+
+    def test_a_host_without_python_3_13_refuses_and_names_the_remedy(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        bin_dir = tmp_path / "old-python-bin"
+        _make_unusable_bare_pythons(bin_dir)
+        for tool in ("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"):
+            found = shutil.which(tool, path=env["PATH"])
+            assert found is not None
+            (bin_dir / tool).symlink_to(found)
+        env["PATH"] = str(bin_dir)
 
         result = _run_hook(work, env, _push_stdin(work))
 
-        assert result.returncode == 0, "scanner crash must fail OPEN: " + result.stdout + result.stderr
-
-    def test_scanner_usage_error_fails_open(self, tmp_path: Path) -> None:
-        """An argparse/usage-error exit (2) is also a crash, not a finding → ALLOW."""
-        work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        shim = _crashing_scan_shim(tmp_path / "scanbin", exit_code=2)
-        env["T3_PRIVACY_SCAN_CMD"] = shim
-        (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
-        _git(work, "add", "feature.txt")
-        _git(work, "commit", "-m", "add feature")
-
-        result = _run_hook(work, env, _push_stdin(work))
-
-        assert result.returncode == 0, "scanner usage error must fail OPEN: " + result.stdout + result.stderr
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "No Python 3.13+ interpreter" in result.stdout, result.stdout
 
     def test_genuine_finding_still_blocks(self, tmp_path: Path) -> None:
-        """The real scanner reports a finding on the dedicated code → still BLOCK.
-
-        Uses the real privacy_scan.py (not a shim) so the dedicated findings
-        exit code path is exercised end-to-end — the gate must block on it.
-        """
-        work, env = _clone_with_remote(tmp_path, "PUBLIC")  # env already points at real privacy_scan.py
+        """The real scanner reports a finding on the dedicated code, and the gate blocks on it."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
         (work / "leak.txt").write_text(
             "token = glpat-XXXXXXXXXXXXXXXX\n",
             encoding="utf-8",
@@ -511,6 +542,39 @@ class TestLeakGateFailsOpenOnScannerCrash:
         result = _run_hook(work, env, _push_stdin(work))
 
         assert result.returncode == 1, "genuine finding must still block: " + result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout, result.stdout
+
+    def test_an_unset_registry_refuses_instead_of_leaving_the_term_check_inert(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        env.pop("TEATREE_TERM_REGISTRY")
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "banned_term_registry" in result.stdout, result.stdout
+
+    def test_the_scanner_runs_from_the_checkout_tree(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+        bin_dir = tmp_path / "fake-installed-bin"
+        bin_dir.mkdir()
+        called = bin_dir / "t3-was-called"
+        (bin_dir / "t3").write_text(f"#!/bin/sh\ntouch {called}\nexit 0\n", encoding="utf-8")
+        (bin_dir / "t3").chmod(0o755)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+        flagged = _run_hook(work, env, _push_stdin(work), hook=_relocated_checkout(tmp_path, scanner=_FINDING_SCANNER))
+
+        assert flagged.returncode == 1, "an installed t3 that always passes must change nothing: " + flagged.stdout
+        assert "carries privacy findings" in flagged.stdout, flagged.stdout
+        assert not called.exists(), "the hook called an installed t3 instead of the checkout's scanner"
+
+    def test_a_clean_scanner_in_the_checkout_lets_the_same_push_through(self, tmp_path: Path) -> None:
+        work, env = self._clean_feature_commit(tmp_path)
+
+        passed = _run_hook(work, env, _push_stdin(work), hook=_relocated_checkout(tmp_path, scanner=_CLEAN_SCANNER))
+
+        assert passed.returncode == 0, passed.stdout + passed.stderr
 
 
 class TestRefusePublicPushWithNonNoreplyAuthor:
@@ -675,7 +739,6 @@ def _public_work_clone(tmp_path: Path, origin: Path) -> tuple[Path, dict[str, st
     _make_gh_shim(bin_dir, "PUBLIC")
     env = _hermetic_env()
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
     env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
     return work, env
 
@@ -1052,7 +1115,6 @@ class TestProbeErrorVisibilityFailsClosed:
         _make_erroring_gh_shim(bin_dir)
         env = _hermetic_env()
         env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
-        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
         # privacy-scan:allow fixture -- a planted FAKE secret the gate-under-test must
         # scan; annotated so this repo's own pre-push gate does not flag the diff line.
@@ -1113,7 +1175,6 @@ class TestLeakGateResolvesVisibilityOnTheRemotesOwnForge:
         _make_glab_shim(bin_dir, visibility)
         env = _hermetic_env()
         env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-        env["T3_PRIVACY_SCAN_CMD"] = f"{sys.executable} {SCAN}"
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
         (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
         _git(work, "add", "leak.txt")
@@ -1186,22 +1247,15 @@ def _make_failing_uv_shim(bin_dir: Path) -> None:
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _make_always_finding_scanner(bin_dir: Path) -> Path:
-    """A scanner that reports a finding on ANY input.
+def _plant_always_finding_scanner(root: Path) -> None:
+    """Give a relocated checkout a scanner that reports a finding on ANY input.
 
     These tests are about which VISIBILITY the gate resolves, not about what the
     scanner detects. An always-finding stub makes the two outcomes unambiguous:
     exit 0 can only mean the scan was SKIPPED on a resolved private verdict, and
     a refusal can only mean the undetermined path ran the scan.
     """
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    stub = bin_dir / "privacy-scan-stub"
-    stub.write_text(
-        "#!/usr/bin/env bash\ncat >/dev/null\necho '1: secret / redacted-match'\nexit 3\n",
-        encoding="utf-8",
-    )
-    stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return stub
+    (root / "scripts" / "privacy_scan.py").write_text(_FINDING_SCANNER, encoding="utf-8")
 
 
 class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
@@ -1230,6 +1284,7 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         root = tmp_path / "checkout"
         root.mkdir()
         hook = _relocate_hook(root)
+        _plant_always_finding_scanner(root)
         _fake_core_package(root / core_src, verdict=verdict, fail_marker=fail_marker)
 
         origin = tmp_path / "origin"
@@ -1243,8 +1298,7 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         bin_dir = tmp_path / "bin"
         _make_failing_uv_shim(bin_dir)
         env = _hermetic_env()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-        env["T3_PRIVACY_SCAN_CMD"] = str(_make_always_finding_scanner(bin_dir))
+        env["PATH"] = f"{bin_dir}{os.pathsep}{_PATH_WITHOUT_GH}"
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
 
         (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
@@ -1333,14 +1387,14 @@ class TestResolverRunsInACheckoutWhoseEnvLacksCore:
         root = tmp_path / "checkout"
         root.mkdir()
         hook = _relocate_hook(root)
+        _plant_always_finding_scanner(root)
         _fake_core_package(root / core_src, verdict="PRIVATE")
         work, _env = _clone_with_remote(tmp_path, "PUBLIC")
         bin_dir = tmp_path / "bin"
         (_make_envless_uv_shim if uv == "envless" else _make_failing_uv_shim)(bin_dir)
         _make_unusable_bare_pythons(bin_dir)
         env = _hermetic_env()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-        env["T3_PRIVACY_SCAN_CMD"] = str(_make_always_finding_scanner(tmp_path / "scanbin"))
+        env["PATH"] = f"{bin_dir}{os.pathsep}{_PATH_WITHOUT_GH}"
         env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
         _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
         return subprocess.run(
@@ -1369,15 +1423,6 @@ class TestResolverRunsInACheckoutWhoseEnvLacksCore:
         assert "config_setting set private_repos" not in result.stdout, result.stdout
 
 
-def _make_visibility_shim(bin_dir: Path, verdict: str) -> Path:
-    """A ``T3_REPO_VISIBILITY_CMD`` stand-in that pins the gate's visibility verdict."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / f"visibility-{verdict.lower()}"
-    shim.write_text(f"#!/usr/bin/env bash\necho {verdict}\n", encoding="utf-8")
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return shim
-
-
 def _commit_as(work: Path, name: str, email: str, filename: str, body: str) -> None:
     (work / filename).write_text(body, encoding="utf-8")
     _git(work, "add", filename)
@@ -1400,7 +1445,9 @@ class TestUnconfirmedVisibilityKeepsTheIdentityGuard:
 
     def _unconfirmed(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["T3_REPO_VISIBILITY_CMD"] = str(_make_visibility_shim(tmp_path / "visbin", "UNKNOWN"))
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
         return work, env
 
     def test_unconfirmed_visibility_refuses_an_internal_commit_identity(self, tmp_path: Path) -> None:
@@ -1758,9 +1805,9 @@ class TestRefusePublicPushWithLeakingRefName:
         result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/democorp-onboarding"))
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "feat/democorp-onboarding" in result.stdout, result.stdout
+        assert "democorp" not in result.stdout, result.stdout
         combined = (result.stdout + result.stderr).lower()
-        assert "banned_term" in combined, result.stdout
+        assert "banned_term: prose_collider#0" in combined, result.stdout
         assert "refs/pull/*" in result.stdout, result.stdout
 
     def test_blocks_public_push_when_a_tag_name_carries_a_banned_term(self, tmp_path: Path) -> None:
@@ -1771,7 +1818,8 @@ class TestRefusePublicPushWithLeakingRefName:
         result = _run_hook(work, env, _push_stdin(work, "refs/tags/v1.0-democorp"))
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "v1.0-democorp" in result.stdout, result.stdout
+        assert "democorp" not in result.stdout, result.stdout
+        assert "banned_term: prose_collider#0" in result.stdout, result.stdout
 
     def test_blocks_public_push_when_a_hierarchical_tag_name_carries_the_term(self, tmp_path: Path) -> None:
         """Every component of a ref name is published, not only the last one."""
@@ -1781,7 +1829,8 @@ class TestRefusePublicPushWithLeakingRefName:
         result = _run_hook(work, env, _push_stdin(work, "refs/tags/democorp/v1.0"))
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "democorp/v1.0" in result.stdout, result.stdout
+        assert "democorp" not in result.stdout, result.stdout
+        assert "banned_term: prose_collider#0" in result.stdout, result.stdout
 
     def test_allows_a_clean_hierarchical_tag_name(self, tmp_path: Path) -> None:
         work, env = self._public_clone_with_banned_term(tmp_path)
@@ -1815,7 +1864,8 @@ class TestRefusePublicPushWithLeakingRefName:
         )
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "feat/democorp-onboarding" in result.stdout
+        assert "democorp" not in result.stdout
+        assert "banned_term: prose_collider#0" in result.stdout
 
     def test_allows_a_leaking_local_name_pushed_under_a_clean_remote_name(self, tmp_path: Path) -> None:
         work, env = self._public_clone_with_banned_term(tmp_path)
@@ -1833,16 +1883,16 @@ class TestRefusePublicPushWithLeakingRefName:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_scanner_crash_on_the_ref_name_fails_open(self, tmp_path: Path) -> None:
-        """A crashing scanner is cannot-evaluate, never the over-deny lockout (#126 gap 3)."""
+    def test_scanner_crash_on_the_ref_name_fails_closed(self, tmp_path: Path) -> None:
+        """A ref-name scan that cannot run refuses the push: the name is published for good."""
         work, env = self._public_clone_with_banned_term(tmp_path)
-        env["T3_PRIVACY_SCAN_CMD"] = _crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
-        _git(work, "checkout", "-b", "feat/democorp-onboarding")
+        _git(work, "checkout", "-b", "feat/clean-name")
+        hook = _relocated_checkout(tmp_path, scanner=_crashing_scanner(1))
 
-        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/democorp-onboarding"))
+        result = _run_hook(work, env, _push_stdin(work, "refs/heads/feat/clean-name"), hook=hook)
 
-        assert result.returncode == 0, "ref-name scanner crash must fail OPEN: " + result.stdout + result.stderr
-        assert "ref-name privacy scan could not run" in result.stderr, result.stderr
+        assert result.returncode == 1, "ref-name scanner crash must fail CLOSED: " + result.stdout + result.stderr
+        assert "ref-name privacy scan could not run" in result.stdout, result.stdout
 
 
 def _commit_verbatim(repo: Path, filename: str, content: str, message: str) -> str:
@@ -1850,18 +1900,6 @@ def _commit_verbatim(repo: Path, filename: str, content: str, message: str) -> s
     _git(repo, "add", filename)
     _git(repo, "commit", "--cleanup=verbatim", "-m", message)
     return _rev(repo, "HEAD")
-
-
-def _stdin_draining_scanner(bin_dir: Path) -> str:
-    """The real scanner behind a wrapper that drains its stdin whenever it is handed a file path."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "draining-scan"
-    shim.write_text(
-        f'#!/usr/bin/env bash\nif [ "${{1:-}}" != "-" ]; then cat >/dev/null; fi\nexec {sys.executable} {SCAN} "$@"\n',
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return str(shim)
 
 
 _QUOTED_HUNK_MESSAGE = f"docs: quote the config diff\n\n@@ -1 +1 @@\n-{_PLANTED_SECRET}+token = <placeholder>\n"
@@ -1917,7 +1955,6 @@ class TestCommitMessagesAreScannedAsText:
 
     def test_a_message_scan_never_consumes_the_remaining_ref_updates(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["T3_PRIVACY_SCAN_CMD"] = _stdin_draining_scanner(tmp_path / "scanbin")
         clean = _commit_file(work, "a.txt", "a clean line\n", "add a")
         _git(work, "checkout", "-b", "feature", "origin/main")
         leak = _commit_verbatim(work, "notes.txt", "a clean note\n", _QUOTED_HUNK_MESSAGE)
@@ -1946,6 +1983,127 @@ class TestHostQualifiedPrivateDeclarationNeverSkipsPublicPush:
         assert result.returncode == 1, result.stdout + result.stderr
         assert _REAL_EMAIL in result.stdout
         assert "visibility could not be confirmed" in result.stdout
+
+
+class TestTheHookReadsNoEnvironmentOverride:
+    """Nothing in the environment redirects the scanner, the visibility verdict or the findings code.
+
+    Each variable below once swapped a stage of the gate for a command of the caller's
+    choosing, which made it a way for an agent to get a push past the gate.
+    """
+
+    _SEAMS = ("T3_REPO_VISIBILITY_CMD", "T3_PRIVACY_SCAN_CMD", "T3_PRIVACY_FINDINGS_EXIT_CODE")
+
+    def test_hook_has_no_env_seams(self, tmp_path: Path) -> None:
+        text = HOOK.read_text(encoding="utf-8")
+        assert [name for name in self._SEAMS if name in text] == []
+
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        always_clean = tmp_path / "always-clean"
+        always_clean.write_text("#!/bin/sh\ncat >/dev/null\nexit 0\n", encoding="utf-8")
+        always_private = tmp_path / "always-private"
+        always_private.write_text("#!/bin/sh\necho PRIVATE\n", encoding="utf-8")
+        for script in (always_clean, always_private):
+            script.chmod(0o755)
+        env.update(
+            T3_PRIVACY_SCAN_CMD=str(always_clean),
+            T3_REPO_VISIBILITY_CMD=str(always_private),
+            T3_PRIVACY_FINDINGS_EXIT_CODE="99",
+        )
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, "an env override must change nothing: " + result.stdout + result.stderr
+        assert "carries privacy findings" in result.stdout, result.stdout
+
+
+class TestCommitMessagesRideTheScannersStdin:
+    """A message is handed to the scanner on stdin: no file is written, so no TMPDIR can be missing or unwritable."""
+
+    def test_messages_scanned_from_stdin_not_tmpdir(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+        tip = _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n\n" + _PLANTED_SECRET)
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert f"commit {tip} (commit message):" in result.stdout, result.stdout
+
+    def test_a_clean_message_passes_with_the_same_unusable_tmpdir(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+        _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestRootForcedAndTagRangesAreCheckedForRegistryTerms:
+    """The ranges where "what is new" is least clear still get the registry-term pass.
+
+    A term is generated per test, so the registry holds nothing but a placeholder.
+    """
+
+    @staticmethod
+    def _public_clone(tmp_path: Path) -> tuple[Path, dict[str, str], str]:
+        term = "zq" + secrets.token_hex(4)
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = json.dumps({"leak": [term]})
+        return work, env, term
+
+    @staticmethod
+    def _assert_refused_without_the_value(result: subprocess.CompletedProcess[str], term: str) -> None:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert term not in result.stdout + result.stderr, "the refusal printed the registry term"
+        assert "banned_term: leak#0" in result.stdout, result.stdout
+
+    def test_a_new_root_range_is_scanned_for_the_term(self, tmp_path: Path) -> None:
+        work, env, term = self._public_clone(tmp_path)
+        _git(work, "update-ref", "-d", "refs/remotes/origin/main")
+        _commit_file(work, "notes.txt", f"the {term} sits in a note\n", "add notes")
+
+        self._assert_refused_without_the_value(_run_hook(work, env, _push_stdin(work)), term)
+
+    def test_a_forced_range_is_scanned_for_the_term(self, tmp_path: Path) -> None:
+        work, env, term = self._public_clone(tmp_path)
+        _git(work, "checkout", "-b", "replaced")
+        replaced_remote_tip = _commit_file(work, "old.txt", "the history this push replaces\n", "old tip")
+        _git(work, "checkout", "main")
+        _commit_file(work, "notes.txt", f"the {term} sits in a note\n", "add notes")
+        stdin = f"refs/heads/main {_rev(work, 'HEAD')} refs/heads/main {replaced_remote_tip}\n"
+
+        self._assert_refused_without_the_value(_run_hook(work, env, stdin), term)
+
+    def test_a_forced_range_against_a_remote_tip_the_clone_has_never_seen_is_scanned(self, tmp_path: Path) -> None:
+        work, env, term = self._public_clone(tmp_path)
+        _commit_file(work, "notes.txt", f"the {term} sits in a note\n", "add notes")
+        stdin = f"refs/heads/main {_rev(work, 'HEAD')} refs/heads/main {'ab' * 20}\n"
+
+        self._assert_refused_without_the_value(_run_hook(work, env, stdin), term)
+
+    def test_an_annotated_tag_message_is_scanned_even_when_its_range_is_empty(self, tmp_path: Path) -> None:
+        work, env, term = self._public_clone(tmp_path)
+        _git(work, "tag", "-a", "v2", "-m", f"release notes mention {term}", "HEAD")
+        stdin = f"refs/tags/v2 {_rev(work, 'refs/tags/v2')} refs/tags/v2 {ZERO_SHA}\n"
+
+        result = _run_hook(work, env, stdin)
+
+        self._assert_refused_without_the_value(result, term)
+        assert "annotated tag" in result.stdout, result.stdout
+
+    def test_a_clean_annotated_tag_passes(self, tmp_path: Path) -> None:
+        work, env, _term = self._public_clone(tmp_path)
+        _git(work, "tag", "-a", "v2", "-m", "release notes", "HEAD")
+        stdin = f"refs/tags/v2 {_rev(work, 'refs/tags/v2')} refs/tags/v2 {ZERO_SHA}\n"
+
+        result = _run_hook(work, env, stdin)
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 if __name__ == "__main__":
