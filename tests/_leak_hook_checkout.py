@@ -60,8 +60,8 @@ class CommittedFingerprint:
     """What the scratch checkout commits: *registry*'s digests (the hook's own registry when ``None``), in *state*.
 
     ``committed``: the file is at HEAD and clean. ``missing``: HEAD has no such file. ``untracked``: the file is
-    on disk and was never committed. ``edited``: HEAD holds the committed digests and the disk holds the hook's
-    registry's. ``garbled``: the committed file is not JSON.
+    on disk, matches the hook's registry, and was never committed. ``edited``: HEAD holds the committed digests
+    and the disk holds the hook's registry's. ``garbled``: the committed file is not JSON.
     """
 
     state: str = "committed"
@@ -116,7 +116,7 @@ def place_hook(
         target.write_text("{not json\n", encoding="utf-8")
     _commit_everything(root)
     if fingerprint.state == "untracked":
-        target.write_text(committed_text, encoding="utf-8")
+        target.write_text(fingerprint_text(registry), encoding="utf-8")
     if fingerprint.state == "edited":
         target.write_text(fingerprint_text(registry), encoding="utf-8")
     return placed
