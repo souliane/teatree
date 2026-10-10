@@ -28,6 +28,7 @@ never skips: a bypassed hook chain leaves no second net to fail open into.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,7 @@ class PushRange:
     diff_text: str
     commit_messages: str
     commit_objects: str
+    commit_objects_blanked: str
     identities: tuple[str, ...]
 
     @classmethod
@@ -66,6 +68,7 @@ class PushRange:
             diff_text=diff.rstrip("\n"),
             commit_messages=_with_stored(messages, [_decoded(obj.partition(b"\n\n")[2]) for obj in objects]),
             commit_objects="\n".join(_decoded(obj) for obj in objects),
+            commit_objects_blanked="\n".join(_with_blank_identities(_decoded(obj)) for obj in objects),
             identities=tuple(line for line in identities.splitlines() if line),
         )
 
@@ -105,6 +108,18 @@ def _decoded(raw: bytes) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return raw.decode("latin-1")
+
+
+_IDENTITY_ADDRESS = re.compile(r"^(author|committer|tagger) (.*)<[^>]*>", re.MULTILINE)
+
+
+def _with_blank_identities(commit_object: str) -> str:
+    """*commit_object* with only the ``<...>`` of its identity header lines blanked (noreply by rule, no email finding).
+
+    The headers end at the first blank line; a message line that starts like one is left as it is.
+    """
+    headers, separator, message = commit_object.partition("\n\n")
+    return _IDENTITY_ADDRESS.sub(r"\1 \2<>", headers) + separator + message
 
 
 def _with_stored(decoded: str, stored: list[str]) -> str:

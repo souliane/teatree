@@ -2194,6 +2194,23 @@ _HEADER_PLANTS = {
 }
 
 
+#: A secret and a home path in a header, built from the marked fixtures above so this file never holds the bare value.
+_FIXTURE_TOKEN = _PLANTED_SECRET.split("= ", 1)[1].strip()
+_FIXTURE_HOME_PATH = _PLANTED_HOME_PATH.split("see ", 1)[1].strip()
+_GENERIC_HEADER_PLANTS = {
+    "secret-in-an-extra-header": (_CraftedCommit(extra_header=f"x-note token {_FIXTURE_TOKEN}"), "api_key"),
+    "home-path-in-an-extra-header": (_CraftedCommit(extra_header=f"x-note see {_FIXTURE_HOME_PATH}"), "home_path"),
+    "secret-in-a-header-without-a-blank-line": (
+        _CraftedCommit(extra_header=f"x-note token {_FIXTURE_TOKEN}", blank_line=False),
+        "api_key",
+    ),
+    "home-path-in-a-header-without-a-blank-line": (
+        _CraftedCommit(extra_header=f"x-note see {_FIXTURE_HOME_PATH}", blank_line=False),
+        "home_path",
+    ),
+}
+
+
 class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
     """A commit object carries more text than its message: extra headers and the author and committer names.
 
@@ -2221,11 +2238,41 @@ class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
         assert "leak#" in report, report
         assert "second-leak-term" not in report, "a refusal never prints the term"
 
+    @pytest.mark.parametrize(
+        ("plant", "category"), list(_GENERIC_HEADER_PLANTS.values()), ids=list(_GENERIC_HEADER_PLANTS)
+    )
+    def test_a_secret_or_a_home_path_in_a_header_is_refused(
+        self, tmp_path: Path, plant: _CraftedCommit, category: str
+    ) -> None:
+        """Every detector reads the object, not only the registry-term pass; the same value in a message is refused."""
+        crafted, report = self._push(tmp_path, plant)
+
+        assert report.startswith("1\n"), "the value landed in a commit header: " + report
+        assert f"commit {crafted}" in report, report
+        assert category in report, report
+
     def test_a_clean_hand_made_commit_passes(self, tmp_path: Path) -> None:
         """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""
         _crafted, report = self._push(tmp_path, _CraftedCommit())
 
         assert report.startswith("0\n"), report
+
+    def test_a_clean_merge_commit_passes(self, tmp_path: Path) -> None:
+        """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        _git(work, "checkout", "-b", "side")
+        _commit_file(work, "side.txt", "a clean side line\n", "side work")
+        _git(work, "checkout", "-")
+        _commit_file(work, "main.txt", "a clean main line\n", "main work")
+        _git(work, "merge", "--no-ff", "-m", "merge side", "side")
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 class TestATermInAPathOrAnAnnouncedNameIsRefused:
@@ -2370,6 +2417,18 @@ class TestRootForcedAndTagRangesAreCheckedForRegistryTerms:
 
         self._assert_refused_without_the_value(result, term)
         assert "annotated tag" in result.stdout, result.stdout
+
+    def test_an_annotated_tag_message_with_a_secret_is_refused(self, tmp_path: Path) -> None:
+        """A tag object is read whole by every detector, tagger line blanked, like a commit object."""
+        work, env, _term = self._public_clone(tmp_path)
+        _git(work, "tag", "-a", "v2", "-m", f"release token {_FIXTURE_TOKEN}", "HEAD")
+        stdin = f"refs/tags/v2 {_rev(work, 'refs/tags/v2')} refs/tags/v2 {ZERO_SHA}\n"
+
+        result = _run_hook(work, env, stdin)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "annotated tag" in result.stdout, result.stdout
+        assert "api_key" in result.stdout, result.stdout
 
     def test_a_clean_annotated_tag_passes(self, tmp_path: Path) -> None:
         work, env, _term = self._public_clone(tmp_path)

@@ -799,13 +799,16 @@ class TestATermInAPathOrABranchNameIsRefused:
         assert not outcome.pushed
 
 
-def _hand_made_commit(repo: Path, *, author: str = "agent", committer: str = "agent", header: str = "") -> str:
+def _hand_made_commit(
+    repo: Path, *, author: str = "agent", committer: str = "agent", header: str = "", blank_line: bool = False
+) -> str:
     """Write a commit object by hand on ``HEAD``'s tree and move the branch onto it; the object may end in a header."""
     tree = run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip()
     parent = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
     ident = f"<{run_checked(['git', 'config', 'user.email'], cwd=repo).stdout.strip()}> 1700000000 +0000"
     text = f"tree {tree}\nparent {parent}\nauthor {author} {ident}\ncommitter {committer} {ident}\n"
-    text += f"{header}\n" if header else "\na clean message\n"
+    text += f"{header}\n" if header else ""
+    text += "\na clean message\n" if (blank_line or not header) else ""
     sha = run_checked(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, stdin_text=text).stdout.strip()
     run_checked(["git", "update-ref", "refs/heads/feature", sha], cwd=repo)
     return sha
@@ -835,6 +838,36 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
         assert not outcome.ok, "the term landed in a commit header"
         assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
         assert not outcome.pushed
+
+    @pytest.mark.parametrize("shape", ["with-a-message", "without-a-blank-line"])
+    @pytest.mark.parametrize(
+        ("header", "category"),
+        [
+            ("x-note token " + "glpat" + "-" + "X" * 16, "api_key"),
+            ("x-note see " + "/home/" + "someone" + "/secret", "home_path"),
+        ],
+        ids=["secret", "home-path"],
+    )
+    def test_a_secret_or_a_home_path_in_a_header_is_refused(
+        self, repo: Path, leak_env: None, header: str, category: str, shape: str
+    ) -> None:
+        """Every detector reads the object, not only the term gates; the same value in a message is refused."""
+        _hand_made_commit(repo, header=header, blank_line=shape == "with-a-message")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the value landed in a commit header"
+        assert any(f.gate == "secret-scan" and category in f.detail for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_clean_merge_commit_passes(self, repo: Path, leak_env: None) -> None:
+        """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
+        _merge_forward(repo, main_content="a clean prior line\n")
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
 
     def test_a_clean_hand_made_commit_passes(self, repo: Path, leak_env: None) -> None:
         """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""

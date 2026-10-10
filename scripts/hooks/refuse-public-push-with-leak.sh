@@ -444,29 +444,77 @@ _scan_message_text() {
   } | _scan --text -
 }
 
-# The whole commit object, headers included, for registry terms and opaque ids only: an extra header, the author or the
-# committer name travels with the pushed commit like the message does, and no CI job reads commit objects. The generic
-# detectors stay off, as they do for an annotated tag: a noreply address in an `author` line is not a finding.
-_scan_commit_objects() {
-  git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r object_sha; do
-    git cat-file commit "${object_sha}" 2>/dev/null </dev/null || exit 1
-  done | _scan --text --terms-only -
+# A scan that could not run outranks a finding, and a finding outranks a clean scan: the code to report for these.
+_worse_scan_rc() {
+  local code worst=0
+  for code in "$@"; do
+    if [ "${code}" -ne 0 ] && [ "${code}" -ne "${findings_code}" ]; then
+      echo "${code}"
+      return 0
+    fi
+    [ "${code}" -eq 0 ] || worst="${findings_code}"
+  done
+  echo "${worst}"
 }
 
-# Both reads, one report: a scan that could not run outranks a finding, and a finding outranks a clean one.
+# A raw commit or tag object on stdin, as it is (`raw`) or with only the identity addresses blanked (`blank`): the
+# `<...>` part of its `author`, `committer` and `tagger` header lines, which are noreply addresses by rule.
+_identity_view() {
+  if [ "$1" = blank ]; then
+    sed -E '1,/^$/s/^(author|committer|tagger) (.*)<[^>]*>/\1 \2<>/'
+  else
+    cat
+  fi
+}
+
+# The raw objects named by the args, as they are or through `_identity_view`: the commits of a `git rev-list` range
+# (`commit`), or one annotated tag (`tag`).
+_emit_objects() {
+  local kind="$1" mode="$2"
+  shift 2
+  case "${kind}" in
+    commit)
+      git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r object_sha; do
+        git cat-file commit "${object_sha}" 2>/dev/null </dev/null | _identity_view "${mode}" || exit 1
+      done
+      ;;
+    tag)
+      git cat-file -p "$1" 2>/dev/null </dev/null | _identity_view "${mode}"
+      ;;
+  esac
+}
+
+# The WHOLE raw object, headers and all, because an extra header, an author or committer name and a tag's own lines travel
+# with the pushed object like its message does, and no CI job reads objects. Two passes, one report: registry terms and
+# opaque ids over the object as it is, so a term in a name or an address is still found; and EVERY detector over it with
+# the identity addresses blanked, so a secret or a home path in a header is found and the noreply address is no email
+# finding. Only deliberately encoded content is left unread.
+_scan_objects_from() {
+  local kind="$1" terms_rc=0 full_rc=0 terms_report full_report
+  shift
+  terms_report=$(_emit_objects "${kind}" raw "$@" | _scan --text --terms-only - 2>&1) || terms_rc=$?
+  full_report=$(_emit_objects "${kind}" blank "$@" | _scan --text - 2>&1) || full_rc=$?
+  if [ "${terms_rc}" -ne 0 ]; then
+    printf '%s\n' "${terms_report}"
+  fi
+  if [ "${full_rc}" -ne 0 ] || [ "${terms_rc}" -eq 0 ]; then
+    printf '%s\n' "${full_report}"
+  fi
+  return "$(_worse_scan_rc "${terms_rc}" "${full_rc}")"
+}
+
+_scan_commit_objects() {
+  _scan_objects_from commit "$@"
+}
+
+# Both reads, one report.
 _scan_messages_as_text() {
-  local message_rc=0 object_rc=0 message_report object_report code worst=0
+  local message_rc=0 object_rc=0 message_report object_report
   message_report=$(_scan_message_text "$@" 2>&1) || message_rc=$?
   object_report=$(_scan_commit_objects "$@" 2>&1) || object_rc=$?
   printf '%s\n' "${message_report}"
   [ "${object_rc}" -eq 0 ] || printf '%s\n' "${object_report}"
-  for code in "${message_rc}" "${object_rc}"; do
-    if [ "${code}" -ne 0 ] && [ "${code}" -ne "${findings_code}" ]; then
-      return "${code}"
-    fi
-    [ "${code}" -eq 0 ] || worst="${findings_code}"
-  done
-  return "${worst}"
+  return "$(_worse_scan_rc "${message_rc}" "${object_rc}")"
 }
 
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
@@ -551,7 +599,7 @@ _scan_ref_name() {
 _scan_tag_object() {
   local sha="$1" tag_report tag_rc=0
   [ "$(git cat-file -t "${sha}" 2>/dev/null || true)" = "tag" ] || return 0
-  tag_report=$(git cat-file -p "${sha}" 2>/dev/null </dev/null | _scan --text --terms-only - 2>&1) || tag_rc=$?
+  tag_report=$(_scan_objects_from tag "${sha}" 2>&1) || tag_rc=$?
   [ "${tag_rc}" -ne 0 ] || return 0
   if [ "${tag_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to ${target} publishes an annotated tag whose message or tagger line carries privacy findings."

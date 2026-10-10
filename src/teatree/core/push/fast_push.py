@@ -322,7 +322,7 @@ class LeakGateScan:
         # paths would otherwise lose its own lines before the gates read them.
         by_path.setdefault(_MESSAGE_PATH, []).extend(self._message_text.splitlines())
         by_path.setdefault(_RANGE_MESSAGE_PATH, []).extend(self._range.commit_messages.splitlines())
-        # Whole objects feed the term gates only: the generic scan would flag a noreply address in an author line.
+        # The term gates read the objects as they are; the generic scan reads them with the identity addresses blanked.
         by_path.setdefault(_RANGE_OBJECT_PATH, []).extend(self._range.commit_objects.splitlines())
         by_path.setdefault(_REF_NAME_PATH, []).append(self._branch)
         return by_path
@@ -393,6 +393,7 @@ class LeakGateScan:
             pairs.extend(zip(diff_text.splitlines(), _diff_line_paths(diff_text), strict=True))
         pairs.extend((line, _MESSAGE_PATH) for line in self._message_text.splitlines())
         pairs.extend((line, _RANGE_MESSAGE_PATH) for line in self._range.commit_messages.splitlines())
+        pairs.extend((line, _RANGE_OBJECT_PATH) for line in self._range.commit_objects_blanked.splitlines())
         pairs.append((self._branch, _REF_NAME_PATH))
         return pairs
 
