@@ -15,18 +15,19 @@ fixed visibility. Nothing about git or the filesystem is mocked.
 
 import json
 import os
-import re
 import secrets
 import shutil
 import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from teatree.hooks._repo_visibility import slug_for_remote_url
 from tests._leak_hook_checkout import HOOK, REPO_ROOT, CommittedFingerprint, default_hook, place_hook
 
 SCAN = REPO_ROOT / "scripts" / "privacy_scan.py"
@@ -1277,7 +1278,7 @@ def _fake_core_package(src_root: Path, *, verdict: str = "", fail_marker: str = 
     body = (
         f"import sys\nsys.stderr.write({fail_marker!r} + '\\n')\nraise SystemExit(1)\n"
         if fail_marker
-        else f"print({verdict!r})\n"
+        else f"import sys\nprint({verdict!r} if '--live' in sys.argv else 'UNKNOWN')\n"
     )
     (hooks / "repo_visibility_cli.py").write_text(body, encoding="utf-8")
 
@@ -1569,26 +1570,36 @@ def _make_unreachable_forge_shims(bin_dir: Path) -> Path:
 _PRIVATE_GITLAB_REMOTE = "git@gitlab.com:acme-eng/inner/widget.git"
 
 
-class TestDeclaredPrivateRemotePassesTheIdentityGuardOffline:
-    """A remote declared in ``private_repos`` is PROVEN private, with no probe, from any checkout.
+class TestADeclaredPrivateRemoteIsScannedUnlessTheForgeSaysPrivate:
+    """``private_repos`` is a store the pusher can point anywhere, so it never establishes PRIVATE for a push.
 
-    This is what lets the identity guard stay fail-closed on an undetermined
-    verdict: the operator's own private forge never reaches that branch. The
-    resolver answers from the offline allowlist before any probe, and nothing
-    about the answer is cached per checkout, so two worktrees of one repo pushing
-    to one remote get one verdict. The forge CLIs here log every call and never
-    answer, so a pass can only come from the allowlist.
+    Only the forge's answer, asked now, does. The forge CLIs here log every call and never answer, so the
+    declared remote is an undetermined one: scanned, and refused for the internal identity.
     """
 
-    def _pushes_from(self, tmp_path: Path, entries: list[str]) -> tuple[list[subprocess.CompletedProcess[str]], Path]:
+    def test_a_declared_remote_is_refused_when_the_forge_does_not_answer(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
+        log = _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["gitlab.com/acme-eng"]))
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work), remote_url=_PRIVATE_GITLAB_REMOTE)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "visibility could not be confirmed" in result.stdout, result.stdout
+        assert log.exists(), "the forge was asked, and its silence left the declaration with no weight"
+
+    def test_the_forges_own_private_answer_passes_from_two_worktrees(self, tmp_path: Path) -> None:
+        """The control: the same remote, the forge answering PRIVATE now, passes whichever checkout asks."""
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
         _git(work, "worktree", "add", "-b", "second", str(tmp_path / "work-b"))
         second = tmp_path / "work-b"
         _git(second, "config", "user.email", _NOREPLY_EMAIL)
-        log = _make_unreachable_forge_shims(tmp_path / "offline-bin")
-        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
-        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", entries))
+        _make_glab_shim(tmp_path / "glabbin", "private")
+        env["PATH"] = f"{tmp_path / 'glabbin'}{os.pathsep}{env['PATH']}"
         results = []
         for checkout, ref in ((work, "refs/heads/main"), (second, "refs/heads/second")):
             _commit_as(checkout, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
@@ -1596,57 +1607,8 @@ class TestDeclaredPrivateRemotePassesTheIdentityGuardOffline:
             results.append(
                 _run_hook(checkout, checkout_env, _push_stdin(checkout, ref), remote_url=_PRIVATE_GITLAB_REMOTE)
             )
-        return results, log
-
-    def test_allowlisted_private_gitlab_remote_passes_from_two_worktrees(self, tmp_path: Path) -> None:
-        results, log = self._pushes_from(tmp_path, ["gitlab.com/acme-eng"])
 
         assert [r.returncode for r in results] == [0, 0], [r.stdout + r.stderr for r in results]
-        assert log.exists(), "the forge was asked first; its unreachable answer leaves the declaration standing"
-
-    def test_the_same_remote_outside_the_allowlist_is_refused(self, tmp_path: Path) -> None:
-        """Anti-vacuity: the pass above is the allowlist's, not a gate that stopped asking."""
-        results, _log = self._pushes_from(tmp_path, ["gitlab.com/other-org"])
-
-        assert [r.returncode for r in results] == [1, 1], [r.stdout + r.stderr for r in results]
-        assert all(_REAL_EMAIL in r.stdout and "visibility could not be confirmed" in r.stdout for r in results)
-
-
-class TestUnreadableAllowlistRefusesByName:
-    """A ``private_repos`` store the resolver could not READ is named in the refusal.
-
-    The cold read used to fail open to an empty allowlist, so a declared-private
-    remote behind a locked or corrupt config DB was refused as "visibility could not
-    be confirmed" with a hint to declare it in ``private_repos`` — which it already
-    was. The gate stays fail-closed; the refusal now says what actually failed.
-    """
-
-    def _push(self, tmp_path: Path, *, email: str) -> tuple[subprocess.CompletedProcess[str], Path]:
-        work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
-        _make_unreachable_forge_shims(tmp_path / "offline-bin")
-        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
-        store = tmp_path / "config.sqlite3"
-        store.write_bytes(b"this is not an sqlite database" * 64)
-        env["T3_CONFIG_DB"] = str(store)
-        env["XDG_DATA_HOME"] = str(tmp_path / "xdg")
-        _commit_as(work, "Dev", email, "feature.txt", "clean feature line\n")
-        return _run_hook(work, env, _push_stdin(work), remote_url=_PRIVATE_GITLAB_REMOTE), store
-
-    def test_unreadable_allowlist_refuses_with_its_own_reason(self, tmp_path: Path) -> None:
-        result, store = self._push(tmp_path, email=_REAL_EMAIL)
-
-        assert result.returncode == 1, result.stdout + result.stderr
-        assert "could not read private_repos" in result.stdout, result.stdout
-        assert "visibility could not be confirmed" not in result.stdout, result.stdout
-        assert str(store) in result.stderr, result.stderr
-
-    def test_unreadable_allowlist_still_passes_a_clean_noreply_push(self, tmp_path: Path) -> None:
-        """Fail closed means "enforce", not "block": nothing to refuse, nothing refused."""
-        result, _store = self._push(tmp_path, email=_NOREPLY_EMAIL)
-
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "could not read private_repos" in result.stderr, result.stderr
 
 
 class TestUrlSpelledPrivateRemoteIsProbedOnItsHost:
@@ -1677,45 +1639,21 @@ class TestUrlSpelledPrivateRemoteIsProbedOnItsHost:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-_SUGGESTED_ENTRY = re.compile(r"private_repos '\[\"(?P<entry>[^\"]+)\"\]'")
+class TestTheRefusalDoesNotAdviseDeclaringTheRepoPrivate:
+    """A ``private_repos`` declaration carries no weight on the push path, so the refusal must not point at one."""
 
-
-class TestTheSuggestedAllowlistEntryUnblocksThePush:
-    """Following the refusal's own ``private_repos`` advice must actually resolve the remote.
-
-    The hint printed the host-stripped label. The matcher strips exactly one leading
-    dotted segment as a host, so for a GitLab namespace that itself carries a dot the
-    suggested ``my.group/widget`` stripped to ``widget`` and never matched: the
-    operator declared the repo exactly as told and was refused again.
-    """
-
-    @pytest.mark.parametrize(
-        "remote",
-        [
-            "git@gitlab.com:my.group/widget.git",
-            "https://gitlab.com/my.group/sub/widget.git",
-            "git@gitlab.com:acme-eng/inner/widget.git",
-            "ssh://git@gitlab.example.org:2222/acme-eng/inner/widget.git",
-        ],
-        ids=["dotted-ns-scp", "dotted-ns-https", "scp", "ssh-url-port"],
-    )
-    def test_declaring_the_suggested_entry_lets_the_same_push_through(self, remote: str, tmp_path: Path) -> None:
+    def test_the_hint_says_to_authenticate_the_forge_cli(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        _git(work, "remote", "set-url", "origin", remote)
+        _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
         _make_unreachable_forge_shims(tmp_path / "offline-bin")
         env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
-        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "before.sqlite3", []))
         _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
-        refused = _run_hook(work, env, _push_stdin(work), remote_url=remote)
-        assert refused.returncode == 1, refused.stdout + refused.stderr
-        suggested = _SUGGESTED_ENTRY.search(refused.stdout)
-        assert suggested, refused.stdout
 
-        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "after.sqlite3", [suggested["entry"]]))
-        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path / "second-push"))
-        result = _run_hook(work, env, _push_stdin(work), remote_url=remote)
+        result = _run_hook(work, env, _push_stdin(work), remote_url=_PRIVATE_GITLAB_REMOTE)
 
-        assert result.returncode == 0, f"declared {suggested['entry']!r} as advised:\n{result.stdout}{result.stderr}"
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "glab auth login" in result.stdout, result.stdout
+        assert "config_setting set private_repos" not in result.stdout, result.stdout
 
 
 class TestRefusalNeverRecommendsRewritingThePushedBranch:
@@ -2298,12 +2236,11 @@ class TestTheHookHoldsTheLoadedRegistryToTheCommittedFingerprint:
         assert result.returncode == 1, result.stdout + result.stderr
         assert "does not match" in result.stdout
 
-    def test_the_same_allowlisted_remote_passes_with_the_committed_registry(self, tmp_path: Path) -> None:
-        """Anti-vacuity: the pass is the verified allowlist's, and the refusal above is the registry's alone."""
-        work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        _make_unreachable_forge_shims(tmp_path / "offline-bin")
-        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
-        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["github.com/acme/widget"]))
+    def test_the_same_remote_passes_when_the_forge_says_private_and_the_registry_is_the_committed_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Anti-vacuity: the pass is the forge's, and the refusal above is the registry's alone."""
+        work, env = _clone_with_remote(tmp_path, "PRIVATE")
         env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
         (work / "feature.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
@@ -2515,3 +2452,54 @@ class TestAnExportedRunnerVariableDoesNotRedirectTheHook:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "inner-widget" not in result.stdout, "the pushed remote is the one git named"
+
+
+class TestThePushPathTakesOnlyTheForgesPrivateAnswer:
+    """A local file cannot say a remote is private: the visibility cache and ``private_repos`` skip no scan.
+
+    Both are files a pusher can write: the cache directly (no environment change at all), the allowlist in a
+    store ``T3_CONFIG_DB`` or ``T3_DATA_DIR`` points anywhere (a copy of the owner's registry passes the registry
+    check). With no forge answering, the remote is undetermined and the leak is scanned and refused.
+    """
+
+    def _leaking_push(self, tmp_path: Path) -> tuple[Path, dict[str, str], str]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+        return work, env, _push_stdin(work)
+
+    def test_a_planted_private_cache_entry_skips_no_scan(self, tmp_path: Path) -> None:
+        work, env, stdin = self._leaking_push(tmp_path)
+        state = Path(env["T3_DATA_DIR"])
+        entry = {"ts": time.time(), "visibility": "PRIVATE"}
+        (state / "repo-visibility-cache.json").write_text(
+            json.dumps({slug_for_remote_url(_FORGE_URL): entry}), encoding="utf-8"
+        )
+
+        result = _run_hook(work, env, stdin)
+
+        assert result.returncode == 1, "a cached PRIVATE skipped the scan: " + result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    def test_a_decoy_store_declaring_the_repo_private_skips_no_scan(self, tmp_path: Path) -> None:
+        work, env, stdin = self._leaking_push(tmp_path)
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "decoy.sqlite3", ["github.com/acme/widget"]))
+
+        result = _run_hook(work, env, stdin)
+
+        assert result.returncode == 1, "a decoy allowlist skipped the scan: " + result.stdout + result.stderr
+        assert "privacy" in (result.stdout + result.stderr).lower()
+
+    def test_the_forges_own_private_answer_still_skips_the_scan(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the cache and the allowlist lost their weight; a gate that never skips would fail this."""
+        work, env = _clone_with_remote(tmp_path, "PRIVATE")
+        (work / "leak.txt").write_text(_PLANTED_SECRET, encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr

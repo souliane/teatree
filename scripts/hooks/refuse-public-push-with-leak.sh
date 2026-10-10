@@ -22,8 +22,8 @@
 # that is not KNOWN private, an undetermined one included: an internal address
 # bound for a remote nobody could classify is refused exactly as on a public
 # one, and the refusal says how to confirm the visibility. A private remote
-# passes because the resolver PROVES it private (the `private_repos` allowlist,
-# or a forge probe), never because the gate stopped asking.
+# passes because the forge's own answer, asked now, says it is private, never
+# because the gate stopped asking.
 #
 # No refusal ever recommends rewriting the pushed branch. The pushed branch
 # is the reviewed branch; rewriting it moves every commit an open merge
@@ -49,27 +49,24 @@
 # branch is thousands of commits behind, that re-scans the entire already-public
 # history on every push and turns the gate into an outage).
 #
-# Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which answers
-# from the offline `private_repos` allowlist first and only then probes, routing
-# the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab) and
-# host-caching the verdict per slug. The allowlist is what makes the verdict
-# deterministic: a probe carries a network budget a loaded machine loses, and a
-# lost probe used to decide a declared-private repo's visibility. The gate SKIPS the scan only when the
-# remote is KNOWN to be private/internal. Every undetermined case — an
-# unparsable remote, no forge CLI for that host, a probe error, or an
-# unrecognised answer — fails CLOSED and the diff is scanned anyway, so a
-# leak never rides out on a tool-less machine or an unparsable remote
-# (§3f #14; was fail-open). A clean push on a machine without a forge CLI is
+# Visibility is resolved by `teatree.hooks.repo_visibility_cli --live`, which asks the
+# forge now, routing the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab).
+# It reads neither the day cache nor the `private_repos` allowlist: both are files a
+# pusher can write (the allowlist in a store T3_CONFIG_DB or T3_DATA_DIR points
+# anywhere), so a PRIVATE they hold would skip a leak scan on nothing but the pusher's
+# word. The gate SKIPS the scan only when the forge itself says the remote is
+# private/internal. Every undetermined case — an unparsable remote, no forge CLI for
+# that host, a probe error, or an unrecognised answer — fails CLOSED and the diff is
+# scanned anyway, so a leak never rides out on a tool-less machine or an unparsable
+# remote (§3f #14; was fail-open). A clean push on a machine without a forge CLI is
 # unaffected: the scan passes it. A scan that cannot RUN (no Python 3.13+, a missing or
 # crashing scanner, an unset registry) refuses the push as well: a gate that cannot
-# look has not shown the push is clean. An allowlist the resolver could not READ (a locked, corrupt or
-# absent config DB) is reported as ALLOWLIST_UNREADABLE, enforced the same way but
-# named apart, so the refusal points at the store instead of at redeclaring a repo.
+# look has not shown the push is clean.
 #
 # The scanner and the visibility resolver run from THIS checkout's tree
 # (`<repo>/scripts/privacy_scan.py`, `<repo>/src`), never from an installed copy, so a push
 # that fixes the gate is judged by the fixed gate. The hook reads no override variable of its
-# own. The term registry and the private_repos allowlist still resolve through the environment
+# own. The term registry still resolves through the environment
 # (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME), so before it trusts any
 # verdict, a private one included, the hook holds the lists it LOADED to the digests committed at this
 # checkout's HEAD in .github/term-source-fingerprint.json (digests only, never printed) and refuses on a
@@ -104,15 +101,6 @@ fi
 #   git@github.com:owner/repo(.git)  # privacy-scan:allow doc example
 slug=$(printf '%s' "${remote_url}" \
   | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
-
-# Suggest a host-qualified entry. A dotless host needs its canonical HostName;
-# without one, show the expected form instead of suggesting a value that cannot match.
-entry_slug=$(printf '%s' "${remote_url}" \
-  | sed -E 's#^[^:]+://([^@/]*@)?([^/:]+)(:[0-9]+)?/#\2/#; s#^([^/:@]+@)?([^/:]+):#\2/#; s#\.git$##')
-entry_host="${entry_slug%%/*}"
-if [ "${entry_host}" != "${entry_slug}" ] && [[ "${entry_host}" != *.* ]] && [ "${entry_host}" != "localhost" ]; then
-  entry_slug=""
-fi
 
 # Resolve the repo root from this script's own location
 # (scripts/hooks/<this>.sh -> repo root) so the visibility CLI runs against
@@ -153,7 +141,7 @@ _resolve_visibility() {
 
   if command -v uv >/dev/null 2>&1; then
     if out=$(PYTHONPATH="${probe_path}" uv run --project "${repo_root}" --no-sync \
-        python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"); then
+        python -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}"); then
       rc=0
     fi
   fi
@@ -162,7 +150,7 @@ _resolve_visibility() {
     for py in python3.13 python3.14 python3; do
       command -v "${py}" >/dev/null 2>&1 || continue
       if out=$(PYTHONPATH="${probe_path}" \
-          "${py}" -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"); then
+          "${py}" -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}"); then
         rc=0
         break
       fi
@@ -175,9 +163,6 @@ _resolve_visibility() {
   if [ "${rc}" -ne 0 ] && [ -s "${err}" ]; then
     echo "⚠ push privacy gate: visibility probe failed — diagnostics below." >&2
     sed 's/^/    /' "${err}" >&2 2>/dev/null || true
-  elif [ "${out}" = "ALLOWLIST_UNREADABLE" ]; then
-    # The resolver names WHICH store it could not read; that path is the whole diagnosis.
-    grep '^could not read private_repos' "${err}" 2>/dev/null | sed 's/^/    /' >&2 || true
   fi
   [ "${err}" = /dev/null ] || rm -f "${err}"
   printf '%s\n' "${out}"
@@ -208,14 +193,7 @@ case "${visibility}" in
   RESOLVER_FAILED)
     echo "⚠ push privacy gate: could not run the visibility resolver for '${slug:-<remote>}' (diagnostics above) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
     target="repo '${slug:-<remote>}' (could not run the visibility resolver — visibility unknown, refusing push)"
-    confirm_hint="  The visibility resolver could not start in this checkout (diagnostics above), so neither private_repos nor the forge was asked. Run 'uv sync' in ${repo_root}, or install Python 3.13+, and push again."
-    ;;
-  ALLOWLIST_UNREADABLE)
-    # Not "undeclared": the store that would say whether it is declared could not be
-    # read, so the hint below sends the operator to that store, not to redeclaring.
-    echo "⚠ push privacy gate: could not read private_repos, and no forge probe confirmed '${slug:-<remote>}' — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
-    target="repo '${slug:-<remote>}' (could not read private_repos — visibility unknown, refusing push)"
-    confirm_hint="  The private_repos allowlist could not be read from the config DB this hook resolves (the path is printed above). Repair or unlock that store (t3 doctor check names it); redeclaring the repo does not help while the store is unreadable."
+    confirm_hint="  The visibility resolver could not start in this checkout (diagnostics above), so the forge was not asked. Run 'uv sync' in ${repo_root}, or install Python 3.13+, and push again."
     ;;
   *)
     # Undetermined visibility (unparsable remote, no forge CLI for that host,
@@ -224,7 +202,7 @@ case "${visibility}" in
     # is stopped. Warn loudly so the undetermined path shows.
     echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning the diff and checking commit identities anyway (fail closed, §3f #14)." >&2
     target="repo '${slug:-<remote>}' (visibility could not be confirmed)"
-    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${entry_slug:-<host>/<owner>/<repo>}\"]'"
+    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login). A cached verdict or a private_repos declaration does not establish a private remote for a push: only the forge's answer, asked now, does."
     ;;
 esac
 
@@ -271,7 +249,7 @@ if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
   exit 1
 fi
 
-# The term registry and the private_repos verdict resolve through the environment, which a pusher can fill with
+# The term registry resolves through the environment, which a pusher can fill with
 # a store of their own in ways no PreToolUse guard sees (`export`, `printf -v`, `read`, `source`, a script setting
 # os.environ). So the lists this hook LOADED are held to the digests committed at this checkout's HEAD, which the
 # required term-source-drift CI job holds equal to the real secret. Only the fingerprint as committed counts: a file
