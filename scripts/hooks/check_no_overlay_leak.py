@@ -33,10 +33,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from teatree.hooks.banned_term_registry import terms_for_gate
+from teatree.hooks.banned_term_registry import load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
+from teatree.hooks.term_refs import TermRefs
 
 _FINDINGS_EXIT_CODE = 1
 _MISCONFIGURED_EXIT_CODE = 2
@@ -123,9 +124,9 @@ def _is_in_scan_roots(path: Path) -> bool:
     return any(str(path).startswith(f"{root}/") for root in SCAN_ROOTS) or str(path) in SCAN_FILES
 
 
-def _scan(paths: list[Path], terms: tuple[str, ...]) -> list[tuple[Path, int, str, str]]:
-    """Scan *paths* for configured terms AND always-on opaque ids."""
-    findings: list[tuple[Path, int, str, str]] = []
+def _scan(paths: list[Path], terms: tuple[str, ...], refs: TermRefs) -> list[tuple[Path, int, str]]:
+    """Scan *paths* for configured terms AND always-on opaque ids; a term is reported by ``class#index``."""
+    findings: list[tuple[Path, int, str]] = []
     for path in paths:
         if path.suffix not in TEXT_SUFFIXES:
             continue
@@ -140,9 +141,9 @@ def _scan(paths: list[Path], terms: tuple[str, ...]) -> list[tuple[Path, int, st
         for lineno, line in enumerate(text.splitlines(), start=1):
             term = matched_term(line, terms)
             if term is not None:
-                findings.append((path, lineno, term, line.strip()))
+                findings.append((path, lineno, refs.ref(term)))
             for opaque in find_opaque_ids(line):
-                findings.append((path, lineno, opaque, line.strip()))  # noqa: PERF401 — two sources
+                findings.append((path, lineno, repr(opaque)))  # noqa: PERF401 — two sources
     return findings
 
 
@@ -168,16 +169,15 @@ def main(argv: list[str]) -> int:
         staged = [p for p in _staged_files() if _is_in_scan_roots(p)]
         paths = staged or _walk_roots()
 
-    findings = _scan(paths, terms)
+    findings = _scan(paths, terms, load_term_refs(terms))
     if not findings:
         return 0
 
     print("Overlay-leak gate (BLUEPRINT § 1): forbidden tokens found in core.")
     print()
-    for path, lineno, term, line in findings:
-        print(f"  {path}:{lineno}: {term!r}")
-        print(f"    {line}")
-        print()
+    for path, lineno, ref in findings:
+        print(f"  {path}:{lineno}: {ref}")
+    print()
     print("Core stays generic. Move overlay-specific names to the overlay package; scrub opaque IDs.")
     return _FINDINGS_EXIT_CODE
 

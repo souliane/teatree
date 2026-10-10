@@ -318,17 +318,17 @@ class TestCompanyIdentifierAllowlistGate:
 
 
 class TestMatchedTermAttribution:
-    """``_matched_term`` attributes by whole-token match, never substring.
+    """``_matched_term`` reads the term the matcher chose from the report's ``class#index`` row.
 
-    A flagged line that contains a longer word must not be attributed to a
-    short term that is merely its substring.
+    The report never carries the value, so the attribution cannot be a substring
+    coincidence: a short term that is merely a substring of the flagged word is not
+    the one the row names.
     """
 
-    def test_attribution_is_not_a_substring_coincidence(self) -> None:
-        # ``wid`` is a substring of ``widget`` but is NOT a whole token in the
-        # flagged line, so the real whole-token term is reported instead.
-        report = "BANNED TERM in /tmp/x.txt:\n  1:the acme widget shipped\n\nBanned terms: wid, acme\n"
-        assert banned_terms_scanner._matched_term(report) == "acme"
+    def test_the_reference_names_the_term_the_matcher_chose(self, tmp_path: Path) -> None:
+        db = _seed_config_db(tmp_path, filename="refs.sqlite3", terms=["wid", "acme"])
+        report = "BANNED TERM in /tmp/x.txt:\n  1: leak#1\n\nThese terms must not appear in this repo.\n"
+        assert banned_terms_scanner._matched_term(report, db) == "acme"
 
 
 class TestExtractSecretScanSurfaces:
@@ -1385,7 +1385,7 @@ class TestScanTextScannerCrashFailsClosed:
         # marker. The crash detection keys on an EMPTY report, not on exit 1.
         class _HitResult:
             returncode = 1
-            stdout = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp\n"
+            stdout = "BANNED TERM in /tmp/x.txt:\n  1: leak#0\n"
             stderr = ""
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: _HitResult())
@@ -1400,7 +1400,7 @@ class _CleanResult:
 
 class _HitReportResult:
     returncode = 1
-    stdout = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp\n"
+    stdout = "BANNED TERM in /tmp/x.txt:\n  1: leak#0\n"
     stderr = ""
 
 
@@ -1725,15 +1725,14 @@ class TestUnsetRegistryReachesThePublishGate:
 
 class TestMatchedTerm:
     def test_term_in_flagged_line_is_reported(self) -> None:
-        report = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp, widgetco\n"
+        report = "BANNED TERM in /tmp/x.txt:\n  1: leak#0\n\nThese terms must not appear in this repo.\n"
         assert banned_terms_scanner._matched_term(report) == "acmecorp"
 
-    def test_falls_back_to_first_configured_term_when_no_flagged_line_matches(self) -> None:
-        # The script reported a match but the term substring is not in any
-        # flagged line we parsed — report the first configured term so the
-        # deny reason is never empty.
-        report = "BANNED TERM in /tmp/x.txt:\n\nBanned terms: acmecorp, widgetco\n"
-        assert banned_terms_scanner._matched_term(report) == "acmecorp"
+    def test_a_reference_the_registry_does_not_hold_resolves_to_nothing(self) -> None:
+        assert banned_terms_scanner._matched_term("BANNED TERM in /tmp/x.txt:\n  1: leak#9\n") is None
+
+    def test_a_report_without_a_reference_row_resolves_to_nothing(self) -> None:
+        assert banned_terms_scanner._matched_term("BANNED TERM in /tmp/x.txt:\n\nBanned terms: acmecorp\n") is None
 
     def test_empty_report_returns_none(self) -> None:
         assert banned_terms_scanner._matched_term("") is None

@@ -26,6 +26,7 @@ The module is pure detection. The PreToolUse hook in
 """
 
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Callable
@@ -38,7 +39,6 @@ from teatree.hooks._command_parser import is_publish_command as _is_publish_comm
 from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._parser_primitives import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
-from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # Marker returned by ``scan_text`` when the body source cannot be resolved
@@ -334,7 +334,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
 
     if result.returncode == 0:
         return None
-    term = _matched_term(result.stdout, _load_allowlist(config_path))
+    term = _matched_term(result.stdout, config_path)
     # Exit 1 with NO parseable BANNED TERM report is the import-crash shape: a
     # Python traceback exits 1 (colliding with "banned term found") but prints
     # nothing on stdout. There is no real match — the scanner crashed — so fail
@@ -344,52 +344,25 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     return term
 
 
-def _load_allowlist(config_path: Path | None) -> tuple[str, ...]:
-    """Return the registry ``allow`` carve-out.
-
-    Mirrors :func:`banned_terms_cli._load_allowlist` so the report-attribution
-    path here and the shell scanner's matching path read the SAME carve-out. The
-    shell scanner already blanks allow-listed identifier runs when flagging a
-    line, so this is only used to keep the REPORTED term in sync — a line flagged
-    for a genuine customer codename next to a company identifier must attribute
-    the codename, never the carved-out org slug. Reads the consolidated
-    ``banned_term_registry`` ``allow`` class from the ``ConfigSetting`` store
-    via :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path.
-    Empty (default) is a no-op.
-    """
-    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-path import
-
-    return allowlist_terms(config_path)
+_REPORT_ROW_RE = re.compile(r"^  \d+: (\S+#\d+)\s*$")
 
 
-def _matched_term(report: str, allowlist: tuple[str, ...] = ()) -> str | None:
-    """Pull the banned term out of ``check-banned-terms.sh``'s report.
+def _matched_term(report: str, config_path: Path | None = None) -> str | None:
+    """Resolve the term ``check-banned-terms.sh``'s report names back to its registry value.
 
     The script prints ``BANNED TERM in <file>:`` followed by indented
-    ``<lineno>:<line>`` rows, then a trailing ``Banned terms: a, b, c``
-    line listing every configured term. The offending term is whichever
-    configured term's tokens appear as a whole-token run in a flagged line.
-
-    Attribution uses the SAME whole-token matcher the shell scanner used to
-    flag the line (``teatree.hooks.term_match``), with the SAME company-identifier
-    *allowlist* carve-out, so the reported term can never be a substring
-    coincidence (the old ``term in haystack`` check would, for a neutral example,
-    name ``acme`` for a line that only said ``acmecorp``) NOR an allow-listed org
-    slug carved out of a company identifier (it would otherwise name the org slug
-    for a line whose real hit is a customer codename beside that identifier).
+    ``<line>: <class#index>`` rows and never the term itself: its output reaches
+    transcripts and logs. The matcher already chose the term per line, so the first
+    reference that resolves against the registry is the attribution; this process
+    holds the registry and is the only place the value is needed (the deny reason).
     """
-    lines = report.splitlines()
-    configured: list[str] = []
-    flagged: list[str] = []
-    for line in lines:
-        if line.startswith("Banned terms:"):
-            configured = [t.strip() for t in line.removeprefix("Banned terms:").split(",") if t.strip()]
-        elif line.startswith("  ") and ":" in line:
-            flagged.append(line)
-    term = _matched_token_term("\n".join(flagged), tuple(configured), allowlist)
-    if term is not None:
-        return term
-    return configured[0] if configured else None
+    from teatree.hooks.banned_term_registry import load_term_refs, terms_for_gate  # noqa: PLC0415 — cold-path import
+
+    refs = [match.group(1) for line in report.splitlines() if (match := _REPORT_ROW_RE.match(line))]
+    if not refs:
+        return None
+    registry_refs = load_term_refs(terms_for_gate("diff", db_path=config_path), db_path=config_path)
+    return next((term for ref in refs if (term := registry_refs.term(ref))), None)
 
 
 def format_block_message(term: str) -> str:

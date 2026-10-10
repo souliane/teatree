@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.hooks import term_match
+from teatree.hooks.term_refs import TermRefs
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 _GIT_LS_TIMEOUT_S = 30
@@ -136,15 +137,16 @@ class TreeEnumerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class TreeFinding:
-    """A single banned-brand hit in a committed file."""
+    """A single banned-brand hit in a committed file; rendered by ``ref``, never by the matched term or line."""
 
     path: str
     lineno: int
     term: str
     line: str
+    ref: str = ""
 
     def render(self) -> str:
-        return f"{self.path}:{self.lineno}: {self.term!r} — {self.line.strip()}"
+        return f"{self.path}:{self.lineno}: {self.ref}"
 
 
 def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
@@ -256,7 +258,9 @@ def _scannable_text(repo_root: Path, path: Path, rel: str) -> str | None:
         return None
 
 
-def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[TreeFinding]:
+def scan_tree(
+    repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...] = (), refs: TermRefs | None = None
+) -> list[TreeFinding]:
     """Scan every tracked text file for committed brands and conflated terminology.
 
     Two passes per file, both over the COMMITTED blob (so a working-tree
@@ -268,6 +272,8 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...
 
     *allowlist* carves the company's own identifiers out of the brand pass only;
     the terminology gate is teatree vocabulary, which no operator config exempts.
+    *refs* names each brand hit by ``class#index``; without it a hit is named by its
+    position in *terms*.
 
     Propagates :class:`TreeEnumerationError` — a tree that could not be enumerated
     has no findings for the same reason a tree that was never read has none.
@@ -277,6 +283,7 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...
         raise BannedTermsUnsetError(message)
     from teatree.hooks import terminology_gate  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+    refs = refs or TermRefs(None, terms)
     findings: list[TreeFinding] = []
     for path in git_tracked_files(repo_root):
         rel = path.relative_to(repo_root).as_posix()
@@ -285,10 +292,11 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...
             continue
         lines = text.splitlines()
         findings.extend(
-            TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, terms, allowlist)
+            TreeFinding(rel, lineno, term, line, refs.ref(term))
+            for lineno, term, line in scan_text(text, terms, allowlist)
         )
         if not terminology_gate.path_is_exempt(rel):
             for lineno, finding in terminology_gate.scan_text(text):
                 term = f"{finding.phrase} — {finding.correction}"
-                findings.append(TreeFinding(rel, lineno, term, lines[lineno - 1]))
+                findings.append(TreeFinding(rel, lineno, term, lines[lineno - 1], term))
     return findings

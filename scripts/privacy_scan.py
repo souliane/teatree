@@ -303,9 +303,9 @@ def _scan_directory(root: Path, scan: _Scan) -> list[dict[str, str | int]]:
 
 
 def _location(finding: dict[str, str | int]) -> str:
-    """Locatable position of a finding: ``<file> line N`` in a directory scan, else ``line N``."""
+    """Locatable position of a finding: ``<file>:N`` in a directory scan, else ``line N``."""
     file = finding.get("file")
-    return f"{file} line {finding['line']}" if file else f"line {finding['line']}"
+    return f"{file}:{finding['line']}" if file else f"line {finding['line']}"
 
 
 def _plain_summary(findings: list[dict[str, str | int]]) -> str:

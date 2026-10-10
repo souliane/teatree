@@ -19,11 +19,22 @@ class TermRefs:
     """
 
     def __init__(self, registry: Mapping[str, tuple[str, ...]] | None, scan_terms: tuple[str, ...] = ()) -> None:
-        self._refs = {_key(term): f"scan#{index}" for index, term in enumerate(scan_terms)}
+        self._refs: dict[str, str] = {}
+        self._terms: dict[str, str] = {}
+        for index, term in enumerate(scan_terms):
+            self._register(term, f"scan#{index}")
         for term_class, terms in reversed(list((registry or {}).items())):
-            if term_class == ALLOW:
-                continue
-            self._refs.update({_key(term): f"{term_class}#{index}" for index, term in enumerate(terms)})
+            if term_class != ALLOW:
+                for index, term in enumerate(terms):
+                    self._register(term, f"{term_class}#{index}")
+
+    def _register(self, term: str, ref: str) -> None:
+        self._refs[_key(term)] = ref
+        self._terms[ref] = term.strip()
 
     def ref(self, term: str) -> str:
         return self._refs.get(_key(term), UNLISTED_REF)
+
+    def term(self, ref: str) -> str | None:
+        """The registry term a ``class#index`` names, for the in-process caller that must act on it."""
+        return self._terms.get(ref)
