@@ -135,7 +135,7 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 _resolve_visibility() {
   local err py probe_path out="" rc=1
   err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX" 2>/dev/null) || err=/dev/null
-  probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src${PYTHONPATH:+:${PYTHONPATH}}"
+  probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src"
 
   if command -v uv >/dev/null 2>&1; then
     if out=$(PYTHONPATH="${probe_path}" uv run --project "${repo_root}" --no-sync \
