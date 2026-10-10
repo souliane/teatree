@@ -31,9 +31,7 @@ class TestHeadingNormalization:
         assert normalize_heading(heading) == "/spec-writer - build summary notes"
 
     def test_a_different_skills_section_is_not_claimed(self) -> None:
-        assert normalize_heading("🧪 /scenario-writer — checklist and progress state") != normalize_heading(
-            CANONICAL
-        )
+        assert normalize_heading("🧪 /scenario-writer — checklist and progress state") != normalize_heading(CANONICAL)
 
 
 class TestSectionResolution:
