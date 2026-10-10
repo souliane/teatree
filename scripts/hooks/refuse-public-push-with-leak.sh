@@ -457,11 +457,14 @@ _worse_scan_rc() {
   echo "${worst}"
 }
 
-# A raw commit or tag object on stdin, as it is (`raw`) or with only the identity addresses blanked (`blank`): the
-# `<...>` part of its `author`, `committer` and `tagger` header lines, which are noreply addresses by rule.
+# A raw commit or tag object on stdin, as it is (`raw`) or with the exact string `@users.noreply.github.com` cut from the
+# `<...>` of its `author`, `committer` and `tagger` lines (`blank`), the indented copies inside a `mergetag` block
+# included: the identity rule makes that domain the only one allowed, so the email detector has nothing to find in it.
+# The login in front of it stays visible to every detector, because the rule accepts any `[A-Za-z0-9-]+` there and a
+# token such as `sk-…` fits it.
 _identity_view() {
   if [ "$1" = blank ]; then
-    sed -E '1,/^$/s/^(author|committer|tagger) (.*)<[^>]*>/\1 \2<>/'
+    sed -E '1,/^$/s/^( ?(author|committer|tagger) .*)@users\.noreply\.github\.com>/\1>/'
   else
     cat
   fi
@@ -487,8 +490,8 @@ _emit_objects() {
 # The WHOLE raw object, headers and all, because an extra header, an author or committer name and a tag's own lines travel
 # with the pushed object like its message does, and no CI job reads objects. Two passes, one report: registry terms and
 # opaque ids over the object as it is, so a term in a name or an address is still found; and EVERY detector over it with
-# the identity addresses blanked, so a secret or a home path in a header is found and the noreply address is no email
-# finding. Only deliberately encoded content is left unread.
+# the noreply domain cut from the identity lines, so a secret or a home path in a header is found, and so is a token worn
+# as a noreply login, while a noreply address is no email finding. Only deliberately encoded content is left unread.
 _scan_objects_from() {
   local kind="$1" terms_rc=0 full_rc=0 terms_report full_report
   shift

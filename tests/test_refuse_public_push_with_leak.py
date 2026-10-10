@@ -2159,16 +2159,20 @@ class _CraftedCommit:
 
     author_name: str = "Dev"
     committer_name: str = "Dev"
+    author_email: str = _NOREPLY_EMAIL
+    committer_email: str = _NOREPLY_EMAIL
     extra_header: str = ""
     message: str = "a clean message\n"
     blank_line: bool = True
+    second_parent: str = ""
 
 
 def _craft_commit(repo: Path, plant: _CraftedCommit) -> str:
     """Write a commit object by hand, on ``HEAD``'s tree, so its headers can carry what ``git commit`` would not."""
-    ident = f"<{_NOREPLY_EMAIL}> 1700000000 +0000"
     lines = [f"tree {_rev(repo, 'HEAD^{tree}')}", f"parent {_rev(repo, 'HEAD')}"]
-    lines += [f"author {plant.author_name} {ident}", f"committer {plant.committer_name} {ident}"]
+    lines += [f"parent {plant.second_parent}"] if plant.second_parent else []
+    lines += [f"author {plant.author_name} <{plant.author_email}> 1700000000 +0000"]
+    lines += [f"committer {plant.committer_name} <{plant.committer_email}> 1700000000 +0000"]
     lines += [plant.extra_header] if plant.extra_header else []
     text = "\n".join(lines) + "\n" + (f"\n{plant.message}" if plant.blank_line else "")
     return (
@@ -2211,6 +2215,60 @@ _GENERIC_HEADER_PLANTS = {
 }
 
 
+#: A secret-shaped login: the identity rule accepts any ``[A-Za-z0-9-]+@users.noreply.github.com``, and ``sk-`` fits it.
+_LOGIN_TOKEN = "sk" + "-" + "A" * 24
+_DISGUISED = f"{_LOGIN_TOKEN}@users.noreply.github.com"
+_LOGIN_PLANTS = {
+    "author": _CraftedCommit(author_email=_DISGUISED),
+    "committer": _CraftedCommit(committer_email=_DISGUISED),
+    "duplicate-author-line": _CraftedCommit(extra_header=f"author y <{_DISGUISED}> 1700000000 +0000"),
+    "line-mimicking-an-identity-inside-a-signature": _CraftedCommit(
+        extra_header="\n".join(
+            [
+                "gpgsig -----BEGIN PGP SIGNATURE-----",
+                f" author y <{_DISGUISED}> 1700000000 +0000",
+                " -----END PGP SIGNATURE-----",
+            ]
+        )
+    ),
+}
+
+
+def _craft_tag(repo: Path, *, tagger_email: str) -> str:
+    """Write an annotated tag object by hand, on ``HEAD``, so its ``tagger`` line carries what ``git tag`` would not."""
+    head = ["object " + _rev(repo, "HEAD"), "type commit", "tag v9", f"tagger Dev <{tagger_email}> 1700000000 +0000"]
+    text = "\n".join(head) + "\n\na clean tag\n"
+    return (
+        subprocess.run(
+            [str(shutil.which("git")), "hash-object", "-t", "tag", "-w", "--stdin"],
+            cwd=repo,
+            input=text.encode(),
+            check=True,
+            capture_output=True,
+            env=_hermetic_env(),
+        )
+        .stdout.decode()
+        .strip()
+    )
+
+
+def _signed_tag_mergetag(tagged: str) -> str:
+    """The ``mergetag`` header git writes when it merges a SIGNED tag, with a placeholder signature block."""
+    lines = [
+        f"mergetag object {tagged}",
+        " type commit",
+        " tag v1",
+        f" tagger Dev <{_NOREPLY_EMAIL}> 1700000000 +0000",
+        " ",
+        " a clean signed tag",
+        " -----BEGIN PGP SIGNATURE-----",
+        " ",
+        " PLACEHOLDERSIGNATUREBLOCKNOTAREALSIGNATURE",
+        " -----END PGP SIGNATURE-----",
+    ]
+    return "\n".join(lines)
+
+
 class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
     """A commit object carries more text than its message: extra headers and the author and committer names.
 
@@ -2250,6 +2308,58 @@ class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
         assert report.startswith("1\n"), "the value landed in a commit header: " + report
         assert f"commit {crafted}" in report, report
         assert category in report, report
+
+    @pytest.mark.parametrize("plant", list(_LOGIN_PLANTS.values()), ids=list(_LOGIN_PLANTS))
+    def test_a_secret_shaped_login_is_refused_though_the_domain_is_noreply(
+        self, tmp_path: Path, plant: _CraftedCommit
+    ) -> None:
+        """Only the exact ``@users.noreply.github.com`` is hidden from the detectors, not the login in front of it."""
+        crafted, report = self._push(tmp_path, plant)
+
+        assert report.startswith("1\n"), "the token landed as a noreply login: " + report
+        assert f"commit {crafted}" in report, report
+        assert "api_key" in report, report
+
+    def test_a_secret_shaped_login_in_a_tagger_line_is_refused(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        tag = _craft_tag(work, tagger_email=_DISGUISED)
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, f"refs/tags/v9 {tag} refs/tags/v9 {ZERO_SHA}\n", hook=hook)
+
+        assert result.returncode == 1, "the token landed as a tagger login: " + result.stdout + result.stderr
+        assert "api_key" in result.stdout, result.stdout
+
+    def test_a_clean_noreply_tagger_passes(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        tag = _craft_tag(work, tagger_email=_NOREPLY_EMAIL)
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, f"refs/tags/v9 {tag} refs/tags/v9 {ZERO_SHA}\n", hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_clean_merge_of_a_signed_tag_passes(self, tmp_path: Path) -> None:
+        """Git copies the tag's ``tagger`` line, indented, into a ``mergetag`` header: a noreply address, no finding."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        _git(work, "checkout", "-b", "side")
+        side = _commit_file(work, "side.txt", "a clean side line\n", "side work")
+        _git(work, "checkout", "-")
+        merge = _craft_commit(work, _CraftedCommit(second_parent=side, extra_header=_signed_tag_mergetag(side)))
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, f"refs/heads/feature {merge} refs/heads/feature {ZERO_SHA}\n", hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def test_a_clean_hand_made_commit_passes(self, tmp_path: Path) -> None:
         """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""

@@ -799,19 +799,39 @@ class TestATermInAPathOrABranchNameIsRefused:
         assert not outcome.pushed
 
 
-def _hand_made_commit(
-    repo: Path, *, author: str = "agent", committer: str = "agent", header: str = "", blank_line: bool = False
-) -> str:
+@dataclass(frozen=True)
+class _HandMade:
+    """What a hand-made commit object carries beyond ``git commit``'s own output."""
+
+    author: str = "agent"
+    committer: str = "agent"
+    author_email: str = ""
+    committer_email: str = ""
+    header: str = ""
+    blank_line: bool = False
+    second_parent: str = ""
+
+
+def _hand_made_commit(repo: Path, plant: _HandMade | None = None) -> str:
     """Write a commit object by hand on ``HEAD``'s tree and move the branch onto it; the object may end in a header."""
+    plant = plant or _HandMade()
+    config_email = run_checked(["git", "config", "user.email"], cwd=repo).stdout.strip()
     tree = run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip()
-    parent = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
-    ident = f"<{run_checked(['git', 'config', 'user.email'], cwd=repo).stdout.strip()}> 1700000000 +0000"
-    text = f"tree {tree}\nparent {parent}\nauthor {author} {ident}\ncommitter {committer} {ident}\n"
-    text += f"{header}\n" if header else ""
-    text += "\na clean message\n" if (blank_line or not header) else ""
+    parents = [run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()]
+    parents += [plant.second_parent] if plant.second_parent else []
+    lines = [f"tree {tree}", *(f"parent {parent}" for parent in parents)]
+    lines += [f"author {plant.author} <{plant.author_email or config_email}> 1700000000 +0000"]
+    lines += [f"committer {plant.committer} <{plant.committer_email or config_email}> 1700000000 +0000"]
+    text = "\n".join(lines) + "\n"
+    text += f"{plant.header}\n" if plant.header else ""
+    text += "\na clean message\n" if (plant.blank_line or not plant.header) else ""
     sha = run_checked(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, stdin_text=text).stdout.strip()
     run_checked(["git", "update-ref", "refs/heads/feature", sha], cwd=repo)
     return sha
+
+
+#: A secret-shaped login: the identity rule accepts any ``[A-Za-z0-9-]+@users.noreply.github.com``, and ``sk-`` fits it.
+_DISGUISED = "sk" + "-" + "A" * 24 + "@users.noreply.github.com"
 
 
 class TestACommitObjectIsReadWholeNotOnlyItsMessage:
@@ -831,7 +851,7 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
         ids=["extra-header", "author-name", "committer-name"],
     )
     def test_a_term_in_a_header_is_refused(self, repo: Path, leak_env: None, plant: dict[str, str]) -> None:
-        _hand_made_commit(repo, **plant)
+        _hand_made_commit(repo, _HandMade(**plant))
 
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
@@ -852,7 +872,7 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
         self, repo: Path, leak_env: None, header: str, category: str, shape: str
     ) -> None:
         """Every detector reads the object, not only the term gates; the same value in a message is refused."""
-        _hand_made_commit(repo, header=header, blank_line=shape == "with-a-message")
+        _hand_made_commit(repo, _HandMade(header=header, blank_line=shape == "with-a-message"))
 
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
@@ -864,6 +884,63 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
         """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
         _merge_forward(repo, main_content="a clean prior line\n")
         (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+
+    @pytest.mark.parametrize(
+        "plant",
+        [
+            _HandMade(author_email=_DISGUISED),
+            _HandMade(committer_email=_DISGUISED),
+            _HandMade(header=f"author y <{_DISGUISED}> 1700000000 +0000"),
+            _HandMade(
+                header="\n".join(
+                    [
+                        "gpgsig -----BEGIN PGP SIGNATURE-----",
+                        f" author y <{_DISGUISED}> 1700000000 +0000",
+                        " -----END PGP SIGNATURE-----",
+                    ]
+                )
+            ),
+        ],
+        ids=["author", "committer", "duplicate-author-line", "line-mimicking-an-identity-inside-a-signature"],
+    )
+    def test_a_secret_shaped_login_is_refused_though_the_domain_is_noreply(
+        self, repo: Path, leak_env: None, plant: _HandMade
+    ) -> None:
+        """Only the exact ``@users.noreply.github.com`` is hidden from the detectors, not the login in front of it."""
+        _hand_made_commit(repo, plant)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the token landed as a noreply login"
+        assert any(f.gate == "secret-scan" and "api_key" in f.detail for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_clean_merge_of_a_signed_tag_passes(self, repo: Path, leak_env: None) -> None:
+        """Git copies the tag's ``tagger`` line, indented, into a ``mergetag`` header: a noreply address, no finding."""
+        email = run_checked(["git", "config", "user.email"], cwd=repo).stdout.strip()
+        run_checked(["git", "checkout", "-b", "side"], cwd=repo)
+        _commit(repo, "side.txt", "a clean side line\n", "side work")
+        side = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        run_checked(["git", "checkout", "feature"], cwd=repo)
+        mergetag = "\n".join(
+            [
+                f"mergetag object {side}",
+                " type commit",
+                " tag v1",
+                f" tagger Dev <{email}> 1700000000 +0000",
+                " ",
+                " a clean signed tag",
+                " -----BEGIN PGP SIGNATURE-----",
+                " ",
+                " PLACEHOLDERSIGNATUREBLOCKNOTAREALSIGNATURE",
+                " -----END PGP SIGNATURE-----",
+            ]
+        )
+        _hand_made_commit(repo, _HandMade(second_parent=side, header=mergetag, blank_line=True))
 
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
