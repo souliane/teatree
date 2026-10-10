@@ -57,10 +57,20 @@ def _git(repo: Path, *args: str, timeout: int = _LOCAL_TIMEOUT_S, stdin: str = "
     return result.stdout if result.returncode == 0 else None
 
 
-def _listing_goes_where_the_push_goes(repo: Path, remote_url: str, remote_name: str) -> bool:
-    listed_at = _git(repo, "ls-remote", "--get-url", remote_url)
+def _why_a_listing_cannot_be_trusted(repo: Path, remote_url: str, remote_name: str) -> str:
+    """``""`` when a listing at *remote_url* comes from where the push goes, else why it would not."""
     pushed_to = _git(repo, "remote", "get-url", "--push", remote_name)
-    return listed_at is not None and pushed_to is not None and listed_at.strip() == remote_url == pushed_to.strip()
+    if pushed_to is None:
+        return "could not confirm the URL git pushes to (no remote of that name, or a push to a raw URL)"
+    if pushed_to.strip() != remote_url:
+        return "could not list the heads: the push URL of the remote differs from the URL git passed"
+    listed_at = _git(repo, "ls-remote", "--get-url", remote_url)
+    if listed_at is None or listed_at.strip() != remote_url:
+        return (
+            "could not list the heads at the URL git pushes to: a url.<base>.insteadOf or pushInsteadOf "
+            "setting would send the listing to another repository"
+        )
+    return ""
 
 
 def _commits_held_here(repo: Path, shas: list[str]) -> list[str]:
@@ -76,11 +86,7 @@ def remote_holdings(
 ) -> RemoteHoldings:
     """The commits the remote at *remote_url* holds that *repo* has, with *reported_shas* (git's own word) added."""
     reported = [sha for sha in reported_shas if _SHA.match(sha)]
-    if not _listing_goes_where_the_push_goes(repo, remote_url, remote_name):
-        reason = (
-            "could not list the heads at the URL git pushes to: a url.<base>.insteadOf or pushInsteadOf "
-            "setting would send the listing to another repository"
-        )
+    if reason := _why_a_listing_cannot_be_trusted(repo, remote_url, remote_name):
         return RemoteHoldings(tuple(_commits_held_here(repo, reported)), listed=False, reason=reason)
     listing = _git(repo, *_LOW_SPEED, "ls-remote", "--heads", remote_url, timeout=_LISTING_TIMEOUT_S)
     if listing is None:

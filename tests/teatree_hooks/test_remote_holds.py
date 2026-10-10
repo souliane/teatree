@@ -140,6 +140,18 @@ class TestAUrlRewriteCannotSendTheListingElsewhere:
         holdings = remote_holdings(work, remote_url=str(origin), remote_name="origin")
 
         assert not holdings.listed
+        assert "differs" in holdings.reason
+        assert "insteadOf" not in holdings.reason
+
+    def test_a_remote_name_git_does_not_know_is_not_blamed_on_a_rewrite(self, clone: tuple[Path, Path, str]) -> None:
+        """A push to a raw URL has no remote of that name; the reason says the push URL could not be confirmed."""
+        origin, work, _tip = clone
+
+        holdings = remote_holdings(work, remote_url=str(origin), remote_name=str(origin))
+
+        assert not holdings.listed
+        assert "could not confirm the URL git pushes to" in holdings.reason
+        assert "insteadOf" not in holdings.reason
 
     def test_an_unrewritten_url_is_listed(self, clone: tuple[Path, Path, str]) -> None:
         origin, work, _tip = clone
