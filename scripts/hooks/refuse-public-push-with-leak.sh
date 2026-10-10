@@ -122,11 +122,13 @@ _checkout_git() {
 # committed at HEAD must hash to their HEAD blobs. Hashing, not `git diff`: `--assume-unchanged` and `--skip-worktree`
 # make git stop looking at an edited file. Prints the differing paths, and only paths, never content.
 sources_list_rel="scripts/hooks/leak-gate-sources.txt"
+_listed_sources() {
+  { _checkout_git show "HEAD:${sources_list_rel}" 2>/dev/null </dev/null || true; } | grep -v '^$' | LC_ALL=C sort -u || true
+}
 _sources_differing_from_head() {
-  local listed paths path want hashes have
+  local paths path want hashes have
   local -a pathspec=()
-  listed=$(_checkout_git show "HEAD:${sources_list_rel}" 2>/dev/null </dev/null) || listed=""
-  paths=$(printf '%s\n' "${listed}" | grep -v '^$' | LC_ALL=C sort -u || true)
+  paths=$(_listed_sources)
   if [ -z "${paths}" ]; then
     printf '%s\n' "${sources_list_rel}"
     return 0
@@ -175,17 +177,33 @@ if [ -n "${differing_sources}" ]; then
   exit 1
 fi
 
-# Bytecode is code too: Python takes a `__pycache__/*.pyc` whose header carries the source's mtime and size for that
-# source's own bytecode, and the checkout's `__pycache__` is untracked and git-ignored, so a planted one would run in
-# place of the committed module the check above just verified. Every Python this hook starts reads and writes its
-# bytecode under a fresh empty directory instead, removed on exit; when none can be made the prefix is a path that
-# cannot exist, which reads nothing.
-pycache_prefix=$(mktemp -d "${TMPDIR:-/tmp}/t3-pycache.XXXXXX" 2>/dev/null) || pycache_prefix=/dev/null/t3-no-pycache
-trap '[ "${pycache_prefix}" = /dev/null/t3-no-pycache ] || rm -rf "${pycache_prefix}"' EXIT
-export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="${pycache_prefix}"
+# Nothing is run from the checkout. Its directories are searched by Python before the standard library (the script's own
+# directory, `PYTHONPATH`, and for `-m` the working directory, which is the repo being pushed), so an untracked
+# `argparse.py` or `dataclasses.py` anywhere there would run in place of the real module, and a planted
+# `__pycache__/*.pyc` in place of a verified source. The files the list names are therefore copied out of HEAD into a
+# directory of this hook's own, removed on exit, and every Python this hook starts runs from that copy with `-P` (no
+# script directory, no working directory on `sys.path`) and `-S` (no site) and writes no bytecode. The checks above stay:
+# they give a clear refusal for an edit, where the copy alone would silently ignore it.
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/t3-gate.XXXXXX" 2>/dev/null) || work_dir=""
+if [ -z "${work_dir}" ]; then
+  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: a directory for the committed sources could not be made under ${TMPDIR:-/tmp} (fail closed). Nothing was published."
+  exit 1
+fi
+trap 'rm -rf "${work_dir}"' EXIT
+gate_tree="${work_dir}/tree"
+mkdir "${gate_tree}"
+archive_paths=()
+while IFS= read -r archive_path; do
+  archive_paths+=("${archive_path}")
+done < <(_listed_sources)
+if ! _checkout_git archive --format=tar HEAD -- "${archive_paths[@]}" </dev/null | tar -x -C "${gate_tree}" 2>/dev/null; then
+  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: the committed sources could not be copied out of HEAD of ${repo_root} (fail closed). Nothing was published."
+  exit 1
+fi
+export PYTHONDONTWRITEBYTECODE=1
 
-scanner="${repo_root}/scripts/privacy_scan.py"
-scan_pythonpath="${repo_root}/src:${repo_root}/vendor/teatree/src"
+scanner="${gate_tree}/scripts/privacy_scan.py"
+scan_pythonpath="${gate_tree}/src:${gate_tree}/vendor/teatree/src"
 # The dedicated "findings present" exit code of scripts/privacy_scan.py. Any other
 # non-zero exit is a scan that could not run, and refuses the push as well.
 findings_code=3
@@ -198,7 +216,7 @@ _find_python() {
   local name candidate
   for name in python3.13 python3.14 python3 python; do
     while IFS= read -r candidate; do
-      if "${candidate}" -S -c 'import sys; sys.exit(sys.version_info < (3, 13))' >/dev/null 2>&1; then
+      if "${candidate}" -P -S -c 'import sys; sys.exit(sys.version_info < (3, 13))' >/dev/null 2>&1; then
         printf '%s\n' "${candidate}"
         return 0
       fi
@@ -210,20 +228,21 @@ _find_python() {
   printf '%s\n' "${candidate}"
 }
 
-# `-S`: no site-packages, no `.pth` file and no `sitecustomize` runs before the scanner does,
-# and PYTHONPATH is this checkout's own source only, so nothing outside the tree can stand in
-# for the gate or end it early. The scanner imports the standard library and `teatree` alone.
+# `-P -S`: no script or working directory on `sys.path`, no site-packages, no `.pth` file and no `sitecustomize` runs
+# before the scanner does, and PYTHONPATH is the copy of the committed sources alone, so nothing outside it can stand
+# in for the gate or end it early. The scanner imports the standard library and `teatree` alone.
 _scan() {
-  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S "${scanner}" "$@"
+  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -P -S "${scanner}" "$@"
 }
 
 scan_py=$(_find_python || true)
 
-# The visibility resolver starts exactly as the scanner does: this checkout's interpreter under `-S`, so no `.pth` file
-# of the checkout's own `.venv`, no `sitecustomize` and no site-packages runs before it, and PYTHONPATH is this
-# checkout's source alone (in BOTH supported layouts: `<root>/src/teatree` standalone, `<root>/vendor/teatree/src/teatree`
-# in a fork that vendors core). Its import chain is stdlib-only, so nothing else is needed. The FULL remote URL is
-# passed, never the host-stripped `slug`, because the host segment is what selects the forge tool.
+# The visibility resolver starts exactly as the scanner does: the interpreter found above under `-P -S` from the copy of
+# the committed sources, so no `.pth` file, no `sitecustomize`, no site-packages and no working-directory module runs
+# first, and PYTHONPATH is that copy alone (in BOTH supported layouts: `<root>/src/teatree` standalone,
+# `<root>/vendor/teatree/src/teatree` in a fork that vendors core). Its import chain is stdlib-only, so nothing else is
+# needed. The FULL remote URL is passed, never the host-stripped `slug`, because the host segment is what selects the
+# forge tool.
 #
 # A probe failure is REPORTED, never swallowed. Discarding it is precisely how a PRIVATE repo gets silently
 # downgraded to "assume public" and re-scanned on every push: the verdict is undetermined, the gate says only
@@ -235,7 +254,7 @@ _resolve_visibility() {
 
   if [ -n "${scan_py}" ]; then
     if out=$(PYTHONPATH="${scan_pythonpath}" \
-        "${scan_py}" -S -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}" </dev/null); then
+        "${scan_py}" -P -S -m teatree.hooks.repo_visibility_cli --live "${remote_url}" 2>>"${err}" </dev/null); then
       rc=0
     fi
   fi
@@ -291,7 +310,7 @@ esac
 
 if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
   echo "✗ refuse: push to ${target} cannot be checked: the privacy scan could not start (fail closed)."
-  [ -f "${scanner}" ] || echo "  ${scanner} is missing from this checkout."
+  [ -f "${scanner}" ] || echo "  scripts/privacy_scan.py is missing from this checkout's committed sources."
   [ -n "${scan_py}" ] || echo "  No Python 3.13+ interpreter was found on PATH (python3.13, python3.14, python3, python, uv)."
   echo "  Nothing was published. Install Python 3.13+ (or uv) and restore this checkout's scripts/, then push again."
   [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
@@ -370,7 +389,7 @@ if [ "${synthesized}" != "1" ]; then
   done <<< "${refs_input}"
 fi
 tips_rc=0
-tips_out=$(PYTHONPATH="${scan_pythonpath}" "${scan_py}" -S -m teatree.hooks.remote_holds \
+tips_out=$(PYTHONPATH="${scan_pythonpath}" "${scan_py}" -P -S -m teatree.hooks.remote_holds \
   "${remote_url}" "${remote_name}" ${reported_shas[@]+"${reported_shas[@]}"} </dev/null) || tips_rc=$?
 if [ "${tips_rc}" -ne 0 ]; then
   echo "⚠ push privacy gate: could not determine what the remote holds (exit ${tips_rc}) — scanning every commit reachable from the pushed sha (wider, never narrower)." >&2

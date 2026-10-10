@@ -126,6 +126,24 @@ def _listed_sources() -> list[str]:
     return [line for line in (REPO_ROOT / SOURCES_LIST).read_text(encoding="utf-8").splitlines() if line]
 
 
+def commit_guarded(root: Path) -> None:
+    """Commit what a test planted in a bare scratch checkout, and list the planted files as the guarded sources.
+
+    The hook runs only the committed files its list names, so a stand-in scanner or ``teatree`` package a test writes
+    after :func:`place_hook` has to be committed and listed to run at all.
+    """
+    guarded: list[str] = []
+    for relative in ("scripts/privacy_scan.py", "src", "vendor"):
+        target = root / relative
+        files = [target] if target.is_file() else sorted(target.rglob("*")) if target.is_dir() else []
+        guarded.extend(path.relative_to(root).as_posix() for path in files if path.is_file())
+    (root / SOURCES_LIST).write_text(
+        "".join(f"{path}\n" for path in sorted(guarded or ["README.md"])), encoding="utf-8"
+    )
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.name=scratch", "-c", "user.email=scratch@example.invalid", "commit", "-q", "-m", "planted")
+
+
 def default_hook(parent: Path, env: Mapping[str, str]) -> Path:
     """The hook placed beside *parent* for the registry *env* carries, reused when it is already there."""
     registry = env.get("TEATREE_TERM_REGISTRY", "")

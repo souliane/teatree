@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks._repo_visibility import slug_for_remote_url
-from tests._leak_hook_checkout import HOOK, REPO_ROOT, CommittedFingerprint, default_hook, place_hook
+from tests._leak_hook_checkout import HOOK, REPO_ROOT, CommittedFingerprint, commit_guarded, default_hook, place_hook
 
 SCAN = REPO_ROOT / "scripts" / "privacy_scan.py"
 #: The scanner refuses to run without a registry, so every hook run is given a placeholder one.
@@ -586,7 +586,7 @@ class TestLeakGateFailsClosedOnScannerCrash:
         _make_unusable_bare_pythons(bin_dir)
         for tool in (
             *("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"),
-            *("env", "awk", "paste", "uniq", "head", "wc", "find"),
+            *("env", "awk", "paste", "uniq", "head", "wc", "find", "tar", "mkdir"),
         ):
             found = shutil.which(tool, path=env["PATH"])
             assert found is not None
@@ -1339,6 +1339,7 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         hook = _relocate_hook(root)
         _plant_always_finding_scanner(root)
         _fake_core_package(root / core_src, verdict=verdict, fail_marker=fail_marker)
+        commit_guarded(root)
 
         origin = tmp_path / "origin"
         _make_repo(origin)
@@ -1419,6 +1420,7 @@ class TestResolverNeedsNothingButTheCheckoutsSource:
         _plant_always_finding_scanner(root)
         if core_src is not None:
             _fake_core_package(root / core_src, verdict="PRIVATE")
+        commit_guarded(root)
         work, _env = _clone_with_remote(tmp_path, "PUBLIC")
         env = _hermetic_env()
         env["PATH"] = _PATH_WITHOUT_GH
@@ -1984,26 +1986,49 @@ class TestTheHookReadsNoEnvironmentOverride:
 
 
 class TestCommitMessagesRideTheScannersStdin:
-    """A message is handed to the scanner on stdin: no file is written, so no TMPDIR can be missing or unwritable."""
+    """A message is handed to the scanner on stdin: the scan writes no file, and the hook leaves nothing in ``TMPDIR``.
 
-    def test_messages_scanned_from_stdin_not_tmpdir(self, tmp_path: Path) -> None:
+    The hook needs one directory of its own, for the copy of the committed sources it runs. Without one it refuses:
+    a gate that cannot make it has not looked at the push.
+    """
+
+    @staticmethod
+    def _usable_tmpdir(tmp_path: Path, env: dict[str, str]) -> Path:
+        tmpdir = tmp_path / "tmpdir"
+        tmpdir.mkdir()
+        env["TMPDIR"] = str(tmpdir)
+        return tmpdir
+
+    def test_messages_are_scanned_from_stdin_and_nothing_is_left_in_tmpdir(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+        tmpdir = self._usable_tmpdir(tmp_path, env)
         tip = _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n\n" + _PLANTED_SECRET)
 
         result = _run_hook(work, env, _push_stdin(work))
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert f"commit {tip} (commit message):" in result.stdout, result.stdout
+        assert list(tmpdir.iterdir()) == []
 
-    def test_a_clean_message_passes_with_the_same_unusable_tmpdir(self, tmp_path: Path) -> None:
+    def test_a_clean_message_passes_and_leaves_nothing_in_tmpdir(self, tmp_path: Path) -> None:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+        tmpdir = self._usable_tmpdir(tmp_path, env)
         _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n")
 
         result = _run_hook(work, env, _push_stdin(work))
 
         assert result.returncode == 0, result.stdout + result.stderr
+        assert list(tmpdir.iterdir()) == []
+
+    def test_an_unusable_tmpdir_refuses_instead_of_skipping_the_scan(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TMPDIR"] = str(tmp_path / "no-such-tmpdir")
+        _commit_verbatim(work, "a.txt", "a clean line\n", "feat: add a\n\n" + _PLANTED_SECRET)
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "directory for the committed sources could not be made" in result.stdout, result.stdout
 
 
 class TestRootForcedAndTagRangesAreCheckedForRegistryTerms:
@@ -2475,6 +2500,18 @@ class TestThePushPathTakesOnlyTheForgesPrivateAnswer:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+_ARGPARSE_THAT_REPORTS_CLEAN = (
+    'import os, sys\nsys.stdout.write("Privacy scan: clean (0 findings)\\n")\nsys.stdout.flush()\nos._exit(0)\n'
+)
+_DATACLASSES_THAT_ANSWERS_PRIVATE = (
+    "import os, sys\n"
+    'if "--live" in sys.argv:\n'
+    '    sys.stdout.write("PRIVATE\\n")\n'
+    "    sys.stdout.flush()\n"
+    "    os._exit(0)\n"
+)
+
+
 class TestTheHookRunsOnlyCommittedCode:
     """An edit nobody committed is not code the push gate may run: it is the pusher's word that the push is clean.
 
@@ -2631,6 +2668,29 @@ class TestTheHookRunsOnlyCommittedCode:
         assert result.returncode == 1, "the shadowing package judged the push: " + result.stdout + result.stderr
         assert "shadowed" in result.stdout, result.stdout
         assert "src/teatree/hooks/term_match/" in result.stdout, result.stdout
+
+    @pytest.mark.parametrize("where", ["scripts", "src"])
+    def test_an_untracked_module_named_like_a_standard_library_one_is_not_imported(
+        self, tmp_path: Path, where: str
+    ) -> None:
+        """The scanner's own directory and ``PYTHONPATH`` come first on ``sys.path``, ahead of the standard library."""
+        work, env, hook = self._leaking_push(tmp_path)
+        (hook.parents[2] / where / "argparse.py").write_text(_ARGPARSE_THAT_REPORTS_CLEAN, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, f"{where}/argparse.py judged the push: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
+
+    def test_a_standard_library_named_module_in_the_repo_the_hook_runs_in_is_not_imported(self, tmp_path: Path) -> None:
+        """``python -m`` puts the working directory first on ``sys.path``, and a hook runs in the repo being pushed."""
+        work, env, hook = self._leaking_push(tmp_path)
+        (work / "dataclasses.py").write_text(_DATACLASSES_THAT_ANSWERS_PRIVATE, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "dataclasses.py answered private: " + result.stdout + result.stderr
+        assert "privacy findings" in result.stdout, result.stdout
 
     def test_committed_sources_run_as_before(self, tmp_path: Path) -> None:
         """Anti-vacuity: with nothing edited the same push is judged by the real scanner and refused as a leak."""
