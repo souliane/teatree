@@ -15,7 +15,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from tests.test_refuse_public_push_with_leak import _clone_with_remote, _git, _push_stdin, _run_hook
+from tests.teatree_hooks.test_refuse_public_push_with_leak import _clone_with_remote, _git, _push_stdin, _run_hook
 
 
 def _rev_parse(work: Path) -> str:

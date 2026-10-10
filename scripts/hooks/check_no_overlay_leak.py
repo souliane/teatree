@@ -91,7 +91,7 @@ TEXT_SUFFIXES: tuple[str, ...] = (
 _EXEMPT_PATH_SUFFIXES: tuple[str, ...] = (
     "tests/teatree_hooks/test_opaque_id.py",
     "tests/test_no_overlay_leak_hook.py",
-    "tests/test_privacy_scan_script.py",
+    "tests/teatree_hooks/test_privacy_scan_script.py",
 )
 
 

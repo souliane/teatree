@@ -23,7 +23,7 @@ from scripts import privacy_scan
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE, REGISTRY_UNAVAILABLE_EXIT_CODE
 from teatree.hooks.term_fingerprint import gate_fingerprints
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "privacy_scan.py"
 _TERM = "acmeterm"
 _REGISTRY = json.dumps({"leak": ["alpha-term", _TERM], "prose_collider": [], "tone": []})
