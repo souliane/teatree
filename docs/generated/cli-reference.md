@@ -11624,8 +11624,8 @@ Usage: t3 teatree handover create [OPTIONS]
  because "hand-off written" over a payload the receiver cannot use is the
  failure this command is supposed to make impossible.
 
- No ``--to`` from outside the live ``t3-master`` slot parks for whichever
- session starts next. Per directive #8, every in-flight
+ No ``--to`` → the live ``t3-master`` slot holder; if none, parked
+ for whichever session starts next. Per directive #8, every in-flight
  sub-agent worktree is driven through leak-gated fast-push so their work is
  committed/pushed/PR'd BEFORE the orchestrator terminates them — and that
  barrier runs on the refused path too, since a session with nothing to hand
@@ -11636,8 +11636,9 @@ Usage: t3 teatree handover create [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --to                                         TEXT  Target session id. Omit   │
-│                                                    to park when another      │
-│                                                    session owns the loop.    │
+│                                                    to hand to the live loop  │
+│                                                    owner, else park for      │
+│                                                    next.                     │
 │ --from-file                                  TEXT  Read the hand-off body    │
 │                                                    from this file ('-' for   │
 │                                                    stdin).                   │
