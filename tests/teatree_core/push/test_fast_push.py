@@ -6,6 +6,7 @@ runtime so this test file never contains a literal matchable token.
 """
 
 import json
+import secrets
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -97,7 +98,7 @@ class TestLeakGatesRefuse:
 
         assert not outcome.ok
         assert any(f.gate == "banned-terms" and f.path == "notes.md" for f in outcome.findings)
-        assert any("forbiddenbrand" in f.detail for f in outcome.findings)
+        assert any(f.detail == "banned term leak#0" for f in outcome.findings)
         assert not outcome.committed
         assert not outcome.pushed
         assert forge.created == []
@@ -398,7 +399,7 @@ class TestCoreGateClassRouting:
     def test_leak_class_term_is_flagged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed_registry(tmp_path, monkeypatch)
         findings = LeakGateScan._banned_terms({"sample.txt": ["acme"]})
-        assert [f.detail for f in findings] == ["banned term 'acme'"]
+        assert [f.detail for f in findings] == ["banned term leak#0"]
 
     def test_tone_class_term_is_not_flagged_by_the_core_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -431,8 +432,20 @@ class TestCoreGateClassRouting:
         # registry's ``overlay`` class (not the excluded ``leak``/``prose_collider``).
         self._seed(tmp_path, monkeypatch, {"leak": ["democorp"], "prose_collider": [], "overlay": ["acme-internal"]})
         findings = LeakGateScan._overlay_leak({"sample.txt": ["uses acme-internal here"]})
-        assert [f.detail for f in findings] == ["overlay-scoped term 'acme-internal'"]
+        assert [f.detail for f in findings] == ["overlay-scoped term overlay#0"]
         assert LeakGateScan._overlay_leak({"sample.txt": ["mentions democorp"]}) == []
+
+    def test_a_term_shaped_like_an_email_or_an_id_is_named_by_class_and_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        email_term = f"zq{secrets.token_hex(4)}@qx{secrets.token_hex(3)}.com"
+        id_term = "C0" + "".join(secrets.choice("BDFGHJKPQRSVWXZ0123456789") for _ in range(9))
+        self._seed(tmp_path, monkeypatch, {"leak": [email_term], "prose_collider": [], "overlay": [id_term]})
+
+        details = [f.detail for f in LeakGateScan._banned_terms({"s.txt": [f"mail {email_term}"]})]
+        details += [f.detail for f in LeakGateScan._overlay_leak({"s.txt": [f"channel {id_term}"]})]
+
+        assert details == ["banned term leak#0", "overlay-scoped term overlay#0", "opaque id overlay#0"]
 
     def test_banned_terms_carve_out_reads_the_registry_allow_class(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -445,7 +458,7 @@ class TestCoreGateClassRouting:
         # Remove the carve-out and the bare slug flags again — anti-vacuous control.
         self._seed(tmp_path, monkeypatch, {"leak": [], "prose_collider": ["acme"]})
         assert [f.detail for f in LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]})] == [
-            "banned term 'acme'"
+            "banned term prose_collider#0"
         ]
 
 
@@ -692,7 +705,7 @@ class TestThePushedBranchNameIsScanned:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<ref-name>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed
@@ -786,7 +799,7 @@ class TestASyntheticPathNameDoesNotDisplaceARealFile:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<ref-name>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed
@@ -798,7 +811,7 @@ class TestASyntheticPathNameDoesNotDisplaceARealFile:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<commit-message>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<commit-message>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed

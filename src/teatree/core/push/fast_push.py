@@ -57,7 +57,7 @@ from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
-from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
+from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
@@ -338,8 +338,9 @@ class LeakGateScan:
             detail = "banned_term_registry is UNSET — configure its leak and prose_collider lists"
             return [LeakFinding(gate="banned-terms", path="", detail=detail)]
         allowlist = allowlist_terms()
+        refs = load_term_refs(terms)
         return [
-            LeakFinding(gate="banned-terms", path=path, detail=f"banned term '{term}'")
+            LeakFinding(gate="banned-terms", path=path, detail=f"banned term {refs.ref(term)}")
             for path, lines in lines_by_path.items()
             for line in lines
             if (term := matched_term(line, terms, allowlist))
@@ -395,14 +396,21 @@ class LeakGateScan:
     @staticmethod
     def _overlay_leak(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
         terms = terms_for_gate("overlay")
+        refs = load_term_refs(terms)
         findings = [
-            LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term '{term}'")
+            LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term {refs.ref(term)}")
             for path, lines in lines_by_path.items()
             for line in lines
             if (term := matched_term(line, terms))
         ]
         findings.extend(
-            LeakFinding(gate="overlay-leak", path=path, detail=f"opaque id '{opaque}'")
+            LeakFinding(
+                gate="overlay-leak",
+                path=path,
+                detail=f"opaque id {refs.ref(term)}"
+                if (term := matched_term(opaque, terms))
+                else f"opaque id '{opaque}'",
+            )
             for path, lines in lines_by_path.items()
             for line in lines
             for opaque in find_opaque_ids(line)
