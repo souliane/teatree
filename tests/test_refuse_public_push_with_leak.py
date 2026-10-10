@@ -580,7 +580,10 @@ class TestLeakGateFailsClosedOnScannerCrash:
         work, env = self._clean_feature_commit(tmp_path)
         bin_dir = tmp_path / "old-python-bin"
         _make_unusable_bare_pythons(bin_dir)
-        for tool in ("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"):
+        for tool in (
+            *("bash", "git", "gh", "sed", "tr", "grep", "sort", "cat", "mktemp", "rm", "dirname"),
+            *("env", "awk", "paste", "uniq", "head", "wc"),
+        ):
             found = shutil.which(tool, path=env["PATH"])
             assert found is not None
             (bin_dir / tool).symlink_to(found)
@@ -1290,7 +1293,7 @@ def _relocate_hook(root: Path) -> Path:
     directory, so this exercises the shipped script rather than a snapshot of
     it that could drift away from the file under test.
     """
-    return place_hook(root, registry=_DEFAULT_REGISTRY, scanner=None, src=None)
+    return place_hook(root, registry=_DEFAULT_REGISTRY, scanner=None, with_sources=False)
 
 
 def _make_failing_uv_shim(bin_dir: Path) -> None:
@@ -2503,3 +2506,98 @@ class TestThePushPathTakesOnlyTheForgesPrivateAnswer:
         result = _run_hook(work, env, _push_stdin(work))
 
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestTheHookRunsOnlyCommittedCode:
+    """An edit nobody committed is not code the push gate may run: it is the pusher's word that the push is clean.
+
+    The hook runs the scanner, the registry check and the visibility resolver from the working tree it lives in, so
+    an uncommitted edit of any of them (a scanner that reports nothing, a check that always verifies, a resolver that
+    always answers private) would judge the push. The hook reads the list of those files from HEAD and refuses when
+    a listed file differs from its HEAD blob, naming the file and never its content.
+    """
+
+    _EVIL = "# EVIL-MARKER-edited-and-never-committed\n"
+
+    def _leaking_push(
+        self, tmp_path: Path, *, env_registry: str = _REAL_REGISTRY, committed: str | None = None
+    ) -> tuple[Path, dict[str, str], Path]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = env_registry
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        (work / "leak.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+        fingerprint = CommittedFingerprint(registry=committed) if committed else None
+        hook = place_hook(tmp_path / "checkout", registry=env_registry, fingerprint=fingerprint)
+        return work, env, hook
+
+    @staticmethod
+    def _edit(hook: Path, relative: str, appended: str) -> None:
+        target = hook.parents[2] / relative
+        target.write_text(target.read_text(encoding="utf-8") + appended, encoding="utf-8")
+
+    def test_a_scanner_edited_to_report_nothing_is_refused(self, tmp_path: Path) -> None:
+        work, env, hook = self._leaking_push(tmp_path)
+        (hook.parents[2] / "scripts" / "privacy_scan.py").write_text(_CLEAN_SCANNER + self._EVIL, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the edited scanner judged the push: " + result.stdout + result.stderr
+        assert "scripts/privacy_scan.py" in result.stdout, result.stdout
+        assert "EVIL-MARKER" not in result.stdout + result.stderr, "the refusal names the file, never its content"
+
+    def test_a_registry_check_edited_to_always_verify_is_refused(self, tmp_path: Path) -> None:
+        work, env, hook = self._leaking_push(tmp_path, env_registry=_FAKE_REGISTRY, committed=_REAL_REGISTRY)
+        self._edit(hook, "src/teatree/hooks/term_fingerprint.py", "\nunverified_gates = lambda registry, path: []\n")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the edited check verified a fake registry: " + result.stdout + result.stderr
+        assert "src/teatree/hooks/term_fingerprint.py" in result.stdout, result.stdout
+
+    def test_a_visibility_resolver_edited_to_answer_private_is_refused(self, tmp_path: Path) -> None:
+        work, env, hook = self._leaking_push(tmp_path)
+        resolver = hook.parents[2] / "src" / "teatree" / "hooks" / "repo_visibility_cli.py"
+        edited = resolver.read_text(encoding="utf-8").replace(
+            "    verdict = probe_visibility(slug)\n", '    verdict = "PRIVATE"\n'
+        )
+        assert edited != resolver.read_text(encoding="utf-8"), "the edit must change the resolver"
+        resolver.write_text(edited, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "the edited resolver said private: " + result.stdout + result.stderr
+        assert "src/teatree/hooks/repo_visibility_cli.py" in result.stdout, result.stdout
+
+    def test_marking_the_file_assume_unchanged_does_not_hide_the_edit(self, tmp_path: Path) -> None:
+        work, env, hook = self._leaking_push(tmp_path)
+        root = hook.parents[2]
+        _git(root, "update-index", "--assume-unchanged", "scripts/privacy_scan.py")
+        (root / "scripts" / "privacy_scan.py").write_text(_CLEAN_SCANNER, encoding="utf-8")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, "git was told to ignore the edit: " + result.stdout + result.stderr
+        assert "scripts/privacy_scan.py" in result.stdout, result.stdout
+
+    def test_a_list_that_is_not_committed_is_refused(self, tmp_path: Path) -> None:
+        work, env, hook = self._leaking_push(tmp_path)
+        root = hook.parents[2]
+        _git(root, "rm", "-q", "scripts/hooks/leak-gate-sources.txt")
+        _git(root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "drop the list")
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "leak-gate-sources.txt" in result.stdout, result.stdout
+
+    def test_committed_sources_run_as_before(self, tmp_path: Path) -> None:
+        """Anti-vacuity: with nothing edited the same push is judged by the real scanner and refused as a leak."""
+        work, env, hook = self._leaking_push(tmp_path)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "privacy findings" in result.stdout

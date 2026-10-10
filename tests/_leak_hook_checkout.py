@@ -23,6 +23,7 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 HOOK: Final = REPO_ROOT / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
 REAL_SCANNER: Final = REPO_ROOT / "scripts" / "privacy_scan.py"
 FINGERPRINT_PATH: Final = Path(".github") / "term-source-fingerprint.json"
+SOURCES_LIST: Final = Path("scripts") / "hooks" / "leak-gate-sources.txt"
 
 
 def registry_table(registry: str | Mapping[str, object]) -> dict[str, list[str]]:
@@ -73,25 +74,39 @@ def place_hook(
     registry: str | Mapping[str, object],
     fingerprint: CommittedFingerprint | None = None,
     scanner: Path | str | None = REAL_SCANNER,
-    src: Path | None = REPO_ROOT / "src",
+    with_sources: bool = True,
 ) -> Path:
     """Place the real hook at ``<root>/scripts/hooks/`` in a git checkout and return its path.
 
-    *registry* is what the hook will load. *scanner* is the real scanner (a symlink), the text of a stand-in
-    the test authors, or ``None`` for none.
+    The checkout commits the real hook's guarded sources (copies of the working tree's, so a test sees an edit under
+    test), the list that names them and the fingerprint. *registry* is what the hook will load. *scanner* is the real
+    scanner, the text of a stand-in the test authors, or ``None`` for none. *with_sources* is ``False`` for a test
+    that plants its own ``teatree`` package.
     """
     fingerprint = fingerprint or CommittedFingerprint()
     hooks_dir = root / "scripts" / "hooks"
     hooks_dir.mkdir(parents=True)
     placed = hooks_dir / HOOK.name
     placed.symlink_to(HOOK)
-    if src is not None:
-        (root / "src").symlink_to(src)
+    guarded: list[str] = []
+    if with_sources:
+        guarded.extend(path for path in _listed_sources() if path != "scripts/privacy_scan.py")
+    scanner_target = root / "scripts" / "privacy_scan.py"
     if isinstance(scanner, Path):
-        (root / "scripts" / "privacy_scan.py").symlink_to(scanner)
+        guarded.append("scripts/privacy_scan.py")
+        scanner_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(scanner, scanner_target)
     elif scanner is not None:
-        (root / "scripts" / "privacy_scan.py").write_text(scanner, encoding="utf-8")
+        guarded.append("scripts/privacy_scan.py")
+        scanner_target.write_text(scanner, encoding="utf-8")
+    for relative in guarded:
+        if (REPO_ROOT / relative).is_file() and not (root / relative).exists():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative, root / relative)
     (root / "README.md").write_text("scratch checkout\n", encoding="utf-8")
+    (root / SOURCES_LIST).write_text(
+        "".join(f"{path}\n" for path in sorted(guarded or ["README.md"])), encoding="utf-8"
+    )
     target = root / FINGERPRINT_PATH
     target.parent.mkdir(parents=True)
     committed_text = fingerprint_text(registry if fingerprint.registry is None else fingerprint.registry)
@@ -105,6 +120,10 @@ def place_hook(
     if fingerprint.state == "edited":
         target.write_text(fingerprint_text(registry), encoding="utf-8")
     return placed
+
+
+def _listed_sources() -> list[str]:
+    return [line for line in (REPO_ROOT / SOURCES_LIST).read_text(encoding="utf-8").splitlines() if line]
 
 
 def default_hook(parent: Path, env: Mapping[str, str]) -> Path:

@@ -108,6 +108,53 @@ slug=$(printf '%s' "${remote_url}" \
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 
+# git at THIS checkout, blind to the variables that relocate a repository or its object store (a fleet claim push
+# exports a scratch object directory, and a hook run from another repository would otherwise read that one).
+_checkout_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE -u GIT_PREFIX -u GIT_CEILING_DIRECTORIES \
+    git -C "${repo_root}" "$@"
+}
+
+# The hook runs the scanner, the visibility resolver and `remote_holds` from this working tree, and everything they
+# import. An uncommitted edit of any of them (a scanner that reports nothing, a check that always verifies, a resolver
+# that always answers private) would be the pusher's word that the push is clean, so the files named by the list
+# committed at HEAD must hash to their HEAD blobs. Hashing, not `git diff`: `--assume-unchanged` and `--skip-worktree`
+# make git stop looking at an edited file. Prints the differing paths, and only paths, never content.
+sources_list_rel="scripts/hooks/leak-gate-sources.txt"
+_sources_differing_from_head() {
+  local listed paths path want hashes have
+  local -a pathspec=()
+  listed=$(_checkout_git show "HEAD:${sources_list_rel}" 2>/dev/null </dev/null) || listed=""
+  paths=$(printf '%s\n' "${listed}" | grep -v '^$' | LC_ALL=C sort -u || true)
+  if [ -z "${paths}" ]; then
+    printf '%s\n' "${sources_list_rel}"
+    return 0
+  fi
+  while IFS= read -r path; do
+    pathspec+=("${path}")
+  done <<< "${paths}"
+  want=$(_checkout_git ls-tree HEAD -- "${pathspec[@]}" 2>/dev/null </dev/null \
+    | awk -F'\t' '{ split($1, mode, " "); print mode[3] "\t" $2 }' || true)
+  if ! hashes=$(printf '%s\n' "${paths}" | _checkout_git hash-object --stdin-paths 2>/dev/null); then
+    printf '%s\n' "${paths}"
+    return 0
+  fi
+  have=$(paste <(printf '%s\n' "${hashes}") <(printf '%s\n' "${paths}"))
+  printf '%s\n%s\n' "${want}" "${have}" | LC_ALL=C sort | uniq -u | awk -F'\t' 'NF { print $(NF) }' | LC_ALL=C sort -u
+}
+
+differing_sources=$(_sources_differing_from_head)
+if [ -n "${differing_sources}" ]; then
+  differing_count=$(printf '%s\n' "${differing_sources}" | wc -l | tr -d ' ')
+  echo "✗ refuse: push to '${slug:-<remote>}' cannot be checked: ${differing_count} file(s) this hook runs differ from HEAD of ${repo_root}, or are not committed there:"
+  printf '%s\n' "${differing_sources}" | head -5 | sed 's/^/    /'
+  [ "${differing_count}" -le 5 ] || echo "    ... and $((differing_count - 5)) more"
+  echo "  The push gate runs only committed code: an uncommitted edit of it would be the pusher's word that the push is clean."
+  echo "  Commit or restore the file(s), then push again. Nothing was published."
+  exit 1
+fi
+
 # The FULL remote URL is passed (never the host-stripped `slug`) because the
 # host segment is what selects the forge tool. Shelling `gh repo view` here
 # hard-coded ONE forge: a gitlab.com remote errored on every push, so
@@ -255,15 +302,10 @@ fi
 # required term-source-drift CI job holds equal to the real secret. Only the fingerprint as committed counts: a file
 # that is missing, untracked, edited since, or unreadable is refused like a mismatch. No digest and no term is printed.
 fingerprint_rel=".github/term-source-fingerprint.json"
-_checkout_git() {
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE -u GIT_PREFIX -u GIT_CEILING_DIRECTORIES \
-    git -C "${repo_root}" "$@" </dev/null
-}
 _fingerprint_is_committed() {
   local at_head on_disk
-  at_head=$(_checkout_git rev-parse --verify --quiet "HEAD:${fingerprint_rel}" 2>/dev/null) || return 1
-  on_disk=$(_checkout_git hash-object -- "${repo_root}/${fingerprint_rel}" 2>/dev/null) || return 1
+  at_head=$(_checkout_git rev-parse --verify --quiet "HEAD:${fingerprint_rel}" 2>/dev/null </dev/null) || return 1
+  on_disk=$(_checkout_git hash-object -- "${repo_root}/${fingerprint_rel}" 2>/dev/null </dev/null) || return 1
   [ -n "${at_head}" ] && [ "${at_head}" = "${on_disk}" ]
 }
 
