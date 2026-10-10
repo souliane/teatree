@@ -48,7 +48,7 @@ def test_the_scan_covers_the_owner_question_tests() -> None:
 @pytest.mark.parametrize(
     "planted",
     [
-        "C04ABCDEF12",  # privacy-scan:allow deliberate scanner-test fixture, reserved example name
+        "C04ABCDEF12",  # privacy-scan:allow leak-scan:allow deliberate scanner-test fixture, reserved example name
         "https://real.example.org/x",
         "someone@real.example.org",  # privacy-scan:allow deliberate scanner-test fixture, reserved example name
     ],
