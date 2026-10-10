@@ -77,7 +77,7 @@ class GateInputs:
     unread_diff: str = ""
 
 
-def _repo_has_no_display_surface(overlay: "OverlayBase", ticket: Ticket) -> bool:
+def _repo_is_exempt_from_mandatory_e2e(overlay: "OverlayBase", ticket: Ticket) -> bool:
     """Whether the overlay excludes *ticket*'s repo from mandatory E2E.
 
     The repo is read off ``ticket.issue_url`` — the only repo identity the gate
@@ -118,7 +118,7 @@ def resolve_gate_inputs(ticket: Ticket, *, read_diff: Callable[[], list[str]], h
         overlay = get_overlay(ticket.overlay or None)
     except ImproperlyConfigured:
         overlay = None
-    if overlay is not None and _repo_has_no_display_surface(overlay, ticket):
+    if overlay is not None and _repo_is_exempt_from_mandatory_e2e(overlay, ticket):
         return GateInputs(ticket=ticket, changed_files=[], head_sha=head_sha, display_impacting=False)
     diff = guarded_read("the changed-file diff", read_diff, neutral=[])
     if diff.failed:
