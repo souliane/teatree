@@ -177,7 +177,7 @@ def _shorthand_problems(where: str, text: str) -> list[str]:
 def _option_problems(options: tuple[CardOption, ...]) -> list[str]:
     problems: list[str] = []
     if len(options) not in {0, 2, 3, 4}:
-        problems.append(f"{len(options)} option; a card has none, or 2 to 4 options")
+        problems.append(f"{len(options)} {'option' if len(options) == 1 else 'options'}; a card has none, or 2 to 4")
     labels = [option.label.strip().casefold() for option in options]
     if "" in labels:
         problems.append("an option has a blank label")

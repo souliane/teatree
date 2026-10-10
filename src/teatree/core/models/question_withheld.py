@@ -1,7 +1,6 @@
 """A withheld owner question hands the task waiting on it to the card that asks it again (#4990).
 
-Lives beside :class:`DeferredQuestion` because ``DeferredQuestion.record`` is what carries the task
-across, and a model may not import ``teatree.core``; ``core.question_heal`` does the withholding.
+Beside :class:`DeferredQuestion` because ``record`` carries the task across and a model may not import ``teatree.core``.
 """
 
 from typing import TYPE_CHECKING

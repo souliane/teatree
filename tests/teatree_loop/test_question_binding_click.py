@@ -1,9 +1,6 @@
-"""A tap on an owner-question button answers that question and closes its card (#4990).
+"""A tap on an owner-question button answers that question and closes its card in place (#4990).
 
-One committed round trip: record a card, post it through the first-post drain to a recording Slack client, then tap.
-The tap records the option's label on the SAME row (resolved via Slack) and edits the ROOT message to show the
-choice, always with blocks and never with buttons. A second tap, a tap by anyone else, or a tap on a stale card
-changes nothing.
+One committed round trip: post a card through the first-post drain to a recording Slack client, then tap it.
 """
 
 import contextlib

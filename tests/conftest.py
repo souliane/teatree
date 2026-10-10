@@ -203,8 +203,6 @@ def _clear_backend_caches() -> Iterator[None]:
     backend constructor routes through it) reaches ``read_pass`` via the module,
     not a bound import, so the single source-module patch is enough.
     """
-    from unittest.mock import patch  # noqa: PLC0415
-
     import teatree.utils.secrets as _secrets_mod  # noqa: PLC0415
     from teatree.core.backend_factory import reset_backend_caches  # noqa: PLC0415
     from teatree.core.overlay_loader import reset_overlay_cache  # noqa: PLC0415
@@ -649,14 +647,7 @@ def _merge_targets_private_by_default(request: pytest.FixtureRequest) -> Iterato
 
 @pytest.fixture(autouse=True)
 def _owner_is_never_in_quiet_hours(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Let the owner-question drains send at any wall-clock hour unless a test opts in.
-
-    The drains hold every DM from 22:00 to 08:00 in the owner's zone, so without this a drain test would pass
-    or fail with the hour the suite happens to run at. Tests that drive the window carry
-    ``@pytest.mark.real_quiet_hours`` and set the clock themselves.
-    """
-    from unittest.mock import patch  # noqa: PLC0415 — deferred: conftest stays import-light at collection
-
+    """Let the owner-question drains send at any wall-clock hour; ``@pytest.mark.real_quiet_hours`` opts out."""
     if "real_quiet_hours" in request.keywords:
         yield
         return

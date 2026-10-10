@@ -109,12 +109,7 @@ def apply_bound_answer(bound: BoundAnswer, *, backend: "MessagingBackend | None"
 
 
 def answer_from_click(payload: dict, *, backend: "MessagingBackend") -> bool:
-    """Record the option the owner tapped and close the card; ``True`` only when this tap answered it.
-
-    A tap by anyone else, on a message that roots no owner question, or naming an option the
-    card no longer offers changes nothing. A tap on a card that is already closed shows why,
-    in place of its buttons.
-    """
+    """Record the option the owner tapped and close the card; ``True`` only when this tap answered it."""
     tap = _parse_tap(payload)
     if tap is None or tap.user_id != configured_owner_id(backend):
         return False
@@ -194,11 +189,8 @@ def _parse_tap(payload: dict) -> _Tap | None:
 
 
 def _tapped_label(question: DeferredQuestion, tap: _Tap) -> str | None:
-    """The label of the tapped option, or ``None`` when the card no longer offers that option.
-
-    Not the ``options_hash`` check a typed digit needs: a producer may keep its own dedupe key in that column.
-    """
-    options = _recorded_options(question)
+    """The label of the tapped option, or ``None`` when the card no longer offers it."""
+    options = _recorded_options(question)  # not _live_options: a producer may keep its own key in options_hash
     if options is None or not (1 <= tap.index <= len(options)):
         return None
     label = str(options[tap.index - 1].get("label", ""))

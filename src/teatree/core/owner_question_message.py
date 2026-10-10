@@ -1,8 +1,6 @@
 """The owner-question message: the approved card layout as plain text and as Slack blocks (#4990).
 
-One layout (:func:`~teatree.core.modelkit.question_card.layout`) feeds both, so the text a row was checked
-as is the text it is sent as. A row recorded before cards existed is shown through the same layout; the
-checks it must pass at send time are the ones every card passes at record time.
+One layout feeds both, so the text a row was checked as is the text it is sent as; an old row goes through it too.
 """
 
 import datetime as dt

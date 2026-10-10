@@ -1,8 +1,6 @@
 """A row recorded before cards existed is checked where it is sent, and never reaches the owner unplainly (#4990).
 
-Every owner send goes through ``shown_problems_for``: a card passes by construction, an old row must read
-plainly now. One that does not is withheld — moved to the internal queue with an audit row, its root message
-(if it was already posted) replaced by a neutral line, and never posted, bumped or counted again.
+A row that does not read plainly now is withheld: moved to the internal queue, its posted root made neutral.
 """
 
 import datetime as dt

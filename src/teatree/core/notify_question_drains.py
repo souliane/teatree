@@ -294,12 +294,7 @@ def resurface_question_backlog(
 
 
 def _checked(rows: Iterable[DeferredQuestion], *, backend: "MessagingBackend | None") -> list[DeferredQuestion]:
-    """The rows whose text passes the owner-message checks; the others are withheld, never posted, bumped or counted.
-
-    A card passes by construction. A row recorded before cards existed must read plainly NOW, so an old
-    snake_case profile name or ``#123`` never reaches the owner; its already-posted root is replaced by a neutral
-    line (best-effort — an edit sends no notification, and a failed one must not stop the drain).
-    """
+    """The rows that pass the owner-message checks; the others are withheld, never posted, bumped or counted."""
     sendable: list[DeferredQuestion] = []
     for row in rows:
         if not (problems := shown_problems_for(row)):
