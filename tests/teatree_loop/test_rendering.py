@@ -238,7 +238,9 @@ class TestSelfReassignmentSuppression:
 
     def test_feed_of_only_self_reassignments_renders_zero_reassignment_output(self) -> None:
         actions = [
-            _disposition_action(reason="unassigned", payload_extra={"old_owner": "alice-alt", "new_owners": ["souliane"]}),
+            _disposition_action(
+                reason="unassigned", payload_extra={"old_owner": "alice-alt", "new_owners": ["souliane"]}
+            ),
             _disposition_action(
                 reason="unassigned", payload_extra={"old_owner": "alice.work", "new_owners": ["souliane"]}
             ),
