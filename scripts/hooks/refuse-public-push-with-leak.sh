@@ -69,10 +69,13 @@
 # (`<repo>/scripts/privacy_scan.py`, `<repo>/src`), never from an installed copy, so a push
 # that fixes the gate is judged by the fixed gate. The hook reads no override variable of its
 # own. The term registry and the private_repos allowlist still resolve through the environment
-# (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME), and a hook cannot see
-# its caller's environment as an attack, so the PreToolUse guards refuse an inline assignment of
-# any of them, or of SKIP/GIT_CONFIG_*/XDG_CONFIG_HOME, on a command that commits, pushes or runs
-# prek (src/teatree/hooks/git_bypass_detect.py, hooks/scripts/direct_command_guard.py). The local
+# (TEATREE_TERM_REGISTRY, T3_CONFIG_DB, T3_DATA_DIR, XDG_DATA_HOME, HOME), so before it trusts any
+# verdict, a private one included, the hook holds the lists it LOADED to the digests committed at this
+# checkout's HEAD in .github/term-source-fingerprint.json (digests only, never printed) and refuses on a
+# mismatch, on a fingerprint it cannot read, and on one that is missing, untracked or edited since. The
+# PreToolUse guards also refuse an inline assignment of any of those names, or of
+# SKIP/GIT_CONFIG_*/XDG_CONFIG_HOME, on a command that commits, pushes or runs prek or a t3 verb that
+# pushes (src/teatree/hooks/git_bypass_detect.py, hooks/scripts/direct_command_guard.py). The local
 # remote-tracking refs that bound the push range are trusted the same way, and the same guards
 # refuse writing one by hand.
 #
@@ -184,9 +187,14 @@ visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[
 # verdict is "could not confirm private", so it is enforced like a public one
 # (hooks/CLAUDE.md: public-surface leak gates fail CLOSED always); only the wording
 # differs, so no refusal calls a repo PUBLIC on a verdict that did not say so.
+known_private=0
 case "${visibility}" in
   PRIVATE | INTERNAL)
-    exit 0  # KNOWN non-public remote — nothing reaches public history
+    # KNOWN non-public remote — nothing reaches public history. The verdict comes from the same
+    # environment-resolved store as the term registry, so it is only trusted once that registry is verified below.
+    known_private=1
+    target="private repo '${slug}'"
+    confirm_hint=""
     ;;
   PUBLIC)
     target="PUBLIC repo '${slug}'"
@@ -257,6 +265,49 @@ if [ ! -f "${scanner}" ] || [ -z "${scan_py}" ]; then
   [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
   exit 1
 fi
+
+# The term registry and the private_repos verdict resolve through the environment, which a pusher can fill with
+# a store of their own in ways no PreToolUse guard sees (`export`, `printf -v`, `read`, `source`, a script setting
+# os.environ). So the lists this hook LOADED are held to the digests committed at this checkout's HEAD, which the
+# required term-source-drift CI job holds equal to the real secret. Only the fingerprint as committed counts: a file
+# that is missing, untracked, edited since, or unreadable is refused like a mismatch. No digest and no term is printed.
+fingerprint_rel=".github/term-source-fingerprint.json"
+_checkout_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE -u GIT_PREFIX -u GIT_CEILING_DIRECTORIES \
+    git -C "${repo_root}" "$@" </dev/null
+}
+_fingerprint_is_committed() {
+  local at_head on_disk
+  at_head=$(_checkout_git rev-parse --verify --quiet "HEAD:${fingerprint_rel}" 2>/dev/null) || return 1
+  on_disk=$(_checkout_git hash-object -- "${repo_root}/${fingerprint_rel}" 2>/dev/null) || return 1
+  [ -n "${at_head}" ] && [ "${at_head}" = "${on_disk}" ]
+}
+
+registry_rc=0
+registry_report=""
+if ! _fingerprint_is_committed; then
+  registry_rc=126
+else
+  registry_report=$(_scan --verify-registry "${repo_root}/${fingerprint_rel}" 2>&1 </dev/null) || registry_rc=$?
+fi
+if [ "${registry_rc}" -ne 0 ]; then
+  echo "✗ refuse: push to ${target} cannot be checked: the term registry this hook loaded could not be verified (fail closed)."
+  if [ "${registry_rc}" -eq 126 ]; then
+    echo "  ${fingerprint_rel} is not committed unchanged at HEAD of ${repo_root}, so there is nothing to hold the registry to."
+  else
+    printf '%s\n' "${registry_report}" | sed 's/^/  /'
+    if [ "${registry_rc}" -eq 5 ]; then
+      echo "  A registry of the caller's choosing (an exported term registry or config store, a redirected data dir or HOME) is not"
+      echo "  the one whose digests this checkout commits. If the owner's registry itself changed, the owner resyncs the CI secret and"
+      echo "  this file together (scripts/term_source_drift.py sync --apply) and the refreshed file is committed."
+    fi
+  fi
+  echo "  Nothing was published."
+  [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+  exit 1
+fi
+[ "${known_private}" = 0 ] || exit 0
 
 # Ref updates arrive on stdin under git's native pre-push protocol. But when the
 # hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the

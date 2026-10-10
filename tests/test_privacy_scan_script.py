@@ -15,10 +15,13 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
+from scripts import privacy_scan
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE, REGISTRY_UNAVAILABLE_EXIT_CODE
+from teatree.hooks.term_fingerprint import gate_fingerprints
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "privacy_scan.py"
@@ -712,3 +715,121 @@ class TestPrivacyScanDiffAddedLineScoping:
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "private_ip" in result.stdout
         assert "10.1.1.5" in result.stdout  # privacy-scan:allow self-fixture
+
+
+class TestVerifyRegistryAgainstTheCommittedFingerprint:
+    """``--verify-registry`` holds the registry the scan LOADED against the digests a repository commits.
+
+    The registry comes from the environment, which a caller can fill with a list of their own; the
+    committed fingerprint is the only thing in the checkout that says what the real list hashes to.
+    The report names a gate and never a digest or a term. All terms are SYNTHETIC.
+    """
+
+    _UNVERIFIED = 5
+    _REAL: ClassVar[dict[str, list[str]]] = {"leak": ["alpha-term", "beta-term"], "overlay": ["gamma-term"], "tone": []}
+
+    def _commit(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        document = {"version": 1, "gates": gate_fingerprints(registry)}
+        path = tmp_path / "term-source-fingerprint.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def _verify(self, fingerprint: Path, registry: dict[str, list[str]] | None) -> subprocess.CompletedProcess[str]:
+        env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB"}}
+        if registry is not None:
+            env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(fingerprint)],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_the_exit_code_is_its_own(self) -> None:
+        assert privacy_scan.REGISTRY_UNVERIFIED_EXIT_CODE == self._UNVERIFIED
+
+    def test_a_registry_matching_the_committed_fingerprint_verifies(self, tmp_path: Path) -> None:
+        result = self._verify(self._commit(tmp_path, self._REAL), self._REAL)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_registry_of_the_callers_choosing_does_not(self, tmp_path: Path) -> None:
+        fake = {"leak": ["a-term-the-caller-picked"], "overlay": ["gamma-term"]}
+
+        result = self._verify(self._commit(tmp_path, self._REAL), fake)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+        assert "tree" in result.stderr
+        assert "overlay" not in result.stderr
+
+    def test_the_report_carries_no_digest_and_no_term(self, tmp_path: Path) -> None:
+        fake = {"leak": ["a-term-the-caller-picked"], "overlay": ["another-picked-term"]}
+
+        result = self._verify(self._commit(tmp_path, self._REAL), fake)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+        shown = result.stdout + result.stderr
+        assert "sha256" not in shown
+        assert not any(term in shown for term in ("alpha-term", "beta-term", "gamma-term", "picked"))
+
+    def test_a_missing_fingerprint_does_not_verify(self, tmp_path: Path) -> None:
+        result = self._verify(tmp_path / "absent.json", self._REAL)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+
+    def test_a_malformed_fingerprint_does_not_verify(self, tmp_path: Path) -> None:
+        malformed = tmp_path / "term-source-fingerprint.json"
+        malformed.write_text('{"gates": {}}', encoding="utf-8")
+
+        result = self._verify(malformed, self._REAL)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+
+    def test_an_unset_registry_is_the_registry_unavailable_code_not_a_pass(self, tmp_path: Path) -> None:
+        empty_db = tmp_path / "empty.sqlite3"
+        conn = sqlite3.connect(str(empty_db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.commit()
+        conn.close()
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+        env["T3_CONFIG_DB"] = str(empty_db)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(self._commit(tmp_path, self._REAL))],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == REGISTRY_UNAVAILABLE_EXIT_CODE, result.stdout + result.stderr
+
+    def test_a_registry_read_from_the_config_store_is_verified_too(self, tmp_path: Path) -> None:
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": ["decoy-term"]}),),
+        )
+        conn.commit()
+        conn.close()
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+        env["T3_CONFIG_DB"] = str(db)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(self._commit(tmp_path, self._REAL))],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr

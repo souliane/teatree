@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOK = REPO_ROOT / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
+from tests._leak_hook_checkout import HOOK, REPO_ROOT, CommittedFingerprint, default_hook, place_hook
+
 SCAN = REPO_ROOT / "scripts" / "privacy_scan.py"
 #: The scanner refuses to run without a registry, so every hook run is given a placeholder one.
 _DEFAULT_REGISTRY = json.dumps({"leak": ["demo-leak-term"], "prose_collider": []})
@@ -141,11 +141,13 @@ def _run_hook(
     env: dict[str, str],
     stdin: str,
     remote_url: str = "https://github.com/acme/widget.git",
-    hook: Path = HOOK,
+    hook: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    """Run the hook the way git does; by default the real one, placed where its fingerprint matches ``env``."""
+    placed = hook or default_hook(cwd.parent, env)
     return subprocess.run(
         # `bash <hook>` on PATH is git's real pre-push invocation shape; test-only driver.
-        ["bash", str(hook), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
+        ["bash", str(placed), "origin", remote_url],  # noqa: S607 — bash resolved via PATH is the hook's real invocation
         cwd=cwd,
         input=stdin,
         capture_output=True,
@@ -453,13 +455,11 @@ def _relocated_checkout(tmp_path: Path, *, scanner: str | None) -> Path:
     The hook runs the scanner from the tree it lives in, so replacing
     ``scripts/privacy_scan.py`` here is the only way to give it another scanner.
     """
-    root = tmp_path / "scratch-checkout"
-    hook = _relocate_hook(root)
-    (root / "src").symlink_to(REPO_ROOT / "src")
-    if scanner is not None:
-        (root / "scripts" / "privacy_scan.py").write_text(scanner, encoding="utf-8")
-    return hook
+    return place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY, scanner=scanner)
 
+
+#: A stand-in scanner agrees the registry is the committed one: these tests are about what the hook does next.
+_VERIFIES = "import sys\nif '--verify-registry' in sys.argv:\n    sys.exit(0)\n"
 
 #: Which of the hook's scans a stand-in scanner crashes on; it is clean on the others.
 _CRASH_WHEN = {
@@ -473,8 +473,7 @@ _CRASH_WHEN = {
 def _crashing_scanner(exit_code: int, *, when: str = "always") -> str:
     """A scanner that exits ``exit_code`` (never the findings code) on the scan named by ``when``."""
     return (
-        "import sys\n"
-        "data = sys.stdin.read()\n"
+        _VERIFIES + "data = sys.stdin.read()\n"
         f"if {_CRASH_WHEN[when]}:\n"
         "    sys.stderr.write('scanner blew up\\n')\n"
         f"    sys.exit({exit_code})\n"
@@ -482,8 +481,8 @@ def _crashing_scanner(exit_code: int, *, when: str = "always") -> str:
     )
 
 
-_FINDING_SCANNER = "import sys\nsys.stdin.read()\nprint('line 1: banned_term: leak#0')\nsys.exit(3)\n"
-_CLEAN_SCANNER = "import sys\nsys.stdin.read()\nprint('Privacy scan: clean (0 findings)')\n"
+_FINDING_SCANNER = _VERIFIES + "sys.stdin.read()\nprint('line 1: banned_term: leak#0')\nsys.exit(3)\n"
+_CLEAN_SCANNER = _VERIFIES + "sys.stdin.read()\nprint('Privacy scan: clean (0 findings)')\n"
 
 
 class TestLeakGateFailsClosedOnScannerCrash:
@@ -518,7 +517,7 @@ class TestLeakGateFailsClosedOnScannerCrash:
 
     def test_scanner_usage_error_fails_closed(self, tmp_path: Path) -> None:
         work, env = self._clean_feature_commit(tmp_path)
-        hook = _relocated_checkout(tmp_path, scanner="import sys\nsys.exit(2)\n")
+        hook = _relocated_checkout(tmp_path, scanner=_VERIFIES + "sys.exit(2)\n")
 
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
@@ -790,7 +789,7 @@ def _run_hook_synth(
     synth["PRE_COMMIT_LOCAL_BRANCH"] = remote_branch
     synth["PRE_COMMIT_REMOTE_BRANCH"] = remote_branch
     return subprocess.run(
-        ["bash", str(HOOK), "origin", _REMOTE_URL],  # noqa: S607 — bash on PATH is the hook's real invocation
+        ["bash", str(default_hook(work.parent, synth)), "origin", _REMOTE_URL],  # noqa: S607 — bash on PATH is the hook's real invocation
         cwd=work,
         input="",
         capture_output=True,
@@ -1249,11 +1248,7 @@ def _relocate_hook(root: Path) -> Path:
     directory, so this exercises the shipped script rather than a snapshot of
     it that could drift away from the file under test.
     """
-    hooks_dir = root / "scripts" / "hooks"
-    hooks_dir.mkdir(parents=True)
-    placed = hooks_dir / HOOK.name
-    placed.symlink_to(HOOK)
-    return placed
+    return place_hook(root, registry=_DEFAULT_REGISTRY, scanner=None, src=None)
 
 
 def _make_failing_uv_shim(bin_dir: Path) -> None:
@@ -2170,3 +2165,110 @@ class TestRefusalsNameARegistryTermByClassAndIndexOnly:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+_REAL_REGISTRY = json.dumps({"leak": ["demo-leak-term", "second-leak-term"], "overlay": ["demo-overlay-term"]})
+_FAKE_REGISTRY = json.dumps({"leak": ["fake-picked-term"]})
+_COMMITTED_FOR_THE_REAL_ONE = CommittedFingerprint(registry=_REAL_REGISTRY)
+
+
+class TestTheHookHoldsTheLoadedRegistryToTheCommittedFingerprint:
+    """A registry of the caller's choosing is not the registry the checkout commits digests for, so it gates nothing.
+
+    The environment can carry a fake ``TEATREE_TERM_REGISTRY`` or ``T3_CONFIG_DB`` that no inline-assignment
+    check sees (``export``, ``printf -v``, ``read``, ``source``, a Python ``os.environ``). The hook compares the
+    lists it loaded with the digests committed at its own checkout's HEAD and refuses on any difference, on a
+    fingerprint it cannot read, and on one that is not committed unchanged. All terms are SYNTHETIC.
+    """
+
+    def _push(
+        self,
+        tmp_path: Path,
+        *,
+        env_registry: str,
+        fingerprint: CommittedFingerprint | None = None,
+        leaking: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["TEATREE_TERM_REGISTRY"] = env_registry
+        body = "a line naming second-leak-term\n" if leaking else "a clean feature line\n"
+        (work / "feature.txt").write_text(body, encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+        hook = place_hook(tmp_path / "checkout", registry=env_registry, fingerprint=fingerprint)
+        return _run_hook(work, env, _push_stdin(work), hook=hook)
+
+    def test_the_registry_the_checkout_commits_is_accepted_and_still_catches_its_terms(self, tmp_path: Path) -> None:
+        result = self._push(tmp_path, env_registry=_REAL_REGISTRY, leaking=True)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "leak#1" in result.stdout, "the scan ran with the verified registry"
+        assert "does not match" not in result.stdout
+
+    def test_a_clean_push_with_the_committed_registry_passes(self, tmp_path: Path) -> None:
+        result = self._push(tmp_path / "a", env_registry=_REAL_REGISTRY)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_an_exported_fake_registry_is_refused_though_the_push_holds_a_real_term(self, tmp_path: Path) -> None:
+        result = self._push(
+            tmp_path, env_registry=_FAKE_REGISTRY, fingerprint=_COMMITTED_FOR_THE_REAL_ONE, leaking=True
+        )
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "does not match" in result.stdout
+        assert "tree" in result.stdout
+
+    def test_the_refusal_prints_no_digest_and_no_term(self, tmp_path: Path) -> None:
+        result = self._push(
+            tmp_path, env_registry=_FAKE_REGISTRY, fingerprint=_COMMITTED_FOR_THE_REAL_ONE, leaking=True
+        )
+
+        shown = result.stdout + result.stderr
+        assert result.returncode == 1, shown
+        assert "sha256" not in shown
+        assert not any(
+            term in shown for term in ("demo-leak-term", "second-leak-term", "demo-overlay-term", "fake-picked")
+        )
+
+    @pytest.mark.parametrize("state", ["missing", "untracked", "edited", "garbled"])
+    def test_a_fingerprint_that_is_not_committed_unchanged_is_refused(self, tmp_path: Path, state: str) -> None:
+        fingerprint = CommittedFingerprint(state=state, registry=_FAKE_REGISTRY)
+
+        result = self._push(tmp_path, env_registry=_REAL_REGISTRY, fingerprint=fingerprint)
+
+        assert result.returncode == 1, f"{state}: " + result.stdout + result.stderr
+        assert "term-source-fingerprint.json" in result.stdout
+
+    def test_a_fake_store_cannot_turn_a_remote_nothing_proves_private_into_a_private_one(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        log = _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["github.com/acme/widget"]))
+        env["TEATREE_TERM_REGISTRY"] = _FAKE_REGISTRY
+        (work / "feature.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+        hook = place_hook(tmp_path / "checkout", registry=_FAKE_REGISTRY, fingerprint=_COMMITTED_FOR_THE_REAL_ONE)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert log.exists(), "the forge was asked and could not answer, so only the fake allowlist said private"
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "does not match" in result.stdout
+
+    def test_the_same_allowlisted_remote_passes_with_the_committed_registry(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the pass is the verified allowlist's, and the refusal above is the registry's alone."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["github.com/acme/widget"]))
+        env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
+        (work / "feature.txt").write_text("a line naming second-leak-term\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+        hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
+
+        result = _run_hook(work, env, _push_stdin(work), hook=hook)
+
+        assert result.returncode == 0, result.stdout + result.stderr

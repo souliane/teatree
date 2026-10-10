@@ -17,6 +17,9 @@ Exit codes:
 * :data:`REGISTRY_UNAVAILABLE_EXIT_CODE` (``4``) — the banned-term registry is unset,
     empty or unreadable. A scan without a term source proves nothing, so it never
     reports clean.
+* :data:`REGISTRY_UNVERIFIED_EXIT_CODE` (``5``) — ``--verify-registry`` found the loaded
+    registry different from the fingerprint a repository commits for it, or that
+    fingerprint unreadable. The report names a gate, never a digest or a term.
 
 A finding names a registry term by ``class#index``, never by its value.
 """
@@ -29,11 +32,12 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs
+from teatree.hooks.banned_term_registry import allowlist_terms, load_registry, load_term_refs
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+from teatree.hooks.term_fingerprint import FingerprintUnreadableError, unverified_gates
 from teatree.hooks.term_match import matched_term
 from teatree.hooks.term_refs import TermRefs
 
@@ -41,6 +45,7 @@ _DIFF_DETECTORS = (_scan_diff_comments,)
 
 PRIVACY_FINDINGS_EXIT_CODE = 3
 REGISTRY_UNAVAILABLE_EXIT_CODE = 4
+REGISTRY_UNVERIFIED_EXIT_CODE = 5
 _UNREADABLE_INPUT_EXIT_CODE = 2
 
 # Require a plausible local part: it may contain ``.+-`` internally but
@@ -355,7 +360,36 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run only the registry-term and opaque-id passes (a whole-history range cannot pass the generic ones)",
     )
+    parser.add_argument(
+        "--verify-registry",
+        type=Path,
+        metavar="FINGERPRINT",
+        help="Do not scan: check the registry this scan loads against the committed fingerprint file FINGERPRINT",
+    )
     return parser
+
+
+def _verify_registry(fingerprint: Path) -> int:
+    """Hold the registry a scan would load against the committed fingerprint; report gates, never digests or terms."""
+    try:
+        resolve_banned_terms()
+        registry = load_registry() or {}
+    except BannedTermsUnsetError as exc:
+        print(f"privacy scan: cannot verify the term registry — {exc}", file=sys.stderr)
+        return REGISTRY_UNAVAILABLE_EXIT_CODE
+    try:
+        differing = unverified_gates(registry, fingerprint)
+    except FingerprintUnreadableError as exc:
+        print(f"privacy scan: {exc}", file=sys.stderr)
+        return REGISTRY_UNVERIFIED_EXIT_CODE
+    if differing:
+        print(
+            f"privacy scan: the term registry this scan loaded does not match {fingerprint.name} for: "
+            f"{', '.join(differing)}",
+            file=sys.stderr,
+        )
+        return REGISTRY_UNVERIFIED_EXIT_CODE
+    return 0
 
 
 def _findings(args: argparse.Namespace, scan: _Scan) -> list[dict[str, str | int]]:
@@ -370,6 +404,8 @@ def _findings(args: argparse.Namespace, scan: _Scan) -> list[dict[str, str | int
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.verify_registry is not None:
+        return _verify_registry(args.verify_registry)
     try:
         terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:

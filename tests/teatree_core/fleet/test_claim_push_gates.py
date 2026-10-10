@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 
 from teatree.core.fleet import claim as fleet_claim
+from tests._leak_hook_checkout import place_hook
 
 from ._git_origin import init_bare, init_client
 
-_ROOT = Path(__file__).resolve().parents[3]
-_LEAK_GATE = _ROOT / "scripts" / "hooks" / "refuse-public-push-with-leak.sh"
+_REGISTRY = json.dumps({"leak": ["demo-leak-term"]})
 _WORK_KEY = "https://github.com/acme/widget/issues/7"
 _PRE_FIX_EMAIL = "fleet-claim@teatree.local"  # privacy-scan:allow the claim identity before the noreply fix
 
@@ -38,10 +38,11 @@ def _config_db_without_private_repos(db: Path) -> Path:
 @pytest.fixture
 def gated_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     client = init_client(tmp_path / "client", init_bare(tmp_path / "origin.git"))
+    leak_gate = place_hook(tmp_path / "gate-checkout", registry=_REGISTRY)
     pre_push = client / ".git" / "hooks" / "pre-push"
-    pre_push.write_text(f'#!/bin/sh\nexec bash "{_LEAK_GATE}" "$@"\n', encoding="utf-8")
+    pre_push.write_text(f'#!/bin/sh\nexec bash "{leak_gate}" "$@"\n', encoding="utf-8")
     pre_push.chmod(0o755)
-    monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["demo-leak-term"]}))
+    monkeypatch.setenv("TEATREE_TERM_REGISTRY", _REGISTRY)
     monkeypatch.setenv("T3_CONFIG_DB", str(_config_db_without_private_repos(tmp_path / "config.sqlite3")))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "hook-state"))
     return client
