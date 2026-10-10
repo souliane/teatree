@@ -445,8 +445,7 @@ class TestMigrateRenumberReconcile:
                 return CompletedProcess(
                     args,
                     0,
-                    f"{RECONCILE_OK} gadgetapp.0046_move_owner_link_data -> "
-                    "gadgetapp.0047_move_owner_link_data\n",
+                    f"{RECONCILE_OK} gadgetapp.0046_move_owner_link_data -> gadgetapp.0047_move_owner_link_data\n",
                     "",
                 )
             # Retried migrate now succeeds (history consistent).
