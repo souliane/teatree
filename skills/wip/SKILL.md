@@ -178,7 +178,7 @@ These are references to canonical rule homes, not restatements:
 - **Dependency-aware merge chains** — when multiple PRs land in the same repo, the forge's "require up-to-date" rule serializes merges: update-branch + re-wait CI on each PR before issuing its merge. Fan-out dispatch is parallel; same-repo merges are sequential. (`/t3:rules` § "Never Change PR Base Branch or Dependencies")
 - **One consolidated MR per repo for cleanup work** — structural or multi-item cleanup in a single repo ships as one PR, not one-per-item. (`/t3:rules` § "Do Work Now, Don't Defer to 'Later' Tickets")
 - **No code in the main agent, no edits to the main clone** — all implementation happens in worktrees via sub-agents. (`/t3:rules` § "Worktree-First Work")
-- **Privacy gate on public repos** — `refuse-public-push-with-leak` pre-push hook runs the checkout's `scripts/privacy_scan.py`; clean scan is a precondition for every push. (`/t3:rules` § "Verify Repo Visibility Before Filing External Issues")
+- **Privacy gate on public repos** — `refuse-public-push-with-leak` pre-push hook runs `t3 tool privacy-scan`; clean scan is a precondition for every push. (`/t3:rules` § "Verify Repo Visibility Before Filing External Issues")
 
 ### Merge serialization
 
@@ -222,7 +222,7 @@ Present a summary table after all workers have reported and all green PRs are me
      NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
      ```
 
-   - **Privacy gate.** A push to a PUBLIC repo is gated by the `refuse-public-push-with-leak` pre-push hook: it runs the checkout's `scripts/privacy_scan.py` on each newly-public commit's patch and message, and the push is refused on any finding or when the scan cannot run — a fix-up commit never clears an earlier commit's finding. The delivery sub-agent treats a clean scan as a precondition for the push, not an afterthought — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Verify Repo Visibility Before Filing External Issues".
+   - **Privacy gate.** A push to a PUBLIC repo is gated by the `refuse-public-push-with-leak` pre-push hook: it runs `t3 tool privacy-scan` on each newly-public commit's patch and message, and the push is refused on any finding — a fix-up commit never clears an earlier commit's finding. The delivery sub-agent treats a clean scan as a precondition for the push, not an afterthought — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Verify Repo Visibility Before Filing External Issues".
    - The sub-agent pushes, creates the PR, waits for CI, merges, cleans up the worktree, and updates main, then returns a structured result the orchestrator records before starting the next ticket.
    - Delivery is sequential — each PR merges before the next ticket's sub-agent is spawned, never in parallel.
 4. **Close stale issues** that are already resolved in the codebase.
