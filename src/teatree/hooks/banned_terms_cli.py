@@ -103,7 +103,18 @@ def staged_added_numbered_lines(repo: Path, file: str) -> list[tuple[int, str]] 
     """
     try:
         result = run_allowed_to_fail(
-            ["git", "diff", "--cached", "-U0", "--diff-filter=ACMR", "--", file],
+            [
+                "git",
+                "diff",
+                "--cached",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-color",
+                "-U0",
+                "--diff-filter=ACMR",
+                "--",
+                file,
+            ],
             expected_codes=(0,),
             cwd=repo,
             env=_git_env_locating_the_repo_from_cwd(),

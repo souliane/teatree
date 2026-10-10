@@ -310,6 +310,23 @@ def test_staged_added_lines_returns_only_added_lines(tmp_path: Path) -> None:
     assert added == ["brand new line added"]
 
 
+def test_a_textconv_driver_does_not_blank_the_staged_diff(tmp_path: Path) -> None:
+    """A textconv driver in ``.git/config`` and ``.git/info/attributes`` rewrites what ``git diff`` shows."""
+    repo, _db = _init_repo_with_committed_banned_line(tmp_path)
+    blank = tmp_path / "blank.sh"
+    blank.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    blank.chmod(0o755)
+    _git(repo, "config", "diff.blank.textconv", str(blank))
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("doc.md diff=blank\n", encoding="utf-8")
+    (repo / "doc.md").write_text(
+        "acme reference on a pre-existing committed line\na brand new line added\n", encoding="utf-8"
+    )
+    _git(repo, "add", "doc.md")
+
+    assert staged_added_lines(repo, "doc.md") == ["a brand new line added"]
+
+
 def test_staged_added_lines_empty_when_no_staged_change(tmp_path: Path) -> None:
     repo, _db = _init_repo_with_committed_banned_line(tmp_path)
 

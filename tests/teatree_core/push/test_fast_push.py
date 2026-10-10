@@ -671,6 +671,55 @@ class TestThePushRangeNeverTrustsALocalTrackingRef:
         assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
 
 
+class TestRepoLocalGitStateDoesNotBlankWhatFastPushReads:
+    """A textconv driver or a replace ref lives in ``.git`` and changes what git shows, tracked files untouched."""
+
+    @staticmethod
+    def _blank_textconv(repo: Path, tmp_path: Path, pattern: str) -> None:
+        blank = tmp_path / "blank.sh"
+        blank.write_text("#!/bin/sh\nexit 0\n")
+        blank.chmod(0o755)
+        run_checked(["git", "config", "diff.blank.textconv", str(blank)], cwd=repo)
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text(f"{pattern} diff=blank\n")
+
+    def test_a_textconv_driver_does_not_blank_the_committed_range(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+        self._blank_textconv(repo, tmp_path, "notes.md")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the converted patch emptied what the gates read"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_textconv_driver_does_not_blank_the_staged_diff(self, repo: Path, leak_env: None, tmp_path: Path) -> None:
+        self._blank_textconv(repo, tmp_path, "notes.md")
+        (repo / "notes.md").write_text("mentions forbiddenbrand here\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the converted staged diff emptied what the gates read"
+        assert {f.gate for f in outcome.findings} >= {"banned-terms", "secret-scan"}, outcome.findings
+        assert not outcome.pushed
+
+    def test_a_replaced_commit_does_not_hide_the_range(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+        leak = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        clean = run_checked(
+            ["git", "commit-tree", f"{leak}~1^{{tree}}", "-p", f"{leak}~1", "-m", "a clean stand-in"], cwd=repo
+        ).stdout.strip()
+        run_checked(["git", "replace", leak, clean], cwd=repo)
+        (repo / "notes.md").unlink()
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the replacement commit hid the leak from the range"
+        assert not outcome.pushed
+
+
 def _branch_work_lands_on_main_then_merges_back(repo: Path) -> None:
     """The #4429 shape: the branch's content reaches ``main`` under a different SHA.
 

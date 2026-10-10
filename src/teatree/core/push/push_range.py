@@ -27,6 +27,7 @@ single failure point. A range git cannot walk returns ``None`` and the caller re
 never skips: a bypassed hook chain leaves no second net to fail open into.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,9 @@ from teatree.hooks.remote_holds import remote_holdings
 from teatree.utils.run import run_allowed_to_fail
 
 _REMOTE = "origin"
+
+#: Repo-local git state (a textconv driver, an external diff) rewrites the text of a diff; the gates read the raw one.
+READ_FLAGS = ("--no-textconv", "--no-ext-diff", "--no-color")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +54,9 @@ class PushRange:
         tips = _remote_tips(repo)
         rev_args = ["HEAD", "--not", *tips] if tips else ["HEAD"]
 
-        diff = _git_output(repo, ["log", "--format=", "--patch", "--cc", *rev_args])
-        messages = _git_output(repo, ["log", "--format=%B", *rev_args])
-        identities = _git_output(repo, ["log", "--format=%ae%n%ce", *rev_args])
+        diff = _git_output(repo, ["log", *READ_FLAGS, "--format=", "--patch", "--cc", *rev_args])
+        messages = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%B", *rev_args])
+        identities = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%ae%n%ce", *rev_args])
         if diff is None or messages is None or identities is None:
             return None
         return cls(
@@ -71,5 +75,6 @@ def _remote_tips(repo: Path) -> tuple[str, ...]:
 
 
 def _git_output(repo: Path, args: list[str]) -> str | None:
-    result = run_allowed_to_fail(["git", *args], expected_codes=None, cwd=repo)
+    env = {**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"}
+    result = run_allowed_to_fail(["git", *args], expected_codes=None, cwd=repo, env=env)
     return result.stdout if result.returncode == 0 else None

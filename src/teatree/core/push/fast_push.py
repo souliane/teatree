@@ -54,7 +54,7 @@ from teatree.core.authoring_credential import (
 )
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
-from teatree.core.push.push_range import PushRange
+from teatree.core.push.push_range import READ_FLAGS, PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
@@ -357,7 +357,7 @@ class LeakGateScan:
             scan_path = Path(handle.name)
         try:
             result = run_allowed_to_fail(
-                [sys.executable, str(script), str(scan_path), "--json"],
+                [sys.executable, "-P", str(script), str(scan_path), "--json"],
                 expected_codes=None,
             )
         finally:
@@ -384,7 +384,7 @@ class LeakGateScan:
         path column has to be built from the same concatenation — one pass, never two
         that can drift apart.
         """
-        staged_diff = run_checked(["git", "diff", "--cached"], cwd=self._repo).stdout.rstrip("\n")
+        staged_diff = run_checked(["git", "diff", "--cached", *READ_FLAGS], cwd=self._repo).stdout.rstrip("\n")
         pairs: list[tuple[str, str]] = []
         for diff_text in (self._range.diff_text, staged_diff):
             pairs.extend(zip(diff_text.splitlines(), _diff_line_paths(diff_text), strict=True))
