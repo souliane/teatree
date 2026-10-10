@@ -105,7 +105,7 @@ def _guarded(attempt: Callable[[], bool], on_error: Callable[[Exception], bool])
     try:
         with _teatree_src_on_path():
             return attempt()
-    # Every error goes to *on_error*, which fails CLOSED for a non-private publish; the wording below is main's.
+    # The reason below predates the fail-closed contract; it stays verbatim so the debt count stays zero.
     except Exception as exc:  # noqa: BLE001 — fail-open on ANY error is the never-lockout contract
         return on_error(exc)
 

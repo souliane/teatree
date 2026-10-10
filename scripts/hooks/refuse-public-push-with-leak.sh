@@ -246,17 +246,15 @@ _scan() {
 
 scan_py=$(_find_python || true)
 
-# The visibility resolver starts exactly as the scanner does: the interpreter found above under `-P -S` from the copy of
-# the committed sources, so no `.pth` file, no `sitecustomize`, no site-packages and no working-directory module runs
-# first, and PYTHONPATH is that copy alone (in BOTH supported layouts: `<root>/src/teatree` standalone,
-# `<root>/vendor/teatree/src/teatree` in a fork that vendors core). Its import chain is stdlib-only, so nothing else is
-# needed. The FULL remote URL is passed, never the host-stripped `slug`, because the host segment is what selects the
-# forge tool.
+# The resolver starts like the scanner (`-P -S` over the committed copy, in both layouts) and gets the FULL remote URL:
+# the host segment of it, which `slug` drops, is what selects the forge tool.
 #
-# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a PRIVATE repo gets silently
-# downgraded to "assume public" and re-scanned on every push: the verdict is undetermined, the gate says only
-# "could not confirm", and the REASON it could not confirm is invisible forever. A resolver that could not run at
-# all says so (RESOLVER_FAILED) rather than posing as an answer, because its remedy is the checkout.
+# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a
+# PRIVATE repo gets silently downgraded to "assume public" and re-scanned on
+# every push: the verdict is undetermined, the gate says only "could not
+# confirm", and the REASON it could not confirm is invisible forever. A resolver
+# that could not run at all says so (RESOLVER_FAILED) rather than posing as an
+# answer, because its remedy is the checkout, not the repo's declared visibility.
 _resolve_visibility() {
   local err out="" rc=1
   err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX" 2>/dev/null) || err=/dev/null
@@ -520,15 +518,8 @@ _scan_messages_as_text() {
   return "$(_worse_scan_rc "${message_rc}" "${object_rc}")"
 }
 
-# On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
-# changed file within a commit — so the refusal names the exact commit + file a
-# finding lives in. Without this the finding's line number is only an offset into
-# a concatenated multi-commit blob, unlocatable in public history; an operator who
-# cannot find the reported finding learns to distrust (and bypass) the gate. Only
-# the RARE blocked path pays this per-commit cost: a clean push is decided by the
-# whole-range message and patch scans and never enters here. Args are the pushed tip commit, then
-# the `<sha> --not <public-tips>` range; uses the global ${findings_code}.
-# Returns 0 if it attributed at least one finding, 1 if none (caller then prints the raw report).
+# Blocked pushes only: re-scan per commit and file, since a finding's line number in the whole-range blob is not locatable.
+# Args: the pushed tip, then the `<sha> --not <public-tips>` range. Returns 0 if it attributed a finding, 1 if none.
 _attribute_findings() {
   local tip="$1"
   shift

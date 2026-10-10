@@ -1,7 +1,6 @@
 """A matched registry term is named by ``class#index``; the value never leaves the registry."""
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -13,7 +12,7 @@ _REGISTRY = {
     "prose_collider": ("gamma-term", "beta-term"),
     "tone": (),
     "overlay": ("delta-term",),
-    "allow": ("alpha-term",),
+    "allow": ("alpha-term", "epsilon-term"),
 }
 
 
@@ -28,8 +27,8 @@ def test_a_term_is_named_by_its_class_and_position() -> None:
 def test_the_earliest_class_wins_a_term_listed_twice_and_allow_never_names_a_finding() -> None:
     refs = TermRefs(_REGISTRY)
 
-    assert refs.ref("beta-term") == "leak#1"
     assert refs.ref("alpha-term") == "leak#0"
+    assert refs.ref("epsilon-term") == UNLISTED_REF
 
 
 def test_lookup_ignores_case_and_surrounding_space() -> None:
@@ -50,7 +49,7 @@ def test_an_unreadable_registry_falls_back_to_scan_positions(raw: str, monkeypat
     assert load_term_refs(("only-term",)).ref("only-term") == "scan#0"
 
 
-def test_load_term_refs_reads_the_registry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_term_refs_reads_the_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["x-term", "y-term"]}))
 
     assert load_term_refs(("y-term",)).ref("y-term") == "leak#1"

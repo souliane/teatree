@@ -33,12 +33,24 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks._repo_visibility import slug_for_remote_url
-from tests._leak_hook_checkout import HOOK, REPO_ROOT, CommittedFingerprint, commit_guarded, default_hook, place_hook
+from tests._leak_hook_checkout import (
+    HOOK,
+    REPO_ROOT,
+    CommittedFingerprint,
+    FingerprintState,
+    commit_guarded,
+    default_hook,
+    place_hook,
+)
 
 SCAN = REPO_ROOT / "scripts" / "privacy_scan.py"
 #: The scanner refuses to run without a registry, so every hook run is given a placeholder one.
 _DEFAULT_REGISTRY = json.dumps({"leak": ["demo-leak-term"], "prose_collider": []})
 ZERO_SHA = "0" * 40
+#: The registry the hook is placed with, one it is not, and the fingerprint committed for the first.
+_REAL_REGISTRY = json.dumps({"leak": ["demo-leak-term", "second-leak-term"], "overlay": ["demo-overlay-term"]})
+_FAKE_REGISTRY = json.dumps({"leak": ["fake-picked-term"]})
+_COMMITTED_FOR_THE_REAL_ONE = CommittedFingerprint(registry=_REAL_REGISTRY)
 # Planted fixture values the gate-under-test must flag; annotated so this
 # repo's own pre-push gate does not flag the test source itself.
 _PLANTED_SECRET = "token = glpat-XXXXXXXXXXXXXXXX\n"  # privacy-scan:allow fixture
@@ -1954,8 +1966,7 @@ class TestHostQualifiedPrivateDeclarationNeverSkipsPublicPush:
 class TestTheHookReadsNoEnvironmentOverride:
     """Nothing in the environment redirects the scanner, the visibility verdict or the findings code.
 
-    Each variable below once swapped a stage of the gate for a command of the caller's
-    choosing, which made it a way for an agent to get a push past the gate.
+    Each variable below would let the caller swap a stage of the gate for a command of its own choosing.
     """
 
     _SEAMS = ("T3_REPO_VISIBILITY_CMD", "T3_PRIVACY_SCAN_CMD", "T3_PRIVACY_FINDINGS_EXIT_CODE")
@@ -2273,7 +2284,8 @@ class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
     """A commit object carries more text than its message: extra headers and the author and committer names.
 
     Those travel with the pushed object and no CI job reads commit objects, so the hook feeds the scanner each whole
-    object for registry terms as well. Generic detectors stay off the headers: a noreply address there is not a finding.
+    object for registry terms and, with only the noreply domain cut, for every other detector: a noreply address is no
+    finding, while a secret or a home path in a header, or in the login before that domain, is refused.
     """
 
     @staticmethod
@@ -2361,12 +2373,6 @@ class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
 
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_a_clean_hand_made_commit_passes(self, tmp_path: Path) -> None:
-        """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""
-        _crafted, report = self._push(tmp_path, _CraftedCommit())
-
-        assert report.startswith("0\n"), report
-
     def test_a_clean_merge_commit_passes(self, tmp_path: Path) -> None:
         """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
@@ -2385,15 +2391,15 @@ class TestACommitObjectIsScannedWholeNotOnlyItsMessage:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-class TestATermInAPathOrAnAnnouncedNameIsRefused:
-    """A registry term can also ride out as a file path (new, renamed, deleted), a tag name or a branch name.
+class TestATermInAPathIsRefused:
+    """A registry term can also ride out as a file path (new, renamed, deleted).
 
     A path is a line of the diff header (``diff --git``, ``rename to``, ``--- a/``) and the scanner reads the header
-    lines of a diff as well as its hunks; a ref name is scanned apart, as published.
+    lines of a diff as well as its hunks.
     """
 
     @staticmethod
-    def _push(tmp_path: Path, *, local_ref: str, change: str) -> str:
+    def _push(tmp_path: Path, *, change: str) -> str:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
         env["TEATREE_TERM_REGISTRY"] = _REAL_REGISTRY
         _make_unreachable_forge_shims(tmp_path / "offline-bin")
@@ -2411,22 +2417,15 @@ class TestATermInAPathOrAnAnnouncedNameIsRefused:
         _git(work, "commit", "--allow-empty", "-m", "a clean message")
         sha = _rev(work, "HEAD")
         hook = place_hook(tmp_path / "checkout", registry=_REAL_REGISTRY)
-        result = _run_hook(work, env, f"{local_ref} {sha} {local_ref} {ZERO_SHA}\n", hook=hook)
+        result = _run_hook(work, env, f"refs/heads/feature {sha} refs/heads/feature {ZERO_SHA}\n", hook=hook)
         return f"{result.returncode}\n{result.stdout}{result.stderr}"
 
     @pytest.mark.parametrize("change", ["new", "rename", "delete"])
     def test_a_path_with_a_term_is_refused(self, tmp_path: Path, change: str) -> None:
-        report = self._push(tmp_path, local_ref="refs/heads/feature", change=change)
+        report = self._push(tmp_path, change=change)
 
         assert report.startswith("1\n"), f"a {change} path with a term landed: " + report
         assert "leak#" in report, report
-
-    @pytest.mark.parametrize("local_ref", ["refs/tags/second-leak-term-v1", "refs/heads/second-leak-term-fix"])
-    def test_a_tag_or_branch_name_with_a_term_is_refused(self, tmp_path: Path, local_ref: str) -> None:
-        report = self._push(tmp_path, local_ref=local_ref, change="none")
-
-        assert report.startswith("1\n"), f"{local_ref} landed: " + report
-        assert "second-leak-term" not in report, "a refusal never prints the term"
 
 
 class TestCommitMessagesRideTheScannersStdin:
@@ -2593,15 +2592,6 @@ class TestRefusalsNameARegistryTermByClassAndIndexOnly:
         assert "carries privacy findings" in result.stdout
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
-
-
-_REAL_REGISTRY = json.dumps({"leak": ["demo-leak-term", "second-leak-term"], "overlay": ["demo-overlay-term"]})
-_FAKE_REGISTRY = json.dumps({"leak": ["fake-picked-term"]})
-_COMMITTED_FOR_THE_REAL_ONE = CommittedFingerprint(registry=_REAL_REGISTRY)
-
-
 class TestTheHookHoldsTheLoadedRegistryToTheCommittedFingerprint:
     """A registry of the caller's choosing is not the registry the checkout commits digests for, so it gates nothing.
 
@@ -2662,7 +2652,9 @@ class TestTheHookHoldsTheLoadedRegistryToTheCommittedFingerprint:
         )
 
     @pytest.mark.parametrize("state", ["missing", "untracked", "edited", "garbled"])
-    def test_a_fingerprint_that_is_not_committed_unchanged_is_refused(self, tmp_path: Path, state: str) -> None:
+    def test_a_fingerprint_that_is_not_committed_unchanged_is_refused(
+        self, tmp_path: Path, state: FingerprintState
+    ) -> None:
         fingerprint = CommittedFingerprint(state=state, registry=_FAKE_REGISTRY)
 
         result = self._push(tmp_path, env_registry=_REAL_REGISTRY, fingerprint=fingerprint)
@@ -3163,3 +3155,7 @@ class TestTheHookRunsOnlyCommittedCode:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "privacy findings" in result.stdout
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

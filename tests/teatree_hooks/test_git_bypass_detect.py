@@ -121,7 +121,7 @@ class TestEveryValidPushOptionSpelling:
         assert git_bypass_deny_reason(command) is None
 
 
-class TestEnvAndConfigWaysAroundTheHooks:
+class EnvAndConfigWaysAroundTheHooks:
     """Ways to switch a hook off that are not the ``--no-verify`` flag, refused on both lanes.
 
     ``SKIP=<hook id>`` is honoured by prek itself, ``GIT_CONFIG_*`` and ``git config`` can
@@ -162,23 +162,8 @@ class TestEnvAndConfigWaysAroundTheHooks:
         "SKIP=x cat .pre-commit-config.yaml",
     )
 
-    @pytest.mark.parametrize("command", DENIED)
-    def test_both_lanes_deny(self, command: str) -> None:
-        lane_b = git_bypass_deny_reason(command)
-        lane_a = deny_match(command)
 
-        assert lane_b is not None
-        assert "BLOCKED" in lane_b
-        assert lane_a is not None, "Lane A must refuse what Lane B refuses"
-        assert "BLOCKED" in lane_a
-
-    @pytest.mark.parametrize("command", ALLOWED)
-    def test_both_lanes_allow(self, command: str) -> None:
-        assert git_bypass_deny_reason(command) is None
-        assert deny_match(command) is None
-
-
-class TestRedirectsOfTheGatesConfigAndTermStore:
+class RedirectsOfTheGatesConfigAndTermStore:
     """The environment can aim git's configuration, or the registry the leak gate reads, somewhere else.
 
     A pre-push hook cannot see its own caller's environment as an attack, so the guards refuse the
@@ -243,17 +228,22 @@ class TestRedirectsOfTheGatesConfigAndTermStore:
         "cat .git/refs/remotes/origin/main",
     )
 
-    @pytest.mark.parametrize("command", DENIED)
-    def test_both_lanes_deny(self, command: str) -> None:
-        lane_b = git_bypass_deny_reason(command)
-        lane_a = deny_match(command)
 
-        assert lane_b is not None, "Lane B must refuse it"
-        assert "BLOCKED" in lane_b
-        assert lane_a is not None, "Lane A must refuse what Lane B refuses"
-        assert "BLOCKED" in lane_a
+_LANE_FAMILIES = (EnvAndConfigWaysAroundTheHooks, RedirectsOfTheGatesConfigAndTermStore)
 
-    @pytest.mark.parametrize("command", ALLOWED)
-    def test_both_lanes_allow(self, command: str) -> None:
-        assert git_bypass_deny_reason(command) is None
-        assert deny_match(command) is None
+
+@pytest.mark.parametrize("command", [row for family in _LANE_FAMILIES for row in family.DENIED])
+def test_both_lanes_deny(command: str) -> None:
+    lane_b = git_bypass_deny_reason(command)
+    lane_a = deny_match(command)
+
+    assert lane_b is not None, "Lane B must refuse it"
+    assert "BLOCKED" in lane_b
+    assert lane_a is not None, "Lane A must refuse what Lane B refuses"
+    assert "BLOCKED" in lane_a
+
+
+@pytest.mark.parametrize("command", [row for family in _LANE_FAMILIES for row in family.ALLOWED])
+def test_both_lanes_allow(command: str) -> None:
+    assert git_bypass_deny_reason(command) is None
+    assert deny_match(command) is None

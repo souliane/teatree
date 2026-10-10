@@ -15,7 +15,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from teatree.hooks.term_fingerprint import gate_fingerprints
 
@@ -55,6 +55,9 @@ def _commit_everything(root: Path) -> None:
     _git(root, "-c", "user.name=scratch", "-c", "user.email=scratch@example.invalid", "commit", "-q", "-m", "x")
 
 
+FingerprintState = Literal["committed", "missing", "untracked", "edited", "garbled"]
+
+
 @dataclass(frozen=True)
 class CommittedFingerprint:
     """What the scratch checkout commits: *registry*'s digests (the hook's own registry when ``None``), in *state*.
@@ -64,7 +67,7 @@ class CommittedFingerprint:
     and the disk holds the hook's registry's. ``garbled``: the committed file is not JSON.
     """
 
-    state: str = "committed"
+    state: FingerprintState = "committed"
     registry: str | Mapping[str, object] | None = None
 
 

@@ -1,9 +1,14 @@
-"""Detect a git command that silences hooks or schedules an out-of-band auto-merge.
+"""Detect a git command that silences hooks, redirects what they read, or schedules an out-of-band auto-merge.
 
 The safety-critical subset of the ``hooks/scripts/direct_command_guard`` denylist
 that must ALSO refuse on Lane B (the ``pydantic_ai`` shell): a command that
 disables the git verification hooks (``--no-verify``, the ``git -c
-core.hooksPath=…`` silencer), skips commit signing (``--no-gpg-sign``), or
+core.hooksPath=…`` silencer, ``git config core.hooksPath``, ``SKIP=<hook id>``),
+redirects git's configuration (``GIT_CONFIG_*``, ``HOME``, ``XDG_CONFIG_HOME``) or the
+term registry the leak gate reads (``TEATREE_TERM_REGISTRY``, ``T3_CONFIG_DB``,
+``T3_DATA_DIR``, ``XDG_DATA_HOME``) on a command that commits, pushes or runs prek,
+writes a remote-tracking ref (``refs/remotes/…``) by hand so a tool believes the
+remote holds commits it does not, skips commit signing (``--no-gpg-sign``), or
 schedules a GitLab pipeline-succeeds auto-merge (``git push -o
 merge_request.merge_when_pipeline_succeeds``) — each a way to land work past the
 gates the keystone merge enforces. The full direct-command denylist (docker,
@@ -114,9 +119,11 @@ _QUOTED_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 def git_bypass_deny_reason(command: str) -> str | None:
     """Return the deny reason for a hook/merge-bypass git command, or ``None``.
 
-    ``None`` for anything that does not silence hooks, skip signing, or schedule an
-    auto-merge — including ordinary git ops and prose that merely mentions a flag
-    inside a quoted argument.
+    ``None`` for anything that does not silence hooks (the flag, the hooks-directory
+    setting or ``SKIP=``), redirect git's configuration or the term registry on a command
+    that commits, pushes or runs prek, plant a remote-tracking ref by hand, skip signing,
+    or schedule an auto-merge — including ordinary git ops and prose that merely mentions
+    a flag inside a quoted argument.
     """
     if not command:
         return None

@@ -838,7 +838,8 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
     """A commit object carries more text than its message: extra headers and the author and committer names.
 
     Those travel with the pushed object and no CI job reads commit objects, so the registry-term gates read each whole
-    object. Generic detectors stay off the headers: a noreply address there is not a finding.
+    object and the generic scan reads it with only the noreply domain cut: a noreply address is no finding, while a
+    secret or a home path in a header, or in the login before that domain, is refused.
     """
 
     @pytest.mark.parametrize(
@@ -882,6 +883,7 @@ class TestACommitObjectIsReadWholeNotOnlyItsMessage:
 
     def test_a_clean_merge_commit_passes(self, repo: Path, leak_env: None) -> None:
         """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
+        _commit(repo, "own.py", "y = 0\n", "feat: a clean change of the branch's own")
         _merge_forward(repo, main_content="a clean prior line\n")
         (repo / "feature.py").write_text("x = 1\n")
 
