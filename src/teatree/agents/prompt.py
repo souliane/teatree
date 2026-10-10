@@ -19,6 +19,7 @@ from teatree.agents.skill_injection import (
     _read_skill_contents_scoped,
 )
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
@@ -43,6 +44,7 @@ _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> wor
 _SKILLS_POINTER = "the full skill — load it with the Skill tool (a harness without one: Read skills/<skill>/SKILL.md)"
 _PARENT_POINTER = "the parent task's recorded result"
 _HANDOFF_POINTER = "Complete predecessor result (source of truth): "
+_OWNER_KINDS = ", ".join(OwnerDecision)
 
 
 def _parent_result_summary(task: Task) -> str:
@@ -133,9 +135,10 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
             "1. Check what has been done so far (git log, existing code, PR status)",
             "2. Identify what remains to be done",
             "3. If you can proceed (code, test, fix) — do it",
-            "4. If you need human input (design decision, access, clarification) — STOP immediately.",
-            '   Do NOT attempt to guess or work around it. Set "needs_user_input": true and "user_input_reason": "..."',
-            "   in your JSON result. The pipeline will create an interactive session for a human to continue.",
+            f"4. If only the owner can decide ({_OWNER_KINDS}; an access or permission grant is credentials),",
+            '   STOP: set "needs_user_input": true, "user_input_kind": "<kind>", "user_input_checked": ["<fact>"]',
+            '   (every fact you checked first) and "user_input_reason": "..." in your JSON result.',
+            "   Decide everything else yourself: a gate refusal, a red check or a spent budget is yours.",
             f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
             "   It runs the commit-stage, push-stage and manual CI-job hooks; a bare `prek run --all-files`",
             "   SKIPS the push-stage and manual gates CI re-runs. Report the SHA it says it measured TOGETHER",
@@ -313,10 +316,10 @@ def build_system_context(
             "so emit it yourself whenever /t3:next is unavailable or does not run.",
             *envelope_contract_lines(task.phase, reviewer_identity=_assigned_reviewer_identity(task)),
             "",
-            "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
-            "STOP immediately. Do not guess or work around it. Emit the envelope with:",
-            '  {"summary": "...", "needs_user_input": true, "user_input_reason": "Why you need input"}',
-            "The pipeline will open a human interactive session.",
+            f"IMPORTANT: If only the owner can decide ({_OWNER_KINDS}), STOP immediately and emit:",
+            '  {"summary": "...", "needs_user_input": true, "user_input_kind": "<kind>",',
+            '   "user_input_checked": ["<fact you checked>"], "user_input_reason": "..."}',
+            "Decide everything else yourself.",
         ),
     )
 

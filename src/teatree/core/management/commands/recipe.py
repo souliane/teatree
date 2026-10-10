@@ -12,6 +12,7 @@ from teatree.config import get_effective_settings
 from teatree.core.factory.factory_recipe import load_recipe
 from teatree.core.factory.factory_score import FactoryScore, FactoryScoreDict, score
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
@@ -57,6 +58,8 @@ def _queue_recipe_approval(recipe_sha: str, overlay: str) -> bool:
         f"Review the evals/recipe.yaml diff, then run `t3 {overlay or '<overlay>'} recipe approve` to pin it.",
         options_json=json.dumps(["approve", "reject"]),
         options_hash=dedup_key,
+        decision=OwnerDecision.PRODUCT_SCOPE,
+        checked=[f"recipe sha {recipe_sha[:12]} is not the approved_recipe_sha for {scope}"],
     )
     return True
 

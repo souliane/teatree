@@ -63,6 +63,8 @@ class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
         assert _UNDECIDED_SETTING in question.question
         assert _SECOND_UNDECIDED_SETTING in question.question
         assert question.dedupe_marker.startswith(MARKER_PREFIX)
+        assert question.evidence["decision"] == "architecture"
+        assert [fact.split(":")[0] for fact in question.evidence["checked"]] == sorted(self.registry)
         assert len(signals) == 1
 
     def test_the_question_carries_every_gate_satisfier(self) -> None:
@@ -92,13 +94,14 @@ class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
 
         assert DeferredQuestion.objects.count() == 2
 
-    def test_answering_it_lets_the_next_pass_ask_again(self) -> None:
+    def test_an_answered_set_is_never_asked_again(self) -> None:
+        """An owner marker is sticky (#5096): the answer settles this set; only a changed set is asked."""
         InertGateQuestionScanner(registry=self.registry).scan()
         DeferredQuestion.objects.update(answered_at=timezone.now(), answer_text="leave them off")
 
         InertGateQuestionScanner(registry=self.registry).scan()
 
-        assert DeferredQuestion.objects.count() == 2
+        assert DeferredQuestion.objects.count() == 1
 
 
 @django.test.override_settings(USE_TZ=True)

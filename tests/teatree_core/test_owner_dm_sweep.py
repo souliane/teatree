@@ -9,12 +9,13 @@ from teatree.core.models import DeferredQuestion, PullRequest, Ticket
 from teatree.core.owner_dm_sweep import SweepSeams, run_sweep, subject_closed_locally
 from teatree.core.owner_threads import AUTO_RESOLVE_MAX_AGE, open_owner_threads
 from teatree.url_classify import find_forge_urls
+from tests._owner_channel import OWNER_DECISION
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1234"
 
 
 def _thread(text: str, *, age: timedelta = timedelta(minutes=5), ts: str = "1779990001.000001") -> DeferredQuestion:
-    row = DeferredQuestion.record(text, slack_channel="D0OWNER", slack_ts=ts)
+    row = DeferredQuestion.record(text, slack_channel="D0OWNER", slack_ts=ts, **OWNER_DECISION)
     DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - age)
     row.refresh_from_db()
     return row

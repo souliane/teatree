@@ -53,7 +53,6 @@ def _session_keyed_question(*, marker: str, ticket_state: str) -> DeferredQuesti
         "How should this proceed?",
         task_session=session,
         dedupe_marker=marker,
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 
@@ -117,7 +116,6 @@ class TestRepairMarkerOwnsItsSubject(TestCase):
         question = DeferredQuestion.record(
             "Repair-loop stall.",
             dedupe_marker=f"repair-stall:{ticket.pk}:coding",
-            audience=DeferredQuestion.Audience.INTERNAL,
         )
 
         assert drain_pending_questions().drained == 1

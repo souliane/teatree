@@ -41,6 +41,7 @@ from teatree.core.models import (
     ReviewRequestPost,
     Ticket,
 )
+from teatree.core.review.mr_state_question import mr_state_marker
 from teatree.types import RawAPIDict
 from tests._send_gate import allow_slack_channels
 from tests.teatree_backends._gitlab_wire import GitLabWire
@@ -283,7 +284,7 @@ class TestOversizeGroupFailsClosed(TestCase):
             verdict = work_group_ready(mr_url=_url(1))
         assert not verdict.ready
         assert verdict.reason == "work_group_too_large"
-        assert DeferredQuestion.objects.filter(dedupe_marker=f"mr-state:{_url(1)}").count() == 1
+        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_url(1))).count() == 1
 
     def test_control_group_within_the_bound_releases_and_asks_nothing(self) -> None:
         with _forge(self._group(WORK_GROUP_MAX_MEMBERS)):

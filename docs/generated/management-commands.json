@@ -836,16 +836,12 @@
           "name": "reachability"
         },
         {
-          "help": "Resolve pending questions with a user answer (resumes any parked headless task)",
+          "help": "Resolve pending internal questions; an owner question is answered only in its Slack thread",
           "name": "answer"
         },
         {
           "help": "Dismiss pending questions without answering them",
           "name": "dismiss"
-        },
-        {
-          "help": "Deliver ONE un-mirrored question now, bypassing the per-tick batch cap",
-          "name": "mirror"
         },
         {
           "help": "Re-post the pending backlog to the user's Slack DM (away\u2192present drain)",

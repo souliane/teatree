@@ -30,6 +30,7 @@ from teatree import answer_handback
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DmContext, IncomingEvent, PendingChatInjection, Session, Task, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.task_handoff import RESUME_ANSWER_PREFIX
 from teatree.core.notify_question_drains import (
     drain_deferred_questions,
     drain_unmirrored_deferred_questions,
@@ -39,7 +40,8 @@ from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingS
 from teatree.loop.question_binding import BoundAnswer, apply_bound_answer
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
-from tests._owner_channel import OWNER_SLACK_ID
+from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
+from tests.factories import planned_ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -91,6 +93,7 @@ def _question(text: str, *, slack_ts: str, generation: int = 1) -> DeferredQuest
         generation=generation,
         slack_channel=_CHANNEL,
         slack_ts=slack_ts,
+        **OWNER_DECISION,
     )
 
 
@@ -268,8 +271,8 @@ def _owner_is_mid_conversation(thread_root: str = "900.0") -> None:
 
 
 def _mirror_two_questions() -> tuple[DeferredQuestion, DeferredQuestion, dict[str, str]]:
-    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1)
-    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2)
+    older = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", generation=1, **OWNER_DECISION)
+    newer = DeferredQuestion.record("Ship the release?", session_id="s", run_id="r", generation=2, **OWNER_DECISION)
     backend, roots = _threading_slack()
     with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
         drain_unmirrored_deferred_questions(user_id="U_ME", backend=backend)
@@ -425,7 +428,7 @@ class TestAResurfacedQuestionIsAnswerable:
 
     def test_an_unmirrored_row_is_resurfaced_at_root_and_stamped(self) -> None:
         _owner_is_mid_conversation()
-        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r")
+        row = DeferredQuestion.record("Which DB host?", session_id="s", run_id="r", **OWNER_DECISION)
         roots: dict[str, str] = {}
         backend, posted = _recording_slack(8000, roots)
 
@@ -472,13 +475,42 @@ class TestABoundAnswerSurvivesARefusedResume(TestCase):
     def test_the_answer_is_applied_and_no_resume_is_minted(self) -> None:
         ticket = Ticket.objects.create()
         parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
-        question = DeferredQuestion.record("Which DB host?", parked_task=parked)
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked, **OWNER_DECISION)
 
         assert apply_bound_answer(BoundAnswer(question=question, answer="use postgres-1")) is True
 
         question.refresh_from_db()
         assert question.answer_text == "use postgres-1"
         assert not parked.child_tasks.exists()
+
+
+class TestASlackAnswerResumesOnlyAnOwnerQuestion(TestCase):
+    def _parked(self) -> Task:
+        ticket = planned_ticket()
+        return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+
+    def test_slack_answer_to_owner_row_resumes_once(self) -> None:
+        parked = self._parked()
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked, **OWNER_DECISION)
+        bound = BoundAnswer(question=question, answer="use postgres-1")
+
+        assert apply_bound_answer(bound) is True
+        assert apply_bound_answer(bound) is False
+
+        assert [task.execution_reason for task in Task.objects.exclude(pk=parked.pk)] == [
+            f"{RESUME_ANSWER_PREFIX} use postgres-1."
+        ]
+        assert parked.child_tasks.count() == 1
+
+    def test_slack_answer_to_internal_row_mints_no_task(self) -> None:
+        parked = self._parked()
+        question = DeferredQuestion.record("Which DB host?", parked_task=parked)
+
+        assert apply_bound_answer(BoundAnswer(question=question, answer="use postgres-1")) is True
+
+        question.refresh_from_db()
+        assert question.resolved_via == DeferredQuestion.ResolvedVia.SLACK
+        assert not Task.objects.exclude(pk=parked.pk).exists()
 
 
 class TestASlackAnswerIsHandedBackToTheAskingSession(TestCase):

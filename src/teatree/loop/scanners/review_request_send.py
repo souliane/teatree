@@ -24,9 +24,11 @@ from typing import Protocol
 from teatree.core.machine_output import call_command_streamed, last_json_object
 from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.review.mr_state_question import (
+    OwnerAsk,
     ask_mr_state,
     owner_answer_at_head,
     retire_head_bound_question,
@@ -175,6 +177,10 @@ def _ask(item: TriagedMr, sha: str, reason: str) -> ScanSignal:
         reason=f"it is ready for review, but {text}",
         options=MISSING_REVIEW_OPTIONS,
         head_sha=sha,
+        owner=OwnerAsk(
+            OwnerDecision.PUBLIC_POST,
+            [f"review request refused: {reason}", f"head {sha[:12]}", f"triage verdict: {item.verdict.action}"],
+        ),
     )
     asked = question is not None
     return ScanSignal(

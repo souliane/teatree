@@ -65,7 +65,7 @@ def open_owner_threads(*, since: datetime | None = None, now: datetime | None = 
     regardless of the watermark, so a thread that opened before the last pass and
     became resolvable since is not skipped forever. Oldest first.
     """
-    pending = DeferredQuestion.pending().filter(audience=DeferredQuestion.Audience.OWNER_QUESTION)
+    pending = DeferredQuestion.owner_pending()
     cutoff = (now or timezone.now()) - AUTO_RESOLVE_MAX_AGE
     rows = [row for row in pending if since is None or row.created_at >= since or row.created_at >= cutoff]
     return tuple(OwnerThread(question=row) for row in rows)

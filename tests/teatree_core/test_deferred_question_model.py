@@ -8,6 +8,7 @@ single-use consume, scope of queryset, audit row).
 import os
 import tempfile
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -16,15 +17,11 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree import answer_handback
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.approval_dial import auto_answer_by_policy
-from teatree.core.models.deferred_question import (
-    DeferredQuestion,
-    DeferredQuestionAudit,
-    DeferredQuestionError,
-    is_tool_lack_selfreport,
-    question_fingerprint,
-)
+from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.question_text import question_fingerprint
 from teatree.instance_id import instance_id
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -57,7 +54,7 @@ class TestDedupeMarker:
         DeferredQuestion.record("q")
         assert DeferredQuestion.pending().count() == 2
 
-    def test_resolved_marker_row_does_not_block_a_new_record(self) -> None:
+    def test_internal_marker_stays_pending_only(self) -> None:
         first = DeferredQuestion.record("stall", dedupe_marker="m")
         DeferredQuestion.consume(first.pk, answer="handled")
         second = DeferredQuestion.record("stall again", dedupe_marker="m")
@@ -93,92 +90,153 @@ class TestDeferredQuestionRecord:
 
 
 class TestDeferredQuestionAudience:
-    """Audience separates owner questions from the box's internal escalations (Phase 2)."""
+    """Only a named owner decision with checked evidence reaches the owner; every other question is internal."""
 
-    def test_record_defaults_to_owner_audience(self) -> None:
-        row = DeferredQuestion.record("Ship it?")
+    def test_record_without_decision_is_internal(self) -> None:
+        row = DeferredQuestion.record("Repair-loop stall on ticket 1")
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.evidence == {}
+
+    @pytest.mark.parametrize("decision", list(OwnerDecision))
+    def test_a_named_decision_makes_an_owner_row(self, decision: OwnerDecision) -> None:
+        row = DeferredQuestion.record("Ship it?", decision=decision, checked=["the issue is silent"])
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
 
-    def test_record_accepts_internal_audience(self) -> None:
-        row = DeferredQuestion.record(
-            "Repair-loop stall on ticket 1",
-            audience=DeferredQuestion.Audience.INTERNAL,
+    def test_owner_row_stores_kind_and_checked(self) -> None:
+        DeferredQuestion.record(
+            "Rotate the deploy token?",
+            decision=OwnerDecision.CREDENTIALS,
+            checked=["  the token expired 10-08 ", "", "no standing answer in memory"],
         )
-        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        row = DeferredQuestion.objects.get()
+        assert row.evidence == {
+            "decision": "credentials",
+            "checked": ["the token expired 10-08", "no standing answer in memory"],
+        }
+
+    @pytest.mark.parametrize("checked", [(), ["", "   "]])
+    def test_decision_without_checked_is_refused_and_writes_no_row(self, checked: list[str]) -> None:
+        with pytest.raises(DeferredQuestionError, match="checked"):
+            DeferredQuestion.record("Ship it?", decision=OwnerDecision.PUBLIC_POST, checked=checked)
+        assert not DeferredQuestion.objects.exists()
+
+    def test_unknown_decision_is_refused(self) -> None:
+        with pytest.raises(DeferredQuestionError, match="whim"):
+            DeferredQuestion.record("Ship it?", decision=cast("OwnerDecision", "whim"), checked=["looked"])
+        assert not DeferredQuestion.objects.exists()
+
+    def test_architecture_kind_exists(self) -> None:
+        assert {kind.value for kind in OwnerDecision} == {
+            "credentials",
+            "money_or_plan",
+            "public_post",
+            "irreversible",
+            "product_scope",
+            "architecture",
+        }
+        row = DeferredQuestion.record(
+            "Split the model?", decision=OwnerDecision.ARCHITECTURE, checked=["BLUEPRINT §4 is silent"]
+        )
+        assert row.evidence["decision"] == "architecture"
+
+    def test_owner_pending_lists_only_pending_owner_rows(self) -> None:
+        owner = DeferredQuestion.record("Rotate it?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
+        answered = DeferredQuestion.record("Pay it?", decision=OwnerDecision.MONEY_OR_PLAN, checked=["invoice"])
+        DeferredQuestion.consume(answered.pk, answer="yes")
+        DeferredQuestion.record("internal stall")
+        assert [r.pk for r in DeferredQuestion.owner_pending()] == [owner.pk]
 
     def test_unmirrored_pending_excludes_internal_rows(self) -> None:
-        owner = DeferredQuestion.record("Owner decision?")
-        DeferredQuestion.record("internal stall", audience=DeferredQuestion.Audience.INTERNAL)
+        owner = DeferredQuestion.record("Owner decision?", decision=OwnerDecision.CREDENTIALS, checked=["expired"])
+        DeferredQuestion.record("internal stall")
         unmirrored = list(DeferredQuestion.unmirrored_pending())
         assert [r.pk for r in unmirrored] == [owner.pk]
 
 
-class TestToolLackSelfReport:
-    """An agent's own "I lack the tools to proceed" report is a dispatch fault (INTERNAL)."""
+class TestAnOwnerQuestionIsNeverReAsked:
+    """An owner marker is sticky across answered and dismissed rows."""
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            # The verbatim leak: a scanning-news park that reached the owner's DM.
-            (
-                "This session lacks any shell/write tool (no Bash, no Write/Edit, no gh) needed to run "
-                "`manage.py shell -c record_candidate`, dedupe-check via `gh issue list`, or post the Slack DM."
-            ),
-            "I have no shell to run the management command.",
-            "This agent runs shell-denied, so it cannot file the issue.",
-            "This must be picked up by a session with the standard toolset.",
-            "I need a session with the tools to complete this.",
-            "Missing the gh CLI, so I can't open the PR.",
-            # #201 (codex_reviewing) — leaked AFTER the first fix: the fault is
-            # reported by its consequence, not the bare "no shell" token.
-            (
-                "This session was launched without Bash/Edit/Write/Agent tool access, so I cannot "
-                "inspect the PR diff locally, make code changes, or run the required "
-                "`t3 tool verify-gates` green-proof, nor post the codex adversarial review comment "
-                "via `gh pr comment`. Need either the session relaunched with full tool access, or "
-                "explicit guidance on how to proceed read-only."
-            ),
-            # #202 (reviewing) — leaked AFTER the first fix: the fault is reported as
-            # its symptom (no shell, internal task-context tools returned nothing).
-            (
-                "Ticket 187's body/state and the full Slack thread weren't available in this phase "
-                "(no shell, TaskGet/TaskList returned nothing for it), so I can't confirm what "
-                "concrete action is being asked about beyond a generic acknowledgment."
-            ),
-            # Isolated signals each phrasing carries, asserted alone so the class is
-            # caught even when only one signal is present.
-            "I cannot inspect the PR diff locally.",
-            "Need the session relaunched with full tool access.",
-            "TaskGet/TaskList returned nothing for it.",
-            "This phase has no accessible checkout of the repo.",
-            "I cannot run the required verify-gates green-proof.",
-        ],
-    )
-    def test_tool_lack_phrasings_are_classified(self, text: str) -> None:
-        assert is_tool_lack_selfreport(text) is True
+    @pytest.mark.parametrize("resolution", [{"answer": "keep them"}, {"dismissed_reason": "not now"}])
+    def test_owner_marker_sticky_answered_and_dismissed(self, resolution: dict[str, str]) -> None:
+        first = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        DeferredQuestion.consume(first.pk, **resolution)
+        again = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        assert again.pk == first.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 1
 
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Should I merge PR #7 or wait for the release branch?",
-            "The design has two viable approaches — which do you prefer?",
-            "I don't have enough context about the rollout plan to continue.",
-            "Should I write the migration now or in a follow-up?",
-            # Genuine review-phase decision — no tool-lack signal — must stay owner.
-            "Two findings conflict; should I block the PR or file a follow-up ticket?",
-            # Near-miss owner questions that brush the new signal words without being
-            # a lack report: deciding to "check out" a branch, a "which tool" pick, a
-            # "cannot decide" judgment gap.
-            "Should I check out the release branch or stay on main?",
-            "Which tool should I use to profile the endpoint?",
-            "I cannot decide between the two migration strategies — which do you prefer?",
-        ],
-    )
-    def test_genuine_owner_questions_are_not_classified(self, text: str) -> None:
-        assert is_tool_lack_selfreport(text) is False
+    def test_an_answered_owner_marker_holds_a_differently_worded_question(self) -> None:
+        """Regression pin: the owner's answer settles the marker, whatever the wording."""
+        first = DeferredQuestion.record(
+            "Reclaim the leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["3 dirs"]
+        )
+        DeferredQuestion.consume(first.pk, answer="keep them")
+        again = DeferredQuestion.record(
+            "Reclaim the 4 leftovers?", dedupe_marker="m", decision=OwnerDecision.IRREVERSIBLE, checked=["4 dirs"]
+        )
+        assert again.pk == first.pk
 
-    def test_classification_ignores_case_and_whitespace(self) -> None:
-        assert is_tool_lack_selfreport("  This  session  LACKS  any  SHELL  tool. ") is True
+    def test_a_dismissed_owner_marker_does_not_hold_a_different_question(self) -> None:
+        first = DeferredQuestion.record(
+            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
+        other = DeferredQuestion.record(
+            "Fix the title, then post?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["bad title"]
+        )
+        assert other.pk != first.pk
+        assert other.is_pending
+
+    @pytest.mark.parametrize("variant", ["post the review request?", "Post  the review\nrequest? "])
+    def test_a_dismissed_owner_marker_holds_a_cosmetic_rewording(self, variant: str) -> None:
+        first = DeferredQuestion.record(
+            "Post the review request?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        DeferredQuestion.consume(first.pk, dismissed_reason="a cold review holds this head")
+        again = DeferredQuestion.record(
+            variant, dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["no review"]
+        )
+        assert again.pk == first.pk
+        assert not DeferredQuestion.owner_pending().exists()
+
+    def test_a_resolved_internal_row_does_not_mute_an_owner_record(self) -> None:
+        internal = DeferredQuestion.record("stall", dedupe_marker="m")
+        DeferredQuestion.consume(internal.pk, answer="handled")
+        owner = DeferredQuestion.record(
+            "Ship it?", dedupe_marker="m", decision=OwnerDecision.PUBLIC_POST, checked=["review is green"]
+        )
+        assert owner.pk != internal.pk
+        assert owner.audience == DeferredQuestion.Audience.OWNER_QUESTION
+
+
+class TestAnOwnerRecordSupersedesAPendingInternalRow:
+    def _ask_owner(self) -> DeferredQuestion:
+        return DeferredQuestion.record(
+            "Which credential?", dedupe_marker="m", decision=OwnerDecision.CREDENTIALS, checked=["the vault is empty"]
+        )
+
+    def test_the_owner_is_asked_and_the_internal_row_is_retired(self) -> None:
+        internal = DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        owner = self._ask_owner()
+        internal.refresh_from_db()
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [owner.pk]
+        assert internal.resolved_via == DeferredQuestion.ResolvedVia.STALE
+
+    def test_a_repeat_of_the_owner_question_is_still_held(self) -> None:
+        DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        first = self._ask_owner()
+        again = self._ask_owner()
+        assert again.pk == first.pk
+        assert DeferredQuestion.objects.filter(dedupe_marker="m").count() == 2
+
+    def test_an_internal_record_never_retires_a_pending_owner_row(self) -> None:
+        owner = self._ask_owner()
+        internal = DeferredQuestion.record("repair halted on task 9", dedupe_marker="m")
+        assert internal.pk == owner.pk
+        assert [row.pk for row in DeferredQuestion.owner_pending()] == [owner.pk]
 
 
 class TestDeferredQuestionPending:

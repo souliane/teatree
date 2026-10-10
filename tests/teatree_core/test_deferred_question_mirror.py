@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -113,7 +114,13 @@ class TestSupersedable:
     """A newer question stale-marks only rows the owner cannot already be answering (#4721)."""
 
     def _prior(self, **kwargs: object) -> DeferredQuestion:
-        fields: dict = {"session_id": "s1", "run_id": "r1", "generation": 1}
+        fields: dict = {
+            "session_id": "s1",
+            "run_id": "r1",
+            "generation": 1,
+            "decision": OwnerDecision.CREDENTIALS,
+            "checked": ["no stored token"],
+        }
         fields.update(kwargs)
         return DeferredQuestion.record("prior", **fields)
 
@@ -134,7 +141,7 @@ class TestSupersedable:
         assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
 
     def test_an_internal_row_is_excluded(self) -> None:
-        self._prior(audience=DeferredQuestion.Audience.INTERNAL)
+        self._prior(decision=None)
         assert list(DeferredQuestion.supersedable(session_id="s1", run_id="r1")) == []
 
     def test_a_resolved_row_is_excluded(self) -> None:

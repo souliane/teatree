@@ -10,8 +10,8 @@ daemon (#186), and — after the first fix shipped — two review-phase parks th
 reported the same fault by its consequence/symptom instead ("launched without
 Bash/Edit/Write/Agent tool access, so I cannot inspect the PR diff", #201; "no
 shell, TaskGet/TaskList returned nothing", #202). The classifier is
-phase-independent, so it covers every such phase. An ordinary needs-input reason is
-a genuine owner question and keeps the default ``OWNER_QUESTION`` audience.
+phase-independent, so it covers every such phase. Only a reason that names an owner
+decision (``user_input_kind``) is an owner question (#5096).
 """
 
 import pytest
@@ -26,17 +26,22 @@ from teatree.core.models.task_handoff import (
     record_deferred_question,
     schedule_resume,
 )
+from tests.factories import planned_ticket
 
 
 class TestRecordDeferredQuestionAudience(TestCase):
-    def _headless_task_with_reason(self, reason: str, *, phase: str = "scanning_news") -> Task:
+    def _headless_task_with_reason(
+        self, reason: str, *, phase: str = "scanning_news", kind: str = "", checked: tuple[str, ...] = ()
+    ) -> Task:
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
-        TaskAttempt.objects.create(
-            task=task,
-            result={"needs_user_input": True, "user_input_reason": reason},
-        )
+        result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
+        if kind:
+            result["user_input_kind"] = kind
+        if checked:
+            result["user_input_checked"] = list(checked)
+        TaskAttempt.objects.create(task=task, result=result)
         return task
 
     def test_tool_lack_self_report_is_recorded_internal(self) -> None:
@@ -111,22 +116,113 @@ class TestRecordDeferredQuestionAudience(TestCase):
         assert row.audience == DeferredQuestion.Audience.INTERNAL
         assert row.pk not in {r.pk for r in DeferredQuestion.unmirrored_pending()}
 
-    def test_ordinary_question_keeps_owner_audience(self) -> None:
+    def test_a_question_naming_no_owner_decision_is_internal(self) -> None:
         task = self._headless_task_with_reason("Should I merge PR #7 now, or wait for the release branch to cut first?")
         row = record_deferred_question(task)
-        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
 
-    def test_review_phase_owner_decision_keeps_owner_audience(self) -> None:
-        # A genuine reviewing-phase decision question — no tool-lack / dispatch signal
-        # — must stay OWNER_QUESTION and reach the owner. The broadening must not
-        # sweep real "how should I proceed on X?" questions into INTERNAL.
+    def test_a_named_owner_decision_reaches_the_owner(self) -> None:
         task = self._headless_task_with_reason(
             "Two of the review findings conflict — should I block the PR on the missing migration, "
             "or accept it and file a follow-up ticket? Which do you prefer?",
             phase="reviewing",
+            kind="product_scope",
+            checked=("the ticket names neither option",),
         )
         row = record_deferred_question(task)
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+
+    def test_declared_kind_with_checked_records_owner_row(self) -> None:
+        task = self._headless_task_with_reason(
+            "The deploy token expired; mint a new one?",
+            kind="credentials",
+            checked=("the vault holds no deploy token", " "),
+        )
+        row = record_deferred_question(task)
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert row.evidence == {"decision": "credentials", "checked": ["the vault holds no deploy token"]}
+
+    def test_an_unknown_kind_names_no_owner_decision(self) -> None:
+        task = self._headless_task_with_reason("The gate refused the push.", phase="reviewing", kind="gate_refusal")
+        row = record_deferred_question(task)
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
+
+class TestAHeadlessStopReachesTheOwnerOnlyForAnOwnerDecision(TestCase):
+    """A kind-less stop is recorded internal and resumes nothing; only an owner-channel answer resumes (#5096)."""
+
+    def _stopped(self, ticket: Ticket, reason: str, *, kind: str = "") -> Task:
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="reviewing")
+        result: dict[str, object] = {"needs_user_input": True, "user_input_reason": reason}
+        if kind:
+            result |= {"user_input_kind": kind, "user_input_checked": ["the vault holds no deploy token"]}
+        TaskAttempt.objects.create(task=task, result=result)
+        task.complete()
+        return task
+
+    def test_kindless_stop_records_internal_and_mints_no_task(self) -> None:
+        task = self._stopped(planned_ticket(), "The merge gate refused the push; how should I proceed?")
+
+        assert not Task.objects.exclude(pk=task.pk).exists()
+        row = DeferredQuestion.objects.get(parked_task=task)
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.is_pending
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.UNRESOLVED
+
+    def test_a_tool_lack_self_report_is_never_resumed(self) -> None:
+        task = self._stopped(planned_ticket(), "This session lacks any shell tool (no Bash), so I cannot inspect it.")
+
+        assert not task.child_tasks.exists()
+        assert DeferredQuestion.objects.get().is_pending
+
+    def test_a_credentials_stop_asks_the_owner_and_queues_nothing(self) -> None:
+        task = self._stopped(planned_ticket(), "The deploy token expired; mint a new one?", kind="credentials")
+
+        assert not task.child_tasks.exists()
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert row.is_pending
+
+    def test_sticky_hit_resumes_only_on_owner_channel_answer(self) -> None:
+        reason = "The deploy token expired; mint a new one?"
+        via = DeferredQuestion.ResolvedVia
+        for channel in (via.SLACK, via.LOCAL, via.AGENT, via.STALE):
+            with self.subTest(channel=channel):
+                ticket = planned_ticket()
+                first = self._stopped(ticket, reason, kind="credentials")
+                row = DeferredQuestion.objects.get(parked_task=first)
+                if channel == via.STALE:
+                    row.mark_stale("the token rotated on its own")
+                else:
+                    row.apply_answer("use the vault entry", resolved_via=channel)
+
+                second = self._stopped(ticket, reason, kind="credentials")
+
+                assert DeferredQuestion.objects.filter(parked_task__ticket=ticket).count() == 1
+                resumed = [child.execution_reason for child in second.child_tasks.all()]
+                assert resumed == ([f"{RESUME_ANSWER_PREFIX} use the vault entry."] if channel == via.SLACK else [])
+                assert not first.child_tasks.exists()
+
+    def test_a_cosmetic_rewording_of_a_dismissed_owner_stop_is_not_asked_again(self) -> None:
+        for variant in ("the deploy token expired; mint a new one?", "The deploy token  expired;\nmint a new one? "):
+            with self.subTest(variant=variant):
+                ticket = planned_ticket()
+                first = self._stopped(ticket, "The deploy token expired; mint a new one?", kind="credentials")
+                DeferredQuestion.objects.get(parked_task=first).mark_stale("withdrawn by the age ladder")
+
+                self._stopped(ticket, variant, kind="credentials")
+
+                assert DeferredQuestion.objects.filter(parked_task__ticket=ticket).count() == 1
+                assert not DeferredQuestion.unmirrored_pending().exists()
+
+    def test_a_different_reason_after_a_dismissed_owner_stop_is_asked(self) -> None:
+        ticket = planned_ticket()
+        first = self._stopped(ticket, "The deploy token expired; mint a new one?", kind="credentials")
+        DeferredQuestion.objects.get(parked_task=first).mark_stale("withdrawn by the age ladder")
+
+        second = self._stopped(ticket, "Which vault holds the signing key?", kind="credentials")
+
+        assert [row.parked_task_id for row in DeferredQuestion.unmirrored_pending()] == [second.pk]
 
 
 class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):

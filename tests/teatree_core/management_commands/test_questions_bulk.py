@@ -35,7 +35,8 @@ def _call(*args: str) -> tuple[str, str, int]:
 def _pending(text: str) -> DeferredQuestion:
     # `status` is DERIVED from answered_at/dismissed_at, not stored — a pending row is
     # simply one where neither stamp is set, which is the model's default.
-    return DeferredQuestion.objects.create(question=text)
+    # Internal, because the command line answers only internal questions.
+    return DeferredQuestion.objects.create(question=text, audience=DeferredQuestion.Audience.INTERNAL)
 
 
 class TestDismissTakesManyIds:

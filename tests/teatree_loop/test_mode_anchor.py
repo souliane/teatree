@@ -15,6 +15,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.loop.statusline import live_loops_anchor, set_preset_line_reader
 from teatree.loops.preset_status import preset_line_handles
+from tests._owner_channel import OWNER_DECISION
 
 
 def _reset_reader() -> None:
@@ -76,6 +77,6 @@ class TestWaitingCountCoversAllKinds:
 
     def test_counts_manual_and_question_kinds(self) -> None:
         WaitingItem.objects.add("chase finance")
-        DeferredQuestion.record("deploy now?")
+        DeferredQuestion.record("deploy now?", **OWNER_DECISION)
         # Two distinct kinds → the count is all-kinds, not questions-only.
         assert "2 waiting" in self._loop_line()

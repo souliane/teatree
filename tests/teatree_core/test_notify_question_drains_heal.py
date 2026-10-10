@@ -17,8 +17,9 @@ from teatree.core.notify_question_drains import (
     reask_escalated_questions,
     resurface_question_backlog,
 )
-from teatree.core.provision.failure_question import record_provision_failure_question
+from teatree.core.provision.failure_question import provision_failure_marker
 from tests._git_repo import make_git_repo
+from tests._owner_channel import OWNER_DECISION
 
 
 def _backend() -> MagicMock:
@@ -33,8 +34,10 @@ class _HealedProvisionQuestion(TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ticket = Ticket.objects.create(overlay="test", repos=[], state=Ticket.State.WORK_STARTED)
-        self.question = record_provision_failure_question(ticket, "no repos on ticket", retries=6)
-        self.live = DeferredQuestion.record("Which DB host?")
+        self.question = DeferredQuestion.record(
+            "Provision failed: no repos on ticket", dedupe_marker=provision_failure_marker(ticket.pk), **OWNER_DECISION
+        )
+        self.live = DeferredQuestion.record("Which DB host?", **OWNER_DECISION)
         self.ticket = ticket
 
     def _heal(self) -> None:
@@ -79,17 +82,6 @@ class TestTheMirrorDrain(_HealedProvisionQuestion):
         assert self._posted_the_provision_question(backend)
         self.question.refresh_from_db()
         assert self.question.is_pending
-
-    def test_the_targeted_kick_withdraws_a_healed_row(self) -> None:
-        self._heal()
-
-        with patch.object(notify_module, "messaging_from_overlay", return_value=_backend()):
-            assert drain_unmirrored_deferred_questions(user_id="U_ME", only_ref=self.question.stable_notify_ref) == (
-                0,
-                0,
-            )
-
-        self._assert_withdrawn()
 
 
 class TestTheResurfaceDrain(_HealedProvisionQuestion):

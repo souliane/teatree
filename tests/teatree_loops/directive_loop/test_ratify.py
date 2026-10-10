@@ -6,6 +6,8 @@ and there is NO auto-admit path — a directive cannot become ADMITTED without a
 approval. The rejection path records the human's words.
 """
 
+import itertools
+
 import pytest
 from asgiref.sync import async_to_sync
 from django.core.management import call_command
@@ -115,6 +117,14 @@ class TestAskRatification(TestCase):
         assert "max_open_prs_per_repo_per_ticket" in question.question
         assert "pr_budget_gate" in question.question
         assert "rejected alternatives" in question.question
+
+    def test_the_ask_is_an_architecture_decision_carrying_the_sketch_it_checked(self) -> None:
+        directive = _interpreted_directive()
+        question = ask_ratification(directive)
+        assert directive.sketch is not None
+        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.evidence["decision"] == "architecture"
+        assert any(render_sketch(directive.sketch) in fact for fact in question.evidence["checked"])
 
     def test_the_cli_path_question_is_byte_identical(self) -> None:
         directive = _interpreted_directive()
@@ -256,6 +266,7 @@ class TestUndecidableAnswerDefers(TestCase):
         assert directive.ratify_question is not None
         assert directive.ratify_question.pk != first.pk
         assert directive.ratify_question.answered_at is None
+        assert directive.ratify_question.evidence["decision"] == "architecture"
         assert try_admit(directive) == "pending"
 
 
@@ -264,12 +275,12 @@ def _answer_over_mcp(question: DeferredQuestion, text: str) -> None:
 
 
 def _answer_from_a_headless_agent(question: DeferredQuestion, text: str) -> None:
-    with harness_signature(HEADLESS_AGENT_ENV):
+    with harness_signature(HEADLESS_AGENT_ENV), pytest.raises(SystemExit):
         call_command("questions", "answer", question.pk, text)
 
 
 def _answer_on_the_command_line(question: DeferredQuestion, text: str) -> None:
-    with harness_signature({}):
+    with harness_signature({}), pytest.raises(SystemExit):
         call_command("questions", "answer", question.pk, text)
 
 
@@ -285,37 +296,41 @@ _DIRECTIVE_SOURCES = (_ambient_interpreted_directive, _interpreted_directive)
 class TestOnlyTheOwnerRatifies(TestCase):
     """Only a Slack reply by the owner or the owner's graduated policy decides a ratification."""
 
-    def test_a_non_owner_approval_is_re_asked(self) -> None:
+    def test_a_non_owner_surface_cannot_answer_a_ratification(self) -> None:
         for make_directive in _DIRECTIVE_SOURCES:
             for answer in _NON_OWNER_SURFACES:
-                with self.subTest(source=make_directive.__name__, surface=answer.__name__):
-                    directive = make_directive()
-                    first = ask_ratification(directive)
-                    answer(first, "approve")
-                    first.refresh_from_db()
-                    assert first.resolved_via not in DeferredQuestion.OWNER_CHANNELS
+                for text in ("approve", "reject"):
+                    with self.subTest(source=make_directive.__name__, surface=answer.__name__, text=text):
+                        directive = make_directive()
+                        first = ask_ratification(directive)
+                        answer(first, text)
+                        first.refresh_from_db()
+                        assert first.is_pending
 
-                    directive.refresh_from_db()
-                    assert try_admit(directive) == "reasked"
+                        directive.refresh_from_db()
+                        assert try_admit(directive) == "pending"
+                        directive.refresh_from_db()
+                        assert directive.state == Directive.State.RATIFY_PENDING
 
-                    directive.refresh_from_db()
-                    assert directive.state == Directive.State.RATIFY_PENDING
-                    reasked = directive.ratify_question
-                    assert reasked is not None
-                    assert reasked.pk != first.pk
-                    assert reasked.is_pending
-                    assert "owner channel" in reasked.question
-                    assert "questions answer" not in reasked.question
+    def test_a_non_owner_answer_already_on_record_is_re_asked(self) -> None:
+        non_owner = (DeferredQuestion.ResolvedVia.LOCAL, DeferredQuestion.ResolvedVia.AGENT)
+        for make_directive, via, text in itertools.product(_DIRECTIVE_SOURCES, non_owner, ("approve", "reject")):
+            with self.subTest(source=make_directive.__name__, via=via, text=text):
+                directive = make_directive()
+                first = ask_ratification(directive)
+                assert first.apply_answer(text, resolved_via=via) is not None
 
-    def test_a_non_owner_denial_does_not_reject(self) -> None:
-        for answer in _NON_OWNER_SURFACES:
-            with self.subTest(surface=answer.__name__):
-                directive = _interpreted_directive()
-                answer(ask_ratification(directive), "reject")
                 directive.refresh_from_db()
                 assert try_admit(directive) == "reasked"
+
                 directive.refresh_from_db()
                 assert directive.state == Directive.State.RATIFY_PENDING
+                reasked = directive.ratify_question
+                assert reasked is not None
+                assert reasked.pk != first.pk
+                assert reasked.is_pending
+                assert "owner channel" in reasked.question
+                assert "questions answer" not in reasked.question
 
     def test_every_owner_channel_still_admits(self) -> None:
         for make_directive in _DIRECTIVE_SOURCES:
@@ -329,7 +344,7 @@ class TestOnlyTheOwnerRatifies(TestCase):
 
     def test_the_owner_answers_the_re_ask_on_slack(self) -> None:
         directive = _interpreted_directive()
-        _answer_on_the_command_line(ask_ratification(directive), "approve")
+        ask_ratification(directive).apply_answer("approve", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
         directive.refresh_from_db()
         assert try_admit(directive) == "reasked"
         directive.refresh_from_db()

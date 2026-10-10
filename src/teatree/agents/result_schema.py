@@ -23,6 +23,7 @@ from teatree.agents.result_payloads import (
     suggestion_url,
     verdict_carries_payload,
 )
+from teatree.agents.result_schema_owner_stop import OWNER_STOP_SCHEMA_PROPERTIES, OwnerStop
 from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
@@ -147,7 +148,7 @@ class DirectiveInterpretationEnvelope(TypedDict, total=False):
     clarifying_questions: list[str]
 
 
-class AgentResult(TypedDict, total=False):
+class AgentResult(OwnerStop, total=False):
     """Structured result from an agent task execution."""
 
     summary: str
@@ -171,8 +172,6 @@ class AgentResult(TypedDict, total=False):
     work_item: WorkItemEnvelope
     fix_record: FixRecord
     ticket_sweep: TicketSweepEvidence
-    needs_user_input: bool
-    user_input_reason: str
     next_steps: list[str]
     commands_executed: list[str]
     skill_application: list[SkillApplication]
@@ -471,8 +470,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "required": list(FIX_RECORD_FIELDS),
         },
         "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
-        "needs_user_input": {"type": "boolean"},
-        "user_input_reason": {"type": "string"},
+        **OWNER_STOP_SCHEMA_PROPERTIES,
         "next_steps": {
             "type": "array",
             "items": {"type": "string"},

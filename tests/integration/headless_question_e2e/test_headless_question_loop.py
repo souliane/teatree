@@ -82,6 +82,8 @@ class TestHeadlessQuestionLoop:
             "summary": "Blocked on a design decision",
             "needs_user_input": True,
             "user_input_reason": "Which DB host should the new connection pool target?",
+            "user_input_kind": "architecture",
+            "user_input_checked": ["settings name no pool host", "the ticket names no pool host"],
         }
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),

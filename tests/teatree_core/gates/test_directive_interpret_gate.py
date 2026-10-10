@@ -134,7 +134,9 @@ class TestRecordClarifications(TestCase):
         assert error == ""
         directive.refresh_from_db()
         assert directive.state == Directive.State.CLARIFYING
-        assert DeferredQuestion.objects.filter(options_hash__startswith=f"directive_clarify:{directive.pk}:").exists()
+        question = DeferredQuestion.objects.get(options_hash__startswith=f"directive_clarify:{directive.pk}:")
+        assert question.evidence["decision"] == "product_scope"
+        assert any(directive.raw_text in fact for fact in question.evidence["checked"])
 
 
 class TestNoOps(TestCase):

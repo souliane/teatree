@@ -13,6 +13,7 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.task_failure_taxonomy import PLAN_STALE_PREFIX, FailureKind
 from teatree.core.models import (
     DeferredQuestion,
@@ -67,6 +68,22 @@ class TestValidateResultKeys(TestCase):
 
     def test_rejects_unknown_keys(self) -> None:
         assert "unexpected keys" in validate_result_keys({"bogus": 1})
+
+    def test_accepts_each_owner_decision_kind_with_checked_facts(self) -> None:
+        for kind in OwnerDecision:
+            stop = {"summary": "x", "needs_user_input": True, "user_input_kind": kind}
+            assert validate_result_keys(stop | {"user_input_checked": ["the vault holds no token"]}) == ""
+
+    def test_user_input_kind_without_checked_is_refused(self) -> None:
+        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "credentials"}
+        for checked in ({}, {"user_input_checked": []}, {"user_input_checked": ["  "]}, {"user_input_checked": "a"}):
+            assert "user_input_checked" in validate_result_keys(stop | checked), checked
+
+    def test_unknown_user_input_kind_is_refused(self) -> None:
+        stop = {"summary": "x", "needs_user_input": True, "user_input_kind": "gate_refusal"}
+        error = validate_result_keys(stop | {"user_input_checked": ["the gate log"]})
+        assert "user_input_kind" in error
+        assert "credentials" in error
 
 
 class TestRecordResultEnvelope(TestCase):
@@ -365,9 +382,8 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
 
     @patch("teatree.core.models.pending_article_suggestion.check_url")
-    def test_recorded_batch_surfaces_one_owner_approval_dm(self, check_url: object) -> None:
-        # The shell-denied agent cannot post the approval DM itself, so the server
-        # DMs ONE owner-audience batch listing the candidates it just recorded.
+    def test_recorded_batch_is_one_internal_question(self, check_url: object) -> None:
+        # An undecided question is internal: the batch names no owner decision, so it is never DMed.
         check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
         task = self._claimed()
         record_result_envelope(
@@ -379,7 +395,7 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         )
         question = DeferredQuestion.objects.get()
         assert question.is_pending
-        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.audience == DeferredQuestion.Audience.INTERNAL
         assert question.parked_task_id is None
         assert "https://ex.com/a" in question.question
 
@@ -443,6 +459,8 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
         question = DeferredQuestion.objects.get()
         assert question.parked_task_id == task.pk
         assert question.is_pending
+        assert question.evidence["decision"] == "product_scope"
+        assert any("2 needs-triage recommendation" in fact for fact in question.evidence["checked"])
 
     def test_summary_only_triage_assessing_is_refused(self) -> None:
         task = self._claimed()
@@ -496,6 +514,8 @@ class TestAnsweringEnvelopeChannel(TestCase):
         assert "Here is the reply." in question.question
         assert "C123/168.9" in question.question
         assert question.is_pending
+        assert question.evidence["decision"] == "public_post"
+        assert any("C123/168.9" in fact for fact in question.evidence["checked"])
 
     def test_summary_only_answering_is_refused(self) -> None:
         task = self._claimed()

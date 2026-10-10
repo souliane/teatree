@@ -10,9 +10,6 @@ populated when availability=away (BLUEPRINT §17.1 invariant 9):
     the user no longer wants to answer; writes an audit row.
 * ``t3 teatree questions reachability`` — which automated resolvers can decide
     each pending row, and how many can be decided by none (#4178).
-* ``t3 teatree questions mirror --ref <ref>`` — deliver ONE un-mirrored row
-    now; the capture-time kick the loop-driven ``AskUserQuestion`` deny arm
-    spawns detached so a headless blocker does not wait for the next tick.
 * ``t3 teatree questions resurface`` — re-post the pending backlog to the
     user's Slack DM (the away→present drain): returning from away never
     silently swallows questions. Reuses :func:`teatree.core.notify.notify_user`
@@ -26,6 +23,7 @@ on its next turn.
 """
 
 import io
+import json
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
@@ -33,10 +31,10 @@ from django.db import transaction
 from django_typer.management import command, initialize
 
 from teatree.core.machine_output import MachineOutputCommand, emit
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE, OwnerDecision, owner_decision
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
-from teatree.core.models.errors import NoPlanArtifactError
-from teatree.core.models.task_handoff import schedule_resume
-from teatree.core.notify_question_drains import drain_deferred_questions, drain_unmirrored_deferred_questions
+from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.core.table_output import print_table
 
 
@@ -121,7 +119,6 @@ class Command(MachineOutputCommand):
             str,
             typer.Option("--options", help="Verbatim JSON-encoded ``AskUserQuestion`` options."),
         ] = "",
-        session_id: Annotated[str, typer.Option("--session", help="Originating session id.")] = "",
         dedupe_marker: Annotated[
             str,
             typer.Option(
@@ -129,38 +126,60 @@ class Command(MachineOutputCommand):
                 help="Escalate-once scope; an open question already carrying it is returned unchanged.",
             ),
         ] = "",
-        audience: Annotated[
+        decision: Annotated[
             str,
-            typer.Option("--audience", help="owner_question (DM'd to the owner) or internal (logged only)."),
-        ] = DeferredQuestion.Audience.OWNER_QUESTION,
+            typer.Option(
+                "--decision",
+                help=f"Only for a decision the owner alone makes: {', '.join(OwnerDecision)}. Absent: internal.",
+            ),
+        ] = "",
+        checked: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--checked", help="A fact you checked before asking; repeat per fact. Required with --decision."
+            ),
+        ] = None,
     ) -> str:
         """Record a deferred question by hand — the agent-facing capture surface.
 
-        ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
-        already set, exposed so a question recorded here carries the SAME shape:
-        its row collapses onto the scanner's row for one underlying signal, and
-        an agent's self-report about its own tooling can be marked internal
-        instead of reaching the owner's DM.
+        ``--dedupe-marker`` is the column the scanners set, so a row recorded here
+        collapses onto the scanner's row for one underlying signal. ``--decision`` is
+        the deny-by-default allowlist (#5096): only a named owner decision with a ``--checked``
+        fact reaches the owner's DM, and its marker defaults to ``<decision>:<question fingerprint>`` so
+        the same question is never asked twice.
 
-        There is no ``--tool-use-id``: that identifier is assigned by the harness
-        and nobody at a shell can know it. The away-mode ``AskUserQuestion``
-        PreToolUse hook records its own rows through
-        :meth:`DeferredQuestion.record` directly and sets it there.
+        There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
+        and the ``AskUserQuestion`` PreToolUse hook records its own rows through
+        :meth:`DeferredQuestion.record` directly and sets them there.
         """
-        if audience not in DeferredQuestion.Audience.values:
-            self.stderr.write(f"unknown audience {audience!r} — expected one of {DeferredQuestion.Audience.values}")
+        kind = owner_decision(decision) if decision else None
+        if decision and kind is None:
+            self.stderr.write(f"unknown decision {decision!r} — expected one of {', '.join(OwnerDecision)}")
             raise SystemExit(2)
+        if kind is not None and not dedupe_marker:
+            dedupe_marker = f"{kind}:{question_fingerprint(question)}"
+        try:
+            options = json.loads(options_json) if options_json else None
+        except ValueError:
+            options = None
         try:
             row = DeferredQuestion.record(
                 question,
                 options_json=options_json,
-                session_id=session_id,
+                options_hash=options_digest(options) if isinstance(options, list) else "",
                 dedupe_marker=dedupe_marker,
-                audience=audience,
+                decision=kind,
+                checked=checked or (),
             )
         except DeferredQuestionError as exc:
-            self.stderr.write(str(exc))
+            self.stderr.write(f"{exc}. {OWNER_QUESTION_ROUTE}" if kind else str(exc))
             raise SystemExit(2) from exc
+        if kind is None:
+            return f"recorded #{row.pk} internal, not sent to the owner; decide it yourself. {OWNER_QUESTION_ROUTE}"
+        if row.answered_at is not None:
+            return f"#{row.pk} was already answered: {row.answer_text}"
+        if row.dismissed_at is not None:
+            return f"#{row.pk} was already dismissed: {row.dismissed_reason}"
         return f"recorded #{row.pk}."
 
     @command(name="list")
@@ -250,7 +269,7 @@ class Command(MachineOutputCommand):
         ] = None,
         agent_surface: Annotated[bool, typer.Option("--agent-surface", hidden=True)] = False,
     ) -> str:
-        """Resolve pending questions with a user answer (resumes any parked headless task).
+        """Resolve pending internal questions; an owner question is answered only in its Slack thread.
 
         ``--also`` exists because one decision routinely settles several questions:
         a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -267,11 +286,16 @@ class Command(MachineOutputCommand):
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
+        targets = [question_id, *(also or [])]
+        owner_rows = DeferredQuestion.objects.filter(pk__in=targets, audience=DeferredQuestion.Audience.OWNER_QUESTION)
+        if owner_ids := sorted(owner_rows.values_list("pk", flat=True)):
+            self.stderr.write(f"{', '.join(f'#{pk}' for pk in owner_ids)}: {OWNER_ANSWER_ROUTE}")
+            raise SystemExit(2)
         # A command-line answer is never an owner channel.
         resolved_via = DeferredQuestion.ResolvedVia.AGENT if agent_surface else DeferredQuestion.ResolvedVia.LOCAL
         answered: list[int] = []
         skipped: list[int] = []
-        for target in [question_id, *(also or [])]:
+        for target in targets:
             try:
                 with transaction.atomic():
                     row = DeferredQuestion.consume(target, answer=text)
@@ -286,11 +310,6 @@ class Command(MachineOutputCommand):
                         answer_text=text,
                         resolver_id=resolver_id,
                     )
-                    if row.parked_task is not None:
-                        try:
-                            schedule_resume(row.parked_task, answer=text)
-                        except NoPlanArtifactError as exc:
-                            self.stderr.write(f"answer #{row.pk} kept; its parked task was not resumed: {exc}")
                     answered.append(row.pk)
             except DeferredQuestionError as exc:
                 self.stderr.write(str(exc))
@@ -356,37 +375,6 @@ class Command(MachineOutputCommand):
         if not dismissed:
             raise SystemExit(1)
         return f"dismissed {len(dismissed)}: {', '.join(f'#{pk}' for pk in dismissed)}."
-
-    @command()
-    def mirror(
-        self,
-        ref: Annotated[
-            str,
-            typer.Option("--ref", help="The row's stable_notify_ref (its tool_use_id, or '<instance>:<pk>')."),
-        ] = "",
-        user_id: Annotated[
-            str,
-            typer.Option("--user-id", help="Slack user id to DM (defaults to the configured user)."),
-        ] = "",
-        overlay: Annotated[
-            str,
-            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
-        ] = "",
-    ) -> str:
-        """Deliver ONE un-mirrored question now, bypassing the per-tick batch cap.
-
-        Same :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions`
-        egress the tick scanner runs, so there is exactly one Slack chokepoint for
-        every deferred question. An unmatched *ref* is not an error: the tick drain
-        may have taken the row first, and the durable row remains the fallback.
-        """
-        if not ref.strip():
-            self.stderr.write("--ref is required; a blank ref would drain the whole backlog.")
-            raise SystemExit(2)
-        mirrored, total = drain_unmirrored_deferred_questions(user_id=user_id, overlay=overlay, only_ref=ref.strip())
-        if total == 0:
-            return f"nothing to mirror for ref {ref.strip()!r} — already delivered, or resolved."
-        return f"mirrored {mirrored}/{total} question(s)."
 
     @command()
     def resurface(

@@ -203,4 +203,6 @@ class OfflineNamesTheDurableRouteTests(TestCase):
         message = err.getvalue()
         assert f"task {self.task.pk}" in message
         assert "completed" in message
-        assert "questions answer" in message
+        # An owner question is answered in its Slack thread; `questions answer` refuses it.
+        assert "Slack thread" in message
+        assert "questions answer" not in message

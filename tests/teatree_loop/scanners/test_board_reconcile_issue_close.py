@@ -290,6 +290,9 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
         questions = DeferredQuestion.objects.filter(dedupe_marker=f"issue-closed-unshipped-work:{ticket.pk}")
         assert questions.count() == 1
         assert "/checkouts/4084/teatree" in questions.get().question
+        evidence = questions.get().evidence
+        assert evidence["decision"] == "irreversible"
+        assert any("/checkouts/4084/teatree" in fact for fact in evidence["checked"])
 
     def test_a_clean_worktree_raises_no_question(self) -> None:
         Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=_ISSUE)

@@ -408,7 +408,6 @@ class HaltCountTestCase(TestCase):
             DeferredQuestion.record(
                 f"repair-loop stall {i}",
                 dedupe_marker=f"repair-stall:{i}:coding",
-                audience=DeferredQuestion.Audience.INTERNAL,
             )
         finding = recon._check_halt_count()
         assert finding.is_alarm

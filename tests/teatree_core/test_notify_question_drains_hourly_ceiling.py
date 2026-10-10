@@ -21,6 +21,7 @@ from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPoste
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.utils.thread_db import close_thread_db_connections
+from tests._owner_channel import OWNER_DECISION
 from tests.db_alias import run_racing_threads
 from tests.teatree_core.conftest import SchemaGuardAlias
 from tests.teatree_core.test_claim_liveness import _OTHER_NS, _READER_NS, pinned_reader_namespace
@@ -62,8 +63,8 @@ def _backend() -> MagicMock:
 
 
 def _backlog(question: str, *, slack_ts: str = "", age_days: int = 3) -> DeferredQuestion:
-    mirror = {"slack_channel": _CHANNEL, "slack_ts": slack_ts} if slack_ts else {}
-    row = DeferredQuestion.record(question, session_id="s", **mirror)
+    channel = _CHANNEL if slack_ts else ""
+    row = DeferredQuestion.record(question, session_id="s", slack_channel=channel, slack_ts=slack_ts, **OWNER_DECISION)
     DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - dt.timedelta(days=age_days))
     row.refresh_from_db()
     return row

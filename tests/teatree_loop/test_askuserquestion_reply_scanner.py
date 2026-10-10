@@ -21,7 +21,7 @@ from teatree.core.models import DmContext, PendingChatInjection, Session, Task, 
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
-from tests._owner_channel import OWNER_SLACK_ID
+from tests._owner_channel import OWNER_DECISION, OWNER_SLACK_ID
 from tests.factories import planned_ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -213,7 +213,7 @@ _RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestParkedTaskHeadlessResume:
-    """A bound reply to a headless-lane question re-queues a headless resume.
+    """A bound reply to a headless-lane owner question re-queues a headless resume.
 
     The question carries a ``parked_task`` correlation; applying the answer
     re-queues a HEADLESS followup that resumes the captured session (via the
@@ -240,6 +240,7 @@ class TestParkedTaskHeadlessResume:
             slack_channel=_CHANNEL,
             slack_ts="100.0",
             parked_task=parked,
+            **OWNER_DECISION,
         )
         _record_reply("use postgres-1", slack_ts="200.0")
 
@@ -260,6 +261,7 @@ class TestParkedTaskHeadlessResume:
             slack_channel=_CHANNEL,
             slack_ts="100.0",
             parked_task=parked,
+            **OWNER_DECISION,
         )
         _record_reply("use postgres-1", slack_ts="200.0")
 

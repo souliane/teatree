@@ -3417,10 +3417,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 #
-# There is ONE Slack egress for a deferred question and it is not here:
-# ``notify_question_drains.drain_unmirrored_deferred_questions`` -> ``notify_user``.
-# This handler records the durable row and kicks that drain; the tick scanner
-# re-runs it for anything the kick did not land (#4673).
+# The row is INTERNAL: only a ``questions record --decision --checked`` re-record reaches the owner.
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
@@ -3432,7 +3429,7 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     not nagged for a decision they just made; loop-driven / autonomous turn:
     capture a generation-stamped ``DeferredQuestion``, deduped against a harness
     retry of the SAME denied call, kick its delivery, then deny so the agent
-    narrates the deferral and proceeds — the answer comes back at the session's next turn end.
+    decides it and proceeds — the row is internal, never DM'd (#5096).
 
     A Claude Code question is never asked twice: an attended session's question
     exists only in the terminal the owner is already looking at.
@@ -3442,15 +3439,17 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
         _supersede_pending_questions(data)
         return False
-    queue_id, ref = _capture_and_defer_question(data, dedupe=True)
+    queue_id = _capture_and_defer_question(data, dedupe=True)
     if queue_id is None:
         # Teatree unavailable, or nothing to record — fail open so the in-client modal renders.
         return False
-    _kick_question_drain(ref)
+    from teatree.core.modelkit.owner_decision import (  # noqa: PLC0415 — teatree is optional in a hook
+        OWNER_QUESTION_ROUTE,
+    )
+
     reason = (
-        f"Your question was captured durably as DeferredQuestion #{queue_id} and is being delivered to "
-        "the user's Slack DM. A loop-driven AskUserQuestion cannot block here. Proceed with any work that "
-        f"does not depend on the answer; the reply comes back to this session at its next turn end (row #{queue_id})."
+        f"Your question was recorded as internal DeferredQuestion #{queue_id}; it is NOT sent to the user. "
+        f"A loop-driven AskUserQuestion cannot block here: decide it yourself and proceed. {OWNER_QUESTION_ROUTE}"
     )
     return emit_pretooluse_deny(reason, gate_id="deferred_question")
 
@@ -3475,28 +3474,6 @@ def _supersede_pending_questions(data: dict) -> None:
         return
 
 
-def _kick_question_drain(ref: str) -> None:
-    """Deliver the just-recorded row NOW, detached — never on the hook's own budget.
-
-    Selection in the tick drain is oldest-first and capped, so without this a headless
-    blocker waits ``ceil(backlog/cap)`` ticks. Detached rather than synchronous because
-    ``notify_user``'s client retries and this runs inside the PreToolUse timeout. Any
-    failure is silent: the durable row plus the tick scanner remain the fallback.
-    """
-    overlay = os.environ.get("T3_OVERLAY_NAME", "")
-    if not ref or not overlay:
-        return
-    # ``T3_OVERLAY_NAME`` carries the entry name (e.g. ``t3-teatree``); the CLI group
-    # registers under the canonical short name with that prefix stripped (``t3 teatree
-    # …``). The full entry name is still what ``--overlay`` wants, for per-overlay bot
-    # routing.
-    argv = t3_argv(overlay.removeprefix("t3-"), "questions", "mirror", "--ref", ref, "--overlay", overlay)
-    if argv is None:
-        return
-    with contextlib.suppress(Exception):
-        spawn_t3_detached(argv)
-
-
 def _run_id(data: dict) -> str:
     """Harness run id when the payload exposes one; empty when it names no run.
 
@@ -3510,30 +3487,28 @@ def _run_id(data: dict) -> str:
     return ""
 
 
-def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[int | None, str]:
+def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> int | None:
     """Record the loop-driven deny arm's durable ``DeferredQuestion`` (#1174, #4673).
 
     It supersedes only the pending rows :meth:`DeferredQuestion.supersedable` still
-    allows — never one already delivered to Slack (#4721) — and records the row
-    UN-MIRRORED, so the one Slack egress (``drain_unmirrored_deferred_questions`` ->
-    ``notify_user``) delivers it and stamps the mirror coordinates the reply matcher
-    binds on. Returns ``(row id, stable_notify_ref)``, or ``(None, "")`` when teatree is
-    unavailable or there is nothing to record — fails open, so the in-client modal renders.
+    allows — never one already delivered to Slack (#4721) — and records the row internal.
+    Returns the row id, or ``None`` when teatree is unavailable or there is nothing to
+    record — fails open, so the in-client modal renders.
 
     *dedupe* makes the row itself the idempotency record: a harness retry returns the
     live row rather than superseding it into a twin ``live_for_reply`` cannot bind,
     which silently drops the operator's Slack answer.
     """
     if not bootstrap_teatree_django():
-        return None, ""
+        return None
     try:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None, ""
+        return None
     first = _first_question(data)
     question_text = str(first.get("question", "")).strip()
     if not question_text:
-        return None, ""
+        return None
     options = first.get("options", []) if isinstance(first.get("options"), list) else []
     session_id = str(data.get("session_id", ""))
     run_id = _run_id(data)
@@ -3545,7 +3520,7 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[in
             for prior in DeferredQuestion.supersedable(session_id=session_id, run_id=run_id):
                 prior.mark_stale("superseded by newer question")
     except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None, ""
+        return None
     if row is None:
         try:
             row = DeferredQuestion.record(
@@ -3559,8 +3534,8 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[in
                 dedupe_marker=marker,
             )
         except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-            return None, ""
-    return int(row.pk), row.stable_notify_ref
+            return None
+    return int(row.pk)
 
 
 def _is_live_user_turn(data: dict) -> bool:

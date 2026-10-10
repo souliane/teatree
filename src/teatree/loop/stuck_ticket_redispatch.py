@@ -422,7 +422,6 @@ def _escalate_once(ticket: Ticket, *, reason: str) -> None:
         question,
         session_id="",
         dedupe_marker=marker,
-        audience=DeferredQuestion.Audience.INTERNAL,
     )
 
 

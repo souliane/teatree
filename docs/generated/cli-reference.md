@@ -14009,8 +14009,6 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
 │ dismiss       Dismiss a pending question without answering it.               │
-│ mirror        Deliver ONE un-mirrored question now, bypassing the per-tick   │
-│               batch cap.                                                     │
 │ resurface     Re-post the pending backlog to the user's Slack DM             │
 │               (away→present drain).                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -14023,16 +14021,17 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 
  Record a deferred question by hand — the agent-facing capture surface.
 
- ``--dedupe-marker`` and ``--audience`` are the two columns the scanners
- already set, exposed so a question recorded here carries the SAME shape:
- its row collapses onto the scanner's row for one underlying signal, and
- an agent's self-report about its own tooling can be marked internal
- instead of reaching the owner's DM.
+ ``--dedupe-marker`` is the column the scanners set, so a row recorded here
+ collapses onto the scanner's row for one underlying signal. ``--decision`` is
+ the deny-by-default allowlist (#5096): only a named owner decision with a
+ ``--checked``
+ fact reaches the owner's DM, and its marker defaults to ``<decision>:<question
+ fingerprint>`` so
+ the same question is never asked twice.
 
- There is no ``--tool-use-id``: that identifier is assigned by the harness
- and nobody at a shell can know it. The away-mode ``AskUserQuestion``
- PreToolUse hook records its own rows through
- :meth:`DeferredQuestion.record` directly and sets it there.
+ There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
+ and the ``AskUserQuestion`` PreToolUse hook records its own rows through
+ :meth:`DeferredQuestion.record` directly and sets them there.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question      TEXT  The question text. [required]                       │
@@ -14040,12 +14039,14 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --options              TEXT  Verbatim JSON-encoded ``AskUserQuestion``       │
 │                              options.                                        │
-│ --session              TEXT  Originating session id.                         │
 │ --dedupe-marker        TEXT  Escalate-once scope; an open question already   │
 │                              carrying it is returned unchanged.              │
-│ --audience             TEXT  owner_question (DM'd to the owner) or internal  │
-│                              (logged only).                                  │
-│                              [default: owner_question]                       │
+│ --decision             TEXT  Only for a decision the owner alone makes:      │
+│                              credentials, money_or_plan, public_post,        │
+│                              irreversible, product_scope, architecture.      │
+│                              Absent: internal.                               │
+│ --checked              TEXT  A fact you checked before asking; repeat per    │
+│                              fact. Required with --decision.                 │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -14087,8 +14088,8 @@ Usage: t3 teatree questions reachability [OPTIONS]
 ```
 Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 
- Resolve pending questions with a user answer (resumes any parked headless
- task).
+ Resolve pending internal questions; an owner question is answered only in its
+ Slack thread.
 
  ``--also`` exists because one decision routinely settles several questions:
  a loop that cannot act on an ambiguous instruction files a clarifying question
@@ -14141,31 +14142,6 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_IDS...
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree questions mirror`
-
-```
-Usage: t3 teatree questions mirror [OPTIONS]
-
- Deliver ONE un-mirrored question now, bypassing the per-tick batch cap.
-
- Same
- :func:`teatree.core.notify_question_drains.drain_unmirrored_deferred_questions
- `
- egress the tick scanner runs, so there is exactly one Slack chokepoint for
- every deferred question. An unmatched *ref* is not an error: the tick drain
- may have taken the row first, and the durable row remains the fallback.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --ref            TEXT  The row's stable_notify_ref (its tool_use_id, or      │
-│                        '<instance>:<pk>').                                   │
-│ --user-id        TEXT  Slack user id to DM (defaults to the configured       │
-│                        user).                                                │
-│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay bot     │
-│                        routing).                                             │
-│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -14292,7 +14268,7 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
 │ --user-id                TEXT  Slack user id to DM (defaults to the          │
 │                                configured user).                             │
-│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│ --kind                   TEXT  Notification kind: info | answer.             │
 │                                [default: info]                               │
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │
@@ -14326,7 +14302,7 @@ Usage: t3 teatree notify dm [OPTIONS] BODY
 │ --idempotency-key        TEXT  Required dedupe key (the helper enforces it). │
 │ --user-id                TEXT  Slack user id to DM (defaults to the          │
 │                                configured user).                             │
-│ --kind                   TEXT  Notification kind: info | answer | question.  │
+│ --kind                   TEXT  Notification kind: info | answer.             │
 │                                [default: info]                               │
 │ --overlay                TEXT  Set T3_OVERLAY_NAME for the call (per-overlay │
 │                                bot routing).                                 │

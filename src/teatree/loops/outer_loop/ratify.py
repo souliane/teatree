@@ -1,15 +1,15 @@
 """The RATIFY phase — the ONLY writer of the ADMITTED state (T4-PR-3).
 
-Ratification is structural, not advisory: :func:`ask_ratification` records a
+Ratification is structural: :func:`ask_ratification` records a
 :class:`~teatree.core.models.deferred_question.DeferredQuestion` and moves the
 experiment to ``RATIFY_PENDING``; :func:`try_admit` is the sole path that calls
-:meth:`OuterLoopExperiment.admit` — and only after a human's recorded answer
-approves it. A denial rejects; an answer that decides neither is re-asked. There is
-no auto-admit code path anywhere, so an experiment cannot become ``ADMITTED``
-without a consumed question.
+:meth:`OuterLoopExperiment.admit`, and only from a consumed answer. The owner's standing
+answer is "approve" (#5096), so the question is internal and answered by policy with an
+audit row; a recorded denial still rejects and an undecidable answer is still re-asked.
 """
 
 from teatree.core.models import DeferredQuestion, OuterLoopExperiment
+from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.ratification import RatificationVerdict, classify_ratification_answer
 
 #: How much of the undecidable answer to quote back, bounded so a long one cannot bloat the DM.
@@ -24,6 +24,7 @@ def ask_ratification(experiment: OuterLoopExperiment) -> DeferredQuestion:
         options_hash=f"outer_loop_ratify:{experiment.pk}",
     )
     experiment.attach_ratification(question)
+    auto_answer_by_policy(question, "approve")
     return question
 
 

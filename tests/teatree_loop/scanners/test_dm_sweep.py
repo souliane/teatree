@@ -14,6 +14,7 @@ from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.dm_sweep import DmSweepScanner, SlackThreadReply, _is_owner_reply
 from teatree.types import RawAPIDict
+from tests._owner_channel import OWNER_DECISION
 
 CHANNEL = "D0OWNER"
 TS = "1779990001.000001"
@@ -33,7 +34,7 @@ class _FakeMessaging:
 
 
 def _thread(text: str = "Ship it?", *, age: timedelta = timedelta(minutes=5)) -> DeferredQuestion:
-    row = DeferredQuestion.record(text, slack_channel=CHANNEL, slack_ts=TS)
+    row = DeferredQuestion.record(text, slack_channel=CHANNEL, slack_ts=TS, **OWNER_DECISION)
     DeferredQuestion.objects.filter(pk=row.pk).update(created_at=timezone.now() - age)
     row.refresh_from_db()
     return row

@@ -8,14 +8,17 @@ rows) reach the user's Slack DM. Side-effecting; emits a signal only when
 it actually mirrors something.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.loop.domain_jobs import _run_job
+from teatree.core.models import DeferredQuestion, Session, Ticket
+from teatree.loop.domain_jobs import _global_dispatch_jobs, _run_job
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.question_drain import sweep_owner_questions
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
+from tests._owner_channel import OWNER_DECISION
 
 
 class TestDeferredQuestionPosterScanner(TestCase):
@@ -49,3 +52,36 @@ class TestDeferredQuestionPosterScanner(TestCase):
         ):
             _, signals, error = _run_job(_ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""))
         assert (signals, error) == ([], "RuntimeError: boom")
+
+
+class TestSettleRunsBeforeTheMirror(TestCase):
+    def _owner_question_whose_ticket_then_merged(self) -> DeferredQuestion:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.CODED)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        question = DeferredQuestion.record("May I post it?", task_session=session, **OWNER_DECISION)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
+        return question
+
+    def test_an_owner_question_whose_subject_finished_is_settled_not_posted(self) -> None:
+        question = self._owner_question_whose_ticket_then_merged()
+        backend = MagicMock()
+
+        signals = DeferredQuestionPosterScanner(backend=backend, user_id="U_ME", settle=sweep_owner_questions).scan()
+
+        assert signals == []
+        backend.post_message.assert_not_called()
+        question.refresh_from_db()
+        assert not question.is_pending
+
+    def test_without_a_settle_step_the_same_question_is_posted(self) -> None:
+        self._owner_question_whose_ticket_then_merged()
+        backend = MagicMock()
+
+        DeferredQuestionPosterScanner(backend=backend, user_id="U_ME").scan()
+
+        backend.post_message.assert_called_once()
+
+    def test_the_global_dispatch_poster_settles_with_the_owner_sweep(self) -> None:
+        poster = next(job.scanner for job in _global_dispatch_jobs() if job.scanner.name == "deferred_question_poster")
+
+        assert poster.settle is sweep_owner_questions

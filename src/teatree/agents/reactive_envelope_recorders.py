@@ -18,6 +18,7 @@ from django.utils import timezone
 from teatree.agents.result_payloads import answer_text, recommendation_issue_url, suggestion_url
 from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, ArticleSuggestion, TriageRecommendation
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task
 from teatree.core.models.ticket_number import derive_issue_number
@@ -187,6 +188,8 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
         ),
         parked_task=task,
         dedupe_marker=f"triage-batch-{task.pk}",
+        decision=OwnerDecision.PRODUCT_SCOPE,
+        checked=[f"task {task.pk} recorded {recorded} needs-triage recommendation(s) as pending rows"],
     )
 
 
@@ -301,6 +304,8 @@ def _maybe_record_answer_draft(
     DeferredQuestion.record(
         question=f"Approve this drafted reply{where}?\n\n{text}",
         parked_task=task,
+        decision=OwnerDecision.PUBLIC_POST,
+        checked=[f"task {task.pk} drafted a reply{where}, not delivered in the owner's own DM thread"],
     )
 
 

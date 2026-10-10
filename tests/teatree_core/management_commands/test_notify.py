@@ -11,9 +11,11 @@ import os
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models import BotPing
 
 
@@ -188,6 +190,32 @@ class TestNotifySendSubcommand(TestCase):
         )
 
         assert code == 2
+
+    def test_send_kind_question_refused(self) -> None:
+        backend = _backend()
+        for subcommand in ("send", "dm"):
+            err = StringIO()
+            with (
+                patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+                pytest.raises(SystemExit) as exit_info,
+            ):
+                call_command(
+                    "notify",
+                    subcommand,
+                    "ship it?",
+                    "--user-id",
+                    "U_ME",
+                    "--kind",
+                    "question",
+                    "--idempotency-key",
+                    f"k-question-{subcommand}",
+                    stderr=err,
+                )
+
+            assert exit_info.value.code == 2, subcommand
+            assert OWNER_QUESTION_ROUTE in err.getvalue(), subcommand
+        backend.post_message.assert_not_called()
+        assert not BotPing.objects.exists()
 
     def test_overlay_flag_restores_previous_env(self) -> None:
         backend = _backend()

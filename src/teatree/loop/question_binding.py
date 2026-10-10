@@ -25,22 +25,19 @@ Every rung binds only a reply whose recorded author is the owner's Slack user id
 any other reply, or an unknown owner id, binds nothing and is left for the DM path.
 """
 
-import hashlib
 import json
-import logging
 import re
 from dataclasses import dataclass
 
-from teatree.core.models import NoPlanArtifactError, PendingChatInjection
+from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.question_text import options_digest
 from teatree.loop.inbound_reading import InboundIntent, InboundReader
 
 # The digest's instructed form, ``#<id> <your answer>``. At least one separator
 # is required so ``#12abc`` is not read as question 12 answered "abc".
 _ID_PREFIX_RE = re.compile(r"^\s*#(\d+)(?:[\s:.,\-]+(.*))?$", re.DOTALL)
 _DIGIT_RE = re.compile(r"^\s*([1-9][0-9]*)\s*$")
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +76,7 @@ def bind_reply(
 
 
 def apply_bound_answer(bound: BoundAnswer) -> bool:
-    """Resolve the bound question and resume any parked task; ``True`` when applied.
+    """Resolve the bound question and resume its parked task when the owner may; ``True`` when applied.
 
     ``False`` means a concurrent answer won the single-use CAS, which the caller
     treats as "this reply resolved nothing" and rolls its own claim back.
@@ -87,16 +84,9 @@ def apply_bound_answer(bound: BoundAnswer) -> bool:
     applied = bound.question.apply_answer(bound.answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
     if applied is None:
         return False
-    parked = applied.parked_task
-    if parked is not None:
-        from teatree.core.models.task_handoff import schedule_resume  # noqa: PLC0415 — lazy ORM import
+    from teatree.core.models.task_handoff import resume_on_answer  # noqa: PLC0415 — lazy ORM import
 
-        try:
-            schedule_resume(parked, answer=bound.answer)
-        except NoPlanArtifactError:
-            logger.warning(
-                "Answer to question %s kept; its parked task %s was not resumed", bound.question.pk, parked.pk
-            )
+    resume_on_answer(applied, applied.parked_task)
     return True
 
 
@@ -189,8 +179,7 @@ def _live_options(question: DeferredQuestion) -> list[dict] | None:
         return None
     if not isinstance(options, list):
         return None
-    blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
-    if hashlib.sha256(blob.encode("utf-8")).hexdigest() != question.options_hash:
+    if options_digest(options) != question.options_hash:
         return None
     return options
 

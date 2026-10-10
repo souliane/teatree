@@ -189,7 +189,6 @@ class TestChainPosition:
             with (
                 patch.object(router, "_is_live_user_turn", return_value=False),
                 patch.object(router, "_session_drives_loop", return_value=True),
-                patch.object(router, "_kick_question_drain"),
             ):
                 yield
 
@@ -202,8 +201,12 @@ class TestChainPosition:
         assert "substrate_self_signoff" in _deny_reason(capsys)
         assert not DeferredQuestion.objects.filter(session_id="sess-loop-grant").exists()
 
-    def test_without_the_grant_the_same_loop_ask_is_deferred_to_the_owner(self) -> None:
+    def test_without_the_grant_the_same_loop_ask_is_recorded_internal(self) -> None:
+        # An undecided question is internal: a loop-driven ask names no owner decision, so it never reaches the owner.
         with _config(autonomy="full"), self._loop_driven():
             self._run_pretooluse_chain(_ask(_COVERED_ASK, session_id="sess-loop-nogrant"))
 
         assert DeferredQuestion.objects.filter(session_id="sess-loop-nogrant").count() == 1
+        assert (
+            DeferredQuestion.objects.get(session_id="sess-loop-nogrant").audience == DeferredQuestion.Audience.INTERNAL
+        )

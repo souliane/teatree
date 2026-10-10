@@ -34,7 +34,7 @@ other deterministic failure, and any refusal that already spent its retry, hits 
 all — neither transient nor deterministic) would otherwise match no branch and
 freeze silently; it is routed straight to the escalation path. The invariant: a
 terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
-never freezes silently.
+never freezes silently; only an operator's cancel is parked without a question.
 
 A SELF-CORRECTABLE FAILED task — one whose deterministic failure is a config breach
 with exactly ONE valid resolution (an invalid ``agent_harness``/``agent_harness_provider``
@@ -171,8 +171,8 @@ def requeue_transient_failed() -> int:
 
     Returns the count of tasks reopened (transient reopens + corrective retries).
     A terminal FAILED task on a non-terminal ticket is NEVER left silent: it is
-    reopened, corrective-retried once, or escalated via ``DeferredQuestion`` — an
-    empty-error task (no recorded error) escalates rather than freezing.
+    reopened, corrective-retried once, parked as a cancel, or escalated via
+    ``DeferredQuestion`` — an empty-error task (no recorded error) escalates rather than freezing.
 
     The FAILED set is loaded ONCE with its attempts prefetched (no per-task N+1) and
     already-parked rows excluded, so the per-tick cost stays bounded as dead letters
@@ -207,7 +207,12 @@ def _route_failed_task(task: Task, *, now: datetime) -> int:
     escalated), it just can no longer take the whole tick down with it.
     """
     error = _latest_error(task)
-    if retire_if_dead_artifact(task) or _answer_moved_target(task, error=error) or park_if_live_successor(task):
+    if (
+        retire_if_dead_artifact(task)
+        or _answer_moved_target(task, error=error)
+        or park_if_live_successor(task)
+        or _park_cancelled(task, error=error)
+    ):
         task.ticket.pop_task_thread(int(task.pk))
         return 0
     if not error:
@@ -253,6 +258,14 @@ def _answer_moved_target(task: Task, *, error: str) -> bool:
         park_moved_target(task)
     else:
         _escalate_once(task, reason=halt)
+    return True
+
+
+def _park_cancelled(task: Task, *, error: str) -> bool:
+    """An operator's cancel is a decision already made, so the row is parked and nobody is asked about it."""
+    if classify_failure(error) != FailureKind.CANCELLED:
+        return False
+    _stamp_halt(task)
     return True
 
 
@@ -566,5 +579,4 @@ def _escalate_once(task: Task, *, reason: str) -> None:
             question,
             task_session=task.session,
             dedupe_marker=escalation_marker(task),
-            audience=DeferredQuestion.Audience.INTERNAL,
         )

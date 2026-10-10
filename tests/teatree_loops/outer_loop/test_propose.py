@@ -107,16 +107,10 @@ class TestGatesOpenedPipeline(TestCase):
         assert exp.state == OuterLoopExperiment.State.RATIFY_PENDING
         assert exp.ratify_question is not None
 
-        # Tick 3 — still pending until a human answers: never auto-implements.
+        # An undecided question is internal: the standing "approve" answers it by policy, so the next tick admits.
+        assert exp.ratify_question.resolved_via == DeferredQuestion.ResolvedVia.POLICY
         third = self._tick(report)
-        assert third.action == "pending"
-        exp.refresh_from_db()
-        assert exp.state == OuterLoopExperiment.State.RATIFY_PENDING
-
-        # A human approves → the NEXT tick admits it (the only ADMITTED path).
-        DeferredQuestion.consume(exp.ratify_question_id, answer="approve")
-        fourth = self._tick(report)
-        assert fourth.action == "admitted"
+        assert third.action == "admitted"
         exp.refresh_from_db()
         assert exp.state == OuterLoopExperiment.State.ADMITTED
 

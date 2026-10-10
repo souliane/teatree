@@ -14,6 +14,7 @@ import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
 
+from teatree.core.modelkit.owner_decision import OWNER_QUESTION_ROUTE
 from teatree.core.models import DeferredQuestion, Task
 from teatree.core.notify import NotifyOutcome, NotifyReason
 from teatree.mcp.server import build_server
@@ -116,5 +117,15 @@ class TestNotifyUser(TestCase):
                 {"text": "act on this", "kind": "action_required", "idempotency_key": "mcp-kind-1"},
             )
 
-        assert "answer | question | info" in str(exc_info.value)
-        assert "kind='question'" in str(exc_info.value)
+        assert "valid kinds: answer | info." in str(exc_info.value)
+        assert OWNER_QUESTION_ROUTE in str(exc_info.value)
+
+    def test_notify_user_question_kind_refused(self) -> None:
+        with (
+            patch("teatree.mcp.write_tools.notify_user_outcome", return_value=NotifyOutcome(sent=True)) as seam,
+            pytest.raises(Exception, match="questions record") as exc_info,
+        ):
+            _call("notify_user", {"text": "ship it?", "kind": "question", "idempotency_key": "mcp-kind-q"})
+
+        assert OWNER_QUESTION_ROUTE in str(exc_info.value)
+        seam.assert_not_called()

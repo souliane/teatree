@@ -35,6 +35,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from tests._owner_channel import OWNER_DECISION
 
 _SHA = "a" * 40
 _REVIEWER = "cold-reviewer"
@@ -277,7 +278,7 @@ class TestInFlightGroup(CheckingTestBase):
 
 class TestNeedsYouGroup(CheckingTestBase):
     def test_pending_question_pre_window_still_shown(self) -> None:
-        question = DeferredQuestion.record("Should I ship the widget?")
+        question = DeferredQuestion.record("Should I ship the widget?", **OWNER_DECISION)
         # Backdate well before the window — a pending question is not
         # window-bounded, so it must still surface.
         DeferredQuestion.objects.filter(pk=question.pk).update(
@@ -290,7 +291,22 @@ class TestNeedsYouGroup(CheckingTestBase):
         # forge issue ref and breaks the all-refs-clickable contract).
         assert item.label.startswith(f"Q{question.pk}:")
         assert "#" not in item.label
-        assert f"questions answer {question.pk}" in item.detail
+        # An owner row is answered in its Slack thread; the CLI only dismisses it.
+        assert "Slack thread" in item.detail
+        assert f"questions dismiss {question.pk}" in item.detail
+        assert "questions answer" not in item.detail
+
+    def test_only_owner_questions_are_listed_and_internal_ones_are_counted(self) -> None:
+        owner = DeferredQuestion.record("Should I ship the widget?", **OWNER_DECISION)
+        internal = DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+
+        labels = [item.label for item in report.needs_you.items]
+        assert any(label.startswith(f"Q{owner.pk}:") for label in labels)
+        assert not any(label.startswith(f"Q{internal.pk}:") for label in labels)
+        assert "1 internal escalations: factory work, not questions" in labels
+        assert report.needs_you.total == 2
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
         ticket = self._ticket(state=Ticket.State.WORK_STARTED)
@@ -375,7 +391,7 @@ class TestTerseFormatting(CheckingTestBase):
         self._merge(merged_ticket, pr_id=7, slug="acme/widgets", hours_ago=2)
         inflight_ticket = self._ticket(number=43, state=Ticket.State.CODED)
         self._transition(inflight_ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
-        DeferredQuestion.record("Should I ship the widget rename?")
+        DeferredQuestion.record("Should I ship the widget rename?", **OWNER_DECISION)
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="github")
         terse = report.to_terse(overlay_name=self.OVERLAY)
         for line in terse.splitlines():
@@ -389,7 +405,7 @@ class TestTerseFormatting(CheckingTestBase):
             outside_links = re.sub(r"\[[^\]]*\]\([^)]*\)", "", stripped)
             assert not re.search(r"#\d", outside_links), f"bare #-id outside a link: {line!r}"
             has_link = bool(re.search(r"\]\(https?://", stripped))
-            is_command = "t3 " in stripped and "questions answer" in stripped
+            is_command = "t3 " in stripped and "questions dismiss" in stripped
             assert has_link or is_command, f"reference line is neither a link nor a command: {line!r}"
 
 
@@ -571,7 +587,7 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         assert "\n" not in terse
 
     def test_deferred_questions_not_duplicated_in_multi_overlay(self) -> None:
-        DeferredQuestion.record("Should I proceed?")
+        DeferredQuestion.record("Should I proceed?", **OWNER_DECISION)
 
         overlay_windows = {
             self.OVERLAY: (self.since, self.now),

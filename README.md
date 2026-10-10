@@ -134,8 +134,8 @@ blocks until someone is at a terminal, which rules out long autonomous sessions.
 
 An operating mode carries a posture saying whether the owner is reachable. Under
 a deferring posture a question becomes a durable `DeferredQuestion` row instead
-of a block — answered later from Slack via `t3 teatree questions answer` — while
-the agent continues on what it can. Everything the owner sees arrives as a Slack
+of a block — answered later by replying in its Slack thread — while the agent
+continues on what it can. Everything the owner sees arrives as a Slack
 DM: no dashboard, no shared SaaS, no onboarding.
 
 `core/models/deferred_question.py`

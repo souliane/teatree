@@ -17,6 +17,7 @@ A task with no dispatch row, or a result without the envelope, is a no-op (``""`
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import DeferredQuestion, Directive, DirectiveError
 from teatree.core.models.mechanism_sketch import ACTIVATION_ONLY, MechanismSketchError, sketch_from_envelope
 from teatree.core.overlay_loader import resolve_overlay_name
@@ -94,6 +95,8 @@ def _record_clarifications(directive: Directive, questions: list[str]) -> str:
         DeferredQuestion.record(
             f"Clarify directive #{directive.pk}: {question}",
             options_hash=f"directive_clarify:{directive.pk}:{directive.generation}:{index}",
+            decision=OwnerDecision.PRODUCT_SCOPE,
+            checked=[f"the interpreter could not sketch directive #{directive.pk} as worded: {directive.raw_text}"],
         )
     try:
         directive.mark_clarifying()

@@ -26,6 +26,7 @@ from teatree.core.factory.factory_signals import FactorySignalsReport, SignalVer
 from teatree.core.models import DeferredQuestion, Directive, Loop
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.shared.guards import GuardSeams
+from tests._owner_channel import OWNER_DECISION
 
 _NOW = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
 
@@ -174,7 +175,7 @@ class TestCheckIntentFreshness(TestCase):
 
     def test_unmirrored_owner_question_with_masked_dispatch_loop_fails(self) -> None:
         Loop.objects.filter(name="dispatch").update(enabled=False)
-        question = DeferredQuestion.record("Which target branch — main or develop?", session_id="s1")
+        question = DeferredQuestion.record("Which target branch — main or develop?", session_id="s1", **OWNER_DECISION)
         assert question.slack_ts == ""
         ok, out = _run()
         assert ok is False
@@ -187,7 +188,7 @@ class TestCheckIntentFreshness(TestCase):
         # it stays `pending` only until the HUMAN answers, so a masked dispatch loop
         # (every away-mode preset masks it) must not red the box on it.
         Loop.objects.filter(name="dispatch").update(enabled=False)
-        question = DeferredQuestion.record("Which target branch — main or develop?", session_id="s1")
+        question = DeferredQuestion.record("Which target branch — main or develop?", session_id="s1", **OWNER_DECISION)
         question.mark_mirrored(channel="C1", slack_ts="1700000000.1")
         ok, out = _run()
         assert ok is True
@@ -231,7 +232,7 @@ class TestCheckIntentFreshness(TestCase):
         # Only OWNER_QUESTION rows are owner intent; INTERNAL (self-health) rows never
         # reach the owner and must not gate the check.
         Loop.objects.filter(name="dispatch").update(enabled=False)
-        DeferredQuestion.record("repair stalled", session_id="s1", audience=DeferredQuestion.Audience.INTERNAL)
+        DeferredQuestion.record("repair stalled", session_id="s1")
         ok, out = _run()
         assert ok is True
         assert out == ""

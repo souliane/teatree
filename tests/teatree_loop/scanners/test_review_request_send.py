@@ -25,6 +25,7 @@ from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_guard import GuardTarget
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.models import (
     ConfigSetting,
     DeferredQuestion,
@@ -34,7 +35,7 @@ from teatree.core.models import (
     ReviewVerdict,
     Ticket,
 )
-from teatree.core.review.mr_state_question import ask_mr_state, head_tag, mr_state_marker
+from teatree.core.review.mr_state_question import OwnerAsk, ask_mr_state, head_tag, mr_state_marker
 from teatree.loop import followup_dry_run
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
@@ -46,6 +47,7 @@ from teatree.loop.scanners.review_request_send import (
     ReviewRequestSendScanner,
 )
 from teatree.types import RawAPIDict
+from tests._owner_channel import answer_on_slack
 from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 from tests.teatree_loop.test_followup_dry_run import _file_backed_default_database, _InlineThreadPoolExecutor
@@ -62,6 +64,7 @@ _CHANNEL = "C_REVIEW"
 _SENDER = "review_request_send"
 _COMMAND = "teatree.core.management.commands.review_request_post"
 _POST, _IN_PERSON, _NOT_READY = MISSING_REVIEW_OPTIONS
+_ASKED_AT_HEAD = mr_state_marker(_URL, head_sha=_HEAD)
 
 
 def _mr(iid: int = 7, *, sha: str = _HEAD, title: str = "") -> RawAPIDict:
@@ -218,11 +221,11 @@ def _mr_state_questions() -> list[str]:
 
 
 def _pending_question(url: str = _URL) -> DeferredQuestion:
-    return DeferredQuestion.pending().get(dedupe_marker=mr_state_marker(url))
+    return DeferredQuestion.pending().get(dedupe_marker__startswith=mr_state_marker(url))
 
 
 def _answer(text: str) -> None:
-    assert DeferredQuestion.consume(_pending_question().pk, answer=text) is not None
+    answer_on_slack(_pending_question(), text)
 
 
 def _admit_followup(*, runs: bool) -> None:
@@ -283,6 +286,18 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
         assert signals[0].payload["asked"] is True
         assert head_tag(_HEAD) in _pending_question().question
 
+    def test_post_ask_is_public_post_owner_row_with_checked(self) -> None:
+        _ready_ticket(verdict_at=_OLD_HEAD)
+
+        with _world(self.slack, self.forge):
+            _followup_pass(self.forge, self.slack)
+
+        question = _pending_question()
+        assert question.audience == DeferredQuestion.Audience.OWNER_QUESTION
+        assert question.evidence["decision"] == "public_post"
+        checked = " | ".join(question.evidence["checked"])
+        assert all(fact in checked for fact in ("awaiting_cold_review", _HEAD[:12], "request_review"))
+
     def test_a_hold_at_the_head_sends_nothing(self) -> None:
         _ready_ticket(verdict="hold")
 
@@ -304,7 +319,7 @@ class TestOnlyACurrentColdReviewReleasesTheRequest(_SenderCase):
             )
             signals = _followup_pass(self.forge, self.slack)
 
-        assert asked_before_the_hold == [mr_state_marker(_URL)]
+        assert asked_before_the_hold == [_ASKED_AT_HEAD]
         assert _verdicts(signals) == [("review_request.send_deferred", "hold_at_head")]
         assert _mr_state_questions() == []
 
@@ -347,7 +362,7 @@ class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
             _followup_pass(self.forge, self.slack)
 
         assert self.slack.posts == []
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
         assert _kinds(first) == ["review_request.send_refused"]
         assert first[0].payload["reason"] == "no_ticket"
 
@@ -359,7 +374,7 @@ class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
 
         assert self.slack.posts == []
         assert [signal.payload["reason"] for signal in signals] == ["anti_vacuity_not_attested"]
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
         assert not ReviewRequestPost.objects.filter(mr_url=_URL).exists()
 
     def test_a_send_retires_the_owner_question_it_answers(self) -> None:
@@ -382,11 +397,15 @@ class TestARefusalTheOwnerCanFixReachesTheOwner(_SenderCase):
 
         assert self.slack.posts == []
         assert _verdicts(signals) == [("review_request.send_refused", "pr_metadata_invalid")]
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
 
     def test_a_refusal_the_cap_keeps_from_the_owner_says_it_did_not_ask(self) -> None:
         for other in (1, 2):
-            ask_mr_state(mr_url=_mr(other)["web_url"], reason="another merge request waits on the owner.")
+            ask_mr_state(
+                mr_url=_mr(other)["web_url"],
+                reason="another merge request waits on the owner.",
+                owner=OwnerAsk(OwnerDecision.PUBLIC_POST, ["review request refused: no_ticket"]),
+            )
         _ready_ticket(attested=False)
 
         with _world(self.slack, self.forge):
@@ -570,7 +589,7 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
 
         assert _verdicts(signals) == [("review_request.send_refused", "anti_vacuity_not_attested")]
         assert signals[0].payload["asked"] is False
-        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_URL)).count() == 1
+        assert DeferredQuestion.objects.filter(dedupe_marker=_ASKED_AT_HEAD).count() == 1
 
     def test_a_decline_holds_the_send_even_after_the_review_lands(self) -> None:
         ticket = self._ask_at_head()
@@ -584,7 +603,7 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
 
         assert self.slack.posts == []
         assert _verdicts(signals) == [("review_request.send_deferred", "owner_declined")]
-        rows = DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_URL))
+        rows = DeferredQuestion.objects.filter(dedupe_marker=_ASKED_AT_HEAD)
         assert (rows.filter(answered_at__isnull=False).count(), _mr_state_questions()) == (1, [])
 
     def test_a_new_head_reopens_the_decision(self) -> None:
@@ -637,7 +656,8 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
         assert old.dismissed_at is not None
         assert head_tag(_NEW_HEAD) in _pending_question().question
 
-    def test_another_callers_open_question_is_kept_and_counts_as_asked(self) -> None:
+    def test_another_callers_internal_question_gives_way_to_the_owner_ask(self) -> None:
+        """The batch gate's question is the factory's own now, so it can no longer stand in for the owner's."""
         batch_gate_row = ask_mr_state(mr_url=_URL, reason="its work group is not ready.")
         assert batch_gate_row is not None
         _ready_ticket(verdict_at=_OLD_HEAD)
@@ -645,46 +665,42 @@ class TestTheOwnersAnswerBindsToTheHead(_SenderCase):
         with _world(self.slack, self.forge):
             signals = _followup_pass(self.forge, self.slack)
 
-        assert _pending_question().pk == batch_gate_row.pk
         assert signals[0].payload["asked"] is True
+        (owner_row,) = DeferredQuestion.owner_pending()
+        assert owner_row.pk != batch_gate_row.pk
+        assert owner_row.dedupe_marker == _ASKED_AT_HEAD
+        assert owner_row.evidence["decision"] == "public_post"
 
 
-class TestAnAnswerToTheSurveyorIsHonouredOnceThePosturePermits(_SenderCase):
-    """SHIP asked while nothing could be sent; the sender that takes over reads that answer."""
+class TestAnAnswerToTheSurveyorBindsNoSend(_SenderCase):
+    """The surveyor's question is internal (#5096), so only the owner's answer to the sender's own question binds."""
 
-    def _surveyor_asks_and_the_owner_answers(self, answer: str) -> None:
+    def _surveyor_asks_and_it_is_answered(self, answer: str) -> None:
         seed_forbidding_posture()
         with _world(self.slack, self.forge):
             _ship_triage_pass(self.forge, self.slack)
         _answer(answer)
         seed_permitting_posture()
 
-    def _assert_a_decline_holds_the_send(self, answer: str) -> None:
+    def test_a_decline_to_the_surveyor_does_not_hold_a_reviewed_send(self) -> None:
         _ready_ticket()
-        self._surveyor_asks_and_the_owner_answers(answer)
-
-        with _world(self.slack, self.forge):
-            signals = _followup_pass(self.forge, self.slack)
-
-        assert self.slack.posts == []
-        assert _verdicts(signals) == [("review_request.send_deferred", "owner_declined")]
-
-    def test_asking_in_person_holds_the_send(self) -> None:
-        self._assert_a_decline_holds_the_send(_IN_PERSON)
-
-    def test_not_ready_yet_holds_the_send(self) -> None:
-        self._assert_a_decline_holds_the_send(_NOT_READY)
-
-    def test_post_sends_without_asking_a_second_time(self) -> None:
-        _ready_ticket(verdict_at=_OLD_HEAD)
-        self._surveyor_asks_and_the_owner_answers(_POST)
+        self._surveyor_asks_and_it_is_answered(_NOT_READY)
 
         with _world(self.slack, self.forge):
             signals = _followup_pass(self.forge, self.slack)
 
         assert _kinds(signals) == ["review_request.sent"]
-        assert len(self.slack.posts) == 1
-        assert DeferredQuestion.objects.filter(dedupe_marker=mr_state_marker(_URL)).count() == 1
+
+    def test_a_post_answer_to_the_surveyor_asks_the_owner_instead_of_sending(self) -> None:
+        _ready_ticket(verdict_at=_OLD_HEAD)
+        self._surveyor_asks_and_it_is_answered(_POST)
+
+        with _world(self.slack, self.forge):
+            signals = _followup_pass(self.forge, self.slack)
+
+        assert self.slack.posts == []
+        assert _verdicts(signals) == [("review_request.send_refused", "awaiting_cold_review")]
+        assert _pending_question().audience == DeferredQuestion.Audience.OWNER_QUESTION
 
     def test_the_surveyor_asks_nothing_more_at_an_answered_head(self) -> None:
         seed_forbidding_posture()
@@ -716,7 +732,7 @@ class TestTheOwnerQuestionLivesWhereTheSenderIsAbsent(_SenderCase):
         with _world(self.slack, self.forge):
             self._ship_triage_scan()
 
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
 
     def test_a_forbidding_posture_still_asks_the_owner(self) -> None:
         _admit_followup(runs=True)
@@ -725,7 +741,7 @@ class TestTheOwnerQuestionLivesWhereTheSenderIsAbsent(_SenderCase):
         with _world(self.slack, self.forge):
             self._ship_triage_scan()
 
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
 
     def test_no_messaging_backend_still_asks_the_owner(self) -> None:
         _admit_followup(runs=True)
@@ -733,7 +749,7 @@ class TestTheOwnerQuestionLivesWhereTheSenderIsAbsent(_SenderCase):
         with _world(self.slack, self.forge):
             _ship_triage_pass(self.forge, None)
 
-        assert _mr_state_questions() == [mr_state_marker(_URL)]
+        assert _mr_state_questions() == [_ASKED_AT_HEAD]
 
 
 class TestTheSenderFollowsThePosture(_SenderCase):

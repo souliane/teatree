@@ -11,6 +11,7 @@ from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.waiting_item import WaitingItem
 from teatree.core.waiting import WaitingKind, format_age, gather_waiting
+from tests._owner_channel import OWNER_DECISION
 
 
 def _kinds(overlay: str = "") -> list[str]:
@@ -24,8 +25,17 @@ class TestGatherWaiting:
         assert gather_waiting("") == []
 
     def test_pending_question_is_gathered(self) -> None:
-        DeferredQuestion.record("what region should I deploy to?")
+        DeferredQuestion.record("what region should I deploy to?", **OWNER_DECISION)
         entries = gather_waiting("")
+        assert [e.kind for e in entries] == [WaitingKind.QUESTION]
+        assert "region" in entries[0].ref
+
+    def test_only_the_owner_question_is_waiting_on_you(self) -> None:
+        DeferredQuestion.record("what region should I deploy to?", **OWNER_DECISION)
+        DeferredQuestion.record("repair-halt on coding: investigate?")
+
+        entries = gather_waiting("")
+
         assert [e.kind for e in entries] == [WaitingKind.QUESTION]
         assert "region" in entries[0].ref
 
@@ -67,7 +77,7 @@ class TestGatherWaiting:
 @pytest.mark.django_db
 class TestResolvingClearsEntryByConstruction:
     def test_answering_a_question_removes_its_entry(self) -> None:
-        question = DeferredQuestion.record("deploy now?")
+        question = DeferredQuestion.record("deploy now?", **OWNER_DECISION)
         assert WaitingKind.QUESTION in _kinds()  # present before
         DeferredQuestion.consume(question.pk, answer="yes")
         assert WaitingKind.QUESTION not in _kinds()  # absent after

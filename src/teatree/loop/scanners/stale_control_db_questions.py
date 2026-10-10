@@ -10,18 +10,19 @@ this files a question listing what it found and deletes nothing, ever. B8's defa
 KEEP, and a database copy is the artifact where a wrong delete is unrecoverable.
 
 Same mechanism as the inert-gate ask, deliberately — one deduped ``DeferredQuestion`` under
-a stable marker, so a check running every tick asks once and then nothing until the owner
-answers or dismisses it.
+a marker fingerprinting the artifact set, so a check running every tick asks once per set and
+never again once the owner has answered or dismissed it.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.loop.scanners.base import ScanSignal
 
-#: One marker, not one per file: the decision is "reclaim this space or keep it", asked once.
-MARKER = "control-db-artifacts"
+#: One marker per artifact SET, not per file: an unchanged set is asked once, a changed one again.
+MARKER_PREFIX = "control-db-artifacts:"
 
 #: How many paths the question names before it stops — enough to judge, short enough to read.
 _NAMED = 8
@@ -57,6 +58,7 @@ class StaleControlDbQuestionScanner:
 
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM
+        from teatree.core.models.question_text import question_fingerprint  # noqa: PLC0415 — deferred: ORM
 
         paths = self.artifacts()
         total = sum(path.stat().st_size for path in paths)
@@ -64,10 +66,12 @@ class StaleControlDbQuestionScanner:
             return []
 
         question = _question(paths, total_bytes=total)
+        names = sorted(path.name for path in paths)
         DeferredQuestion.record(
             question,
-            dedupe_marker=MARKER,
-            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+            dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(names))}",
+            decision=OwnerDecision.IRREVERSIBLE,
+            checked=[f"find_control_db_artifacts lists {', '.join(names)}", f"{total} bytes, none the canonical DB"],
         )
         return [
             ScanSignal(
@@ -78,4 +82,4 @@ class StaleControlDbQuestionScanner:
         ]
 
 
-__all__ = ["MARKER", "StaleControlDbQuestionScanner"]
+__all__ = ["MARKER_PREFIX", "StaleControlDbQuestionScanner"]

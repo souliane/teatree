@@ -32,6 +32,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.config.setting_taxonomy import owner_only_reason
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUESTION_ROUTE
 from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX
 from teatree.core.models import Task
 from teatree.core.notify import NotifyKind, notify_user_outcome
@@ -201,11 +202,10 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     never-lockout carve-out. Pass a stable ``idempotency_key`` so a retry under
     the same key is a no-op rather than a duplicate DM.
 
-    ``kind`` is one of ``answer`` / ``question`` / ``info`` — the closed
-    :class:`~teatree.core.notify.NotifyKind` set. A DM that needs the owner to
-    ACT is ``kind="question"`` (it routes to the owner-question audience);
-    there is no separate action-required kind. An unknown kind is refused with
-    the valid set named, never a bare enum traceback.
+    ``kind`` is ``answer`` or ``info``. ``question`` is refused with
+    :data:`~teatree.core.modelkit.owner_decision.OWNER_QUESTION_ROUTE`: an owner
+    question is recorded with its decision and checked facts, never sent as a DM.
+    An unknown kind is refused with the valid set named, never a bare enum traceback.
 
     A non-delivery ALWAYS names itself: ``reason`` is the machine-readable
     :class:`~teatree.core.notify.NotifyReason` (``no_messaging_backend``,
@@ -224,19 +224,17 @@ async def _notify_user(text: str, *, kind: str = "info", idempotency_key: str) -
     try:
         kind_value = NotifyKind(kind)
     except ValueError:
-        valid = " | ".join(member.value for member in NotifyKind)
-        msg = (
-            f"invalid kind {kind!r} — valid kinds: {valid}. "
-            "A DM that needs the owner to act is kind='question' (owner-question audience)."
-        )
+        valid = " | ".join(member.value for member in NotifyKind if member is not NotifyKind.QUESTION)
+        msg = f"invalid kind {kind!r} — valid kinds: {valid}. {OWNER_QUESTION_ROUTE}"
         raise ToolError(msg) from None
-    audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
+    if kind_value is NotifyKind.QUESTION:
+        raise ToolError(OWNER_QUESTION_ROUTE)
     outcome = await sync_to_async(
         lambda: notify_user_outcome(
             text,
             kind=kind_value,
             idempotency_key=idempotency_key,
-            audience=audience,
+            audience=NotifyAudience.OWNER_DELIVERY,
             options=NotifyOptions(requested_push=True),
         ),
         thread_sensitive=True,
@@ -278,14 +276,19 @@ async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
 
 
 async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp") -> dict[str, Any]:
-    """Answer a pending DeferredQuestion (single-use CAS + audit row).
+    """Answer a pending internal DeferredQuestion (single-use CAS + audit row).
 
-    Wraps ``t3 teatree questions answer`` — resumes any parked headless task
-    with the answer, exactly like the CLI.
+    Wraps ``t3 teatree questions answer``, which resumes no task and refuses an owner
+    question; that refusal comes back as ``ok=false`` naming the Slack-thread route.
     """
 
     def _answer() -> dict[str, Any]:
-        run_command("questions", "answer", question_id, text, resolver_id=resolver, agent_surface=True)
+        try:
+            run_command("questions", "answer", question_id, text, resolver_id=resolver, agent_surface=True)
+        except ToolError as exc:
+            if OWNER_ANSWER_ROUTE not in str(exc):
+                raise
+            return {"ok": False, "question_id": question_id, "refused": str(exc)}
         return {"ok": True, "question_id": question_id}
 
     return await sync_to_async(_answer, thread_sensitive=True)()
@@ -453,8 +456,8 @@ _TOOLS: tuple[_WriteTool, ...] = (
         "teatree.core.notify.notify_user_outcome — send-proxy + BotPing audit + own-DM carve-out",
         "- notify_user(text, kind, idempotency_key): send a bot→user DM through the "
         "audited notify egress (send-proxy + BotPing idempotency + own-DM "
-        "never-lockout carve-out). kind is one of answer | question | info — an "
-        "action-needed DM is kind='question'. Pass a stable idempotency_key to "
+        "never-lockout carve-out). kind is answer | info; kind='question' is refused: "
+        "an owner question goes through `questions record`. Pass a stable idempotency_key to "
         "dedupe retries. A non-delivery returns sent=false PLUS a `reason` slug and "
         "a human `detail` — never a bare false; treat any reason other than "
         "already_sent as the owner NOT having been told.",
