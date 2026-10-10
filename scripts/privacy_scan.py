@@ -3,44 +3,45 @@
 Used by: retro (§ Privacy Scan), contribute (§2 Pre-Flight), and the
 public-repo pre-push leak gate (``scripts/hooks/refuse-public-push-with-leak.sh``).
 
+Stdlib-only on purpose: the pre-push gate runs this file with whatever Python 3.13+
+the host has and ``PYTHONPATH`` at the checkout's ``src``, so a missing third-party
+package can never be a reason for the gate not to run.
+
 Exit codes:
 
 * ``0`` — clean (no findings), or ``--no-strict`` regardless of findings.
 * :data:`PRIVACY_FINDINGS_EXIT_CODE` (``3``) — genuine findings present in
-    strict mode. This is a DEDICATED code, distinct from the generic Python
-    exception code (``1``) and the typer usage-error code (``2``), so the
-    pre-push gate can block on *findings only* and fail OPEN on any other
-    non-zero exit (a scanner crash, a missing script, an argparse error).
-    Conflating "findings" with "crash" previously wedged every push closed
-    whenever the scanner itself failed (#126 gap 3).
+    strict mode. A DEDICATED code, distinct from the generic Python exception code
+    (``1``) and the argparse usage-error code (``2``), so a caller can tell a finding
+    from a crash. The pre-push gate refuses on both.
+* :data:`REGISTRY_UNAVAILABLE_EXIT_CODE` (``4``) — the banned-term registry is unset,
+    empty or unreadable. A scan without a term source proves nothing, so it never
+    reports clean.
+
+A finding names a registry term by ``class#index``, never by its value.
 """
 
+import argparse
 import json
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
-import typer
-from rich.console import Console
-from rich.table import Table
-
-from teatree.hooks.banned_term_registry import allowlist_terms
+from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 from teatree.hooks.term_match import matched_term
+from teatree.hooks.term_refs import TermRefs
 
 _DIFF_DETECTORS = (_scan_diff_comments,)
 
-# Dedicated "findings present" exit code. NOT 1 (generic exception) and NOT
-# 2 (typer usage error) so the leak gate can distinguish a real finding from
-# the scanner crashing. See module docstring.
 PRIVACY_FINDINGS_EXIT_CODE = 3
-
-app = typer.Typer(add_completion=False)
-console = Console(stderr=True)
+REGISTRY_UNAVAILABLE_EXIT_CODE = 4
+_UNREADABLE_INPUT_EXIT_CODE = 2
 
 # Require a plausible local part: it may contain ``.+-`` internally but
 # must *end* in an email-local char (alphanumeric/underscore) immediately
@@ -50,7 +51,7 @@ console = Console(stderr=True)
 # marker, whitespace, or absent, while still matching genuine addresses
 # whose local part ends in a real char (including a one-char local part).
 _EMAIL_RE = re.compile(
-    r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}",
+    r"[a-zA-Z0-9_]([a-zA-Z0-9_.+-]*[a-zA-Z0-9_])?@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}",
     re.ASCII,
 )
 _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
@@ -64,7 +65,7 @@ _HOME_PATH_RE = re.compile(r"(?:/Users/|/home/)[a-zA-Z0-9_.-]+")
 _IP_RE = re.compile(r"\b(?<![\d.])(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b(?!\.\d)")
 _API_KEY_RE = re.compile(r"\b(?:glpat-|sk-|ghp_|gho_|github_pat_|xoxb-|xoxp-)[a-zA-Z0-9_-]{10,}")
 _HOSTNAME_RE = re.compile(r"\b[a-z0-9-]+\.internal\.[a-z]+\b|\b[a-z0-9-]+\.corp\.[a-z]+\b")
-_FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder")
+_RESERVED_DOMAIN_RE = re.compile(r"(?:^|\.)(?:example\.(?:com|org|net)|example|invalid|test|localhost)$", re.IGNORECASE)
 
 # An SSH git remote — ``git@<host>:<org>/<repo>(.git)`` — is transport
 # syntax, never an email/PII. ``_EMAIL_RE`` matches the ``git@<host>``
@@ -74,6 +75,10 @@ _FALSE_POSITIVE_RE = re.compile(r"example\.com|user@example|jane|bob|placeholder
 # followed by ``:<path>`` — a real email never has a ``:path`` after the
 # domain — so this is a tight, non-weakening exclusion.
 _SSH_GIT_REMOTE_RE = re.compile(r"\bgit@[a-zA-Z0-9.-]+:[A-Za-z0-9._/~-]+")
+
+
+def _is_reserved_domain(address_or_host: str) -> bool:
+    return _RESERVED_DOMAIN_RE.search(address_or_host.rpartition("@")[2]) is not None
 
 
 def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
@@ -90,78 +95,41 @@ def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
 _ALLOW_MARKER = "privacy-scan:allow"
 
 
+@dataclass(frozen=True)
+class _Scan:
+    terms: tuple[str, ...]
+    allowlist: tuple[str, ...]
+    refs: TermRefs
+    terms_only: bool = False
+
+
 def _banned_allowlist() -> tuple[str, ...]:
     try:
         return allowlist_terms()
     except BannedTermsUnreadableError:
-        # The detector already reports the unreadable store; the optional
-        # carve-out must not crash the rest of the privacy scan.
         return ()
 
 
-def _resolve_scan_terms() -> tuple[str, ...]:
-    """Resolve the banned-terms list from the canonical source, fail-closed.
-
-    Reuses the shared :func:`resolve_banned_terms` so the public-leak scan reads
-    the SAME registry as the commit/posting gates. An unset registry is the
-    load-bug-shaped UNSET that must NOT silently degrade to an empty ban list
-    (that would quietly disable the gate on a config typo): the banned-terms
-    detector is reported INERT on stderr — the other detectors still run, so the
-    pre-push gate is never wedged — instead of going silently inert.
-    A classed registry still needs a nonempty scan list; an empty registry is
-    reported as inert rather than being mistaken for a completed scan.
-
-    A store that could not be READ at all (:class:`BannedTermsUnreadableError`,
-    locked/corrupt/table-less) is reported with its OWN distinct message rather
-    than the plain-unset wording — an errored read says nothing about whether the
-    operator configured a list, so conflating the two hid the real cause (#4008).
-    Both still leave this detector INERT: the sibling in-process
-    ``fast_push._banned_terms`` core-gate scan runs the same term list on the
-    same push and fails CLOSED on this exact exception, so a push is never
-    silently unscanned end to end.
-    """
-    try:
-        return resolve_banned_terms()
-    except BannedTermsUnreadableError:
-        print(
-            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_term_registry` "
-            "could not be READ (locked, corrupt, or missing its table) — indistinguishable "
-            "from unset, so this detector sits out (the other detectors still run).",
-            file=sys.stderr,
-        )
-        return ()
-    except BannedTermsUnsetError:
-        print(
-            "Privacy scan: WARNING — banned-terms detector INERT: `banned_term_registry` "
-            "is unset or has no scan terms (the other detectors still run; configure "
-            "a classed registry with at least one scan term).",
-            file=sys.stderr,
-        )
-        return ()
-
-
-def _scan_line(line: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[tuple[str, str]]:
-    findings: list[tuple[str, str]] = []
-    if _ALLOW_MARKER in line:
-        return findings
-    findings.extend(
+def _generic_findings(line: str) -> list[tuple[str, str]]:
+    findings: list[tuple[str, str]] = [
         ("email", m.group())
         for m in _EMAIL_RE.finditer(line)
-        if not _FALSE_POSITIVE_RE.search(m.group()) and not _is_ssh_git_remote(line, m)
-    )
+        if not _is_reserved_domain(m.group()) and not _is_ssh_git_remote(line, m)
+    ]
     findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
     findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
     findings.extend(("api_key", m.group()[:20] + "...") for m in _API_KEY_RE.finditer(line))
-    # Opaque Slack/forge IDs (real-shaped only; synthetic placeholders are
-    # allowlisted in teatree.hooks.opaque_id).
-    findings.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
     findings.extend(
-        ("internal_hostname", m.group())
-        for m in _HOSTNAME_RE.finditer(line)
-        if not _FALSE_POSITIVE_RE.search(m.group())
+        ("internal_hostname", m.group()) for m in _HOSTNAME_RE.finditer(line) if not _is_reserved_domain(m.group())
     )
-    if term := matched_term(line, terms, allowlist):
-        findings.append(("banned_term", term))
+    return findings
+
+
+def _scan_line(line: str, scan: _Scan) -> list[tuple[str, str]]:
+    findings = [] if scan.terms_only or _ALLOW_MARKER in line else _generic_findings(line)
+    findings.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
+    if term := matched_term(line, scan.terms, scan.allowlist):
+        findings.append(("banned_term", scan.refs.ref(term)))
     return findings
 
 
@@ -169,11 +137,9 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
     """Run each whole-text diff detector fail-open.
 
     The diff detectors need the unified-diff structure (file headers + ``+``
-    markers), so they run over the whole text rather than per line. A
-    detector that raises is cannot-evaluate — it is skipped (a warning is
-    emitted), NEVER a deny that wedges the push closed. This mirrors the
-    gate-overdeny rule the per-line scan and the pre-push gate already
-    follow: only genuine findings block, a crash never does.
+    markers), so they run over the whole text rather than per line. A detector that
+    raises is cannot-evaluate: it is skipped with a warning and never a finding. The
+    registry-term and opaque-id passes do not depend on these detectors.
     """
     findings: list[dict[str, str | int]] = []
     for detector in _DIFF_DETECTORS:
@@ -181,26 +147,21 @@ def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
             hits = detector(text)
         except Exception as exc:  # noqa: BLE001 — fail-open: a crashing detector is cannot-evaluate, never a deny.
             name = getattr(detector, "__name__", repr(detector))
-            console.print(f"[yellow]privacy scan: detector {name} failed ({exc}) — skipped[/]")
+            print(f"privacy scan: detector {name} failed ({exc}) — skipped", file=sys.stderr)
             continue
         findings.extend({"line": lineno, "category": category, "match": match} for lineno, category, match in hits)
     return findings
 
 
-def _scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
-    """Per-line + whole-text findings for one text blob (no file attribution).
-
-    Whole-file mode: every line is scanned. Used for filesystem targets (the
-    directory tree/core scan and a single-file scan), where each line is raw
-    content, never a diff.
-    """
+def _scan_text(text: str, scan: _Scan) -> list[dict[str, str | int]]:
+    """Per-line + whole-text findings for one text blob: every line is scanned, none is read as a diff."""
     findings: list[dict[str, str | int]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         findings.extend(
-            {"line": lineno, "category": category, "match": match}
-            for category, match in _scan_line(line, terms, allowlist)
+            {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, scan)
         )
-    findings.extend(_run_diff_detectors(text))
+    if not scan.terms_only:
+        findings.extend(_run_diff_detectors(text))
     return findings
 
 
@@ -233,8 +194,8 @@ def _diff_scan_lines(text: str) -> Iterator[tuple[int, str]]:
     verbatim: *added* (``+``) hunk lines carry the genuinely-new content the
     gate must still catch, and lines outside any hunk — file headers, or plain
     text piped with no diff structure — are new content too and are scanned
-    exactly as in whole-file mode. The push gate hands commit messages over as
-    a file (whole-file mode), never in this stream: git puts no separator
+    exactly as in whole-file mode. The push gate hands commit messages over on
+    stdin in ``--text`` mode, never in this stream: git puts no separator
     between one commit's last hunk and the next commit's subject.
 
     Combined diffs (``git show --cc`` on merge commits) carry one marker column
@@ -257,21 +218,21 @@ def _diff_scan_lines(text: str) -> Iterator[tuple[int, str]]:
         yield lineno, raw
 
 
-def _scan_diff(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...]) -> list[dict[str, str | int]]:
+def _scan_diff(text: str, scan: _Scan) -> list[dict[str, str | int]]:
     """Diff-mode findings: per-line detectors over ADDED lines only, plus whole-text detectors.
 
-    The per-line credential/PII detectors run over :func:`_diff_scan_lines`
-    (added + non-hunk lines), so already-public context/removed lines never
-    trip them. The whole-text diff detectors still see the full text — they are
-    already added-line-scoped internally.
+    The per-line detectors run over :func:`_diff_scan_lines` (added + non-hunk
+    lines), so already-public context/removed lines never trip them. The whole-text
+    diff detectors still see the full text — they are already added-line-scoped
+    internally.
     """
     findings: list[dict[str, str | int]] = []
     for lineno, line in _diff_scan_lines(text):
         findings.extend(
-            {"line": lineno, "category": category, "match": match}
-            for category, match in _scan_line(line, terms, allowlist)
+            {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, scan)
         )
-    findings.extend(_run_diff_detectors(text))
+    if not scan.terms_only:
+        findings.extend(_run_diff_detectors(text))
     return findings
 
 
@@ -305,29 +266,23 @@ def _iter_directory_files(root: Path) -> Iterator[Path]:
         yield path
 
 
-def _read_text_robust(path: Path) -> str:
-    """Decode *path* as text, tolerating non-UTF-8 bytes rather than crashing.
+def _decode_robust(raw: bytes) -> str:
+    """Decode *raw* as text, tolerating non-UTF-8 bytes rather than crashing.
 
     A git commit message can carry the author's configured
     ``i18n.commitEncoding``/``i18n.logOutputEncoding`` (e.g. ISO-8859-1), so
     ``git log --format=%B`` output is not guaranteed UTF-8. A raised
-    ``UnicodeDecodeError`` here would exit non-zero with a code the pre-push
-    gate reads as "scanner crashed" and fails OPEN on (module docstring) —
-    exactly the case a leak needs blocked. Latin-1 never raises (every byte
-    maps to one codepoint), so failing back to it keeps ASCII secrets intact
-    and scannable instead of skipping the scan entirely.
+    ``UnicodeDecodeError`` would end the scan without a verdict on exactly the
+    content a leak needs blocked. Latin-1 never raises (every byte maps to one
+    codepoint), so failing back to it keeps ASCII secrets intact and scannable.
     """
     try:
-        return path.read_text(encoding="utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        return path.read_text(encoding="latin-1")
+        return raw.decode("latin-1")
 
 
-def _scan_directory(
-    root: Path,
-    terms: tuple[str, ...],
-    allowlist: tuple[str, ...],
-) -> list[dict[str, str | int]]:
+def _scan_directory(root: Path, scan: _Scan) -> list[dict[str, str | int]]:
     """Walk *root* and scan each text file, tagging every finding with its file path.
 
     A directory is the scanner's most obvious invocation (``privacy-scan .``); it must
@@ -341,7 +296,7 @@ def _scan_directory(
         except (OSError, UnicodeDecodeError):
             continue
         rel = path.relative_to(root).as_posix()
-        for finding in _scan_text(text, terms, allowlist):
+        for finding in _scan_text(text, scan):
             finding["file"] = rel
             findings.append(finding)
     return findings
@@ -370,53 +325,52 @@ def _plain_summary(findings: list[dict[str, str | int]]) -> str:
     return "\n".join([header, *rows])
 
 
-@app.command()
-def main(
-    input_file: str = typer.Argument("-", help="File to scan (- for stdin, or a file path)"),
-    *,
-    strict: bool = typer.Option(True, help="Strict mode (exit 1 on any finding). Use --no-strict for warnings only."),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-) -> None:
-    """Scan text for privacy-sensitive patterns."""
-    terms = _resolve_scan_terms()
-    allowlist = _banned_allowlist()
-    target = None if input_file == "-" else Path(input_file)
-    if target is not None and target.is_dir():
-        all_findings = _scan_directory(target, terms, allowlist)
-    elif target is None:
-        # stdin is the push-gate's patch path: a unified diff. Scope the
-        # per-line detectors to added / non-hunk lines.
-        all_findings = _scan_diff(sys.stdin.read(), terms, allowlist)
-    else:
-        # A file (the push gate's commit messages among them) is raw content, not a diff — scan every line.
-        all_findings = _scan_text(_read_text_robust(target), terms, allowlist)
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Scan text for privacy-sensitive patterns.")
+    parser.add_argument("input_file", nargs="?", default="-", help="File to scan (- for stdin, or a file path)")
+    parser.add_argument(
+        "--strict",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Strict mode (exit non-zero on any finding). Use --no-strict for warnings only.",
+    )
+    parser.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+    parser.add_argument("--text", action="store_true", help="Scan every line of stdin as prose, not as a unified diff")
+    parser.add_argument(
+        "--terms-only",
+        action="store_true",
+        help="Run only the registry-term and opaque-id passes (a whole-history range cannot pass the generic ones)",
+    )
+    return parser
 
+
+def _findings(args: argparse.Namespace, scan: _Scan) -> list[dict[str, str | int]]:
+    if args.input_file == "-":
+        text = _decode_robust(sys.stdin.buffer.read())
+        return _scan_text(text, scan) if args.text else _scan_diff(text, scan)
+    target = Path(args.input_file)
+    if target.is_dir():
+        return _scan_directory(target, scan)
+    return _scan_text(_decode_robust(target.read_bytes()), scan)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        terms = resolve_banned_terms()
+    except BannedTermsUnsetError as exc:
+        print(f"privacy scan: cannot scan without a term source — {exc}", file=sys.stderr)
+        return REGISTRY_UNAVAILABLE_EXIT_CODE
+    scan = _Scan(terms, _banned_allowlist(), load_term_refs(terms), terms_only=args.terms_only)
+    try:
+        all_findings = _findings(args, scan)
+    except OSError as exc:
+        print(f"privacy scan: cannot read {args.input_file}: {exc.strerror}", file=sys.stderr)
+        return _UNREADABLE_INPUT_EXIT_CODE
     all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
-
-    if json_output:
-        print(json.dumps(all_findings, indent=2))
-    else:
-        # Always emit a deterministic, plain-text summary on **stdout**.
-        # This is the stream a piped/non-TTY caller reliably sees: the
-        # pre-push gate captures it with ``> report 2>&1`` and
-        # ``ToolRunner.run_script`` re-emits it. The rich table is a
-        # TTY-only nicety on stderr; it must never be the *only* output,
-        # or scripted callers get "exit 1, no diagnostics" (#696).
-        print(_plain_summary(all_findings))
-        if all_findings:
-            table = Table(title="Privacy Scan Findings")
-            table.add_column("Location", style="dim")
-            table.add_column("Category", style="bold")
-            table.add_column("Match")
-            for f in all_findings:
-                table.add_row(_location(f), str(f["category"]), str(f["match"]))
-            console.print(table)
-        else:
-            console.print("[green]Privacy scan: clean[/]")
-
-    if all_findings and strict:
-        raise SystemExit(PRIVACY_FINDINGS_EXIT_CODE)
+    print(json.dumps(all_findings, indent=2) if args.json_output else _plain_summary(all_findings))
+    return PRIVACY_FINDINGS_EXIT_CODE if all_findings and args.strict else 0
 
 
 if __name__ == "__main__":
-    app()
+    raise SystemExit(main())

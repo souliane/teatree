@@ -11,7 +11,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
 
