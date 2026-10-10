@@ -190,6 +190,12 @@ class TestRedirectsOfTheGatesConfigAndTermStore:
         # SKIP= through every wrapper that still reaches a hook
         "SKIP=refuse-public-push-with-leak t3 push",
         "SKIP=x t3 teatree pr create",
+        # every t3 verb that pushes
+        "SKIP=x t3 teatree ship",
+        "TEATREE_TERM_REGISTRY='{}' t3 fast-push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 t3 teatree pr ensure-pr",
+        "HOME=/tmp/evil t3 teatree handover run",
+        "SKIP=x t3 teatree workspace salvage",
         "SKIP=x bash -c 'git push'",
         "bash -c 'SKIP=x git push'",
         "env 'SKIP=x' git push",
@@ -219,6 +225,8 @@ class TestRedirectsOfTheGatesConfigAndTermStore:
 
     ALLOWED = (
         "SKIP=x t3 doctor check",
+        "SKIP=x t3 teatree ticket status",
+        "T3_CONFIG_DB=/tmp/x.sqlite3 t3 teatree pr list",
         "T3_CONFIG_DB=/tmp/x.sqlite3 t3 loop status",
         "XDG_DATA_HOME=/tmp/x uv run pytest tests/foo.py",
         "TEATREE_TERM_REGISTRY='{}' uv run pytest -q",

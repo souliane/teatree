@@ -86,11 +86,11 @@ _GIT_GLOBAL_OPTS = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
 # The four spellings git accepts for one push option, all scheduling the same
 # auto-merge: ``-o V``, ``-oV``, ``--push-option V``, ``--push-option=V``.
 _AUTO_MERGE_PUSH_OPTION = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
-# What a hook is attached to: a commit, a push, prek itself running the hooks, or ``t3`` pushing for the caller.
+# What a hook is attached to: a commit, a push, prek running the hooks, or a ``t3`` verb that pushes for the caller.
 _HOOKED_RUN = (
     rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b"
     r"|(?<![\w./-])(?:prek|pre-commit)(?=\s|$)"
-    r"|(?<![\w./-])t3\s+(?:[\w-]+\s+)?(?:push|pr\s+create)\b)"
+    r"|(?<![\w./-])t3\s+(?:[\w-]+\s+){0,2}?(?:push|fast-push|ship|handover|salvage|ensure-pr|pr\s+create)\b)"
 )
 # Environment names that point git's configuration, or the term registry the leak gate reads, elsewhere.
 _GIT_CONFIG_REDIRECTS = r"GIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)|HOME|XDG_CONFIG_HOME"
