@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives the questions command through the card checks in teatree.core.modelkit.
 """``t3 teatree questions record`` records an owner question only as a short, plain card (#4990)."""
 
 import io

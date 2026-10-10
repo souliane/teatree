@@ -37,6 +37,7 @@ from teatree import answer_handback
 from teatree.core.modelkit.question_card import QuestionCard
 from teatree.core.models.question_subject import finished_subject_reason
 from teatree.core.models.question_text import options_digest, question_fingerprint
+from teatree.core.models.question_withheld import carried_wait
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
@@ -221,8 +222,6 @@ class DeferredQuestion(models.Model):
 
         with transaction.atomic():
             marked = cls.objects.select_for_update().filter(dedupe_marker=dedupe_marker).order_by("-created_at", "-pk")
-            from teatree.core.models.question_withheld import carried_wait  # noqa: PLC0415 — it imports this module
-
             parked_task, task_session = carried_wait(marked, parked_task, task_session)
             if dedupe_marker and (held := cls._held(marked, clean_question, owner=card is not None)):
                 return held
