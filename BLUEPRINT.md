@@ -595,7 +595,7 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.b
 |---|---|
 | `CodeHostBackend` — PR/issue/comment (incl. `list`/`update_issue_comment`, and `list_repo_open_issues` — the paginated open-backlog read the § Issue hygiene create-dedupe needs)/upload/review-state + the §17.4.3 merge-RPC surface (`fetch_live_head_sha`, `fetch_pr_merge_state`, `fetch_pr_draft_state`, `fetch_required_checks_rollup`, `fetch_required_status_check_contexts`, `fetch_workflow_runs_at_head` (the GitHub-Free plan-restriction Actions-API fallback, a GitLab no-op stub — [#4844](https://github.com/souliane/teatree/issues/4844)), `merge_pr_squash_bound` — raw forge I/O resolved via `core.backend_registry`; `merge.execution`/`merge.ci_rollup` keep the verdict/error classification) | `GitHubCodeHost`, `GitLabCodeHost` |
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
-| `MessagingBackend` — mentions/DMs/post/reply/react | `SlackBotBackend`, `NoopMessagingBackend` |
+| `MessagingBackend` — mentions/DMs/post/reply/update (in place, always with blocks)/react | `SlackBotBackend`, `NoopMessagingBackend` |
 
 Multi-field request parameters are grouped into frozen `slots=True` dataclasses (`PullRequestSpec`). `repo + pr_iid` is the natural unit on both code hosts — protocol methods never accept free-form PR URLs.
 

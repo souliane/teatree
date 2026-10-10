@@ -111,6 +111,17 @@ class TestTransportWrapsEveryEgress:
         assert _posted_text(captured) == _LONG_PROSE
         assert captured[0].json["blocks"] == blocks
 
+    def test_an_update_always_sends_its_blocks_and_never_re_flows_the_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: list[_Call] = []
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Done"}}]
+
+        _backend().update_message(channel=_SELF_DM, ts="1.0", text=_LONG_PROSE, blocks=blocks)
+
+        assert captured[0].json == {"channel": _SELF_DM, "ts": "1.0", "text": _LONG_PROSE, "blocks": blocks}
+
     def test_post_reply_wraps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
         monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))

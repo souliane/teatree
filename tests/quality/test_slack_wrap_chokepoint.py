@@ -34,7 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src" / "teatree"
 
 #: Every Slack API method whose payload carries a message body.
-_TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "files.completeUploadExternal"})
+_TEXT_BEARING_METHODS = frozenset({"chat.postMessage", "chat.update", "files.completeUploadExternal"})
 
 #: The only modules that may NAME one of those methods in a call. ``egress``
 #: posts solely through the ``_post`` it is handed (the wrap seam), while
