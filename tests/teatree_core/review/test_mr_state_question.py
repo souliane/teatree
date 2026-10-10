@@ -27,16 +27,19 @@ from django.test import TestCase
 from teatree.core import notify as notify_module
 from teatree.core.gates.review_request_guard import canonical_mr_url
 from teatree.core.modelkit.owner_decision import OwnerDecision
+from teatree.core.modelkit.question_card import MAX_QUESTION_CHARS
 from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.core.review import mr_state_question
 from teatree.core.review.mr_state_question import (
+    AWAITING_COLD_REVIEW,
     ask_mr_state,
     head_tag,
     mr_state_marker,
     observe_owner_question_creation,
     owner_answer_at_head,
+    owner_question_text,
     retire_head_bound_question,
 )
 from teatree.on_behalf_gate import OnBehalfVerdict
@@ -105,6 +108,15 @@ class TestOneOpenQuestionPerMergeRequest(TestCase):
         """
         digest = hashlib.sha256(canonical_mr_url(_MR).encode()).hexdigest()[:32]
         assert mr_state_marker(f"{_MR}#note_9") == f"mr-state:{digest}"
+
+    def test_a_long_nested_forge_url_still_reaches_the_owner_with_the_cold_review_wording(self) -> None:
+        long_mr = "https://gitlab.acme.example/a-group/a-subgroup/another-subgroup/the-project/-/merge_requests/12345"
+        assert len(owner_question_text(long_mr, AWAITING_COLD_REVIEW)) > MAX_QUESTION_CHARS
+
+        row = _ask_owner(long_mr, reason=AWAITING_COLD_REVIEW)
+
+        assert row is not None
+        assert row.question == owner_question_text(long_mr, AWAITING_COLD_REVIEW)
 
     def test_marker_fits_64_chars_for_long_gitlab_url(self) -> None:
         long_mr = "https://gitlab.example.com/a-long-group/a-long-subgroup/another-subgroup/the-project/-/merge_requests/123456"

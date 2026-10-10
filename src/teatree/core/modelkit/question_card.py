@@ -212,8 +212,8 @@ def _sentence_problems(name: str, text: str, *, limit: int, ends_with: str = "")
     if not clean:
         return [f"{name} is required"]
     problems = []
-    if len(clean) > limit:
-        problems.append(f"{name} is {len(clean)} characters; at most {limit}")
+    if (read := len(_LABELLED_LINK.sub(r"\1", clean))) > limit:
+        problems.append(f"{name} is {read} characters; at most {limit}")
     if ends_with and not clean.endswith(ends_with):
         problems.append(f'{name} must end in "{ends_with}"')
     if "\n" in clean or _SENTENCE_BREAK.search(_ABBREVIATION.sub("x", clean)):

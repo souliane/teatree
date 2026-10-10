@@ -8,6 +8,7 @@ import pytest
 
 from teatree.core.modelkit.owner_decision import OwnerDecision
 from teatree.core.modelkit.question_card import (
+    MAX_QUESTION_CHARS,
     MAX_WORDS,
     CardOption,
     QuestionCard,
@@ -185,6 +186,20 @@ class TestCardProblems:
     )
     def test_the_question_must_be_one_short_sentence_ending_in_a_question_mark(self, question: str) -> None:
         assert any("question" in problem for problem in SAMPLE_CARD.problems(question))
+
+    def test_a_link_counts_as_the_label_the_owner_reads(self) -> None:
+        url = "https://git.acme.example/group/subgroup/nested/project/-/merge_requests/123456/diffs?view=inline"
+        question = f"Can I post the review request for <{url}|this pull request> without an independent review?"
+
+        assert len(question) > MAX_QUESTION_CHARS
+        assert SAMPLE_CARD.problems(question) == []
+
+    def test_a_question_that_reads_over_the_cap_is_refused_whatever_its_links(self) -> None:
+        question = f"Can I post <https://git.acme.example/x|{'q' * 150}> today?"
+
+        problems = SAMPLE_CARD.problems(question)
+
+        assert any("the question is 168 characters; at most 160" in problem for problem in problems), problems
 
     @pytest.mark.parametrize("token", _SHORTHAND_TOKENS)
     @pytest.mark.parametrize("field", sorted(_SHORTHAND_FIELDS))
