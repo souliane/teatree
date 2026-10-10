@@ -7349,7 +7349,7 @@ Usage: t3 teatree [OPTIONS] [COMMAND] [ARGS]...
 │                 below env (#1775).                                           │
 │ approval_dial   Per-action-class approval dial — graduate a class from ask   │
 │                 to auto (#119).                                              │
-│ questions       Manage the away-mode deferred-question backlog (#58).        │
+│ questions       Manage the open-question backlog (#58).                      │
 │ pending_chat    Manage the inbound Slack-DM queue (#1063).                   │
 │ notify          Slack egress from the shell (#1030, #1750).                  │
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
@@ -13996,15 +13996,15 @@ Usage: t3 teatree approval_dial show [OPTIONS]
 ```
 Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 
- Manage the away-mode deferred-question backlog (#58).
+ Manage the open-question backlog (#58).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ record        Record a deferred question (used by the PreToolUse away-mode   │
-│               hook).                                                         │
-│ list          List pending deferred questions, oldest first.                 │
+│ record        Record a question for the owner as a short card, checked       │
+│               before it is stored.                                           │
+│ list          List open questions, oldest first.                             │
 │ reachability  Report which automated resolvers can decide each pending       │
 │               question.                                                      │
 │ answer        Resolve a pending question with a user answer.                 │
@@ -14031,8 +14031,8 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
  question is never asked twice.
 
  There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
- and the ``AskUserQuestion`` PreToolUse hook records its own rows through
- :meth:`DeferredQuestion.record` directly and sets them there.
+ and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and
+ sets them there.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question      TEXT  The question text. [required]                       │
@@ -14062,11 +14062,11 @@ Usage: t3 teatree questions record [OPTIONS] QUESTION
 ```
 Usage: t3 teatree questions list [OPTIONS]
 
- List pending deferred questions, oldest first.
+ List open questions, oldest first.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --all     --pending      Include answered/dismissed rows. [default: pending] │
-│ --json                   Emit the deferred questions as JSON instead of the  │
+│ --json                   Emit the open questions as JSON instead of the      │
 │                          human view.                                         │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯

@@ -1,4 +1,4 @@
-"""``t3 teatree questions`` — manage the away-mode deferred-question backlog (#58).
+"""``t3 teatree questions`` — manage the open-question backlog (#58).
 
 Three subcommands operate on the durable :class:`DeferredQuestion` queue
 populated when availability=away (BLUEPRINT §17.1 invariant 9):
@@ -35,7 +35,7 @@ from teatree.core.modelkit.owner_decision import OWNER_ANSWER_ROUTE, OWNER_QUEST
 from teatree.core.modelkit.question_card import CardOption, QuestionCard
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.question_text import question_fingerprint
-from teatree.core.notify_question_drains import drain_deferred_questions
+from teatree.core.notify_question_drains import drain_deferred_questions, owner_quiet_now
 from teatree.core.table_output import print_table
 
 
@@ -96,7 +96,7 @@ def _render_questions_table(rows: list[DeferredQuestion]) -> str:
         ]
         for row in rows
     ]
-    title = f"{len(rows)} deferred question(s)"
+    title = f"{len(rows)} open question(s)"
     if escalated:
         title += f", {escalated} past the age ceiling"
     print_table(
@@ -165,8 +165,7 @@ class Command(MachineOutputCommand):
         and its marker defaults to ``<decision>:<question fingerprint>`` so the same question is never asked twice.
 
         There is no ``--tool-use-id`` or ``--session``: both identify a harness call,
-        and the ``AskUserQuestion`` PreToolUse hook records its own rows through
-        :meth:`DeferredQuestion.record` directly and sets them there.
+        and the ``AskUserQuestion`` PreToolUse hook records its own rows directly and sets them there.
         """
         kind = owner_decision(decision) if decision else None
         if decision and kind is None:
@@ -204,10 +203,10 @@ class Command(MachineOutputCommand):
         ] = False,
         json_output: Annotated[
             bool,
-            typer.Option("--json", help="Emit the deferred questions as JSON instead of the human view."),
+            typer.Option("--json", help="Emit the open questions as JSON instead of the human view."),
         ] = False,
     ) -> list[DeferredQuestionRow]:
-        """List pending deferred questions, oldest first."""
+        """List open questions, oldest first."""
         rows = list(DeferredQuestion.objects.order_by("-created_at")) if all_rows else list(DeferredQuestion.pending())
         payload: list[DeferredQuestionRow] = [
             {
@@ -230,7 +229,7 @@ class Command(MachineOutputCommand):
             json_output=json_output,
             out=cast("IO[str]", self.stdout),
             err=cast("IO[str]", self.stderr),
-            human=_render_questions_table(rows) if rows else "no deferred questions.",
+            human=_render_questions_table(rows) if rows else "no open questions.",
         )
         return payload
 
@@ -413,6 +412,8 @@ class Command(MachineOutputCommand):
         delivered, total = drain_deferred_questions(user_id=user_id, overlay=overlay)
         if total == 0:
             return "no pending questions to resurface."
+        if delivered == 0 and owner_quiet_now():
+            return f"held until 08:00 (quiet hours); {total} question(s) still pending."
         if delivered == 0:
             return (
                 f"resurfaced nothing new — {total} question(s) still pending. Either none was newly "

@@ -312,7 +312,7 @@ description = "Refreshes each overlay-declared reference DB's DSLR snapshot out-
 [loops.dispatch]
 delay_seconds = 300
 colleague_facing = false
-description = "Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts deferred questions."
+description = "Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts owner questions."
 
 [loops.tickets]
 delay_seconds = 300

@@ -848,7 +848,7 @@
           "name": "resurface"
         },
         {
-          "help": "List pending deferred questions, oldest first",
+          "help": "List open questions, oldest first",
           "name": "list"
         }
       ]
