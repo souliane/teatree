@@ -489,6 +489,7 @@ class TestRepoModeCommand:
         mock.assert_called_once_with(".", refresh=True)
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class TestPrivacyScanWrapperSurfacesFindings:
     """``t3 tool privacy-scan`` must surface the scanner's findings (#696).
 

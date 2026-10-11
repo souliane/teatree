@@ -15,17 +15,29 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
-from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+from scripts import privacy_scan
+from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE, REGISTRY_UNAVAILABLE_EXIT_CODE
+from teatree.hooks.term_fingerprint import gate_fingerprints
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "privacy_scan.py"
+_TERM = "acmeterm"
+_REGISTRY = json.dumps({"leak": ["alpha-term", _TERM], "prose_collider": [], "tone": []})
 
 
-def _run(stdin: str) -> subprocess.CompletedProcess[str]:
+@pytest.fixture(autouse=True)
+def _configured_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEATREE_TERM_REGISTRY", _REGISTRY)
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+
+
+def _run(stdin: str, *flags: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "-"],
+        [sys.executable, str(SCRIPT), "-", *flags],
         input=stdin,
         capture_output=True,
         text=True,
@@ -300,6 +312,85 @@ class TestDecoratorIsNotAnEmail:
         assert "email" in result.stdout
 
 
+class TestScannerRunsOnABareInterpreter:
+    """The hook runs the scanner with whatever Python 3.13+ the host has, so nothing third-party may be imported."""
+
+    def test_scanner_imports_without_typer_or_rich(self) -> None:
+        env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+        bare = [sys.executable, "-S"]
+        control = subprocess.run([*bare, "-c", "import typer"], capture_output=True, text=True, check=False, env=env)
+        assert control.returncode != 0, "the control interpreter must not be able to import typer"
+
+        result = subprocess.run(
+            [*bare, str(SCRIPT), "-"], input="a clean line\n", capture_output=True, text=True, check=False, env=env
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "clean" in result.stdout.lower()
+
+
+class TestMarkerSilencesOnlyTheGenericDetectors:
+    """``privacy-scan:allow`` is for a fixture that trips a generic detector, never for a registry term or an id."""
+
+    def test_marker_does_not_silence_registry_term_or_opaque_id(self) -> None:
+        opaque = "C0" + "QZ81XK7PL"
+        for payload in (
+            f"the {_TERM} repo  # privacy-scan:allow fixture\n",
+            f"channel = {opaque}  # privacy-scan:allow x\n",
+        ):
+            result = _run(payload)
+            assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, payload + result.stdout + result.stderr
+
+    def test_marker_still_silences_a_generic_detector(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX  # privacy-scan:allow fixture\n")  # privacy-scan:allow fixture
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestEmailFilterIsExact:
+    """Only a reserved example domain makes an address a placeholder; a name embedded in the local part does not."""
+
+    @pytest.mark.parametrize("local", ["bob-x", "x-bob", "xbobx", "jane.q", "placeholder-1"])
+    def test_a_placeholder_word_inside_the_local_part_is_still_reported(self, local: str) -> None:
+        result = _run(f"mail {local}@acme-corp.com\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    @pytest.mark.parametrize(
+        "address", ["alice@example.com", "bob@example.org", "carol@team.example", "dave@x.invalid"]
+    )
+    def test_email_filter_is_exact(self, address: str) -> None:
+        result = _run(f"mail {address}\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_an_internal_hostname_carrying_a_placeholder_word_is_reported(self) -> None:
+        result = _run("host bob.internal.corp\n")  # privacy-scan:allow a placeholder host the detector must report
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "internal_hostname" in result.stdout
+
+
+class TestTextAndTermsOnlyModes:
+    _HUNK = "@@ -1 +1 @@\n-token = glpat-XXXXXXXXXXXXXXXX\n+token = <placeholder>\n"  # privacy-scan:allow fixture
+
+    def test_stdin_is_diff_scoped_by_default(self) -> None:
+        assert _run(self._HUNK).returncode == 0
+
+    def test_text_mode_scans_whole_text(self) -> None:
+        result = _run(self._HUNK, "--text")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "api_key" in result.stdout
+
+    def test_terms_only_mode_skips_the_generic_detectors(self) -> None:
+        payload = "token = glpat-XXXXXXXXXXXXXXXX and a path /Users/someone/x\n"  # privacy-scan:allow fixture
+        assert _run(payload, "--terms-only").returncode == 0
+
+    def test_terms_only_mode_still_reports_registry_terms_and_opaque_ids(self) -> None:
+        opaque = "C0" + "QZ81XK7PL"
+        result = _run(f"{_TERM} and {opaque}\n", "--terms-only", "--text")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term: leak#1" in result.stdout
+        assert "opaque_id" in result.stdout
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
@@ -440,13 +531,12 @@ class TestPrivacyScanBannedTermsSource:
         conn.close()
         return db
 
-    def test_db_configured_term_is_a_finding(self, tmp_path: Path) -> None:
-        # A configured brand term in the diff trips the pre-push leak gate.
-        db = self._seed(tmp_path, ["acmeterm"])
+    def test_db_configured_term_is_a_finding_named_by_class_and_index(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, ["other-term", "acmeterm"])
         result = _run_env("a line mentioning acmeterm here\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
-        assert "banned_term" in result.stdout
-        assert "acmeterm" in result.stdout
+        assert "banned_term: prose_collider#1" in result.stdout
+        assert "acmeterm" not in result.stdout + result.stderr
 
     def test_db_configured_term_absent_from_input_is_clean(self, tmp_path: Path) -> None:
         db = self._seed(tmp_path, ["acmeterm"])
@@ -460,39 +550,29 @@ class TestPrivacyScanBannedTermsSource:
             {"T3_CONFIG_DB": str(db), "TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": ["envterm"]})},
         )
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
-        assert "envterm" in result.stdout
+        assert "prose_collider#0" in result.stdout
 
-    def test_unset_row_warns_loudly_and_never_silently_inert(self, tmp_path: Path) -> None:
-        # Anti-vacuity: a DB with no banned_terms row is a load-bug-shaped UNSET,
-        # so the banned-terms detector must SAY it is inert on stderr rather than
-        # silently degrade to an empty ban list. (The other detectors still run,
-        # so the pre-push gate is never wedged.)
+    def test_unset_registry_exits_nonzero_for_public_push(self, tmp_path: Path) -> None:
         empty_db = tmp_path / "empty.sqlite3"
         conn = sqlite3.connect(str(empty_db))
         conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
         conn.commit()
         conn.close()
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(empty_db)})
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "banned-terms" in result.stderr.lower()
-        assert "inert" in result.stderr.lower()
+        assert result.returncode == REGISTRY_UNAVAILABLE_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term_registry" in result.stderr
+        assert "clean" not in result.stdout.lower()
 
-    def test_explicit_empty_classed_registry_warns_that_the_scan_is_inert(self, tmp_path: Path) -> None:
+    def test_explicit_empty_classed_registry_exits_nonzero(self, tmp_path: Path) -> None:
         db = self._seed(tmp_path, [])
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "inert" in result.stderr.lower()
+        assert result.returncode == REGISTRY_UNAVAILABLE_EXIT_CODE, result.stdout + result.stderr
 
-    def test_unreadable_store_reports_could_not_be_read_not_present_but_unset(self, tmp_path: Path) -> None:
-        # A store that could not be READ (locked/corrupt/table-less) is a DISTINCT
-        # cause from a genuinely-unset row — the message must say so, not reuse the
-        # plain-unset wording, else an operator debugging a busy DB is told the
-        # wrong thing (#4008). Still INERT (not a hard failure): the sibling
-        # in-process fast_push core-gate scan covers the same push.
+    def test_unreadable_store_exits_nonzero_and_says_it_could_not_be_read(self, tmp_path: Path) -> None:
         corrupt_db = tmp_path / "corrupt.sqlite3"
         corrupt_db.write_bytes(b"this is not a sqlite database")
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(corrupt_db)})
-        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.returncode == REGISTRY_UNAVAILABLE_EXIT_CODE, result.stdout + result.stderr
         assert "could not be read" in result.stderr.lower()
         assert "present-but-unset" not in result.stderr.lower()
 
@@ -526,7 +606,7 @@ class TestPrivacyScanAllowlistFromRegistry:
         db = self._seed_registry(tmp_path, {"leak": [], "prose_collider": ["acme"]})
         result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
-        assert "banned_term" in result.stdout
+        assert "banned_term: prose_collider#0" in result.stdout
 
 
 class TestPrivacyScanDiffAddedLineScoping:
@@ -635,3 +715,121 @@ class TestPrivacyScanDiffAddedLineScoping:
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "private_ip" in result.stdout
         assert "10.1.1.5" in result.stdout  # privacy-scan:allow self-fixture
+
+
+class TestVerifyRegistryAgainstTheCommittedFingerprint:
+    """``--verify-registry`` holds the registry the scan LOADED against the digests a repository commits.
+
+    The registry comes from the environment, which a caller can fill with a list of their own; the
+    committed fingerprint is the only thing in the checkout that says what the real list hashes to.
+    The report names a gate and never a digest or a term. All terms are SYNTHETIC.
+    """
+
+    _UNVERIFIED = 5
+    _REAL: ClassVar[dict[str, list[str]]] = {"leak": ["alpha-term", "beta-term"], "overlay": ["gamma-term"], "tone": []}
+
+    def _commit(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        document = {"version": 1, "gates": gate_fingerprints(registry)}
+        path = tmp_path / "term-source-fingerprint.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
+
+    def _verify(self, fingerprint: Path, registry: dict[str, list[str]] | None) -> subprocess.CompletedProcess[str]:
+        env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB"}}
+        if registry is not None:
+            env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(fingerprint)],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_the_exit_code_is_its_own(self) -> None:
+        assert privacy_scan.REGISTRY_UNVERIFIED_EXIT_CODE == self._UNVERIFIED
+
+    def test_a_registry_matching_the_committed_fingerprint_verifies(self, tmp_path: Path) -> None:
+        result = self._verify(self._commit(tmp_path, self._REAL), self._REAL)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_registry_of_the_callers_choosing_does_not(self, tmp_path: Path) -> None:
+        fake = {"leak": ["a-term-the-caller-picked"], "overlay": ["gamma-term"]}
+
+        result = self._verify(self._commit(tmp_path, self._REAL), fake)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+        assert "tree" in result.stderr
+        assert "overlay" not in result.stderr
+
+    def test_the_report_carries_no_digest_and_no_term(self, tmp_path: Path) -> None:
+        fake = {"leak": ["a-term-the-caller-picked"], "overlay": ["another-picked-term"]}
+
+        result = self._verify(self._commit(tmp_path, self._REAL), fake)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+        shown = result.stdout + result.stderr
+        assert "sha256" not in shown
+        assert not any(term in shown for term in ("alpha-term", "beta-term", "gamma-term", "picked"))
+
+    def test_a_missing_fingerprint_does_not_verify(self, tmp_path: Path) -> None:
+        result = self._verify(tmp_path / "absent.json", self._REAL)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+
+    def test_a_malformed_fingerprint_does_not_verify(self, tmp_path: Path) -> None:
+        malformed = tmp_path / "term-source-fingerprint.json"
+        malformed.write_text('{"gates": {}}', encoding="utf-8")
+
+        result = self._verify(malformed, self._REAL)
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr
+
+    def test_an_unset_registry_is_the_registry_unavailable_code_not_a_pass(self, tmp_path: Path) -> None:
+        empty_db = tmp_path / "empty.sqlite3"
+        conn = sqlite3.connect(str(empty_db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.commit()
+        conn.close()
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+        env["T3_CONFIG_DB"] = str(empty_db)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(self._commit(tmp_path, self._REAL))],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == REGISTRY_UNAVAILABLE_EXIT_CODE, result.stdout + result.stderr
+
+    def test_a_registry_read_from_the_config_store_is_verified_too(self, tmp_path: Path) -> None:
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": ["decoy-term"]}),),
+        )
+        conn.commit()
+        conn.close()
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+        env["T3_CONFIG_DB"] = str(db)
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--verify-registry", str(self._commit(tmp_path, self._REAL))],
+            input="",
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == self._UNVERIFIED, result.stdout + result.stderr

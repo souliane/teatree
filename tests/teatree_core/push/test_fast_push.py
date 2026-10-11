@@ -6,7 +6,11 @@ runtime so this test file never contains a literal matchable token.
 """
 
 import json
+import secrets
+import shutil
 import sqlite3
+import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +36,7 @@ from teatree.core.push.fast_push import (
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.hooks import _repo_visibility
+from teatree.hooks._repo_visibility import slug_for_remote_url
 from teatree.utils.run import CommandFailedError, run_checked
 
 
@@ -97,7 +102,7 @@ class TestLeakGatesRefuse:
 
         assert not outcome.ok
         assert any(f.gate == "banned-terms" and f.path == "notes.md" for f in outcome.findings)
-        assert any("forbiddenbrand" in f.detail for f in outcome.findings)
+        assert any(f.detail == "banned term leak#0" for f in outcome.findings)
         assert not outcome.committed
         assert not outcome.pushed
         assert forge.created == []
@@ -398,7 +403,7 @@ class TestCoreGateClassRouting:
     def test_leak_class_term_is_flagged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed_registry(tmp_path, monkeypatch)
         findings = LeakGateScan._banned_terms({"sample.txt": ["acme"]})
-        assert [f.detail for f in findings] == ["banned term 'acme'"]
+        assert [f.detail for f in findings] == ["banned term leak#0"]
 
     def test_tone_class_term_is_not_flagged_by_the_core_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -431,8 +436,20 @@ class TestCoreGateClassRouting:
         # registry's ``overlay`` class (not the excluded ``leak``/``prose_collider``).
         self._seed(tmp_path, monkeypatch, {"leak": ["democorp"], "prose_collider": [], "overlay": ["acme-internal"]})
         findings = LeakGateScan._overlay_leak({"sample.txt": ["uses acme-internal here"]})
-        assert [f.detail for f in findings] == ["overlay-scoped term 'acme-internal'"]
+        assert [f.detail for f in findings] == ["overlay-scoped term overlay#0"]
         assert LeakGateScan._overlay_leak({"sample.txt": ["mentions democorp"]}) == []
+
+    def test_a_term_shaped_like_an_email_or_an_id_is_named_by_class_and_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        email_term = f"zq{secrets.token_hex(4)}@qx{secrets.token_hex(3)}.com"
+        id_term = "C0" + "".join(secrets.choice("BDFGHJKPQRSVWXZ0123456789") for _ in range(9))
+        self._seed(tmp_path, monkeypatch, {"leak": [email_term], "prose_collider": [], "overlay": [id_term]})
+
+        details = [f.detail for f in LeakGateScan._banned_terms({"s.txt": [f"mail {email_term}"]})]
+        details += [f.detail for f in LeakGateScan._overlay_leak({"s.txt": [f"channel {id_term}"]})]
+
+        assert details == ["banned term leak#0", "overlay-scoped term overlay#0", "opaque id overlay#0"]
 
     def test_banned_terms_carve_out_reads_the_registry_allow_class(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -445,7 +462,7 @@ class TestCoreGateClassRouting:
         # Remove the carve-out and the bare slug flags again — anti-vacuous control.
         self._seed(tmp_path, monkeypatch, {"leak": [], "prose_collider": ["acme"]})
         assert [f.detail for f in LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]})] == [
-            "banned term 'acme'"
+            "banned term prose_collider#0"
         ]
 
 
@@ -526,13 +543,11 @@ class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
         assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
         assert not outcome.pushed
 
-    def test_an_unresolvable_push_range_is_a_hard_refusal(self, repo: Path, leak_env: None) -> None:
-        # The default branch NAME resolves but its remote tip does not (a partial fetch).
-        # `_branch_guard_finding` already fails closed on an unresolvable default branch;
-        # a range nothing can bound gets the same posture rather than a silent skip.
+    def test_a_push_range_git_cannot_walk_is_a_hard_refusal(self, repo: Path, leak_env: None) -> None:
+        # A range nothing can bound is refused, never skipped: `git log` failing is a scan that did not happen.
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push.git.default_branch", return_value="development"):
+        with patch("teatree.core.push.push_range._git_output", return_value=None):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -583,6 +598,371 @@ class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
         _commit(repo, "old.md", "mentions forbiddenbrand here\n", "docs: forbiddenbrand notes")
         run_checked(["git", "push", "-u", "origin", "feature"], cwd=repo)
         (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+
+
+class TestThePushRangeNeverTrustsALocalTrackingRef:
+    """``t3 fast-push`` bypasses the hook, so its own range has to be as hard to empty as the hook's.
+
+    A remote-tracking ref is a file the pusher can write, and one that says ``origin/main`` already holds the
+    unpushed leak empties the range. The range is what the remote lists at the URL the push goes to, from the same
+    ``teatree.hooks.remote_holds`` the pre-push hook runs.
+    """
+
+    def _leak_committed(self, repo: Path) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+
+    def test_a_planted_tracking_ref_does_not_empty_the_range(self, repo: Path, leak_env: None) -> None:
+        self._leak_committed(repo)
+        head = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        run_checked(["git", "update-ref", "refs/remotes/origin/main", head], cwd=repo)
+        run_checked(["git", "update-ref", "refs/remotes/origin/feature", head], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the planted refs emptied the range"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_url_rewrite_that_splits_the_listing_from_the_push_does_not_empty_the_range(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        self._leak_committed(repo)
+        origin = tmp_path / "origin.git"
+        fake = tmp_path / "fake.git"
+        run_checked(["git", "clone", "--bare", str(repo), str(fake)])
+        run_checked(["git", "config", f"url.{fake}.insteadOf", str(origin)], cwd=repo)
+        run_checked(["git", "config", f"url.{origin}.pushInsteadOf", str(origin)], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the listing read the fake repository while the push went to the real one"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+
+    def test_a_remote_that_cannot_be_listed_widens_the_range(self, repo: Path, leak_env: None, tmp_path: Path) -> None:
+        _commit(repo, "old.md", "mentions forbiddenbrand here\n", "docs: forbiddenbrand notes")
+        run_checked(["git", "push", "-u", "origin", "feature"], cwd=repo)
+        run_checked(["git", "remote", "set-url", "origin", str(tmp_path / "no-such-repository")], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "history the remote already holds is re-judged when the remote cannot say so"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+
+    def test_a_planted_private_cache_entry_does_not_waive_the_identity_gate(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        origin = tmp_path / "origin.git"
+        run_checked(["git", "remote", "set-url", "origin", "git@github.com:acme/widget.git"], cwd=repo)
+        run_checked(["git", "remote", "set-url", "--push", "origin", str(origin)], cwd=repo)
+        cache = tmp_path / "viscache"
+        cache.mkdir(exist_ok=True)
+        entry = {"ts": time.time(), "visibility": "PRIVATE"}
+        (cache / "repo-visibility-cache.json").write_text(
+            json.dumps({slug_for_remote_url("git@github.com:acme/widget.git"): entry}), encoding="utf-8"
+        )
+        _commit(repo, "clean.py", "x = 1\n", "feat: clean", email="dev@example.com")
+
+        outcome = run_fast_push(repo, FakeForge())
+
+        assert not outcome.ok, "a cached PRIVATE waived the identity gate"
+        assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
+
+
+class TestRepoLocalGitStateDoesNotBlankWhatFastPushReads:
+    """A textconv driver or a replace ref lives in ``.git`` and changes what git shows, tracked files untouched."""
+
+    @staticmethod
+    def _blank_textconv(repo: Path, tmp_path: Path, pattern: str) -> None:
+        blank = tmp_path / "blank.sh"
+        blank.write_text("#!/bin/sh\nexit 0\n")
+        blank.chmod(0o755)
+        run_checked(["git", "config", "diff.blank.textconv", str(blank)], cwd=repo)
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text(f"{pattern} diff=blank\n")
+
+    def test_a_textconv_driver_does_not_blank_the_committed_range(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+        self._blank_textconv(repo, tmp_path, "notes.md")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the converted patch emptied what the gates read"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_textconv_driver_does_not_blank_the_staged_diff(self, repo: Path, leak_env: None, tmp_path: Path) -> None:
+        self._blank_textconv(repo, tmp_path, "notes.md")
+        (repo / "notes.md").write_text("mentions forbiddenbrand here\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the converted staged diff emptied what the gates read"
+        assert {f.gate for f in outcome.findings} >= {"banned-terms", "secret-scan"}, outcome.findings
+        assert not outcome.pushed
+
+    def test_a_replaced_commit_does_not_hide_the_range(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "notes.md", "mentions forbiddenbrand here\n", "docs: notes")
+        leak = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        clean = run_checked(
+            ["git", "commit-tree", f"{leak}~1^{{tree}}", "-p", f"{leak}~1", "-m", "a clean stand-in"], cwd=repo
+        ).stdout.strip()
+        run_checked(["git", "replace", leak, clean], cwd=repo)
+        (repo / "notes.md").unlink()
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the replacement commit hid the leak from the range"
+        assert not outcome.pushed
+
+    def test_a_replaced_commit_does_not_hide_a_header_of_its_object(self, repo: Path, leak_env: None) -> None:
+        leak = _hand_made_commit(repo, _HandMade(author="forbiddenbrand"))
+        clean = run_checked(
+            ["git", "commit-tree", f"{leak}^{{tree}}", "-p", f"{leak}~1", "-m", "a clean stand-in"], cwd=repo
+        ).stdout.strip()
+        run_checked(["git", "replace", leak, clean], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the replacement commit hid the header of the object from the whole-object read"
+        assert not outcome.pushed
+
+
+class TestACommitMessageIsReadAsStoredAndAsDecoded:
+    """A commit's ``encoding`` header travels with the pushed object, so what git decodes is not all the remote holds.
+
+    ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes ``git log`` re-decode them into noise while the pushed object
+    still carries the message; a message stored in Shift_JIS is logged in Shift_JIS unless the read asks for UTF-8, and
+    its stored bytes read ``second-leak-A-term`` (0x83 0x41 is "ア"), which only the UTF-8 read matches.
+    """
+
+    @staticmethod
+    def _commit_message(repo: Path, tmp_path: Path, message: bytes, *config: str) -> None:
+        (repo / "a.txt").write_text("a clean line\n")
+        run_checked(["git", "add", "a.txt"], cwd=repo)
+        message_file = tmp_path / "message.txt"
+        message_file.write_bytes(message)
+        subprocess.run(  # bytes, not text: git echoes the subject in the commit's own encoding
+            [str(shutil.which("git")), *config, "commit", "--cleanup=verbatim", "-F", str(message_file)],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_a_wrong_encoding_header_does_not_hide_a_leaking_message(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        self._commit_message(
+            repo, tmp_path, b"release notes mention forbiddenbrand here\n", "-c", "i18n.commitEncoding=UTF-16LE"
+        )
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the message landed behind a wrong encoding header"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_message_stored_in_another_encoding_is_read_as_git_decodes_it(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": ["second-leak-term"], "prose_collider": []}))
+        run_checked(["git", "config", "i18n.commitEncoding", "Shift_JIS"], cwd=repo)
+        self._commit_message(repo, tmp_path, "notes mention second-leak-ア-term here\n".encode("shift_jis"))
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "git logged the message in Shift_JIS and the read did not ask for UTF-8"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+
+class TestATermInAPathOrABranchNameIsRefused:
+    """A registry term can also ride out as a file path (new, renamed, deleted) or as the branch name."""
+
+    @pytest.mark.parametrize("change", ["new", "rename", "delete"])
+    def test_a_path_with_a_term_is_refused(self, repo: Path, leak_env: None, change: str) -> None:
+        if change == "new":
+            (repo / "forbiddenbrand.txt").write_text("a clean line\n")
+        elif change == "rename":
+            run_checked(["git", "mv", "README.md", "forbiddenbrand.md"], cwd=repo)
+        else:
+            _commit(repo, "forbiddenbrand.txt", "a clean line\n", "docs: add a file")
+            run_checked(["git", "push", "origin", "feature"], cwd=repo)
+            (repo / "forbiddenbrand.txt").unlink()
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, f"a {change} path with a term landed"
+        assert not outcome.pushed
+
+    def test_a_branch_name_with_a_term_is_refused(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "checkout", "-b", "forbiddenbrand-fix"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "a branch name with a term landed"
+        assert not outcome.pushed
+
+
+@dataclass(frozen=True)
+class _HandMade:
+    """What a hand-made commit object carries beyond ``git commit``'s own output."""
+
+    author: str = "agent"
+    committer: str = "agent"
+    author_email: str = ""
+    committer_email: str = ""
+    header: str = ""
+    blank_line: bool = False
+    second_parent: str = ""
+
+
+def _hand_made_commit(repo: Path, plant: _HandMade | None = None) -> str:
+    """Write a commit object by hand on ``HEAD``'s tree and move the branch onto it; the object may end in a header."""
+    plant = plant or _HandMade()
+    config_email = run_checked(["git", "config", "user.email"], cwd=repo).stdout.strip()
+    tree = run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip()
+    parents = [run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()]
+    parents += [plant.second_parent] if plant.second_parent else []
+    lines = [f"tree {tree}", *(f"parent {parent}" for parent in parents)]
+    lines += [f"author {plant.author} <{plant.author_email or config_email}> 1700000000 +0000"]
+    lines += [f"committer {plant.committer} <{plant.committer_email or config_email}> 1700000000 +0000"]
+    text = "\n".join(lines) + "\n"
+    text += f"{plant.header}\n" if plant.header else ""
+    text += "\na clean message\n" if (plant.blank_line or not plant.header) else ""
+    sha = run_checked(["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, stdin_text=text).stdout.strip()
+    run_checked(["git", "update-ref", "refs/heads/feature", sha], cwd=repo)
+    return sha
+
+
+#: A secret-shaped login: the identity rule accepts any ``[A-Za-z0-9-]+@users.noreply.github.com``, and ``sk-`` fits it.
+_DISGUISED = "sk" + "-" + "A" * 24 + "@users.noreply.github.com"
+
+
+class TestACommitObjectIsReadWholeNotOnlyItsMessage:
+    """A commit object carries more text than its message: extra headers and the author and committer names.
+
+    Those travel with the pushed object and no CI job reads commit objects, so the registry-term gates read each whole
+    object and the generic scan reads it with only the noreply domain cut: a noreply address is no finding, while a
+    secret or a home path in a header, or in the login before that domain, is refused.
+    """
+
+    @pytest.mark.parametrize(
+        "plant",
+        [
+            {"header": "x-note mentions forbiddenbrand"},
+            {"author": "forbiddenbrand"},
+            {"committer": "forbiddenbrand"},
+        ],
+        ids=["extra-header", "author-name", "committer-name"],
+    )
+    def test_a_term_in_a_header_is_refused(self, repo: Path, leak_env: None, plant: dict[str, str]) -> None:
+        _hand_made_commit(repo, _HandMade(**plant))
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the term landed in a commit header"
+        assert any(f.gate == "banned-terms" for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    @pytest.mark.parametrize("shape", ["with-a-message", "without-a-blank-line"])
+    @pytest.mark.parametrize(
+        ("header", "category"),
+        [
+            ("x-note token " + "glpat" + "-" + "X" * 16, "api_key"),
+            ("x-note see " + "/home/" + "someone" + "/secret", "home_path"),
+        ],
+        ids=["secret", "home-path"],
+    )
+    def test_a_secret_or_a_home_path_in_a_header_is_refused(
+        self, repo: Path, leak_env: None, header: str, category: str, shape: str
+    ) -> None:
+        """Every detector reads the object, not only the term gates; the same value in a message is refused."""
+        _hand_made_commit(repo, _HandMade(header=header, blank_line=shape == "with-a-message"))
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the value landed in a commit header"
+        assert any(f.gate == "secret-scan" and category in f.detail for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_clean_merge_commit_passes(self, repo: Path, leak_env: None) -> None:
+        """Anti-vacuity: a merge has two ``parent`` lines and a noreply committer, and is no finding either."""
+        _commit(repo, "own.py", "y = 0\n", "feat: a clean change of the branch's own")
+        _merge_forward(repo, main_content="a clean prior line\n")
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+
+    @pytest.mark.parametrize(
+        "plant",
+        [
+            _HandMade(author_email=_DISGUISED),
+            _HandMade(committer_email=_DISGUISED),
+            _HandMade(header=f"author y <{_DISGUISED}> 1700000000 +0000"),
+            _HandMade(
+                header="\n".join(
+                    [
+                        "gpgsig -----BEGIN PGP SIGNATURE-----",
+                        f" author y <{_DISGUISED}> 1700000000 +0000",
+                        " -----END PGP SIGNATURE-----",
+                    ]
+                )
+            ),
+        ],
+        ids=["author", "committer", "duplicate-author-line", "line-mimicking-an-identity-inside-a-signature"],
+    )
+    def test_a_secret_shaped_login_is_refused_though_the_domain_is_noreply(
+        self, repo: Path, leak_env: None, plant: _HandMade
+    ) -> None:
+        """Only the exact ``@users.noreply.github.com`` is hidden from the detectors, not the login in front of it."""
+        _hand_made_commit(repo, plant)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the token landed as a noreply login"
+        assert any(f.gate == "secret-scan" and "api_key" in f.detail for f in outcome.findings), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_clean_merge_of_a_signed_tag_passes(self, repo: Path, leak_env: None) -> None:
+        """Git copies the tag's ``tagger`` line, indented, into a ``mergetag`` header: a noreply address, no finding."""
+        email = run_checked(["git", "config", "user.email"], cwd=repo).stdout.strip()
+        run_checked(["git", "checkout", "-b", "side"], cwd=repo)
+        _commit(repo, "side.txt", "a clean side line\n", "side work")
+        side = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        run_checked(["git", "checkout", "feature"], cwd=repo)
+        mergetag = "\n".join(
+            [
+                f"mergetag object {side}",
+                " type commit",
+                " tag v1",
+                f" tagger Dev <{email}> 1700000000 +0000",
+                " ",
+                " a clean signed tag",
+                " -----BEGIN PGP SIGNATURE-----",
+                " ",
+                " PLACEHOLDERSIGNATUREBLOCKNOTAREALSIGNATURE",
+                " -----END PGP SIGNATURE-----",
+            ]
+        )
+        _hand_made_commit(repo, _HandMade(second_parent=side, header=mergetag, blank_line=True))
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert outcome.ok, outcome.findings
+
+    def test_a_clean_hand_made_commit_passes(self, repo: Path, leak_env: None) -> None:
+        """Anti-vacuity: the same object shape with nothing in it is not a finding, noreply identities included."""
+        _hand_made_commit(repo)
 
         outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
@@ -692,7 +1072,7 @@ class TestThePushedBranchNameIsScanned:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<ref-name>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed
@@ -786,7 +1166,7 @@ class TestASyntheticPathNameDoesNotDisplaceARealFile:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<ref-name>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed
@@ -798,7 +1178,7 @@ class TestASyntheticPathNameDoesNotDisplaceARealFile:
 
         assert not outcome.ok
         assert any(
-            f.gate == "banned-terms" and f.path == "<commit-message>" and "forbiddenbrand" in f.detail
+            f.gate == "banned-terms" and f.path == "<commit-message>" and f.detail == "banned term leak#0"
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed

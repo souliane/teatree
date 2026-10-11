@@ -221,28 +221,44 @@ class TestBannedTermsGateColdHostBootstrap:
         )
 
 
-class TestBannedTermsGateInternalErrorFailsOpenLoudly:
-    """An internal error stays fail-open (never-lockout) but is LOUD, not silent (HLG-3)."""
+class TestBannedTermsGateInternalError:
+    """An internal error fails CLOSED for a publish not provably private, and OPEN (loudly) for any other command."""
 
-    def test_internal_error_returns_false_and_notes_on_stderr(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    _ERROR_MESSAGE = "simulated internal gate error"
+
+    def _break_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> object:
         from hooks.scripts.banned_terms import gate  # noqa: PLC0415 — in-process handler under test
+        from teatree.hooks import _repo_visibility  # noqa: PLC0415 — the probe answer the destination check reads
 
-        error_message = "simulated internal gate error"
-
-        def _boom(_data: dict) -> bool:
-            raise RuntimeError(error_message)
+        def _boom(_data: dict, **_kwargs: object) -> bool:
+            raise RuntimeError(self._ERROR_MESSAGE)
 
         monkeypatch.setattr(gate, "_run_banned_terms_pretool", _boom)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        return gate
+
+    def test_a_public_post_is_denied_without_echoing_the_error(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gate = self._break_the_gate(monkeypatch)
+
         blocked = gate.handle_banned_terms_pretool(
             {"tool_name": "Bash", "tool_input": {"command": _public_post_with("anything")}}
         )
+        out = capsys.readouterr().out
+
+        assert blocked is True
+        assert "internal error (RuntimeError)" in out
+        assert self._ERROR_MESSAGE not in out
+
+    def test_a_command_that_publishes_nothing_fails_open_and_says_so(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gate = self._break_the_gate(monkeypatch)
+
+        blocked = gate.handle_banned_terms_pretool({"tool_name": "Bash", "tool_input": {"command": "ls -la"}})
         captured = capsys.readouterr()
-        # Fail OPEN: a crashing hook must never wedge the agent (never-lockout).
+
         assert blocked is False
-        # But NOT silent: the fail-open on the public-egress path is named loudly so
-        # it is diagnosable instead of an invisible no-op.
-        assert "banned-terms publish gate failed open" in captured.err
-        assert "RuntimeError: simulated internal gate error" in captured.err
-        assert "NOT a clean scan" in captured.err
+        assert "banned-terms publish gate failed open on an internal error (RuntimeError)" in captured.err
+        assert self._ERROR_MESSAGE not in captured.err

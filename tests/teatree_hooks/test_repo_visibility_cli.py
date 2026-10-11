@@ -27,6 +27,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -113,7 +114,14 @@ def _cli_process(
     data_dir: Path | None = None,
     config_db: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = {
+    env = _cli_env(tmp_path, bin_dir, data_dir=data_dir, config_db=config_db)
+    return _spawn_cli(remote, env)
+
+
+def _cli_env(
+    tmp_path: Path, bin_dir: Path, *, data_dir: Path | None = None, config_db: Path | None = None
+) -> dict[str, str]:
+    return {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         # Isolate the day cache so a verdict never leaks between tests or in
@@ -127,8 +135,11 @@ def _cli_process(
         # developer's own published settings as its fallback.
         "XDG_DATA_HOME": str(tmp_path / "xdg"),
     }
+
+
+def _spawn_cli(remote: str, env: dict[str, str], *flags: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "teatree.hooks.repo_visibility_cli", remote],
+        [sys.executable, "-m", "teatree.hooks.repo_visibility_cli", *flags, remote],
         capture_output=True,
         text=True,
         check=False,
@@ -418,3 +429,71 @@ class TestUrlRemotesRouteOnTheirHostAlone:
     def test_a_url_without_a_parsable_host_keeps_its_verbatim_slug(self, remote: str) -> None:
         """Anti-vacuity: only a real network host is rewritten; anything else is left exactly as it was."""
         assert slug_for_remote_url(remote) == remote.split("://", 1)[1].removesuffix(".git")
+
+
+def _plant_cached_verdict(data_dir: Path, remote: str, verdict: str) -> None:
+    """Write a fresh verdict for *remote* into the host-wide visibility cache, as any process of this user can."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    entry = {"ts": time.time(), "visibility": verdict}
+    (data_dir / "repo-visibility-cache.json").write_text(
+        json.dumps({slug_for_remote_url(remote): entry}), encoding="utf-8"
+    )
+
+
+class TestTheLiveFlagTakesOnlyTheForgesAnswer:
+    """The push path asks with ``--live``: a local file, however fresh, cannot say a repository is private.
+
+    The day cache and the ``private_repos`` allowlist live in files a pusher can write (the cache directly, the
+    allowlist in a store ``T3_CONFIG_DB`` or ``T3_DATA_DIR`` points anywhere), so neither may skip a leak scan. Only
+    the forge's answer to a probe made now establishes PRIVATE; anything else is UNKNOWN, which the gate reads as
+    "scan".
+    """
+
+    def _live(self, remote: str, tmp_path: Path, bin_dir: Path, *, config_db: Path | None = None) -> str:
+        result = _spawn_cli(remote, _cli_env(tmp_path, bin_dir, config_db=config_db), "--live")
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout.strip()
+
+    def test_a_planted_private_cache_entry_is_what_the_default_mode_believes(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the plant works on the default path, so the live-mode refusal below is the flag's."""
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, gh_visibility="PUBLIC")
+        _plant_cached_verdict(tmp_path / "state", _GITHUB_REMOTE, "PRIVATE")
+
+        assert _run_cli(_GITHUB_REMOTE, tmp_path, bin_dir) == "PRIVATE"
+
+    def test_a_planted_private_cache_entry_does_not_outvote_the_forge(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, gh_visibility="PUBLIC")
+        _plant_cached_verdict(tmp_path / "state", _GITHUB_REMOTE, "PRIVATE")
+
+        assert self._live(_GITHUB_REMOTE, tmp_path, bin_dir) == "PUBLIC"
+
+    def test_a_planted_private_cache_entry_is_not_an_answer_when_the_forge_is_silent(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        _plant_cached_verdict(tmp_path / "state", _GITHUB_REMOTE, "PRIVATE")
+
+        assert self._live(_GITHUB_REMOTE, tmp_path, bin_dir) == "UNKNOWN"
+
+    def test_a_decoy_allowlist_is_not_an_answer_when_the_forge_is_silent(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        decoy = _seed_config_db(tmp_path / "decoy.db", {"private_repos": ["gitlab.com/acme-eng"]})
+
+        assert _run_cli(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=decoy) == "PRIVATE", "the default mode believes it"
+        assert self._live(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=decoy) == "UNKNOWN"
+
+    def test_the_forges_own_private_answer_is_believed(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, glab_visibility="private")
+
+        assert self._live(_GITLAB_REMOTE, tmp_path, bin_dir) == "PRIVATE"
+
+    def test_it_neither_reads_nor_writes_the_cache(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, glab_visibility="private")
+
+        self._live(_GITLAB_REMOTE, tmp_path, bin_dir)
+
+        assert not (tmp_path / "state" / "repo-visibility-cache.json").exists()
