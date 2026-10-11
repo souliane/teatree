@@ -10,6 +10,7 @@ not merely whether the happy path resolves.
 
 import errno
 import os
+import runpy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -314,7 +315,7 @@ class TestThisProcessIsNeverItsOwnWitness:
 
     def test_the_pid_dropped_is_the_one_the_table_calls_self_not_os_getpid(self, tmp_path: Path) -> None:
         """A bind-mounted host table numbers this process by its HOST pid."""
-        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "elsewhere"})
+        host = _proc_with(tmp_path / "host-proc", {})
         (host / str(os.getpid())).mkdir()
         holding(host / str(os.getpid()), tmp_path / "checkout" / ".venv")
 
@@ -322,6 +323,20 @@ class TestThisProcessIsNeverItsOwnWitness:
             table = read_process_table()
 
         assert table.holds(tmp_path / "checkout"), "the container's own pid names another process on the host"
+
+    def test_a_placed_pid_is_never_taken_for_this_process_whatever_pid_the_worker_has(self, tmp_path: Path) -> None:
+        with patch.object(os, "getpid", return_value=21):
+            venue = runpy.run_path(str(Path(__file__).parents[2] / "_process_table_venue.py"))
+        proc = tmp_path / "proc"
+        (proc / "22").mkdir(parents=True)
+        (proc / "22" / "cwd").symlink_to(tmp_path / "checkout")
+        venue["this_process_in"](proc)
+
+        with patch.object(process_table, "_OWN_PROC_ROOT", proc):
+            table = read_process_table()
+
+        assert table.usable, table.gaps
+        assert table.holds(tmp_path / "checkout")
 
     def test_this_processs_executable_does_not_place_it_either(self, tmp_path: Path) -> None:
         """``exe`` points into the venv the pass itself runs from, in every checkout it sweeps."""
