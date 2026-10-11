@@ -1321,9 +1321,9 @@ stays connected:
   the server's MCP log (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-plugin-t3-teatree/`).
   Frames are never logged.
 
-Without a `python3` >= 3.9 on the host, `deploy/t3` serves directly as before and says so on
-stderr, and the SessionStart hook prints the same warning into the session: the tools then drop at
-the next restart until the server is reconnected from `/mcp`. On macOS without the Command Line
+Without a `python3` >= 3.9 on the host, `deploy/t3` serves the session directly, with no proxy,
+and says so on stderr, and the SessionStart hook prints the same warning into the session: the tools
+then drop at the next restart until the server is reconnected from `/mcp`. On macOS without the Command Line
 Tools, `/usr/bin/python3` is only an installer stub, so install them (or another python3) first.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)

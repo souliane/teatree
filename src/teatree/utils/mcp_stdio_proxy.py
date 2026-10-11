@@ -233,7 +233,7 @@ class StdioProxy:
         self._timer: tuple[float, Callable[[], None]] | None = None
         self._exit_code: int | None = None
 
-    def request_stop(self, signum: int, _frame: object = None) -> None:
+    def request_stop(self, signum: int, _signal_frame: object = None) -> None:
         self._events.put(partial(self._on_signal, signum))
 
     def run(self) -> int:

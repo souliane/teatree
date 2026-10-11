@@ -3,16 +3,17 @@
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from mcp import types as mcp_types
+from mcp.types import CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
 from mcp.types.version import LATEST_HANDSHAKE_VERSION, LATEST_MODERN_VERSION
-from mcp_types._types import CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
 from pydantic import BaseModel
 
 from teatree.utils.mcp_stdio_proxy import StdioProxy, Timing
@@ -60,6 +61,12 @@ def sdk_initialized() -> dict[str, Any]:
 
 def tool_pid(frame: dict[str, Any]) -> int:
     return frame["result"]["structuredContent"]["result"]
+
+
+def exchange(to_server: IO[bytes], from_server: IO[bytes], request_id: object) -> dict[str, Any]:
+    to_server.write(json.dumps(request(request_id, "tools/call", {})).encode() + b"\n")
+    to_server.flush()
+    return json.loads(from_server.readline())
 
 
 RETRYABLE = frozenset({"server_restarting", "server_restarted"})
@@ -200,6 +207,10 @@ class FakeChild:
     def spawns(self) -> list[dict[str, Any]]:
         return [event for event in self.events() if "spawn" in event]
 
+    def family(self) -> list[int]:
+        spawns = self.spawns()
+        return [spawn["pid"] for spawn in spawns] + [spawn["grandchild"] for spawn in spawns if spawn["grandchild"]]
+
     def received(self, spawn: int) -> list[str]:
         return [event["line"] for event in self.events() if event.get("recv") == spawn]
 
@@ -281,7 +292,7 @@ class Harness:
 
     def close(self) -> None:
         if self._runner.is_alive():
-            self.proxy.request_stop(15)
+            self.proxy.request_stop(signal.SIGTERM)
             self._runner.join(10)
         if not self._to_proxy.closed:
             self._to_proxy.close()

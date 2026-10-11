@@ -1,8 +1,9 @@
 """Shared pure logic for the containerized ``t3`` workflow (#3232).
 
 Teatree runs exclusively in Docker — the ``t3`` CLI as well as every server — so
-an operator needs no host Python / uv / prereqs (an optional stdlib ``python3`` only keeps
-a connected ``t3 mcp serve`` session across a container restart). ``t3`` on the host is one fixed
+an operator needs no host Python / uv / prereqs (an optional stdlib ``python3`` keeps a
+connected ``t3 mcp serve`` session across a container restart and sizes the worker at deploy
+time). ``t3`` on the host is one fixed
 thing: an executable LAUNCHER on ``PATH`` that ``exec``s the main checkout's
 container-wrapping entry ``deploy/t3``, which ``docker compose exec``s into the
 running worker. There is no second way to run ``t3``: a host CLI cannot reach the

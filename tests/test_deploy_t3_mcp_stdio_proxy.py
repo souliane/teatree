@@ -13,7 +13,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 import pytest
 from _deploy_wrapper_paths import copy_wrapper
@@ -21,7 +21,7 @@ from _deploy_wrapper_paths import copy_wrapper
 from teatree.mcp.serve_lifecycle import is_serve_command
 from teatree.utils import mcp_stdio_proxy
 from tests._process_liveness import is_gone_within
-from tests.teatree_utils._mcp_proxy_children import FakeChild, request
+from tests.teatree_utils._mcp_proxy_children import FakeChild, exchange, request
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 SYSTEM_PATH = os.defpath.strip(os.pathsep)
@@ -158,12 +158,6 @@ def call(proc: subprocess.Popen[bytes], request_id: object) -> dict[str, Any]:
     assert to_server is not None
     assert from_server is not None
     return exchange(to_server, from_server, request_id)
-
-
-def exchange(to_server: IO[bytes], from_server: IO[bytes], request_id: object) -> dict[str, Any]:
-    to_server.write(json.dumps(request(request_id, "tools/call", {})).encode() + b"\n")
-    to_server.flush()
-    return json.loads(from_server.readline())
 
 
 def process_args(pid: int) -> list[str]:

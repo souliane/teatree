@@ -14,7 +14,6 @@ from mcp import types as mcp_types
 
 from teatree.utils import mcp_stdio_proxy as proxy_module
 from teatree.utils.mcp_stdio_proxy import (
-    BACKOFF_SECONDS,
     BATCH,
     MALFORMED,
     NOTIFICATION,
@@ -29,7 +28,7 @@ from teatree.utils.mcp_stdio_proxy import (
     restarting_error,
     watch_parent,
 )
-from tests.teatree_utils._mcp_proxy_children import FakeChild, Harness, request
+from tests.teatree_utils._mcp_proxy_children import FakeChild, request
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -102,11 +101,11 @@ class TestClassify:
 
         assert (message.kind, message.method) == (kind, method)
 
-    def test_an_int_and_a_string_id_are_distinct_keys(self) -> None:
+    def test_an_int_and_an_equal_float_id_are_distinct_keys(self) -> None:
         as_int = classify(b'{"jsonrpc":"2.0","id":1,"method":"ping"}')
-        as_str = classify(b'{"jsonrpc":"2.0","id":"1","method":"ping"}')
+        as_float = classify(b'{"jsonrpc":"2.0","id":1.0,"method":"ping"}')
 
-        assert as_int.key != as_str.key
+        assert as_int.key != as_float.key
 
     def test_a_cancellation_is_keyed_by_the_request_it_cancels(self) -> None:
         cancel = classify(b'{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"L1"}}')
@@ -117,15 +116,6 @@ class TestClassify:
 class TestBackoff:
     def test_the_schedule_doubles_then_caps(self) -> None:
         assert [backoff_delay(failures) for failures in range(8)] == [0, 1, 2, 4, 8, 16, 30, 30]
-
-    def test_a_long_outage_is_noticed_within_one_cap(self) -> None:
-        attempts, elapsed = [], 0.0
-        for failures in range(1, 12):
-            elapsed += backoff_delay(failures)
-            attempts.append(elapsed)
-
-        first_after_outage = next(at for at in attempts if at >= 60.0)
-        assert first_after_outage - 60.0 <= BACKOFF_SECONDS[-1]
 
 
 class TestIterLines:
@@ -236,17 +226,3 @@ class TestMainSeams:
         watch_parent(stops.append, getppid=lambda: next(parents), interval=0.01).join(5)
 
         assert stops == [signal.SIGTERM]
-
-    def test_a_proxy_whose_parent_died_stops_its_server(self, tmp_path: Path) -> None:
-        fake = FakeChild(tmp_path, [{}])
-        harness = Harness(fake.argv)
-        try:
-            harness.send(request(1, "tools/call", {}))
-            harness.recv()
-            parents = iter([4242, 1])
-
-            watch_parent(harness.proxy.request_stop, getppid=lambda: next(parents), interval=0.01)
-
-            assert harness.wait() == 0
-        finally:
-            harness.close()

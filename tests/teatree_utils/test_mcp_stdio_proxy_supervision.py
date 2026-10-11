@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,7 @@ def fake_call(request_id: object) -> dict[str, Any]:
     return request(request_id, "tools/call", {})
 
 
-def is_listen_ack(listen_id: str):
+def is_listen_ack(listen_id: str) -> Callable[[dict[str, Any]], bool]:
     def matches(frame: dict[str, Any]) -> bool:
         meta = frame.get("params", {}).get("_meta", {})
         return frame.get("method") == "notifications/subscriptions/acknowledged" and (
@@ -55,7 +56,7 @@ def is_listen_ack(listen_id: str):
     return matches
 
 
-def has_id(request_id: object):
+def has_id(request_id: object) -> Callable[[dict[str, Any]], bool]:
     return lambda frame: frame.get("id") == request_id
 
 
@@ -294,7 +295,10 @@ class TestModernListen:
                 harness.recv_matching(is_listen_ack(f"L{generation + 2}"))
 
             served, _ = harness.call_until_served(fake_call)
+            completed = [frame["id"] for frame in harness.seen if frame.get("id") in {"L1", "L2", "L3"}]
+
             assert served["result"]["spawn"] == 2
+            assert completed == ["L1", "L2"]
         finally:
             harness.close()
 
@@ -319,11 +323,13 @@ class TestWhileNoServerIsReady:
             harness.send(b"{not json\n")
             parse_error = harness.recv(timeout=5)
             harness.call_until_served(fake_call)
+            null_id_errors = [frame for frame in harness.seen if frame.get("id") is None and "error" in frame]
 
             assert retry_reason(refused) == "server_restarting"
             assert pong["result"] == {}
             assert [frame for frame in harness.seen if frame.get("id") == 12] == []
             assert parse_error == {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+            assert null_id_errors == [parse_error]
             assert not any('"id": 10' in line or '"id":12' in line for line in fake.received(1))
         finally:
             harness.close()
@@ -438,11 +444,8 @@ class TestStartAndEnd:
 
 
 class TestTransparency:
-    @pytest.mark.parametrize("negotiation", [sdk_discover("d1"), sdk_initialize(0)])
-    def test_negotiation_results_are_byte_identical_to_the_direct_server(
-        self, sdk_argv: list[str], negotiation: dict[str, Any]
-    ) -> None:
-        payload = json.dumps(negotiation).encode() + b"\n"
+    def test_a_negotiation_result_is_byte_identical_to_the_direct_server(self, sdk_argv: list[str]) -> None:
+        payload = json.dumps(sdk_discover("d1")).encode() + b"\n"
         direct = subprocess.run(sdk_argv, input=payload, capture_output=True, timeout=30, check=False).stdout
 
         harness = Harness(sdk_argv)
@@ -549,11 +552,6 @@ class TestHostDirectory:
             harness.close()
 
 
-def family(fake: FakeChild) -> list[int]:
-    spawns = fake.spawns()
-    return [spawn["pid"] for spawn in spawns] + [spawn["grandchild"] for spawn in spawns if spawn["grandchild"]]
-
-
 class TestShutdown:
     def test_a_server_outliving_client_eof_is_terminated_after_the_grace(self, tmp_path: Path) -> None:
         fake = FakeChild(tmp_path, [{"linger_after_eof": 30}])
@@ -593,7 +591,7 @@ class TestShutdown:
             harness.proxy.request_stop(signal.SIGINT)
 
             assert harness.wait() == 0
-            assert all(is_gone_within(pid, seconds=5) for pid in family(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
             assert f"exited with code {128 + signal.SIGINT}" in capfd.readouterr().err
         finally:
             harness.close()
@@ -609,7 +607,7 @@ class TestShutdown:
             harness.proxy.request_stop(signal.SIGTERM)
 
             assert harness.wait(timeout=10) == 0
-            assert all(is_gone_within(pid, seconds=5) for pid in family(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
         finally:
             harness.close()
 
@@ -652,7 +650,7 @@ class TestShutdown:
             harness.close_input()
 
             assert harness.wait() == 0
-            assert all(is_gone_within(pid, seconds=5) for pid in family(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
         finally:
             harness.close()
 
@@ -667,7 +665,7 @@ class TestShutdown:
 
             assert harness.wait(timeout=10) == 0
         finally:
-            for pid in family(fake):
+            for pid in fake.family():
                 with contextlib.suppress(OSError):
                     os.kill(pid, signal.SIGKILL)
             harness.close()

@@ -4,7 +4,8 @@
 # ttyd — `t3 <args>` on the host executes transparently in a container that shares
 # the live DB, credential, and session mounts. `t3 setup` installs a launcher
 # pointing here; `t3 doctor` verifies the wiring. An optional stdlib python3 >= 3.9
-# only lets a connected `t3 mcp serve` session survive a container restart.
+# lets a connected `t3 mcp serve` session survive a container restart (deploy.sh also
+# uses it to size the worker).
 #
 # Prefers `exec` into the already-running worker (fast; shares the live state).
 # Falls back to a one-off `run --rm` container (worker role, serving topology) when the
@@ -28,7 +29,7 @@ if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ] && [ -z "${TEATREE_MCP_PROXY_CHILD
     if [ -f "$MCP_PROXY" ] && python3 -I -S -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
         exec python3 -I -S "$MCP_PROXY" env TEATREE_MCP_PROXY_CHILD=1 "$SCRIPT_DIR/t3" "$@"
     fi
-    echo "deploy/t3: WARN no python3 >= 3.9 on this host, so this MCP server will not survive a container restart; reconnect it from the /mcp menu after one" >&2
+    echo "deploy/t3: WARN no python3 >= 3.9 (or no MCP stdio proxy file) on this host, so this MCP server will not survive a container restart; reconnect it from the /mcp menu after one" >&2
 fi
 
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"

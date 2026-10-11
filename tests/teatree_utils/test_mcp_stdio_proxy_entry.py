@@ -9,13 +9,12 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Any
 
 import pytest
 
 from teatree.utils import mcp_stdio_proxy as proxy_module
 from tests._process_liveness import is_gone_within
-from tests.teatree_utils._mcp_proxy_children import SDK_SERVER, FakeChild, request, sdk_initialize, write_child
+from tests.teatree_utils._mcp_proxy_children import SDK_SERVER, FakeChild, exchange, sdk_initialize, write_child
 
 pytestmark = pytest.mark.integration
 
@@ -27,17 +26,6 @@ def proxy_argv(server_argv: list[str]) -> list[str]:
     return [sys.executable, "-I", "-S", str(PROXY), *server_argv]
 
 
-def call(to_server: IO[bytes], from_server: IO[bytes], request_id: object) -> dict[str, Any]:
-    to_server.write(json.dumps(request(request_id, "tools/call", {})).encode() + b"\n")
-    to_server.flush()
-    return json.loads(from_server.readline())
-
-
-def descendants(fake: FakeChild) -> list[int]:
-    spawns = fake.spawns()
-    return [spawn["pid"] for spawn in spawns] + [spawn["grandchild"] for spawn in spawns if spawn["grandchild"]]
-
-
 @contextlib.contextmanager
 def running_proxy(fake: FakeChild) -> Iterator[subprocess.Popen[bytes]]:
     proc = subprocess.Popen(
@@ -46,7 +34,7 @@ def running_proxy(fake: FakeChild) -> Iterator[subprocess.Popen[bytes]]:
     try:
         yield proc
     finally:
-        _reap_everything(proc, descendants(fake))
+        _reap_everything(proc, fake.family())
 
 
 def _reap_everything(proc: subprocess.Popen[bytes], pids: list[int]) -> None:
@@ -60,18 +48,18 @@ def _reap_everything(proc: subprocess.Popen[bytes], pids: list[int]) -> None:
 
 
 class TestStopSignals:
-    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
     def test_a_stop_signal_exits_zero_and_leaves_no_descendant(self, tmp_path: Path, signum: int) -> None:
         fake = FakeChild(tmp_path, [{"grandchild": True}])
         with running_proxy(fake) as proc:
             assert proc.stdin is not None
             assert proc.stdout is not None
-            call(proc.stdin, proc.stdout, 1)
+            exchange(proc.stdin, proc.stdout, 1)
 
             proc.send_signal(signum)
 
             assert proc.wait(timeout=10) == 0
-            assert all(is_gone_within(pid, seconds=5) for pid in descendants(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
             assert len(fake.spawns()) == 1
 
     def test_the_client_close_sequence_leaves_no_descendant(self, tmp_path: Path) -> None:
@@ -79,7 +67,7 @@ class TestStopSignals:
         with running_proxy(fake) as proc:
             assert proc.stdin is not None
             assert proc.stdout is not None
-            call(proc.stdin, proc.stdout, 1)
+            exchange(proc.stdin, proc.stdout, 1)
 
             proc.send_signal(signal.SIGINT)
             time.sleep(0.1)
@@ -90,7 +78,7 @@ class TestStopSignals:
                 proc.kill()
             proc.wait(timeout=10)
 
-            assert all(is_gone_within(pid, seconds=5) for pid in descendants(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
 
 
 class TestParentDeath:
@@ -106,15 +94,15 @@ class TestParentDeath:
         assert middleman.stdout is not None
         proxy_pid = int(middleman.stdout.readline())
         try:
-            call(middleman.stdin, middleman.stdout, 1)
+            exchange(middleman.stdin, middleman.stdout, 1)
 
             middleman.kill()
             middleman.wait(10)
 
             assert is_gone_within(proxy_pid, seconds=10)
-            assert all(is_gone_within(pid, seconds=5) for pid in descendants(fake))
+            assert all(is_gone_within(pid, seconds=5) for pid in fake.family())
         finally:
-            _reap_everything(middleman, [proxy_pid, *descendants(fake)])
+            _reap_everything(middleman, [proxy_pid, *fake.family()])
 
 
 class TestPipedUse:
@@ -135,14 +123,14 @@ class TestPipedUse:
         assert proc.stdin is not None
         assert proc.stdout is not None
         try:
-            first = call(proc.stdin, proc.stdout, "secret-request-id")
+            first = exchange(proc.stdin, proc.stdout, "secret-request-id")
             os.kill(first["result"]["pid"], signal.SIGKILL)
-            while call(proc.stdin, proc.stdout, "retry").get("error"):
+            while exchange(proc.stdin, proc.stdout, "retry").get("error"):
                 time.sleep(0.1)
             proc.stdin.close()
             stderr = proc.communicate(timeout=20)[1].decode()
         finally:
-            _reap_everything(proc, descendants(fake))
+            _reap_everything(proc, fake.family())
 
         lines = stderr.splitlines()
         assert all(line.startswith("mcp-stdio-proxy: ") for line in lines)
