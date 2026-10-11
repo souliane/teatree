@@ -58,7 +58,7 @@ def planted(tmp_path: Path) -> Planted:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(text, encoding="utf-8")
     (repo / "src" / "pkg" / "blob.dat").write_bytes(b"\xff\xfe" + registry["leak"][0].encode())
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "remote", "add", "origin", f"https://github.example/{OWNER}/widget.git")
     _git(repo, "add", ".")
     return repo, registry
