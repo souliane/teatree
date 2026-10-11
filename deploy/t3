@@ -1054,12 +1054,6 @@ if [ -n "${TEATREE_FORCE_ONE_OFF:-}" ]; then
     DISPATCH_MODE=one-off
     DISPATCH_ROUTE=""
 fi
-MCP_STDIO=0
-if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ]; then
-    MCP_STDIO=1
-    DISPATCH_MODE=one-off
-    DISPATCH_ROUTE=""
-fi
 
 # A convergence swaps the routes one at a time, so a moment with NONE of them up is
 # short and self-clearing. Waiting it out is what turns the window from an outage an
@@ -1229,9 +1223,7 @@ fi
 # Announce the one-off venue before dispatch, on stderr so a `--json` consumer
 # is unaffected; said afterwards it arrives as one more opaque rc=1 (#4076).
 # Forge operations resolve the repository owner's routed credential inside it.
-if [ "$MCP_STDIO" = 1 ]; then
-    echo "deploy/t3: MCP stdio server runs in its own container so worker restarts keep this connection alive." >&2
-elif [ "$DISPATCH_MODE" = one-off ]; then
+if [ "$DISPATCH_MODE" = one-off ]; then
     echo "deploy/t3: one-off dispatch was requested — dispatching in a one-off container." >&2
 else
     echo "deploy/t3: the teatree worker is not running — dispatching in a one-off container." >&2
@@ -1252,8 +1244,4 @@ fi
 # `--entrypoint sh` bypasses the TEATREE_ROLE dispatcher so we run the CLI directly,
 # not a server — through the same prologue the exec paths use, so this venue repairs
 # its own GPG home and resolves its own GitLab token rather than inheriting neither.
-RUN_TTY_ARGS=()
-if [ "$MCP_STDIO" = 1 ]; then
-    RUN_TTY_ARGS=(-T)
-fi
-exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps "${RUN_TTY_ARGS[@]}" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
+exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"

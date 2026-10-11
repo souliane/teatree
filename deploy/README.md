@@ -311,14 +311,7 @@ CLI's exit code and stderr.
 
 Codex gets the `teatree` MCP server (`t3 mcp serve`) from the plugin's
 `.mcp.json`, and setup confirms it with `codex mcp get teatree --json`. Where the
-host's `deploy/t3` launches an interactive MCP server, it uses a dedicated
-one-off container with raw stdio. A worker restart or deploy recreation leaves
-that container and the connected session's tools running. The server exits and
-its container is removed when the client closes stdin. If the one-off container
-itself is stopped, the stdio connection closes; open Claude Code's `/mcp` menu
-and reconnect the teatree server to start a new one.
-
-When the container is the Codex sandbox, setup also checks that
+container is the Codex sandbox, setup also checks that
 `codex -c 'plugins={"t3@souliane"={enabled=false}}' mcp list --json` lists
 nothing, because worker threads switch the plugin off and refuse any MCP server
 still loaded. Setup writes no `[mcp_servers]` table: one added to `config.toml` by

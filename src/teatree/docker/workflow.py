@@ -3,9 +3,8 @@
 Teatree runs exclusively in Docker — the ``t3`` CLI as well as every server — so
 an operator needs no host Python / uv / prereqs. ``t3`` on the host is one fixed
 thing: an executable LAUNCHER on ``PATH`` that ``exec``s the main checkout's
-container-wrapping entry ``deploy/t3``, which dispatches into the running
-worker. ``t3 mcp serve`` gets a separate one-off container so its stdio survives
-worker replacement. There is no second way to run ``t3``: a host CLI cannot reach the
+container-wrapping entry ``deploy/t3``, which ``docker compose exec``s into the
+running worker. There is no second way to run ``t3``: a host CLI cannot reach the
 control DB (:data:`teatree.paths.DEFAULT_CONTROL_DB_DIR` exists only inside the
 container) and silently resolves every setting from shipped defaults.
 

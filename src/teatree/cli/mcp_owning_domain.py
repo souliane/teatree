@@ -5,12 +5,14 @@ The MCP server is a WRITER — ``review_post_comment``, ``ticket_visit_phase``,
 containerized stack owns the control DB (:mod:`teatree.db.boundary`), a host
 server's writes are refused, so the server has to run where the writes are legal.
 
-A shell alias cannot route a client that launches ``.mcp.json`` as a PATH lookup.
-The ownership check delegates a native console script to ``deploy/t3``, which
-starts the server in its own container, separate from the replaceable worker.
+A shell alias cannot reach it: ``t3 setup`` aliases ``t3`` to ``deploy/t3`` for
+interactive shells, but Claude Code launches the server from ``.mcp.json`` as a
+PATH lookup, which resolves the native console script and bypasses the alias
+entirely. That is how four host ``t3 mcp serve`` processes came to hold the
+bind-mounted database read-write while the containerized stack wrote it too.
 
-So the routing lives here instead of in ``.mcp.json``: the decision is taken
-at startup from the observed ownership of the database
+So the routing lives here instead of in ``.mcp.json``: the same decision the
+alias encodes, taken at startup from the observed ownership of the database
 rather than pinned into a committed file. An install whose database is visible
 from here and carries no claim serves natively and never touches Docker — which
 is every plain teatree clone. An install that cannot SEE the claim at all is a
@@ -114,10 +116,10 @@ def declare_cwd_insensitive_invocation(env: MutableMapping[str, str]) -> None:
 def delegate_to_owning_domain(serve_args: Sequence[str] = ()) -> None:
     """Replace this process with the containerized server when the container owns the DB.
 
-    ``execv``, not a subprocess: the client talks over inherited stdin/stdout;
-    the wrapper hands those descriptors to a worker-independent container.
-    *serve_args* ride along, so the delegated server is the one the client asked
-    for. Returns normally — serve here —
+    ``execv``, not a subprocess: the client talks to this process over inherited
+    stdin/stdout, and replacing the image hands it those exact file descriptors with
+    no relaying layer to buffer or drop a frame. *serve_args* ride along, so the
+    delegated server is the one the client asked for. Returns normally — serve here —
     whenever :func:`owning_domain_wrapper` declines.
     """
     wrapper = owning_domain_wrapper()
