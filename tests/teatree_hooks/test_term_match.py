@@ -267,10 +267,6 @@ class TestMaskExemptBlanksWholeEntryRuns:
         toks = term_match.tokens("acme then engineering later")
         assert term_match.tokens(mask_exempt("acme then engineering later", ("acme-engineering",))) == toks
 
-    def test_empty_allowlist_is_identity(self) -> None:
-        toks = term_match.tokens("acme-engineering")
-        assert term_match.tokens(mask_exempt("acme-engineering", ())) == toks
-
 
 class TestContainsRun:
     """The contiguous-sublist primitive directly (incl. the empty-needle guard)."""

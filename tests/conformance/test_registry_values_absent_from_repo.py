@@ -80,7 +80,7 @@ def test_a_value_in_each_root_is_found_and_named_by_class_only(planted: Planted)
     exit_code, output = _scan(repo, registry, "--classes", CLASSES)
 
     assert exit_code == 1, output
-    assert sorted(line.strip() for line in output.splitlines() if ": " in line and "#" in line) == [
+    assert _findings(output) == [
         ".github/workflows/ci.yml:1: overlay#1",
         "docs/guide.md:1: allow#0",
         "docs/guide.md:2: leak#1",
@@ -89,6 +89,37 @@ def test_a_value_in_each_root_is_found_and_named_by_class_only(planted: Planted)
         "tests/test_module.py:2: allow#1",
     ]
     assert not [value for values in registry.values() for value in values if value in output]
+
+
+def _findings(output: str) -> list[str]:
+    return sorted(line.strip() for line in output.splitlines() if ": " in line and "#" in line)
+
+
+def test_a_run_from_a_subdirectory_scans_the_whole_work_tree(planted: Planted) -> None:
+    repo, registry = planted
+
+    from_root = _scan(repo, registry, "--classes", CLASSES)
+    from_docs = _scan(repo / "docs", registry, "--classes", CLASSES)
+
+    assert from_docs[0] == 1, from_docs[1]
+    assert _findings(from_docs[1]) == _findings(from_root[1])
+
+
+def test_a_tree_with_no_tracked_file_under_the_roots_refuses(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "notes").mkdir(parents=True)
+    leak = _value("leak")
+    (repo / "notes" / "readme.md").write_text(f"{leak}\n", encoding="utf-8")
+    (repo / "NOTICE").write_text(f"{leak}\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", ".")
+    registry = {"leak": [leak], "overlay": [], "allow": [], "prose_collider": [], "tone": []}
+
+    exit_code, output = _scan(repo, registry, "--classes", CLASSES)
+
+    assert exit_code == 2, output
+    assert "MISCONFIGURED" in output
+    assert leak not in output
 
 
 def test_an_unreadable_tracked_file_refuses_the_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,7 +200,11 @@ def test_the_required_tree_job_runs_this_scan() -> None:
     (checkout,) = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
     (scan,) = [step for step in steps if "--classes" in str(step.get("run", ""))]
 
-    assert scan["run"] == f"uv run t3 banned-terms scan-tree --repo-root . --classes {CLASSES}"
-    assert scan["if"] == checkout["if"] == SAME_REPO_GUARD
-    assert scan["env"] == {"TEATREE_TERM_REGISTRY": "${{ secrets.TEATREE_TERM_REGISTRY }}"}
-    assert "continue-on-error" not in scan
+    assert scan == {
+        "name": "Registry values absent from the value-free roots",
+        "if": SAME_REPO_GUARD,
+        "env": {"TEATREE_TERM_REGISTRY": "${{ secrets.TEATREE_TERM_REGISTRY }}"},
+        "run": f"uv run t3 banned-terms scan-tree --repo-root . --classes {CLASSES}",
+    }
+    assert checkout["if"] == SAME_REPO_GUARD
+    assert not {"continue-on-error", "defaults"} & set(workflow["jobs"]["banned-terms-tree"])
