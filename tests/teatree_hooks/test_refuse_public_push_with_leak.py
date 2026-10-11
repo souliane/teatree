@@ -545,6 +545,21 @@ _FINDING_SCANNER = _VERIFIES + "sys.stdin.read()\nprint('line 1: banned_term: le
 _CLEAN_SCANNER = _VERIFIES + "sys.stdin.read()\nprint('Privacy scan: clean (0 findings)')\n"
 
 
+def _hook_failing_the_reads_of(tmp_path: Path, form: list[str]) -> Path:
+    hook = place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY)
+    reader = hook.parents[2] / "src" / "teatree" / "hooks" / "commit_objects.py"
+    committed = reader.read_text(encoding="utf-8")
+    failing = committed.replace(
+        '\nif __name__ == "__main__":',
+        f"\n_git = lambda *a, _read=_git: None if sys.argv[1:{len(form) + 1}] == {form!r} else _read(*a)\n"
+        '\nif __name__ == "__main__":',
+    )
+    assert failing != committed, "commit_objects.py no longer has the anchor the plant is inserted before"
+    reader.write_text(failing, encoding="utf-8")
+    _git(hook.parents[2], "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "one read")
+    return hook
+
+
 class TestLeakGateFailsClosedOnScannerCrash:
     """A scan that could not run is not a clean scan: the push is refused (hooks/CLAUDE.md: leak gates fail closed).
 
@@ -559,6 +574,11 @@ class TestLeakGateFailsClosedOnScannerCrash:
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "add feature")
         return work, env
+
+    def _annotated_tag_push(self, tmp_path: Path) -> tuple[Path, dict[str, str], str]:
+        work, env = self._clean_feature_commit(tmp_path)
+        _git(work, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "tag", "-a", "v1", "-m", "release v1")
+        return work, env, f"refs/tags/v1 {_rev(work, 'refs/tags/v1')} refs/tags/v1 {ZERO_SHA}\n"
 
     @pytest.mark.parametrize(
         ("when", "exit_code"),
@@ -587,23 +607,30 @@ class TestLeakGateFailsClosedOnScannerCrash:
     @pytest.mark.parametrize("form", [["messages"], ["commit", "raw"], ["commit", "blank"]], ids="-".join)
     def test_a_commit_object_read_that_fails_alone_refuses_the_push(self, tmp_path: Path, form: list[str]) -> None:
         work, env = self._clean_feature_commit(tmp_path)
-        hook = place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY)
-        reader = hook.parents[2] / "src" / "teatree" / "hooks" / "commit_objects.py"
-        committed = reader.read_text(encoding="utf-8")
-        failing = committed.replace(
-            '\nif __name__ == "__main__":',
-            f"\n_git = lambda *a, _read=_git: None if sys.argv[1:{len(form) + 1}] == {form!r} else _read(*a)\n"
-            '\nif __name__ == "__main__":',
-        )
-        assert failing != committed, "the plant must make the git reads of one form fail"
-        reader.write_text(failing, encoding="utf-8")
-        _git(hook.parents[2], "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "one read")
+        hook = _hook_failing_the_reads_of(tmp_path, form)
 
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
         assert result.returncode == 1, "a read that did not happen passed the push: " + result.stdout + result.stderr
         assert "could not run (exit 1)" in result.stdout, result.stdout
         assert result.stdout.count("commit_objects: could not read") == 1, result.stdout
+
+    @pytest.mark.parametrize("form", [["tag", "raw"], ["tag", "blank"]], ids="-".join)
+    def test_an_annotated_tag_read_that_fails_alone_refuses_the_push(self, tmp_path: Path, form: list[str]) -> None:
+        work, env, stdin = self._annotated_tag_push(tmp_path)
+
+        result = _run_hook(work, env, stdin, hook=_hook_failing_the_reads_of(tmp_path, form))
+
+        assert result.returncode == 1, "a failed tag read passed the push: " + result.stdout + result.stderr
+        assert "the annotated-tag privacy scan could not run (exit 1)" in result.stdout, result.stdout
+        assert result.stdout.count("commit_objects: could not read") == 1, result.stdout
+
+    def test_the_same_annotated_tag_push_passes_when_every_read_works(self, tmp_path: Path) -> None:
+        work, env, stdin = self._annotated_tag_push(tmp_path)
+
+        result = _run_hook(work, env, stdin, hook=place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY))
+
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def test_unresolvable_scanner_refuses(self, tmp_path: Path) -> None:
         work, env = self._clean_feature_commit(tmp_path)
