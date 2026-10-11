@@ -64,8 +64,8 @@ class TestTheDigestIsTheDriftScriptsDigest:
 
         assert gate_fingerprints(REGISTRY) == written["gates"]
 
-    def test_only_the_two_ci_fed_classes_are_fingerprinted(self) -> None:
-        assert set(gate_fingerprints(REGISTRY)) == {"tree", "overlay"}
+    def test_only_the_ci_fed_classes_are_fingerprinted(self) -> None:
+        assert set(gate_fingerprints(REGISTRY)) == {"tree", "overlay", "allow"}
 
 
 class TestUnverifiedGates:
@@ -149,7 +149,7 @@ class TestAFingerprintThatCannotBeReadIsNeverAMatch:
         assert stored not in message
 
 
-def test_the_committed_file_in_this_repository_has_the_two_gates() -> None:
+def test_the_committed_file_in_this_repository_has_every_gate() -> None:
     committed = Path(__file__).resolve().parents[2] / ".github" / "term-source-fingerprint.json"
 
-    assert set(json.loads(committed.read_text(encoding="utf-8"))["gates"]) == {"tree", "overlay"}
+    assert set(json.loads(committed.read_text(encoding="utf-8"))["gates"]) == {"tree", "overlay", "allow"}
