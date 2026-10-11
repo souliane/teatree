@@ -426,20 +426,16 @@ _display() {
   fi
 }
 
-# Messages of the commits named by the `git log` args, scanned apart from any patch.
-# A message is published verbatim, never a diff, so it goes to the scanner on stdin in
-# text mode: no file is written, so no temp directory can be missing or unwritable.
-# `git log` gets a closed stdin: every caller sits in a `while read` loop it must not drain.
-# Each message is read twice: as git decodes it (UTF-8, which also reads a message stored in another encoding), and as the
-# object stores it. The `encoding` header travels with the pushed commit, so `i18n.commitEncoding=UTF-16LE` on plain bytes
-# makes git decode them into noise while the remote still holds the message, and no CI job reads commit messages.
+# The commit and tag objects a push publishes, read by `teatree.hooks.commit_objects` (the one reader `t3 fast-push`
+# shares) from the copied sources: prints nothing and exits non-zero when git could not read them, so the scan fails closed.
+_objects() {
+  PYTHONPATH="${scan_pythonpath}" "${scan_py}" -P -S -m teatree.hooks.commit_objects "$@" </dev/null
+}
+
+# Messages of the commits named by the `git log` args, scanned apart from any patch, on stdin in text mode (no temp file
+# that can be missing or unwritable); each is read as git decodes it and as the object stores it.
 _scan_message_text() {
-  {
-    git log --encoding=UTF-8 "${git_read_flags[@]}" --format='%B' "$@" 2>/dev/null </dev/null || exit 1
-    git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r raw_sha; do
-      git cat-file commit "${raw_sha}" 2>/dev/null </dev/null | sed '1,/^$/d' || exit 1
-    done
-  } | _scan --text -
+  _objects messages "$@" | _scan --text -
 }
 
 # A scan that could not run outranks a finding, and a finding outranks a clean scan: the code to report for these.
@@ -455,36 +451,6 @@ _worse_scan_rc() {
   echo "${worst}"
 }
 
-# A raw commit or tag object on stdin, as it is (`raw`) or with the exact string `@users.noreply.github.com` cut from the
-# `<...>` of its `author`, `committer` and `tagger` lines (`blank`), the indented copies inside a `mergetag` block
-# included: the identity rule makes that domain the only one allowed, so the email detector has nothing to find in it.
-# The login in front of it stays visible to every detector, because the rule accepts any `[A-Za-z0-9-]+` there and a
-# token such as `sk-…` fits it.
-_identity_view() {
-  if [ "$1" = blank ]; then
-    sed -E '1,/^$/s/^( ?(author|committer|tagger) .*)@users\.noreply\.github\.com>/\1>/'
-  else
-    cat
-  fi
-}
-
-# The raw objects named by the args, as they are or through `_identity_view`: the commits of a `git rev-list` range
-# (`commit`), or one annotated tag (`tag`).
-_emit_objects() {
-  local kind="$1" mode="$2"
-  shift 2
-  case "${kind}" in
-    commit)
-      git rev-list "$@" 2>/dev/null </dev/null | while IFS= read -r object_sha; do
-        git cat-file commit "${object_sha}" 2>/dev/null </dev/null | _identity_view "${mode}" || exit 1
-      done
-      ;;
-    tag)
-      git cat-file -p "$1" 2>/dev/null </dev/null | _identity_view "${mode}"
-      ;;
-  esac
-}
-
 # The WHOLE raw object, headers and all, because an extra header, an author or committer name and a tag's own lines travel
 # with the pushed object like its message does, and no CI job reads objects. Two passes, one report: registry terms and
 # opaque ids over the object as it is, so a term in a name or an address is still found; and EVERY detector over it with
@@ -493,8 +459,8 @@ _emit_objects() {
 _scan_objects_from() {
   local kind="$1" terms_rc=0 full_rc=0 terms_report full_report
   shift
-  terms_report=$(_emit_objects "${kind}" raw "$@" | _scan --text --terms-only - 2>&1) || terms_rc=$?
-  full_report=$(_emit_objects "${kind}" blank "$@" | _scan --text - 2>&1) || full_rc=$?
+  terms_report=$(_objects "${kind}" raw "$@" | _scan --text --terms-only - 2>&1) || terms_rc=$?
+  full_report=$(_objects "${kind}" blank "$@" | _scan --text - 2>&1) || full_rc=$?
   if [ "${terms_rc}" -ne 0 ]; then
     printf '%s\n' "${terms_report}"
   fi

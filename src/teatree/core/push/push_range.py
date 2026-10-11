@@ -22,23 +22,29 @@ and refuse every later push of a long-lived branch over one flagged line forever
 ``--cc`` keeps a merge's conflict resolutions — content in neither parent — in scope while
 leaving the already-public content the merge carried over out of it.
 
+The whole commit objects, the stored messages and the noreply cut come from :mod:`teatree.hooks.commit_objects`,
+which the hook runs too, so the two readers cannot drift.
+
 Everything is read ONCE, at resolution, so the gates consume plain data and there is a
 single failure point. A range git cannot walk returns ``None`` and the caller refuses —
 never skips: a bypassed hook chain leaves no second net to fail open into.
 """
 
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.hooks.commit_objects import (
+    READ_FLAGS,
+    commit_objects,
+    decode_robust,
+    decoded_messages,
+    without_the_noreply_domain,
+)
 from teatree.hooks.remote_holds import remote_holdings
-from teatree.utils.run import run_allowed_to_fail, spawn_byte_pipe
+from teatree.utils.run import run_allowed_to_fail
 
 _REMOTE = "origin"
-
-#: Repo-local git state (a textconv driver, an external diff) rewrites the text of a diff; the gates read the raw one.
-READ_FLAGS = ("--no-textconv", "--no-ext-diff", "--no-color")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,77 +64,19 @@ class PushRange:
         rev_args = ["HEAD", "--not", *tips] if tips else ["HEAD"]
 
         diff = _git_output(repo, ["log", *READ_FLAGS, "--format=", "--patch", "--cc", *rev_args])
-        messages = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%B", *rev_args])
+        messages = decoded_messages(rev_args, repo)
         identities = _git_output(repo, ["log", "--encoding=UTF-8", "--format=%ae%n%ce", *rev_args])
-        objects = _commit_objects(repo, rev_args)
+        objects = commit_objects(rev_args, repo)
         if diff is None or messages is None or identities is None or objects is None:
             return None
         return cls(
             public_tips=tips,
             diff_text=diff.rstrip("\n"),
-            commit_messages=_with_stored(messages, [_decoded(obj.partition(b"\n\n")[2]) for obj in objects]),
-            commit_objects="\n".join(_decoded(obj) for obj in objects),
-            commit_objects_blanked="\n".join(_without_the_noreply_domain(_decoded(obj)) for obj in objects),
+            commit_messages=decode_robust(messages),
+            commit_objects="\n".join(decode_robust(obj) for obj in objects),
+            commit_objects_blanked="\n".join(decode_robust(without_the_noreply_domain(obj)) for obj in objects),
             identities=tuple(line for line in identities.splitlines() if line),
         )
-
-
-def _commit_object(repo: Path, sha: str) -> bytes | None:
-    pipe = spawn_byte_pipe(["git", "--no-replace-objects", "-C", str(repo), "cat-file", "commit", sha])
-    try:
-        pipe.stdin.close()
-        data = pipe.stdout.read()
-    finally:
-        pipe.stdout.close()
-        code = pipe.process.wait()
-    return data if code == 0 else None
-
-
-def _commit_objects(repo: Path, rev_args: list[str]) -> list[bytes] | None:
-    """Each commit exactly as the object stores it, headers and message, which is what the remote holds.
-
-    The ``encoding`` header travels with the pushed commit, so ``i18n.commitEncoding=UTF-16LE`` on plain bytes makes
-    ``git log`` decode the message into noise while it is still there to read, and an extra header or the author and
-    committer names are text ``git log --format=%B`` never shows.
-    """
-    shas = _git_output(repo, ["rev-list", *rev_args])
-    if shas is None:
-        return None
-    objects: list[bytes] = []
-    for sha in shas.split():
-        data = _commit_object(repo, sha)
-        if data is None:
-            return None
-        objects.append(data)
-    return objects
-
-
-def _decoded(raw: bytes) -> str:
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
-
-
-_NOREPLY_IDENTITY = re.compile(r"^( ?(?:author|committer|tagger) .*)@users\.noreply\.github\.com>", re.MULTILINE)
-
-
-def _without_the_noreply_domain(commit_object: str) -> str:
-    """*commit_object* with the exact ``@users.noreply.github.com`` cut from its identity header lines.
-
-    The identity rule makes that domain the only one allowed, so the email detector has nothing to find in it, while the
-    login in front stays visible to every detector (a token such as ``sk-…`` fits the login shape). The indented copies
-    inside a ``mergetag`` block are covered; the headers end at the first blank line, and a message is left as it is.
-    """
-    headers, separator, message = commit_object.partition("\n\n")
-    return _NOREPLY_IDENTITY.sub(r"\1>", headers) + separator + message
-
-
-def _with_stored(decoded: str, stored: list[str]) -> str:
-    """*decoded* followed by the stored-message lines it does not already carry."""
-    known = set(decoded.splitlines())
-    extra = [line for message in stored for line in message.splitlines() if line not in known]
-    return decoded + "\n".join(extra) + "\n" if extra else decoded
 
 
 def _remote_tips(repo: Path) -> tuple[str, ...]:

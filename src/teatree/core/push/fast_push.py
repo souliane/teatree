@@ -54,12 +54,13 @@ from teatree.core.authoring_credential import (
 )
 from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, probe_gitlab_open_pr
 from teatree.core.public_identity import is_noreply_email
-from teatree.core.push.push_range import READ_FLAGS, PushRange
+from teatree.core.push.push_range import PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.commit_objects import READ_FLAGS
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.repo_visibility_cli import visibility_for_remote
 from teatree.hooks.term_match import matched_term

@@ -45,6 +45,7 @@ src/teatree/hooks/_ssh_alias.py
 src/teatree/hooks/banned_term_registry.py
 src/teatree/hooks/banned_terms_cli.py
 src/teatree/hooks/banned_terms_tree_scan.py
+src/teatree/hooks/commit_objects.py
 src/teatree/hooks/git_config_offline.py
 src/teatree/hooks/leak_policy.py
 src/teatree/hooks/opaque_id.py

@@ -35,6 +35,7 @@ from pathlib import Path
 from teatree.hooks.banned_term_registry import allowlist_terms, load_registry, load_term_refs
 from teatree.hooks.banned_terms_cli import resolve_banned_terms
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
+from teatree.hooks.commit_objects import decode_robust
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 from teatree.hooks.term_fingerprint import FingerprintUnreadableError, unverified_gates
@@ -285,22 +286,6 @@ def _iter_directory_files(root: Path) -> Iterator[Path]:
         yield path
 
 
-def _decode_robust(raw: bytes) -> str:
-    """Decode *raw* as text, tolerating non-UTF-8 bytes rather than crashing.
-
-    A git commit message can carry the author's configured
-    ``i18n.commitEncoding``/``i18n.logOutputEncoding`` (e.g. ISO-8859-1), so
-    ``git log --format=%B`` output is not guaranteed UTF-8. A raised
-    ``UnicodeDecodeError`` would end the scan without a verdict on exactly the
-    content a leak needs blocked. Latin-1 never raises (every byte maps to one
-    codepoint), so failing back to it keeps ASCII secrets intact and scannable.
-    """
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
-
-
 def _scan_directory(root: Path, scan: _Scan) -> list[dict[str, str | int]]:
     """Walk *root* and scan each text file, tagging every finding with its file path.
 
@@ -394,12 +379,12 @@ def _verify_registry(fingerprint: Path) -> int:
 
 def _findings(args: argparse.Namespace, scan: _Scan) -> list[dict[str, str | int]]:
     if args.input_file == "-":
-        text = _decode_robust(sys.stdin.buffer.read())
+        text = decode_robust(sys.stdin.buffer.read())
         return _scan_text(text, scan) if args.text else _scan_diff(text, scan)
     target = Path(args.input_file)
     if target.is_dir():
         return _scan_directory(target, scan)
-    return _scan_text(_decode_robust(target.read_bytes()), scan)
+    return _scan_text(decode_robust(target.read_bytes()), scan)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

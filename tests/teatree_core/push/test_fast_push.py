@@ -721,6 +721,18 @@ class TestRepoLocalGitStateDoesNotBlankWhatFastPushReads:
         assert not outcome.ok, "the replacement commit hid the leak from the range"
         assert not outcome.pushed
 
+    def test_a_replaced_commit_does_not_hide_a_header_of_its_object(self, repo: Path, leak_env: None) -> None:
+        leak = _hand_made_commit(repo, _HandMade(author="forbiddenbrand"))
+        clean = run_checked(
+            ["git", "commit-tree", f"{leak}^{{tree}}", "-p", f"{leak}~1", "-m", "a clean stand-in"], cwd=repo
+        ).stdout.strip()
+        run_checked(["git", "replace", leak, clean], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok, "the replacement commit hid the header of the object from the whole-object read"
+        assert not outcome.pushed
+
 
 class TestACommitMessageIsReadAsStoredAndAsDecoded:
     """A commit's ``encoding`` header travels with the pushed object, so what git decodes is not all the remote holds.
