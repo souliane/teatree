@@ -3,7 +3,9 @@
 # Docker stack so an operator needs no host Python / uv / py3.13 / prek / direnv /
 # ttyd — `t3 <args>` on the host executes transparently in a container that shares
 # the live DB, credential, and session mounts. `t3 setup` installs a launcher
-# pointing here; `t3 doctor` verifies the wiring.
+# pointing here; `t3 doctor` verifies the wiring. An optional stdlib python3 >= 3.9
+# lets a connected `t3 mcp serve` session survive a container restart (deploy.sh also
+# uses it to size the worker).
 #
 # Prefers `exec` into the already-running worker (fast; shares the live state).
 # Falls back to a one-off `run --rm` container (worker role, serving topology) when the
@@ -19,6 +21,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$SCRIPT_DIR/generation-topology.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+
+# The stdio proxy respawns this command when the container under a connected MCP session restarts.
+# Its child carries the marker so it dispatches below instead of wrapping itself again.
+if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ] && [ -z "${TEATREE_MCP_PROXY_CHILD:-}" ]; then
+    MCP_PROXY="$REPO_ROOT/src/teatree/utils/mcp_stdio_proxy.py"
+    if [ -f "$MCP_PROXY" ] && python3 -I -S -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+        exec python3 -I -S "$MCP_PROXY" env TEATREE_MCP_PROXY_CHILD=1 "$SCRIPT_DIR/t3" "$@"
+    fi
+    echo "deploy/t3: WARN no python3 >= 3.9 (or no MCP stdio proxy file) on this host, so this MCP server will not survive a container restart; reconnect it from the /mcp menu after one" >&2
+fi
+
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
 SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
@@ -1083,6 +1096,12 @@ fi
 
 if [ "$DISPATCH_MODE" = auto ]; then
     DISPATCH_ROUTE="$RUNNING_SERVICE"
+fi
+
+# A proxy child serves its session for hours, so as a one-off it would outlive the next deploy on old code.
+if [ -n "${TEATREE_MCP_PROXY_CHILD:-}" ] && [ -z "$DISPATCH_ROUTE" ]; then
+    echo "deploy/t3: no control-DB service is running, so the MCP stdio proxy waits for the stack instead of starting a one-off container." >&2
+    exit "$VENUE_UNAVAILABLE_EXIT"
 fi
 
 refuse_host_bound_agent_home_on_setup() {

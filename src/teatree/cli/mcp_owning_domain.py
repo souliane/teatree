@@ -117,8 +117,9 @@ def delegate_to_owning_domain(serve_args: Sequence[str] = ()) -> None:
     """Replace this process with the containerized server when the container owns the DB.
 
     ``execv``, not a subprocess: the client talks to this process over inherited
-    stdin/stdout, and replacing the image hands it those exact file descriptors with
-    no relaying layer to buffer or drop a frame. *serve_args* ride along, so the
+    stdin/stdout, and replacing the image hands it those exact file descriptors.
+    ``deploy/t3`` then relays them through its stdio proxy, byte for byte, so the
+    session survives a container restart. *serve_args* ride along, so the
     delegated server is the one the client asked for. Returns normally — serve here —
     whenever :func:`owning_domain_wrapper` declines.
     """

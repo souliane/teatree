@@ -1198,7 +1198,9 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
 ## Running the `t3` CLI on the box (#3232)
 
 teatree runs **exclusively in Docker** — the CLI as well as the servers — so the
-box needs no host Python / uv / py3.13 / prek / direnv / ttyd. `deploy/t3` is a
+box needs no host Python / uv / py3.13 / prek / direnv / ttyd. A stock stdlib
+`python3` >= 3.9 is optional: when present it runs the MCP stdio proxy (below) and
+the deploy-time worker sizing, and both degrade without it. `deploy/t3` is a
 container-wrapping entry: it `docker compose exec`s into the first running
 control-DB service — `teatree-worker`, then `teatree-admin` (falling back to a
 one-off `run --rm` when the stack is down) — so `t3 <args>` executes inside a
@@ -1280,6 +1282,49 @@ one installed from another checkout, is left alone with one line. A failed or un
 deploy with `deploy: FATAL` and the exact command to run by hand, and an unreadable receipt or no uv at
 `~/.local/bin/uv` or on the ssh `PATH` fails it with a `deploy: FATAL` naming the cause; the stack has already
 converged by then.
+
+### A connected MCP session across a worker restart
+
+Claude Code starts the teatree MCP server with `t3 mcp serve` and never restarts a stdio server
+that exits. `deploy/t3 mcp serve` therefore runs `src/teatree/utils/mcp_stdio_proxy.py` under the
+host `python3 -I -S`: the proxy holds the session's stdin and stdout and runs `deploy/t3 mcp serve`
+as its child. When the container under that child restarts (every deploy, or a crash), the session
+stays connected:
+
+- A call made while no server is up fails at once with a retryable `-32603` error saying the
+  server is restarting; retry it a few seconds later. A `ping` still gets its empty answer, and a
+  JSON-RPC batch gets none, exactly as from the server itself (MCP has no batching).
+- A call that was running when the server went away gets an error saying it may or may not have
+  taken effect, so check the result of a write before repeating it.
+- The proxy starts a long-running server again straight away; each further failed start waits 1, 2,
+  4, 8, 16, then 30 s. A sibling route is usually up during a deploy, so recovery takes about 2 s.
+  While the deploy lock is held the new child waits for a route, up to
+  `TEATREE_UPDATE_WAIT_SECONDS`, exactly as a fresh `t3 mcp serve` would. When no control-DB
+  service runs and no deploy holds the lock (a crash, `compose stop`/`down`, a docker restart), the
+  proxy never starts a one-off container, which would outlive the next deploy on old code: each
+  attempt exits 69 and backs off, and the session is served again within 30 s of the stack coming
+  back.
+- A new server is used only once it has answered a replay of the session's own handshake; one that
+  does not answer within 60 s is killed and started again. An open `subscriptions/listen` is then
+  completed, so Claude Code listens again after its short grace period and re-reads the tool list
+  from the new server. Two limits apply: Claude Code stops re-listening for 6 hours after five
+  re-opens within an hour, and a re-listen that waits through a second long outage gives up after
+  its 30 s request timeout. Either way the tools keep working, and only a tool added by the deploy
+  stays hidden until the server is reconnected from the `/mcp` menu. A client on the older
+  handshake protocol gets its handshake replayed and keeps the tool list it connected with.
+- After a deploy the session is normally served from `teatree-admin`, because the worker is
+  recreated after it. The tools work there, apart from the docker-socket ones such as worktree
+  provisioning; reconnect from the `/mcp` menu to move back to the worker.
+- A session that cannot start fails at connect: with no running service, an invisible checkout or
+  no docker the proxy exits with `deploy/t3`'s own code (69, 75 or 127).
+- Each step of a restart is one `mcp-stdio-proxy:` line on stderr, which Claude Code keeps in
+  the server's MCP log (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-plugin-t3-teatree/`).
+  Frames are never logged.
+
+Without a `python3` >= 3.9 on the host, `deploy/t3` serves the session directly, with no proxy,
+and says so on stderr, and the SessionStart hook prints the same warning into the session: the tools
+then drop at the next restart until the server is reconnected from `/mcp`. On macOS without the Command Line
+Tools, `/usr/bin/python3` is only an installer stub, so install them (or another python3) first.
 
 ## Configuring the loop agent — `~/.claude/settings.json` (#3359)
 
