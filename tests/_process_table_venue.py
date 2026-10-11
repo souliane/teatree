@@ -7,7 +7,6 @@ in a container and fails on a host — the exact venue-dependence #4244 is about
 Both helpers name every source, so the answer is the test's own.
 """
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,7 +17,8 @@ from teatree.core.cleanup import process_table
 #: What the synthetic tables call THIS process. Deliberately not ``os.getpid()``:
 #: a bind-mounted host ``/proc`` numbers this process by its HOST pid, so a reader
 #: that trusts ``os.getpid()`` names a different process entirely and must go red.
-THIS_PROCESS_PID = str(os.getpid() + 1)
+#: Above Linux's pid ceiling (2**22), so it never equals a worker's real pid or a pid a test places.
+THIS_PROCESS_PID = str(2**22 + 1)
 
 
 @contextmanager
