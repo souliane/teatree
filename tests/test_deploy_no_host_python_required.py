@@ -7,6 +7,8 @@ maintainer's box (where all three exist) and fail only on the hosts the shim was
 written for, so the absence is pinned rather than assumed.
 
 PATH here carries the shell essentials and the ``docker`` stub, and nothing else.
+``mcp serve`` alone uses a host python3 when one exists, for the stdio proxy that keeps a
+connected session across a container restart; without one it dispatches directly and warns.
 """
 
 # test-path: cross-cutting -- drives deploy/t3 under a stripped PATH; the src import is marker parity only
@@ -24,6 +26,7 @@ from tests._deploy_wrapper_paths import container_worktree_root
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
 WRAPPER = DEPLOY_DIR / "t3"
+MCP_PROXY = DEPLOY_DIR.parent / "src" / "teatree" / "utils" / "mcp_stdio_proxy.py"
 
 CONTAINER_WORKTREE_ROOT = container_worktree_root()
 DISPATCHED = "DISPATCHED"
@@ -105,6 +108,29 @@ class TestTheHostNeedsNoPythonToolchain:
 
         assert proc.returncode == 0, proc.stderr
         assert f"{DISPATCHED} {CONTAINER_WORKTREE_ROOT}/4242-ticket/teatree" in proc.stdout
+
+    def test_mcp_serve_dispatches_directly_and_warns_on_a_python_free_path(
+        self, tmp_path: Path, bare_bin: Path, wrapper: Path
+    ) -> None:
+        proxy = wrapper.parents[1] / "src" / "teatree" / "utils" / MCP_PROXY.name
+        proxy.parent.mkdir(parents=True)
+        shutil.copy2(MCP_PROXY, proxy)
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+
+        proc = subprocess.run(
+            [str(wrapper), "mcp", "serve"],
+            input="",
+            capture_output=True,
+            text=True,
+            env={"PATH": str(bare_bin), "HOME": str(home), "TEATREE_HOST_HOME": str(home)},
+            cwd=tmp_path,
+            check=False,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert DISPATCHED in proc.stdout
+        assert "will not survive a container restart" in proc.stderr
 
     def test_no_interpreter_is_reachable_from_that_path(self, bare_bin: Path) -> None:
         """Guards the guard: a PATH that still leaks a python proves nothing."""

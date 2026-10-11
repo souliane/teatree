@@ -20,8 +20,13 @@
 
 set -u
 
-if ! command -v t3 >/dev/null 2>&1; then
+T3_PATH="$(command -v t3 2>/dev/null)" || T3_PATH=""
+if [ -z "$T3_PATH" ]; then
     printf 't3 CLI not found on PATH; teatree commands will not work in this session.\n' >&2
+elif grep -qF '# >>> teatree docker t3 launcher >>>' "$T3_PATH" 2>/dev/null &&
+    ! python3 -I -S -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+    # stdout, not stderr: a SessionStart hook's stdout is what reaches the session.
+    printf 'WARN teatree: this host has no python3 >= 3.9, so the teatree MCP tools will drop at the next worker restart and stay gone until the server is reconnected from the /mcp menu. Install python3 to keep them across restarts.\n'
 fi
 
 exit 0
