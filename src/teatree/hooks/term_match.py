@@ -48,6 +48,8 @@ live only in the operator's local config, never in this public source.)
 
 import re
 
+from teatree.utils.exact_carve_out import mask_exempt
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
@@ -85,51 +87,6 @@ def _contains_run(haystack: list[str], needle: list[str]) -> bool:
     return "".join(needle) in haystack
 
 
-def _strip_allowlisted_tokens(text_tokens: list[str], allowlist: tuple[str, ...]) -> list[str]:
-    """Drop every allow-listed identifier's token-run from *text_tokens*.
-
-    An allow-listed entry is a company-owned identifier (synthetic example:
-    ``myorg-engineering`` / ``myorg-product``, an internal-URL host/namespace)
-    the operator declares as NEVER-a-leak: it is its OWN org/repo name, not
-    customer PII. Each entry tokenizes like any term (``myorg-engineering`` →
-    ``[myorg, engineering]``); a CONTIGUOUS run of those tokens is removed from
-    the text BEFORE banned-term matching, so a SHORTER banned term can no longer
-    surface inside it (a bare ``myorg`` token of ``myorg-engineering`` /
-    ``myorg-product`` is consumed by the carve-out and never reaches
-    :func:`matched_term`). A bare standalone ``myorg`` token that is NOT part of
-    an allow-listed run is left in place — the carve-out exempts the company's
-    own COMPOUND identifiers, not every appearance of a sub-token. Single-token
-    allow-list entries are honoured too (the whole token is dropped).
-
-    Longer allow-list entries are applied first so a multi-token identifier
-    (``myorg-engineering``) is consumed as one run rather than being partly eaten
-    by a shorter overlapping entry. The scan is left-to-right and greedy: once a
-    run is consumed its tokens are not re-examined.
-    """
-    runs = sorted(
-        (toks for toks in (tokens(entry) for entry in allowlist) if toks),
-        key=len,
-        reverse=True,
-    )
-    if not runs:
-        return text_tokens
-    kept: list[str] = []
-    i = 0
-    n = len(text_tokens)
-    while i < n:
-        consumed = False
-        for run in runs:
-            span = len(run)
-            if text_tokens[i : i + span] == run:
-                i += span
-                consumed = True
-                break
-        if not consumed:
-            kept.append(text_tokens[i])
-            i += 1
-    return kept
-
-
 def matched_term(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> str | None:
     """Return the first configured *term* whose tokens appear in *text*, else ``None``.
 
@@ -137,15 +94,11 @@ def matched_term(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] =
     tokens in *text* (case-insensitive). Terms that tokenize to nothing
     (pure punctuation) never match.
 
-    *allowlist* carves out the company's OWN identifiers
-    (:func:`_strip_allowlisted_tokens`): each allow-listed identifier's
-    token-run is removed from *text* before matching, so a shorter banned term
-    (a bare org slug ``myorg``) never surfaces inside a longer company-owned
-    identifier (``myorg-engineering``) or an internal-URL path. A genuine
-    customer codename (NOT on the allow-list) is unaffected, so the gate is not
-    gutted.
+    *allowlist* exempts each EXACT occurrence of a company-owned identifier
+    (:func:`teatree.utils.exact_carve_out.mask_exempt`), so a shorter banned term
+    never surfaces inside it, while an identifier that extends one is still scanned.
     """
-    text_tokens = _strip_allowlisted_tokens(tokens(text), allowlist)
+    text_tokens = tokens(mask_exempt(text, allowlist))
     for term in terms:
         term_tokens = tokens(term)
         if term_tokens and _contains_run(text_tokens, term_tokens):

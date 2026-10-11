@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks import term_match
+from teatree.utils.exact_carve_out import mask_exempt
 
 # Synthetic term lists. ``ab`` vs ``about`` mirrors a short-term
 # false positive generically; ``acme``/``acme-corp``/``foo_bar`` exercise
@@ -251,25 +252,25 @@ class TestCompanyIdentifierAllowlistCarveOut:
 
 
 class TestStripAllowlistedTokens:
-    """The token-run remover backing the carve-out, exercised directly."""
+    """The exact carve-out backing the allow-list, exercised directly."""
 
     def test_removes_a_multi_token_run(self) -> None:
-        toks = term_match.tokens("the acme engineering team")
-        assert term_match._strip_allowlisted_tokens(toks, ("acme-engineering",)) == ["the", "team"]
+        toks = term_match.tokens(mask_exempt("the acme engineering team", ("acme-engineering",)))
+        assert toks == ["the", "team"]
 
     def test_removes_a_single_token_entry(self) -> None:
-        toks = term_match.tokens("the widget here")
-        assert term_match._strip_allowlisted_tokens(toks, ("widget",)) == ["the", "here"]
+        toks = term_match.tokens(mask_exempt("the widget here", ("widget",)))
+        assert toks == ["the", "here"]
 
     def test_keeps_a_partial_run(self) -> None:
         # Only ``acme`` present, not the full ``acme engineering`` run, so nothing
         # is consumed.
         toks = term_match.tokens("acme then engineering later")
-        assert term_match._strip_allowlisted_tokens(toks, ("acme-engineering",)) == toks
+        assert term_match.tokens(mask_exempt("acme then engineering later", ("acme-engineering",))) == toks
 
     def test_empty_allowlist_is_identity(self) -> None:
         toks = term_match.tokens("acme-engineering")
-        assert term_match._strip_allowlisted_tokens(toks, ()) == toks
+        assert term_match.tokens(mask_exempt("acme-engineering", ())) == toks
 
 
 class TestContainsRun:

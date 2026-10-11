@@ -45,9 +45,9 @@ def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     The allow-list names the company's OWN identifiers (synthetic example:
     ``myorg-engineering`` / ``myorg-product``, internal-URL namespaces) that are
     NEVER a leak — they are the org's own org/repo names, not customer PII. Each
-    entry's token-run is removed from a line before banned-term matching, so a
-    shorter banned term (a bare org slug) can no longer surface inside a longer
-    company-owned identifier. The allow-list is optional and defaults to empty.
+    exact occurrence of an entry is blanked before banned-term matching, so a
+    shorter banned term (a bare org slug) can no longer surface inside it, while an
+    identifier extending the entry is still scanned. The allow-list is optional and defaults to empty.
     """
     from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-path import
 

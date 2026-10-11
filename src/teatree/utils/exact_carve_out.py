@@ -1,0 +1,91 @@
+"""Exempt an allow-listed identifier only where it occurs exactly, never inside a longer identifier.
+
+An entry is a token run (case-insensitive, camelCase split, ``-``/``_``/space/``.`` interchangeable between
+tokens). An occurrence is extended, so not exempt, when a letter, digit, ``-`` or ``_`` touches either end; for
+an entry holding ``.`` or ``@`` also when a ``.``, ``@`` or ``+`` joins either end to a letter or digit.
+"""
+
+import functools
+import itertools
+import re
+from dataclasses import dataclass
+
+_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]+")
+_CASE_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_JOINING_SEPARATORS = frozenset({"", "-", "_", " ", "."})
+_WORD_JOINERS = frozenset("-_")
+_ADDRESS_JOINERS = frozenset(".@+")
+
+type _Token = tuple[str, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _Entry:
+    tokens: tuple[str, ...]
+    separators: tuple[str, ...]
+    address_like: bool
+
+
+def _tokens(text: str) -> list[_Token]:
+    found: list[_Token] = []
+    for run in _ALNUM_RUN_RE.finditer(text):
+        cuts = [0, *(cut.start() for cut in _CASE_BOUNDARY_RE.finditer(run.group())), len(run.group())]
+        found.extend(
+            (text[run.start() + a : run.start() + b].lower(), run.start() + a, run.start() + b)
+            for a, b in itertools.pairwise(cuts)
+        )
+    return found
+
+
+@functools.cache
+def _entry(raw: str) -> _Entry:
+    tokens = _tokens(raw)
+    return _Entry(
+        tokens=tuple(token for token, _, _ in tokens),
+        separators=tuple(raw[left[2] : right[1]] for left, right in itertools.pairwise(tokens)),
+        address_like="." in raw or "@" in raw,
+    )
+
+
+def _same_separator(found: str, expected: str) -> bool:
+    return found == expected or (found in _JOINING_SEPARATORS and expected in _JOINING_SEPARATORS)
+
+
+def _extended(text: str, start: int, end: int, *, address_like: bool) -> bool:
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+    if before.isalnum() or after.isalnum() or before in _WORD_JOINERS or after in _WORD_JOINERS:
+        return True
+    if not address_like:
+        return False
+    return (before in _ADDRESS_JOINERS and start > 1 and text[start - 2].isalnum()) or (
+        after in _ADDRESS_JOINERS and end + 1 < len(text) and text[end + 1].isalnum()
+    )
+
+
+def _occurrences(text: str, tokens: list[_Token], entry: _Entry) -> list[tuple[int, int]]:
+    width = len(entry.tokens)
+    spans: list[tuple[int, int]] = []
+    for index in range(len(tokens) - width + 1):
+        window = tokens[index : index + width]
+        if tuple(token for token, _, _ in window) != entry.tokens:
+            continue
+        found = (text[left[2] : right[1]] for left, right in itertools.pairwise(window))
+        if all(itertools.starmap(_same_separator, zip(found, entry.separators, strict=True))):
+            spans.append((window[0][1], window[-1][2]))
+    return spans
+
+
+def mask_exempt(text: str, allowlist: tuple[str, ...]) -> str:
+    """*text* with every exact allow-entry occurrence blanked to spaces, so positions are kept."""
+    lowered = text.lower()
+    entries = [entry for entry in map(_entry, allowlist) if entry.tokens and entry.tokens[0] in lowered]
+    if not entries:
+        return text
+    tokens = _tokens(text)
+    masked = list(text)
+    for entry in entries:
+        for start, end in _occurrences(text, tokens, entry):
+            if not _extended(text, start, end, address_like=entry.address_like):
+                masked[start:end] = " " * (end - start)
+    return "".join(masked)
