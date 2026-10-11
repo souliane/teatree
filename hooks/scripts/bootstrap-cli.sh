@@ -17,6 +17,7 @@
 # Whether the teatree MCP is live is per-machine and per-session, so it is
 # checked REACTIVELY -- when an MCP tool actually fails -- never as a
 # session-start ritual. Session start stays instant.
+# It also warns, with no MCP call, when a Docker install has no python3 for the MCP stdio proxy.
 
 set -u
 

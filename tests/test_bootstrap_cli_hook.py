@@ -14,8 +14,6 @@ HOOK = Path(__file__).resolve().parents[1] / "hooks" / "scripts" / "bootstrap-cl
 BASH = shutil.which("bash")
 WARNING = "no python3 >= 3.9"
 
-pytestmark = pytest.mark.skipif(BASH is None or shutil.which("grep") is None, reason="needs bash and grep")
-
 
 def _bin(tmp_path: Path, *, launcher: bool, python: str) -> Path:
     bin_dir = tmp_path / "bin"

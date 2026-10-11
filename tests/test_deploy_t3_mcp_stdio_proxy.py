@@ -27,10 +27,7 @@ WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 SYSTEM_PATH = os.defpath.strip(os.pathsep)
 WARNING = "will not survive a container restart"
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(shutil.which("bash", path=SYSTEM_PATH) is None, reason="needs a system bash"),
-]
+pytestmark = pytest.mark.integration
 
 
 @dataclass
@@ -149,14 +146,16 @@ def exchange(to_server: IO[bytes], from_server: IO[bytes], request_id: object) -
 
 
 def process_args(pid: int) -> list[str]:
-    return Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")[:-1]
-
-
-needs_proc = pytest.mark.skipif(not Path("/proc/self/cmdline").exists(), reason="reads argv from /proc")
+    cmdline = Path(f"/proc/{pid}/cmdline")
+    if cmdline.exists():
+        return cmdline.read_bytes().decode().split("\0")[:-1]
+    listed = subprocess.run(
+        ["/bin/ps", "-ww", "-o", "args=", "-p", str(pid)], capture_output=True, text=True, check=True
+    )
+    return listed.stdout.split()
 
 
 class TestMcpServeRunsBehindTheProxy:
-    @needs_proc
     def test_the_wrapper_execs_the_proxy_around_a_marked_copy_of_itself(self, tmp_path: Path) -> None:
         fake = FakeChild(tmp_path, [{}])
         layout = build_layout(tmp_path, fake)
@@ -192,7 +191,6 @@ class TestMcpServeRunsBehindTheProxy:
         assert served["result"]["spawn"] == 1
         assert len(layout.docker_execs()) == 2
 
-    @needs_proc
     def test_the_reaper_matches_the_docker_child_and_never_the_proxy(self, tmp_path: Path) -> None:
         fake = FakeChild(tmp_path, [{}])
         layout = build_layout(tmp_path, fake)
