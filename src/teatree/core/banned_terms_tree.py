@@ -26,6 +26,7 @@ __all__ = [
     "BannedTermsUnsetError",
     "TreeEnumerationError",
     "TreeFinding",
+    "TreeReadError",
     "TreeScanResult",
     "scan_committed_tree",
     "scan_registry_values",

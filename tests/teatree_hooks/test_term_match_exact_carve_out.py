@@ -68,19 +68,23 @@ def _fast_push(lines: tuple[str, ...], registry: Registry, monkeypatch: pytest.M
     return [bool(LeakGateScan._banned_terms({"sample.txt": [line]})) for line in lines]
 
 
-def _privacy_scan(lines: tuple[str, ...], registry: Registry, _monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+def _banned_term_lines(stdin: str, registry: Registry, *mode: str) -> set[int]:
     env = {key: value for key, value in os.environ.items() if key != "T3_CONFIG_DB"}
     env["TEATREE_TERM_REGISTRY"] = json.dumps(registry)
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "-", "--text", "--terms-only", "--json", "--no-strict"],
-        input="\n".join(lines) + "\n",
+        [sys.executable, str(SCRIPT), "-", *mode, "--terms-only", "--json", "--no-strict"],
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
         env=env,
     )
     assert result.returncode == 0, result.stderr
-    flagged = {item["line"] for item in json.loads(result.stdout) if item["category"] == "banned_term"}
+    return {item["line"] for item in json.loads(result.stdout) if item["category"] == "banned_term"}
+
+
+def _privacy_scan(lines: tuple[str, ...], registry: Registry, _monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    flagged = _banned_term_lines("\n".join(lines) + "\n", registry, "--text")
     return [number in flagged for number in range(1, len(lines) + 1)]
 
 
@@ -120,3 +124,11 @@ def test_without_the_allow_class_the_exact_forms_block_too(consumer: str, monkey
     blocked = CONSUMERS[consumer](EXEMPT_FORMS, _registry([]), monkeypatch)
 
     assert [form for form, hit in zip(EXEMPT_FORMS, blocked, strict=True) if not hit] == []
+
+
+@pytest.mark.parametrize(("allow", "flagged"), [([HANDLE, ALIAS, ADDRESS], set()), ([], {4, 5})])
+def test_a_diff_marker_before_an_address_entry_does_not_extend_it(allow: list[str], flagged: set[int]) -> None:
+    added = (f"+{ALIAS} ping", f"+{ADDRESS}")
+    diff = "\n".join(("--- a/notes.md", "+++ b/notes.md", f"@@ -0,0 +1,{len(added)} @@", *added)) + "\n"
+
+    assert _banned_term_lines(diff, _registry(allow)) == flagged

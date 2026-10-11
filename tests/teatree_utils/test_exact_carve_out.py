@@ -5,6 +5,7 @@ import pytest
 from teatree.utils.exact_carve_out import mask_exempt
 
 HANDLE = "acme-owner"
+ALIAS = "alice.work"
 ADDRESS = "alice@acme.example"
 
 
@@ -44,6 +45,13 @@ def test_a_letter_glued_to_either_end_extends_the_identifier(extended: str) -> N
 @pytest.mark.parametrize("extended", [f"x+{ADDRESS}", f"{ADDRESS}+x", f"{ADDRESS}@x"])
 def test_an_address_mark_joined_to_a_word_extends_an_address(extended: str) -> None:
     assert mask_exempt(extended, (ADDRESS,)) == extended
+
+
+@pytest.mark.parametrize(
+    ("marker", "entry", "tail"), [("+", ALIAS, " ping"), ("+", ADDRESS, ""), ("@", ALIAS, " ping")]
+)
+def test_a_leading_diff_marker_does_not_extend_an_address_entry(marker: str, entry: str, tail: str) -> None:
+    assert mask_exempt(f"{marker}{entry}{tail}", (ALIAS, ADDRESS)) == marker + " " * len(entry) + tail
 
 
 def test_a_dotted_neighbour_does_not_extend_an_undotted_entry() -> None:
