@@ -34,6 +34,7 @@ EXEMPT_FORMS = (
     f"mail {ADDRESS}.",
     ALIAS,
     f"ping {ALIAS}.",
+    f"ping {ALIAS}. Next",
 )
 SIBLINGS = (
     f"{HANDLE}-bot",

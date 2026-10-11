@@ -242,8 +242,7 @@ class TestCompanyIdentifierAllowlistCarveOut:
         assert term_match.matched_term("acme-engineering", self._TERMS, ("", "   ", "--")) == "acme"
 
     def test_longer_identifier_consumed_as_one_run(self) -> None:
-        # ``acme-widget-app`` (3 tokens) is consumed whole even though
-        # ``acme-product`` (2 tokens) shares the ``acme`` prefix — longest-first.
+        # ``acme-widget-app`` is its own exact entry; ``acme-product`` shares only the ``acme`` prefix.
         assert term_match.matched_term("acme-widget-app", self._TERMS, self._ALLOW) is None
 
     def test_line_matches_honours_allowlist(self) -> None:
@@ -251,7 +250,7 @@ class TestCompanyIdentifierAllowlistCarveOut:
         assert term_match.line_matches("acme alone here", self._TERMS, self._ALLOW) is True
 
 
-class TestStripAllowlistedTokens:
+class TestMaskExemptBlanksWholeEntryRuns:
     """The exact carve-out backing the allow-list, exercised directly."""
 
     def test_removes_a_multi_token_run(self) -> None:

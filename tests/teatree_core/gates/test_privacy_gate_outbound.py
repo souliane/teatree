@@ -92,6 +92,16 @@ def test_registry_allow_entry_is_exempt_only_where_it_occurs_exactly(inject_rule
     assert scan_outbound_text(text=f"Ship {allowed}-bot today.", target_repo=REAL_PUBLIC).refused
 
 
+def test_block_patterns_still_see_an_allow_listed_identifier(inject_rules) -> None:
+    allowed = TEST_TERM_REGISTRY["allow"][0]
+    inject_rules(public=True, block=[allowed])
+
+    result = scan_outbound_text(text=f"Ship {allowed} today.", target_repo=REAL_PUBLIC)
+
+    assert result.refused
+    assert [match.pattern_name for match in result.matches] == [f"block:{allowed}"]
+
+
 def test_private_target_passes_same_leaking_content(inject_rules) -> None:
     inject_rules(public=False, redact=[REDACT])
     result = scan_outbound_text(text=f"This touches {REDACT} verbatim user said.", target_repo="acme/private")

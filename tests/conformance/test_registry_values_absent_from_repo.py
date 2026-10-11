@@ -22,6 +22,9 @@ from teatree.utils.run import run_checked
 ROOT = Path(__file__).resolve().parents[2]
 CLASSES = "leak,overlay,allow"
 OWNER = "acme-owner"
+SAME_REPO_GUARD = (
+    "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+)
 
 
 def _value(kind: str) -> str:
@@ -51,6 +54,7 @@ def planted(tmp_path: Path) -> Planted:
         "docs/guide.md": f"Deploy {OWNER}-bot today.\nThen {registry['leak'][1]}.\n",
         ".github/workflows/ci.yml": f"name: {registry['overlay'][1]}\n",
         "src/pkg/prose.py": f"TEXT = '{registry['prose_collider'][0]}'\n",
+        "docs/owner.md": f"Ask {OWNER} first.\n",
         "NOTICE": f"Outside the value-free roots: {registry['leak'][0]}\n",
     }
     repo = tmp_path / "repo"
@@ -162,9 +166,10 @@ def test_the_repository_holds_no_registry_value() -> None:
 def test_the_required_tree_job_runs_this_scan() -> None:
     workflow = cast("dict[str, Any]", yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text()))
     steps = [step for step in workflow["jobs"]["banned-terms-tree"]["steps"] if isinstance(step, dict)]
-    scans = [step for step in steps if f"scan-tree --repo-root . --classes {CLASSES}" in str(step.get("run", ""))]
+    (checkout,) = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
+    (scan,) = [step for step in steps if "--classes" in str(step.get("run", ""))]
 
-    assert len(scans) == 1
-    assert scans[0]["env"] == {"TEATREE_TERM_REGISTRY": "${{ secrets.TEATREE_TERM_REGISTRY }}"}
-    assert "github.event_name != 'pull_request'" in scans[0]["if"]
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in scans[0]["if"]
+    assert scan["run"] == f"uv run t3 banned-terms scan-tree --repo-root . --classes {CLASSES}"
+    assert scan["if"] == checkout["if"] == SAME_REPO_GUARD
+    assert scan["env"] == {"TEATREE_TERM_REGISTRY": "${{ secrets.TEATREE_TERM_REGISTRY }}"}
+    assert "continue-on-error" not in scan

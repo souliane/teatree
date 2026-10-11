@@ -12,7 +12,12 @@ from teatree.hooks.term_fingerprint import FingerprintUnreadableError, gate_fing
 
 DRIFT_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "term_source_drift.py"
 #: Mixed case, padding and a duplicate: none of it may change the digest.
-REGISTRY = {"leak": ["Alpha-Term", " beta-term ", "alpha-term"], "overlay": ["gamma-term"], "tone": ["delta-term"]}
+REGISTRY = {
+    "leak": ["Alpha-Term", " beta-term ", "alpha-term"],
+    "overlay": ["gamma-term"],
+    "allow": ["Epsilon-Term", "epsilon-term "],
+    "tone": ["delta-term"],
+}
 
 
 def _document(registry: dict[str, list[str]]) -> dict[str, object]:
@@ -76,11 +81,15 @@ class TestUnverifiedGates:
 
     def test_reordering_recasing_and_duplicating_terms_is_not_a_difference(self, tmp_path: Path) -> None:
         committed = _commit(tmp_path, _document(REGISTRY))
-        reshuffled = {"leak": ["BETA-TERM", "alpha-term"], "overlay": ["GAMMA-TERM", "gamma-term"]}
+        reshuffled = {
+            "leak": ["BETA-TERM", "alpha-term"],
+            "overlay": ["GAMMA-TERM", "gamma-term"],
+            "allow": ["EPSILON-TERM"],
+        }
 
         assert unverified_gates(reshuffled, committed) == []
 
-    def test_a_class_outside_the_two_fed_ones_is_not_compared(self, tmp_path: Path) -> None:
+    def test_a_class_outside_the_fed_ones_is_not_compared(self, tmp_path: Path) -> None:
         committed = _commit(tmp_path, _document(REGISTRY))
 
         assert unverified_gates({**REGISTRY, "tone": ["another-term"]}, committed) == []
@@ -93,8 +102,10 @@ class TestUnverifiedGates:
             ({"leak": [], "overlay": ["something-else"]}, ["overlay", "tree"]),
             ({"leak": ["other-one", "other-two"]}, ["tree"]),
             ({"overlay": ["other-three"]}, ["overlay"]),
+            ({"allow": []}, ["allow"]),
+            ({"allow": ["other-four"]}, ["allow"]),
         ],
-        ids=["leak", "overlay", "both", "leak-same-size", "overlay-same-size"],
+        ids=["leak", "overlay", "both", "leak-same-size", "overlay-same-size", "allow", "allow-same-size"],
     )
     def test_a_differing_list_names_the_gate_it_belongs_to(
         self, tmp_path: Path, changed: dict[str, list[str]], gates: list[str]
@@ -106,7 +117,7 @@ class TestUnverifiedGates:
     def test_a_registry_without_a_fed_class_differs_from_one_that_has_terms(self, tmp_path: Path) -> None:
         committed = _commit(tmp_path, _document(REGISTRY))
 
-        assert sorted(unverified_gates({}, committed)) == ["overlay", "tree"]
+        assert sorted(unverified_gates({}, committed)) == ["allow", "overlay", "tree"]
 
 
 class TestAFingerprintThatCannotBeReadIsNeverAMatch:
@@ -123,17 +134,23 @@ class TestAFingerprintThatCannotBeReadIsNeverAMatch:
 
     @pytest.mark.parametrize(
         "document",
-        [[], {"version": 1}, {"gates": []}, {"gates": {"tree": {"count": 1, "digest": "sha256:aa"}}}],
-        ids=["not-a-table", "no-gates", "gates-not-a-table", "overlay-gate-absent"],
+        [
+            [],
+            {"version": 1},
+            {"gates": []},
+            {"gates": {"tree": {"count": 1, "digest": "sha256:aa"}}},
+            {"gates": {"tree": {"count": 1, "digest": "sha256:aa"}, "overlay": {"count": 1, "digest": "sha256:bb"}}},
+        ],
+        ids=["not-a-table", "no-gates", "gates-not-a-table", "overlay-gate-absent", "allow-gate-absent"],
     )
-    def test_a_document_without_both_gates(self, tmp_path: Path, document: object) -> None:
+    def test_a_document_without_all_three_gates(self, tmp_path: Path, document: object) -> None:
         with pytest.raises(FingerprintUnreadableError):
             unverified_gates(REGISTRY, _commit(tmp_path, document))
 
     def test_an_entry_without_a_digest(self, tmp_path: Path) -> None:
         entry = {"count": 1}
         with pytest.raises(FingerprintUnreadableError):
-            unverified_gates(REGISTRY, _commit(tmp_path, {"gates": {"tree": entry, "overlay": entry}}))
+            unverified_gates(REGISTRY, _commit(tmp_path, {"gates": {"tree": entry, "overlay": entry, "allow": entry}}))
 
     def test_the_refusal_quotes_neither_a_digest_nor_a_term(self, tmp_path: Path) -> None:
         stored = json.dumps(_document(REGISTRY))
@@ -145,7 +162,7 @@ class TestAFingerprintThatCannotBeReadIsNeverAMatch:
         message = str(raised.value)
         assert "sha256" not in message
         assert "stored-digest" not in message
-        assert not any(term in message for term in ("alpha-term", "beta-term", "gamma-term"))
+        assert not any(term in message for term in ("alpha-term", "beta-term", "gamma-term", "epsilon-term"))
         assert stored not in message
 
 
