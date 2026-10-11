@@ -101,11 +101,12 @@ class TestClassify:
 
         assert (message.kind, message.method) == (kind, method)
 
-    def test_an_int_and_an_equal_float_id_are_distinct_keys(self) -> None:
+    @pytest.mark.parametrize("other_id", [b'"1"', b"1.0"])
+    def test_an_int_id_and_a_lookalike_id_are_distinct_keys(self, other_id: bytes) -> None:
         as_int = classify(b'{"jsonrpc":"2.0","id":1,"method":"ping"}')
-        as_float = classify(b'{"jsonrpc":"2.0","id":1.0,"method":"ping"}')
+        lookalike = classify(b'{"jsonrpc":"2.0","id":' + other_id + b',"method":"ping"}')
 
-        assert as_int.key != as_float.key
+        assert as_int.key != lookalike.key
 
     def test_a_cancellation_is_keyed_by_the_request_it_cancels(self) -> None:
         cancel = classify(b'{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"L1"}}')
