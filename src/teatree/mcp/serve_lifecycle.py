@@ -33,9 +33,11 @@ the exec'd server exit on stdin EOF.
 Which is why the host process the sweep must classify is the LAUNCHER, not the
 server. ``t3 setup`` replaces ``t3`` on PATH with a wrapper that execs
 ``docker compose exec … t3-in-container t3 mcp serve``, so on a dockerised
-install the only host-side process is that wrapper — matched by
+install the host-side server process is that launcher — matched by
 :func:`is_serve_command` through the ``t3-in-container`` label under a
-container-CLI argv[0].
+container-CLI argv[0]. Its parent is the host stdio proxy
+(:mod:`teatree.utils.mcp_stdio_proxy`), whose own argv deliberately does not match:
+it exits on client EOF or parent death by itself.
 """
 
 import logging
