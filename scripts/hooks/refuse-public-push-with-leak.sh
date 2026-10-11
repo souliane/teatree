@@ -125,11 +125,11 @@ _checkout_git() {
     git -C "${repo_root}" "$@"
 }
 
-# The hook runs the scanner, the visibility resolver and `remote_holds` from this working tree, and everything they
-# import. An uncommitted edit of any of them (a scanner that reports nothing, a check that always verifies, a resolver
-# that always answers private) would be the pusher's word that the push is clean, so the files named by the list
-# committed at HEAD must hash to their HEAD blobs. Hashing, not `git diff`: `--assume-unchanged` and `--skip-worktree`
-# make git stop looking at an edited file. Prints the differing paths, and only paths, never content.
+# The hook runs the scanner, the visibility resolver, `remote_holds` and `commit_objects` from this working tree, and
+# everything they import. An uncommitted edit of any of them (a scanner that reports nothing, a check that always
+# verifies, a resolver that always answers private) would be the pusher's word that the push is clean, so the files
+# named by the list committed at HEAD must hash to their HEAD blobs. Hashing, not `git diff`: `--assume-unchanged` and
+# `--skip-worktree` make git stop looking at an edited file. Prints the differing paths, and only paths, never content.
 sources_list_rel="scripts/hooks/leak-gate-sources.txt"
 _listed_sources() {
   { _checkout_git show "HEAD:${sources_list_rel}" 2>/dev/null </dev/null || true; } | grep -v '^$' | LC_ALL=C sort -u || true

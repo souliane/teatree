@@ -20,6 +20,7 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 from teatree.utils.run import spawn_byte_pipe
 
@@ -105,7 +106,7 @@ def decoded_messages(rev_args: Sequence[str], repo: Path | None = None) -> bytes
     return _git(repo, "log", "--encoding=UTF-8", *READ_FLAGS, "--format=%B", *rev_args)
 
 
-def _view(raw_object: bytes, how: str) -> bytes:
+def _view(raw_object: bytes, how: Literal["raw", "blank"]) -> bytes:
     return without_the_noreply_domain(raw_object) if how == "blank" else raw_object
 
 
