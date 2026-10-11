@@ -37,6 +37,19 @@ class Layout:
     python_log: Path
     env: dict[str, str]
     cwd: Path
+    stack_state: Path
+
+    def stack(self, *, up: bool) -> None:
+        self.stack_state.write_text("up" if up else "down", encoding="utf-8")
+
+    def docker_lines(self) -> list[str]:
+        return self.docker_log.read_text(encoding="utf-8").splitlines() if self.docker_log.exists() else []
+
+    def one_offs(self) -> list[str]:
+        return [line for line in self.docker_lines() if " run " in f" {line} "]
+
+    def down_probes(self) -> int:
+        return self.docker_lines().count("STACK-DOWN")
 
     def docker_execs(self) -> list[str]:
         lines = self.docker_log.read_text(encoding="utf-8").splitlines() if self.docker_log.exists() else []
@@ -51,7 +64,7 @@ def _executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _docker_stub(log: Path, fake: FakeChild) -> str:
+def _docker_stub(log: Path, fake: FakeChild, state: Path) -> str:
     server = " ".join(fake.argv)
     return f"""#!/bin/bash
 printf '%s\\n' "$*" | tr '\\n' ' ' >>{log}
@@ -59,7 +72,10 @@ echo >>{log}
 if [ "$1" = inspect ]; then printf '%s' "bind $PWD"; exit 0; fi
 if [ "$1" = version ]; then echo 99; exit 0; fi
 for arg in "$@"; do
-    if [ "$arg" = ps ]; then echo 'c0ffee teatree-worker False'; exit 0; fi
+    if [ "$arg" = ps ]; then
+        if [ "$(cat {state})" = up ]; then echo 'c0ffee teatree-worker False'; else echo STACK-DOWN >>{log}; fi
+        exit 0
+    fi
     if [ "$arg" = config ]; then exit 0; fi
     if [ "$arg" = exec ] || [ "$arg" = run ]; then
         case " $* " in *" mcp serve"*) exec {server} ;; esac
@@ -71,7 +87,9 @@ exit 0
 """
 
 
-def build_layout(tmp_path: Path, fake: FakeChild, *, python_ok: bool = True, with_proxy: bool = True) -> Layout:
+def build_layout(
+    tmp_path: Path, fake: FakeChild, *, python_ok: bool = True, with_proxy: bool = True, stack_up: bool = True
+) -> Layout:
     checkout = tmp_path / "checkout"
     entry = checkout / "deploy" / "t3"
     entry.parent.mkdir(parents=True)
@@ -87,7 +105,9 @@ def build_layout(tmp_path: Path, fake: FakeChild, *, python_ok: bool = True, wit
     stubs.mkdir()
     docker_log = tmp_path / "docker.log"
     python_log = tmp_path / "python.log"
-    _executable(stubs / "docker", _docker_stub(docker_log, fake))
+    stack_state = tmp_path / "stack-state"
+    stack_state.write_text("up" if stack_up else "down", encoding="utf-8")
+    _executable(stubs / "docker", _docker_stub(docker_log, fake, stack_state))
     probe_answer = "" if python_ok else 'case "$*" in *version_info*) exit 1 ;; esac\n'
     # A wrapper that lost its marker would nest proxies without bound; this caps it at one level.
     nesting_guard = '[ -z "$SHIM_INSIDE_PROXY" ] || exit 99\nexport SHIM_INSIDE_PROXY=1\n'
@@ -102,11 +122,12 @@ def build_layout(tmp_path: Path, fake: FakeChild, *, python_ok: bool = True, wit
             "PATH": f"{stubs}{os.pathsep}{SYSTEM_PATH}",
             "TEATREE_HOST_HOME": str(tmp_path / "home"),
             "TEATREE_UPDATE_WAIT_SECONDS": "0",
+            "TEATREE_DEPLOY_LOCK": str(tmp_path / "no-deploy.lock"),
         }
     )
     cwd = tmp_path / "elsewhere"
     cwd.mkdir()
-    return Layout(entry, docker_log, python_log, env, cwd)
+    return Layout(entry, docker_log, python_log, env, cwd, stack_state)
 
 
 @contextlib.contextmanager
@@ -257,3 +278,74 @@ class TestWithoutTheProxy:
         assert WARNING in completed.stderr.decode()
         assert all("mcp_stdio_proxy" not in call for call in layout.python_calls())
         assert all(is_gone_within(spawn["pid"], seconds=5) for spawn in fake.spawns())
+
+
+def run_wrapper(layout: Layout, *argv: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    frame = json.dumps(request(1, "tools/call", {})) + "\n"
+    return subprocess.run(
+        ["/bin/bash", str(layout.entry), *argv],
+        input=frame,
+        capture_output=True,
+        text=True,
+        env={**layout.env, **(env or {})},
+        cwd=layout.cwd,
+        timeout=60,
+        check=False,
+    )
+
+
+class TestAProxyChildNeverStartsAOneOff:
+    def test_with_no_service_running_a_marked_child_refuses_with_69(self, tmp_path: Path) -> None:
+        layout = build_layout(tmp_path, FakeChild(tmp_path, [{}]), stack_up=False)
+
+        completed = run_wrapper(layout, "mcp", "serve", env={"TEATREE_MCP_PROXY_CHILD": "1"})
+
+        assert completed.returncode == 69
+        assert "no control-DB service is running" in completed.stderr
+        assert layout.one_offs() == []
+
+    def test_a_forced_one_off_is_refused_to_a_marked_child(self, tmp_path: Path) -> None:
+        layout = build_layout(tmp_path, FakeChild(tmp_path, [{}]))
+
+        completed = run_wrapper(
+            layout, "mcp", "serve", env={"TEATREE_MCP_PROXY_CHILD": "1", "TEATREE_FORCE_ONE_OFF": "1"}
+        )
+
+        assert completed.returncode == 69
+        assert layout.one_offs() == []
+
+    def test_a_session_started_while_the_stack_is_down_fails_at_connect(self, tmp_path: Path) -> None:
+        layout = build_layout(tmp_path, FakeChild(tmp_path, [{}]), stack_up=False)
+
+        completed = run_wrapper(layout, "mcp", "serve")
+
+        assert completed.returncode == 69
+        assert completed.stdout == ""
+        assert layout.one_offs() == []
+
+    def test_without_python_the_direct_dispatch_still_starts_a_one_off(self, tmp_path: Path) -> None:
+        fake = FakeChild(tmp_path, [{}])
+        layout = build_layout(tmp_path, fake, python_ok=False, stack_up=False)
+
+        completed = run_wrapper(layout, "mcp", "serve")
+
+        assert json.loads(completed.stdout)["result"]["spawn"] == 0
+        assert len(layout.one_offs()) == 1
+
+    def test_a_session_waits_out_a_full_outage_and_returns_to_a_running_service(self, tmp_path: Path) -> None:
+        fake = FakeChild(tmp_path, [{}])
+        layout = build_layout(tmp_path, fake)
+        with serving(layout, fake, "mcp", "serve") as proc:
+            first = call(proc, 1)
+            layout.stack(up=False)
+            os.kill(first["result"]["pid"], signal.SIGKILL)
+            deadline = time.monotonic() + 30
+            while layout.down_probes() < 2 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            layout.stack(up=True)
+            while "error" in (served := call(proc, "retry")) and time.monotonic() < deadline + 30:
+                time.sleep(0.1)
+
+        assert layout.down_probes() >= 2
+        assert served["result"]["spawn"] == 1
+        assert layout.one_offs() == []

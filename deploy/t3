@@ -1097,6 +1097,12 @@ if [ "$DISPATCH_MODE" = auto ]; then
     DISPATCH_ROUTE="$RUNNING_SERVICE"
 fi
 
+# A proxy child serves its session for hours, so as a one-off it would outlive the next deploy on old code.
+if [ -n "${TEATREE_MCP_PROXY_CHILD:-}" ] && [ -z "$DISPATCH_ROUTE" ]; then
+    echo "deploy/t3: no control-DB service is running, so the MCP stdio proxy waits for the stack instead of starting a one-off container." >&2
+    exit "$VENUE_UNAVAILABLE_EXIT"
+fi
+
 refuse_host_bound_agent_home_on_setup() {
     [ "${1:-}" = setup ] || return 0
     [ -n "$DISPATCH_ROUTE" ] || return 0

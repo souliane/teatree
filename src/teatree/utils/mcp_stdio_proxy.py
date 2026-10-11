@@ -156,6 +156,7 @@ class Timing:
     eof_grace: float = 3.0
     kill_grace: float = 2.0
     signal_grace: float = 0.3
+    replay_timeout: float = 60.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -300,6 +301,15 @@ class StdioProxy:
         # Only the client's own frame is a safe probe: an unenveloped one locks the handshake era.
         child.replayed = negotiation
         child.write(negotiation.line)
+        self._after(self._timing.replay_timeout, partial(self._replay_overdue, child))
+
+    def _replay_overdue(self, child: _Child) -> None:
+        if child.replayed is not None:
+            seconds = self._timing.replay_timeout
+            _log(
+                f"server pid {child.proc.pid} did not answer the session's handshake within {seconds:g}s; restarting it"
+            )
+            child.signal_group(signal.SIGKILL)
 
     def _on_replay_reply(self, child: _Child, negotiation: _Negotiation, reply: Message) -> None:
         child.replayed = None
@@ -345,7 +355,7 @@ class StdioProxy:
             self._unended.pop(message.key, None)
             self._held = [(held, raw) for held, raw in self._held if held.key != message.key]
         elif message.kind != REQUEST:
-            return
+            return  # a batch included: the SDK server answers none either, MCP having dropped batching
         elif message.method == _LISTEN:
             self._held.append((message, line))
         elif message.method == _PING:

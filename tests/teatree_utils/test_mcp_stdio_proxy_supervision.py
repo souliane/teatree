@@ -205,6 +205,30 @@ class TestHandshakeReplay:
             harness.close()
 
 
+class TestReplayDeadline:
+    def test_a_server_that_never_answers_the_replay_is_replaced(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        fake = FakeChild(tmp_path, [{}, {"delay": 30}, {}])
+        harness = Harness(fake.argv, Timing(backoff=(0.05,), stable_seconds=0.0, replay_timeout=0.5))
+        try:
+            negotiate(harness)
+            harness.send(fake_call(1))
+            pid = harness.recv_matching(has_id(1))["result"]["pid"]
+
+            os.kill(pid, signal.SIGKILL)
+            served, refused = harness.call_until_served(fake_call)
+            time.sleep(1.0)
+            still_served, _ = harness.call_until_served(fake_call)
+
+            assert served["result"]["spawn"] == 2
+            assert still_served["result"]["spawn"] == 2
+            assert refused
+            assert "did not answer the session's handshake" in capfd.readouterr().err
+        finally:
+            harness.close()
+
+
 class TestModernListen:
     def test_an_open_listen_ends_only_once_the_new_server_is_ready(self, tmp_path: Path) -> None:
         fake = FakeChild(tmp_path, [{}, {"delay": 1.5}])
@@ -298,6 +322,7 @@ class TestWhileNoServerIsReady:
 
             assert retry_reason(refused) == "server_restarting"
             assert pong["result"] == {}
+            assert [frame for frame in harness.seen if frame.get("id") == 12] == []
             assert parse_error == {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
             assert not any('"id": 10' in line or '"id":12' in line for line in fake.received(1))
         finally:
@@ -305,8 +330,8 @@ class TestWhileNoServerIsReady:
 
 
 class TestBackoff:
-    def test_consecutive_failed_starts_wait_one_then_two_seconds(self, tmp_path: Path) -> None:
-        fake = FakeChild(tmp_path, [{}, {"exit": 3}, {"exit": 3}, {}])
+    def test_a_wrapper_refusing_while_the_stack_is_down_is_retried_with_backoff(self, tmp_path: Path) -> None:
+        fake = FakeChild(tmp_path, [{}, {"exit": 69}, {"exit": 69}, {}])
         harness = Harness(fake.argv, Timing(stable_seconds=0.0))
         try:
             negotiate(harness)
@@ -556,7 +581,9 @@ class TestShutdown:
         finally:
             harness.close()
 
-    def test_a_stop_reaches_a_grandchild_that_ignores_it(self, tmp_path: Path) -> None:
+    def test_a_stop_reaches_the_child_at_once_and_a_grandchild_that_ignores_it(
+        self, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
         fake = FakeChild(tmp_path, [{"grandchild": True}])
         harness = Harness(fake.argv)
         try:
@@ -567,6 +594,7 @@ class TestShutdown:
 
             assert harness.wait() == 0
             assert all(is_gone_within(pid, seconds=5) for pid in family(fake))
+            assert f"exited with code {128 + signal.SIGINT}" in capfd.readouterr().err
         finally:
             harness.close()
 

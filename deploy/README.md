@@ -1292,27 +1292,31 @@ as its child. When the container under that child restarts (every deploy, or a c
 stays connected:
 
 - A call made while no server is up fails at once with a retryable `-32603` error saying the
-  server is restarting; retry it a few seconds later. A `ping` still gets its empty answer.
+  server is restarting; retry it a few seconds later. A `ping` still gets its empty answer, and a
+  JSON-RPC batch gets none, exactly as from the server itself (MCP has no batching).
 - A call that was running when the server went away gets an error saying it may or may not have
   taken effect, so check the result of a write before repeating it.
-- The proxy starts a long-running server again straight away; each further failed start waits
-  1, 2, 4, 8, 16, then 30 s. A sibling route is usually up during a deploy, so recovery takes
-  about 2 s. While the deploy lock is held the new child waits for a route, up to
-  `TEATREE_UPDATE_WAIT_SECONDS`, exactly as a fresh `t3 mcp serve` would. After a crash, service
-  returns within 30 s of the stack.
-- A new server is used only once it has answered a replay of the session's own handshake. An open
-  `subscriptions/listen` is then completed, so Claude Code listens again after its short grace
-  period and re-reads the tool list from the new server. Two limits apply: Claude Code stops
-  re-listening for 6 hours after five re-opens within an hour, and a re-listen that waits through
-  a second long outage gives up after its 30 s request timeout. Either way the tools keep working,
-  and only a tool added by the deploy stays hidden until the server is reconnected from the `/mcp`
-  menu. A client on the older handshake protocol gets its handshake replayed and keeps the tool
-  list it connected with.
+- The proxy starts a long-running server again straight away; each further failed start waits 1, 2,
+  4, 8, 16, then 30 s. A sibling route is usually up during a deploy, so recovery takes about 2 s.
+  While the deploy lock is held the new child waits for a route, up to
+  `TEATREE_UPDATE_WAIT_SECONDS`, exactly as a fresh `t3 mcp serve` would. When no control-DB
+  service runs and no deploy holds the lock (a crash, `compose stop`/`down`, a docker restart), the
+  proxy never starts a one-off container, which would outlive the next deploy on old code: each
+  attempt exits 69 and backs off, and the session is served again within 30 s of the stack coming
+  back.
+- A new server is used only once it has answered a replay of the session's own handshake; one that
+  does not answer within 60 s is killed and started again. An open `subscriptions/listen` is then
+  completed, so Claude Code listens again after its short grace period and re-reads the tool list
+  from the new server. Two limits apply: Claude Code stops re-listening for 6 hours after five
+  re-opens within an hour, and a re-listen that waits through a second long outage gives up after
+  its 30 s request timeout. Either way the tools keep working, and only a tool added by the deploy
+  stays hidden until the server is reconnected from the `/mcp` menu. A client on the older
+  handshake protocol gets its handshake replayed and keeps the tool list it connected with.
 - After a deploy the session is normally served from `teatree-admin`, because the worker is
   recreated after it. The tools work there, apart from the docker-socket ones such as worktree
   provisioning; reconnect from the `/mcp` menu to move back to the worker.
-- A session that cannot start still fails at connect, as before: with no stack, an invisible
-  checkout or no docker the proxy exits with `deploy/t3`'s own code (69, 75 or 127).
+- A session that cannot start fails at connect: with no running service, an invisible checkout or
+  no docker the proxy exits with `deploy/t3`'s own code (69, 75 or 127).
 - Each step of a restart is one `mcp-stdio-proxy:` line on stderr, which Claude Code keeps in
   the server's MCP log (`~/.cache/claude-cli-nodejs/<project>/mcp-logs-plugin-t3-teatree/`).
   Frames are never logged.

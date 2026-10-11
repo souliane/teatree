@@ -18,9 +18,10 @@ WARNING = "no python3 >= 3.9"
 def _bin(tmp_path: Path, *, launcher: bool, python: str) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    grep = shutil.which("grep")
-    assert grep is not None
-    (bin_dir / "grep").symlink_to(grep)
+    for tool in ("grep", "readlink"):
+        found = shutil.which(tool)
+        assert found is not None
+        (bin_dir / tool).symlink_to(found)
     t3 = bin_dir / "t3"
     body = f'#!/usr/bin/env bash\n{LAUNCHER_MARKER}\nexec /checkout/deploy/t3 "$@"\n' if launcher else "#!/bin/sh\n"
     t3.write_text(body, encoding="utf-8")
@@ -48,6 +49,21 @@ def test_a_docker_launcher_without_a_usable_python_warns_the_session(tmp_path: P
     assert completed.returncode == 0
     assert WARNING in completed.stdout
     assert "/mcp" in completed.stdout
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_a_t3_symlinked_to_deploy_t3_without_python_warns_the_session(tmp_path: Path, *, relative: bool) -> None:
+    bin_dir = _bin(tmp_path, launcher=False, python="absent")
+    wrapper = tmp_path / "checkout" / "deploy" / "t3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (bin_dir / "t3").unlink()
+    (bin_dir / "t3").symlink_to(Path("..") / "checkout" / "deploy" / "t3" if relative else wrapper)
+
+    completed = _run(bin_dir)
+
+    assert completed.returncode == 0
+    assert WARNING in completed.stdout
 
 
 def test_a_docker_launcher_with_python_stays_quiet(tmp_path: Path) -> None:
