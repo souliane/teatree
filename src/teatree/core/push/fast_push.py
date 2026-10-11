@@ -57,9 +57,10 @@ from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
-from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
+from teatree.hooks.banned_term_registry import allowlist_terms, load_term_refs, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.commit_objects import READ_FLAGS
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.repo_visibility_cli import visibility_for_remote
 from teatree.hooks.term_match import matched_term
@@ -85,6 +86,7 @@ _NON_PUBLIC_VERDICTS: Final = frozenset({"PRIVATE", "INTERNAL"})
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _RANGE_MESSAGE_PATH = "<unpushed-commit-messages>"
+_RANGE_OBJECT_PATH = "<unpushed-commit-objects>"
 _REF_NAME_PATH = "<ref-name>"
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
@@ -229,7 +231,7 @@ def _identity_gate_target(repo: Path) -> str | None:
     ``refuse-public-push-with-leak.sh``'s rule through its own resolver: an undetermined visibility is public.
     """
     remote = git.remote_url(repo=str(repo))
-    verdict = visibility_for_remote(remote)
+    verdict = visibility_for_remote(remote, live=True)
     if verdict in _NON_PUBLIC_VERDICTS:
         return None
     slug = git_remote.slug_from_remote(remote) or "<remote>"
@@ -321,6 +323,8 @@ class LeakGateScan:
         # paths would otherwise lose its own lines before the gates read them.
         by_path.setdefault(_MESSAGE_PATH, []).extend(self._message_text.splitlines())
         by_path.setdefault(_RANGE_MESSAGE_PATH, []).extend(self._range.commit_messages.splitlines())
+        # The term gates read the objects as they are; the generic scan reads them with only the noreply domain cut.
+        by_path.setdefault(_RANGE_OBJECT_PATH, []).extend(self._range.commit_objects.splitlines())
         by_path.setdefault(_REF_NAME_PATH, []).append(self._branch)
         return by_path
 
@@ -338,8 +342,9 @@ class LeakGateScan:
             detail = "banned_term_registry is UNSET — configure its leak and prose_collider lists"
             return [LeakFinding(gate="banned-terms", path="", detail=detail)]
         allowlist = allowlist_terms()
+        refs = load_term_refs(terms)
         return [
-            LeakFinding(gate="banned-terms", path=path, detail=f"banned term '{term}'")
+            LeakFinding(gate="banned-terms", path=path, detail=f"banned term {refs.ref(term)}")
             for path, lines in lines_by_path.items()
             for line in lines
             if (term := matched_term(line, terms, allowlist))
@@ -356,7 +361,7 @@ class LeakGateScan:
             scan_path = Path(handle.name)
         try:
             result = run_allowed_to_fail(
-                [sys.executable, str(script), str(scan_path), "--json"],
+                [sys.executable, "-P", str(script), str(scan_path), "--json"],
                 expected_codes=None,
             )
         finally:
@@ -383,26 +388,34 @@ class LeakGateScan:
         path column has to be built from the same concatenation — one pass, never two
         that can drift apart.
         """
-        staged_diff = run_checked(["git", "diff", "--cached"], cwd=self._repo).stdout.rstrip("\n")
+        staged_diff = run_checked(["git", "diff", "--cached", *READ_FLAGS], cwd=self._repo).stdout.rstrip("\n")
         pairs: list[tuple[str, str]] = []
         for diff_text in (self._range.diff_text, staged_diff):
             pairs.extend(zip(diff_text.splitlines(), _diff_line_paths(diff_text), strict=True))
         pairs.extend((line, _MESSAGE_PATH) for line in self._message_text.splitlines())
         pairs.extend((line, _RANGE_MESSAGE_PATH) for line in self._range.commit_messages.splitlines())
+        pairs.extend((line, _RANGE_OBJECT_PATH) for line in self._range.commit_objects_blanked.splitlines())
         pairs.append((self._branch, _REF_NAME_PATH))
         return pairs
 
     @staticmethod
     def _overlay_leak(lines_by_path: dict[str, list[str]]) -> list[LeakFinding]:
         terms = terms_for_gate("overlay")
+        refs = load_term_refs(terms)
         findings = [
-            LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term '{term}'")
+            LeakFinding(gate="overlay-leak", path=path, detail=f"overlay-scoped term {refs.ref(term)}")
             for path, lines in lines_by_path.items()
             for line in lines
             if (term := matched_term(line, terms))
         ]
         findings.extend(
-            LeakFinding(gate="overlay-leak", path=path, detail=f"opaque id '{opaque}'")
+            LeakFinding(
+                gate="overlay-leak",
+                path=path,
+                detail=f"opaque id {refs.ref(term)}"
+                if (term := matched_term(opaque, terms))
+                else f"opaque id '{opaque}'",
+            )
             for path, lines in lines_by_path.items()
             for line in lines
             for opaque in find_opaque_ids(line)
@@ -466,11 +479,11 @@ class FastPusher:
         guard = self._branch_guard_finding(branch)
         if guard is not None:
             return FastPushOutcome(ok=False, branch=branch, findings=[guard])
-        push_range = PushRange.resolve(self._repo, branch=branch, default_branch=self._default_branch())
+        push_range = PushRange.resolve(self._repo)
         if push_range is None:
             detail = (
                 "refusing to fast-push: could not resolve what this push would newly expose "
-                f"(no reachable origin/{self._default_branch()} tip) — fail closed"
+                "(git could not walk the range) — fail closed"
             )
             return FastPushOutcome(ok=False, branch=branch, findings=[LeakFinding("push-range", "", detail)])
         run_checked(["git", "add", "-A"], cwd=self._repo)

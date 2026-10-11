@@ -7,6 +7,7 @@ pinned by the deny-corpus parity test.
 
 import pytest
 
+from hooks.scripts.direct_command_guard import deny_match
 from teatree.hooks.git_bypass_detect import git_bypass_deny_reason
 
 # Assembled so the literal bypass strings never appear in this file's own scanned
@@ -14,6 +15,7 @@ from teatree.hooks.git_bypass_detect import git_bypass_deny_reason
 _NO_VERIFY = "--no-" + "verify"
 _NO_GPG = "--no-" + "gpg-sign"
 _HOOKS_PATH = "core.hooks" + "Path=/dev/null"
+_HOOKS_PATH_KEY = "core.hooks" + "Path"
 
 
 class TestDenies:
@@ -117,3 +119,131 @@ class TestEveryValidPushOptionSpelling:
     )
     def test_an_unrelated_push_option_is_allowed(self, command: str) -> None:
         assert git_bypass_deny_reason(command) is None
+
+
+class EnvAndConfigWaysAroundTheHooks:
+    """Ways to switch a hook off that are not the ``--no-verify`` flag, refused on both lanes.
+
+    ``SKIP=<hook id>`` is honoured by prek itself, ``GIT_CONFIG_*`` and ``git config`` can
+    point git's hooks directory anywhere, and each of them is as good as the flag at getting
+    a push past the leak gate. Lane A (the PreToolUse guard) and Lane B (the pydantic-ai
+    shell) must agree on every row.
+    """
+
+    DENIED = (
+        "SKIP=refuse-public-push-with-leak git push",
+        "SKIP=banned-terms git commit -m x",
+        "SKIP=x prek run",
+        "SKIP=x pre-commit run --all-files",
+        "export SKIP=refuse-public-push-with-leak && git push origin HEAD",
+        "env SKIP=x git -C ../worktree push",
+        "SKIP='a,b' git push",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=" + _HOOKS_PATH_KEY + " GIT_CONFIG_VALUE_0=/dev/null git push",
+        "GIT_CONFIG_GLOBAL=/tmp/evil-gitconfig git push",
+        "GIT_CONFIG_SYSTEM=/tmp/evil-gitconfig git commit -m x",
+        "GIT_CONFIG_PARAMETERS=\"'" + _HOOKS_PATH_KEY + "=/dev/null'\" git push",
+        "git config " + _HOOKS_PATH_KEY + " /dev/null",
+        "git config --global " + _HOOKS_PATH_KEY + " /dev/null",
+        "git config --local --add " + _HOOKS_PATH_KEY + " /tmp/hooks",
+        "git -C ../worktree config --file .git/config " + _HOOKS_PATH_KEY + ' ""',
+    )
+
+    ALLOWED = (
+        "SKIP=x make lint",
+        "SKIP=x echo done",
+        "git commit -m 'note: SKIP=x is how a hook is skipped'",
+        "git push origin HEAD  # SKIP=x would skip a hook",
+        "git config " + _HOOKS_PATH_KEY,
+        "git config --get " + _HOOKS_PATH_KEY,
+        "git config --unset " + _HOOKS_PATH_KEY,
+        "git config user.name alice",
+        "GIT_CONFIG_GLOBAL=/dev/null git status",
+        "cat .pre-commit-config.yaml",
+        "SKIP=x cat .pre-commit-config.yaml",
+    )
+
+
+class RedirectsOfTheGatesConfigAndTermStore:
+    """The environment can aim git's configuration, or the registry the leak gate reads, somewhere else.
+
+    A pre-push hook cannot see its own caller's environment as an attack, so the guards refuse the
+    assignment on the commands that run hooks (a commit, a push, prek, ``t3 push``). A quoted
+    assignment, a ``bash -c`` wrapper and ``t3 push`` carry it just the same.
+    """
+
+    DENIED = (
+        # SKIP= through every wrapper that still reaches a hook
+        "SKIP=refuse-public-push-with-leak t3 push",
+        "SKIP=x t3 teatree pr create",
+        # every t3 verb that pushes
+        "SKIP=x t3 teatree ship",
+        "TEATREE_TERM_REGISTRY='{}' t3 fast-push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 t3 teatree pr ensure-pr",
+        "HOME=/tmp/evil t3 teatree handover run",
+        "SKIP=x t3 teatree workspace salvage",
+        "SKIP=x bash -c 'git push'",
+        "bash -c 'SKIP=x git push'",
+        "env 'SKIP=x' git push",
+        'export "SKIP=x"; git push origin HEAD',
+        # the registry and the stores that locate it
+        "TEATREE_TERM_REGISTRY='{}' git push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 git push",
+        "T3_DATA_DIR=/tmp/decoy git push",
+        "XDG_DATA_HOME=/tmp/decoy git push",
+        "export T3_CONFIG_DB=/tmp/decoy.sqlite3 && git push",
+        "T3_CONFIG_DB=/tmp/decoy.sqlite3 t3 push",
+        "TEATREE_TERM_REGISTRY='{}' prek run --hook-stage pre-push",
+        # git's global configuration, found through the home directory
+        "HOME=/tmp/evil git push",
+        "XDG_CONFIG_HOME=/tmp/evil git push",
+        "env HOME=/tmp/evil git commit -m x",
+        "HOME=/tmp/evil t3 push",
+        # a remote-tracking ref written by hand makes every tool that reads one believe the remote has it
+        "git update-ref refs/remotes/origin/main HEAD",
+        "git -C ../worktree update-ref -m planted refs/remotes/origin/feature HEAD",
+        "git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main",
+        "git fetch . HEAD:refs/remotes/origin/feature",
+        "git push . HEAD:refs/remotes/origin/feature",
+        "echo abc > .git/refs/remotes/origin/feature",
+        "printf abc | tee .git/refs/remotes/origin/feature",
+    )
+
+    ALLOWED = (
+        "SKIP=x t3 doctor check",
+        "SKIP=x t3 teatree ticket status",
+        "T3_CONFIG_DB=/tmp/x.sqlite3 t3 teatree pr list",
+        "T3_CONFIG_DB=/tmp/x.sqlite3 t3 loop status",
+        "XDG_DATA_HOME=/tmp/x uv run pytest tests/foo.py",
+        "TEATREE_TERM_REGISTRY='{}' uv run pytest -q",
+        "T3_DATA_DIR=/tmp/x uv run pytest -q",
+        "HOME=/tmp/x make test",
+        "echo $HOME",
+        "cd ~ && git status",
+        "git update-ref -d refs/remotes/origin/stale",
+        "git update-ref refs/heads/topic HEAD",
+        "git for-each-ref refs/remotes/",
+        "git rev-parse refs/remotes/origin/main",
+        "git branch -r",
+        "git fetch origin",
+        "cat .git/refs/remotes/origin/main",
+    )
+
+
+_LANE_FAMILIES = (EnvAndConfigWaysAroundTheHooks, RedirectsOfTheGatesConfigAndTermStore)
+
+
+@pytest.mark.parametrize("command", [row for family in _LANE_FAMILIES for row in family.DENIED])
+def test_both_lanes_deny(command: str) -> None:
+    lane_b = git_bypass_deny_reason(command)
+    lane_a = deny_match(command)
+
+    assert lane_b is not None, "Lane B must refuse it"
+    assert "BLOCKED" in lane_b
+    assert lane_a is not None, "Lane A must refuse what Lane B refuses"
+    assert "BLOCKED" in lane_a
+
+
+@pytest.mark.parametrize("command", [row for family in _LANE_FAMILIES for row in family.ALLOWED])
+def test_both_lanes_allow(command: str) -> None:
+    assert git_bypass_deny_reason(command) is None
+    assert deny_match(command) is None

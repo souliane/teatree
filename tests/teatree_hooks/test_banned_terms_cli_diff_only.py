@@ -37,6 +37,7 @@ from teatree.hooks.banned_terms_cli import (
     main,
     resolve_banned_terms,
     staged_added_lines,
+    staged_added_numbered_lines,
 )
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 
@@ -176,7 +177,8 @@ def test_diff_only_blocks_commit_that_adds_a_new_banned_term_line(tmp_path: Path
 
     assert result.returncode == 1, "a newly-added banned-term line must STILL block"
     assert "BANNED TERM in doc.md" in result.stdout
-    assert "newly added acme leak line" in result.stdout
+    assert "  3: prose_collider#0" in result.stdout
+    assert "acme" not in result.stdout
 
 
 def test_diff_only_blocks_brand_new_file_with_banned_term(tmp_path: Path) -> None:
@@ -287,9 +289,8 @@ def test_staged_added_lines_keeps_content_line_starting_with_plus(tmp_path: Path
     )
     _git(repo, "add", "doc.md")
 
-    added = staged_added_lines(repo, "doc.md")
-
-    assert added == [content_line]
+    assert staged_added_lines(repo, "doc.md") == [content_line]
+    assert staged_added_numbered_lines(repo, "doc.md") == [(3, content_line)]
 
 
 # ── helper-level unit tests: staged added-line extraction ──
@@ -307,6 +308,23 @@ def test_staged_added_lines_returns_only_added_lines(tmp_path: Path) -> None:
     added = staged_added_lines(repo, "doc.md")
 
     assert added == ["brand new line added"]
+
+
+def test_a_textconv_driver_does_not_blank_the_staged_diff(tmp_path: Path) -> None:
+    """A textconv driver in ``.git/config`` and ``.git/info/attributes`` rewrites what ``git diff`` shows."""
+    repo, _db = _init_repo_with_committed_banned_line(tmp_path)
+    blank = tmp_path / "blank.sh"
+    blank.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    blank.chmod(0o755)
+    _git(repo, "config", "diff.blank.textconv", str(blank))
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("doc.md diff=blank\n", encoding="utf-8")
+    (repo / "doc.md").write_text(
+        "acme reference on a pre-existing committed line\na brand new line added\n", encoding="utf-8"
+    )
+    _git(repo, "add", "doc.md")
+
+    assert staged_added_lines(repo, "doc.md") == ["a brand new line added"]
 
 
 def test_staged_added_lines_empty_when_no_staged_change(tmp_path: Path) -> None:
@@ -336,7 +354,7 @@ def test_diff_only_report_flags_only_added_banned_line(tmp_path: Path) -> None:
 
     report = _diff_only_report(["doc.md"], _TERMS, repo)
 
-    assert report == ["BANNED TERM in doc.md:", "  +:added acme line"]
+    assert report == ["BANNED TERM in doc.md:", "  3: scan#0"]
 
 
 def test_diff_only_report_clean_added_line_is_empty(tmp_path: Path) -> None:
@@ -363,7 +381,7 @@ def test_diff_only_report_flags_a_term_inside_an_email_address(tmp_path: Path) -
 
     assert _diff_only_report(["doc.md"], _TERMS, repo) == [
         "BANNED TERM in doc.md:",
-        "  +:Author: someone <dev@acme.example>",
+        "  1: scan#0",
     ]
 
 
@@ -387,20 +405,19 @@ def test_diff_only_report_falls_back_to_full_scan_when_diff_unresolvable(
     # the per-file fallback scans the whole file — fail closed, the banned term
     # is still caught. Drive the None branch directly so the fallback is
     # exercised regardless of the ambient git state.
-    monkeypatch.setattr(banned_terms_cli, "staged_added_lines", lambda _repo, _file: None)
+    monkeypatch.setattr(banned_terms_cli, "staged_added_numbered_lines", lambda _repo, _file: None)
     doc = tmp_path / "doc.md"
     doc.write_text("acme on a line in a file the diff could not resolve\n", encoding="utf-8")
 
     report = _diff_only_report([str(doc)], _TERMS, tmp_path)
 
-    assert report[0] == f"BANNED TERM in {doc}:"
-    assert any("acme on a line" in line for line in report)
+    assert report == [f"BANNED TERM in {doc}:", "  1: scan#0"]
 
 
 def test_diff_only_report_fallback_skips_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Fallback path (None diff) with a non-existent file → skipped, no report
     # entry, no crash.
-    monkeypatch.setattr(banned_terms_cli, "staged_added_lines", lambda _repo, _file: None)
+    monkeypatch.setattr(banned_terms_cli, "staged_added_numbered_lines", lambda _repo, _file: None)
 
     assert _diff_only_report([str(tmp_path / "does-not-exist.md")], _TERMS, tmp_path) == []
 
@@ -409,7 +426,7 @@ def test_diff_only_report_fallback_clean_existing_file_is_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Fallback path (None diff) with an EXISTING clean file → no hits, empty.
-    monkeypatch.setattr(banned_terms_cli, "staged_added_lines", lambda _repo, _file: None)
+    monkeypatch.setattr(banned_terms_cli, "staged_added_numbered_lines", lambda _repo, _file: None)
     clean = tmp_path / "clean.md"
     clean.write_text("a perfectly clean file with no banned term\n", encoding="utf-8")
 
@@ -498,8 +515,7 @@ def test_full_file_report_flags_committed_line(tmp_path: Path) -> None:
 
     report = _full_file_report([str(doc)], _TERMS)
 
-    assert report[0] == f"BANNED TERM in {doc}:"
-    assert any("pre-existing committed line" in line for line in report)
+    assert report == [f"BANNED TERM in {doc}:", "  1: scan#0"]
 
 
 def test_full_file_report_skips_missing_file(tmp_path: Path) -> None:
@@ -552,3 +568,4 @@ class TestStagedDiffIgnoresInheritedGitDir:
         monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
 
         assert staged_added_lines(repo / "sub", "README.md") == ["clean sub line"]
+        assert staged_added_numbered_lines(repo / "sub", "README.md") == [(1, "clean sub line")]

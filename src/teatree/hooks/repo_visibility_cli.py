@@ -15,7 +15,7 @@ pre-push hook pays an interpreter start, not a framework boot.
 
 Usage::
 
-    python -m teatree.hooks.repo_visibility_cli <remote-url-or-slug>
+    python -m teatree.hooks.repo_visibility_cli [--live] <remote-url-or-slug>
 
 Prints exactly one line -- ``PUBLIC`` / ``PRIVATE`` / ``INTERNAL`` /
 ``UNKNOWN`` -- and exits 0 whenever it could run. ``UNKNOWN`` is the fail-safe
@@ -26,6 +26,13 @@ whose rule needs a public remote must require an affirmative ``PUBLIC``.
 
 A reachable forge answer PUBLIC takes precedence over ``private_repos``. If the
 probe cannot answer, a matching host-qualified declaration resolves PRIVATE.
+
+``--live`` is the push path's question: ONLY a probe made now may say a repository is
+not public. The day cache and the ``private_repos`` allowlist are files a pusher can
+write (the cache directly, the allowlist in a store ``T3_CONFIG_DB`` or
+``T3_DATA_DIR`` points anywhere), so a PRIVATE they hold would skip a leak scan on
+nothing but the pusher's word. Neither is read, and the cache is not written; an
+unanswered probe is ``UNKNOWN``, which the gate reads as "scan".
 
 An allowlist that could not be READ is not an empty one. When the probe cannot
 decide either, the verdict is ``ALLOWLIST_UNREADABLE`` and the reason goes to
@@ -39,12 +46,13 @@ from dataclasses import dataclass
 
 from teatree.config import cold_reader
 from teatree.hooks._private_repo_entries import private_repo_entry_matches, warn_malformed_private_entry
-from teatree.hooks._repo_visibility import slug_for_remote_url, slug_visibility
+from teatree.hooks._repo_visibility import probe_visibility, slug_for_remote_url, slug_visibility
 
 UNKNOWN_VERDICT = "UNKNOWN"
 PRIVATE_VERDICT = "PRIVATE"
 ALLOWLIST_UNREADABLE_VERDICT = "ALLOWLIST_UNREADABLE"
 _ALLOWLIST_KEY = "private_repos"
+_FORGE_VERDICTS = frozenset({"PUBLIC", "PRIVATE", "INTERNAL"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,10 +95,12 @@ def _read_allowlist() -> _Allowlist:
     return _Allowlist(tuple(entries))
 
 
-def _resolve(url: str) -> _Resolution:
-    slug = slug_for_remote_url(url.strip())
-    if not slug:
-        return _Resolution(UNKNOWN_VERDICT)
+def _resolve_live(slug: str) -> _Resolution:
+    verdict = probe_visibility(slug)
+    return _Resolution(verdict if verdict in _FORGE_VERDICTS else UNKNOWN_VERDICT)
+
+
+def _resolve_declared(slug: str) -> _Resolution:
     allowlist = _read_allowlist()
     verdict = slug_visibility(slug)
     if verdict == "PUBLIC":
@@ -104,7 +114,14 @@ def _resolve(url: str) -> _Resolution:
     return _Resolution(UNKNOWN_VERDICT)
 
 
-def visibility_for_remote(url: str) -> str:
+def _resolve(url: str, *, live: bool = False) -> _Resolution:
+    slug = slug_for_remote_url(url.strip())
+    if not slug:
+        return _Resolution(UNKNOWN_VERDICT)
+    return _resolve_live(slug) if live else _resolve_declared(slug)
+
+
+def visibility_for_remote(url: str, *, live: bool = False) -> str:
     """Return ``url``'s visibility verdict, or ``UNKNOWN_VERDICT``.
 
     The remote is normalized to a HOST-QUALIFIED slug first
@@ -113,17 +130,20 @@ def visibility_for_remote(url: str) -> str:
     would default every remote to the GitHub probe.
 
     A reachable PUBLIC answer wins over a host-qualified declaration. When
-    the forge cannot answer, a matching declaration yields PRIVATE.
+    the forge cannot answer, a matching declaration yields PRIVATE. With *live*
+    only the forge's answer, asked now, counts (see the module docstring).
     """
-    return _resolve(url).verdict
+    return _resolve(url, live=live).verdict
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    live = "--live" in args
+    args = [arg for arg in args if arg != "--live"]
     if len(args) != 1 or not args[0].strip():
         sys.stdout.write(f"{UNKNOWN_VERDICT}\n")
         return 0
-    resolution = _resolve(args[0])
+    resolution = _resolve(args[0], live=live)
     if resolution.reason:
         sys.stderr.write(f"{resolution.reason}\n")
     sys.stdout.write(f"{resolution.verdict}\n")

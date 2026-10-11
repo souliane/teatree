@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.hooks import privacy_diff_comments
 
@@ -189,6 +191,7 @@ class TestDetectorUnit:
         assert all(isinstance(lineno, int) and lineno > 0 for lineno, _, _ in findings)
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class TestScriptEndToEnd:
     """The script blocks a diff with an MR-ref comment on an added line."""
 

@@ -6,12 +6,14 @@ resolver. An unset or unreadable registry always fails closed.
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
-from teatree.hooks.term_match import line_matches, matched_term
+from teatree.hooks.term_match import matched_term
+from teatree.hooks.term_refs import TermRefs
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # How long to wait for ``git diff`` before treating the staged diff as
@@ -21,6 +23,8 @@ _GIT_DIFF_TIMEOUT_S = 10
 
 # The variables that tell git WHERE the repository is; git exports them to hooks.
 _GIT_REPO_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE"})
+
+_HUNK_NEW_START_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 
 
 def resolve_banned_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
@@ -50,6 +54,13 @@ def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
     return allowlist_terms(db_path)
 
 
+def _load_refs(terms: tuple[str, ...], config_path: Path | None = None) -> TermRefs:
+    """The ``class#index`` namer a finding is reported through; the registry never leaves the process."""
+    from teatree.hooks.banned_term_registry import load_term_refs  # noqa: PLC0415 — cold-path import
+
+    return load_term_refs(terms, db_path=config_path)
+
+
 def _git_env_locating_the_repo_from_cwd() -> dict[str, str]:
     """The process env with the git variables that name a repository dropped.
 
@@ -64,7 +75,13 @@ def _git_env_locating_the_repo_from_cwd() -> dict[str, str]:
 
 
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
-    """Return *file*'s ADDED lines from the staged diff, or ``None`` on failure.
+    """Return *file*'s ADDED lines from the staged diff, or ``None`` on failure."""
+    numbered = staged_added_numbered_lines(repo, file)
+    return None if numbered is None else [text for _number, text in numbered]
+
+
+def staged_added_numbered_lines(repo: Path, file: str) -> list[tuple[int, str]] | None:
+    """Return *file*'s ADDED lines from the staged diff as ``(line number, text)``, or ``None`` on failure.
 
     Runs ``git diff --cached -U0 --diff-filter=ACMR -- <file>`` from *repo* and
     keeps the body of each ``+`` line inside a hunk (``-U0`` emits no context
@@ -86,7 +103,18 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
     """
     try:
         result = run_allowed_to_fail(
-            ["git", "diff", "--cached", "-U0", "--diff-filter=ACMR", "--", file],
+            [
+                "git",
+                "diff",
+                "--cached",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-color",
+                "-U0",
+                "--diff-filter=ACMR",
+                "--",
+                file,
+            ],
             expected_codes=(0,),
             cwd=repo,
             env=_git_env_locating_the_repo_from_cwd(),
@@ -94,15 +122,18 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
         )
     except (CommandFailedError, TimeoutExpired, OSError):
         return None
-    added: list[str] = []
+    added: list[tuple[int, str]] = []
     in_hunk = False
+    number = 0
     for line in result.stdout.splitlines():
         if line.startswith("diff --git"):
             in_hunk = False  # back to per-file headers; ``+++ b/<file>`` is pre-hunk
-        elif line.startswith("@@"):
+        elif header := _HUNK_NEW_START_RE.match(line):
             in_hunk = True  # hunk body begins; subsequent ``+`` lines are added content
+            number = int(header.group(1))
         elif in_hunk and line.startswith("+"):
-            added.append(line[1:])
+            added.append((number, line[1:]))
+            number += 1
     return added
 
 
@@ -158,12 +189,13 @@ def _diff_only_report(
     carve-out, the own-private-repo-URL
     carve-out (:func:`_line_is_own_repo_url_only`, #3251), and whole-token matcher
     (:mod:`teatree.hooks.term_match`) the full scan uses, so the two paths agree
-    on every line they both see.
+    on every line they both see. A hit is reported as ``<line>: <class#index>``, never by value.
     """
+    refs = _load_refs(terms, config_path)
     report: list[str] = []
     for file in files:
         path = Path(file)
-        added = staged_added_lines(repo, file)
+        added = staged_added_numbered_lines(repo, file)
         if added is None:
             if not path.is_file():
                 continue
@@ -173,18 +205,18 @@ def _diff_only_report(
             if not hits:
                 continue
             report.append(f"BANNED TERM in {file}:")
-            report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
+            report.extend(f"  {line_number}: {refs.ref(term)}" for line_number, term, _line in hits)
             continue
         flagged = [
-            line
-            for line in added
-            if line_matches(line, terms, allowlist)
+            (number, term)
+            for number, line in added
+            if (term := matched_term(line, terms, allowlist))
             and not _line_is_own_repo_url_only(line, terms, allowlist, config_path)
         ]
         if not flagged:
             continue
         report.append(f"BANNED TERM in {file}:")
-        report.extend(f"  +:{line}" for line in flagged)
+        report.extend(f"  {number}: {refs.ref(term)}" for number, term in flagged)
     return report
 
 
@@ -198,6 +230,7 @@ def _full_file_report(files: list[str], terms: tuple[str, ...], allowlist: tuple
     ``banned_terms/deny.py`` with its own informative "own configured repo" warn —
     carving it out here too would silently suppress that warn (#3251).
     """
+    refs = _load_refs(terms)
     report: list[str] = []
     for file in files:
         path = Path(file)
@@ -207,7 +240,7 @@ def _full_file_report(files: list[str], terms: tuple[str, ...], allowlist: tuple
         if not hits:
             continue
         report.append(f"BANNED TERM in {file}:")
-        report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
+        report.extend(f"  {line_number}: {refs.ref(term)}" for line_number, term, _line in hits)
     return report
 
 
@@ -235,7 +268,7 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
         report = _full_file_report(args.files, terms, allowlist)
 
     if report:
-        report.extend(("", f"Banned terms: {','.join(terms)}", "These terms must not appear in this repo."))
+        report.extend(("", "These terms must not appear in this repo."))
         sys.stdout.write("\n".join(report) + "\n")
         return 1
     return 0

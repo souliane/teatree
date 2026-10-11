@@ -51,4 +51,5 @@ def scan_committed_tree(repo_root: Path, *, config_path: Path | None = None) -> 
     """
     terms = load_brand_terms(db_path=config_path)
     allowlist = banned_term_registry.allowlist_terms(config_path)
-    return TreeScanResult(findings=scan_tree(repo_root, terms, allowlist))
+    refs = banned_term_registry.load_term_refs(terms, db_path=config_path)
+    return TreeScanResult(findings=scan_tree(repo_root, terms, allowlist, refs))

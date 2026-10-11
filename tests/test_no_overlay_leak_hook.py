@@ -63,6 +63,11 @@ FAKE_TERMS = (
 TERMS_ENV = json.dumps({"leak": [], "prose_collider": [], "overlay": FAKE_TERMS})
 
 
+def _ref(term: str) -> str:
+    """The ``class#index`` the gate reports for *term*: the registry value itself never appears in the output."""
+    return f"overlay#{FAKE_TERMS.index(term)}"
+
+
 def _run(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "TEATREE_TERM_REGISTRY": TERMS_ENV}
     return subprocess.run(
@@ -97,7 +102,8 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert "t3-fake-overlay" in result.stdout
+        assert _ref("t3-fake-overlay") in result.stdout
+        assert "t3-fake-overlay" not in result.stdout
 
     def test_blocks_tenant_name_in_docs(self, tmp_path: Path) -> None:
         _seed(tmp_path, "docs/integrations.md", "# Alpha-Tenant\n\nIntegration notes.\n")
@@ -105,7 +111,8 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert "alpha-tenant" in result.stdout.lower()
+        assert _ref("alpha-tenant") in result.stdout
+        assert "alpha-tenant" not in result.stdout.lower()
 
     def test_ignores_substring_matches(self, tmp_path: Path) -> None:
         _seed(
@@ -149,7 +156,8 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert term.lower() in result.stdout.lower()
+        assert _ref(term) in result.stdout
+        assert term.lower() not in result.stdout.lower()
 
     def test_case_insensitive(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", "# ALPHA-TENANT reference\n")
@@ -168,7 +176,8 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert snake_variant in result.stdout.lower()
+        assert _ref(snake_variant.replace("_", "-")) in result.stdout
+        assert snake_variant not in result.stdout.lower()
 
     def test_blocks_space_separated_variant(self, tmp_path: Path) -> None:
         # Whitespace is a token separator too, so a multi-word term written
@@ -178,7 +187,7 @@ class TestNoOverlayLeakHook:
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert "blue-widget" in result.stdout.lower()
+        assert _ref("blue-widget") in result.stdout
 
     @pytest.mark.parametrize(
         "glued_variant",
@@ -223,7 +232,8 @@ class TestNoOverlayLeakHook:
         )
 
         assert result.returncode == 1, result.stdout
-        assert "acme" in result.stdout.lower()
+        assert "overlay#0" in result.stdout
+        assert "acme" not in result.stdout.lower()
 
     @pytest.mark.parametrize("clean_word", ["about", "above", "abroad", "absolute"])
     def test_short_term_single_word_is_not_blocked(self, tmp_path: Path, clean_word: str) -> None:
@@ -293,7 +303,7 @@ class TestRequiredOverlayTerms:
         _seed(tmp_path, "src/teatree/foo.py", '"""See t3-fake-overlay."""\n')
         result = _run(tmp_path)
         assert result.returncode == 1
-        assert "t3-fake-overlay" in result.stdout
+        assert _ref("t3-fake-overlay") in result.stdout
 
 
 class TestExpandedScanRoots:
@@ -320,7 +330,7 @@ class TestExpandedScanRoots:
         _seed(tmp_path, relpath, "# reference to alpha-tenant here\n")
         result = _run(tmp_path)
         assert result.returncode == 1, result.stdout
-        assert "alpha-tenant" in result.stdout.lower()
+        assert _ref("alpha-tenant") in result.stdout
 
 
 class TestOpaqueIdDetection:
@@ -393,7 +403,8 @@ class TestDbSourcedTerms:
         _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
         result = self._run_with_db(tmp_path, db)
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "alpha-tenant" in result.stdout.lower()
+        assert "overlay#0" in result.stdout
+        assert "alpha-tenant" not in result.stdout.lower()
 
     def test_db_terms_populated_satisfy_gate(self, tmp_path: Path) -> None:
         db = _seed_overlay_leak_db(tmp_path, ["alpha-tenant"])
@@ -466,7 +477,8 @@ class TestRegistrySourcedTerms:
         _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
         result = self._run_with_db(tmp_path, db)
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "alpha-tenant" in result.stdout.lower()
+        assert "overlay#0" in result.stdout
+        assert "alpha-tenant" not in result.stdout.lower()
 
     def test_registry_wins_over_legacy_overlay_row(self, tmp_path: Path) -> None:
         # A present registry is authoritative: a file naming only the LEGACY-row term

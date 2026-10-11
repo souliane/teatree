@@ -86,6 +86,22 @@ _GIT_GLOBAL_OPTS = r"(?:-{1,2}\S+(?:\s+[^-\s]\S*)?\s+)*"
 # The four spellings git accepts for one push option, all scheduling the same
 # auto-merge: ``-o V``, ``-oV``, ``--push-option V``, ``--push-option=V``.
 _AUTO_MERGE_PUSH_OPTION = r"(?:-o|--push-option)[\s=]*['\"]?merge_request\.merge_when_pipeline_succeeds"
+# What a hook is attached to: a commit, a push, prek running the hooks, or a ``t3`` verb that pushes for the caller.
+_HOOKED_RUN = (
+    rf"(?:\bgit\s+{_GIT_GLOBAL_OPTS}(?:commit|push)\b"
+    r"|(?<![\w./-])(?:prek|pre-commit)(?=\s|$)"
+    r"|(?<![\w./-])t3\s+(?:[\w-]+\s+){0,2}?(?:push|fast-push|ship|handover|salvage|ensure-pr|pr\s+create)\b)"
+)
+# Environment names that point git's configuration, or the term registry the leak gate reads, elsewhere.
+_GIT_CONFIG_REDIRECTS = r"GIT_CONFIG_(?:COUNT|KEY_\w+|VALUE_\w+|GLOBAL|SYSTEM|NOSYSTEM|PARAMETERS)|HOME|XDG_CONFIG_HOME"
+_STORE_REDIRECTS = r"TEATREE_TERM_REGISTRY|T3_CONFIG_DB|T3_DATA_DIR|XDG_DATA_HOME"
+# Writing a remote-tracking ref (never deleting one): ``update-ref`` or ``symbolic-ref``, a refspec onto
+# one, or a shell write into the refs directory.
+_PLANTED_REF = (
+    r"\bgit\b[^\n;&|]*\b(?:update-ref|symbolic-ref)\b(?![^\n;&|]*\s(?:-d|--delete)\b)[^\n;&|]*\brefs/remotes/"
+    r"|\bgit\b[^\n;&|]*\b(?:fetch|pull|push)\b[^\n;&|]*:\+?refs/remotes/"
+    r"|(?:>>?|\btee\b|\bcp\b|\bmv\b|\bln\b)[^\n;&|]*\brefs/remotes/"
+)
 
 # Forbidden command patterns → deny messages.  Each entry is
 # (compiled regex matching the Bash command, human-readable deny reason).
@@ -103,6 +119,14 @@ _RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE),
         (
             "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        # ``git config core.hooksPath <dir>`` sets the same redirect as the ``-c`` form, for good.
+        re.compile(r"\bgit\b.*\bconfig\b.*\bcore\.hooksPath[ \t]+[^\s;&|]", re.IGNORECASE),
+        (
+            "BLOCKED: `git config core.hooksPath …` redirects git's hooks directory "
             "(equivalent to `--no-verify`) — fix the hook failure instead."
         ),
     ),
@@ -233,10 +257,49 @@ _QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+# Redirects of the leak gate's own inputs, scanned against the raw command BEFORE the ``t3``/read-only
+# leader allowlist: ``SKIP=x t3 push`` and ``echo abc > .git/refs/remotes/…`` lead with an allowlisted
+# word and are still the bypass. A hook cannot see its caller's environment as an attack, so the
+# assignment is refused where the command is read.
+_ALWAYS_BLOCKED: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(rf"(?s)(?<!\w)(?:{_GIT_CONFIG_REDIRECTS})=.*?{_HOOKED_RUN}"),
+        (
+            "BLOCKED: `GIT_CONFIG_*=`, `HOME=` or `XDG_CONFIG_HOME=` on a command that commits, pushes or runs prek "
+            "redirects git's configuration, its hooks directory included (equivalent to `--no-verify`) — "
+            "fix the hook failure instead."
+        ),
+    ),
+    (
+        re.compile(rf"(?s)(?<!\w)(?:{_STORE_REDIRECTS})=.*?{_HOOKED_RUN}"),
+        (
+            "BLOCKED: `TEATREE_TERM_REGISTRY=`, `T3_CONFIG_DB=`, `T3_DATA_DIR=` or `XDG_DATA_HOME=` on a command that "
+            "commits, pushes or runs prek aims the leak gate at a term registry of the caller's choosing "
+            "(equivalent to `--no-verify`) — the gate reads the owner's own store."
+        ),
+    ),
+    (
+        # prek honours ``SKIP=<hook id>``: the same escape as ``--no-verify``, for one hook.
+        re.compile(rf"(?s)(?<!\w)SKIP=.*?{_HOOKED_RUN}"),
+        (
+            "BLOCKED: `SKIP=<hook id>` on a command that commits, pushes or runs prek switches that hook off "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        re.compile(_PLANTED_REF),
+        (
+            "BLOCKED: writing a remote-tracking ref (`refs/remotes/…`) by hand makes every tool that reads one "
+            "believe the remote already has commits it does not — `git fetch` the remote instead."
+        ),
+    ),
+]
+
 # Keep the combined list for any existing code that references _BLOCKED_COMMANDS
-# directly (e.g. downstream tests that import it). Both partitions are included
+# directly (e.g. downstream tests that import it). Every partition is included
 # so the union is identical to the original list.
 BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+    *_ALWAYS_BLOCKED,
     *_RAW_SCAN_BLOCKED,
     *_QUOTE_STRIPPED_BLOCKED,
 ]
@@ -432,14 +495,25 @@ def _denylist_reason(command: str) -> str | None:
     return None
 
 
-def deny_match(command: str) -> str | None:
-    """Return a deny reason for *command*, or None if it should pass through."""
+def _unconditional_reason(command: str) -> str | None:
+    """The refusals no ``t3``/read-only leader allowlist may wave through."""
     # Checked FIRST — even before t3/read-only bypass — because agents must
     # never opt in to remote pg_dump regardless of the surrounding command.
     if _REMOTE_DUMP_ENV_RE.search(command):
         return _REMOTE_DUMP_DENY_REASON
     if headed := _headed_browser_deny(command):
         return headed
+    scan_command = _strip_forge_heredoc_bodies(command)
+    for pattern, reason in _ALWAYS_BLOCKED:
+        if pattern.search(scan_command):
+            return reason + " If `t3` fails, fix the CLI — do not work around it."
+    return None
+
+
+def deny_match(command: str) -> str | None:
+    """Return a deny reason for *command*, or None if it should pass through."""
+    if reason := _unconditional_reason(command):
+        return reason
     stripped = command.lstrip()
     # F6: only honor the readonly/t3 prefix allowlist when there is no shell
     # chaining operator in the command. ``grep x /dev/null; pip install y``

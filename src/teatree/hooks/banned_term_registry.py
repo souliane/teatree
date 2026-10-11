@@ -14,6 +14,7 @@ from typing import Final
 from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.leak_policy import ALLOW, LEAK, PROSE_COLLIDER, TERM_CLASSES, TONE, Surface, classes_for_surface
+from teatree.hooks.term_refs import TermRefs
 
 __all__ = [
     "ALLOW",
@@ -28,6 +29,7 @@ __all__ = [
     "class_of_term",
     "export_scan_terms",
     "load_registry",
+    "load_term_refs",
     "terms_for_gate",
 ]
 
@@ -179,6 +181,15 @@ def class_of_term(term: str, *, db_path: Path | None = None) -> str:
         if any(entry.strip().lower() == cleaned for entry in registry[term_class]):
             return term_class
     return PROSE_COLLIDER
+
+
+def load_term_refs(scan_terms: tuple[str, ...] = (), *, db_path: Path | None = None) -> TermRefs:
+    """The ``class#index`` namer for a finding; names by scan position when the registry cannot be read."""
+    try:
+        registry = load_registry(db_path=db_path)
+    except BannedTermsUnsetError:
+        registry = None
+    return TermRefs(registry, scan_terms)
 
 
 def allowlist_terms(db_path: Path | None = None) -> tuple[str, ...]:
