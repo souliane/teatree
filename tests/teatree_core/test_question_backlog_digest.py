@@ -93,7 +93,7 @@ class TestResurfaceQuestionBacklog(TestCase):
 
     def test_the_interval_bucket_is_the_idempotency_key(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)
-        now = timezone.now()
+        now = dt.datetime(2026, 10, 10, 12, tzinfo=dt.UTC)
 
         with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
             resurface_question_backlog(now=now)
@@ -106,6 +106,18 @@ class TestResurfaceQuestionBacklog(TestCase):
         # Same bucket → the BotPing ledger collapses the repeat; a new bucket is a new nag.
         assert key_first == key_same_bucket
         assert key_next_bucket != key_first
+
+    def test_the_interval_bucket_rotates_at_utc_midnight(self) -> None:
+        DeferredQuestion.record("Merge it?", **OWNER_DECISION)
+        before_midnight = dt.datetime(2026, 10, 10, 23, 58, tzinfo=dt.UTC)
+
+        with patch("teatree.core.notify_question_drains.notify_user", return_value=True) as notify:
+            resurface_question_backlog(now=before_midnight)
+            key_before_midnight = notify.call_args.kwargs["idempotency_key"]
+            resurface_question_backlog(now=before_midnight + dt.timedelta(minutes=5))
+            key_after_midnight = notify.call_args.kwargs["idempotency_key"]
+
+        assert key_before_midnight != key_after_midnight
 
     def test_a_failed_delivery_reports_not_posted(self) -> None:
         DeferredQuestion.record("Merge it?", **OWNER_DECISION)
