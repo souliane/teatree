@@ -87,6 +87,31 @@ def test_a_value_in_each_root_is_found_and_named_by_class_only(planted: Planted)
     assert not [value for values in registry.values() for value in values if value in output]
 
 
+def test_an_unreadable_tracked_file_refuses_the_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    target = repo / "src" / "pkg" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("clean\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "remote", "add", "origin", "https://github.example/acme-owner/widget.git")
+    _git(repo, "add", ".")
+    read_text = Path.read_text
+
+    def fail_target(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == target:
+            message = "read failed"
+            raise OSError(message)
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_target)
+    registry = {"leak": ["widget-secret"], "overlay": [], "allow": [], "prose_collider": [], "tone": []}
+
+    exit_code, output = _scan(repo, registry, "--classes", "leak")
+
+    assert exit_code == 2, output
+    assert "MISCONFIGURED" in output
+
+
 def test_the_default_scan_keeps_reading_only_the_leak_class(planted: Planted) -> None:
     repo, registry = planted
 

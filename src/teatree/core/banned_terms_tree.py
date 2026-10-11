@@ -35,6 +35,14 @@ __all__ = [
 VALUE_FREE_ROOTS: Final = ("src", "scripts", "tests", "docs", ".github")
 
 
+class TreeReadError(TreeEnumerationError):
+    """A tracked file was unreadable, leaving the registry-value scan incomplete."""
+
+    @classmethod
+    def for_path(cls, repo_root: Path, rel: str, exc: OSError) -> "TreeReadError":
+        return cls(f"could not read tracked file {rel} under {repo_root}: {exc}")
+
+
 @dataclass(frozen=True)
 class TreeScanResult:
     """The outcome of a full-tree backstop scan.
@@ -88,8 +96,10 @@ def scan_registry_values(
             continue
         try:
             text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except UnicodeDecodeError:
             continue
+        except OSError as exc:
+            raise TreeReadError.for_path(repo_root, rel, exc) from exc
         hits = scan_text(text, terms, (owner,) if owner else ())
         findings.extend(TreeFinding(rel, lineno, term, line, refs.ref(term)) for lineno, term, line in hits)
     return TreeScanResult(findings=findings)
