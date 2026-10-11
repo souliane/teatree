@@ -42,9 +42,18 @@ def test_a_letter_glued_to_either_end_extends_the_identifier(extended: str) -> N
     assert mask_exempt(extended, (HANDLE,)) == extended
 
 
-@pytest.mark.parametrize("extended", [f"x+{ADDRESS}", f"{ADDRESS}+x", f"{ADDRESS}@x"])
-def test_an_address_mark_joined_to_a_word_extends_an_address(extended: str) -> None:
-    assert mask_exempt(extended, (ADDRESS,)) == extended
+@pytest.mark.parametrize(
+    ("entry", "extended"),
+    [
+        (ADDRESS, f"x+{ADDRESS}"),
+        (ADDRESS, f"{ADDRESS}+x"),
+        (ADDRESS, f"{ADDRESS}@x"),
+        ("alice@acme", "bob.alice@acme"),
+        ("@acme-owner", "acme-owner.evil"),
+    ],
+)
+def test_an_address_mark_joined_to_a_word_extends_an_address(entry: str, extended: str) -> None:
+    assert mask_exempt(extended, (entry,)) == extended
 
 
 @pytest.mark.parametrize(
