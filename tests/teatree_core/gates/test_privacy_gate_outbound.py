@@ -23,6 +23,7 @@ from django.core.exceptions import ImproperlyConfigured
 from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import scan_outbound_text
 from teatree.hooks import _repo_visibility, publish_destination
+from tests._send_gate import TEST_TERM_REGISTRY
 
 REAL_PUBLIC = "souliane/teatree"
 REDACT = "SECRETCORP"
@@ -81,6 +82,14 @@ def test_clean_body_passes(inject_rules) -> None:
     inject_rules(public=True, redact=[REDACT])
     result = scan_outbound_text(text="A perfectly ordinary review note.", target_repo=REAL_PUBLIC)
     assert not result.refused
+
+
+def test_registry_allow_entry_is_exempt_only_where_it_occurs_exactly(inject_rules) -> None:
+    inject_rules(public=True)
+    allowed = TEST_TERM_REGISTRY["allow"][0]
+
+    assert not scan_outbound_text(text=f"Ship {allowed} today.", target_repo=REAL_PUBLIC).refused
+    assert scan_outbound_text(text=f"Ship {allowed}-bot today.", target_repo=REAL_PUBLIC).refused
 
 
 def test_private_target_passes_same_leaking_content(inject_rules) -> None:

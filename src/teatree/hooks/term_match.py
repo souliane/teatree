@@ -46,6 +46,7 @@ single-word-term behaviour. (All examples are synthetic — real term values
 live only in the operator's local config, never in this public source.)
 """
 
+import functools
 import re
 
 from teatree.utils.exact_carve_out import mask_exempt
@@ -85,6 +86,19 @@ def _contains_run(haystack: list[str], needle: list[str]) -> bool:
     if any(token == first and haystack[start : start + span] == needle for start, token in enumerate(haystack)):
         return True
     return "".join(needle) in haystack
+
+
+@functools.lru_cache(maxsize=4096)
+def _term_run(term: str) -> tuple[str, ...]:
+    return tuple(tokens(term))
+
+
+def terms_in_reach(text: str, terms: tuple[str, ...]) -> tuple[str, ...]:
+    """The *terms* some line of *text* could match: a superset that lets a whole-file scan skip a clean file."""
+    present = set(tokens(text))
+    return tuple(
+        term for term in terms if (run := _term_run(term)) and (present.issuperset(run) or "".join(run) in present)
+    )
 
 
 def matched_term(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> str | None:

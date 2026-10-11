@@ -13,7 +13,14 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from teatree.core.banned_terms_tree import BannedTermsUnsetError, TreeEnumerationError, scan_committed_tree
+from teatree.core.banned_terms_tree import (
+    VALUE_FREE_ROOTS,
+    BannedTermsUnsetError,
+    TreeEnumerationError,
+    scan_committed_tree,
+    scan_registry_values,
+)
+from teatree.hooks.banned_term_registry import REGISTRY_TERM_CLASSES
 
 banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop scans.")
 _console = Console()
@@ -39,6 +46,12 @@ def scan_tree(
         "--repo-root",
         help="Repository root to scan (defaults to the current directory).",
     ),
+    classes: str | None = typer.Option(
+        None,
+        "--classes",
+        help=f"Comma-separated registry classes whose every value must be absent from {', '.join(VALUE_FREE_ROOTS)}; "
+        "only the repository owner's login is exempt.",
+    ),
 ) -> None:
     """Scan every git-tracked file for committed banned terms.
 
@@ -46,8 +59,12 @@ def scan_tree(
     ``$TEATREE_TERM_REGISTRY`` CI secret.
     """
     root = repo_root if repo_root is not None else Path.cwd()
+    named = tuple(dict.fromkeys(name.strip() for name in (classes or "").split(",") if name.strip()))
+    if classes is not None and (not named or not set(named) <= set(REGISTRY_TERM_CLASSES)):
+        msg = f"name one or more of: {', '.join(REGISTRY_TERM_CLASSES)}"
+        raise typer.BadParameter(msg, param_hint="--classes")
     try:
-        result = scan_committed_tree(root)
+        result = scan_registry_values(root, named) if named else scan_committed_tree(root)
     except BannedTermsUnsetError as exc:
         # A genuinely-unset brand list (no config, no env, a missing key) is
         # refused LOUD (exit 2) — never a silent inert scan that hides a load

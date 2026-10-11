@@ -698,9 +698,9 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 | `prose_collider` | diff + core | `banned_terms` | may be empty when `leak` supplies scan terms |
 | `tone` | diff | (none) | optional |
 | `overlay` | overlay core-generic gate | `overlay_leak_terms` | nonempty for the core overlay-leak scan |
-| `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | optional |
+| `allow` | the exact-occurrence carve-out; scanned *for* by `scan-tree --classes` | `banned_terms_allowlist` | optional |
 
-* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
+* **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out: each EXACT occurrence is blanked before matching, while an identifier extending one (a suffix, a prefix, a longer address) is still scanned. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
 * **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate also refuses when its scan classes contain no terms. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
 * **Single resolver.** Every gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. Legacy keys have no runtime fallback. Migration `0123` preserves registry class values when both old and new rows exist, and removes the old rows per scope.
 
