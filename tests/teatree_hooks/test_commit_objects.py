@@ -112,14 +112,15 @@ class TestThePrintedViews:
 
         assert b"tagger dev <dev>" in capfdbinary.readouterr().out
 
-    def test_the_objects_of_a_range_come_back_in_order(self, repo: Path) -> None:
+    def test_the_objects_of_a_range_come_back_in_rev_list_order(self, repo: Path) -> None:
         first = _commit(repo, b"one\n")
-        second = _commit(repo, b"two\n")
+        _commit(repo, b"two\n")
+        third = _commit(repo, b"three\n")
 
-        objects = commit_objects([second, "--not", first], repo)
+        objects = commit_objects([third, "--not", first], repo)
 
         assert objects is not None
-        assert [stored_message(obj) for obj in objects] == [b"two\n"]
+        assert [stored_message(obj) for obj in objects] == [b"three\n", b"two\n"]
 
 
 class TestAReadThatCannotBeCompletedPrintsNothing:
