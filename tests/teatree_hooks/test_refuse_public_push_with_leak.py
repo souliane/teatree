@@ -584,23 +584,26 @@ class TestLeakGateFailsClosedOnScannerCrash:
         assert result.returncode == 1, result.stdout + result.stderr
         assert "could not run" in result.stdout, result.stdout
 
-    def test_a_commit_object_read_that_fails_refuses_the_push(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("form", [["messages"], ["commit", "raw"], ["commit", "blank"]], ids="-".join)
+    def test_a_commit_object_read_that_fails_alone_refuses_the_push(self, tmp_path: Path, form: list[str]) -> None:
         work, env = self._clean_feature_commit(tmp_path)
         hook = place_hook(tmp_path / "scratch-checkout", registry=_DEFAULT_REGISTRY)
         reader = hook.parents[2] / "src" / "teatree" / "hooks" / "commit_objects.py"
         committed = reader.read_text(encoding="utf-8")
         failing = committed.replace(
-            '\nif __name__ == "__main__":', '\n_git = lambda *_: None\n\nif __name__ == "__main__":'
+            '\nif __name__ == "__main__":',
+            f"\n_git = lambda *a, _read=_git: None if sys.argv[1:{len(form) + 1}] == {form!r} else _read(*a)\n"
+            '\nif __name__ == "__main__":',
         )
-        assert failing != committed, "the plant must make every git read of the reader fail"
+        assert failing != committed, "the plant must make the git reads of one form fail"
         reader.write_text(failing, encoding="utf-8")
-        _git(hook.parents[2], "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "no reads")
+        _git(hook.parents[2], "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam", "one read")
 
         result = _run_hook(work, env, _push_stdin(work), hook=hook)
 
         assert result.returncode == 1, "a read that did not happen passed the push: " + result.stdout + result.stderr
         assert "could not run (exit 1)" in result.stdout, result.stdout
-        assert "commit_objects: could not read" in result.stdout, result.stdout
+        assert result.stdout.count("commit_objects: could not read") == 1, result.stdout
 
     def test_unresolvable_scanner_refuses(self, tmp_path: Path) -> None:
         work, env = self._clean_feature_commit(tmp_path)

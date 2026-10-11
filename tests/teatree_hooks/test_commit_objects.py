@@ -133,6 +133,7 @@ class TestAReadThatCannotBeCompletedPrintsNothing:
             ["commit", "raw"],
             ["commit", "sideways", "HEAD"],
             ["unknown"],
+            [],
         ],
     )
     def test_it_exits_1_and_the_scan_around_it_sees_no_text(
