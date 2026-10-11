@@ -122,6 +122,21 @@ def test_a_tree_with_no_tracked_file_under_the_roots_refuses(tmp_path: Path) -> 
     assert leak not in output
 
 
+@pytest.mark.parametrize("where", ["plain-directory", "missing-path", "inside-dot-git"])
+def test_a_root_outside_any_git_work_tree_refuses(planted: Planted, tmp_path: Path, where: str) -> None:
+    repo, registry = planted
+    plain = tmp_path / "plain"
+    (plain / "src").mkdir(parents=True)
+    (plain / "src" / "module.py").write_text(f"NAME = '{registry['leak'][0]}'\n", encoding="utf-8")
+    root = {"plain-directory": plain, "missing-path": tmp_path / "absent", "inside-dot-git": repo / ".git"}[where]
+
+    exit_code, output = _scan(root, registry, "--classes", CLASSES)
+
+    assert exit_code == 2, output
+    assert "MISCONFIGURED" in output
+    assert not [value for values in registry.values() for value in values if value in output]
+
+
 def test_an_unreadable_tracked_file_refuses_the_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     target = repo / "src" / "pkg" / "module.py"
