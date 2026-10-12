@@ -20,6 +20,8 @@ lives at ``refs/teatree/claims/<slug>`` on the forge remote:
 
 The commit the ref points at is the CAS token: its sha changes on every heartbeat
 and every steal, so a re-point lands only against the value its writer observed.
+Every claim commit has the root of ``origin``'s default branch as its only parent
+and that root's tree as its own, so it adds nothing beyond its record (the message).
 WHO holds the claim is the ``instance_id`` in the tip's claim record
 (:func:`read_tip`) — a steal always writes the thief's, a heartbeat always its
 own — so a stolen-from instance reads another holder and stands down, while a
@@ -28,8 +30,8 @@ heartbeat whose new sha its writer never recorded still reads as its own.
 No new database: the forge that owns the work domain (issues, branches, PRs) is
 the same server that arbitrates the claim, so the mutex is consistent with the
 work it guards by construction. The module is deliberately Django-free — it uses
-only :mod:`teatree.utils.run` (the sanctioned subprocess boundary),
-:func:`teatree.instance_id.instance_id`, and the stdlib — so a claim race can be
+only :mod:`teatree.utils.run` (the sanctioned subprocess boundary) and the git
+helpers built on it, :func:`teatree.instance_id.instance_id`, and the stdlib — so a claim race can be
 exercised by real subprocesses without booting Django.
 
 Zero footprint: every object git writes for a claim operation — the throwaway
@@ -55,6 +57,7 @@ from types import MappingProxyType
 from typing import TypedDict, cast
 
 from teatree.instance_id import instance_id
+from teatree.utils import git_branch
 from teatree.utils.git_run import git_env_non_interactive
 from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 
@@ -378,18 +381,29 @@ def _ephemeral_odb(repo: str, remote: str, extra_env: Mapping[str, str]) -> Iter
         yield _Scope(repo=repo, remote=remote, env=env | overrides)
 
 
-def _empty_tree(scope: _Scope) -> str:
-    return run_checked(["git", "-C", scope.repo, "mktree"], stdin_text="", env=scope.env).stdout.strip()
+def _default_branch_root(scope: _Scope) -> str:
+    try:
+        tip = f"refs/remotes/{scope.remote}/{git_branch.default_branch(scope.repo)}"
+    except RuntimeError as exc:
+        msg = f"cannot resolve the default branch of {scope.repo}, so a claim commit has no root to descend from"
+        raise FleetClaimUnavailableError(msg) from exc
+    roots = _git(scope.repo, ["rev-list", "--max-parents=0", tip], env=scope.env)
+    if roots.returncode != 0 or not roots.stdout.split():
+        msg = f"cannot read the root commit of {tip} in {scope.repo}"
+        raise FleetClaimUnavailableError(msg)
+    return roots.stdout.split()[-1]
 
 
 def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
-    # mktree + commit-tree, written into the scope's ephemeral object dir. Per the
+    # commit-tree, written into the scope's ephemeral object dir. Per the
     # module contract any inability to build a claim commit surfaces as
     # FleetClaimUnavailableError (never a bare CommandFailedError), so the wire's
     # fail-safe catch handles a corrupt local repo uniformly with remote-unreachable.
+    root = _default_branch_root(scope)
     message = json.dumps(meta, sort_keys=True)
+    # The root's own tree makes the commit's patch empty: it carries nothing but its record.
+    args = ["git", "-C", scope.repo, *_CLAIM_IDENTITY, "commit-tree", f"{root}^{{tree}}", "-p", root, "-m", message]
     try:
-        args = ["git", "-C", scope.repo, *_CLAIM_IDENTITY, "commit-tree", _empty_tree(scope), "-m", message]
         return run_checked(args, env=scope.env).stdout.strip()
     except CommandFailedError as exc:
         msg = f"cannot write the claim commit in {scope.repo} (local git failure)"
@@ -397,8 +411,9 @@ def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
 
 
 def _try_create(scope: _Scope, sha: str, ref: str) -> CompletedProcess[str]:
-    # Assumes each claim commit is unique (the nonce in _meta): so an existing ref
-    # is never a fast-forward of this fresh commit, and a plain push succeeds ONLY
+    # Assumes each claim commit is unique (the nonce in _meta) and that its only
+    # ancestor is the default branch's root, which no claim ref holds: so an existing
+    # ref is never a fast-forward of this fresh commit, and a plain push succeeds ONLY
     # as a create — an idempotent "already there" success (two claimants, one sha)
     # cannot occur.
     return _git(scope.repo, ["push", scope.remote, f"{sha}:{ref}"], env=scope.env)

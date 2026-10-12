@@ -12,6 +12,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+FIXTURE_IDENTITY = (
+    "-c",
+    "user.name=teatree-fixture",
+    "-c",
+    "user.email=teatree-fixture@users.noreply.github.com",  # privacy-scan:allow placeholder noreply fixture identity
+)
+
 
 def _run(*args: str) -> str:
     cmd = ["git", *args]
@@ -22,8 +29,16 @@ def git(repo: Path, *args: str) -> str:
     return _run("-C", str(repo), *args)
 
 
+def empty_tree(repo: Path) -> str:
+    return git(repo, "hash-object", "-t", "tree", "-w", "/dev/null")
+
+
 def init_bare(path: Path) -> Path:
+    """A bare origin whose default branch ``main`` holds one root commit, as every forge repo does."""
     _run("init", "--bare", "-q", str(path))
+    git(path, "symbolic-ref", "HEAD", "refs/heads/main")
+    root = git(path, *FIXTURE_IDENTITY, "commit-tree", empty_tree(path), "-m", "root")
+    git(path, "update-ref", "refs/heads/main", root)
     return path
 
 
@@ -47,8 +62,10 @@ def require_credential(bare: Path, token: str) -> Path:
 
 
 def init_client(client_dir: Path, bare: Path) -> Path:
-    _run("init", "-q", str(client_dir))
+    _run("init", "-q", "-b", "main", str(client_dir))
     git(client_dir, "remote", "add", "origin", f"file://{bare}")
+    if bare.exists():
+        git(client_dir, "fetch", "-q", "origin")
     return client_dir
 
 

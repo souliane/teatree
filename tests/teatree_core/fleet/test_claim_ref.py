@@ -37,7 +37,7 @@ import pytest
 
 from teatree.core.fleet import claim as fleet_claim
 
-from ._git_origin import as_other_instance, require_credential
+from ._git_origin import as_other_instance, init_bare, init_client, require_credential
 
 _CTX = multiprocessing.get_context("spawn" if sys.platform == "darwin" else "fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
@@ -47,20 +47,6 @@ _GATE_TIMEOUT_S = 30.0
 def _git(*args: str) -> str:
     cmd = ["git", *args]
     return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
-
-
-def _init_bare(path: Path) -> None:
-    _git("init", "--bare", "-q", str(path))
-
-
-def _init_client(client_dir: Path, bare: Path) -> None:
-    """A fresh clone-shaped repo whose ``origin`` is the shared bare repo.
-
-    No ``user.*`` config is set — ``fleet_claim`` authors its claim commits under
-    a fixed identity, so a client needs only the ``origin`` remote.
-    """
-    _git("init", "-b", "main", "-q", str(client_dir))
-    _git("-C", str(client_dir), "remote", "add", "origin", f"file://{bare}")
 
 
 def _wait_for(path: Path, timeout: float = _GATE_TIMEOUT_S) -> None:
@@ -118,7 +104,7 @@ def _record(work_dir: str, idx: int, outcome: dict[str, object]) -> None:
 
 def _acquire_worker(idx: int, work_dir: str, bare: str, clients_root: str) -> None:
     client = Path(clients_root) / f"client_{idx}"
-    _init_client(client, Path(bare))
+    init_client(client, Path(bare))
     _ready_and_wait(work_dir, idx)
     outcome: dict[str, object] = {"won": False, "sha": "", "error": ""}
     try:
@@ -131,7 +117,7 @@ def _acquire_worker(idx: int, work_dir: str, bare: str, clients_root: str) -> No
 
 def _steal_worker(idx: int, work_dir: str, bare: str, clients_root: str, now: float) -> None:
     client = Path(clients_root) / f"stealer_{idx}"
-    _init_client(client, Path(bare))
+    init_client(client, Path(bare))
     _ready_and_wait(work_dir, idx)
     outcome: dict[str, object] = {"won": False, "sha": "", "error": ""}
     try:
@@ -172,7 +158,7 @@ def _local_only_worker(idx: int, work_dir: str, dbs_root: str) -> None:
 def test_acquire_has_exactly_one_winner(tmp_path: Path, n: int) -> None:
     """N processes race ``acquire``; exactly one creates the ref, the rest lose."""
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     clients = tmp_path / "clients"
     clients.mkdir()
 
@@ -207,11 +193,11 @@ def test_local_only_claim_double_claims_across_instances(tmp_path: Path, n: int)
 def test_steal_impossible_before_ttl(tmp_path: Path) -> None:
     """A live (unexpired) claim cannot be stolen — every stealer stands down."""
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     clients = tmp_path / "clients"
     clients.mkdir()
     holder_repo = clients / "holder"
-    _init_client(holder_repo, bare)
+    init_client(holder_repo, bare)
     # Holder claims at t=1000 with ttl=100 -> live until t=1100.
     held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), ttl_seconds=100.0, now=1000.0)
     assert held is not None
@@ -229,11 +215,11 @@ def test_steal_impossible_before_ttl(tmp_path: Path) -> None:
 def test_concurrent_steal_after_ttl_has_exactly_one_winner(tmp_path: Path, n: int) -> None:
     """After TTL, N stealers race; exactly one CAS lands, the rest are fenced out."""
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     clients = tmp_path / "clients"
     clients.mkdir()
     holder_repo = clients / "holder"
-    _init_client(holder_repo, bare)
+    init_client(holder_repo, bare)
     # Holder claims at t=1000 with ttl=100 -> expired by t=5000.
     held = fleet_claim.acquire(_WORK_KEY, repo=str(holder_repo), ttl_seconds=100.0, now=1000.0)
     assert held is not None
@@ -255,11 +241,11 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     ``heartbeat`` reports the claim lost.
     """
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     dead = tmp_path / "dead"
     survivor = tmp_path / "survivor"
-    _init_client(dead, bare)
-    _init_client(survivor, bare)
+    init_client(dead, bare)
+    init_client(survivor, bare)
 
     original = fleet_claim.acquire(_WORK_KEY, repo=str(dead), ttl_seconds=10.0, now=1000.0)
     assert original is not None
@@ -291,11 +277,11 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
 
 def test_refused_steal_push_is_an_infra_fault_not_a_contended_loss(tmp_path: Path) -> None:
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     holder = tmp_path / "holder"
     stealer = tmp_path / "stealer"
-    _init_client(holder, bare)
-    _init_client(stealer, bare)
+    init_client(holder, bare)
+    init_client(stealer, bare)
     claimed = fleet_claim.acquire(_WORK_KEY, repo=str(holder), now=1000.0, ttl_seconds=10.0)
     assert claimed is not None
     hook = bare / "hooks" / "pre-receive"
@@ -311,10 +297,10 @@ _ROUTED_TOKEN = "routed-claim-credential"
 
 def _origin_requiring_credential(tmp_path: Path) -> tuple[Path, Path]:
     bare = tmp_path / "origin.git"
-    _init_bare(bare)
+    init_bare(bare)
     require_credential(bare, _ROUTED_TOKEN)
     client = tmp_path / "client"
-    _init_client(client, bare)
+    init_client(client, bare)
     return bare, client
 
 

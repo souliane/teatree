@@ -97,8 +97,9 @@ def test_the_expiry_probe_leaves_no_ref_behind_in_the_clone(tmp_path: Path) -> N
     bare, holder = _origin(tmp_path, "holder")
     rival = init_client(tmp_path / "rival", bare)
     assert fleet_claim.acquire(_WORK_KEY, repo=str(holder), ttl_seconds=_TTL, now=0.0) is not None
+    before = git(rival, "for-each-ref", "--format=%(refname) %(objectname)")
     fleet_claim.steal_if_expired(_WORK_KEY, repo=str(rival), ttl_seconds=_TTL, now=1.0)
-    assert git(rival, "for-each-ref", "--format=%(refname)") == ""
+    assert git(rival, "for-each-ref", "--format=%(refname) %(objectname)") == before
 
 
 class TestLiveClaimSurvivesTheZeroFootprintCycle:

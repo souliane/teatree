@@ -7,6 +7,7 @@ metadata parser, and the Django-side wiring — directly.
 """
 
 import subprocess
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -16,9 +17,47 @@ from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.fleet.wire import host_from_issue_url
 from teatree.instance_id import instance_id
 
-from ._git_origin import as_other_instance, git, init_bare, init_client, init_with_origin, ref_sha
+from ._git_origin import FIXTURE_IDENTITY, as_other_instance, git, init_bare, init_client, init_with_origin, ref_sha
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
+
+
+def _main_with_a_root_and_a_child(tmp_path: Path, bare: Path) -> str:
+    """Replace *bare*'s ``main`` with a root holding a file plus one child, and return the root."""
+    seed = tmp_path / "seed"
+    git(tmp_path, "init", "-q", "-b", "main", seed.name)
+    (seed / "README").write_text("root\n", encoding="utf-8")
+    git(seed, "add", "README")
+    git(seed, *FIXTURE_IDENTITY, "commit", "-q", "-m", "root")
+    root = git(seed, "rev-parse", "HEAD")
+    (seed / "README").write_text("child\n", encoding="utf-8")
+    git(seed, *FIXTURE_IDENTITY, "commit", "-q", "-am", "child")
+    git(seed, "push", "-q", "--force", str(bare), "main:main")
+    return root
+
+
+class TestClaimCommitShape:
+    def test_each_claim_commit_has_the_default_branch_root_as_its_only_parent_and_its_tree(
+        self, tmp_path, subtests
+    ) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        root = _main_with_a_root_and_a_child(tmp_path, bare)
+        holder = init_client(tmp_path / "holder", bare)
+        acquired = fleet_claim.acquire(_KEY, repo=str(holder), ttl_seconds=10.0, now=1000.0)
+        assert acquired is not None
+        beat = fleet_claim.heartbeat(acquired, repo=str(holder), now=1001.0)
+        assert isinstance(beat, fleet_claim.Claim)
+        with as_other_instance(tmp_path / "rival-data"):
+            stolen = fleet_claim.steal_if_expired(
+                _KEY, repo=str(init_client(tmp_path / "rival", bare)), ttl_seconds=10.0, now=5000.0
+            )
+        assert stolen is not None
+        assert git(bare, "rev-parse", "main") != root
+
+        for operation, written in (("acquire", acquired), ("heartbeat", beat), ("steal", stolen)):
+            with subtests.test(operation=operation):
+                assert git(bare, "rev-list", "--parents", "-n", "1", written.sha).split()[1:] == [root]
+                assert git(bare, "rev-parse", f"{written.sha}^{{tree}}") == git(bare, "rev-parse", f"{root}^{{tree}}")
 
 
 class TestClaimRef:
@@ -105,8 +144,6 @@ class TestReleaseAndFence:
 
 def _reject_pushes(bare) -> None:
     """Install a ``pre-receive`` hook that refuses every push (push denied, reads OK)."""
-    from pathlib import Path  # noqa: PLC0415 — test-local
-
     hook = Path(bare) / "hooks" / "pre-receive"
     hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     hook.chmod(0o755)
@@ -125,6 +162,13 @@ class TestErrorPaths:
         not_a_repo.mkdir()
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
             fleet_claim.acquire(_KEY, repo=str(not_a_repo))
+
+    def test_acquire_without_a_resolvable_default_branch_fails_safe(self, tmp_path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        never_fetched = init_with_origin(tmp_path / "c", f"file://{bare}")
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="default branch"):
+            fleet_claim.acquire(_KEY, repo=str(never_fetched))
+        assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
 
     def test_acquire_raises_when_push_denied_but_ref_absent(self, tmp_path) -> None:
         # ls-remote succeeds (ref absent) yet the create push is refused — a
