@@ -11,6 +11,8 @@ so the boundary stays JSON-safe.
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from teatree.core.models import MergeVoid
+
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
     from teatree.core.models.pull_request import PullRequest
@@ -56,7 +58,7 @@ def serialize_ticket_detail(ticket: "Ticket") -> dict[str, Any]:
     session, the lifecycle-progress answer a client inspecting one ticket wants.
     """
     visited_phases, _ = ticket.aggregate_phase_records()
-    merge_void = ticket.merge_voids.first()
+    merge_void = MergeVoid.objects.filter(ticket=ticket).first()
     return {
         **serialize_ticket(ticket),
         "visited_phases": visited_phases,

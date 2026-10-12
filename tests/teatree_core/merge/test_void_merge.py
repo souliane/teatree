@@ -215,6 +215,8 @@ class TestVoidMergeCommand(TestCase):
         self.pr.refresh_from_db()
 
         shown = call_command("ticket", "show", str(self.ticket.pk))
+        assert isinstance(shown, dict)
+        assert isinstance(shown["merge_void"], dict)
         assert shown["merge_void"]["actor"] == "operator"
         assert shown["merge_void"]["reason"] == "history rewrite removed the change"
         assert serialize_ticket_detail(self.ticket)["merge_void"]["actor"] == "operator"

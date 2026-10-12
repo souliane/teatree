@@ -44,12 +44,12 @@ class VoidMergeCommands(TyperCommand):
             raise CommandError(str(exc)) from exc
         result: VoidMergeResult = {
             "void_id": int(row.pk),
-            "ticket_id": row.ticket_id,
-            "pull_request_id": row.pull_request_id,
+            "ticket_id": row.ticket.pk,
+            "pull_request_id": row.pull_request.pk,
             "ticket_state": row.ticket_state_before_merge,
             "pull_request_state": row.pr_state_before_merge,
         }
         self.stdout.write(
-            f"Voided merge for PR row {pr}; ticket {row.ticket_id} restored to {row.ticket_state_before_merge}"
+            f"Voided merge for PR row {pr}; ticket {row.ticket.pk} restored to {row.ticket_state_before_merge}"
         )
         return result

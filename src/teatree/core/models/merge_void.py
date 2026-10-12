@@ -44,5 +44,5 @@ class MergeVoid(models.Model):
             "evidence": self.evidence,
             "ticket_state_before_merge": self.ticket_state_before_merge,
             "pr_state_before_merge": self.pr_state_before_merge,
-            "pull_request_id": self.pull_request_id,
+            "pull_request_id": self.pull_request.pk,
         }

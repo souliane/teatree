@@ -1,6 +1,7 @@
 """Conservative content-presence verdict for an already merged PR."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 
@@ -26,7 +27,7 @@ class ContentEvidence:
 class ForgeTree:
     sha: str
     tree: str
-    blobs: dict[str, str | None]
+    blobs: Mapping[str, str | None]
 
 
 def assess_content(
@@ -37,22 +38,23 @@ def assess_content(
 ) -> ContentEvidence:
     """Presence is proven by full-tree equality or any changed-path blob equality."""
     paths = tuple(dict.fromkeys(changed_paths))
-    base = {
-        "head_sha": head.sha,
-        "default_sha": default.sha,
-        "head_tree": head.tree,
-        "default_tree": default.tree,
-        "checked_paths": paths,
-    }
+    base = ContentEvidence(
+        ContentPresence.UNKNOWN,
+        head_sha=head.sha,
+        default_sha=default.sha,
+        head_tree=head.tree,
+        default_tree=default.tree,
+        checked_paths=paths,
+    )
     if not all((head.sha, default.sha, head.tree, default.tree)) or not paths:
-        return ContentEvidence(ContentPresence.UNKNOWN, **base, reason="missing head, default, tree, or changed paths")
+        return replace(base, reason="missing head, default, tree, or changed paths")
     if set(paths) - head.blobs.keys() or set(paths) - default.blobs.keys():
-        return ContentEvidence(ContentPresence.UNKNOWN, **base, reason="incomplete blob read")
+        return replace(base, reason="incomplete blob read")
     if head.tree == default.tree:
-        return ContentEvidence(ContentPresence.PRESENT, **base, reason="tree equality")
+        return replace(base, presence=ContentPresence.PRESENT, reason="tree equality")
     matches = tuple(path for path in paths if head.blobs[path] == default.blobs[path])
     if matches:
-        return ContentEvidence(
-            ContentPresence.PRESENT, **base, matching_paths=matches, reason="changed-path blob equality"
+        return replace(
+            base, presence=ContentPresence.PRESENT, matching_paths=matches, reason="changed-path blob equality"
         )
-    return ContentEvidence(ContentPresence.ABSENT, **base, reason="all changed-path blobs differ")
+    return replace(base, presence=ContentPresence.ABSENT, reason="all changed-path blobs differ")

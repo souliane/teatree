@@ -222,11 +222,12 @@ class GhMergeRpc:
 
     def _content_tree(self, slug: str, commit_sha: str, tree_sha: str) -> ForgeTree | None:
         data = self._content_dict(["api", f"repos/{slug}/git/trees/{tree_sha}?recursive=1"])
-        if data is None or data.get("truncated") is not False or not isinstance(data.get("tree"), list):
+        entries = data.get("tree") if data is not None else None
+        if data is None or data.get("truncated") is not False or not isinstance(entries, list):
             return None
         blobs = {
             str(item["path"]): str(item["sha"])
-            for item in data["tree"]
+            for item in entries
             if isinstance(item, dict) and item.get("type") == "blob" and item.get("path") and item.get("sha")
         }
         return ForgeTree(commit_sha, tree_sha, blobs)
