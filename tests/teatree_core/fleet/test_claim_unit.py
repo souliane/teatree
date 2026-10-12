@@ -170,6 +170,46 @@ class TestReleaseAndFence:
         assert lost.observed_sha == twin.sha
 
 
+class TestClaimTipIdentity:
+    _ID = "0d9f3c1e-6b2a-4c8e-9f1a-2b3c4d5e6f70"
+    _LINEAGE = "4f1c2b3a5d6e7f8091a2b3c4d5e6f708"
+
+    @staticmethod
+    def _tip(**meta: object) -> fleet_claim.ClaimTip:
+        return fleet_claim.ClaimTip(sha="a" * 40, meta=cast("fleet_claim.ClaimMeta", meta))
+
+    def test_the_recorded_pair_holds_the_claim(self) -> None:
+        assert self._tip(instance_id=self._ID, lineage=self._LINEAGE).held_by(self._ID, self._LINEAGE)
+
+    def test_id_and_lineage_are_each_compared_verbatim(self, subtests) -> None:
+        near_misses = {
+            "case": (self._ID.upper(), self._LINEAGE.upper()),
+            "prefix": (self._ID[:8], self._LINEAGE[:8]),
+            "suffix": (self._ID + "x", self._LINEAGE + "x"),
+            "space": (" " + self._ID, " " + self._LINEAGE),
+        }
+        for name, (near_id, near_lineage) in near_misses.items():
+            with subtests.test(near=name):
+                assert not self._tip(instance_id=near_id, lineage=self._LINEAGE).held_by(self._ID, self._LINEAGE)
+                assert not self._tip(instance_id=self._ID, lineage=near_lineage).held_by(self._ID, self._LINEAGE)
+
+    def test_an_empty_id_or_lineage_never_matches(self) -> None:
+        assert not self._tip(instance_id="", lineage="").held_by("", "")
+        assert not self._tip(instance_id=self._ID, lineage="").held_by(self._ID, "")
+        assert not self._tip(instance_id="", lineage=self._LINEAGE).held_by("", self._LINEAGE)
+
+    def test_a_non_string_lineage_reads_as_none(self, subtests) -> None:
+        for value, claimed in ((0, "0"), (None, "None"), (["L"], "L"), (123, "123")):
+            with subtests.test(value=value):
+                tip = self._tip(instance_id=self._ID, lineage=value)
+                assert tip.lineage == ""
+                assert not tip.held_by(self._ID, claimed)
+
+    def test_a_record_with_trailing_data_or_a_non_object_is_unreadable(self) -> None:
+        assert fleet_claim._parse_meta(f'{{"instance_id": "{self._ID}"}} trailing') is None
+        assert fleet_claim._parse_meta(f'["{self._ID}"]') is None
+
+
 class TestReadTip:
     def test_a_ref_deleted_mid_read_reads_as_absent(self, tmp_path: Path) -> None:
         bare = init_bare(tmp_path / "o.git")

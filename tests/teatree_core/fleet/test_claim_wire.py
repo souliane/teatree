@@ -10,6 +10,7 @@ in the model manager, so ``teatree.core.models`` keeps no dependency on the high
 ``teatree.core`` coordination modules (the tach boundary).
 """
 
+import contextlib
 import itertools
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -495,12 +496,19 @@ class TestShipFenceGate(TestCase):
         assert "another instance" not in error
 
     def test_fence_fails_closed_with_no_clone_to_read_the_ref_from(self) -> None:
+        # The cwd is a clone whose origin holds this very claim, so only the guard refuses.
+        tmp = self._tmp()
+        holder = init_client(tmp / "holder", init_bare(tmp / "origin.git"))
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
+        assert claim is not None
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(ticket=ticket, overlay="acme", repo_path="", branch="feat")
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
-            _ISSUE, "acme", claim_ref_sha="a" * 40, claimed_by_instance="box-holder", claim_lineage=""
+            _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id, claim_lineage=claim.lineage
         )
-        assert "infrastructure is unreachable" in self._refusal(ticket, worktree)
+
+        with contextlib.chdir(holder):
+            assert "infrastructure is unreachable" in self._refusal(ticket, worktree)
 
 
 def _tempdir(tc: TestCase) -> Path:
