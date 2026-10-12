@@ -7,6 +7,7 @@ from teatree.utils.exact_carve_out import mask_exempt
 HANDLE = "acme-owner"
 ALIAS = "alice.work"
 ADDRESS = "alice@acme.example"
+ARABIC_INDIC_TWO = chr(0x662)
 
 
 def test_an_exact_occurrence_is_blanked_in_place() -> None:
@@ -37,8 +38,18 @@ def test_an_address_needs_its_own_at_sign() -> None:
     assert mask_exempt(ADDRESS.replace("@", "-"), (ADDRESS,)) == ADDRESS.replace("@", "-")
 
 
-@pytest.mark.parametrize("extended", [f"x{HANDLE}", f"{HANDLE}y", f"é{HANDLE}", f"Pre{HANDLE.title()}"])
-def test_a_letter_glued_to_either_end_extends_the_identifier(extended: str) -> None:
+@pytest.mark.parametrize(
+    "extended",
+    [
+        f"x{HANDLE}",
+        f"{HANDLE}y",
+        f"é{HANDLE}",
+        f"Pre{HANDLE.title()}",
+        "2AcmeOwner",
+        f"{HANDLE}{ARABIC_INDIC_TWO}",
+    ],
+)
+def test_a_letter_or_digit_glued_to_either_end_extends_the_identifier(extended: str) -> None:
     assert mask_exempt(extended, (HANDLE,)) == extended
 
 
@@ -50,6 +61,9 @@ def test_a_letter_glued_to_either_end_extends_the_identifier(extended: str) -> N
         (ADDRESS, f"{ADDRESS}@x"),
         ("alice@acme", "bob.alice@acme"),
         ("@acme-owner", "acme-owner.evil"),
+        (ALIAS, f"bob@{ALIAS}"),
+        (ALIAS, f"{ARABIC_INDIC_TWO}.{ALIAS}"),
+        (ALIAS, f"{ALIAS}.2"),
     ],
 )
 def test_an_address_mark_joined_to_a_word_extends_an_address(entry: str, extended: str) -> None:
