@@ -523,6 +523,13 @@ class TestConfigSettingExport(TestCase):
         call_command("config_setting", "export", "--include-private", "--include-banned-terms", "--output", str(target))
         assert "synthetic-scan-term" in target.read_text(encoding="utf-8")
 
+    def test_banned_content_flag_requires_private_backup(self) -> None:
+        out, err = StringIO(), StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "export", "--include-banned-terms", stdout=out, stderr=err)
+        assert out.getvalue() == ""
+        assert "--include-private" in err.getvalue()
+
 
 class TestConfigSettingExportFilters(TestCase):
     """The two export filters over the CLI — both off by default, both together = the file shape."""
