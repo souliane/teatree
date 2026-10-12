@@ -329,7 +329,7 @@ def heartbeat_inflight_claims(overlay: str) -> None:
 
     The heartbeat sweep. Runs on the issue-implementer tick — a cadence comfortably
     shorter than the TTL — so a live claim is re-affirmed long before it could
-    expire and be stolen while its dispatch runs. Per non-abandoned marker carrying
+    expire and be stolen while its dispatch runs. Per non-terminal marker carrying
     a fencing sha: re-point the claim ref (CAS against our own sha) and PERSIST the
     refreshed sha — or the tip this instance wrote earlier without recording it. A
     ``ClaimLost`` means another instance stole it while our dispatch stalled — abandon
@@ -337,16 +337,17 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     unreachable forge is transient: leave the marker and retry next tick (the TTL is
     the backstop).
 
-    Both RELINQUISHED states are skipped — ABANDONED (given up) and DECLINED (an
-    operator cancelled it, #4105) — because a refreshed claim ref on work nobody is
-    doing keeps a sibling instance out of an issue this one has let go.
+    Every terminal state is skipped: ABANDONED (given up) and DECLINED (an operator
+    cancelled it, #4105), because a refreshed claim ref on work nobody is doing keeps a
+    sibling instance out of an issue this one has let go; COMPLETED, because no outward
+    write follows a finished ticket, so its claim only needs to lapse.
     """
     from teatree.core.models import ImplementedIssueMarker  # noqa: PLC0415 — leaf import kept out of module load
 
     live = (
         ImplementedIssueMarker.objects.filter(overlay=overlay)
         .exclude(claim_ref_sha="")
-        .exclude(state__in=ImplementedIssueMarker.State.relinquished())
+        .exclude(state__in=ImplementedIssueMarker.State.terminal())
     )
     for marker in live:
         _heartbeat_one(marker)

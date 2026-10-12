@@ -483,6 +483,20 @@ class TestHeartbeatSweep(TestCase):
         # Un-refreshed, the original claim expired at t=1100, so the rival takes it.
         assert fleet_claim.steal_if_expired(_ISSUE, repo=str(thief), now=2000.0) is not None
 
+    def test_heartbeat_leaves_a_completed_claim_to_lapse(self) -> None:
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder), ttl_seconds=100.0, now=1000.0)
+        assert claim is not None
+        ImplementedIssueMarker.objects.create(
+            issue_url=_ISSUE, overlay="acme", claim_ref_sha=claim.sha, state=ImplementedIssueMarker.State.COMPLETED
+        )
+        with patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
+        assert ref_sha(bare, claim.ref) == claim.sha
+
     def test_heartbeat_skips_a_marker_when_no_repo_resolves(self) -> None:
         marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha="a" * 40)
         with (
