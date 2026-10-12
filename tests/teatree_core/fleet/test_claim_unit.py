@@ -281,6 +281,41 @@ class TestReadTip:
         assert tip.sha == beat.sha
         assert tip.lineage == claim.lineage != ""
 
+    def test_a_ref_that_moves_away_and_back_mid_read_reads_as_unreadable(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        beat = fleet_claim.heartbeat(claim, repo=str(client))
+        assert isinstance(beat, fleet_claim.Claim)
+        git(bare, "update-ref", claim.ref, claim.sha)
+        away = f'git --git-dir="{bare}" update-ref {claim.ref} {beat.sha}'
+        back = f'git --git-dir="{bare}" update-ref {claim.ref} {claim.sha}'
+        run_before_upload_pack(client, {2: away, 3: back})
+
+        assert fleet_claim.read_tip(_KEY, repo=str(client)) == fleet_claim.ClaimTip(sha=claim.sha, meta=None)
+
+    def test_a_ref_that_keeps_moving_through_every_read_fails_safe(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        first = fleet_claim.heartbeat(claim, repo=str(client))
+        assert isinstance(first, fleet_claim.Claim)
+        second = fleet_claim.heartbeat(first, repo=str(client))
+        assert isinstance(second, fleet_claim.Claim)
+        git(bare, "update-ref", claim.ref, claim.sha)
+        run_before_upload_pack(
+            client,
+            {
+                2: f'git --git-dir="{bare}" update-ref {claim.ref} {first.sha}',
+                4: f'git --git-dir="{bare}" update-ref {claim.ref} {second.sha}',
+            },
+        )
+
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="kept moving"):
+            fleet_claim.read_tip(_KEY, repo=str(client))
+
 
 class TestLineage:
     def test_steal_mints_a_new_lineage_and_heartbeat_carries_it_forward(self, tmp_path: Path) -> None:

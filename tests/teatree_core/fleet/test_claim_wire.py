@@ -28,6 +28,7 @@ from teatree.core.forge_push_verdict import CredentialSource
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, KnownIssue, Ticket, Worktree
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.instance_id import instance_id
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
@@ -418,6 +419,19 @@ class TestShipFenceGate(TestCase):
 
         assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
 
+    def test_blocks_a_tip_another_instance_wrote_under_this_tenures_lineage(self) -> None:
+        tmp = self._tmp()
+        ticket, worktree, claim, bare = self._ship_setup(tmp)
+        with as_other_instance(tmp / "rival-data"):
+            rival = fleet_claim.heartbeat(
+                replace(claim, instance_id=instance_id()), repo=str(init_client(tmp / "rival", bare))
+            )
+        assert isinstance(rival, fleet_claim.Claim)
+        assert rival.lineage == claim.lineage
+        assert rival.instance_id != claim.instance_id
+
+        assert "another instance now holds the fleet claim ref" in self._refusal(ticket, worktree)
+
     def test_blocks_when_the_claim_record_at_the_tip_names_no_holder(self) -> None:
         tmp = self._tmp()
         ticket, worktree, claim, _bare = self._ship_setup(tmp)
@@ -617,6 +631,23 @@ class TestHeartbeatSweep(TestCase):
         assert tip.lineage == claim.lineage
         marker.refresh_from_db()
         assert marker.claim_ref_sha == tip.sha != old_code_beat.sha
+
+    def test_a_pre_lineage_markers_beat_writes_no_lineage(self) -> None:
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
+        assert claim is not None
+        marker = ImplementedIssueMarker.objects.create(issue_url=_ISSUE, overlay="acme", claim_ref_sha=claim.sha)
+
+        with patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
+        tip = fleet_claim.read_tip(_ISSUE, repo=str(holder))
+        marker.refresh_from_db()
+        assert tip is not None
+        assert marker.claim_ref_sha == tip.sha != claim.sha
+        assert tip.lineage == marker.claim_lineage == ""
 
     def test_heartbeat_skips_a_declined_marker(self) -> None:
         """An operator let this one go — refreshing its claim keeps a sibling out (#4105)."""
