@@ -322,8 +322,10 @@ class TestIterTermMatches:
         assert matches[0][1] < matches[1][1]
 
     def test_camelcase_split_token_is_matched(self) -> None:
-        matches = term_match.iter_term_matches("value = acmeClient", "acme")
-        assert [m[0] for m in matches] == ["acme"]
+        assert term_match.iter_term_matches("value = acmeClient", "acme") == [("acme", 8)]
+
+    def test_the_position_indexes_the_original_text_past_a_case_cut(self) -> None:
+        assert term_match.iter_term_matches(f"{chr(0x130)} useAcmeClient", "acme") == [("acme", 5)]
 
     def test_multi_token_run_is_matched(self) -> None:
         matches = term_match.iter_term_matches("uses acme-corp here", "acme-corp")
