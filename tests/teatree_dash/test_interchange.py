@@ -13,13 +13,14 @@ from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.interchange import changed_sections, export_text, import_preview
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
 _TUNED_LOOP = "housekeeping"
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _scan_terms() -> Iterator[None]:
-    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
         yield
 
 
