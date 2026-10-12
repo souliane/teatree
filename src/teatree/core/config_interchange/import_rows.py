@@ -85,8 +85,7 @@ def _unstorable_reason(key: str, value: ConfigValue, policy: ImportPolicy) -> st
     itself a personal backup — it is what makes ``--include-private`` restorable (#4156).
     """
     if key not in ALL_KNOWN_CONFIG_SETTINGS and known_pass_key_credential(key) is None:
-        hint = config_key_hint(key)
-        return f"unknown key; {hint}" if hint else "unknown key"
+        return f"unknown key; {config_key_hint(key)}"
     if policy.allow_private:
         return None
     if (secret := policy.secret_reason(key, value)) is not None:

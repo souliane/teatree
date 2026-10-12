@@ -45,12 +45,13 @@ RENAMED_CONFIG_SETTINGS = {
 }
 
 RETIRED_CONFIG_SETTINGS = {
-    "branch_prefix": "retired: no readers; branch naming uses T3_BRANCH_PREFIX",
-    "ask_before_post_on_behalf": "retired: no readers; posting uses resolve_on_behalf_verdict",
+    "branch_prefix": "retired: no readers; branch naming uses T3_BRANCH_PREFIX (#2731)",
+    "ask_before_post_on_behalf": "retired: no readers; posting uses resolve_on_behalf_verdict (#2731)",
 }
 
 
 def config_key_hint(key: str) -> str:
+    """Why *key* has no setting: renamed, retired, or never declared."""
     if replacement := RENAMED_CONFIG_SETTINGS.get(key):
         return f"renamed to {replacement}"
-    return RETIRED_CONFIG_SETTINGS.get(key, "")
+    return RETIRED_CONFIG_SETTINGS.get(key, "not a declared setting")

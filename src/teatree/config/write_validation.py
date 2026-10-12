@@ -52,9 +52,7 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
         raise ConfigWriteError(UNLISTED_HEADER_REFUSAL)
     parser = ALL_KNOWN_CONFIG_SETTINGS.get(key)
     if parser is None:
-        msg = f"unknown config key: {key}"
-        if hint := config_key_hint(key):
-            msg += f"; {hint}"
+        msg = f"unknown config key: {key}; {config_key_hint(key)}"
         raise ConfigWriteError(msg)
     try:
         value = parser(raw)

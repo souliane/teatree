@@ -150,9 +150,7 @@ def _stored_row_suffix(key: str) -> str:
 class Command(TyperCommand):
     def _refuse_unknown_key(self, key: str) -> NoReturn:
         """Refuse a key with no live config setting declaration."""
-        hint = config_key_hint(key)
-        suffix = f"; {hint}" if hint else ""
-        self.stderr.write(f"  refusing: {key!r} is not a known config setting{suffix}")
+        self.stderr.write(f"  refusing: {key!r} is not a known config setting; {config_key_hint(key)}")
         raise SystemExit(2)
 
     def _write_pass_key_resolution(self, key: str, credential: str, overlay: str) -> None:

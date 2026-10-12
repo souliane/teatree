@@ -302,7 +302,9 @@ class TestImportTomlToDb(TestCase):
 
     def test_unknown_key_rejects_the_whole_import(self) -> None:
         result = import_toml_to_db('[teatree]\nnot_a_setting = 1\nmode = "auto"\n', scan_terms=())
-        assert [(r.key, r.reason) for r in result.rejected] == [("not_a_setting", "unknown key")]
+        assert [(r.key, r.reason) for r in result.rejected] == [
+            ("not_a_setting", "unknown key; not a declared setting")
+        ]
         # Atomic: the clean `mode` row is NOT written when a sibling row is rejected.
         assert result.written == ()
         assert ConfigSetting.objects.count() == 0
@@ -326,14 +328,16 @@ class TestImportTomlToDb(TestCase):
     def test_removed_key_is_rejected_with_its_retirement_reason(self) -> None:
         result = import_toml_to_db('[teatree]\nbranch_prefix = "x"\n', scan_terms=())
         assert [(row.key, row.reason) for row in result.rejected] == [
-            ("branch_prefix", "unknown key; retired: no readers; branch naming uses T3_BRANCH_PREFIX")
+            ("branch_prefix", "unknown key; retired: no readers; branch naming uses T3_BRANCH_PREFIX (#2731)")
         ]
         assert result.written == ()
         assert ConfigSetting.objects.count() == 0
 
     def test_unknown_key_without_history_is_still_rejected(self) -> None:
         result = import_toml_to_db('[teatree]\nnot_a_setting = "x"\n', scan_terms=())
-        assert [(row.key, row.reason) for row in result.rejected] == [("not_a_setting", "unknown key")]
+        assert [(row.key, row.reason) for row in result.rejected] == [
+            ("not_a_setting", "unknown key; not a declared setting")
+        ]
         assert result.written == ()
         assert ConfigSetting.objects.count() == 0
 

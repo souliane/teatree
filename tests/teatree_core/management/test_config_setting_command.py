@@ -882,6 +882,25 @@ class _TermGuardCase(TestCase):
             assert load_registry() is None
 
 
+class TestEveryUnknownKeySaysWhy(_TermGuardCase):
+    ANSWERS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "speed": ("renamed to wip",),
+        "branch_prefix": ("retired:", "#2731"),
+        "not_a_setting_probe": ("not a declared setting",),
+    }
+
+    def test_set_and_import_name_the_reason(self) -> None:
+        for key, fragments in self.ANSWERS.items():
+            path = self._file("f.toml", f'[teatree]\n{key} = "x"\n')
+            for args in (("set", key, '"x"'), ("import", "--input", str(path))):
+                with self.subTest(key=key, surface=args[0]):
+                    code, _, err = self._run(*args)
+                    assert code == 2
+                    assert all(fragment in err for fragment in fragments), err
+                    assert "git " not in err
+                    assert not ConfigSetting.objects.filter(key=key).exists()
+
+
 class TestRefusalsNameTheClassNeverTheValue(_TermGuardCase):
     def test_a_banned_term_value_rejected_as_invalid_on_restore_drops_the_parser_message(self) -> None:
         backup = "[backup]\ninclude_private = true\n[teatree]\n"

@@ -233,9 +233,7 @@ def settings_readouts(request: "HttpRequest") -> "HttpResponse":
 
 
 def _unknown_setting(key: str) -> HttpResponseBadRequest:
-    hint = config_key_hint(key)
-    suffix = f"; {hint}" if hint else ""
-    return HttpResponseBadRequest(f"unknown setting {key!r}{suffix}")
+    return HttpResponseBadRequest(f"unknown setting {key!r}; {config_key_hint(key)}")
 
 
 @require_loopback_or_staff
