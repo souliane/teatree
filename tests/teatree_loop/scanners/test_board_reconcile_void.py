@@ -83,6 +83,24 @@ class TestTheJanitorLeavesAVoidedTicketAlone(TestCase):
         assert ticket.state == State.CODED
         assert transitions == []
 
+    def test_an_older_abandoned_pr_neither_ends_the_hold_nor_refuses_each_run(self) -> None:
+        ticket = landed_ticket(from_state=State.REVIEW_REQUESTED)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url=f"https://github.com/{SLUG}/pull/40",
+            repo=SLUG,
+            iid="40",
+            state=PullRequest.State.CLOSED,
+        )
+        void_pr()
+
+        runs = [self._reconcile()[1] for _ in range(2)]
+
+        ticket.refresh_from_db()
+        assert ticket.state == State.REVIEW_REQUESTED
+        assert runs == [[], []]
+
 
 class TestTheJanitorResumesOnceAnotherPrCarriesTheWork(TestCase):
     def test_a_new_pr_ends_the_hold(self) -> None:

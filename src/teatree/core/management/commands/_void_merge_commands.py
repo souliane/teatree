@@ -9,6 +9,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.merge.void_merge import VoidPlan, VoidRefusedError, apply_void, check_operator, plan_void
 from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.core.models.merge_void import PullRequestClose, TicketKept, TicketRestore
+from teatree.url_classify import pr_ref
 
 
 class VoidMergeResult(TypedDict, total=False):
@@ -55,8 +56,17 @@ def _reread(void: MergeVoid) -> list[str]:
     return [
         void.describe(),
         *(f"  pull request row {row.pk}: {row.state}" for row in rows),
-        *(f"  ticket {ticket.pk}: {ticket.state}" for ticket in tickets),
+        *(line for ticket in tickets for line in _ticket_lines(ticket)),
     ]
+
+
+def _ticket_lines(ticket: Ticket) -> list[str]:
+    lines = [f"  ticket {ticket.pk}: {ticket.state}"]
+    if ticket.issue_url and pr_ref(ticket.issue_url) is None:
+        lines.append(
+            f"    reopen {ticket.issue_url} before re-delivery if it is closed, or the board retires the ticket"
+        )
+    return lines
 
 
 class VoidMergeCommands(TyperCommand):

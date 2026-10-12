@@ -39,12 +39,11 @@ def without_voided(tickets: "Iterable[Ticket]") -> "list[Ticket]":
 
 
 def _held_by_void(ticket: "Ticket", voided: "VoidedRefs", *, restored: set[int]) -> bool:
-    """Its own url is a voided PR, or a void restored it and no PR outside the voided set has replaced it since."""
+    """Its own url is a voided PR, or a void restored it and no open or merged PR outside the voided set carries it."""
     if _voided_url(ticket.issue_url, voided):
         return True
-    return ticket.pk in restored and all(
-        _voided_url(url, voided) for url in PullRequest.objects.filter(ticket=ticket).values_list("url", flat=True)
-    )
+    live = PullRequest.objects.filter(ticket=ticket).exclude(state=PullRequest.State.CLOSED)
+    return ticket.pk in restored and all(_voided_url(url, voided) for url in live.values_list("url", flat=True))
 
 
 def _voided_url(url: str, voided: "VoidedRefs") -> bool:

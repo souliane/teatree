@@ -19,7 +19,7 @@ from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError
 from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.hooks.void_merge_detect import DENY_REASON, void_merge_deny_reason
-from tests.void_merge_fixtures import ABSENT, PR_URL, Terminal, human_operator, landed_ticket, stub_forge
+from tests.void_merge_fixtures import ABSENT, ISSUE_URL, PR_URL, Terminal, human_operator, landed_ticket, stub_forge
 
 State = Ticket.State
 
@@ -117,6 +117,16 @@ class TestVoidMergeCommand(TestCase):
         assert f"merge voided: {PR_URL} @{void.merged_sha[:8]} by alice at " in out
         assert f"ticket {self.ticket.pk}: coded" in out
         assert f"pull request row {PullRequest.objects.get().pk}: closed" in out
+        assert f"reopen {ISSUE_URL} before re-delivery if it is closed" in out
+
+    def test_a_ticket_keyed_on_the_voided_pr_gets_no_reopen_reminder(self) -> None:
+        keyed = landed_ticket(issue_url=PR_URL, with_row=False)
+
+        with stub_forge():
+            _, out = _run("--reason", "history rewrite", "--by", "alice", stdin=Terminal("yes\n"), stdout=Terminal())
+
+        assert f"ticket {keyed.pk}: coded" in out
+        assert out.count("reopen ") == 1
 
 
 class TestTheAgentHookReadsTheArgvAsTheParserDoes(TestCase):
