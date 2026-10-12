@@ -26,6 +26,7 @@ from ._git_origin import (
     init_bare,
     init_client,
     init_with_origin,
+    private_origin,
     ref_sha,
     run_before_upload_pack,
 )
@@ -108,6 +109,8 @@ class TestClaimCommitShape:
         holder = init_client(tmp_path / "holder", bare)
         git(holder, "remote", "set-head", "origin", "--delete")
         assert git(holder, "for-each-ref", "--format=%(refname)") == "refs/remotes/origin/trunk"
+        merged_since_the_fetch = git(bare, *FIXTURE_IDENTITY, "commit-tree", f"{root}^{{tree}}", "-p", root, "-m", "m")
+        git(bare, "update-ref", "refs/heads/trunk", merged_since_the_fetch)
 
         claim = fleet_claim.acquire(_KEY, repo=str(holder))
 
@@ -364,12 +367,23 @@ class TestErrorPaths:
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
             fleet_claim.acquire(_KEY, repo=str(not_a_repo))
 
-    def test_acquire_fails_safe_when_origin_advertises_no_default_branch(self, tmp_path: Path) -> None:
-        bare = tmp_path / "unborn.git"
-        git(tmp_path, "init", "--bare", "-q", bare.name)
-        client = init_client(tmp_path / "c", bare)
-        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="advertises no default branch"):
-            fleet_claim.acquire(_KEY, repo=str(client))
+    def test_acquire_fails_safe_when_origin_advertises_no_default_branch(self, tmp_path: Path, subtests) -> None:
+        unborn = tmp_path / "unborn.git"
+        git(tmp_path, "init", "--bare", "-q", unborn.name)
+        detached = init_bare(tmp_path / "detached.git")
+        git(detached, "update-ref", "--no-deref", "HEAD", git(detached, "rev-parse", "main"))
+        for bare in (unborn, detached):
+            with subtests.test(origin=bare.name):
+                client = init_client(tmp_path / f"client-of-{bare.name}", bare)
+                with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="advertises no default branch"):
+                    fleet_claim.acquire(_KEY, repo=str(client))
+                assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
+
+    def test_an_unreadable_default_branch_names_gits_cause_without_the_credential(self, tmp_path: Path) -> None:
+        bare, client = private_origin(tmp_path, "routed-token")
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="credential refused: <redacted>") as refused:
+            fleet_claim.acquire(_KEY, repo=str(client), extra_env={"GH_TOKEN": "stale-token"})
+        assert "stale-token" not in str(refused.value)
         assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
 
     def test_acquire_fails_safe_when_the_default_branch_cannot_be_fetched(self, tmp_path: Path) -> None:
