@@ -18,7 +18,6 @@ import os
 import tomllib
 from unittest import mock
 
-import pytest
 from django.test import TestCase
 
 from teatree.config import defaults_snapshot
@@ -30,8 +29,12 @@ from teatree.core.config_interchange import migration as config_migration
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY
 
 _SHIPPED_TEXT = DEFAULTS_TOML.read_text(encoding="utf-8")
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 
 
 def _teatree(text: str) -> dict[str, object]:
@@ -222,22 +225,22 @@ class TestOneEmitterForBothWriters(TestCase):
 
     def test_private_defaults_shape_is_marked_and_restorable(self) -> None:
         export = export_db_to_toml(
-            scan_terms=("synthetic-private",),
+            scan_terms=_SCAN,
             default_keys_only=True,
             include_defaults=True,
             privacy=ExportPrivacy.PRIVATE,
         )
         assert export.private_backup is True
         assert tomllib.loads(export.toml)["backup"]["include_private"] is True
-        restored = import_toml_to_db(export.toml, scan_terms=("synthetic-private",), restore_private=True)
+        restored = import_toml_to_db(export.toml, scan_terms=_SCAN, restore_private=True)
         assert restored.rejected == ()
 
-    def test_private_export_needs_a_second_flag_for_banned_content(self) -> None:
-        ConfigSetting.objects.set_value("dashboard_instance_label", "synthetic-private")
-        with pytest.raises(ValueError, match="include-banned-terms") as refusal:
-            export_db_to_toml(scan_terms=("synthetic-private",), privacy=ExportPrivacy.PRIVATE)
-        assert "synthetic-private" not in str(refusal.value)
-        assert "banned-term" in str(refusal.value)
-        assert "dashboard_instance_label" in str(refusal.value)
-        export = export_db_to_toml(scan_terms=("synthetic-private",), privacy=ExportPrivacy.WITH_BANNED_TERMS)
-        assert "synthetic-private" in export.toml
+    def test_a_private_export_withholds_the_term_row_and_keeps_the_rest(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_label", _CARRIER)
+        ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
+        export = export_db_to_toml(scan_terms=_SCAN, privacy=ExportPrivacy.PRIVATE)
+        assert [(row.key, row.reason) for row in export.redacted] == [("issue_implementer_label", "banned-term")]
+        assert not line_matches(export.toml, _SCAN)
+        assert _teatree(export.toml)["slack_user_id"] == "synthetic-user-ref"
+        carried = export_db_to_toml(scan_terms=_SCAN, privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES)
+        assert _teatree(carried.toml)["issue_implementer_label"] == _CARRIER

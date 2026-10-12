@@ -19,9 +19,10 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="muted">Secrets and personal identifiers are withheld from an export. A complete backup including
-      them is <span class="mono">t3 &lt;overlay&gt; config_setting export --include-private</span>, restored with
-      <span class="mono">config_setting import --restore-private</span>.</p>
+    <p class="muted">Secrets and personal identifiers are withheld from an export. A personal backup including
+      them is <span class="mono">t3 &lt;overlay&gt; config_setting export --include-private</span>; a row carrying a
+      banned term also needs <span class="mono">--include-banned-term-values --output &lt;file&gt;</span>. Either is
+      restored with <span class="mono">config_setting import --restore-private</span>.</p>
   </section>
 
   <section class="band">
@@ -57,6 +58,11 @@
     {% if import_result %}
       <div class="import-result">
         <h3>{% if import_applied %}Imported{% else %}Import preview — dry-run, nothing written{% endif %}</h3>
+        {% if import_result.unscanned %}
+          <p class="banner-red">Rows were not content-scanned: banned_term_registry is unset or holds no ban-class
+            term — configure it (or supply <span class="mono">$TEATREE_TERM_REGISTRY</span>); every value below is
+            shown withheld.</p>
+        {% endif %}
         {% if import_result.rejected %}
           <p class="banner-red">{{ import_result.rejected|length }} row(s) rejected — the whole import was refused, nothing was written.</p>
           {% if import_result.private_backup %}
@@ -81,7 +87,7 @@
           {% endif %}
           <ul>
             {% for row in import_result.written %}
-              <li class="mono">{{ row.key }} = {{ row.toml_value }} [{{ row.scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
+              <li class="mono">{{ row.key }} = {{ row.toml_value }} [{{ row.shown_scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
             {% endfor %}
           </ul>
         {% endif %}

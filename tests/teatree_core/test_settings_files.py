@@ -17,12 +17,15 @@ Two properties carry that and are asserted as properties rather than as examples
 import copy
 import json
 import os
+import re
 from collections.abc import Iterator
+from io import StringIO
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
@@ -32,8 +35,12 @@ from teatree.core.settings.settings_compat import Severity, build_compat_report
 from teatree.core.settings.settings_files import MAX_SNAPSHOT_BYTES, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.core.settings.settings_peers import PeerSnapshot, SnapshotOrigin
 from teatree.core.settings_snapshot import FORMAT_VERSION, SNAPSHOT_FORMAT, build_snapshot
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 
 #: A setting the fixtures never store, so dropping it from a record adds nothing to either side.
 _UNSTORED_KEY = "merge_wip"
@@ -45,7 +52,7 @@ _STORED_SCOPE = "solo"
 
 @pytest.fixture(scope="module", autouse=True)
 def _scan_terms() -> Iterator[None]:
-    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
         yield
 
 
@@ -406,6 +413,23 @@ class TestSavingThisBoxsSnapshot(TestCase):
     def test_the_download_carries_no_raw_secret(self) -> None:
         response = self.client.get(self.url, {"download": "1"}, **_LOOPBACK)
         assert response.json()["includes_private"] is False
+
+    def test_a_label_carrying_a_term_is_withheld_from_the_payload_and_the_filename(self) -> None:
+        call_command("config_setting", "set", "dashboard_instance_label", json.dumps(_CARRIER), stdout=StringIO())
+        plain = self.client.get(self.url, **_LOOPBACK)
+        download = self.client.get(self.url, {"download": "1"}, **_LOOPBACK)
+        disposition = download.headers["Content-Disposition"]
+        assert plain.json()["instance"]["label"] == "<withheld: banned-term>"
+        assert re.fullmatch(r'attachment; filename="teatree-settings-instance-\d{4}-\d{2}-\d{2}\.json"', disposition)
+        for text in (plain.content.decode(), download.content.decode(), disposition):
+            assert not line_matches(text, _SCAN)
+
+    def test_a_box_with_no_term_answers_503_naming_the_registry(self) -> None:
+        with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            response = self.client.get(self.url, {"download": "1"}, **_LOOPBACK)
+        assert response.status_code == 503
+        assert "banned_term_registry" in response.json()["error"]
+        assert "Content-Disposition" not in response.headers
 
     def test_the_download_route_is_still_read_only(self) -> None:
         assert self.client.post(self.url, {"download": "1"}, **_LOOPBACK).status_code == 405

@@ -16,6 +16,8 @@ import tomlkit
 from django.test import TestCase
 from tomlkit import items as tomlkit_items
 
+from teatree.core.config_interchange.export_rows import ExportGuard
+from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
     classify_seed_rows,
@@ -41,7 +43,7 @@ def _sorted_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
 def _emitted() -> dict[str, dict[str, dict[str, ConfigValue]]]:
     """The emitted seed tables, read back through a real TOML parse."""
     document = tomlkit.document()
-    emit_seed_tables(document, _sorted_table)
+    emit_seed_tables(document, _sorted_table, guard=ExportGuard(ExportPrivacy.SHARED, (), [], []))
     return tomllib.loads(tomlkit.dumps(document))
 
 

@@ -157,7 +157,10 @@ def export_scan_terms(*, db_path: Path | None = None) -> tuple[str, ...]:
                     seen.setdefault(term, None)
         if seen:
             return tuple(seen)
-        msg = f"{_REGISTRY_KEY} has no export scan terms — refusing to scan as empty"
+        msg = (
+            f"{_REGISTRY_KEY} holds no leak, prose_collider, tone or overlay term — configure one "
+            f"or supply the ${_REGISTRY_ENV} JSON secret; refusing to scan as empty"
+        )
         raise BannedTermsUnsetError(msg)
     raise BannedTermsUnsetError.for_key(_REGISTRY_KEY, _REGISTRY_ENV)
 

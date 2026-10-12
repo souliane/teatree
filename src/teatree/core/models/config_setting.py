@@ -109,8 +109,14 @@ def reject_unhonourable_overlay_scope(key: str, scope: str) -> None:
         raise ValueError(msg)
 
 
+#: The scope a report names in place of a scope or entry name that carries a banned term.
+WITHHELD_NAME_SCOPE = "under a name that carries a banned term"
+
+
 def scope_label(scope: str) -> str:
     """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
+    if scope == WITHHELD_NAME_SCOPE:
+        return scope
     return "global" if not scope else f"overlay {scope!r}"
 
 

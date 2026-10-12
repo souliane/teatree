@@ -16,60 +16,43 @@ exports none of them, and re-importing ``defaults.toml`` itself writes nothing.
 """
 
 import tomllib
-from dataclasses import dataclass
 from typing import Any
 
 import tomlkit
 from django.db import transaction
 
-from teatree.config import effective_default
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
-from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
-from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, config_key_hint
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.setting_groups import grouped_settings_table
-from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.document_layout import (
     GLOBAL_SCOPE,
     OVERLAYS_TABLE,
     TABLE_REGISTRY_KEYS,
-    import_candidates,
     registry_value,
     sorted_table,
 )
-from teatree.core.config_interchange.export_rows import _configuration_rows, _exportable_rows, _ExportGuard
-from teatree.core.config_interchange.registry_rows import merged_registry
+from teatree.core.config_interchange.export_rows import ExportGuard, _configuration_rows, _exportable_rows
+from teatree.core.config_interchange.import_rows import ImportPolicy, ImportRows, classify_document, seed_row
 from teatree.core.config_interchange.secret_guard import (
     ExportPrivacy,
     RedactedRow,
+    ScanTermsUnavailableError,
     is_private_backup,
     mark_private_backup,
-    redaction_reason,
     resolve_export_scan_terms,
     stamp_private_backup,
 )
-from teatree.core.config_interchange.seed_tables import (
-    SeedFieldDisposition,
-    classify_seed_rows,
-    emit_seed_tables,
-    holds_value,
-    mask_refusals,
-    unseeded_entries,
-    write_seed_field,
-)
-from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, RejectedRow
+from teatree.core.config_interchange.seed_tables import emit_seed_tables, write_seed_field
+from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, OmittedRow
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
-from teatree.core.overlays.overlay_credentials import known_pass_key_credential
-from teatree.hooks.term_match import matched_term
 
-
-class BannedTermExportError(ValueError):
-    """The export contains a suppressed term without explicit permission."""
+#: Why an unshipped seed entry is left out of every export, so the file still restores.
+UNSHIPPED_SEED_REASON = "not shipped — import has no home for it"
 
 
 def export_db_to_toml(
@@ -107,29 +90,33 @@ def export_db_to_toml(
     owner-approved ``snapshot_settings_defaults`` writes with, so the shipped file and the
     exported file can never come from two writers.
 
-    By DEFAULT the secret guard withholds any row that is a known-private key
-    (``SECRET_SETTINGS``) OR whose key/value contains a banned customer/brand term
-    (``scan_terms``, resolved from the live config when not supplied) — so a SHARED
-    export cannot leak customer data even though the private DB store keeps it.
-    ``privacy`` selects a shared file, a personal backup, or an explicitly
-    authorized personal backup carrying suppressed content. The
-    withheld rows ride back on the result so the caller can warn what it dropped.
+    By DEFAULT (``privacy`` SHARED) the secret guard withholds any row that is a
+    known-private key (``SECRET_SETTINGS``) OR whose key/value contains a banned
+    customer/brand term (``scan_terms``, resolved from the live config when not supplied) —
+    so a SHARED export cannot leak customer data even though the private DB store keeps it.
+    PRIVATE is a personal backup: it carries the key classes but still withholds every row
+    carrying a banned term, the term registry itself included. Only
+    ``PRIVATE_WITH_TERM_VALUES`` carries those, and it resolves no terms at all. Everything
+    under a scope or entry NAME carrying a term is withheld too, reported without the name.
+    The withheld rows ride back on the result so the caller can warn what it dropped.
+
+    The two scanning shapes raise :class:`ScanTermsUnavailableError` when the store holds no
+    ban-class term: an unclassified row would leave the box.
 
     A stored row that is not CONFIGURATION at all — internal runtime state sharing the
     store, a key outliving its declaration — is omitted whatever the filters say, and
-    rides back the same way (#4147). Not a privacy rule but an interchange one: the
-    import has no home for such a key and refuses the whole file on it.
+    rides back the same way (#4147), as does a loop, preset or schedule the shipped file
+    does not carry. Not a privacy rule but an interchange one: the import has no home for
+    either and refuses the whole file on one.
 
-    A private dump STAMPS itself a personal backup (#4156), so the file says
-    which of the two formats it is and ``import --restore-private`` can read it back. The
-    defaults shape stays byte-identical without private flags; with them it carries
-    the same restore marker as every other personal backup.
+    Every private dump STAMPS itself a personal backup (#4156), defaults shape included, so
+    the file says which of the two formats it is and ``import --restore-private`` can read
+    it back. The SHARED defaults shape stays byte-identical to ``defaults.toml``.
     """
-    terms = scan_terms if scan_terms is not None else resolve_export_scan_terms()
-    include_private = privacy is not ExportPrivacy.SHARED
-    guard = _ExportGuard(include_private=include_private, terms=terms, redacted=[], omitted=[])
+    terms = () if privacy is ExportPrivacy.PRIVATE_WITH_TERM_VALUES else scan_terms
+    guard = ExportGuard(privacy, resolve_export_scan_terms() if terms is None else terms, redacted=[], omitted=[])
     document = tomlkit.document()
-    if include_private:
+    if guard.private_backup:
         mark_private_backup(document)
     all_global = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
     overlays_registry = registry_value(all_global, OVERLAYS_TABLE)
@@ -137,7 +124,7 @@ def export_db_to_toml(
     if overlay is not None:
         scoped_registry = {overlay: overlays_registry[overlay]} if overlay in overlays_registry else {}
         _emit_overlay_tables(document, [overlay], scoped_registry, guard=guard)
-        return _finalize_export(tomlkit.dumps(document), guard, privacy=privacy)
+        return _exported(tomlkit.dumps(document), guard)
 
     # The registry keys are rendered as their own top-level tables below, never under
     # ``[teatree]`` (they are NOT ``UserSettings`` fields) — exclude them from the
@@ -151,11 +138,7 @@ def export_db_to_toml(
         global_rows = _filled_with_defaults(global_rows, default_keys_only=default_keys_only, guard=guard)
     if default_keys_only and include_defaults:
         text = render_shipped_file(global_rows, base_text=_shipped_file_text())
-        return _finalize_export(
-            stamp_private_backup(text) if include_private else text,
-            guard,
-            privacy=privacy,
-        )
+        return _exported(stamp_private_backup(text) if guard.private_backup else text, guard)
     if global_rows:
         document["teatree"] = grouped_settings_table(global_rows)
     if not default_keys_only:
@@ -169,40 +152,18 @@ def export_db_to_toml(
         for key in TABLE_REGISTRY_KEYS:
             _emit_registry_tables(document, key, registry_value(all_global, key), guard=guard)
     _emit_seed_tables(document, guard=guard)
-    return _finalize_export(tomlkit.dumps(document), guard, privacy=privacy)
+    return _exported(tomlkit.dumps(document), guard)
 
 
-def _finalize_export(text: str, guard: _ExportGuard, *, privacy: ExportPrivacy) -> ConfigExport:
-    if matched_term(text, guard.terms) and privacy is not ExportPrivacy.WITH_BANNED_TERMS:
-        key = _suppressed_export_key(tomllib.loads(text), guard.terms) or "[document]"
-        message = f"export refused {key} (banned-term); pass --include-private --include-banned-terms"
-        raise BannedTermExportError(message)
-    return ConfigExport(text, tuple(guard.redacted), tuple(guard.omitted), private_backup=guard.include_private)
+def _exported(text: str, guard: ExportGuard) -> ConfigExport:
+    return ConfigExport(text, tuple(guard.redacted), tuple(guard.omitted), private_backup=guard.private_backup)
 
 
-def _suppressed_export_key(value: object, terms: tuple[str, ...], path: tuple[str, ...] = ()) -> str | None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            name = str(key)
-            label = "[suppressed-key]" if matched_term(name, terms) else name
-            child = (*path, label)
-            if matched_term(name, terms):
-                return ".".join(child)
-            if found := _suppressed_export_key(item, terms, child):
-                return found
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            if found := _suppressed_export_key(item, terms, (*path, str(index))):
-                return found
-    elif matched_term(str(value), terms):
-        return ".".join(path) or "[document]"
-    return None
-
-
-def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: _ExportGuard) -> None:
+def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: ExportGuard) -> None:
     """The seed half, under the same guard — a withheld field rides back as a `RedactedRow`."""
-    withheld = emit_seed_tables(document, sorted_table, terms=guard.terms, withhold_secrets=not guard.include_private)
-    guard.redacted.extend(RedactedRow(one.scope, one.field, one.reason) for one in withheld)
+    emission = emit_seed_tables(document, sorted_table, guard=guard)
+    guard.redacted.extend(RedactedRow(one.scope, one.field, one.reason) for one in emission.withheld)
+    guard.omitted.extend(OmittedRow(GLOBAL_SCOPE, entry, UNSHIPPED_SEED_REASON) for entry in emission.unshipped)
 
 
 def _shipped_file_text() -> str:
@@ -219,7 +180,7 @@ def _shipped_file_text() -> str:
 
 
 def _filled_with_defaults(
-    rows: dict[str, ConfigValue], *, default_keys_only: bool, guard: _ExportGuard
+    rows: dict[str, ConfigValue], *, default_keys_only: bool, guard: ExportGuard
 ) -> dict[str, ConfigValue]:
     """Add every eligible key that has no DB row, at its resolved effective value.
 
@@ -247,7 +208,7 @@ def _filled_with_defaults(
     for key, entry in resolve_settings(sorted(eligible - set(rows)), persisted_only=True).items():
         if entry.source is ValueSource.CODE_DEFAULT and key not in carried:
             continue
-        reason = None if guard.include_private else redaction_reason(key, entry.value, guard.terms)
+        reason = guard.reason(key, entry.value)
         if reason is None:
             filled[key] = entry.value
             continue
@@ -268,7 +229,7 @@ def _emit_overlay_tables(
     scopes: list[str],
     overlays_registry: dict[str, Any],
     *,
-    guard: _ExportGuard,
+    guard: ExportGuard,
 ) -> None:
     """Attach an ``[overlays.<name>]`` sub-table per overlay, merging definitions + settings.
 
@@ -282,8 +243,12 @@ def _emit_overlay_tables(
     overlays = tomlkit.table(is_super_table=True)
     emitted = False
     for name in sorted(dict.fromkeys([*overlays_registry, *scopes])):
-        stored = _configuration_rows(ConfigSetting.objects.overrides_for_scope(name), name, guard=guard)
-        rows = _exportable_rows({**overlays_registry.get(name, {}), **stored}, name, guard=guard)
+        scope_rows = ConfigSetting.objects.overrides_for_scope(name)
+        definitions = overlays_registry.get(name, {})
+        if guard.withheld_name(name, len({**definitions, **scope_rows})):
+            continue
+        stored = _configuration_rows(scope_rows, name, guard=guard)
+        rows = _exportable_rows({**definitions, **stored}, name, guard=guard)
         if rows:
             overlays[name] = sorted_table(rows)
             emitted = True
@@ -296,7 +261,7 @@ def _emit_registry_tables(
     key: str,
     registry: dict[str, Any],
     *,
-    guard: _ExportGuard,
+    guard: ExportGuard,
 ) -> None:
     """Attach a ``[<key>.<name>]`` sub-table per entry of the *key* registry.
 
@@ -308,7 +273,7 @@ def _emit_registry_tables(
     emitted = False
     for name in sorted(registry):
         entry = registry[name]
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or guard.withheld_name(name, len(entry)):
             continue
         rows = _exportable_rows(entry, f"{key}.{name}", guard=guard)
         if rows:
@@ -319,98 +284,6 @@ def _emit_registry_tables(
 
 
 # ---- import (the inverse of export) -----------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _ImportPolicy:
-    """What this import may do, threaded through the row classifier.
-
-    Every authorization an import can carry, named in one place: the live ban terms the
-    content scan reads, the operator's safety-posture declaration, and the two halves of the
-    private-backup restore. Bundled so the classifier stays within the arg-count cap, like
-    ``_ExportGuard``.
-    """
-
-    terms: tuple[str, ...]
-    allow_safety_posture: bool
-    private_backup: bool
-    restore_private: bool
-
-    @property
-    def allow_private(self) -> bool:
-        """Whether a private row may be stored — the CALLER asked AND the FILE declared it.
-
-        Two independent halves, both required, which is what keeps ``restore_private`` from
-        being a blanket relaxation of the row rule: it reaches only a file this tooling wrote
-        as a personal backup (#4156).
-        """
-        return self.restore_private and self.private_backup
-
-
-def _unstorable_reason(key: str, value: ConfigValue, policy: _ImportPolicy) -> str | None:
-    """Why this row has no home in the store at all, else None.
-
-    An unknown key and a secret/personal-identifier row
-    (reusing the export withhold rule so a shared TOML never smuggles customer data back in).
-    ``policy.allow_private`` lifts only that last class, and only for a file that declared
-    itself a personal backup — it is what makes ``--include-private`` restorable (#4156).
-    """
-    if key not in ALL_KNOWN_CONFIG_SETTINGS and known_pass_key_credential(key) is None:
-        hint = config_key_hint(key)
-        return f"unknown key; {hint}" if hint else "unknown key"
-    if policy.allow_private:
-        return None
-    if (secret := redaction_reason(key, value, policy.terms)) is not None:
-        return f"secret ({secret})"
-    return None
-
-
-def _classify_import_row(
-    key: str, value: ConfigValue, *, stored: ConfigValue | None, policy: _ImportPolicy
-) -> tuple[str, ConfigValue]:
-    """One row's disposition: ``("reject", reason)`` / ``("skip"|"unchanged"|"write", canonical)``.
-
-    A storable row is coerced through the shared write-path validator; a value equal to the
-    key's EFFECTIVE default (:func:`~teatree.config.effective_default` — the resolver's own
-    default, the same authority the seed-skip consults) is redundant (``skip``), leaving
-    ``restore = delete row`` intact. The resolver reads ``defaults.toml`` as its DEFAULTS
-    tier, so every shipped value IS that effective default: importing the shipped file
-    writes zero rows, and each skipped row resolves to exactly the value the file declares.
-
-    A registry row is MERGED onto *stored* first (:func:`~teatree.core.config_interchange.
-    registry_rows.merged_registry`): its value is a table of independent facts, so the file
-    can describe it INCOMPLETELY — the secret guard withholds an overlay's credential
-    coordinates — and taking the file's version whole would make the redaction a deletion.
-    Here is where the merge belongs, because this is where what the file says meets what the
-    store holds, and a merged row equal to *stored* is exactly the ``unchanged`` below.
-
-    A value the row in *stored* already holds is ``unchanged``. Writing it would be a
-    no-op on the value and a REAL edit to the row — ``set_value`` clears seed provenance,
-    so re-importing a box's own export would hand every deploy-seeded row to the operator.
-
-    A :data:`~teatree.config.setting_registries.SAFETY_POSTURE_KEYS` row that would actually
-    CHANGE the store is rejected unless the caller declares the operator authorized it — the
-    same boundary the settings editor's typed confirm and the MCP write-tool refusal enforce,
-    so a pasted TOML dump is not a quieter route to `autonomy = "full"`. A safety-posture value
-    equal to its default, or to what the store already holds, changes nothing to authorize.
-    """
-    if (unstorable := _unstorable_reason(key, value, policy)) is not None:
-        return ("reject", unstorable)
-    candidate = merged_registry(value, stored) if key in REGISTRY_KEYS and isinstance(value, dict) else value
-    pass_key = known_pass_key_credential(key)
-    try:
-        canonical = (
-            validate_pass_key_entry(candidate) if pass_key is not None else validate_config_write(key, candidate)
-        )
-    except (ConfigWriteError, ValueError) as exc:
-        return ("reject", f"invalid: {exc}")
-    if pass_key is None and canonical == effective_default(key):
-        return ("skip", canonical)
-    if canonical == stored:
-        return ("unchanged", canonical)
-    if key in SAFETY_POSTURE_KEYS and not policy.allow_safety_posture:
-        return ("reject", "safety-posture")
-    return ("write", canonical)
 
 
 def import_toml_to_db(
@@ -458,85 +331,48 @@ def import_toml_to_db(
     the default-False posture every other caller keeps is untouched. Each such row carries
     ``is_private`` so every render site withholds its VALUE while still naming the key — the
     flag is what lets a private row reach a renderer at all.
+
+    A store with no ban-class term cannot content-scan anything, and the receiving box is what
+    the scan protects, so the import proceeds UNSCANNED rather than refusing: the key classes
+    still apply, every value is shown withheld, and ``unscanned`` tells the caller to say so.
+    Rows under a scope NAME carrying a term are refused without the name, or restored with
+    the name withheld from every report under ``restore_private``.
     """
     doc = tomllib.loads(text)
-    policy = _ImportPolicy(
-        terms=scan_terms if scan_terms is not None else resolve_export_scan_terms(),
+    policy = ImportPolicy(
+        terms=scan_terms if scan_terms is not None else _available_scan_terms(),
         allow_safety_posture=allow_safety_posture,
         private_backup=is_private_backup(doc),
         restore_private=restore_private,
     )
-    stored: dict[str, dict[str, ConfigValue]] = {}
-    by_kind: dict[str, list[ImportedRow]] = {"write": [], "skip": [], "unchanged": []}
-    rejected: list[RejectedRow] = []
-    for scope, key, value in import_candidates(doc):
-        rows = stored.setdefault(scope, ConfigSetting.objects.overrides_for_scope(scope))
-        kind, payload = _classify_import_row(key, value, stored=rows.get(key), policy=policy)
-        if kind == "reject":
-            rejected.append(RejectedRow(scope, key, str(payload)))
-        else:
-            by_kind[kind].append(
-                ImportedRow(
-                    scope,
-                    key,
-                    payload,
-                    is_safety_posture=key in SAFETY_POSTURE_KEYS,
-                    # Asked of `redaction_reason` DIRECTLY, never through `_unstorable_reason`:
-                    # that returns None under `allow_private`, which is exactly the rows at risk.
-                    is_private=redaction_reason(key, payload, policy.terms) is not None,
-                )
-            )
-
-    to_write, skipped, unchanged = by_kind["write"], by_kind["skip"], by_kind["unchanged"]
-    seed_writes = _file_seed_dispositions(doc, skipped=skipped, unchanged=unchanged, rejected=rejected)
-    if rejected:
-        return ConfigImport((), tuple(skipped), tuple(rejected), dry_run, tuple(unchanged), policy.private_backup)
+    rows = classify_document(doc, policy)
+    if rows.rejected:
+        return _imported(policy, rows, written=(), dry_run=dry_run)
     if not dry_run:
         with transaction.atomic():
-            ConfigSetting.objects.set_values([(row.key, row.value, row.scope) for row in to_write])
-            for entry in seed_writes:
+            ConfigSetting.objects.set_values([(row.key, row.value, row.scope) for row in rows.to_write])
+            for entry in rows.seed_writes:
                 write_seed_field(entry.table, entry.name, entry.field, entry.value)
-    # Seed rows keep the default is_private=False deliberately: `redaction_reason` is a rule
-    # about SETTINGS keys, and a seed field is a [loops]/[modes]/[schedules] entry, not one.
-    written = (*to_write, *(ImportedRow(e.scope, e.field, e.value) for e in seed_writes))
-    return ConfigImport(written, tuple(skipped), (), dry_run, tuple(unchanged), policy.private_backup)
+    written = (*rows.to_write, *(seed_row(entry, policy) for entry in rows.seed_writes))
+    return _imported(policy, rows, written=written, dry_run=dry_run)
 
 
-def _file_seed_dispositions(
-    doc: dict[str, Any],
-    *,
-    skipped: list[ImportedRow],
-    unchanged: list[ImportedRow],
-    rejected: list[RejectedRow],
-) -> list[SeedFieldDisposition]:
-    """File each seed field into *skipped* / *unchanged* / *rejected*; return the writes.
-
-    An entry the shipped file carries can still have no DB row on a box that never ran the
-    install seed, so a write onto a missing row is rejected rather than left to raise
-    mid-import — the whole import is refused and the operator is told to seed first. A mode
-    mask ``Mode.clean()`` would refuse is rejected the same way.
-    """
-    writes: list[SeedFieldDisposition] = []
-    for entry in classify_seed_rows(doc):
-        if entry.kind == "reject":
-            rejected.append(RejectedRow(entry.scope, entry.field, entry.reason))
-        elif entry.kind == "skip":
-            skipped.append(ImportedRow(entry.scope, entry.field, entry.value))
-        elif holds_value(entry):
-            unchanged.append(ImportedRow(entry.scope, entry.field, entry.value))
-        else:
-            writes.append(entry)
-    unseeded = unseeded_entries(writes)
-    rejected.extend(
-        RejectedRow(entry.scope, entry.field, reason)
-        for entry, reason in mask_refusals(writes)
-        if (entry.table, entry.name) not in unseeded
+def _imported(
+    policy: ImportPolicy, rows: ImportRows, *, written: tuple[ImportedRow, ...], dry_run: bool
+) -> ConfigImport:
+    return ConfigImport(
+        written,
+        tuple(rows.skipped),
+        tuple(rows.rejected),
+        dry_run,
+        tuple(rows.unchanged),
+        private_backup=policy.private_backup,
+        unscanned=policy.unscanned,
     )
-    if not unseeded:
-        return writes
-    rejected.extend(
-        RejectedRow(entry.scope, entry.field, f"no {entry.table} row yet — run `t3 setup` to seed it")
-        for entry in writes
-        if (entry.table, entry.name) in unseeded
-    )
-    return []
+
+
+def _available_scan_terms() -> tuple[str, ...] | None:
+    try:
+        return resolve_export_scan_terms()
+    except ScanTermsUnavailableError:
+        return None

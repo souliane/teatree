@@ -6,6 +6,7 @@ against the real DB; the value is parsed as JSON so a bool kill-switch, a
 string, an int, or a list all round-trip into the override store.
 """
 
+import json
 import re
 import tomllib
 from collections.abc import Iterator
@@ -23,9 +24,22 @@ from teatree.config import get_effective_settings
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Mode
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
+from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.config.setting_taxonomy import taxonomy
+from teatree.core.config_interchange.secret_guard import is_private_backup
 from teatree.core.models import ConfigSetting
+from teatree.core.models import Mode as Preset
+from teatree.hooks.banned_term_registry import load_registry
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
+
+LEAK = TEST_TERM_REGISTRY["leak"][0]
+OV = TEST_TERM_REGISTRY["overlay"][0]
+SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+CARRIER = f"{LEAK} desk"
+#: A runtime-built non-ASCII placeholder — no real word, never a configured term.
+NON_ASCII_TERM = "qx" + "\u00fc" + "mbel-ledger"
 
 
 def _teatree(document: dict[str, object]) -> dict[str, object]:
@@ -481,7 +495,7 @@ class TestConfigSettingExport(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
     def test_export_to_stdout_dumps_teatree_and_overlay_tables(self) -> None:
         call_command("config_setting", "set", "mode", '"auto"')
@@ -512,21 +526,10 @@ class TestConfigSettingExport(TestCase):
         # The global scope is excluded when a single overlay is requested.
         assert "teatree" not in doc
 
-    def test_banned_content_needs_the_second_flag_before_a_file_is_written(self) -> None:
-        ConfigSetting.objects.set_value("dashboard_instance_label", "synthetic-scan-term")
-        target = self.tmp_path / "backup.toml"
-        err = StringIO()
-        with pytest.raises(SystemExit):
-            call_command("config_setting", "export", "--include-private", "--output", str(target), stderr=err)
-        assert not target.exists()
-        assert "synthetic-scan-term" not in err.getvalue()
-        call_command("config_setting", "export", "--include-private", "--include-banned-terms", "--output", str(target))
-        assert "synthetic-scan-term" in target.read_text(encoding="utf-8")
-
     def test_banned_content_flag_requires_private_backup(self) -> None:
         out, err = StringIO(), StringIO()
         with pytest.raises(SystemExit):
-            call_command("config_setting", "export", "--include-banned-terms", stdout=out, stderr=err)
+            call_command("config_setting", "export", "--include-banned-term-values", stdout=out, stderr=err)
         assert out.getvalue() == ""
         assert "--include-private" in err.getvalue()
 
@@ -537,7 +540,7 @@ class TestConfigSettingExportFilters(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
     def _export(self, *flags: str) -> str:
         out = StringIO()
@@ -570,7 +573,7 @@ class TestConfigSettingImport(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
     def _write_toml(self, text: str) -> Path:
         path = self.tmp_path / "dump.toml"
@@ -629,14 +632,14 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scanned-term"]}')
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
     #: One synthetic row per KEY-classified withhold class — a one-class fixture passes against
     #: a one-class fix. The fourth class (a banned term matched on the VALUE) is unit-covered in
     #: ``test_config_migration`` instead: it needs live scan terms, and this command resolves
     #: those through a cold reader that cannot see a test transaction's rows.
     PRIVATE_ROWS: ClassVar[dict[str, str | list[str] | dict[str, list[str]]]] = {
-        "banned_term_registry": {"leak": ["synthetic-scanned-term"], "prose_collider": []},  # private-key
+        "banned_term_registry": {"leak": list(TEST_TERM_REGISTRY["leak"]), "prose_collider": []},  # private-key
         "anthropic_oauth_pass_paths": ["synthetic/oauth-entry"],  # credential-coordinate
         "slack_user_id": "synthetic-user-ref",  # personal-identifier
     }
@@ -661,7 +664,13 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
         path = self.tmp_path / "backup.toml"
         err = StringIO()
         call_command(
-            "config_setting", "export", "--include-private", "--include-banned-terms", "--output", str(path), stderr=err
+            "config_setting",
+            "export",
+            "--include-private",
+            "--include-banned-term-values",
+            "--output",
+            str(path),
+            stderr=err,
         )
         return path, err.getvalue()
 
@@ -837,3 +846,260 @@ class TestCredentialPassKeySetting(TestCase):
         call_command("config_setting", "get", "gitlab_token_pass_key", "--overlay", "t3-teatree", stdout=out)
 
         assert "gitlab_token_pass_key = 'venue/pat'  [source: db, global scope]" in out.getvalue()
+
+
+class _TermGuardCase(TestCase):
+    """Drives ``config_setting`` the way an operator does, each stream captured on its own."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
+
+    def _run(self, *args: str, command: str = "config_setting") -> tuple[int, str, str]:
+        out, err = StringIO(), StringIO()
+        try:
+            call_command(command, *args, stdout=out, stderr=err)
+        except SystemExit as exc:
+            return int(exc.code or 0), out.getvalue(), err.getvalue()
+        return 0, out.getvalue(), err.getvalue()
+
+    def _set(self, key: str, value: object, *flags: str) -> None:
+        assert self._run("set", key, json.dumps(value), *flags)[0] == 0
+
+    def _file(self, name: str, text: str) -> Path:
+        path = self.tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _no_terms(self, registry: str = "") -> None:
+        if registry:
+            self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", registry)
+        else:
+            self.monkeypatch.delenv("TEATREE_TERM_REGISTRY")
+            assert load_registry() is None
+
+
+class TestRefusalsNameTheClassNeverTheValue(_TermGuardCase):
+    def test_a_banned_term_value_rejected_as_invalid_on_restore_drops_the_parser_message(self) -> None:
+        backup = "[backup]\ninclude_private = true\n[teatree]\n"
+        code, out, err = self._run(
+            "import", "--input", str(self._file("f.toml", f'{backup}mode = "{LEAK}"\n')), "--restore-private"
+        )
+        assert code == 2
+        assert "rejected mode" in err
+        assert "invalid (banned-term value; message withheld)" in err
+        assert not line_matches(out, SCAN)
+        assert not line_matches(err, SCAN)
+        control = self._file("g.toml", f'{backup}mode = "not-a-mode"\n')
+        assert "not-a-mode" in self._run("import", "--input", str(control), "--restore-private")[2]
+
+    def test_a_non_ascii_term_is_withheld_by_class_on_export(self) -> None:
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [NON_ASCII_TERM]}))
+        self._set("issue_implementer_label", f"{NON_ASCII_TERM} desk")
+        self._set("merge_wip", 4)
+        code, out, err = self._run("export")
+        assert code == 0
+        assert "withheld issue_implementer_label  [global]  (banned-term)" in err
+        assert not line_matches(out + err, (NON_ASCII_TERM,))
+        assert _teatree(tomllib.loads(out))["merge_wip"] == 4
+
+
+class TestAStoreWithNoTerms(_TermGuardCase):
+    def _assert_export_refused(self) -> None:
+        self._set("merge_wip", 4)
+        target = self.tmp_path / "out.toml"
+        code, out, err = self._run("export", "--output", str(target))
+        assert code == 2
+        assert "banned_term_registry" in err
+        assert "TEATREE_TERM_REGISTRY" in err
+        assert "--include-private --include-banned-term-values" in err
+        assert not target.exists()
+        assert out == ""
+
+    def test_export_refuses_an_unset_registry_and_names_the_escape(self) -> None:
+        self._no_terms()
+        self._assert_export_refused()
+
+    def test_export_refuses_a_registry_holding_only_allow_terms(self) -> None:
+        self._no_terms(json.dumps({"allow": ["placeholder-allow-entry"]}))
+        self._assert_export_refused()
+
+    def test_a_scanned_export_still_writes_its_file(self) -> None:
+        self._set("merge_wip", 4)
+        target = self.tmp_path / "out.toml"
+        assert self._run("export", "--output", str(target))[0] == 0
+        assert _teatree(tomllib.loads(target.read_text(encoding="utf-8")))["merge_wip"] == 4
+
+    def test_import_proceeds_unscanned_with_one_notice_and_withheld_values(self) -> None:
+        self._no_terms()
+        path = self._file("f.toml", "[teatree]\nmerge_wip = 4\n")
+        for flags in (("--dry-run",), ()):
+            code, out, err = self._run("import", "--input", str(path), *flags)
+            assert code == 0
+            [notice] = [line for line in err.splitlines() if "not content-scanned" in line]
+            assert "banned_term_registry" in notice
+            assert "merge_wip = <withheld: private>" in out
+        assert ConfigSetting.objects.get_effective("merge_wip") == 4
+
+    def test_a_scanned_import_shows_the_value_and_no_notice(self) -> None:
+        code, out, err = self._run("import", "--input", str(self._file("f.toml", "[teatree]\nmerge_wip = 4\n")))
+        assert code == 0
+        assert "not content-scanned" not in err
+        assert "merge_wip = 4" in out
+
+    def test_the_full_personal_backup_is_explicit_and_restores_without_terms(self) -> None:
+        self._no_terms()
+        self._set("merge_wip", 4)
+        self._set("slack_user_id", "synthetic-user-ref")
+        code, _, err = self._run("export", "--include-private")
+        assert (code, "--include-banned-term-values" in err) == (2, True)
+        alone = self.tmp_path / "g.toml"
+        code, _, err = self._run("export", "--include-banned-term-values", "--output", str(alone))
+        assert (code, "--include-private" in err, alone.exists()) == (2, True, False)
+        code, out, err = self._run("export", "--include-private", "--include-banned-term-values")
+        assert (code, "--output" in err, out) == (2, True, "")
+        backup = self.tmp_path / "f.toml"
+        assert self._run("export", "--include-private", "--include-banned-term-values", "--output", str(backup))[0] == 0
+        assert is_private_backup(tomllib.loads(backup.read_text(encoding="utf-8")))
+        self._run("clear", "merge_wip")
+        self._run("clear", "slack_user_id")
+        code, out, _ = self._run("import", "--input", str(backup), "--restore-private")
+        assert code == 0
+        assert ConfigSetting.objects.get_effective("merge_wip") == 4
+        assert ConfigSetting.objects.get_effective("slack_user_id") == "synthetic-user-ref"
+        assert "merge_wip = <withheld: private>" in out
+        assert "slack_user_id = <withheld: private>" in out
+        assert "synthetic-user-ref" not in out
+
+    def test_term_values_never_print_to_stdout_even_with_terms(self) -> None:
+        self._set("issue_implementer_label", CARRIER)
+        code, out, err = self._run("export", "--include-private", "--include-banned-term-values")
+        assert (code, out) == (2, "")
+        assert "--output" in err
+
+
+class TestPrivateExportWithholdsRowsNotTheWholeFile(_TermGuardCase):
+    def setUp(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
+        self.shipped_mode = min(shipped_seed_table("modes"))
+
+    def _arrange(self) -> None:
+        self._set("issue_implementer_label", CARRIER)
+        self._set("issue_implementer_label", CARRIER, "--overlay", "probe")
+        self._set("slack_user_id", "synthetic-user-ref")
+        self._set("banned_term_registry", TEST_TERM_REGISTRY)
+        self._run("edit", self.shipped_mode, "--description", f"{LEAK} preset", command="loop_preset")
+
+    def test_every_shape_withholds_the_term_rows_and_still_writes_a_marked_file(self) -> None:
+        self._arrange()
+        for shape in ((), ("--overlay", "probe"), ("--default-keys-only", "--include-defaults")):
+            target = self.tmp_path / "f.toml"
+            code, out, err = self._run("export", "--include-private", *shape, "--output", str(target))
+            text = target.read_text(encoding="utf-8")
+            assert code == 0, err
+            assert not line_matches(text + out + err, SCAN)
+            assert is_private_backup(tomllib.loads(text))
+            assert "(banned-term)" in err
+            assert "--include-banned-term-values" in err
+        defaults = tomllib.loads(text)
+        assert _teatree(defaults)["issue_implementer_label"] == ""
+
+    def test_the_full_shape_keeps_the_key_classes_and_names_each_withheld_row(self) -> None:
+        self._arrange()
+        target = self.tmp_path / "f.toml"
+        _, _, err = self._run("export", "--include-private", "--output", str(target))
+        assert "synthetic-user-ref" in target.read_text(encoding="utf-8")
+        for key in ("issue_implementer_label", "banned_term_registry", "description"):
+            assert f"withheld {key} " in err
+
+    def test_the_second_flag_carries_the_term_rows(self) -> None:
+        self._arrange()
+        target = self.tmp_path / "f2.toml"
+        assert self._run("export", "--include-private", "--include-banned-term-values", "--output", str(target))[0] == 0
+        assert line_matches(target.read_text(encoding="utf-8"), SCAN)
+
+
+class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
+    def _arrange(self) -> None:
+        self._set("merge_wip", 4, "--overlay", OV)
+        self._run("create", f"{LEAK}-probe", command="loop_preset")
+
+    def test_a_shared_export_withholds_the_scope_without_naming_it(self) -> None:
+        self._arrange()
+        code, out, err = self._run("export")
+        assert code == 0
+        assert not line_matches(out + err, SCAN)
+        assert "under a name that carries a banned term" in err
+        assert "(banned-term)" in err
+
+    def test_a_private_export_withholds_it_from_the_file_too(self) -> None:
+        self._arrange()
+        target = self.tmp_path / "f.toml"
+        code, out, err = self._run("export", "--include-private", "--output", str(target))
+        assert code == 0
+        assert not line_matches(target.read_text(encoding="utf-8") + out + err, SCAN)
+        assert "under a name that carries a banned term" in err
+
+    def test_an_import_refuses_the_scope_without_naming_it(self) -> None:
+        path = self._file("g.toml", f"[overlays.{OV}]\nmerge_wip = 4\n")
+        code, out, err = self._run("import", "--input", str(path))
+        assert code == 2
+        assert not line_matches(out + err, SCAN)
+        assert "rejected 1 row(s)  [under a name that carries a banned term]  (secret (banned-term))" in err
+        assert ConfigSetting.objects.get_effective("merge_wip", scope=OV) is None
+
+    def test_the_term_values_backup_carries_and_restores_the_scope_without_printing_it(self) -> None:
+        self._arrange()
+        backup = self.tmp_path / "f3.toml"
+        assert self._run("export", "--include-private", "--include-banned-term-values", "--output", str(backup))[0] == 0
+        assert tomllib.loads(backup.read_text(encoding="utf-8"))["overlays"][OV]["merge_wip"] == 4
+        self._run("clear", "merge_wip", "--overlay", OV)
+        code, out, err = self._run("import", "--input", str(backup), "--restore-private")
+        assert code == 0, err
+        assert ConfigSetting.objects.get_effective("merge_wip", scope=OV) == 4
+        assert not line_matches(out, SCAN)
+        assert "[under a name that carries a banned term]" in out
+
+
+class TestTheSeedImportIsScanned(_TermGuardCase):
+    def setUp(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
+        self.mode = min(shipped_seed_table("modes"))
+        self.shipped_description = Preset.objects.get(name=self.mode).description
+
+    def test_a_term_in_a_preset_field_is_refused_by_class(self) -> None:
+        path = self._file("f.toml", f'[modes.{self.mode}]\ndescription = "{LEAK} preset"\n')
+        code, out, err = self._run("import", "--input", str(path))
+        assert code == 2
+        assert any("description" in line and "secret (banned-term)" in line for line in err.splitlines())
+        assert not line_matches(out + err, SCAN)
+        assert Preset.objects.get(name=self.mode).description == self.shipped_description
+
+    def test_a_clean_preset_field_still_imports(self) -> None:
+        path = self._file("f.toml", f'[modes.{self.mode}]\ndescription = "a tuned preset"\n')
+        assert self._run("import", "--input", str(path))[0] == 0
+        assert Preset.objects.get(name=self.mode).description == "a tuned preset"
+
+    def test_a_restore_shows_a_term_bearing_seed_field_withheld(self) -> None:
+        text = f'[backup]\ninclude_private = true\n[modes.{self.mode}]\ndescription = "{LEAK} preset"\n'
+        code, out, _ = self._run("import", "--input", str(self._file("f.toml", text)), "--restore-private", "--dry-run")
+        assert code == 0
+        assert "would import description = <withheld: private>" in out
+        assert not line_matches(out, SCAN)
+
+
+class TestABackupFromABoxWithACustomPresetRestores(_TermGuardCase):
+    def test_the_unshipped_preset_is_omitted_by_name_and_the_rest_restores(self) -> None:
+        self._run("create", "probe-preset", command="loop_preset")
+        self._set("merge_wip", 4)
+        backup = self.tmp_path / "f.toml"
+        code, _, err = self._run("export", "--include-private", "--include-banned-term-values", "--output", str(backup))
+        assert code == 0
+        assert any("modes.probe-preset" in line and "not shipped" in line for line in err.splitlines())
+        self._run("clear", "merge_wip")
+        code, _, err = self._run("import", "--input", str(backup), "--restore-private")
+        assert code == 0, err
+        assert ConfigSetting.objects.get_effective("merge_wip") == 4

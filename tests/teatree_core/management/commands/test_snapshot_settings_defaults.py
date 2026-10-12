@@ -7,6 +7,7 @@ written file run against the PLAN instead — the same rendered text, one step e
 """
 
 import io
+import json
 import tomllib
 from pathlib import Path
 from unittest import mock
@@ -21,22 +22,32 @@ from teatree.config import cold_defaults
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.defaults_snapshot import ShippedFile, SnapshotPlan, plan_snapshot
 from teatree.config.setting_groups import grouped_key_order
-from teatree.core.management.commands import snapshot_settings_defaults as command_module
 from teatree.core.management.commands.snapshot_settings_defaults import Command
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.hooks.banned_term_registry import load_registry
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
 _TUNABLE = "provision_ram_ceiling_percent"
+_LEAK = TEST_TERM_REGISTRY["leak"][0]
+_OV = TEST_TERM_REGISTRY["overlay"][0]
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+#: A runtime-built non-ASCII placeholder — no real word, never a configured term.
+_NON_ASCII_TERM = "qx" + "\u00fc" + "mbel-ledger"
+#: A DEFAULT key the planner scans rather than declining it as conservative first.
+_SCANNED_CARRIER = "colleague_repo_url_pattern"
 
 
 class SnapshotCommandTestCase(TestCase):
     @pytest.fixture(autouse=True)
     def _files(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self.monkeypatch = monkeypatch
         source = cold_defaults.DEFAULTS_TOML.read_text(encoding="utf-8")
         self.defaults = tmp_path / "defaults.toml"
         self.defaults.write_text(source, encoding="utf-8")
         monkeypatch.setattr(cold_defaults, "DEFAULTS_TOML", self.defaults)
-        monkeypatch.setattr(command_module, "export_scan_terms", list)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
     def _shipped(self) -> dict[str, object]:
         """The fixture file's ``[teatree]`` table in the FLAT namespace the planner works in."""
@@ -47,12 +58,23 @@ class SnapshotCommandTestCase(TestCase):
         call_command("snapshot_settings_defaults", *args, stdout=out, stderr=err)
         return out.getvalue() + err.getvalue()
 
+    def _streams(self) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            call_command("snapshot_settings_defaults", stdout=out, stderr=err)
+        except SystemExit as exc:
+            return int(exc.code or 0), out.getvalue(), err.getvalue()
+        return 0, out.getvalue(), err.getvalue()
+
+    def _set(self, key: str, value: object, *flags: str) -> None:
+        call_command("config_setting", "set", key, json.dumps(value), *flags, stdout=io.StringIO())
+
     def _plan(self) -> SnapshotPlan:
         return plan_snapshot(
             shipped=ShippedFile(table=self._shipped(), text=self.defaults.read_text(encoding="utf-8")),
             live_global=ConfigSetting.objects.overrides_for_scope(""),
             overlay_scope_rows=[],
-            banned_scan=lambda _text: None,
+            banned_scan=lambda _key, _value: False,
         )
 
 
@@ -175,3 +197,36 @@ class TestTheProposalKeepsTheShippedShape(SnapshotCommandTestCase):
 
 def _emitted(text: str) -> dict[str, object]:
     return flatten_settings_table(tomllib.loads(text)["teatree"])
+
+
+class TestABannedTermIsNeverPrinted(SnapshotCommandTestCase):
+    def test_a_carrier_row_is_declined_by_class_not_by_the_term(self) -> None:
+        self._set(_SCANNED_CARRIER, f"{_LEAK}-desk/.*")
+        code, out, err = self._streams()
+        assert code == 0
+        assert f"{_SCANNED_CARRIER}: banned-term" in err
+        assert not line_matches(out, _SCAN)
+        assert not line_matches(err, _SCAN)
+
+    def test_a_non_ascii_term_is_declined_too(self) -> None:
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [_NON_ASCII_TERM]}))
+        self._set(_SCANNED_CARRIER, f"{_NON_ASCII_TERM}-desk/.*")
+        code, out, err = self._streams()
+        assert code == 0
+        assert f"{_SCANNED_CARRIER}: banned-term" in err
+        assert not line_matches(out + err, (_NON_ASCII_TERM,))
+
+    def test_a_scope_name_carrying_a_term_is_listed_without_it(self) -> None:
+        self._set("merge_wip", 4, "--overlay", _OV)
+        code, out, err = self._streams()
+        assert code == 0
+        assert "[under a name that carries a banned term] merge_wip" in err
+        assert not line_matches(out + err, _SCAN)
+
+    def test_a_store_with_no_term_is_refused_with_the_registry_named(self) -> None:
+        self.monkeypatch.delenv("TEATREE_TERM_REGISTRY")
+        assert load_registry() is None
+        code, out, err = self._streams()
+        assert code == 2
+        assert "banned_term_registry" in err
+        assert "proposed changes" not in out + err

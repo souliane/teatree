@@ -174,7 +174,8 @@ def settings_snapshot(request: "HttpRequest") -> "HttpResponse":
 
     Read-only, and behind the same loopback-or-staff gate every other dash view carries. There
     is no private mode to ask for: :func:`~teatree.core.settings_snapshot.build_snapshot` never
-    emits a raw secret, so the route structurally cannot serve one however it is called.
+    emits a raw secret or a banned-term value, so the route structurally cannot serve one
+    however it is called. Scope and entry names still travel; the comparison is keyed on them.
 
     ``?download=1`` is the SAME payload with a filename attached, so the operator can keep this
     capture as a record or carry it to a box no tunnel reaches. It changes nothing but the

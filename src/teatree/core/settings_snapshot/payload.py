@@ -3,12 +3,14 @@
 Every key, choice list, default, group and seed field is read from teatree's OWN registries,
 so a setting added to the schema shows up here with no edit to this module.
 
-**There is no private mode.** The payload is served over HTTP to another instance, so it
-structurally cannot carry a raw secret: a withheld value is replaced by
-:func:`~teatree.core.settings_snapshot.serialisation.redaction_stub` — the reason plus a
-digest of the real value — which still lets two boxes be compared for DIFFERENCE without
-either one carrying the value. A personal backup that does want raw values is a different
-job, and ``config_setting export --include-private`` is where it lives.
+**There is no private mode.** The payload is served over HTTP to another instance, so no
+VALUE, reason or instance label in it carries a raw secret or a banned term: a withheld value
+is replaced by :func:`~teatree.core.settings_snapshot.serialisation.redaction_stub` — the
+reason class plus a digest of the real value — which still lets two boxes be compared for
+DIFFERENCE without either one carrying the value. NAMES travel: scope keys, seed entry names
+and nested keys are what the comparison is keyed on. A box with no ban-class term cannot
+classify anything, so the snapshot is refused there. A personal backup that does want raw
+values is a different job, and ``config_setting export --include-private`` is where it lives.
 
 The withhold is applied by :func:`~teatree.core.settings_snapshot.withholding.redact` at every
 DEPTH of a row's value, not to the row key alone: a registry row's own name says nothing about
@@ -44,19 +46,26 @@ from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, SHIPPED_O
 from teatree.config.setting_groups import UNGROUPED_PATH, group_outline
 from teatree.config.stored_row_health import stored_row_kind
 from teatree.core.config_interchange.migration import export_db_to_toml
-from teatree.core.config_interchange.secret_guard import redaction_reason, resolve_export_scan_terms
+from teatree.core.config_interchange.secret_guard import (
+    ScanTermsUnavailableError,
+    redaction_reason,
+    resolve_export_scan_terms,
+)
 from teatree.core.config_interchange.seed_tables import live_seed_rows, seed_models
 from teatree.core.models import ConfigSetting
 from teatree.core.setting_control import TYPE_KINDS, SettingControl, value_kind
 from teatree.core.settings_snapshot.fingerprint import Shape, SnapshotError, Warnings, build_fingerprint
 from teatree.core.settings_snapshot.serialisation import ROW_KEY_ATTR, Json, field_names, serialise
 from teatree.core.settings_snapshot.withholding import redact
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.term_match import line_matches
 
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_FORMAT: Final = "teatree-settings-snapshot"
 FORMAT_VERSION: Final = 1
+
+#: What ``instance.label`` reads when the configured label carries a banned term.
+WITHHELD_LABEL: Final = "<withheld: banned-term>"
 
 #: The one ConfigSetting row whose value IS the overlay registry.
 OVERLAY_REGISTRY_KEY: Final = "overlays"
@@ -70,11 +79,12 @@ _redaction_key: Final = itemgetter("scope", "key", "path")
 
 def build_snapshot(label: str, note: str = "") -> dict[str, Any]:
     """The whole snapshot for this box, format v1 — a required source raises :class:`SnapshotError`."""
+    terms = _required_scan_terms()
     warn = Warnings()
     controls = {key: SettingControl(key) for key in sorted(ALL_KNOWN_CONFIG_SETTINGS)}
     shapes: dict[str, Shape] = {key: (one.annotation_text, one.raw_choices) for key, one in controls.items()}
-    instance = _instance(label, note, warn)
-    registry, values, notices = _registry_and_values(controls, instance["overlay"], warn)
+    instance = _instance(WITHHELD_LABEL if line_matches(label, terms) else label, note, warn)
+    registry, values, notices = _registry_and_values(controls, instance["overlay"], terms, warn)
     return {
         "format": SNAPSHOT_FORMAT,
         "format_version": FORMAT_VERSION,
@@ -108,15 +118,18 @@ def _instance(label: str, note: str, warn: Warnings) -> dict[str, Any]:
     }
 
 
+def _required_scan_terms() -> tuple[str, ...]:
+    try:
+        return resolve_export_scan_terms()
+    except ScanTermsUnavailableError as exc:
+        message = f"cannot classify the settings snapshot: {exc}"
+        raise SnapshotError(message) from exc
+
+
 def _registry_and_values(
-    controls: Mapping[str, SettingControl], overlay: str, warn: Warnings
+    controls: Mapping[str, SettingControl], overlay: str, terms: tuple[str, ...], warn: Warnings
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, str]]]]:
     keys = list(controls)
-    try:
-        terms = resolve_export_scan_terms()
-    except BannedTermsUnsetError as exc:
-        message = "cannot classify settings snapshot without a term source"
-        raise SnapshotError(message) from exc
     defaults = _default_values(keys, terms, warn)
     settings_registry = _settings_registry(controls, defaults, warn)
     stored, redacted, omitted = _stored_block(terms, warn)
@@ -431,4 +444,11 @@ def _export_toml() -> str:
     return str(export_db_to_toml().toml)
 
 
-__all__ = ["FORMAT_VERSION", "OVERLAY_REGISTRY_KEY", "SNAPSHOT_FORMAT", "SnapshotError", "build_snapshot"]
+__all__ = [
+    "FORMAT_VERSION",
+    "OVERLAY_REGISTRY_KEY",
+    "SNAPSHOT_FORMAT",
+    "WITHHELD_LABEL",
+    "SnapshotError",
+    "build_snapshot",
+]

@@ -23,9 +23,12 @@ from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defau
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_annotation import choice_token
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
-from teatree.core.config_interchange.secret_guard import ExportPrivacy, resolve_export_scan_terms
+from teatree.core.config_interchange.secret_guard import (
+    ExportPrivacy,
+    ScanTermsUnavailableError,
+    resolve_export_scan_terms,
+)
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
 
@@ -181,7 +184,7 @@ class TestExportSecretGuard(TestCase):
     def test_include_private_exports_everything(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
-        result = export_db_to_toml(privacy=ExportPrivacy.WITH_BANNED_TERMS, scan_terms=("acmecorp", "acmebrand"))
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES, scan_terms=("acmecorp", "acmebrand"))
         teatree = _teatree(tomllib.loads(result.toml))
         assert teatree["banned_term_registry"] == {"leak": ["acmebrand"], "prose_collider": []}
         assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
@@ -210,18 +213,41 @@ class TestExportSecretGuard(TestCase):
         assert result.redacted == ()
 
 
-class TestExportScanTermsResolveFailsClosed(TestCase):
-    def test_export_refuses_when_config_lacks_banned_terms(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto")
-        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
-        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(BannedTermsUnsetError, match="refusing"):
-            export_db_to_toml()
+class TestAStoreWithNoScanTerm(TestCase):
+    """Export cannot classify a row without a term; import still can protect nothing, so it says so."""
 
-    def test_import_refuses_before_writing_when_config_lacks_banned_terms(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
-        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(BannedTermsUnsetError, match="refusing"):
-            import_toml_to_db('[teatree]\nmode = "auto"\n')
+    @staticmethod
+    def _without_registry() -> dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+
+    def test_a_scanning_export_refuses(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        for privacy in (ExportPrivacy.SHARED, ExportPrivacy.PRIVATE):
+            with (
+                self.subTest(privacy=privacy),
+                mock.patch.dict(os.environ, self._without_registry(), clear=True),
+                pytest.raises(ScanTermsUnavailableError, match="banned_term_registry"),
+            ):
+                export_db_to_toml(privacy=privacy)
+
+    def test_the_term_values_backup_resolves_no_term(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        with mock.patch.dict(os.environ, self._without_registry(), clear=True):
+            export = export_db_to_toml(privacy=ExportPrivacy.PRIVATE_WITH_TERM_VALUES)
+        assert _teatree(tomllib.loads(export.toml))["merge_wip"] == 4
+        assert export.private_backup is True
+
+    def test_an_import_proceeds_unscanned_with_every_value_withheld(self) -> None:
+        with mock.patch.dict(os.environ, self._without_registry(), clear=True):
+            result = import_toml_to_db('[teatree]\nmerge_wip = 4\nslack_user_id = "synthetic-user-ref"\n')
+        assert result.unscanned is True
+        assert [row.key for row in result.rejected] == ["slack_user_id"]
         assert ConfigSetting.objects.count() == 0
+
+    def test_an_unscanned_invalid_value_withholds_the_parser_message(self) -> None:
+        with mock.patch.dict(os.environ, self._without_registry(), clear=True):
+            result = import_toml_to_db('[teatree]\nmode = "not-a-mode"\n')
+        assert [row.reason for row in result.rejected] == ["invalid (message withheld)"]
 
 
 class TestExportScanTermsRoutesThroughRegistry:
@@ -352,7 +378,7 @@ class TestImportTomlToDb(TestCase):
 
         assert len(result.rejected) == 1
         assert result.rejected[0].key == "gitlab_token_pass_key"
-        assert result.rejected[0].reason.startswith("invalid:")
+        assert result.rejected[0].reason == "invalid (credential-coordinate value; message withheld)"
         assert ConfigSetting.objects.get_effective("gitlab_token_pass_key", scope="acme") is None
 
     def test_a_row_private_only_by_its_value_is_flagged_too(self) -> None:

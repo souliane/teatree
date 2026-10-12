@@ -21,6 +21,7 @@ from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.interchange import MAX_IMPORT_BYTES
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
@@ -29,7 +30,7 @@ _TUNED_LOOP = "housekeeping"
 
 @pytest.fixture(scope="module", autouse=True)
 def _scan_terms() -> Iterator[None]:
-    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
         yield
 
 
@@ -77,7 +78,9 @@ class TestExport(TestCase):
         with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
             response = self.client.get(reverse("dash:interchange_export"), **_LOOPBACK)
         assert response.status_code == 503
-        assert "term source" in response.content.decode()
+        assert "Export refused" in response.content.decode()
+        assert "banned_term_registry" in response.content.decode()
+        assert "Content-Disposition" not in response.headers
 
     def test_export_downloads_a_dump_withholding_secrets(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})
@@ -117,12 +120,21 @@ class TestImport(TestCase):
     def _post(self, text: str, **extra: str):
         return self.client.post(reverse("dash:interchange_import"), {"toml_file": _upload(text), **extra}, **_LOOPBACK)
 
-    def test_missing_term_source_refuses_import_before_writing(self) -> None:
+    def test_missing_term_source_previews_unscanned_with_every_value_withheld(self) -> None:
         with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
-            response = self._post('[teatree]\nmode = "auto"\n', apply="1")
-        assert response.status_code == 503
-        assert "term source" in response.content.decode()
+            response = self._post("[teatree]\nmerge_wip = 4\n")
+        body = _import_block(response.content.decode())
+        assert response.status_code == 200
+        assert "not content-scanned" in body
+        assert "banned_term_registry" in body
+        assert escape("merge_wip = <withheld: private>") in body
+        assert "rejected" not in body
         assert ConfigSetting.objects.count() == 0
+
+    def test_a_scanned_preview_carries_no_unscanned_banner(self) -> None:
+        body = _import_block(self._post("[teatree]\nmerge_wip = 4\n").content.decode())
+        assert "not content-scanned" not in body
+        assert "merge_wip = 4" in body
 
     def test_the_page_offers_a_file_input_not_a_textarea(self) -> None:
         body = self.client.get(reverse("dash:interchange"), **_LOOPBACK).content.decode()

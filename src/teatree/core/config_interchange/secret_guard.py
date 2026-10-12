@@ -33,7 +33,8 @@ import tomlkit
 from teatree.config.extra_headers import carries_unlisted_header
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
 from teatree.core.models.config_setting import ConfigValue
-from teatree.hooks.term_match import matched_term
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
+from teatree.hooks.term_match import line_matches
 
 #: The reserved top-level table a ``--include-private`` export stamps itself with. Its name
 #: cannot collide: settings live under ``[teatree]``, overlays under ``[overlays.<name>]``,
@@ -41,11 +42,17 @@ from teatree.hooks.term_match import matched_term
 PRIVATE_BACKUP_TABLE = "backup"
 _INCLUDE_PRIVATE_FIELD = "include_private"
 
+BANNED_TERM = "banned-term"
+
 
 class ExportPrivacy(StrEnum):
     SHARED = "shared"
     PRIVATE = "private"
-    WITH_BANNED_TERMS = "with_banned_terms"
+    PRIVATE_WITH_TERM_VALUES = "private_with_term_values"
+
+
+class ScanTermsUnavailableError(RuntimeError):
+    """No ban-class term is configured, so no row can be content-scanned."""
 
 
 @dataclass(frozen=True)
@@ -58,20 +65,31 @@ class RedactedRow:
 
 
 def resolve_export_scan_terms() -> tuple[str, ...]:
-    """Every ban-class term for the export content scan; refuses an empty source.
+    """Every ban-class term for the export content scan; raises when the store yields none.
 
     Delegates to :func:`banned_term_registry.export_scan_terms` — the single home that
     resolves the ban classes (``leak`` + ``prose_collider`` + ``tone`` +
     ``overlay``; the ``allow`` carve-out is excluded). Keeping the
     resolution there leaves the registry the
     single term-source: a shared export scans the operator's configured customer/brand
-    terms without any file; an unconfigured or malformed registry fails loud.
+    terms without any file; an unconfigured, empty or malformed registry raises
+    :class:`ScanTermsUnavailableError`, which each caller turns into a refusal or an
+    announced unscanned import.
     """
     # Deferred (PLC0415): importing `teatree.hooks.banned_term_registry` at module scope
     # eagerly loads its heavy package __init__; keep this module's import light.
     from teatree.hooks.banned_term_registry import export_scan_terms  # noqa: PLC0415 — deferred: kept lazy
 
-    return export_scan_terms()
+    try:
+        return export_scan_terms()
+    except BannedTermsUnsetError as exc:
+        raise ScanTermsUnavailableError(str(exc)) from exc
+
+
+def carries_banned_term(key: str, value: object, terms: tuple[str, ...]) -> bool:
+    """Whether *key* or *value* carries a scan term — the one normalisation every scan uses."""
+    # ensure_ascii would escape a non-ASCII letter and split the term's token run.
+    return line_matches(f"{key} {json.dumps(value, default=str, ensure_ascii=False)}", terms)
 
 
 def redaction_reason(key: str, value: ConfigValue | None, terms: tuple[str, ...]) -> str | None:
@@ -96,7 +114,7 @@ def redaction_reason(key: str, value: ConfigValue | None, terms: tuple[str, ...]
         return "personal-identifier"
     if carries_unlisted_header(key, value):
         return "unlisted-header"
-    return "banned-term" if matched_term(f"{key} {json.dumps(value, default=str)}", terms) else None
+    return BANNED_TERM if carries_banned_term(key, value, terms) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,12 +216,15 @@ def is_private_backup(doc: Mapping[str, Any]) -> bool:
 
 
 __all__ = [
+    "BANNED_TERM",
     "PRIVATE_BACKUP_TABLE",
     "ExportPrivacy",
     "Guarded",
     "RedactedRow",
+    "ScanTermsUnavailableError",
     "Substitute",
     "Withheld",
+    "carries_banned_term",
     "is_private_backup",
     "mark_private_backup",
     "redaction_reason",

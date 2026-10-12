@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from unittest import mock
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
@@ -29,8 +30,12 @@ from teatree.core.settings_snapshot import (
     serialise,
 )
 from teatree.core.settings_snapshot.fingerprint import Warnings, schema_state
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 
 _SECRET_VALUE = "sk-live-nobody-should-ever-see-this"
+#: A runtime-built non-ASCII placeholder — no real word, never a configured term.
+_NON_ASCII_TERM = "qx" + "\u00fc" + "mbel-ledger"
 #: Credential COORDINATES — they name where a secret lives, and are withheld for that alone.
 _FAKE_COORDINATE = "fake-store/not-a-real-entry"
 _OTHER_FAKE_COORDINATE = "fake-store/also-not-a-real-entry"
@@ -38,7 +43,7 @@ _OTHER_FAKE_COORDINATE = "fake-store/also-not-a-real-entry"
 
 @pytest.fixture(scope="module", autouse=True)
 def _scan_terms() -> Iterator[None]:
-    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": TEST_TERM_REGISTRY_JSON}):
         yield
 
 
@@ -49,6 +54,13 @@ class TestPayloadShape(TestCase):
             pytest.raises(SnapshotError, match="term source"),
         ):
             build_snapshot("box-a")
+
+    def test_a_non_ascii_term_is_withheld_from_every_value_tier(self) -> None:
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": json.dumps({"leak": [_NON_ASCII_TERM]})}):
+            call_command("config_setting", "set", "issue_implementer_label", json.dumps(f"{_NON_ASCII_TERM} desk"))
+            snapshot = build_snapshot("box-a")
+        assert snapshot["values"]["settings"][""]["issue_implementer_label"]["__redacted__"] == "banned-term"
+        assert not line_matches(json.dumps(snapshot, ensure_ascii=False), (_NON_ASCII_TERM,))
 
     def test_the_format_stamp_is_the_one_the_offline_page_reads(self) -> None:
         snapshot = build_snapshot("box-a")
