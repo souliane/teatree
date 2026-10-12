@@ -346,6 +346,23 @@ class TestLineage:
         assert stolen.lineage not in {"", acquired.lineage}
 
 
+def _running(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()[0]
+    except FileNotFoundError:
+        return False
+    return state not in {"Z", "X"}
+
+
+def _ends_within(pid: int, *, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while _running(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
 def _reject_pushes(bare) -> None:
     """Install a ``pre-receive`` hook that refuses every push (push denied, reads OK)."""
     hook = Path(bare) / "hooks" / "pre-receive"
@@ -412,13 +429,14 @@ class TestErrorPaths:
         with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="gate refused: non-noreply identity"):
             fleet_claim.acquire(_KEY, repo=str(client))
 
-    def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_at_the_deadline(
+    def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_and_ends_the_hook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         bare = init_bare(tmp_path / "o.git")
         client = init_client(tmp_path / "c", bare)
+        hook_child_pid = tmp_path / "hook-child.pid"
         hook = client / ".git" / "hooks" / "pre-push"
-        hook.write_text("#!/bin/sh\nsleep 40 &\nwait\n", encoding="utf-8")
+        hook.write_text(f'#!/bin/sh\nsleep 40 &\necho $! > "{hook_child_pid}"\nwait\n', encoding="utf-8")
         hook.chmod(0o755)
         monkeypatch.setattr(fleet_claim, "_GIT_TIMEOUT_SECONDS", 5.0)
         started = time.monotonic()
@@ -428,6 +446,7 @@ class TestErrorPaths:
 
         assert time.monotonic() - started < 30
         assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
+        assert _ends_within(int(hook_child_pid.read_text(encoding="utf-8")), seconds=10.0)
 
     def test_steal_returns_none_when_cas_is_lost(self, tmp_path, monkeypatch) -> None:
         # The ref is expired (so the steal is attempted) but the CAS is rejected —
