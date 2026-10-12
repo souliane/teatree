@@ -24,6 +24,12 @@ class GuardedPassWriter(Protocol):
     def __call__(self, key: str, value: str, *, echo: Callable[[str], object]) -> str: ...
 
 
+class AuthFile(Protocol):
+    def read(self) -> bytes: ...
+
+    def write(self, raw: bytes) -> None: ...
+
+
 class CodexAuthCacheError(RuntimeError):
     @classmethod
     def pass_read_failed(cls, entry: str) -> "CodexAuthCacheError":
@@ -156,29 +162,65 @@ def store_auth_cache_from_reader(
     echo: Callable[[str], object] = _ignore_message,
 ) -> None:
     """Read and store an auth cache while holding the session writer lock."""
-    entry = CODEX_AUTH_PASS_ENTRY
-    with _exclusive_lock(resolve_codex_home(code_home)):
-        encoded = encode_auth_cache(read())
+    cache = CodexAuthCache(
+        resolve_codex_home(code_home), pass_read=pass_read, pass_write_with_backup=pass_write_with_backup
+    )
+    cache.store_from(read, echo=echo)
+
+
+class LocalAuthFile:
+    def __init__(self, code_home: Path) -> None:
+        self.code_home = code_home
+
+    @property
+    def path(self) -> Path:
+        return self.code_home / "auth.json"
+
+    def read(self) -> bytes:
         try:
-            pass_write_with_backup(entry, encoded, echo=echo)
-            persisted = pass_read(entry)
-        except (SecretNotFoundError, SecretStoreError, OSError) as exc:
-            raise CodexAuthCacheError.pass_persist_failed(entry) from exc
-        if persisted != encoded:
-            raise CodexAuthCacheError.pass_verification_failed(entry)
+            # Codex may replace rather than rewrite its cache while refreshing.
+            # Reassert the private mode before reading or retaining that file.
+            self.path.chmod(0o600)
+            return self.path.read_bytes()
+        except OSError as exc:
+            raise CodexAuthCacheError.missing_cache() from exc
+
+    def write(self, raw: bytes) -> None:
+        _prepare_private_home(self.code_home)
+        fd, temporary = tempfile.mkstemp(prefix=".auth-", dir=self.code_home)
+        temporary_path = Path(temporary)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary_path.replace(self.path)
+            self.path.chmod(0o600)
+            directory_fd = os.open(self.code_home, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
 
 class CodexAuthCache:
+    """A pass entry hydrated into an auth file for one run under a lease in *code_home*, persisted back after."""
+
     def __init__(
         self,
         code_home: Path,
         *,
         entry: str = CODEX_AUTH_PASS_ENTRY,
+        store: AuthFile | None = None,
         pass_read: Callable[[str], str] = read_pass_required,
         pass_write_with_backup: GuardedPassWriter = write_pass_with_backup,
     ) -> None:
         self.code_home = code_home
         self.entry = entry
+        self.store = store or LocalAuthFile(code_home)
         self.pass_read = pass_read
         self.pass_write_with_backup = pass_write_with_backup
         self._hydrated: bytes | None = None
@@ -220,29 +262,34 @@ class CodexAuthCache:
             await task
             raise
 
-    def hydrate(self) -> Path:
+    def stored(self) -> bytes:
         try:
             value = self.pass_read(self.entry)
         except (SecretNotFoundError, SecretStoreError, OSError) as exc:
             raise CodexAuthCacheError.pass_read_failed(self.entry) from exc
-        raw = decode_auth_cache(value)
-        self._atomic_write(raw)
+        return decode_auth_cache(value)
+
+    def hydrate(self) -> Path:
+        raw = self.stored()
+        self.store.write(raw)
         self._hydrated = raw
         return self.auth_path
 
     def persist(self) -> None:
-        try:
-            # Codex may replace rather than rewrite its cache while refreshing.
-            # Reassert the private mode before reading or retaining that file.
-            self.auth_path.chmod(0o600)
-            raw = self.auth_path.read_bytes()
-        except OSError as exc:
-            raise CodexAuthCacheError.missing_cache() from exc
+        raw = self.store.read()
         encoded = encode_auth_cache(raw)
         if raw == self._hydrated:
             return
+        self.write_verified(encoded)
+        self._hydrated = raw
+
+    def store_from(self, read: Callable[[], bytes], *, echo: Callable[[str], object] = _ignore_message) -> None:
+        with _exclusive_lock(self.code_home):
+            self.write_verified(encode_auth_cache(read()), echo=echo)
+
+    def write_verified(self, encoded: str, *, echo: Callable[[str], object] = _ignore_message) -> None:
         try:
-            self.pass_write_with_backup(self.entry, encoded, echo=_ignore_message)
+            self.pass_write_with_backup(self.entry, encoded, echo=echo)
         except (SecretStoreError, OSError) as exc:
             raise CodexAuthCacheError.pass_persist_failed(self.entry) from exc
         try:
@@ -251,27 +298,6 @@ class CodexAuthCache:
             raise CodexAuthCacheError.pass_verification_failed(self.entry) from exc
         if persisted != encoded:
             raise CodexAuthCacheError.pass_verification_failed(self.entry)
-        self._hydrated = raw
 
     def _prepare_home(self) -> None:
         _prepare_private_home(self.code_home)
-
-    def _atomic_write(self, raw: bytes) -> None:
-        self._prepare_home()
-        fd, temporary = tempfile.mkstemp(prefix=".auth-", dir=self.code_home)
-        temporary_path = Path(temporary)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary_path.replace(self.auth_path)
-            self.auth_path.chmod(0o600)
-            directory_fd = os.open(self.code_home, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            temporary_path.unlink(missing_ok=True)

@@ -1,5 +1,8 @@
 """Codex receives only tool and MCP policy it can enforce."""
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 
@@ -10,6 +13,7 @@ from teatree.agents.codex_app_server_options import (
     codex_phase_policy_unavailable_reason,
 )
 from tests.teatree_agents._codex_plugin import CODEX_PLUGIN_ID
+from tests.teatree_agents._executor_fakes import EXECUTOR_ID, FakeExecutor, attested
 
 
 def test_write_denial_becomes_codex_read_only_policy() -> None:
@@ -168,3 +172,34 @@ def test_worker_write_session_keeps_apps_off_beside_its_trust_and_plugin_overrid
         "projects": {"/work/main": {"trust_level": "untrusted"}},
         "plugins": {CODEX_PLUGIN_ID: {"enabled": False}},
     }
+
+
+_PLANNING_OPTIONS = ClaudeAgentOptions(
+    cwd="/work/main", permission_mode="bypassPermissions", disallowed_tools=["Write", "Edit", "NotebookEdit"]
+)
+
+
+@pytest.mark.parametrize(
+    "impostor",
+    [None, True, object(), SimpleNamespace(container_id=EXECUTOR_ID)],
+    ids=["none", "true", "object", "look-alike"],
+)
+def test_mutation_denied_phase_needs_an_attestation(monkeypatch: pytest.MonkeyPatch, impostor: object) -> None:
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+
+    with pytest.raises(CodexAppServerError, match="read-only inside a container"):
+        CodexAppServerOptions.from_sdk_options(_PLANNING_OPTIONS, executor=impostor)
+
+
+def test_an_attested_mutation_denied_phase_runs_unsandboxed_in_the_executor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    attestation = attested(FakeExecutor(tmp_path), monkeypatch)
+    monkeypatch.setattr(codex_app_server_options, "container_is_the_sandbox", lambda: True)
+
+    options = CodexAppServerOptions.from_sdk_options(_PLANNING_OPTIONS, executor=attestation)
+
+    assert (options.sandbox_mode, options.sandbox_policy) == ("danger-full-access", {"type": "dangerFullAccess"})
+    assert options.config["projects"] == {"/work/main": {"trust_level": "untrusted"}}
+    assert options.config["plugins"] == {CODEX_PLUGIN_ID: {"enabled": False}}
+    assert options.executor is attestation

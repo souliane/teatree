@@ -1,5 +1,6 @@
 """One-time import of an already-authenticated Codex ChatGPT cache."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -7,15 +8,25 @@ import typer
 
 from teatree.agents.codex_auth_cache import (
     CODEX_AUTH_PASS_ENTRY,
+    CodexAuthCache,
     CodexAuthCacheError,
     resolve_codex_home,
     store_auth_cache,
     store_auth_cache_from_reader,
 )
+from teatree.agents.codex_read_only_executor import (
+    EXECUTOR_LOGIN_ENTRY,
+    ExecutorDocker,
+    ExecutorRefusalError,
+    executor_lease_dir,
+    login_account,
+)
 from teatree.utils.django_bootstrap import ensure_django
 
 codex_auth_app = typer.Typer(no_args_is_help=True, help="Manage the private Codex ChatGPT auth cache.")
 _MAX_AUTH_BYTES = 1024 * 1024
+_EXECUTOR_HELP = "Act on the read-only executor's own login; only teatree-worker reaches it."
+_WORKER_AUTH_SOURCE = "~/.codex/auth.json"
 
 
 def _read_auth_source(source: str) -> bytes:
@@ -44,29 +55,81 @@ def _forget_codex_holds() -> None:
     AgentRouteAvailability.objects.forget_harness("codex_app_server")
 
 
+def _require_worker_route(verb: str) -> None:
+    try:
+        ExecutorDocker().worker()
+    except ExecutorRefusalError as exc:
+        typer.echo(
+            f"FAIL: {exc}. Only teatree-worker reaches the read-only executor: run "
+            f"`deploy/t3 codex auth {verb} --executor` from the host, or "
+            f"`docker compose -f deploy/docker-compose.yml exec teatree-worker t3 codex auth {verb} --executor`."
+        )
+        raise typer.Exit(code=1) from exc
+
+
+def _refresh_token(raw: bytes) -> object:
+    try:
+        tokens = json.loads(raw).get("tokens")
+    except (ValueError, AttributeError):
+        return None
+    return tokens.get("refresh_token") if isinstance(tokens, dict) else None
+
+
+def _executor_login(source: str | None) -> bytes:
+    """A complete login on a refresh-token chain of its own: two consumers of one chain break at its first rotation."""
+    if source is None:
+        message = "--executor stores a second Codex login; name its auth.json with --from PATH or --from -"
+        raise typer.BadParameter(message, param_hint="--from")
+    raw = _read_auth_source(source)
+    login_account(raw, "--from")
+    try:
+        worker = CodexAuthCache(resolve_codex_home()).stored()
+    except CodexAuthCacheError:
+        return raw
+    if _refresh_token(raw) == _refresh_token(worker):
+        message = f"this is the worker's own Codex login ({CODEX_AUTH_PASS_ENTRY}); log in again for the executor"
+        raise CodexAuthCacheError(message)
+    return raw
+
+
 @codex_auth_app.command("import")
 def import_auth(
-    from_path: str = typer.Option("~/.codex/auth.json", "--from", metavar="PATH|-"),
+    *,
+    from_path: str | None = typer.Option(
+        None, "--from", metavar="PATH|-", help=f"Default {_WORKER_AUTH_SOURCE}; required with --executor."
+    ),
+    executor: bool = typer.Option(False, "--executor", help=_EXECUTOR_HELP),
 ) -> None:
     """Store a locally authenticated ``auth.json`` as one base64 pass entry."""
+    entry = EXECUTOR_LOGIN_ENTRY if executor else CODEX_AUTH_PASS_ENTRY
+    source = from_path or _WORKER_AUTH_SOURCE
     try:
-        if from_path == "-":
-            store_auth_cache(_read_auth_source(from_path), echo=typer.echo)
+        if executor:
+            _require_worker_route("import")
+            raw = _executor_login(from_path)
+            CodexAuthCache(executor_lease_dir(), entry=entry).store_from(lambda: raw, echo=typer.echo)
+        elif source == "-":
+            store_auth_cache(_read_auth_source(source), echo=typer.echo)
         else:
-            store_auth_cache_from_reader(lambda: _read_auth_source(from_path), echo=typer.echo)
+            store_auth_cache_from_reader(lambda: _read_auth_source(source), echo=typer.echo)
     except CodexAuthCacheError as exc:
         raise typer.BadParameter(str(exc), param_hint="--from") from exc
     _forget_codex_holds()
-    typer.echo(f"OK    Stored Codex auth cache in pass entry {CODEX_AUTH_PASS_ENTRY}.")
+    typer.echo(f"OK    Stored Codex auth cache in pass entry {entry}.")
 
 
 @codex_auth_app.command("check")
-def check_auth() -> None:
+def check_auth(*, executor: bool = typer.Option(False, "--executor", help=_EXECUTOR_HELP)) -> None:
     """Run one OK-turn through the stored login; it refreshes only what a real turn would."""
-    from teatree.agents.codex_canary import canary_failure  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.agents.codex_canary import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        canary_failure,
+        executor_canary_failure,
+    )
 
+    if executor:
+        _require_worker_route("check")
     typer.echo("Codex canary: starting")
-    if (failure := canary_failure(resolve_codex_home())) is not None:
+    if (failure := executor_canary_failure() if executor else canary_failure(resolve_codex_home())) is not None:
         typer.echo(f"FAIL: {failure}")
         raise typer.Exit(code=1)
     typer.echo("Codex canary: PASS")

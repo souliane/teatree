@@ -9,7 +9,14 @@ from teatree.agents._runner_env import DispatchCredential
 from teatree.agents._runner_options import SpawnOverrides, _build_options, _turn_ceiling
 from teatree.agents.compaction_guard import CompactionGuard
 from teatree.agents.harness_dispatch import DispatchHarness
-from teatree.agents.prompt import build_system_context, build_task_prompt, required_skill_delivery
+from teatree.agents.prompt import (
+    build_read_only_system_context,
+    build_read_only_task_prompt,
+    build_system_context,
+    build_task_prompt,
+    required_skill_delivery,
+)
+from teatree.agents.read_only_venue_brief import ReadOnlyFacts
 from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.core.models import Task
@@ -33,6 +40,22 @@ class Preflight:
     skills: list[str]
 
 
+def _brief(task: Task, preflight: Preflight, *, lifecycle_skill: str, handoff: Path | None) -> tuple[str, str]:
+    """The task prompt and system context; the read-only executor gets its facts inline or the run is refused."""
+    skills, stage_skills = preflight.skills, preflight.stage_skills
+    if preflight.dispatch.harness.capabilities.read_only_venue:
+        prompt = build_read_only_task_prompt(task, ReadOnlyFacts.gather(task, handoff))
+        context = build_read_only_system_context(
+            task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills
+        )
+        return prompt, context
+    prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
+    context = build_system_context(
+        task, skills=skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills, handoff=handoff
+    )
+    return prompt, context
+
+
 def prepare_run(
     task: Task,
     preflight: Preflight,
@@ -45,15 +68,10 @@ def prepare_run(
     skills = preflight.skills
     stage_skills = preflight.stage_skills
     dispatch = preflight.dispatch
-    prompt = build_task_prompt(task, skills=skills, stage_skills=stage_skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
-    system_context = build_system_context(
-        task,
-        skills=skills,
-        lifecycle_skill=lifecycle_skill,
-        stage_skills=stage_skills,
-        handoff=handoff,
-    )
+    prompt, system_context = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
+    if dispatch.harness.capabilities.read_only_venue:
+        handoff = None
     required_inline, required_explicit = required_skill_delivery(
         task.phase,
         skills,

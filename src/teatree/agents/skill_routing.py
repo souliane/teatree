@@ -10,6 +10,7 @@ from django.utils import timezone
 from teatree.config.agent_spawn import AgentRouteCandidate, SkillModelPolicy
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import AgentRouteAvailability
+from teatree.skill_support.deps import SkillIndex, resolve_requires
 
 
 class AmbiguousSkillRouteError(ValueError):
@@ -26,13 +27,19 @@ def resolve_skill_route(
     *,
     phase_candidates: Sequence[str],
     primary_skill: str = "",
+    skill_index: Callable[[], SkillIndex] | None = None,
 ) -> tuple[str, tuple[AgentRouteCandidate, ...]] | None:
+    """The one loaded skill that routes this dispatch; an owner another owner requires yields to it."""
     owners = sorted(
         skill for skill in set(loaded_skills) if isinstance(skill_models.get(skill), tuple) and skill_models[skill]
     )
     if primary_skill in owners:
         owners = [primary_skill]
-    elif len(owners) > 1:
+    elif len(owners) > 1 and skill_index is not None:
+        index = skill_index()
+        required = {dep for owner in owners for dep in resolve_requires([owner], index) if dep != owner}
+        owners = [owner for owner in owners if owner not in required]
+    if len(owners) > 1:
         message = "multiple loaded skills own an ordered agent route: " + ", ".join(owners)
         raise AmbiguousSkillRouteError(message)
     if not owners:

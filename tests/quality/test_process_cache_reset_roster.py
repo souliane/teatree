@@ -139,6 +139,7 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
     "teatree.agents.live_registry:_shared_registries": "reset_shared_registries",
     "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
+    "teatree.agents.codex_read_only_server:_managers": "reset_executor_app_servers",
     "teatree.core.backend_factory:_code_host_cache": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_cache": "reset_backend_caches",
     # Short-TTL negative caches (F4.5): a transient resolve failure caches a None

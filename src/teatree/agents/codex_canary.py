@@ -7,8 +7,13 @@ from pathlib import Path
 from claude_agent_sdk import AssistantMessage
 
 from teatree.agents.codex_app_server import CodexAppServerSession
+from teatree.agents.codex_app_server_lifecycle import opened_session
 from teatree.agents.codex_app_server_options import CodexAppServerError, CodexAppServerOptions
 from teatree.agents.codex_auth_cache import CodexAuthCache, CodexAuthCacheError
+from teatree.agents.codex_read_only_executor import EXECUTOR_PHASES, ExecutorRefusalError, attest
+from teatree.agents.codex_read_only_server import ExecutorCodexAppServer
+from teatree.agents.codex_read_only_verdict import WORKTREE_ROOT
+from teatree.agents.codex_shared_app_server import SharedCodexSession
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessFallbackError
 
@@ -41,4 +46,36 @@ def canary_failure(code_home: Path) -> str | None:
             answered = asyncio.run(_answered(code_home, cwd))
         except (CodexAuthCacheError, CodexAppServerError, HarnessFallbackError) as exc:
             return str(exc)
+    return None if answered else "Codex finished the turn without an assistant message"
+
+
+async def _executor_answered() -> bool:
+    attestation = await asyncio.to_thread(attest, min(EXECUTOR_PHASES), (WORKTREE_ROOT,))
+    options = CodexAppServerOptions(
+        core=HarnessOptions(cwd=WORKTREE_ROOT),
+        runtime_workspace_roots=(WORKTREE_ROOT,),
+        sandbox_mode="danger-full-access",
+        sandbox_policy={"type": "dangerFullAccess"},
+        config={
+            "features": {"apps": False, "multi_agent": False},
+            "projects": {WORKTREE_ROOT: {"trust_level": "untrusted"}},
+        },
+        executor=attestation,
+    )
+    manager = ExecutorCodexAppServer(attestation)
+    session = SharedCodexSession(options, manager=manager, resume=None)
+    try:
+        async with opened_session(session):
+            await session.query(_PROMPT)
+            return any([isinstance(message, AssistantMessage) async for message in session.receive_response()])
+    finally:
+        await asyncio.to_thread(manager.close)
+
+
+def executor_canary_failure() -> str | None:
+    """The same OK-turn through the read-only executor's own login, from a fresh home it removes after."""
+    try:
+        answered = asyncio.run(_executor_answered())
+    except (ExecutorRefusalError, CodexAuthCacheError, CodexAppServerError, HarnessFallbackError) as exc:
+        return str(exc)
     return None if answered else "Codex finished the turn without an assistant message"
