@@ -147,11 +147,13 @@ def test_an_unreadable_tracked_file_refuses_the_scan(tmp_path: Path, monkeypatch
     _git(repo, "add", ".")
     read_text = Path.read_text
 
-    def fail_target(self: Path, *args: Any, **kwargs: Any) -> str:
+    def fail_target(
+        self: Path, encoding: str | None = None, errors: str | None = None, newline: str | None = None
+    ) -> str:
         if self == target:
             message = "read failed"
             raise OSError(message)
-        return read_text(self, *args, **kwargs)
+        return read_text(self, encoding, errors, newline)
 
     monkeypatch.setattr(Path, "read_text", fail_target)
     registry = {"leak": ["widget-secret"], "overlay": [], "allow": [], "prose_collider": [], "tone": []}

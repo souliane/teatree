@@ -268,6 +268,27 @@ class TestMaskExemptBlanksWholeEntryRuns:
         assert term_match.tokens(mask_exempt("acme then engineering later", ("acme-engineering",))) == toks
 
 
+class TestTheCarveOutReadsTheMatchersTokens:
+    """An allow entry spelled with the matcher's own tokens exempts its text, whatever the script."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "AcmeOwner",
+            "XMLParser",
+            "v2Owner",
+            "acme_owner2",
+            f"{chr(0x130)}acme",
+            f"{chr(0x212A)}cme",
+            f"ping {chr(0x130)}acme-owner",
+        ],
+    )
+    def test_an_entry_of_the_matchers_tokens_exempts_the_whole_text(self, text: str) -> None:
+        entry = "-".join(term_match.tokens(text))
+
+        assert mask_exempt(text, (entry,)).strip() == ""
+
+
 class TestContainsRun:
     """The contiguous-sublist primitive directly (incl. the empty-needle guard)."""
 

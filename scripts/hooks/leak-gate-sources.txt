@@ -68,4 +68,5 @@ src/teatree/utils/__init__.py
 src/teatree/utils/exact_carve_out.py
 src/teatree/utils/pr_ref.py
 src/teatree/utils/run.py
+src/teatree/utils/term_tokens.py
 src/teatree/utils/url_slug.py

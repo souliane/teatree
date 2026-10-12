@@ -29,16 +29,9 @@ tokenize to ``[home, base]`` and so match each other; an underscore term
 such as ``widget_count`` tokenizes to ``[widget, count]`` and matches both
 ``widget_count`` and ``widget count``.
 
-Tokenizing with the standard-library ``re`` is deliberate: ``re.findall``
-over an alphanumeric character class IS the standard tool for this, so no
-third-party word-list / profanity dependency is warranted.
-
-CamelCase is split BEFORE lowercasing by inserting a separator at
-``[a-z0-9]→[A-Z]`` transitions (``acmeProduct`` → ``acme Product``) and at
-acronym ``[A-Z]+→[A-Z][a-z]`` transitions (``XMLParser`` → ``XML Parser``),
-so a glued identifier no longer hides a term. A clean identifier with no
-embedded term (``getUserName`` → ``[get, user, name]``) is unaffected. A
-fully-lowercase glued spelling has no case boundary and stays one token
+The token rule itself lives in :mod:`teatree.utils.term_tokens`, which the
+allow-list carve-out reads too, so the two can never split text differently.
+A fully-lowercase glued spelling has no case boundary and stays one token
 (``democorp``); the multi-token glued fallback in :func:`_contains_run`
 restores coverage of THAT form for multi-word terms only, so a term
 ``demo-corp`` also matches the bare token ``democorp`` without loosening
@@ -47,26 +40,9 @@ live only in the operator's local config, never in this public source.)
 """
 
 import functools
-import re
 
 from teatree.utils.exact_carve_out import mask_exempt
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
-_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
-
-
-def tokens(text: str) -> list[str]:
-    """Split *text* into lowercase alphanumeric tokens.
-
-    Every non-alphanumeric character (``-``, ``_``, whitespace, punctuation)
-    AND every camelCase/PascalCase boundary is a separator, so
-    ``"xx-acme, zz"`` → ``["xx", "acme", "zz"]``, ``"widget_count"`` →
-    ``["widget", "count"]`` and ``"acmeProduct"`` → ``["acme", "product"]``.
-    """
-    split = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
-    split = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", split)
-    return _TOKEN_RE.findall(split.lower())
+from teatree.utils.term_tokens import token_spans, tokens
 
 
 def _contains_run(haystack: list[str], needle: list[str]) -> bool:
@@ -125,31 +101,18 @@ def line_matches(line: str, terms: tuple[str, ...], allowlist: tuple[str, ...] =
     return matched_term(line, terms, allowlist) is not None
 
 
-def _token_spans(text: str) -> list[tuple[str, int, int]]:
-    """Tokenize *text* keeping each token's ``(token, start, end)`` span.
-
-    CamelCase/acronym boundaries are split the same way :func:`tokens` does
-    (a separator is inserted at each boundary), so the returned offsets are
-    into the camelCase-SPLIT text, not the original. Callers use the offset
-    only as an informational position, so the split-text offset is fine.
-    """
-    split = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
-    split = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", split).lower()
-    return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(split)]
-
-
 def iter_term_matches(text: str, term: str) -> list[tuple[str, int]]:
     """Every whole-token occurrence of *term* in *text* as ``(matched, position)``.
 
     A single-token *term* yields one entry per matching token; a multi-token
     *term* yields one entry per contiguous run (the glued-token fallback is
     not position-tracked — a glued single token still yields its own span).
-    *position* is an informational offset into the camelCase-split text.
+    *position* is the offset in *text* where the match starts.
     """
     term_tokens = tokens(term)
     if not term_tokens:
         return []
-    spans = _token_spans(text)
+    spans = token_spans(text)
     matches: list[tuple[str, int]] = []
     span = len(term_tokens)
     for i in range(len(spans) - span + 1):
