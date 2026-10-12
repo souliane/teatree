@@ -133,10 +133,10 @@ class TestFilterTwoEmitsTheUnchangedKeysToo(TestCase):
     def test_the_filter_alone_keeps_the_wider_eligible_key_set(self) -> None:
         # Without filter 1 the eligible set is every ``[teatree]``-emittable key, so a
         # Secret key carrying a row still rides along under ``include_private``.
-        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
+        ConfigSetting.objects.set_value("private_repos", ["probe-org/probe-repo"])
         export = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=(), include_defaults=True)
         emitted = set(_teatree(export.toml))
-        assert emitted == set(default_category_keys()) | {"banned_term_registry"}
+        assert emitted == set(default_category_keys()) | {"private_repos"}
 
     def test_a_key_no_persisted_tier_reaches_is_left_out_never_invented(self) -> None:
         # A Secret/Personal key with no row and no shipped value has only an in-code

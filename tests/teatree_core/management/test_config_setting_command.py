@@ -1063,6 +1063,16 @@ class TestPrivateExportWithholdsRowsNotTheWholeFile(_TermGuardCase):
         assert self._run("export", "--include-private", "--include-banned-term-values", "--output", str(target))[0] == 0
         assert line_matches(target.read_text(encoding="utf-8"), SCAN)
 
+    def test_a_stored_term_registry_is_withheld_when_the_terms_come_from_the_environment(self) -> None:
+        self._set("banned_term_registry", {"leak": ["stored-only-placeholder"]})
+        for flags, carried in (((), False), (("--include-banned-term-values",), True)):
+            with self.subTest(flags=flags):
+                target = self.tmp_path / "f.toml"
+                code, _, err = self._run("export", "--include-private", *flags, "--output", str(target))
+                assert code == 0, err
+                assert ("stored-only-placeholder" in target.read_text(encoding="utf-8")) is carried
+                assert ("withheld banned_term_registry  [global]  (banned-term)" in err) is not carried
+
 
 class TestEveryPrivateExportIsMarkedAndRestores(_TermGuardCase):
     SHAPES: ClassVar[tuple[tuple[str, ...], ...]] = (

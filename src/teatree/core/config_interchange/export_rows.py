@@ -3,6 +3,7 @@
 from collections import Counter
 from dataclasses import dataclass, field
 
+from teatree.config.registries import TERM_REGISTRY
 from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
 from teatree.core.config_interchange.secret_guard import (
     BANNED_TERM,
@@ -62,6 +63,9 @@ class ExportGuard:
         return (*named, *(OmittedRow(scope, f"{count} row(s)", reason) for reason, count in unnamed.items()))
 
     def reason(self, key: str, value: ConfigValue) -> str | None:
+        # The stored registry holds terms even when another source supplies the ones scanned.
+        if key == TERM_REGISTRY and self.privacy is ExportPrivacy.PRIVATE:
+            return BANNED_TERM
         if self.private_backup:
             return BANNED_TERM if carries_banned_term(key, value, self.terms) else None
         return redaction_reason(key, value, self.terms)
