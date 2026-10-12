@@ -233,7 +233,7 @@ def _git(*args: str) -> None:
 
 def _clone_with_worktree(layout: Path) -> tuple[Path, Path]:
     clone, worktree = layout / "root" / "clone", layout / "ws" / "ticket"
-    _git("init", "-q", str(clone))
+    _git("init", "-q", "-b", "main", str(clone))
     _plant(clone, "README")
     _git("-C", str(clone), "add", "README")
     _git("-C", str(clone), "commit", "-qm", "init")
