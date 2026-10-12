@@ -85,6 +85,19 @@ def private_origin(tmp: Path, token: str) -> tuple[Path, Path]:
     return bare, client
 
 
+def run_before_upload_pack(client: Path, call: int, command: str) -> None:
+    """Run *command* just before *client*'s *call*-th read of its origin: a ref write racing that read."""
+    counter = client / ".git" / "upload-pack-calls"
+    wrapper = client / ".git" / "upload-pack-racing-a-write"
+    wrapper.write_text(
+        f'#!/bin/sh\nn=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\necho "$n" > "{counter}"\n'
+        f'[ "$n" = {call} ] && {command}\nexec git upload-pack "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    git(client, "config", "remote.origin.uploadpack", str(wrapper))
+
+
 @contextmanager
 def as_other_instance(data_home: Path) -> Iterator[None]:
     """Act as a separate teatree installation: ``instance_id()`` resolves its own machine data dir."""

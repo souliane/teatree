@@ -26,6 +26,7 @@ from ._git_origin import (
     init_client,
     init_with_origin,
     ref_sha,
+    run_before_upload_pack,
 )
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
@@ -167,6 +168,33 @@ class TestReleaseAndFence:
 
         assert isinstance(lost, fleet_claim.ClaimLost)
         assert lost.observed_sha == twin.sha
+
+
+class TestReadTip:
+    def test_a_ref_deleted_mid_read_reads_as_absent(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        run_before_upload_pack(client, 2, f'git --git-dir="{bare}" update-ref -d {claim.ref}')
+
+        assert fleet_claim.read_tip(_KEY, repo=str(client)) is None
+
+    def test_a_ref_re_pointed_mid_read_is_read_again(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        beat = fleet_claim.heartbeat(claim, repo=str(client))
+        assert isinstance(beat, fleet_claim.Claim)
+        git(bare, "update-ref", claim.ref, claim.sha)
+        run_before_upload_pack(client, 2, f'git --git-dir="{bare}" update-ref {claim.ref} {beat.sha}')
+
+        tip = fleet_claim.read_tip(_KEY, repo=str(client))
+
+        assert tip is not None
+        assert tip.sha == beat.sha
+        assert tip.lineage == claim.lineage != ""
 
 
 class TestLineage:

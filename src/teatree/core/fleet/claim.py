@@ -64,6 +64,7 @@ from teatree.utils.git_run import git_env_non_interactive
 from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 
 _REF_PREFIX = "refs/teatree/claims"
+_READ_ATTEMPTS = 2
 #: ``wire.resolve_claim_repo`` only hands out a clone whose origin hosts the work item.
 _ORIGIN = "origin"
 
@@ -323,23 +324,41 @@ def read_tip(work_key: str, *, repo: str = ".", extra_env: Mapping[str, str] = _
 
     The commit is fetched into an ephemeral object dir with no destination
     refspec and no ``FETCH_HEAD``, so reading a rival's record mutates neither
-    the clone's object DB nor its ref store. The sha is the one ``ls-remote``
-    reported, so a steal CASes against exactly the value whose record drove the
-    expiry decision; a ref that moved under us leaves that sha unfetched and the
-    record unreadable. Raises :class:`FleetClaimUnavailableError` when the remote
-    is unreachable — a fence must read that as "cannot confirm ownership".
+    the clone's object DB nor its ref store. The sha and its record always come
+    from one ``ls-remote`` observation, so a steal CASes against exactly the value
+    whose record drove the expiry decision. A read that fails re-observes the ref
+    once: a ref deleted meanwhile reads as absent and a re-pointed one is read
+    again, while the same sha still unreadable is ``meta=None``. Raises
+    :class:`FleetClaimUnavailableError` when the remote is unreachable or the ref
+    keeps moving — a fence must read that as "cannot confirm ownership".
     """
     ref = claim_ref(work_key)
     sha = _ls_remote_sha(repo, _ORIGIN, ref, extra_env)
     if not sha:
         return None
+    for _attempt in range(_READ_ATTEMPTS):
+        fetched, record = _fetch_record(repo, ref, sha, extra_env)
+        if record is not None:
+            return ClaimTip(sha=sha, meta=_parse_meta(record))
+        observed = _ls_remote_sha(repo, _ORIGIN, ref, extra_env)
+        if not observed:
+            return None
+        if observed == sha:
+            if fetched:
+                return ClaimTip(sha=sha, meta=None)
+            break
+        sha = observed
+    msg = f"fetch {ref} failed (remote unreachable, or the ref kept moving)"
+    raise FleetClaimUnavailableError(msg)
+
+
+def _fetch_record(repo: str, ref: str, sha: str, extra_env: Mapping[str, str]) -> tuple[bool, str | None]:
     with _ephemeral_odb(repo, _ORIGIN, extra_env) as scope:
         fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", _ORIGIN, ref]
         if _git(repo, fetch, env=scope.env).returncode != 0:
-            msg = f"fetch {ref} failed (remote unreachable)"
-            raise FleetClaimUnavailableError(msg)
+            return False, None
         read = _git(repo, ["log", "-1", "--format=%B", sha], env=scope.env)
-    return ClaimTip(sha=sha, meta=_parse_meta(read.stdout) if read.returncode == 0 else None)
+    return True, read.stdout if read.returncode == 0 else None
 
 
 def _resolve_now(now: float | None) -> float:

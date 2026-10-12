@@ -30,7 +30,16 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
-from ._git_origin import as_other_instance, as_twin_instance, git, init_bare, init_client, private_origin, ref_sha
+from ._git_origin import (
+    as_other_instance,
+    as_twin_instance,
+    git,
+    init_bare,
+    init_client,
+    private_origin,
+    ref_sha,
+    run_before_upload_pack,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -399,6 +408,12 @@ class TestShipFenceGate(TestCase):
         ticket, worktree, claim, bare = self._ship_setup(tmp)
         fleet_claim.release(claim, repo=worktree.repo_path)
         assert ref_sha(bare, claim.ref) == ""
+
+        assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
+
+    def test_a_ref_deleted_mid_read_refuses_as_missing(self) -> None:
+        ticket, worktree, claim, bare = self._ship_setup(self._tmp())
+        run_before_upload_pack(Path(worktree.repo_path), 2, f'git --git-dir="{bare}" update-ref -d {claim.ref}')
 
         assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
 
