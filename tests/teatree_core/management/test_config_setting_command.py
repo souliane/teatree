@@ -21,12 +21,13 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
-from teatree.config.cold_defaults import flatten_settings_table
+from teatree.config.cold_defaults import DEFAULTS_TOML, flatten_settings_table
 from teatree.config.enums import Mode
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_groups import UNGROUPED_PATH
 from teatree.config.setting_taxonomy import taxonomy
+from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.secret_guard import is_private_backup
 from teatree.core.models import ConfigSetting
 from teatree.core.models import Mode as Preset
@@ -40,6 +41,10 @@ SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
 CARRIER = f"{LEAK} desk"
 #: A runtime-built non-ASCII placeholder — no real word, never a configured term.
 NON_ASCII_TERM = "qx" + "\u00fc" + "mbel-ledger"
+
+
+def _carries_no_term(*streams: str, terms: tuple[str, ...] = SCAN) -> bool:
+    return not any(line_matches(stream, terms) for stream in streams)
 
 
 def _teatree(document: dict[str, object]) -> dict[str, object]:
@@ -902,6 +907,23 @@ class TestEveryUnknownKeySaysWhy(_TermGuardCase):
 
 
 class TestRefusalsNameTheClassNeverTheValue(_TermGuardCase):
+    def test_an_export_names_a_term_row_by_key_and_class(self) -> None:
+        self._set("issue_implementer_label", CARRIER)
+        self._set("merge_wip", 4)
+        code, out, err = self._run("export")
+        assert code == 0
+        assert "withheld issue_implementer_label  [global]  (banned-term)" in err
+        assert _carries_no_term(out, err)
+        assert _teatree(tomllib.loads(out))["merge_wip"] == 4
+
+    def test_an_import_refusal_names_the_key_and_class(self) -> None:
+        path = self._file("f.toml", f'[teatree]\nissue_implementer_label = "{CARRIER}"\n')
+        code, out, err = self._run("import", "--input", str(path))
+        assert code == 2
+        assert "rejected issue_implementer_label  [global]  (secret (banned-term))" in err
+        assert _carries_no_term(out, err)
+        assert "[source: env/default]" in self._run("get", "issue_implementer_label")[1]
+
     def test_a_banned_term_value_rejected_as_invalid_on_restore_drops_the_parser_message(self) -> None:
         backup = "[backup]\ninclude_private = true\n[teatree]\n"
         code, out, err = self._run(
@@ -922,7 +944,7 @@ class TestRefusalsNameTheClassNeverTheValue(_TermGuardCase):
         code, out, err = self._run("export")
         assert code == 0
         assert "withheld issue_implementer_label  [global]  (banned-term)" in err
-        assert not line_matches(out + err, (NON_ASCII_TERM,))
+        assert _carries_no_term(out, err, terms=(NON_ASCII_TERM,))
         assert _teatree(tomllib.loads(out))["merge_wip"] == 4
 
 
@@ -1010,6 +1032,7 @@ class TestPrivateExportWithholdsRowsNotTheWholeFile(_TermGuardCase):
         self._set("issue_implementer_label", CARRIER, "--overlay", "probe")
         self._set("slack_user_id", "synthetic-user-ref")
         self._set("banned_term_registry", TEST_TERM_REGISTRY)
+        self._run("create", "probe", "--description", f"{LEAK} preset", command="loop_preset")
         self._run("edit", self.shipped_mode, "--description", f"{LEAK} preset", command="loop_preset")
 
     def test_every_shape_withholds_the_term_rows_and_still_writes_a_marked_file(self) -> None:
@@ -1019,7 +1042,7 @@ class TestPrivateExportWithholdsRowsNotTheWholeFile(_TermGuardCase):
             code, out, err = self._run("export", "--include-private", *shape, "--output", str(target))
             text = target.read_text(encoding="utf-8")
             assert code == 0, err
-            assert not line_matches(text + out + err, SCAN)
+            assert _carries_no_term(text, out, err)
             assert is_private_backup(tomllib.loads(text))
             assert "(banned-term)" in err
             assert "--include-banned-term-values" in err
@@ -1041,6 +1064,66 @@ class TestPrivateExportWithholdsRowsNotTheWholeFile(_TermGuardCase):
         assert line_matches(target.read_text(encoding="utf-8"), SCAN)
 
 
+class TestEveryPrivateExportIsMarkedAndRestores(_TermGuardCase):
+    SHAPES: ClassVar[tuple[tuple[str, ...], ...]] = (
+        (),
+        ("--overlay", "probe"),
+        ("--default-keys-only", "--include-defaults"),
+    )
+
+    def setUp(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
+        self._run("edit", min(shipped_seed_table("modes")), "--description", f"{LEAK} preset", command="loop_preset")
+
+    def _unstamped(self, shape: tuple[str, ...]) -> dict[str, object]:
+        # The same emitter scanning nothing: over a store with no key-class row only the stamp may differ.
+        export = export_db_to_toml(
+            shape[1] if shape[:1] == ("--overlay",) else None,
+            scan_terms=(),
+            default_keys_only="--default-keys-only" in shape,
+            include_defaults="--include-defaults" in shape,
+        )
+        return tomllib.loads(export.toml)
+
+    def test_each_shape_is_its_unstamped_export_plus_the_marker(self) -> None:
+        self._set("issue_implementer_label", CARRIER)
+        self._set("issue_implementer_label", CARRIER, "--overlay", "probe")
+        for shape in self.SHAPES:
+            with self.subTest(shape=shape):
+                target = self.tmp_path / "f.toml"
+                flags = ("--include-private", "--include-banned-term-values", *shape, "--output", str(target))
+                code, _, err = self._run("export", *flags)
+                expected = {**self._unstamped(shape), "backup": {"include_private": True}}
+                assert code == 0
+                assert "PERSONAL BACKUP" in err
+                assert tomllib.loads(target.read_text(encoding="utf-8")) == expected
+
+    def test_each_shape_restores_the_cleared_carrier_and_shows_it_withheld(self) -> None:
+        for shape in self.SHAPES:
+            scope = shape[:2] if shape[:1] == ("--overlay",) else ()
+            with self.subTest(shape=shape):
+                self._set("issue_implementer_label", CARRIER, *scope)
+                target = self.tmp_path / "f.toml"
+                flags = ("--include-private", "--include-banned-term-values", *shape, "--output", str(target))
+                assert self._run("export", *flags)[0] == 0
+                self._run("clear", "issue_implementer_label", *scope)
+                code, out, err = self._run("import", "--input", str(target))
+                assert (code, "--restore-private" in err) == (2, True)
+                code, out, err = self._run("import", "--input", str(target), "--restore-private")
+                stored = self._run("get", "issue_implementer_label", *scope)[1]
+                assert code == 0, err
+                assert "issue_implementer_label = <withheld: private>" in out
+                assert _carries_no_term(out, err)
+                assert "[source: db" in stored
+
+
+class TestTheSharedDefaultsShapeStaysUnmarked(_TermGuardCase):
+    def test_it_is_the_shipped_file_byte_for_byte(self) -> None:
+        code, out, _ = self._run("export", "--default-keys-only", "--include-defaults")
+        assert code == 0
+        assert out == DEFAULTS_TOML.read_text(encoding="utf-8")
+
+
 class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
     def _arrange(self) -> None:
         self._set("merge_wip", 4, "--overlay", OV)
@@ -1050,7 +1133,7 @@ class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
         self._arrange()
         code, out, err = self._run("export")
         assert code == 0
-        assert not line_matches(out + err, SCAN)
+        assert _carries_no_term(out, err)
         assert "under a name that carries a banned term" in err
         assert "(banned-term)" in err
 
@@ -1059,14 +1142,14 @@ class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
         target = self.tmp_path / "f.toml"
         code, out, err = self._run("export", "--include-private", "--output", str(target))
         assert code == 0
-        assert not line_matches(target.read_text(encoding="utf-8") + out + err, SCAN)
+        assert _carries_no_term(target.read_text(encoding="utf-8"), out, err)
         assert "under a name that carries a banned term" in err
 
     def test_an_import_refuses_the_scope_without_naming_it(self) -> None:
         path = self._file("g.toml", f"[overlays.{OV}]\nmerge_wip = 4\n")
         code, out, err = self._run("import", "--input", str(path))
         assert code == 2
-        assert not line_matches(out + err, SCAN)
+        assert _carries_no_term(out, err)
         assert "rejected 1 row(s)  [under a name that carries a banned term]  (secret (banned-term))" in err
         assert ConfigSetting.objects.get_effective("merge_wip", scope=OV) is None
 
@@ -1090,11 +1173,13 @@ class TestTheSeedImportIsScanned(_TermGuardCase):
         self.shipped_description = Preset.objects.get(name=self.mode).description
 
     def test_a_term_in_a_preset_field_is_refused_by_class(self) -> None:
+        shown = self._run("show", self.mode, command="loop_preset")[1]
         path = self._file("f.toml", f'[modes.{self.mode}]\ndescription = "{LEAK} preset"\n')
         code, out, err = self._run("import", "--input", str(path))
         assert code == 2
         assert any("description" in line and "secret (banned-term)" in line for line in err.splitlines())
-        assert not line_matches(out + err, SCAN)
+        assert _carries_no_term(out, err)
+        assert self._run("show", self.mode, command="loop_preset")[1] == shown
         assert Preset.objects.get(name=self.mode).description == self.shipped_description
 
     def test_a_clean_preset_field_still_imports(self) -> None:
@@ -1146,6 +1231,7 @@ class TestTheTermValuesBackupNamesOnlyWhatAScanClears(_TermGuardCase):
 
 class TestABackupFromABoxWithACustomPresetRestores(_TermGuardCase):
     def test_the_unshipped_preset_is_omitted_by_name_and_the_rest_restores(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
         self._run("create", "probe-preset", command="loop_preset")
         self._set("merge_wip", 4)
         backup = self.tmp_path / "f.toml"

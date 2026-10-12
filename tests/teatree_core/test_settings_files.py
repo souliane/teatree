@@ -414,6 +414,20 @@ class TestSavingThisBoxsSnapshot(TestCase):
         response = self.client.get(self.url, {"download": "1"}, **_LOOPBACK)
         assert response.json()["includes_private"] is False
 
+    def test_a_term_row_is_named_by_class_in_every_part_of_the_snapshot(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_label", json.dumps(_CARRIER), stdout=StringIO())
+        plain = self.client.get(self.url, **_LOOPBACK)
+        download = self.client.get(self.url, {"download": "1"}, **_LOOPBACK)
+        payload = plain.json()
+        assert (plain.status_code, download.status_code) == (200, 200)
+        assert {"scope": "", "key": "issue_implementer_label", "path": "", "reason": "banned-term"} in payload[
+            "redacted"
+        ]
+        assert payload["values"]["settings"][""]["issue_implementer_label"]["__redacted__"] == "banned-term"
+        assert "(banned-term)" in payload["registry"]["settings"]["issue_implementer_label"]["sync_note"]
+        for text in (plain.content.decode(), download.content.decode(), download.headers["Content-Disposition"]):
+            assert not line_matches(text, _SCAN)
+
     def test_a_label_carrying_a_term_is_withheld_from_the_payload_and_the_filename(self) -> None:
         call_command("config_setting", "set", "dashboard_instance_label", json.dumps(_CARRIER), stdout=StringIO())
         plain = self.client.get(self.url, **_LOOPBACK)

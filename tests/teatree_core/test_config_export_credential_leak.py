@@ -22,9 +22,11 @@ from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.secret_guard import ExportPrivacy, redaction_reason
 from teatree.core.models import ConfigSetting, Mode
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
+from tests._send_gate import TEST_TERM_REGISTRY
 
 #: A credential COORDINATE — it names where a secret lives; obviously fake, like every value here.
 _SYNTHETIC_COORDINATE = "fake-store/not-a-real-entry"
+_LEAK = TEST_TERM_REGISTRY["leak"][0]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -55,7 +57,7 @@ class TestOneWithholdRuleServesBothDirections(TestCase):
         assert redaction_reason("mode", "auto", ()) is None
 
     def test_a_value_carrying_a_scanned_term_is_withheld_whatever_the_key(self) -> None:
-        assert redaction_reason("mode", "acme-internal", ("acme-internal",)) == "banned-term"
+        assert redaction_reason("mode", _LEAK, (_LEAK,)) == "banned-term"
 
 
 class TestExportWithholdsCredentialsAndPersonalIds(TestCase):

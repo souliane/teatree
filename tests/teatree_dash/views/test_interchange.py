@@ -21,9 +21,12 @@ from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.interchange import MAX_IMPORT_BYTES
-from tests._send_gate import TEST_TERM_REGISTRY_JSON
+from teatree.hooks.term_match import line_matches
+from tests._send_gate import TEST_TERM_REGISTRY, TEST_TERM_REGISTRY_JSON
 
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
+_SCAN = tuple(term for terms in TEST_TERM_REGISTRY.values() for term in terms)
+_CARRIER = f"{TEST_TERM_REGISTRY['leak'][0]} desk"
 _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 _TUNED_LOOP = "housekeeping"
 
@@ -129,6 +132,14 @@ class TestImport(TestCase):
         assert "banned_term_registry" in body
         assert escape("merge_wip = <withheld: private>") in body
         assert "rejected" not in body
+        assert ConfigSetting.objects.count() == 0
+
+    def test_a_banned_term_row_is_named_by_key_and_class_never_by_the_term(self) -> None:
+        response = self._post(f'[teatree]\nissue_implementer_label = "{_CARRIER}"\n')
+        body = response.content.decode()
+        assert response.status_code == 200
+        assert "issue_implementer_label [global] — secret (banned-term)" in body
+        assert not line_matches(body, _SCAN)
         assert ConfigSetting.objects.count() == 0
 
     def test_a_scanned_preview_carries_no_unscanned_banner(self) -> None:

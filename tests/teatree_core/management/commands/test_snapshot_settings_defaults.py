@@ -208,20 +208,30 @@ class TestABannedTermIsNeverPrinted(SnapshotCommandTestCase):
         assert not line_matches(out, _SCAN)
         assert not line_matches(err, _SCAN)
 
+    def test_a_workflow_key_carrying_a_term_is_declined_by_its_own_class_first(self) -> None:
+        self._set("issue_implementer_label", f"{_LEAK} desk")
+        code, out, err = self._streams()
+        assert code == 0
+        assert "issue_implementer_label: workflow-engagement" in err
+        assert not line_matches(out, _SCAN)
+        assert not line_matches(err, _SCAN)
+
     def test_a_non_ascii_term_is_declined_too(self) -> None:
         self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [_NON_ASCII_TERM]}))
         self._set(_SCANNED_CARRIER, f"{_NON_ASCII_TERM}-desk/.*")
         code, out, err = self._streams()
         assert code == 0
         assert f"{_SCANNED_CARRIER}: banned-term" in err
-        assert not line_matches(out + err, (_NON_ASCII_TERM,))
+        assert not line_matches(out, (_NON_ASCII_TERM,))
+        assert not line_matches(err, (_NON_ASCII_TERM,))
 
     def test_a_scope_name_carrying_a_term_is_listed_without_it(self) -> None:
         self._set("merge_wip", 4, "--overlay", _OV)
         code, out, err = self._streams()
         assert code == 0
         assert "[under a name that carries a banned term] merge_wip" in err
-        assert not line_matches(out + err, _SCAN)
+        assert not line_matches(out, _SCAN)
+        assert not line_matches(err, _SCAN)
 
     def test_a_store_with_no_term_is_refused_with_the_registry_named(self) -> None:
         self.monkeypatch.delenv("TEATREE_TERM_REGISTRY")
