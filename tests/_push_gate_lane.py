@@ -42,6 +42,8 @@ with open(os.environ["T3_PUSH_GATE_LOCK_PATH"], "a", encoding="utf-8") as probe:
 started = time.time()
 time.sleep(float(os.environ.get("UV_STUB_STAGE_SLEEP", "0")))
 append("UV_STUB_STAGES", f"{{stage}} {{lock}} {{started}} {{time.time()}}")
+if str(stage) == os.environ.get("UV_STUB_FAIL_STAGE"):
+    raise SystemExit(int(os.environ["UV_STUB_FAIL_RC"]))
 """
 
 COPIED = (
