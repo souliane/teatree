@@ -18,7 +18,7 @@ _ARGV_TO_T3 = "import os,sys;a=sys.argv;os.execvp('t3',('t3','teatree',a.pop(1),
         pytest.param(f"echo ok; $({_WRITE})", id="in-a-substitution"),
         pytest.param(f"{_CALL} --reason --dry-run --by alice", id="dry-run-as-the-reason-value"),
         pytest.param(f"{_CALL} --reason x --by --help", id="help-as-the-by-value"),
-        pytest.param(f"{_CALL} --reason x --by alice -- --dry-run", id="dry-run-after-end-of-options"),
+        pytest.param(f"{_CALL} --reason x --by alice -- {_URL} --dry-run", id="dry-run-after-end-of-options"),
         pytest.param(
             f"t3 teatree pr --dry-run void-merge {_URL} --reason x --by alice", id="dry-run-before-void-merge"
         ),
