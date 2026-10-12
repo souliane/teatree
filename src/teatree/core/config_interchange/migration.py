@@ -174,9 +174,29 @@ def export_db_to_toml(
 
 def _finalize_export(text: str, guard: _ExportGuard, *, privacy: ExportPrivacy) -> ConfigExport:
     if matched_term(text, guard.terms) and privacy is not ExportPrivacy.WITH_BANNED_TERMS:
-        message = "export contains a suppressed term; pass --include-private --include-banned-terms"
+        key = _suppressed_export_key(tomllib.loads(text), guard.terms) or "[document]"
+        message = f"export refused {key} (banned-term); pass --include-private --include-banned-terms"
         raise BannedTermExportError(message)
     return ConfigExport(text, tuple(guard.redacted), tuple(guard.omitted), private_backup=guard.include_private)
+
+
+def _suppressed_export_key(value: object, terms: tuple[str, ...], path: tuple[str, ...] = ()) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            name = str(key)
+            label = "[suppressed-key]" if matched_term(name, terms) else name
+            child = (*path, label)
+            if matched_term(name, terms):
+                return ".".join(child)
+            if found := _suppressed_export_key(item, terms, child):
+                return found
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if found := _suppressed_export_key(item, terms, (*path, str(index))):
+                return found
+    elif matched_term(str(value), terms):
+        return ".".join(path) or "[document]"
+    return None
 
 
 def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: _ExportGuard) -> None:

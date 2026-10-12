@@ -237,5 +237,7 @@ class TestOneEmitterForBothWriters(TestCase):
         with pytest.raises(ValueError, match="include-banned-terms") as refusal:
             export_db_to_toml(scan_terms=("synthetic-private",), privacy=ExportPrivacy.PRIVATE)
         assert "synthetic-private" not in str(refusal.value)
+        assert "banned-term" in str(refusal.value)
+        assert "dashboard_instance_label" in str(refusal.value)
         export = export_db_to_toml(scan_terms=("synthetic-private",), privacy=ExportPrivacy.WITH_BANNED_TERMS)
         assert "synthetic-private" in export.toml
