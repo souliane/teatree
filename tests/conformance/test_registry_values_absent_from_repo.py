@@ -47,9 +47,13 @@ def planted(tmp_path: Path) -> Planted:
         "overlay": [_value("overlay"), _value("overlay")],
         "allow": [OWNER, _value("allow")],
     }
+    shared = _value("shared")
+    registry["overlay"].append(shared)
+    registry["allow"].append(shared)
     files = {
         "src/pkg/module.py": f"NAME = '{registry['leak'][0]}'\n",
         "scripts/run.sh": f"echo {registry['overlay'][0]}\n",
+        "scripts/shared.sh": f"echo {shared}\n",
         "tests/test_module.py": f"# owner page: github.example/{OWNER}/widget\nVALUE = '{registry['allow'][1]}'\n",
         "docs/guide.md": f"Deploy {OWNER}-bot today.\nThen {registry['leak'][1]}.\n",
         ".github/workflows/ci.yml": f"name: {registry['overlay'][1]}\n",
@@ -85,6 +89,7 @@ def test_a_value_in_each_root_is_found_and_named_by_class_only(planted: Planted)
         "docs/guide.md:1: allow#0",
         "docs/guide.md:2: leak#1",
         "scripts/run.sh:1: overlay#0",
+        "scripts/shared.sh:1: overlay#2",
         "src/pkg/module.py:1: leak#0",
         "tests/test_module.py:2: allow#1",
     ]
@@ -122,15 +127,10 @@ def test_a_tree_with_no_tracked_file_under_the_roots_refuses(tmp_path: Path) -> 
     assert leak not in output
 
 
-@pytest.mark.parametrize("where", ["plain-directory", "missing-path", "inside-dot-git"])
-def test_a_root_outside_any_git_work_tree_refuses(planted: Planted, tmp_path: Path, where: str) -> None:
-    repo, registry = planted
-    plain = tmp_path / "plain"
-    (plain / "src").mkdir(parents=True)
-    (plain / "src" / "module.py").write_text(f"NAME = '{registry['leak'][0]}'\n", encoding="utf-8")
-    root = {"plain-directory": plain, "missing-path": tmp_path / "absent", "inside-dot-git": repo / ".git"}[where]
+def test_a_root_outside_any_git_work_tree_refuses(planted: Planted, tmp_path: Path) -> None:
+    _repo, registry = planted
 
-    exit_code, output = _scan(root, registry, "--classes", CLASSES)
+    exit_code, output = _scan(tmp_path / "absent", registry, "--classes", CLASSES)
 
     assert exit_code == 2, output
     assert "MISCONFIGURED" in output

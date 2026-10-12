@@ -15,9 +15,8 @@ type TokenSpan = tuple[str, int, int]
 
 
 def tokens(text: str) -> list[str]:
-    lowered = text.lower()
-    if len(lowered) == len(text) and not _CASE_BOUNDARY_RE.search(text):
-        return _TOKEN_RE.findall(lowered)
+    if not _CASE_BOUNDARY_RE.search(text):
+        return _TOKEN_RE.findall(text.lower())
     return [token for token, _, _ in token_spans(text)]
 
 
@@ -45,7 +44,7 @@ def _spans_lowering_each_character(text: str) -> list[TokenSpan]:
     spans: list[TokenSpan] = []
     token, start, end = "", 0, 0
     for index, char in enumerate(text):
-        if index in cuts and token:
+        if index in cuts:
             spans.append((token, start, end))
             token = ""
         for lowered in char.lower():
