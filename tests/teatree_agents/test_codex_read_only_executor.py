@@ -312,6 +312,32 @@ def test_a_checkout_whose_git_data_it_cannot_read_is_refused(
         attest("planning", [EXAMPLE_ROOT])
 
 
+@pytest.mark.parametrize("write", ["OK", "EACCES"])
+def test_a_checkout_on_a_mount_that_is_not_read_only_is_refused(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, write: str
+) -> None:
+    fake.probe["roots"][EXAMPLE_ROOT]["write"] = write
+    _applied(fake, monkeypatch)
+
+    with pytest.raises(
+        ExecutorRefusalError, match=rf"{EXAMPLE_ROOT} is not a directory on a read-only mount there \({write}\)"
+    ):
+        attest("planning", [EXAMPLE_ROOT])
+
+
+@pytest.mark.parametrize(
+    "checkout_env",
+    [[], ["TEATREE_DEPLOY_CHECKOUT=relative/checkout"], [f"TEATREE_DEPLOY_CHECKOUT={_CHECKOUT}"] * 2],
+    ids=["none", "relative", "twice"],
+)
+def test_a_worker_without_exactly_one_absolute_deploy_checkout_is_refused(
+    fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch, checkout_env: list[str]
+) -> None:
+    fake.worker["CheckoutEnv"] = checkout_env
+
+    assert "its answer is malformed (worker deploy checkout)" in str(_refusal(fake, monkeypatch))
+
+
 def test_a_requested_checkout_outside_the_read_only_mounts_is_refused(
     fake: FakeExecutor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
