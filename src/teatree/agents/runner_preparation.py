@@ -14,9 +14,10 @@ from teatree.agents.prompt import (
     build_read_only_task_prompt,
     build_system_context,
     build_task_prompt,
+    read_only_required_skills,
     required_skill_delivery,
 )
-from teatree.agents.read_only_venue_brief import ReadOnlyFacts
+from teatree.agents.read_only_venue_brief import ReadOnlyFacts, read_only_system_context
 from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.core.models import Task
@@ -70,14 +71,18 @@ def prepare_run(
     dispatch = preflight.dispatch
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     prompt, system_context = _brief(task, preflight, lifecycle_skill=lifecycle_skill, handoff=handoff)
-    if dispatch.harness.capabilities.read_only_venue:
+    read_only_venue = dispatch.harness.capabilities.read_only_venue
+    stage_present = stage_skills_present(task, skills, configured=stage_skills)
+    if read_only_venue:
         handoff = None
-    required_inline, required_explicit = required_skill_delivery(
-        task.phase,
-        skills,
-        lifecycle_skill=lifecycle_skill,
-        stage_skills=stage_skills_present(task, skills, configured=stage_skills),
-    )
+        required_inline = read_only_required_skills(
+            task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
+        )
+        required_explicit: set[str] = set()
+    else:
+        required_inline, required_explicit = required_skill_delivery(
+            task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
+        )
     required_inline, required_explicit, load_directive = recover_truncated_inline_skills(
         required_inline=required_inline,
         required_explicit=required_explicit,
@@ -91,6 +96,8 @@ def prepare_run(
         required_explicit=required_explicit,
         rendered_context=f"{system_context}\n{prompt}",
     )
+    if read_only_venue:
+        system_context = read_only_system_context(system_context)
     guard = CompactionGuard()
     options = _build_options(
         task,

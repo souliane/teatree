@@ -19,6 +19,7 @@ from teatree.agents.skill_injection import (
     _is_stack_skill,
     _read_skill_contents,
     _read_skill_contents_scoped,
+    read_only_venue_skill_contents,
 )
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.owner_decision import OwnerDecision
@@ -185,6 +186,8 @@ def build_read_only_task_prompt(task: Task, facts: ReadOnlyFacts) -> str:
         lines.extend(("", "Ticket context (durable knowledge store, in full):", facts.ticket_context))
     if facts.handoff:
         lines.extend(("", "Predecessor result (handoff JSON, in full):", facts.handoff))
+    if parent_summary := _parent_result_summary(task):
+        lines.extend(("", "Prior task result:", parent_summary))
     lines.extend(intake_survey_lines(facts.survey))
     lines.extend(
         (
@@ -254,6 +257,14 @@ def required_skill_delivery(
     return full, explicit | (stack - full)
 
 
+def read_only_required_skills(
+    phase: str, skills: list[str], *, lifecycle_skill: str, stage_skills: list[str]
+) -> set[str]:
+    """What the read-only executor must receive in full: it has neither a Skill tool nor a skill file to read."""
+    full, explicit = required_skill_delivery(phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_skills)
+    return full | explicit
+
+
 def _assigned_reviewer_identity(task: Task) -> str:
     """The identity *task*'s envelope example must show, or ``""`` for every other phase.
 
@@ -319,6 +330,11 @@ def _skill_content(request: _ContextRequest, stage_present: list[str], stage_exc
     skills, lifecycle_skill = request.skills, request.lifecycle_skill
     if not skills:
         return ""
+    if request.read_only_venue:
+        embedded = read_only_required_skills(
+            request.task.phase, skills, lifecycle_skill=lifecycle_skill, stage_skills=stage_present
+        )
+        return read_only_venue_skill_contents(skills, embedded)
     if not (lifecycle_skill or stage_present):
         return _read_skill_contents(skills)
     # Stage skills embed IN FULL — a no-Skill-tool maker cannot load them
@@ -390,14 +406,16 @@ def _render_system_context(request: _ContextRequest, *, handoff: Path | None) ->
 
     lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 
-    parent_summary = _parent_result_summary(task)
+    parent_summary = "" if read_only_venue else _parent_result_summary(task)
     if parent_summary:
         lines.extend(("", "# Prior Task Result", "", parent_summary))
+    if read_only_venue:
+        return "\n".join(lines)
     pointer = "" if handoff is None else f"\n\n{_HANDOFF_POINTER}{handoff}"
     # Appended after bounding, so the backstop's tail cut of an unregistered overflow can never drop it.
     bounded = _enforce_context_budget(
         "\n".join(lines),
-        survey="" if read_only_venue else embedded_intake_survey_json(task),
+        survey=embedded_intake_survey_json(task),
         parent_summary=parent_summary,
         skill_content=skill_content,
         max_bytes=MAX_APPEND_BYTES - len(pointer.encode()),

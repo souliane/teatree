@@ -1,10 +1,12 @@
 """Facts a phase in the read-only executor receives inline: it reaches no forge, no data dir and no ``t3``."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from teatree.agents._runner_options import _resolve_task_cwd
+from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_registry import HarnessFallbackError, HarnessFallbackKind
 from teatree.agents.phase_blocks import intake_survey_json
 from teatree.core.backend_registry import get_backend_provider
@@ -20,6 +22,9 @@ ISSUE_COMMENTS_CAP_BYTES: Final = 64 * 1024
 SURVEY_CAP_BYTES: Final = 32 * 1024
 HANDOFF_CAP_BYTES: Final = 32 * 1024
 TICKET_CONTEXT_CAP_BYTES: Final = 32 * 1024
+ABSENT_TOOL: Final = "`<teatree tool, absent here>`"
+TEATREE_COMMAND: Final = re.compile(r"(?<![\w/:.-])t3 ")
+_TEATREE_TOOL_SPAN: Final = re.compile(r"`[^`\n]*(?:(?<![\w/:.-])t3 |mcp__teatree__)[^`\n]*`")
 
 READ_ONLY_DIRECTIVE: Final = (
     "READ-ONLY VENUE: every checkout here is mounted read-only; only $TMPDIR is writable, and it is discarded.",
@@ -63,6 +68,20 @@ class ReadOnlyFacts:
                 raise _refused(reason)
         _fetch_target(task)
         return facts
+
+
+def read_only_system_context(context: str) -> str:
+    """*context* with every teatree command or tool it names rewritten, or refused: none of them runs here."""
+    rewritten = _TEATREE_TOOL_SPAN.sub(ABSENT_TOOL, context)
+    if command := TEATREE_COMMAND.search(rewritten):
+        reason = (
+            f"the system context still names a teatree command: {rewritten[command.start() : command.end() + 40]!r}"
+        )
+        raise _refused(reason)
+    if (size := len(rewritten.encode())) > MAX_APPEND_BYTES:
+        reason = f"read-only brief over budget: system context {size} bytes > {MAX_APPEND_BYTES}"
+        raise _refused(reason)
+    return rewritten
 
 
 def _refused(reason: str) -> HarnessFallbackError:

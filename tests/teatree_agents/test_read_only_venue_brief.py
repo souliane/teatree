@@ -1,6 +1,7 @@
 """A phase in the read-only executor gets its facts inline in the turn, under fixed caps, and never a ``t3`` command."""
 
 import json
+import os
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,10 +16,17 @@ from teatree.agents._runner_env import DispatchCredential
 from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind
-from teatree.agents.read_only_venue_brief import ISSUE_BODY_CAP_BYTES, ISSUE_COMMENTS_CAP_BYTES, READ_ONLY_DIRECTIVE
+from teatree.agents.phase_agent_skills import declared_skills_for_phase
+from teatree.agents.read_only_venue_brief import (
+    ABSENT_TOOL,
+    ISSUE_BODY_CAP_BYTES,
+    ISSUE_COMMENTS_CAP_BYTES,
+    READ_ONLY_DIRECTIVE,
+)
 from teatree.agents.runner_preparation import PreparedRun
-from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
-from teatree.skill_support.index import DEFAULT_SKILLS_DIR
+from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.skill_support.index import DEFAULT_SKILLS_DIR, harness_skills_dirs, resolve_skill_md
+from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.utils.run import CommandFailedError
 
 _ISSUE_URL = "https://github.com/example-org/example-repo/issues/5"
@@ -69,6 +77,9 @@ class TestTheReadOnlyVenueBrief(TestCase):
         cls.ticket = Ticket.objects.create(issue_url=_ISSUE_URL, context="decision: keep the bar\nnote: two lines")
         LandscapeArtifact.record(ticket=cls.ticket, survey=_SURVEY, recorded_by="t3:intake")
 
+    def setUp(self) -> None:
+        self.skills: list[str] = []
+
     def _task(self, ticket: Ticket | None = None) -> Task:
         ticket = ticket or self.ticket
         return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
@@ -86,7 +97,7 @@ class TestTheReadOnlyVenueBrief(TestCase):
         dispatch = DispatchHarness(
             harness=SimpleNamespace(capabilities=capabilities), name="codex_app_server", provider=None, model=None
         )
-        preflight = runner_mod._Preflight(stage_skills=[], dispatch=dispatch, skills=[])
+        preflight = runner_mod._Preflight(stage_skills=[], dispatch=dispatch, skills=self.skills)
         with (
             patch(
                 "teatree.agents.read_only_venue_brief.get_backend_provider",
@@ -110,6 +121,78 @@ class TestTheReadOnlyVenueBrief(TestCase):
             self._prepare(task, host=host)
         assert (refused.value.kind, refused.value.side_effects_started) == (HarnessFallbackKind.ACCESS, False)
         return refused.value
+
+    def _planner_bundle(self) -> list[str]:
+        selection = SkillLoadingPolicy().select_for_runtime_phase(
+            cwd=Path(self.enterContext(TemporaryDirectory())),
+            phase="planning",
+            overlay_skill_metadata={},
+            agent_declared_skills=declared_skills_for_phase("planning"),
+        )
+        return selection.skills
+
+    def _stack_skill(self, body: str) -> None:
+        """A placeholder ``fastapi`` stack skill in an install root of a scratch home."""
+        home = Path(self.enterContext(TemporaryDirectory()))
+        skill = home / ".claude" / "skills" / "fastapi" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(f"---\nname: fastapi\ndescription: placeholder\n---\n{body}", encoding="utf-8")
+        self.enterContext(patch.dict(os.environ, {"HOME": str(home)}))
+        self.skills = ["fastapi", "rules", "architecture-design"]
+
+    def test_the_real_planner_brief_names_no_teatree_command_and_no_skill_path(self) -> None:
+        skills = self._planner_bundle()
+        rules = resolve_skill_md("rules", harness_skills_dirs())
+        assert rules is not None
+        assert _T3_INVOCATION.search(rules.read_text(encoding="utf-8"))
+
+        self.skills = skills
+        prepared = self._prepare(self._task())
+        context = self._system_context(prepared)
+
+        assert {"rules", "architecture-design"} <= set(skills)
+        assert "--- SKILL: rules ---" in context
+        assert "--- SKILL: architecture-design ---" in context
+        assert ABSENT_TOOL in context
+        assert not _T3_INVOCATION.search(context), _T3_INVOCATION.findall(context)
+        assert "mcp__teatree__" not in context
+        assert [str(root) for root in harness_skills_dirs() if str(root) in context] == []
+        assert json.dumps(_SURVEY, sort_keys=True) not in context
+        assert json.dumps(_SURVEY, sort_keys=True) in prepared.prompt
+
+    def test_a_stack_skill_reaches_the_executor_in_full_with_its_teatree_commands_rewritten(self) -> None:
+        self._stack_skill("Before planning, run `t3 placeholder check` and follow the style rules.\n")
+
+        context = self._system_context(self._prepare(self._task()))
+
+        assert "--- SKILL: fastapi ---" in context
+        assert f"Before planning, run {ABSENT_TOOL} and follow the style rules." in context
+        assert "REQUIRED: Load /fastapi" not in context
+        assert [str(root) for root in harness_skills_dirs() if str(root) in context] == []
+
+    def test_a_brief_that_still_names_a_teatree_command_refuses_the_executor_run(self) -> None:
+        self._stack_skill("Run t3 doctor check before planning.\n")
+
+        refusal = self._refusal(self._task())
+
+        assert "still names a teatree command" in str(refusal)
+
+    def test_the_prior_task_result_is_a_fact_in_the_task_message_not_the_system_context(self) -> None:
+        parent = self._task()
+        TaskAttempt.objects.create(task=parent, result={"summary": "intake done; next run t3 teatree pr create"})
+        child = Task.objects.create(ticket=self.ticket, session=parent.session, parent_task=parent, phase="planning")
+
+        prepared = self._prepare(child)
+
+        assert "intake done; next run t3 teatree pr create" in prepared.prompt
+        assert "Prior Task Result" not in self._system_context(prepared)
+
+    def test_an_over_budget_system_context_refuses_the_executor_run(self) -> None:
+        self._stack_skill("s" * (MAX_APPEND_BYTES + 1024))
+
+        refusal = self._refusal(self._task())
+
+        assert "read-only brief over budget: system context" in str(refusal)
 
     def test_planning_brief_in_the_executor_names_no_t3_command(self) -> None:
         prepared = self._prepare(self._task())
@@ -173,16 +256,6 @@ class TestTheReadOnlyVenueBrief(TestCase):
         body = "y" * (22 * 1024)
 
         assert body in self._prepare(self._task(), host=_Host({"body": body})).prompt
-
-    def test_survey_is_never_replaced_by_a_t3_pointer(self) -> None:
-        with patch("teatree.agents.prompt._read_skill_contents", return_value="s" * (MAX_APPEND_BYTES + 1024)):
-            prepared = self._prepare(self._task())
-        context = self._system_context(prepared)
-
-        assert len(context.encode()) <= MAX_APPEND_BYTES
-        assert "workspace landscape" not in context
-        assert json.dumps(_SURVEY, sort_keys=True) not in context
-        assert json.dumps(_SURVEY, sort_keys=True) in prepared.prompt
 
     def test_ticket_context_is_never_elided_with_a_t3_pointer(self) -> None:
         lines = [f"note {index}: {'z' * 60}" for index in range(450)]
