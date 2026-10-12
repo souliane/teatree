@@ -103,6 +103,27 @@ def test_worker_service_is_unchanged() -> None:
     assert hashlib.sha256(json.dumps(worker, sort_keys=True).encode()).hexdigest() == _WORKER_DIGEST_AT_BASE
 
 
+def _service_volumes(name: str) -> list[_Volume | str]:
+    volumes: list[_Volume | str] = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))["services"][name]["volumes"]
+    return volumes
+
+
+def _staged_swap() -> str:
+    script = (_DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    start = script.index("\nstaged_swap() {")
+    return script[start : script.index("\n}\n", start)]
+
+
+def test_the_executor_is_recreated_only_after_init_mounted_the_clone_volume_read_write() -> None:
+    init = _service_volumes("teatree-init")
+    worktree_bind = next(mount for mount in init if not isinstance(mount, str) and mount["target"] == WORKTREE_ROOT)
+    swap = _staged_swap()
+
+    assert f"teatree_clones:{CLONE_ROOT}" in init
+    assert not worktree_bind.get("read_only")
+    assert swap.index("wait_for_init") < swap.index("recreate_ro_executor")
+
+
 def test_no_whole_project_build_or_up_reaches_the_executor() -> None:
     assert _executor()["profiles"] == ["ro-executor"]
     for script in ("deploy.sh", "watchdog.sh", "roll.sh", "t3", "docker-compose.generation.yml"):

@@ -663,7 +663,8 @@ build_ro_executor() {
 # Only inside the drained window: no read-only phase is mid-run and every executor login is
 # persisted. A contained worker was killed, not drained, so its server may have left a
 # rotated login in the executor's tmpfs; the next server start recovers it, a recreate would
-# wipe it.
+# wipe it. Only after init, whose read-write clone mount creates the t3-workspaces mountpoint
+# that the executor's read-only one cannot create on a fresh clone volume.
 recreate_ro_executor() {
     [ -z "$_EXECUTOR_FAILURE" ] || return 0
     if [ "$_WORKER_CONTAINED" = true ]; then
