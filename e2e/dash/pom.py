@@ -8,10 +8,12 @@ once (no conftest double-import).
 
 from dataclasses import dataclass, field
 from http import HTTPStatus
+from pathlib import Path
 
-from playwright.sync_api import ConsoleMessage, Locator, Page, Request, Response
+from playwright.sync_api import ConsoleMessage, Download, Locator, Page, Request, Response
 
 from teatree.core.models.ticket import Ticket
+from teatree.hooks.term_match import line_matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,3 +136,44 @@ class DrawerPanel:
     @property
     def history_rows(self) -> Locator:
         return self.page.locator("#drawer table.dash tbody tr")
+
+
+@dataclass(frozen=True, slots=True)
+class TermScan:
+    """The placeholder terms a spec proves absent from what the browser received."""
+
+    terms: tuple[str, ...]
+
+    def raise_if_carried(self, text: str) -> None:
+        if line_matches(text, self.terms):
+            msg = "the page carries a placeholder banned term"
+            raise AssertionError(msg)
+
+
+@dataclass
+class InterchangePage:
+    page: Page
+    base_url: str
+    downloads: list[Download] = field(default_factory=list)
+
+    def open(self) -> Response | None:
+        self.page.on("download", self.on_download)
+        return self.page.goto(f"{self.base_url}/dash/import-export/")
+
+    def on_download(self, download: Download) -> None:
+        self.downloads.append(download)
+
+    def preview(self, upload: Path) -> None:
+        self.page.get_by_label("TOML file to import").set_input_files(upload)
+        self.page.get_by_role("button", name="Preview (dry-run)").click()
+
+    def export(self) -> None:
+        self.page.get_by_role("button", name="Export (secrets withheld)").click()
+
+    def banner(self, text: str) -> Locator:
+        return self.page.locator(".banner-red", has_text=text)
+
+    def raise_if_downloaded(self) -> None:
+        if self.downloads:
+            msg = f"the export downloaded {len(self.downloads)} file(s)"
+            raise AssertionError(msg)
