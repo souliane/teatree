@@ -1482,16 +1482,25 @@ mount instead, and the worker never takes the executor's word for it:
   directory that holds `deploy/teatree.env`; plus the clone volume and the `t3-workspaces`
   tree, all `read_only`, over a read-only root filesystem. The only writable paths are two
   tmpfs mounts, `/run/t3-ro` (Codex homes) and `/run/t3-tmp` (`TMPDIR`), which are never
-  persisted. It mounts no control DB, data dir, credential store, agent home or docker socket.
+  persisted and are emptied at every app server start and stop. It mounts no control DB,
+  data dir, credential store, agent home or docker socket.
+- **Nothing outlives a session.** Under the executor lease, before a server starts and after
+  it stops, a sweep ends every process outside PID 1's session (`tini` and its `sleep`) except
+  the worker's own `docker exec` programs, which are the only processes with a parent outside
+  the container. A process cannot clear that by changing its environment or detaching, and a
+  survivor refuses the next session before any home is created.
 - **No privilege.** `cap_drop: [ALL]`, `no-new-privileges`, its own bridge network (never
   the host's, whose loopback the admin trusts), and it runs as `nobody` (65534), not as
   `TEATREE_UID`, so it owns none of the trees it reads and an owner-only file there stays
   unreadable.
 - **No secrets file within reach.** It has no forge or store credential in its
   environment, and the probe refuses the phase whenever it can read a non-empty env or
-  credential file anywhere under its mounts (`.env`, `*.env`, `.env.*` other than
-  templates, `.netrc`, `.git-credentials`, `.pgpass`). The secret it does hold is its own
-  Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
+  credential file anywhere under its mounts (`.env`, `*.env`, `.env.*`, `.env-*` and
+  `.env_*` other than templates, `.envrc`, `.netrc`, `.npmrc`, `.pypirc`,
+  `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`) or a private
+  key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other than `*.pub`, found
+  by its content marker, so certificates and public keys pass). The secret it does hold is
+  its own Codex login: the worker hydrates it from pass into a fresh `/run/t3-ro/codex-*` home per
   app server, persists a rotated token of the same account back to pass with a verifying
   re-read, and deletes the home only after that persist succeeded. Store it once with
   `t3 codex auth import --executor --from -` and test it with
@@ -1511,9 +1520,10 @@ It sits behind its own compose profile, `ro-executor`, so no whole-project `comp
 or `up` reaches it: neither the watchdog's `up -d` nor a generation stack's ever builds or
 starts it. `deploy/deploy.sh` builds its image in a step of its own before the drain, and
 recreates it inside the drained window, when no executor run is in flight and no login is
-waiting in its tmpfs. Either step failing does not stop the deploy: the worker and every
-other service still converge, and the deploy then fails with a message naming the
-executor. Until the executor deploys, planning on Codex is refused and runs on Claude.
+waiting in its tmpfs, and after init, whose read-write clone mount creates the
+`t3-workspaces` mountpoint a fresh clone volume lacks. Either step failing does not stop
+the deploy: the worker and every other service still converge, and the deploy then fails
+with a message naming the executor. Until the executor deploys, planning on Codex is refused and runs on Claude.
 A worker that had to be contained instead of drained leaves the running executor in
 place, because its tmpfs may still hold a rotated login that the next server start
 recovers. The next deploy replaces it.

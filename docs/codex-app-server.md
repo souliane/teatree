@@ -262,8 +262,11 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   read-only, except that Docker's `/etc/hosts`, `/etc/hostname` and `/etc/resolv.conf` may answer `EACCES`
   while mounted `ro`, because a non-root write fails its permission check first. Every mounted directory
   is also walked in full for env and credential files it can open and that are not empty (`.env`, `*.env`,
-  `.env.*` other than `.example`, `.sample`, `.template` and `.dist` templates, `.netrc`,
-  `.git-credentials`, `.pgpass`). The run is refused, named and with nothing started, on a mount that
+  `.env.*`, `.env-*` and `.env_*` other than `.example`, `.sample`, `.template` and `.dist` templates,
+  `.envrc`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.pgpass`, `id_rsa`, `id_dsa`, `id_ecdsa`,
+  `id_ed25519`), and for a private key under a key name (`*.pem`, `*.key`, `*.p8`, `*.ppk`, `id_*` other
+  than `*.pub`) whose first 64 KiB carry a private-key marker; content is read only for key names, since
+  source that embeds the marker is no key. The run is refused, named and with nothing started, on a mount that
   accepts a write or is not declared, a declared mount that is missing or that the write probe or the
   secret scan skipped, any readable secret file, running as root or as the owner of a mounted tree, a
   checkout whose git files (`HEAD`, `index`, `config`, `commondir`, `packed-refs`, `refs/`, `objects/`)
@@ -288,19 +291,25 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
 - **Transport and login.** The executor app server runs as `docker exec -i ... setsid -w sh -c 'exec codex
   app-server'` (plain `setsid` would return at once and end the exec's stdio) with a `PATH`-only docker CLI
   environment. It uses its own login, the pass entry `teatree/codex/ro-executor-auth-json-b64`, under its
-  own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Each
-  server starts from a fresh `/run/t3-ro/codex-*` home. Under the lease no other server runs, so a stdlib
-  sweep program (`codex_read_only_sweep_program`) first ends every process whose environment carries a
-  `CODEX_HOME` under `/run/t3-ro`, with its session and descendants, and never anything in PID 1's session,
-  so `tini` and its `sleep` keep the container and its tmpfs up. A process that survives, or a malformed
-  sweep answer, refuses the run before any home is touched. The server then recovers a newer login a stale
-  home still holds (by `last_refresh`, written to pass and verified by re-read) before deleting that home,
-  and hydrates its own home over exec stdin. A rotated login is persisted the same way at every thread
-  close and at stop; the same sweep runs at stop, and the home is removed only after a verified persist.
-  The agent can rewrite its own home, so a login read back from one is kept only when it carries a
-  `tokens.refresh_token` and the stored login's `tokens.account_id`. Another account or an incomplete
-  login is never written to pass: at persist it fails the run with an auth error that names the executor's
-  entry, and a stale home holding one is deleted without recovery.
+  own lease in `<data dir>/codex-ro-executor`, so a planning run never waits on the worker's lease. Under
+  the lease no other server runs, so a stdlib sweep program (`codex_read_only_sweep_program`) first ends
+  every process outside PID 1's session except itself and the worker's own `docker exec` programs: those
+  are the only processes whose parent is outside the container, and one that runs no Codex home is spared.
+  Nothing a process changes about itself moves it out of that set: it cannot join PID 1's session or gain
+  a parent outside the container, so clearing its environment and detaching (it is then a child of PID 1
+  in a session of its own) does not escape. `tini` and its `sleep` keep the container and its tmpfs up.
+  A survivor, or a malformed sweep answer, refuses the run before any home is touched. The server then
+  recovers a newer login a stale home still holds (by `last_refresh`, written to pass and verified by
+  re-read); a stale home that cannot be read, or whose newer login cannot be persisted, is kept and
+  refuses the run. Only then are both tmpfs mounts emptied and checked empty, so `TMPDIR` never carries
+  one session's files into the next, the new `/run/t3-ro/codex-*` home is created owner-only
+  (`mkdir -m 0700`), and its login is hydrated over exec stdin; the launch never creates a home. A
+  rotated login is persisted the same way at every thread close. At stop, still under the lease, the same
+  sweep runs, the login is persisted, and both tmpfs mounts are emptied only after that persist
+  succeeded. The agent can rewrite its own home, so a login read back from one is kept only when it
+  carries a `tokens.refresh_token` and the stored login's `tokens.account_id`. Another account or an
+  incomplete login is never written to pass: at persist it fails the run with an auth error that names the
+  executor's entry, and a stale home holding one is deleted without recovery.
 - **Per thread.** Each new thread attests again with its own roots and the live home. A home that holds
   `rules/*.rules`, `config.toml` or `plugins/` retires the server; the one retry then reopens the thread on a
   fresh server.
@@ -310,6 +319,11 @@ read-only boundary is the executor's mounts, and the worker checks them live ins
   the body and for the comments, 32 KiB for each of the others), never truncated. It also fetches the
   target ref in the ticket checkout first. An unreadable body or comment list, a missing survey, a failed
   fetch or a part over its cap refuses the run before it opens, so the next route candidate plans instead.
+  The executor has no Skill tool and mounts no skill folder, so its system context embeds in full every
+  skill the phase requires, stack skills included, names the others as not available, and points at no
+  skill path. Each code span naming a `t3` command or a teatree MCP tool reads
+  `<teatree tool, absent here>`; a system context that still names a `t3` command, or that is over the
+  context budget, refuses the run rather than being cut.
 - **Commands.** `t3 codex auth import --executor --from -` stores the executor's login, and
   `t3 codex auth check --executor` runs one OK-turn through it. Both run only in `teatree-worker`, the one
   service granted the docker socket; anywhere else they refuse and name that route. The import needs an
