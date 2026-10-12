@@ -22,10 +22,12 @@ The commit the ref points at is the CAS token: its sha changes on every heartbea
 and every steal, so a re-point lands only against the value its writer observed.
 Every claim commit has the root of ``origin``'s default branch as its only parent
 and that root's tree as its own, so it adds nothing beyond its record (the message).
-WHO holds the claim is the ``instance_id`` in the tip's claim record
-(:func:`read_tip`) — a steal always writes the thief's, a heartbeat always its
-own — so a stolen-from instance reads another holder and stands down, while a
-heartbeat whose new sha its writer never recorded still reads as its own.
+Each claim tenure carries a random ``lineage`` that :func:`acquire` or
+:func:`steal_if_expired` mints and every :func:`heartbeat` writes forward. WHO
+holds the claim is the (``instance_id``, ``lineage``) pair in the tip's claim
+record (:func:`read_tip`), so a stolen-from instance reads another tenure and
+stands down, while a heartbeat whose new sha its writer never recorded still
+reads as its own.
 
 No new database: the forge that owns the work domain (issues, branches, PRs) is
 the same server that arbitrates the claim, so the mutex is consistent with the
@@ -147,8 +149,8 @@ class ClaimTip:
         value = self.meta.get("lineage") if self.meta else None
         return value if isinstance(value, str) else ""
 
-    def held_by(self, instance: str) -> bool:
-        return bool(instance) and self.holder == instance
+    def held_by(self, instance: str, lineage: str) -> bool:
+        return bool(instance) and bool(lineage) and self.holder == instance and self.lineage == lineage
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,9 +277,10 @@ def heartbeat(
     Returns the refreshed :class:`Claim` when the CAS lands. A failed CAS reads the
     tip back, mirroring :func:`acquire`: a ref still on ``claim.sha`` (a hook or a
     permission blip refused the push) raises :class:`FleetClaimUnavailableError` so
-    the caller retries next tick; a tip naming ``claim.instance_id`` is this
-    instance's own unrecorded write and is adopted; any other tip, or a deleted ref,
-    is :class:`ClaimLost`. The CAS is against ``claim.sha``, so a heartbeat can never
+    the caller retries next tick; a tip carrying ``claim.instance_id`` and
+    ``claim.lineage`` is this tenure's own unrecorded write and is adopted (a
+    pre-lineage claim adopts nothing); any other tip, or a deleted ref, is
+    :class:`ClaimLost`. The CAS is against ``claim.sha``, so a heartbeat can never
     clobber a rival's steal.
     """
     ts = _resolve_now(now)
@@ -293,7 +296,7 @@ def heartbeat(
         refusal = _redacted_output(push, extra_env)
         msg = f"heartbeat push for {claim.ref} was refused and the ref still holds our sha: {refusal}"
         raise FleetClaimUnavailableError(msg)
-    if tip and tip.held_by(claim.instance_id):
+    if tip and tip.held_by(claim.instance_id, claim.lineage):
         return replace(claim, sha=tip.sha)
     return ClaimLost(
         work_key=claim.work_key,

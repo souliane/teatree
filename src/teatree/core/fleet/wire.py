@@ -286,20 +286,23 @@ class ClaimLoss(StrEnum):
     UNREACHABLE = "the fleet claim ref infrastructure is unreachable, so ownership cannot be confirmed"
 
     @classmethod
-    def at_tip(cls, tip: claim.ClaimTip | None) -> "ClaimLoss | None":
+    def at_tip(cls, tip: claim.ClaimTip | None, *, recorded_sha: str, lineage: str) -> "ClaimLoss | None":
         if tip is None:
             return cls.MISSING
-        if tip.held_by(instance_id()):
+        if tip.sha == recorded_sha or tip.held_by(instance_id(), lineage):
             return None
-        return cls.STOLEN if tip.holder else cls.UNREADABLE
+        if not tip.holder:
+            return cls.UNREADABLE
+        return cls.UNPROVEN if tip.holder == instance_id() else cls.STOLEN
 
 
 def ticket_claim_loss(ticket: "Ticket", repo: str) -> ClaimLoss | None:
     """The outward-write fence shared by the ship gate, ``execute_ship`` and ``ensure-pr``.
 
-    ``None`` (proceed) when the ticket carries no fleet claim or the claim record at the
-    ref tip names this instance, whatever sha the marker last recorded; otherwise the
-    :class:`ClaimLoss` that aborts the write. An absent ref refuses a marker in every
+    ``None`` (proceed) when the ticket carries no fleet claim, when the ref tip is still
+    the sha the marker recorded, or when the tip's claim record carries this instance's
+    id and the marker's claim lineage; otherwise the :class:`ClaimLoss` that aborts the
+    write. An absent ref refuses a marker in every
     state, so a claim the heartbeat abandoned on a deleted ref stays refused.
 
     The marker is resolved by its own natural key ``(issue_url, overlay)`` — the key
@@ -325,7 +328,7 @@ def ticket_claim_loss(ticket: "Ticket", repo: str) -> ClaimLoss | None:
     except claim.FleetClaimUnavailableError:
         logger.warning("fleet_claim fence: ref infra unreachable for %s, failing safe", marker.issue_url, exc_info=True)
         return ClaimLoss.UNREACHABLE
-    return ClaimLoss.at_tip(tip)
+    return ClaimLoss.at_tip(tip, recorded_sha=marker.claim_ref_sha, lineage=marker.claim_lineage)
 
 
 def heartbeat_inflight_claims(overlay: str) -> None:
@@ -335,8 +338,8 @@ def heartbeat_inflight_claims(overlay: str) -> None:
     shorter than the TTL — so a live claim is re-affirmed long before it could
     expire and be stolen while its dispatch runs. Per non-terminal marker carrying
     a fencing sha: re-point the claim ref (CAS against our own sha) and PERSIST the
-    refreshed sha — or the tip this instance wrote earlier without recording it. A
-    ``ClaimLost`` means another instance stole it while our dispatch stalled — abandon
+    refreshed sha — or the tip this tenure wrote earlier without recording it. A
+    ``ClaimLost`` means another tenure took it while our dispatch stalled — abandon
     the marker so the in-flight work aborts rather than push under a lost claim. An
     unreachable forge is transient: leave the marker and retry next tick (the TTL is
     the backstop).

@@ -386,8 +386,8 @@ class ImplementedIssueMarker(models.Model):
     #: The Stage 2 fleet-claim CAS token: the sha of the commit
     #: ``refs/teatree/claims/<slug>`` points at when this instance won the mutex,
     #: re-stamped by every heartbeat. Empty when the claim was granted local-only.
-    #: Non-empty marks the ticket as fenced; the fence itself reads the holder
-    #: named at the ref tip, not this sha.
+    #: Non-empty marks the ticket as fenced; the fence passes on this sha, or on a tip
+    #: whose record carries this instance's id and ``claim_lineage``.
     claim_ref_sha = models.CharField(max_length=64, blank=True, default="")
     #: The tenure token of the fleet claim this instance won (``ClaimMeta.lineage``).
     #: Empty for a claim won before lineages; such a marker keeps strict sha equality.

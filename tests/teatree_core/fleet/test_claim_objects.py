@@ -121,7 +121,7 @@ class TestLiveClaimSurvivesTheZeroFootprintCycle:
         tip = fleet_claim.read_tip(_WORK_KEY, repo=str(holder))
         assert tip is not None
         assert tip.sha == held.sha
-        assert tip.held_by(held.instance_id)
+        assert tip.held_by(held.instance_id, held.lineage)
 
     def test_a_rival_still_loses_the_acquire(self, tmp_path: Path) -> None:
         bare, _holder, held = self._held_after_cycle(tmp_path)

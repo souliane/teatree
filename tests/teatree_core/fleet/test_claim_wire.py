@@ -10,6 +10,7 @@ in the model manager, so ``teatree.core.models`` keeps no dependency on the high
 ``teatree.core`` coordination modules (the tach boundary).
 """
 
+import itertools
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -29,7 +30,7 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
-from ._git_origin import as_other_instance, init_bare, init_client, private_origin, ref_sha
+from ._git_origin import as_other_instance, as_twin_instance, git, init_bare, init_client, private_origin, ref_sha
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4242"
 _ROUTED_TOKEN = "routed-token"
+_UNPROVEN = "names this instance's id, but neither its sha nor its claim lineage matches"
 
 
 @dataclass
@@ -291,6 +293,30 @@ class TestShipFenceGate(TestCase):
         with as_other_instance(tmp / "rival-data"):
             assert fleet_claim.steal_if_expired(_ISSUE, repo=str(init_client(tmp / "rival", bare)), now=1e12)
 
+    def _our_tenure(self, tmp: Path, issue: str, *, begun_by: str) -> tuple[Ticket, Worktree, Path]:
+        bare = init_bare(tmp / "origin.git")
+        holder = init_client(tmp / "holder", bare)
+        if begun_by == "steal":
+            with as_other_instance(tmp / "rival-data"):
+                expired = fleet_claim.acquire(
+                    issue, repo=str(init_client(tmp / "rival", bare)), ttl_seconds=10.0, now=1000.0
+                )
+            assert expired is not None
+        with _route_claims(holder):
+            marker = _scanner()._claim(issue)
+        assert marker is not None
+        assert marker.claim_lineage
+        ticket = Ticket.objects.create(overlay="acme", issue_url=issue, state=Ticket.State.SELF_REVIEWED)
+        worktree = Worktree.objects.create(
+            ticket=ticket, overlay="acme", repo_path=str(holder), branch="feat", extra={"worktree_path": str(holder)}
+        )
+        return ticket, worktree, bare
+
+    @staticmethod
+    def _twin_steals(tmp: Path, bare: Path, issue: str) -> None:
+        with as_twin_instance(tmp / "twin-data"):
+            assert fleet_claim.steal_if_expired(issue, repo=str(init_client(tmp / "twin", bare)), now=1e12)
+
     def _refusal(self, ticket: Ticket, worktree: Worktree) -> str:
         failure = run_fleet_claim_fence_gate(ticket, worktree)
         assert failure is not None
@@ -384,6 +410,46 @@ class TestShipFenceGate(TestCase):
 
         assert "carries no readable claim record" in self._refusal(ticket, worktree)
 
+    def test_blocks_a_tip_a_twin_installation_wrote_under_this_instance_id(self) -> None:
+        tmp = self._tmp()
+        states = (ImplementedIssueMarker.State.DISPATCHED, ImplementedIssueMarker.State.ABANDONED)
+        for n, (begun_by, state) in enumerate(itertools.product(("acquire", "steal"), states), start=1):
+            with self.subTest(begun_by=begun_by, state=state):
+                issue = f"https://github.com/acme/widget/issues/{n}"
+                case = tmp / f"{begun_by}-{state}"
+                ticket, worktree, bare = self._our_tenure(case, issue, begun_by=begun_by)
+                ImplementedIssueMarker.objects.filter(issue_url=issue).update(state=state)
+                self._twin_steals(case, bare, issue)
+
+                assert _UNPROVEN in self._refusal(ticket, worktree)
+
+    def test_a_twin_that_recreates_a_deleted_ref_is_unproven_and_abandons_the_marker(self) -> None:
+        tmp = self._tmp()
+        ticket, worktree, bare = self._our_tenure(tmp, _ISSUE, begun_by="acquire")
+        git(bare, "update-ref", "-d", fleet_claim.claim_ref(_ISSUE))
+        with as_twin_instance(tmp / "twin-data"):
+            assert fleet_claim.acquire(_ISSUE, repo=str(init_client(tmp / "twin", bare))) is not None
+
+        assert _UNPROVEN in self._refusal(ticket, worktree)
+        with _route_claims(Path(worktree.repo_path)):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+        marker = ImplementedIssueMarker.objects.get(issue_url=_ISSUE, overlay="acme")
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_a_marker_without_lineage_keeps_strict_sha_equality(self) -> None:
+        tmp = self._tmp()
+        holder = init_client(tmp / "holder", init_bare(tmp / "origin.git"))
+        acquired = fleet_claim.acquire(_ISSUE, repo=str(holder))
+        assert acquired is not None
+        legacy = replace(acquired, lineage="")
+        ticket, worktree = self._fenced_ticket(holder, legacy)
+
+        with self.subTest("the ref is still at the recorded sha"):
+            assert run_fleet_claim_fence_gate(ticket, worktree) is None
+        assert isinstance(fleet_claim.heartbeat(legacy, repo=str(holder)), fleet_claim.Claim)
+        with self.subTest("a pre-lineage beat moved the ref"):
+            assert _UNPROVEN in self._refusal(ticket, worktree)
+
     def test_ticket_with_issue_url_but_no_marker_is_a_no_op(self) -> None:
         tmp = self._tmp()
         init_bare(tmp / "origin.git")
@@ -468,6 +534,22 @@ class TestHeartbeatSweep(TestCase):
             patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: str(holder)),
         ):
             fleet_claim_wire.heartbeat_inflight_claims("acme")
+        marker.refresh_from_db()
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+
+    def test_heartbeat_abandons_a_claim_a_twin_installation_stole(self) -> None:
+        tmp = _tempdir(self)
+        bare = init_bare(tmp / "o.git")
+        holder = init_client(tmp / "holder", bare)
+        with _route_claims(holder):
+            marker = _scanner()._claim(_ISSUE)
+        assert marker is not None
+        with as_twin_instance(tmp / "twin-data"):
+            assert fleet_claim.steal_if_expired(_ISSUE, repo=str(init_client(tmp / "twin", bare)), now=1e12)
+
+        with _route_claims(holder):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
         marker.refresh_from_db()
         assert marker.state == ImplementedIssueMarker.State.ABANDONED
 

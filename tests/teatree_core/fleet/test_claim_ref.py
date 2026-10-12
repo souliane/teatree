@@ -264,7 +264,7 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     # heartbeat CAS (against its stale sha) reports the claim lost.
     tip = fleet_claim.read_tip(_WORK_KEY, repo=str(dead))
     assert tip is not None
-    assert not tip.held_by(original.instance_id)
+    assert not tip.held_by(original.instance_id, original.lineage)
     lost = fleet_claim.heartbeat(original, repo=str(dead), now=2001.0)
     assert isinstance(lost, fleet_claim.ClaimLost)
     assert lost.expected_sha == original.sha

@@ -459,8 +459,9 @@ def run_fleet_claim_fence_gate(ticket: Ticket, worktree: Worktree) -> FleetClaim
 
     The fence (:func:`teatree.core.fleet.wire.ticket_claim_loss`): when the ticket was
     claimed through the Stage 2 mutex, re-read ``refs/teatree/claims/<slug>`` and
-    confirm its claim record still names this instance. A ticket with no fleet claim
-    is a no-op.
+    confirm it is still this tenure's: the sha the marker recorded, or a claim record
+    carrying this instance's id and the marker's claim lineage. A ticket with no fleet
+    claim is a no-op.
     """
     from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
 

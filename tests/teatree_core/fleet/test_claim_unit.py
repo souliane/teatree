@@ -17,7 +17,16 @@ from teatree.core.fleet import wire as fleet_claim_wire
 from teatree.core.fleet.wire import host_from_issue_url
 from teatree.instance_id import instance_id
 
-from ._git_origin import FIXTURE_IDENTITY, as_other_instance, git, init_bare, init_client, init_with_origin, ref_sha
+from ._git_origin import (
+    FIXTURE_IDENTITY,
+    as_other_instance,
+    as_twin_instance,
+    git,
+    init_bare,
+    init_client,
+    init_with_origin,
+    ref_sha,
+)
 
 _KEY = "https://github.com/souliane/teatree/issues/99"
 
@@ -113,10 +122,11 @@ class TestReleaseAndFence:
         tip = fleet_claim.read_tip(_KEY, repo=str(client))
         assert tip is not None
         assert tip.sha == claim.sha
-        assert tip.held_by(instance_id())
-        assert not tip.held_by("")
+        assert tip.held_by(instance_id(), claim.lineage)
+        assert not tip.held_by("", claim.lineage)
+        assert not tip.held_by(instance_id(), "")
         with as_other_instance(tmp_path / "rival-data"):
-            assert not tip.held_by(instance_id())
+            assert not tip.held_by(instance_id(), claim.lineage)
 
     def test_heartbeat_moves_the_ref_and_stays_held(self, tmp_path) -> None:
         bare = init_bare(tmp_path / "o.git")
@@ -140,6 +150,23 @@ class TestReleaseAndFence:
 
         assert isinstance(beat, fleet_claim.Claim)
         assert beat.sha == ref_sha(bare, claim.ref) == unrecorded.sha
+
+    def test_heartbeat_does_not_adopt_a_twin_tip(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        holder = init_client(tmp_path / "holder", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(holder), ttl_seconds=10.0, now=1000.0)
+        assert claim is not None
+        with as_twin_instance(tmp_path / "twin-data"):
+            twin = fleet_claim.steal_if_expired(
+                _KEY, repo=str(init_client(tmp_path / "twin", bare)), ttl_seconds=10.0, now=5000.0
+            )
+        assert twin is not None
+        assert twin.instance_id == claim.instance_id
+
+        lost = fleet_claim.heartbeat(claim, repo=str(holder), now=5001.0)
+
+        assert isinstance(lost, fleet_claim.ClaimLost)
+        assert lost.observed_sha == twin.sha
 
 
 class TestLineage:
