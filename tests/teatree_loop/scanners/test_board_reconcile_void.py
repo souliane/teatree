@@ -102,6 +102,29 @@ class TestTheJanitorLeavesAVoidedTicketAlone(TestCase):
         assert runs == [[], []]
 
 
+class TestTheHoldStaysOnTheTicketsTheVoidRestored(TestCase):
+    def test_a_ticket_with_only_closed_prs_the_void_did_not_restore_is_still_retired(self) -> None:
+        landed_ticket()
+        void_pr()
+        other = Ticket.objects.create(
+            overlay="t3-teatree", state=State.CODED, issue_url=f"https://github.com/{SLUG}/issues/8"
+        )
+        PullRequest.objects.create(
+            ticket=other,
+            overlay="t3-teatree",
+            url=f"https://github.com/{SLUG}/pull/40",
+            repo=SLUG,
+            iid="40",
+            state=PullRequest.State.CLOSED,
+        )
+
+        with _forge_after_the_void([]):
+            reconcile_board()
+
+        other.refresh_from_db()
+        assert other.state == State.IGNORED
+
+
 class TestTheJanitorResumesOnceAnotherPrCarriesTheWork(TestCase):
     def test_a_new_pr_ends_the_hold(self) -> None:
         ticket = landed_ticket()
@@ -115,6 +138,24 @@ class TestTheJanitorResumesOnceAnotherPrCarriesTheWork(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == State.IGNORED
+
+    def test_a_merged_re_delivery_lets_the_done_issue_walk_it_past_merged(self) -> None:
+        ticket = landed_ticket(from_state=State.REVIEW_REQUESTED)
+        void_pr()
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            url=f"https://github.com/{SLUG}/pull/43",
+            repo=SLUG,
+            iid="43",
+            state=PullRequest.State.MERGED,
+        )
+
+        with _forge_after_the_void([]):
+            reconcile_board()
+
+        ticket.refresh_from_db()
+        assert ticket.state == State.RETRO_RECORDED
 
     def test_a_different_pr_merged_at_a_different_sha_advances_the_ticket(self) -> None:
         ticket = landed_ticket(issue_url=ISSUE_URL)

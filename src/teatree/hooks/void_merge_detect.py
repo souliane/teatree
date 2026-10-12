@@ -1,8 +1,9 @@
 """Refuse a command that names ``void-merge`` unless every mention is a standalone read-only ``t3`` call.
 
 An inner shell runs quoted text (``bash -c``, ``script -c``, ``ssh``, a heredoc), so a mention
-counts wherever it sits, literal or shell-decoded. A subcommand word built at run time (a
-variable, an expansion, a file) is not seen; the command's own operator checks still refuse it.
+counts wherever it sits, literal or once the outer quoting is decoded. A word built at run time or
+through an inner shell's own decoding is not seen (BLUEPRINT "Merge void" lists the gaps); the
+command's own operator checks still refuse it.
 """
 
 import re
@@ -23,7 +24,8 @@ DENY_REASON = (
     "in their own shell; it shows the forge evidence and asks them to type yes. "
     "Only a standalone `t3 <overlay> pr void-merge <pr-url> --dry-run` (or `--help`) runs here: any other "
     "command naming void-merge is refused, a grep or an echo included, because an inner shell could run "
-    "that text. Search with a pattern such as `void.merge` instead."
+    "that text. To search, use the Grep tool or a pattern such as `void.merge`; in a commit message or note, "
+    "write `merge void` or `void.merge`, or pass the message as a file with `git commit -F <message file>`."
 )
 
 

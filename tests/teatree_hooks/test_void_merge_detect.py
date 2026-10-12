@@ -60,6 +60,7 @@ _ARGV_TO_T3 = "import os,sys;a=sys.argv;os.execvp('t3',('t3','teatree',a.pop(1),
             id="an-encoded-word-in-a-quoted-substitution",
         ),
         pytest.param(f"t3 $OVERLAY pr void-merge {_URL} --dry-run", id="an-expansion-before-pr"),
+        pytest.param(f"t3 teatree $GROUP void-merge {_URL} --dry-run", id="an-expansion-in-place-of-pr"),
         pytest.param(f"grep -rn 'pr void-merge {_URL}' docs/", id="a-grep-mention"),
         pytest.param(f"echo '{_WRITE}' | bash", id="an-echo-piped-to-a-shell"),
         pytest.param(f"echo $({_CALL} --dry-run)", id="a-dry-run-inside-a-substitution"),
@@ -80,8 +81,15 @@ def test_a_command_naming_void_merge_is_refused_unless_it_is_a_standalone_read(c
         pytest.param("cd /work/5210-void-merge-transition/teatree && git status", id="a-branch-name-holding-the-word"),
         pytest.param("uv run pytest tests/test_void_merge_guard.py", id="the-python-module-name"),
         pytest.param("t3 teatree pr create 1844", id="another-pr-subcommand"),
+        pytest.param("grep -rn 'void.merge' src/", id="a-dotted-search-pattern"),
+        pytest.param("git commit -m 'fix(merge void): hold the restored ticket'", id="the-phrase-merge-void"),
         pytest.param("", id="empty"),
     ],
 )
 def test_a_standalone_read_and_unrelated_commands_pass(command: str) -> None:
     assert void_merge_deny_reason(command) is None
+
+
+@pytest.mark.parametrize("escape", ["the Grep tool", "`void.merge`", "`merge void`", "`git commit -F <message file>`"])
+def test_the_refusal_names_the_escapes_that_run_no_void(escape: str) -> None:
+    assert escape in DENY_REASON
