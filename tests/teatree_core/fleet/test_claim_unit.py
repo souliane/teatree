@@ -357,8 +357,8 @@ class TestErrorPaths:
             fleet_claim.acquire(_KEY, repo=str(client))
 
     def test_acquire_raises_on_local_git_failure(self, tmp_path) -> None:
-        # N4: a repo where even the LOCAL mktree/commit-tree cannot run surfaces as
-        # FleetClaimUnavailableError (the module contract), never a bare CommandFailedError.
+        # N4: a directory that is not a repo surfaces as FleetClaimUnavailableError
+        # (the module contract), never a bare CommandFailedError.
         not_a_repo = tmp_path / "plain"
         not_a_repo.mkdir()
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
