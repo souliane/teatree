@@ -32,6 +32,7 @@ class VoidMergeCommands(TyperCommand):
             str, typer.Option(help="Prior PR state if it was merged before state tracking.")
         ] = "",
     ) -> VoidMergeResult:
+        """Audit a false merge after proving its content absent from the default branch."""
         try:
             row = void_merge(
                 pr_pk=pr,
