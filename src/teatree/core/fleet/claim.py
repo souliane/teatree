@@ -20,8 +20,9 @@ lives at ``refs/teatree/claims/<slug>`` on the forge remote:
 
 The commit the ref points at is the CAS token: its sha changes on every heartbeat
 and every steal, so a re-point lands only against the value its writer observed.
-Every claim commit has the root of ``origin``'s default branch as its only parent
-and that root's tree as its own, so it adds nothing beyond its record (the message).
+Every claim commit's only parent is the root of the default branch ``origin``
+advertises, read from the tip ``origin`` holds, and its tree is that root's tree,
+so it adds nothing ``origin`` lacks beyond its record (the message).
 Each claim tenure carries a random ``lineage`` that :func:`acquire` or
 :func:`steal_if_expired` mints and every :func:`heartbeat` writes forward. WHO
 holds the claim is the (``instance_id``, ``lineage``) pair in the tip's claim
@@ -37,8 +38,9 @@ helpers built on it, :func:`teatree.instance_id.instance_id`, and the stdlib —
 exercised by real subprocesses without booting Django.
 
 Zero footprint: every object git writes for a claim operation — the throwaway
-claim commit, and the rival commit an expiry probe fetches to read its metadata —
-is routed into an EPHEMERAL object directory (:func:`_ephemeral_odb`) that is
+claim commit, any of ``origin``'s default branch the clone lacks, and the rival
+commit an expiry probe fetches to read its metadata — is routed into an
+EPHEMERAL object directory (:func:`_ephemeral_odb`) that is
 deleted when the operation ends. The remote ref is the claim's only durable home,
 so nothing local is needed after the push, and the clone teatree pushes from stays
 byte-identical. There is therefore nothing to prune, and no pruning pass that could
@@ -59,7 +61,6 @@ from types import MappingProxyType
 from typing import NotRequired, TypedDict, cast
 
 from teatree.instance_id import instance_id
-from teatree.utils import git_branch
 from teatree.utils.git_run import git_env_non_interactive
 from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
 
@@ -414,6 +415,7 @@ class _Scope:
     repo: str
     remote: str
     env: dict[str, str]
+    extra_env: Mapping[str, str]
 
 
 @contextlib.contextmanager
@@ -428,20 +430,42 @@ def _ephemeral_odb(repo: str, remote: str, extra_env: Mapping[str, str]) -> Iter
     alternate = _objects_dir(repo)
     with tempfile.TemporaryDirectory(prefix="t3-claim-odb-") as scratch:
         overrides = {"GIT_OBJECT_DIRECTORY": scratch, "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternate}
-        yield _Scope(repo=repo, remote=remote, env=env | overrides)
+        yield _Scope(repo=repo, remote=remote, env=env | overrides, extra_env=extra_env)
 
 
-def _default_branch_root(scope: _Scope) -> str:
-    try:
-        tip = f"refs/remotes/{scope.remote}/{git_branch.default_branch(scope.repo)}"
-    except RuntimeError as exc:
-        msg = f"cannot resolve the default branch of {scope.repo}, so a claim commit has no root to descend from"
-        raise FleetClaimUnavailableError(msg) from exc
-    roots = _git(scope.repo, ["rev-list", "--max-parents=0", tip], env=scope.env)
-    if roots.returncode != 0 or not roots.stdout.split():
-        msg = f"cannot read the root commit of {tip} in {scope.repo}"
+def _remote_default_head(scope: _Scope) -> tuple[str, str]:
+    listing = _git(scope.repo, ["ls-remote", "--symref", scope.remote, "HEAD"], env=scope.env)
+    if listing.returncode != 0:
+        refusal = _redacted_output(listing, scope.extra_env)
+        msg = f"ls-remote --symref {scope.remote} HEAD failed (remote unreachable): {refusal}"
         raise FleetClaimUnavailableError(msg)
-    return roots.stdout.split()[-1]
+    heads = [line.removesuffix("\tHEAD") for line in listing.stdout.splitlines() if line.endswith("\tHEAD")]
+    branch = next((head.removeprefix("ref: ") for head in heads if head.startswith("ref: ")), "")
+    tip = next((head for head in heads if not head.startswith("ref: ")), "")
+    if not (branch and tip):
+        msg = f"{scope.remote} advertises no default branch, so a claim commit has no root to descend from"
+        raise FleetClaimUnavailableError(msg)
+    return branch, tip
+
+
+def _roots(scope: _Scope, tip: str) -> list[str]:
+    result = _git(scope.repo, ["rev-list", "--max-parents=0", tip], env=scope.env)
+    return result.stdout.split() if result.returncode == 0 else []
+
+
+def _remote_default_root(scope: _Scope) -> str:
+    # Read from the tip origin advertises, never a local tracking ref, which can name a history origin no longer holds.
+    branch, tip = _remote_default_head(scope)
+    roots = _roots(scope, tip)
+    if not roots:
+        # An empty --refmap keeps fetch from pointing a tracking ref at an object in the throwaway dir.
+        fetch = ["-c", "gc.auto=0", "fetch", "--quiet", "--no-write-fetch-head", "--refmap=", scope.remote, branch]
+        _git(scope.repo, fetch, env=scope.env)
+        roots = _roots(scope, tip)
+    if not roots:
+        msg = f"cannot read the root of {scope.remote}'s {branch} at {tip}: the clone lacks it and fetching it failed"
+        raise FleetClaimUnavailableError(msg)
+    return roots[-1]
 
 
 def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
@@ -449,7 +473,7 @@ def _write_claim_commit(scope: _Scope, meta: ClaimMeta) -> str:
     # module contract any inability to build a claim commit surfaces as
     # FleetClaimUnavailableError (never a bare CommandFailedError), so the wire's
     # fail-safe catch handles a corrupt local repo uniformly with remote-unreachable.
-    root = _default_branch_root(scope)
+    root = _remote_default_root(scope)
     message = json.dumps(meta, sort_keys=True)
     # The root's own tree makes the commit's patch empty: it carries nothing but its record.
     args = ["git", "-C", scope.repo, *_CLAIM_IDENTITY, "commit-tree", f"{root}^{{tree}}", "-p", root, "-m", message]

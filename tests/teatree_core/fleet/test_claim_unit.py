@@ -69,6 +69,50 @@ class TestClaimCommitShape:
                 assert git(bare, "rev-list", "--parents", "-n", "1", written.sha).split()[1:] == [root]
                 assert git(bare, "rev-parse", f"{written.sha}^{{tree}}") == git(bare, "rev-parse", f"{root}^{{tree}}")
 
+    def test_a_clone_whose_tracking_ref_predates_a_history_rewrite_descends_from_the_root_origin_holds(
+        self, tmp_path: Path
+    ) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        rewritten_away = tmp_path / "rewritten-away"
+        git(tmp_path, "init", "-q", "-b", "main", rewritten_away.name)
+        (rewritten_away / "ONLY_IN_THE_OLD_HISTORY").write_text("old\n", encoding="utf-8")
+        git(rewritten_away, "add", "ONLY_IN_THE_OLD_HISTORY")
+        git(rewritten_away, *FIXTURE_IDENTITY, "commit", "-q", "-m", "old root")
+        old_root = git(rewritten_away, "rev-parse", "HEAD")
+        holder = init_client(tmp_path / "holder", rewritten_away)
+        git(holder, "remote", "set-url", "origin", f"file://{bare}")
+
+        claim = fleet_claim.acquire(_KEY, repo=str(holder))
+
+        assert claim is not None
+        assert git(bare, "rev-list", "--parents", "-n", "1", claim.sha).split()[1:] == [git(bare, "rev-parse", "main")]
+        with pytest.raises(subprocess.CalledProcessError):
+            git(bare, "cat-file", "-e", old_root)
+
+    def test_a_clone_that_never_fetched_claims_on_the_root_origin_holds(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        never_fetched = init_with_origin(tmp_path / "c", f"file://{bare}")
+
+        claim = fleet_claim.acquire(_KEY, repo=str(never_fetched))
+
+        assert claim is not None
+        assert git(bare, "rev-list", "--parents", "-n", "1", claim.sha).split()[1:] == [git(bare, "rev-parse", "main")]
+
+    def test_a_clone_without_origin_head_claims_on_a_default_branch_of_any_name(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        root = git(bare, "rev-parse", "main")
+        git(bare, "update-ref", "refs/heads/trunk", root)
+        git(bare, "symbolic-ref", "HEAD", "refs/heads/trunk")
+        git(bare, "update-ref", "-d", "refs/heads/main")
+        holder = init_client(tmp_path / "holder", bare)
+        git(holder, "remote", "set-head", "origin", "--delete")
+        assert git(holder, "for-each-ref", "--format=%(refname)") == "refs/remotes/origin/trunk"
+
+        claim = fleet_claim.acquire(_KEY, repo=str(holder))
+
+        assert claim is not None
+        assert git(bare, "rev-list", "--parents", "-n", "1", claim.sha).split()[1:] == [root]
+
 
 class TestClaimRef:
     def test_valid_key_is_a_ref_with_slug_and_hash(self) -> None:
@@ -216,7 +260,7 @@ class TestReadTip:
         client = init_client(tmp_path / "c", bare)
         claim = fleet_claim.acquire(_KEY, repo=str(client))
         assert claim is not None
-        run_before_upload_pack(client, 2, f'git --git-dir="{bare}" update-ref -d {claim.ref}')
+        run_before_upload_pack(client, {2: f'git --git-dir="{bare}" update-ref -d {claim.ref}'})
 
         assert fleet_claim.read_tip(_KEY, repo=str(client)) is None
 
@@ -228,7 +272,7 @@ class TestReadTip:
         beat = fleet_claim.heartbeat(claim, repo=str(client))
         assert isinstance(beat, fleet_claim.Claim)
         git(bare, "update-ref", claim.ref, claim.sha)
-        run_before_upload_pack(client, 2, f'git --git-dir="{bare}" update-ref {claim.ref} {beat.sha}')
+        run_before_upload_pack(client, {2: f'git --git-dir="{bare}" update-ref {claim.ref} {beat.sha}'})
 
         tip = fleet_claim.read_tip(_KEY, repo=str(client))
 
@@ -284,10 +328,19 @@ class TestErrorPaths:
         with pytest.raises(fleet_claim.FleetClaimUnavailableError):
             fleet_claim.acquire(_KEY, repo=str(not_a_repo))
 
-    def test_acquire_without_a_resolvable_default_branch_fails_safe(self, tmp_path) -> None:
+    def test_acquire_fails_safe_when_origin_advertises_no_default_branch(self, tmp_path: Path) -> None:
+        bare = tmp_path / "unborn.git"
+        git(tmp_path, "init", "--bare", "-q", bare.name)
+        client = init_client(tmp_path / "c", bare)
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="advertises no default branch"):
+            fleet_claim.acquire(_KEY, repo=str(client))
+        assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
+
+    def test_acquire_fails_safe_when_the_default_branch_cannot_be_fetched(self, tmp_path: Path) -> None:
         bare = init_bare(tmp_path / "o.git")
         never_fetched = init_with_origin(tmp_path / "c", f"file://{bare}")
-        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="default branch"):
+        run_before_upload_pack(never_fetched, {2: "exit 1"})
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="fetching it failed"):
             fleet_claim.acquire(_KEY, repo=str(never_fetched))
         assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
 

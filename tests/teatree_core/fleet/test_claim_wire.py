@@ -414,7 +414,7 @@ class TestShipFenceGate(TestCase):
 
     def test_a_ref_deleted_mid_read_refuses_as_missing(self) -> None:
         ticket, worktree, claim, bare = self._ship_setup(self._tmp())
-        run_before_upload_pack(Path(worktree.repo_path), 2, f'git --git-dir="{bare}" update-ref -d {claim.ref}')
+        run_before_upload_pack(Path(worktree.repo_path), {2: f'git --git-dir="{bare}" update-ref -d {claim.ref}'})
 
         assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
 

@@ -7,7 +7,7 @@ Not a test module — no ``test_`` prefix, so pytest never collects it.
 
 import os
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -85,13 +85,14 @@ def private_origin(tmp: Path, token: str) -> tuple[Path, Path]:
     return bare, client
 
 
-def run_before_upload_pack(client: Path, call: int, command: str) -> None:
-    """Run *command* just before *client*'s *call*-th read of its origin: a ref write racing that read."""
+def run_before_upload_pack(client: Path, commands: Mapping[int, str]) -> None:
+    """Run each command just before *client*'s read of its origin with that number: ref writes racing those reads."""
     counter = client / ".git" / "upload-pack-calls"
     wrapper = client / ".git" / "upload-pack-racing-a-write"
+    races = "".join(f'[ "$n" = {call} ] && {command}\n' for call, command in commands.items())
     wrapper.write_text(
         f'#!/bin/sh\nn=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\necho "$n" > "{counter}"\n'
-        f'[ "$n" = {call} ] && {command}\nexec git upload-pack "$@"\n',
+        f'{races}exec git upload-pack "$@"\n',
         encoding="utf-8",
     )
     wrapper.chmod(0o755)

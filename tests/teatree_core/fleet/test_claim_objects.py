@@ -21,7 +21,7 @@ from pathlib import Path
 from teatree.core.fleet import claim as fleet_claim
 from teatree.utils.git_run import git_env_without_overrides
 
-from ._git_origin import git, init_bare, init_client, ref_sha
+from ._git_origin import git, init_bare, init_client, init_with_origin, ref_sha
 
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _TTL = 100.0
@@ -39,7 +39,7 @@ def _origin(tmp_path: Path, name: str = "clone") -> tuple[Path, Path]:
 
 def _write_claim_commit_unisolated(repo: Path) -> None:
     """The leaking write shape — the module's own writer, minus the ephemeral object dir."""
-    scope = fleet_claim._Scope(repo=str(repo), remote="origin", env=git_env_without_overrides())
+    scope = fleet_claim._Scope(repo=str(repo), remote="origin", env=git_env_without_overrides(), extra_env={})
     fleet_claim._write_claim_commit(scope, fleet_claim._meta(_WORK_KEY, "instance", 0.0, _TTL, lineage="f" * 32))
 
 
@@ -91,6 +91,20 @@ def test_steal_writes_no_objects_into_the_stealing_clone(tmp_path: Path) -> None
     assert isinstance(stolen, fleet_claim.Claim)
     assert ref_sha(bare, stolen.ref) == stolen.sha
     assert _loose_objects(rival) == before
+
+
+def test_a_clone_lacking_origins_default_branch_fetches_it_without_touching_its_refs_or_objects(tmp_path: Path) -> None:
+    bare = init_bare(tmp_path / "origin.git")
+    clone = init_with_origin(tmp_path / "clone", f"file://{bare}")
+    objects = {path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()}
+    refs = git(clone, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    held = fleet_claim.acquire(_WORK_KEY, repo=str(clone), ttl_seconds=_TTL, now=0.0)
+    assert isinstance(held, fleet_claim.Claim)
+    assert isinstance(fleet_claim.heartbeat(held, repo=str(clone), now=1.0), fleet_claim.Claim)
+
+    assert git(clone, "for-each-ref", "--format=%(refname) %(objectname)") == refs
+    assert {path for path in (clone / ".git" / "objects").rglob("*") if path.is_file()} == objects
 
 
 def test_the_expiry_probe_leaves_no_ref_behind_in_the_clone(tmp_path: Path) -> None:
