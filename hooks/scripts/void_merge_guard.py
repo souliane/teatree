@@ -6,12 +6,14 @@ gate: it refuses commands naming one subcommand, never arbitrary Bash. Cold-impo
 stdlib plus the ``managed_repo`` sibling at module top.
 """
 
+import logging
 import sys
 
 from hooks.scripts.managed_repo import teatree_src_on_path
 
 sys.modules.setdefault("void_merge_guard", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.void_merge_guard", sys.modules[__name__])
+logger = logging.getLogger(__name__)
 
 
 def handle_block_void_merge(data: dict) -> bool:
@@ -27,7 +29,8 @@ def handle_block_void_merge(data: dict) -> bool:
             from teatree.hooks import void_merge_detect  # noqa: PLC0415 — deferred: cold-hook import
 
             reason = void_merge_detect.void_merge_deny_reason(command)
-    except Exception:  # noqa: BLE001 — crash-proof hook: the command-level operator checks still refuse
+    except Exception:
+        logger.debug("void-merge detection failed; the command's operator checks still refuse", exc_info=True)
         return False
     if reason is None:
         return False

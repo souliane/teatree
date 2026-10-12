@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +25,14 @@ def test_a_dry_run_and_other_tools_pass(capsys: pytest.CaptureFixture[str]) -> N
     assert handle_block_void_merge(_event(f"{_COMMAND} --dry-run")) is False
     assert handle_block_void_merge(_event(_COMMAND, tool_name="Edit")) is False
     assert capsys.readouterr().out == ""
+
+
+def test_a_detector_crash_silently_leaves_the_call_to_the_commands_own_checks(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch("teatree.hooks.void_merge_detect.void_merge_deny_reason", side_effect=RuntimeError("detector bug")):
+        assert handle_block_void_merge(_event(_COMMAND)) is False
+    assert capsys.readouterr() == ("", "")
 
 
 def test_the_router_runs_it_on_every_pre_tool_use() -> None:
