@@ -429,6 +429,20 @@ class TestErrorPaths:
         with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="gate refused: non-noreply identity"):
             fleet_claim.acquire(_KEY, repo=str(client))
 
+    def test_a_refused_heartbeat_that_leaves_the_ref_on_our_sha_is_an_outage_not_a_loss(self, tmp_path: Path) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        claim = fleet_claim.acquire(_KEY, repo=str(client))
+        assert claim is not None
+        hook = client / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\necho 'gate refused the beat'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="still holds our sha: gate refused the beat"):
+            fleet_claim.heartbeat(claim, repo=str(client))
+
+        assert ref_sha(bare, claim.ref) == claim.sha
+
     def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_and_ends_the_hook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
