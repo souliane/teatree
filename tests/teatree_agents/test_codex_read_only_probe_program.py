@@ -111,13 +111,20 @@ _PLACEHOLDER = "EXAMPLE_TOKEN=placeholder\n"
 _SECRETS = (
     ".netrc",
     "app/.env",
+    "app/.env-local",
     "app/.env.local",
+    "app/.envrc",
     "app/.git-credentials",
+    "app/.npmrc",
     "app/.pgpass",
+    "app/.pypirc",
     "app/deploy/teatree.env",
     "app/linked.env",
+    "keys/id_ed25519",
     "vendor/node_modules/pkg/.env",
 )
+_PRIVATE_KEY = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nplaceholder\n"
+_CERTIFICATE = "-----BEGIN " + "CERTIFICATE-----\nplaceholder\n"
 
 
 def _plant(root: Path, *relatives: str, text: str = _PLACEHOLDER) -> None:
@@ -130,7 +137,7 @@ def _plant(root: Path, *relatives: str, text: str = _PLACEHOLDER) -> None:
 def test_every_readable_env_or_credential_file_under_a_mount_is_reported(layout: Path) -> None:
     root = layout / "root"
     _plant(root, *(relative for relative in _SECRETS if relative != "app/linked.env"))
-    _plant(root, "app/.env.example", "app/.envrc", "app/.t3-env.cache", "app/notes.env.md")
+    _plant(root, "app/.env.example", "app/.t3-env.cache", "app/notes.env.md", "keys/id_ed25519.pub")
     _plant(root, "app/empty.env", text="")
     _plant(root, "app/locked.env")
     (root / "app" / "locked.env").chmod(0)
@@ -142,6 +149,23 @@ def test_every_readable_env_or_credential_file_under_a_mount_is_reported(layout:
     assert observed["scan"] == {
         str(root): {"owner": os.getuid(), "secrets": sorted(str(root / relative) for relative in _SECRETS)}
     }
+
+
+def test_a_readable_private_key_is_found_by_its_content_under_any_key_name(layout: Path) -> None:
+    root = layout / "root"
+    _plant(root, "deploy/server.pem", "deploy/tls.key", "keys/id_deploy", text=_PRIVATE_KEY)
+    _plant(root, "deploy/chain.pem", text=_CERTIFICATE)
+    _plant(root, "deploy/notes.key", text="placeholder notes\n")
+    _plant(root, "keys/id_deploy.pub", text="ssh-ed25519 placeholder\n")
+    _plant(root, "src/leak_patterns.py", text=f"PATTERN = {_PRIVATE_KEY!r}\n")
+    _plant(root, "deploy/locked.pem", text=_PRIVATE_KEY)
+    (root / "deploy" / "locked.pem").chmod(0)
+
+    observed = observe(_request(layout), _fake_proc(layout, [(str(root), "ext4")]))
+
+    assert observed["scan"][str(root)]["secrets"] == sorted(
+        str(root / relative) for relative in ("deploy/server.pem", "deploy/tls.key", "keys/id_deploy")
+    )
 
 
 def test_a_nested_mount_is_scanned_once_under_its_own_target(layout: Path) -> None:
@@ -237,6 +261,18 @@ def test_owner_only_git_data_of_a_worktrees_clone_is_named(layout: Path) -> None
     observed = observe(_request(layout, roots=(str(worktree),)), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
 
     assert observed["roots"][str(worktree)]["git"] == f"{packed_refs} is unreadable"
+
+
+@pytest.mark.parametrize("tree", ["objects", "refs"])
+def test_an_unreadable_object_or_loose_ref_of_the_clone_is_named(layout: Path, tree: str) -> None:
+    clone, worktree = _clone_with_worktree(layout)
+    _git("-C", str(clone), "branch", "loose")
+    unreadable = next(path for path in sorted((clone / ".git" / tree).rglob("*")) if path.is_file())
+    unreadable.chmod(0)
+
+    observed = observe(_request(layout, roots=(str(worktree),)), _fake_proc(layout, [(str(layout / "root"), "ext4")]))
+
+    assert observed["roots"][str(worktree)]["git"] == f"{unreadable} is unreadable"
 
 
 def test_a_file_target_is_opened_for_append_and_never_written(tmp_path: Path) -> None:

@@ -8,8 +8,14 @@ import sys
 from pathlib import Path
 from typing import TypedDict
 
-SECRET_NAMES = frozenset({".env", ".netrc", ".git-credentials", ".pgpass"})
+SECRET_NAMES = frozenset(
+    {".env", ".envrc", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".pgpass"}
+    | {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+)
 TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+KEY_SUFFIXES = (".pem", ".key", ".p8", ".ppk")
+PRIVATE_KEY_MARKERS = (b"PRIVATE KEY-----", b"PuTTY-User-Key-File")
+KEY_READ_BYTES = 64 * 1024
 GIT_FILES = ("HEAD", "commondir", "config", "index", "packed-refs")
 GIT_TREES = ("objects", "refs")
 
@@ -141,19 +147,40 @@ def _resolves(name: str) -> bool:
 def secret_name(name: str) -> bool:
     if name in SECRET_NAMES or name.endswith(".env"):
         return True
-    return name.startswith(".env.") and not name.endswith(TEMPLATE_SUFFIXES)
+    return name.startswith((".env.", ".env-", ".env_")) and not name.endswith(TEMPLATE_SUFFIXES)
 
 
-def _readable(path: str) -> bool:
+def key_name(name: str) -> bool:
+    """A name a private key goes by; only its content decides, since certificates and public keys share them."""
+    return name.endswith(KEY_SUFFIXES) or (name.startswith("id_") and not name.endswith(".pub"))
+
+
+def _head(path: str, size: int) -> bytes | None:
+    """The first *size* bytes of a non-empty regular file this process can open, else ``None``."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
-        return False
+        return None
     try:
         info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+            return None
+        return os.read(fd, size) if size else b""
+    except OSError:
+        return None
     finally:
         os.close(fd)
-    return stat.S_ISREG(info.st_mode) and info.st_size > 0
+
+
+def _readable(path: str) -> bool:
+    return _head(path, 0) is not None
+
+
+def _secret_file(name: str, path: str) -> bool:
+    if secret_name(name):
+        return _readable(path)
+    head = _head(path, KEY_READ_BYTES) if key_name(name) else None
+    return head is not None and any(marker in head for marker in PRIVATE_KEY_MARKERS)
 
 
 def _secrets(top: str, mounted: set[str]) -> list[str]:
@@ -178,7 +205,7 @@ def _secrets(top: str, mounted: set[str]) -> list[str]:
             if is_dir:
                 if entry.path not in mounted:
                     pending.append(entry.path)
-            elif secret_name(entry.name) and _readable(entry.path):
+            elif _secret_file(entry.name, entry.path):
                 found.append(entry.path)
     return sorted(found)
 
