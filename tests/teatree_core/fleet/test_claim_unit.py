@@ -7,6 +7,7 @@ metadata parser, and the Django-side wiring — directly.
 """
 
 import subprocess
+import time
 from pathlib import Path
 from typing import cast
 
@@ -361,6 +362,23 @@ class TestErrorPaths:
         hook.chmod(0o755)
         with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="gate refused: non-noreply identity"):
             fleet_claim.acquire(_KEY, repo=str(client))
+
+    def test_a_claim_push_whose_hook_outlives_the_deadline_fails_safe_at_the_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare = init_bare(tmp_path / "o.git")
+        client = init_client(tmp_path / "c", bare)
+        hook = client / ".git" / "hooks" / "pre-push"
+        hook.write_text("#!/bin/sh\nsleep 40 &\nwait\n", encoding="utf-8")
+        hook.chmod(0o755)
+        monkeypatch.setattr(fleet_claim, "_GIT_TIMEOUT_SECONDS", 5.0)
+        started = time.monotonic()
+
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="did not finish within 5s"):
+            fleet_claim.acquire(_KEY, repo=str(client))
+
+        assert time.monotonic() - started < 30
+        assert ref_sha(bare, fleet_claim.claim_ref(_KEY)) == ""
 
     def test_steal_returns_none_when_cas_is_lost(self, tmp_path, monkeypatch) -> None:
         # The ref is expired (so the steal is attempted) but the CAS is rejected —

@@ -62,10 +62,19 @@ from typing import NotRequired, TypedDict, cast
 
 from teatree.instance_id import instance_id
 from teatree.utils.git_run import git_env_non_interactive
-from teatree.utils.run import CommandFailedError, CompletedProcess, redact_secrets, run_allowed_to_fail, run_checked
+from teatree.utils.run import (
+    CommandFailedError,
+    CompletedProcess,
+    TimeoutExpired,
+    redact_secrets,
+    run_bounded_group,
+    run_checked,
+)
 
 _REF_PREFIX = "refs/teatree/claims"
 _READ_ATTEMPTS = 2
+#: Above the privacy gate's own 120 s remote listing, so only a stuck hook or a stalled remote reaches it.
+_GIT_TIMEOUT_SECONDS = 300.0
 #: ``wire.resolve_claim_repo`` only hands out a clone whose origin hosts the work item.
 _ORIGIN = "origin"
 
@@ -383,7 +392,13 @@ def _meta(work_key: str, inst: str, claimed_at: float, ttl_seconds: float, *, li
 def _git(repo: str, args: tuple[str, ...] | list[str], *, env: dict[str, str] | None = None) -> CompletedProcess[str]:
     # Every remote/read op tolerates a non-zero exit (the caller inspects the
     # returncode); the local claim-commit writes use run_checked directly.
-    return run_allowed_to_fail(["git", "-C", repo, *args], expected_codes=None, env=env or git_env_non_interactive())
+    cmd = ["git", "-C", repo, *args]
+    env = env or git_env_non_interactive()
+    try:
+        return run_bounded_group(cmd, timeout=_GIT_TIMEOUT_SECONDS, expected_codes=None, env=env)
+    except TimeoutExpired as exc:
+        msg = f"`git {' '.join(args)}` in {repo} did not finish within {_GIT_TIMEOUT_SECONDS:.0f}s"
+        raise FleetClaimUnavailableError(msg) from exc
 
 
 def _remote_env(extra_env: Mapping[str, str]) -> dict[str, str]:
