@@ -209,6 +209,22 @@ class TestUnreadable:
 
         assert _snapshot(gh).unreadable
 
+    def test_a_compare_status_it_does_not_know_is_unreadable(self) -> None:
+        for status in ("unexpected", ""):
+            gh = FakeGh()
+            gh.compares[f"{TIP}...{NEW_HEAD}"] = _compare(status)
+
+            snapshot = _snapshot(gh)
+
+            assert f"unknown status {status!r}" in snapshot.unreadable
+            assert classify_content(snapshot).kind is ContentVerdictKind.UNKNOWN
+
+    def test_a_payload_that_does_not_say_merged_reads_as_not_merged(self) -> None:
+        payload = json.loads(_graphql())
+        del payload["data"]["repository"]["pullRequest"]["merged"]
+
+        assert _snapshot(FakeGh(graphql=(0, json.dumps(payload), ""))).merged is False
+
     def test_a_default_branch_that_moved_during_the_probe_is_unreadable(self) -> None:
         gh = FakeGh(tips=["9" * 40])
 

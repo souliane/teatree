@@ -193,6 +193,28 @@ class TestVoidSources(_VoidCase):
         ticket.refresh_from_db()
         assert ticket.state == State.CODED
 
+    def test_the_same_pr_number_in_another_repository_stays_out_of_the_void(self) -> None:
+        owner = self.landed()
+        other = "example-org/other-repo"
+        named_by = (
+            {"issue_url": f"https://github.com/{other}/pull/41"},
+            {"extra": {"forge_merge_evidence": {"slug": other, "pr_id": 41, "merged_sha": MERGED_SHA}}},
+            {},
+        )
+        others = [Ticket.objects.create(overlay="t3-teatree", state=State.MERGED, **source) for source in named_by]
+        for ticket in others:
+            TicketTransition.objects.create(ticket=ticket, from_state=State.PR_OPENED, to_state=State.MERGED)
+        clear = MergeClearFactory(ticket=others[2], slug=other, pr_id=41)
+        MergeAuditFactory(clear=clear, merged_sha=MERGED_SHA, repo_slug=other)
+
+        with stub_forge():
+            void = _void()
+
+        assert set(void.tickets.all()) == {owner}
+        assert {ticket.pk: ticket.state for ticket in Ticket.objects.filter(pk__in=[t.pk for t in others])} == {
+            ticket.pk: State.MERGED for ticket in others
+        }
+
     def test_a_ticket_with_no_edge_into_merged_refuses_the_whole_void(self) -> None:
         restorable = self.landed()
         Ticket.objects.create(overlay="t3-teatree", state=State.MERGED, issue_url=PR_URL)
@@ -264,7 +286,8 @@ class TestOperatorRefusals(_VoidCase):
         assert refusal.value.code is VoidRefusal.REASON_MISSING
 
     def test_a_blank_or_agent_looking_actor_refuses(self) -> None:
-        for actor in ("", "  ", "coding-agent", "cold-reviewer-41", "claude-orchestrator", "t3-loop", "critic-2"):
+        agents = ("coding-agent", "coding-loop", "cold-reviewer-41", "claude-orchestrator", "t3-loop", "critic-2")
+        for actor in ("", "  ", *agents):
             with self.subTest(actor=actor), pytest.raises(VoidRefusedError) as refusal:
                 check_operator(reason="history rewrite", actor=actor)
             assert refusal.value.code is VoidRefusal.ACTOR_NOT_HUMAN
