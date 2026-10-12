@@ -47,7 +47,7 @@ from teatree.agents.codex_read_only_verdict import (
     WORKTREE_ROOT,
     evaluate,
 )
-from teatree.utils.run import run_allowed_to_fail, run_checked
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
 
 REPO = Path(__file__).resolve().parents[1]
 SWEEP_PROGRAM = Path(codex_read_only_sweep_program.__file__).read_text(encoding="utf-8")
@@ -185,12 +185,11 @@ class Scratch:
     def compose_file(self) -> Path:
         return self.root / "compose.yml"
 
-    def compose(self, *args: str, allowed: bool = False) -> int:
+    def compose(self, *args: str, check: bool = True) -> CompletedProcess[str]:
         argv = ["docker", "compose", "-p", PROJECT, "-f", str(self.compose_file), *args]
-        if allowed:
-            return run_allowed_to_fail(argv, expected_codes=None, timeout=600).returncode
-        run_checked(argv, timeout=600)
-        return 0
+        if check:
+            return run_checked(argv, timeout=600)
+        return run_allowed_to_fail(argv, expected_codes=None, timeout=600)
 
     def lay_out(self) -> None:
         os.umask(0o022)
@@ -271,13 +270,15 @@ def scratch(root: Path) -> bool:
             cwd=REPO,
             timeout=BUILD_TIMEOUT_SECONDS,
         )
-        refused = layout.compose("up", "-d", EXECUTOR_SERVICE, allowed=True) != 0
-        results = [_report("control: a fresh clone volume refuses the executor", passed=refused, detail=refused)]
+        fresh = layout.compose("up", "-d", EXECUTOR_SERVICE, check=False)
+        refused = fresh.returncode != 0 and "read-only file system" in fresh.stderr
+        detail = fresh.stderr.strip().splitlines()[-1:]
+        results = [_report("control: a fresh clone volume refuses the executor", passed=refused, detail=detail)]
         layout.compose("rm", "-f", EXECUTOR_SERVICE)
         layout.compose("up", "-d", TWIN)
         layout.compose("up", "-d", EXECUTOR_SERVICE)
-        twin = run_checked(["docker", "compose", "-p", PROJECT, "-f", str(layout.compose_file), "ps", "-q", TWIN])
-        worker = docker.answer(["inspect", "--format", WORKER_INSPECT_FORMAT, twin.stdout.strip()])
+        twin = layout.compose("ps", "-q", TWIN).stdout.strip()
+        worker = docker.answer(["inspect", "--format", WORKER_INSPECT_FORMAT, twin])
         root_in_container = f"{WORKTREE_ROOT}/example/teatree"
         executor = Executor(docker, docker.executor_id(PROJECT), worker, (root_in_container,))
         checks: list[Callable[[], bool]] = [
@@ -289,7 +290,7 @@ def scratch(root: Path) -> bool:
         ]
         results += [check() for check in checks]
     finally:
-        layout.compose("down", "-v", "--remove-orphans", allowed=True)
+        layout.compose("down", "-v", "--remove-orphans", check=False)
         run_allowed_to_fail(["docker", "image", "rm", "-f", IMAGE], expected_codes=None)
         shutil.rmtree(root, ignore_errors=True)
     return all(results)
