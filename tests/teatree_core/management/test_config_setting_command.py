@@ -325,13 +325,17 @@ class TestUnknownKeyRefusal(TestCase):
         return err.getvalue()
 
     def test_unknown_names_are_refused_identically(self) -> None:
-        for key in ("issue_implementer_require_label", "speed", "not_a_real_setting"):
+        for key in ("issue_implementer_require_label", "not_a_real_setting"):
             for subcommand in ("get", "set", "seed"):
                 with self.subTest(key=key, subcommand=subcommand):
                     assert self._refusal(subcommand, key) == self._refusal(subcommand, "not_a_real_setting").replace(
                         "not_a_real_setting", key
                     )
                     assert not ConfigSetting.objects.filter(key=key).exists()
+
+    def test_retired_and_renamed_keys_name_their_remedy(self) -> None:
+        assert "no readers" in self._refusal("set", "branch_prefix")
+        assert "renamed to wip" in self._refusal("get", "speed")
 
 
 class TestConfigSettingColdHookGateKey(TestCase):
@@ -477,6 +481,7 @@ class TestConfigSettingExport(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
 
     def test_export_to_stdout_dumps_teatree_and_overlay_tables(self) -> None:
         call_command("config_setting", "set", "mode", '"auto"')
@@ -507,6 +512,17 @@ class TestConfigSettingExport(TestCase):
         # The global scope is excluded when a single overlay is requested.
         assert "teatree" not in doc
 
+    def test_banned_content_needs_the_second_flag_before_a_file_is_written(self) -> None:
+        ConfigSetting.objects.set_value("dashboard_instance_label", "synthetic-scan-term")
+        target = self.tmp_path / "backup.toml"
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "export", "--include-private", "--output", str(target), stderr=err)
+        assert not target.exists()
+        assert "synthetic-scan-term" not in err.getvalue()
+        call_command("config_setting", "export", "--include-private", "--include-banned-terms", "--output", str(target))
+        assert "synthetic-scan-term" in target.read_text(encoding="utf-8")
+
 
 class TestConfigSettingExportFilters(TestCase):
     """The two export filters over the CLI — both off by default, both together = the file shape."""
@@ -514,6 +530,7 @@ class TestConfigSettingExportFilters(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
 
     def _export(self, *flags: str) -> str:
         out = StringIO()
@@ -546,6 +563,7 @@ class TestConfigSettingImport(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scan-term"]}')
 
     def _write_toml(self, text: str) -> Path:
         path = self.tmp_path / "dump.toml"
@@ -604,6 +622,7 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
     def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("TEATREE_TERM_REGISTRY", '{"leak":["synthetic-scanned-term"]}')
 
     #: One synthetic row per KEY-classified withhold class — a one-class fixture passes against
     #: a one-class fix. The fourth class (a banned term matched on the VALUE) is unit-covered in
@@ -634,7 +653,9 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
     def _backup(self) -> tuple[Path, str]:
         path = self.tmp_path / "backup.toml"
         err = StringIO()
-        call_command("config_setting", "export", "--include-private", "--output", str(path), stderr=err)
+        call_command(
+            "config_setting", "export", "--include-private", "--include-banned-terms", "--output", str(path), stderr=err
+        )
         return path, err.getvalue()
 
     def _import(self, path: Path, *flags: str) -> tuple[str, str]:

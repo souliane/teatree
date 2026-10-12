@@ -5,7 +5,7 @@ file) so an operator has a human-readable, re-importable backup of their private
 config. It is NOT the config home — teatree reads config only from the DB — it is
 a one-way dump for backup/inspection. The secret guard withholds customer/brand
 rows from a SHARED export by default (``SECRET_SETTINGS`` + a live banned-term
-content scan); ``--include-private`` exports everything for a personal backup.
+content scan); ``--include-private`` selects a personal backup; suppressed terms need a second flag.
 
 The shipped defaults an operator tunes are not only ``ConfigSetting`` keys: the loops,
 modes and schedules are too, so the same command carries them. They ride the SAME
@@ -27,12 +27,11 @@ from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
-from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, RENAMED_CONFIG_SETTINGS
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS, config_key_hint
 from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.setting_groups import grouped_settings_table
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.config.stored_row_health import is_operator_configuration, stored_row_kind
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.document_layout import (
     GLOBAL_SCOPE,
@@ -42,13 +41,16 @@ from teatree.core.config_interchange.document_layout import (
     registry_value,
     sorted_table,
 )
+from teatree.core.config_interchange.export_rows import _configuration_rows, _exportable_rows, _ExportGuard
 from teatree.core.config_interchange.registry_rows import merged_registry
 from teatree.core.config_interchange.secret_guard import (
+    ExportPrivacy,
     RedactedRow,
     is_private_backup,
     mark_private_backup,
     redaction_reason,
     resolve_export_scan_terms,
+    stamp_private_backup,
 )
 from teatree.core.config_interchange.seed_tables import (
     SeedFieldDisposition,
@@ -59,67 +61,21 @@ from teatree.core.config_interchange.seed_tables import (
     unseeded_entries,
     write_seed_field,
 )
-from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, OmittedRow, RejectedRow
+from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, RejectedRow
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
+from teatree.hooks.term_match import matched_term
 
 
-@dataclass
-class _ExportGuard:
-    """The secret-guard context threaded through every export emitter.
-
-    ``include_private`` exports everything (a personal backup); otherwise each row is
-    scanned against ``terms`` + ``SECRET_SETTINGS`` and a withheld one is appended to the
-    shared ``redacted`` accumulator. Bundled so the emitters stay within the arg-count cap.
-    """
-
-    include_private: bool
-    terms: tuple[str, ...]
-    redacted: list[RedactedRow]
-    omitted: list[OmittedRow]
-
-
-def _configuration_rows(rows: dict[str, ConfigValue], scope: str, *, guard: _ExportGuard) -> dict[str, ConfigValue]:
-    """Drop rows that are not configuration, recording each in ``guard.omitted`` (#4147).
-
-    The ``ConfigSetting`` store also holds internal runtime state and rows outliving the
-    key they were written under. They are not settings — the registry refuses to ``get``
-    them — so the import has no home for them and refuses the WHOLE file on one, which
-    left a live box unable to re-import its own export. Export and import are inverses or
-    they are neither, and the safety posture worth keeping is the import's all-or-nothing
-    refusal; so the export is the side that stops offering a key nothing can read back.
-
-    Applied to SETTING rows only. An overlay's definition keys (``path`` / ``class``) and
-    an e2e repo's fields are not settings and are not classified here.
-    """
-    kept: dict[str, ConfigValue] = {}
-    for key, value in rows.items():
-        if is_operator_configuration(key) or known_pass_key_credential(key) is not None:
-            kept[key] = value
-        else:
-            guard.omitted.append(OmittedRow(scope, key, stored_row_kind(key)))
-    return kept
-
-
-def _exportable_rows(rows: dict[str, ConfigValue], scope: str, *, guard: _ExportGuard) -> dict[str, ConfigValue]:
-    """Drop secret/tainted rows (recording each in ``guard.redacted``) unless include_private."""
-    if guard.include_private:
-        return rows
-    kept: dict[str, ConfigValue] = {}
-    for key, value in rows.items():
-        reason = redaction_reason(key, value, guard.terms)
-        if reason is None:
-            kept[key] = value
-        else:
-            guard.redacted.append(RedactedRow(scope, key, reason))
-    return kept
+class BannedTermExportError(ValueError):
+    """The export contains a suppressed term without explicit permission."""
 
 
 def export_db_to_toml(
     overlay: str | None = None,
     *,
-    include_private: bool = False,
+    privacy: ExportPrivacy = ExportPrivacy.SHARED,
     scan_terms: tuple[str, ...] | None = None,
     default_keys_only: bool = False,
     include_defaults: bool = False,
@@ -155,7 +111,8 @@ def export_db_to_toml(
     (``SECRET_SETTINGS``) OR whose key/value contains a banned customer/brand term
     (``scan_terms``, resolved from the live config when not supplied) — so a SHARED
     export cannot leak customer data even though the private DB store keeps it.
-    ``include_private`` exports everything for a personal, never-shared backup. The
+    ``privacy`` selects a shared file, a personal backup, or an explicitly
+    authorized personal backup carrying suppressed content. The
     withheld rows ride back on the result so the caller can warn what it dropped.
 
     A stored row that is not CONFIGURATION at all — internal runtime state sharing the
@@ -163,12 +120,13 @@ def export_db_to_toml(
     rides back the same way (#4147). Not a privacy rule but an interchange one: the
     import has no home for such a key and refuses the whole file on it.
 
-    An ``include_private`` dump STAMPS itself a personal backup (#4156), so the file says
+    A private dump STAMPS itself a personal backup (#4156), so the file says
     which of the two formats it is and ``import --restore-private`` can read it back. The
-    defaults shape is exempt: it must stay a byte-identical replacement for ``defaults.toml``,
-    and it drops the private classes anyway.
+    defaults shape stays byte-identical without private flags; with them it carries
+    the same restore marker as every other personal backup.
     """
     terms = scan_terms if scan_terms is not None else resolve_export_scan_terms()
+    include_private = privacy is not ExportPrivacy.SHARED
     guard = _ExportGuard(include_private=include_private, terms=terms, redacted=[], omitted=[])
     document = tomlkit.document()
     if include_private:
@@ -179,9 +137,7 @@ def export_db_to_toml(
     if overlay is not None:
         scoped_registry = {overlay: overlays_registry[overlay]} if overlay in overlays_registry else {}
         _emit_overlay_tables(document, [overlay], scoped_registry, guard=guard)
-        return ConfigExport(
-            tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted), private_backup=include_private
-        )
+        return _finalize_export(tomlkit.dumps(document), guard, privacy=privacy)
 
     # The registry keys are rendered as their own top-level tables below, never under
     # ``[teatree]`` (they are NOT ``UserSettings`` fields) — exclude them from the
@@ -194,10 +150,11 @@ def export_db_to_toml(
     if include_defaults:
         global_rows = _filled_with_defaults(global_rows, default_keys_only=default_keys_only, guard=guard)
     if default_keys_only and include_defaults:
-        return ConfigExport(
-            render_shipped_file(global_rows, base_text=_shipped_file_text()),
-            tuple(guard.redacted),
-            tuple(guard.omitted),
+        text = render_shipped_file(global_rows, base_text=_shipped_file_text())
+        return _finalize_export(
+            stamp_private_backup(text) if include_private else text,
+            guard,
+            privacy=privacy,
         )
     if global_rows:
         document["teatree"] = grouped_settings_table(global_rows)
@@ -212,9 +169,14 @@ def export_db_to_toml(
         for key in TABLE_REGISTRY_KEYS:
             _emit_registry_tables(document, key, registry_value(all_global, key), guard=guard)
     _emit_seed_tables(document, guard=guard)
-    return ConfigExport(
-        tomlkit.dumps(document), tuple(guard.redacted), tuple(guard.omitted), private_backup=include_private
-    )
+    return _finalize_export(tomlkit.dumps(document), guard, privacy=privacy)
+
+
+def _finalize_export(text: str, guard: _ExportGuard, *, privacy: ExportPrivacy) -> ConfigExport:
+    if matched_term(text, guard.terms) and privacy is not ExportPrivacy.WITH_BANNED_TERMS:
+        message = "export contains a suppressed term; pass --include-private --include-banned-terms"
+        raise BannedTermExportError(message)
+    return ConfigExport(text, tuple(guard.redacted), tuple(guard.omitted), private_backup=guard.include_private)
 
 
 def _emit_seed_tables(document: tomlkit.TOMLDocument, *, guard: _ExportGuard) -> None:
@@ -374,8 +336,8 @@ def _unstorable_reason(key: str, value: ConfigValue, policy: _ImportPolicy) -> s
     itself a personal backup — it is what makes ``--include-private`` restorable (#4156).
     """
     if key not in ALL_KNOWN_CONFIG_SETTINGS and known_pass_key_credential(key) is None:
-        replacement = RENAMED_CONFIG_SETTINGS.get(key)
-        return f"unknown key; renamed to {replacement}" if replacement else "unknown key"
+        hint = config_key_hint(key)
+        return f"unknown key; {hint}" if hint else "unknown key"
     if policy.allow_private:
         return None
     if (secret := redaction_reason(key, value, policy.terms)) is not None:

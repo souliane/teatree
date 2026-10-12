@@ -36,6 +36,7 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.known_settings import config_key_hint
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS, env_pin
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_display import is_secret
@@ -230,6 +231,12 @@ def settings_readouts(request: "HttpRequest") -> "HttpResponse":
     return render(request, "dash/partials/_settings_readouts.html", _readouts_context())
 
 
+def _unknown_setting(key: str) -> HttpResponseBadRequest:
+    hint = config_key_hint(key)
+    suffix = f"; {hint}" if hint else ""
+    return HttpResponseBadRequest(f"unknown setting {key!r}{suffix}")
+
+
 @require_loopback_or_staff
 @require_POST
 def settings_set(request: "HttpRequest", key: str) -> "HttpResponse":
@@ -245,7 +252,7 @@ def settings_set(request: "HttpRequest", key: str) -> "HttpResponse":
     scope = request.GET.get("scope", "").strip()
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         # No row exists to swap for a key the schema does not know — plain refusal either way.
-        return HttpResponseBadRequest(f"unknown setting {key!r}")
+        return _unknown_setting(key)
     if refusal := _env_pin_refusal(key) or _safety_refusal(request, key):
         return _refused(request, key, refusal)
     submitted = request.POST.get("value", "").strip()
@@ -323,7 +330,7 @@ def settings_restore(request: "HttpRequest", key: str) -> "HttpResponse":
     """POST a restore-to-default — DELETE the DB row so the setting resolves its default again."""
     scope = request.GET.get("scope", "").strip()
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
-        return HttpResponseBadRequest(f"unknown setting {key!r}")
+        return _unknown_setting(key)
     if refusal := _env_pin_refusal(key) or _safety_refusal(request, key):
         return _refused(request, key, refusal)
     return _cleared(request, key, scope)

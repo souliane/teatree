@@ -10,13 +10,24 @@ The promises, in order of how badly a regression would hurt:
 """
 
 import json
+import os
+from collections.abc import Iterator
+from unittest import mock
 
+import pytest
 from django.test import TestCase
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.core.config_interchange.seed_tables import seed_models
 from teatree.core.models import ConfigSetting, Mode
-from teatree.core.settings_snapshot import SNAPSHOT_FORMAT, build_snapshot, canonical_json, redaction_stub, serialise
+from teatree.core.settings_snapshot import (
+    SNAPSHOT_FORMAT,
+    SnapshotError,
+    build_snapshot,
+    canonical_json,
+    redaction_stub,
+    serialise,
+)
 from teatree.core.settings_snapshot.fingerprint import Warnings, schema_state
 
 _SECRET_VALUE = "sk-live-nobody-should-ever-see-this"
@@ -25,7 +36,20 @@ _FAKE_COORDINATE = "fake-store/not-a-real-entry"
 _OTHER_FAKE_COORDINATE = "fake-store/also-not-a-real-entry"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+        yield
+
+
 class TestPayloadShape(TestCase):
+    def test_a_missing_term_source_refuses_the_snapshot(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}),
+            pytest.raises(SnapshotError, match="term source"),
+        ):
+            build_snapshot("box-a")
+
     def test_the_format_stamp_is_the_one_the_offline_page_reads(self) -> None:
         snapshot = build_snapshot("box-a")
         assert snapshot["format"] == SNAPSHOT_FORMAT

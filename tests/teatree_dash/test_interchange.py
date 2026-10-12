@@ -4,12 +4,23 @@ The page's whole reason to exist is that the file reaches past the settings stor
 so what it claims an apply would touch is asserted per FAMILY, not as one row count.
 """
 
+import os
+from collections.abc import Iterator
+from unittest import mock
+
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.interchange import changed_sections, export_text, import_preview
 
 _TUNED_LOOP = "housekeeping"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+        yield
 
 
 class TestExport(TestCase):

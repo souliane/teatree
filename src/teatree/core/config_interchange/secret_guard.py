@@ -25,6 +25,7 @@ different question, answered by :mod:`teatree.config.stored_row_health`.
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, cast
 
 import tomlkit
@@ -41,25 +42,30 @@ PRIVATE_BACKUP_TABLE = "backup"
 _INCLUDE_PRIVATE_FIELD = "include_private"
 
 
+class ExportPrivacy(StrEnum):
+    SHARED = "shared"
+    PRIVATE = "private"
+    WITH_BANNED_TERMS = "with_banned_terms"
+
+
 @dataclass(frozen=True)
 class RedactedRow:
     """One export row withheld by the secret guard, with the reason it was dropped."""
 
     scope: str
     key: str
-    reason: str  # private-key / credential-coordinate / personal-identifier / unlisted-header / banned-term:<term>
+    reason: str  # private-key / credential-coordinate / personal-identifier / unlisted-header / banned-term
 
 
 def resolve_export_scan_terms() -> tuple[str, ...]:
-    """Every ban-class term for the export content scan; fails safe to empty when unset.
+    """Every ban-class term for the export content scan; refuses an empty source.
 
     Delegates to :func:`banned_term_registry.export_scan_terms` — the single home that
     resolves the ban classes (``leak`` + ``prose_collider`` + ``tone`` +
     ``overlay``; the ``allow`` carve-out is excluded). Keeping the
     resolution there leaves the registry the
     single term-source: a shared export scans the operator's configured customer/brand
-    terms without any file, an unconfigured store yields no terms, and a malformed
-    registry fails loud exactly like the gates.
+    terms without any file; an unconfigured or malformed registry fails loud.
     """
     # Deferred (PLC0415): importing `teatree.hooks.banned_term_registry` at module scope
     # eagerly loads its heavy package __init__; keep this module's import light.
@@ -90,8 +96,7 @@ def redaction_reason(key: str, value: ConfigValue | None, terms: tuple[str, ...]
         return "personal-identifier"
     if carries_unlisted_header(key, value):
         return "unlisted-header"
-    hit = matched_term(f"{key} {json.dumps(value, default=str)}", terms)
-    return f"banned-term:{hit}" if hit else None
+    return "banned-term" if matched_term(f"{key} {json.dumps(value, default=str)}", terms) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +185,12 @@ def mark_private_backup(document: tomlkit.TOMLDocument) -> None:
     document[PRIVATE_BACKUP_TABLE] = table
 
 
+def stamp_private_backup(text: str) -> str:
+    document = tomlkit.parse(text)
+    mark_private_backup(document)
+    return tomlkit.dumps(document)
+
+
 def is_private_backup(doc: Mapping[str, Any]) -> bool:
     """Whether *doc* declares itself a ``--include-private`` personal backup."""
     table = doc.get(PRIVATE_BACKUP_TABLE)
@@ -188,6 +199,7 @@ def is_private_backup(doc: Mapping[str, Any]) -> bool:
 
 __all__ = [
     "PRIVATE_BACKUP_TABLE",
+    "ExportPrivacy",
     "Guarded",
     "RedactedRow",
     "Substitute",
@@ -196,6 +208,7 @@ __all__ = [
     "mark_private_backup",
     "redaction_reason",
     "resolve_export_scan_terms",
+    "stamp_private_backup",
     "withheld_within",
     "withhold",
 ]

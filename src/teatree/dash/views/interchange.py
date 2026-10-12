@@ -20,13 +20,14 @@ from django.http import HttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
-from teatree.core.config_interchange.migration import import_toml_to_db
+from teatree.core.config_interchange.migration import BannedTermExportError, import_toml_to_db
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS, ExportSection
 from teatree.core.config_interchange.types import ConfigImport
 from teatree.dash import audit
 from teatree.dash.interchange import SectionChange, changed_sections, export_text, import_preview
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE, NavContext, actor, nav_context
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
@@ -74,7 +75,10 @@ def interchange_export(request: "HttpRequest") -> "HttpResponse":
     """
     default_keys_only = request.GET.get("default_keys_only") == "1"
     include_defaults = request.GET.get("include_defaults") == "1"
-    text = export_text(default_keys_only=default_keys_only, include_defaults=include_defaults)
+    try:
+        text = export_text(default_keys_only=default_keys_only, include_defaults=include_defaults)
+    except (BannedTermsUnsetError, BannedTermExportError) as exc:
+        return _refused(request, f"export refused: {exc}", status=503)
     filename = "defaults.toml" if default_keys_only and include_defaults else "teatree-config.toml"
     response = HttpResponse(text, content_type="text/plain; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
@@ -99,10 +103,10 @@ def _uploaded_toml(request: "HttpRequest") -> tuple[str, str]:
         return "", "that file is not UTF-8 text — export a TOML dump and upload that"
 
 
-def _refused(request: "HttpRequest", reason: str) -> "HttpResponse":
+def _refused(request: "HttpRequest", reason: str, *, status: int = 400) -> "HttpResponse":
     context = _page_context()
     context["import_error"] = reason
-    return render(request, "dash/interchange.html", context, status=400)
+    return render(request, "dash/interchange.html", context, status=status)
 
 
 @require_loopback_or_staff
@@ -126,10 +130,12 @@ def interchange_import(request: "HttpRequest") -> "HttpResponse":
     confirmed = request.POST.get("confirm", "").strip() == SAFETY_CONFIRM_PHRASE
     try:
         preview = import_preview(text)
+        apply_now = request.POST.get("apply", "").strip() == "1" and not preview.rejected
+        result = import_toml_to_db(text, allow_safety_posture=confirmed) if apply_now else preview
+    except BannedTermsUnsetError as exc:
+        return _refused(request, f"import refused: {exc}", status=503)
     except tomllib.TOMLDecodeError as exc:
         return _refused(request, f"invalid TOML: {exc}")
-    apply_now = request.POST.get("apply", "").strip() == "1" and not preview.rejected
-    result = import_toml_to_db(text, allow_safety_posture=confirmed) if apply_now else preview
     written = apply_now and not result.rejected
     if written:
         audit.record(actor=actor(request), action="settings:import", after=f"{len(result.written)} row(s)")

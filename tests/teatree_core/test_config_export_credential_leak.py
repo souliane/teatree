@@ -18,7 +18,7 @@ from django.test import TestCase
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.secret_settings import is_credential_reference
 from teatree.core.config_interchange.migration import export_db_to_toml
-from teatree.core.config_interchange.secret_guard import redaction_reason
+from teatree.core.config_interchange.secret_guard import ExportPrivacy, redaction_reason
 from teatree.core.models import ConfigSetting, Mode
 
 #: A credential COORDINATE — it names where a secret lives; obviously fake, like every value here.
@@ -53,7 +53,7 @@ class TestOneWithholdRuleServesBothDirections(TestCase):
         assert redaction_reason("mode", "auto", ()) is None
 
     def test_a_value_carrying_a_scanned_term_is_withheld_whatever_the_key(self) -> None:
-        assert redaction_reason("mode", "acme-internal", ("acme-internal",)) == "banned-term:acme-internal"
+        assert redaction_reason("mode", "acme-internal", ("acme-internal",)) == "banned-term"
 
 
 class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
@@ -89,7 +89,7 @@ class TestExportWithholdsCredentialsAndPersonalIds(TestCase):
         # The personal-backup escape hatch is unchanged: --include-private keeps the keys.
         ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["synthetic/oauth-entry"])
         ConfigSetting.objects.set_value("slack_user_id", "synthetic-user-ref")
-        result = export_db_to_toml(include_private=True, scan_terms=())
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=())
         teatree = _teatree(result.toml)
         assert teatree["anthropic_oauth_pass_paths"] == ["synthetic/oauth-entry"]
         assert teatree["slack_user_id"] == "synthetic-user-ref"
@@ -149,7 +149,7 @@ class TestTheGuardReachesInsideAValueNotJustItsKey(TestCase):
 
     def test_include_private_still_carries_the_seed_field(self) -> None:
         Mode.objects.create(name="withheld-probe", entries={"gitlab_token_pass_key": _SYNTHETIC_COORDINATE})
-        result = export_db_to_toml(include_private=True, scan_terms=())
+        result = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=())
         assert tomllib.loads(result.toml)["modes"]["withheld-probe"]["entries"] == {
             "gitlab_token_pass_key": _SYNTHETIC_COORDINATE
         }

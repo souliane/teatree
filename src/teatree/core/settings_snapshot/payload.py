@@ -51,6 +51,7 @@ from teatree.core.setting_control import TYPE_KINDS, SettingControl, value_kind
 from teatree.core.settings_snapshot.fingerprint import Shape, SnapshotError, Warnings, build_fingerprint
 from teatree.core.settings_snapshot.serialisation import ROW_KEY_ATTR, Json, field_names, serialise
 from teatree.core.settings_snapshot.withholding import redact
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,11 @@ def _registry_and_values(
     controls: Mapping[str, SettingControl], overlay: str, warn: Warnings
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, str]]]]:
     keys = list(controls)
-    terms = warn.optional("secret_guard.resolve_export_scan_terms", lambda: tuple(resolve_export_scan_terms()), ())
+    try:
+        terms = resolve_export_scan_terms()
+    except BannedTermsUnsetError as exc:
+        message = "cannot classify settings snapshot without a term source"
+        raise SnapshotError(message) from exc
     defaults = _default_values(keys, terms, warn)
     settings_registry = _settings_registry(controls, defaults, warn)
     stored, redacted, omitted = _stored_block(terms, warn)
@@ -423,7 +428,7 @@ def _control_db() -> str:
 
 
 def _export_toml() -> str:
-    return str(export_db_to_toml(include_private=False).toml)
+    return str(export_db_to_toml().toml)
 
 
 __all__ = ["FORMAT_VERSION", "OVERLAY_REGISTRY_KEY", "SNAPSHOT_FORMAT", "SnapshotError", "build_snapshot"]

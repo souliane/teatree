@@ -16,9 +16,12 @@ Two properties carry that and are asserted as properties rather than as examples
 
 import copy
 import json
+import os
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
@@ -38,6 +41,12 @@ _UNSTORED_KEY = "merge_wip"
 #: A setting the fixtures DO store, in a scope the older record is made never to have used.
 _STORED_KEY = "require_human_approval_to_merge"
 _STORED_SCOPE = "solo"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+        yield
 
 
 def _document(**overrides: Any) -> dict[str, Any]:

@@ -701,7 +701,7 @@ The same migration clears stored rows for the retired A/B/C settings; it leaves 
 | `allow` | the carve-out (never scanned *for*) | `banned_terms_allowlist` | optional |
 
 * **Gates.** `diff` — the commit/posting body gate (`banned_terms_scanner`); `core` — the in-process `fast_push` leak gate; `tree` — the whole-tree backstop (`banned_terms_tree_scan`); `overlay` — the BLUEPRINT §1 "core stays generic" gate (`check_no_overlay_leak` / `fast_push`); `allow` — the company-identifier carve-out blanked before matching. The class→gate routing derives from `teatree.hooks.leak_policy.classes_for_surface` (the `overlay` class is registry-only — it is not a publish surface).
-* **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate also refuses when its scan classes contain no terms. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
+* **Unset behaviour.** An absent or malformed registry makes critical gates refuse with `BannedTermsUnsetError`. Each critical diff/core/tree gate and settings export/import also refuse when their scan classes contain no terms. The tree scan requires a nonempty `leak` class, and `check_no_overlay_leak` requires a nonempty `overlay` class before scanning. `tone` and `allow` may be empty.
 * **Single resolver.** Every gate routes through `terms_for_gate` / `allowlist_terms` / `export_scan_terms`. Legacy keys have no runtime fallback. Migration `0123` preserves registry class values when both old and new rows exist, and removes the old rows per scope.
 
 **Code-resident public tier.** A second tier of term data is generic, DB-free, and ships in the repo — it carries no operator-private value, so it stays committed and is NOT part of the registry:
@@ -898,13 +898,16 @@ secret / personal-identifier keys are REJECTED, and one
 rejection refuses the WHOLE import (nothing written) so a bad key never leaves a partial
 store — the reject rule reuses the export withhold taxonomy, so a shared export's rows
 import back exactly and a secret can never round-trip in. Every value is validated through
-the resolver's own registry parser. A pre-upgrade backup containing a renamed key is
-refused with its successor named (for example, `speed` → `wip`); rename the key in
+the resolver's own registry parser. A pre-upgrade backup containing a renamed or retired key is
+refused with a migration hint (for example, `speed` → `wip`); rename the key in
 the backup before retrying the import. **Zero-row normalization:** a value equal to the shipped
 default writes NO row (preserving the zero-seed + `restore = delete row` property), so a
 dump of `defaults.toml` itself imports to zero rows. Export key-sorts every table/scope, so
 `export → import → export` is byte-stable; a shareable export withholds Secret values and
-keeps Personal ones. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
+keeps Personal ones. Refusals report the key and class without repeating a suppressed term.
+A private export stamps its restore marker even in the defaults shape, and suppressed-term
+content requires both `--include-private` and `--include-banned-terms`; the completed TOML
+is scanned before it can be written. The private backup imports with `--restore-private`. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
 CHANGE the store is rejected unless the caller passes `allow_safety_posture`, which defaults
 to False so a caller that never considered the question refuses those keys — the same boundary
 the settings editor's typed confirm and the MCP write-tool refusal enforce, closing the route
@@ -958,7 +961,8 @@ format marker being the one named exception. The dry-run preview is counted PER 
 (`dash/interchange.py`'s `changed_sections`, over the single `section_for_row` canonicaliser),
 so a preview reading "12 rows" cannot hide the one that changes a loop. Export and the
 safety-posture confirm phrase are otherwise unchanged; the settings page links here, and
-`/dash/settings/export/` redirects with its filters intact.
+`/dash/settings/export/` redirects with its filters intact. An unavailable term source
+refuses both browser export and import before a file or DB row is written.
 
 **One section per request** ([#3825](https://github.com/souliane/teatree/issues/3825)).
 Sections sit on the LEFT and the selected section's rows on the RIGHT: rendering every key

@@ -358,6 +358,11 @@ class TestSettingsSet(TestCase):
         assert response.status_code == 400
         assert ConfigSetting.objects.count() == 0
 
+    def test_set_names_the_retirement_reason(self) -> None:
+        response = self._set("branch_prefix", {"value": '"ac"'})
+        assert response.status_code == 400
+        assert b"no readers" in response.content
+
     def test_set_rejects_an_invalid_value(self) -> None:
         response = self._set("admit_colleague_prs_to_board", {"value": '"false"'})
         assert response.status_code == 400

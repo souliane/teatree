@@ -6,13 +6,18 @@ what they reach: every documented section named up front, and a preview counted 
 """
 
 import io
+import os
+from collections.abc import Iterator
+from unittest import mock
 
+import pytest
 from django.test import TestCase
 from django.urls import reverse
 from django.utils.html import escape
 
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.config_interchange.scope import EXPORT_SECTIONS
+from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.models import ConfigSetting, Loop
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE
 from teatree.dash.views.interchange import MAX_IMPORT_BYTES
@@ -20,6 +25,12 @@ from teatree.dash.views.interchange import MAX_IMPORT_BYTES
 _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 _SAFETY_TOML = '[teatree]\nautonomy = "babysit"\n'
 _TUNED_LOOP = "housekeeping"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _scan_terms() -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":["synthetic-scan-term"]}'}):
+        yield
 
 
 def _upload(text: str, name: str = "config.toml") -> io.BytesIO:
@@ -62,6 +73,12 @@ class TestThePageStatesItsScope(TestCase):
 
 
 class TestExport(TestCase):
+    def test_missing_term_source_refuses_download(self) -> None:
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            response = self.client.get(reverse("dash:interchange_export"), **_LOOPBACK)
+        assert response.status_code == 503
+        assert "term source" in response.content.decode()
+
     def test_export_downloads_a_dump_withholding_secrets(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["synthetic"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
@@ -99,6 +116,13 @@ class TestImport(TestCase):
 
     def _post(self, text: str, **extra: str):
         return self.client.post(reverse("dash:interchange_import"), {"toml_file": _upload(text), **extra}, **_LOOPBACK)
+
+    def test_missing_term_source_refuses_import_before_writing(self) -> None:
+        with mock.patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": ""}):
+            response = self._post('[teatree]\nmode = "auto"\n', apply="1")
+        assert response.status_code == 503
+        assert "term source" in response.content.decode()
+        assert ConfigSetting.objects.count() == 0
 
     def test_the_page_offers_a_file_input_not_a_textarea(self) -> None:
         body = self.client.get(reverse("dash:interchange"), **_LOOPBACK).content.decode()
@@ -173,7 +197,7 @@ class TestImport(TestCase):
         # The page cannot restore private rows, so a refusal that only listed per-key secret
         # rejections would leave the operator with a file and no next step (#4156).
         ConfigSetting.objects.set_value("slack_user_id", "<the-operator>")
-        body = self._post(export_db_to_toml(include_private=True, scan_terms=()).toml).content.decode()
+        body = self._post(export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=()).toml).content.decode()
         assert "--restore-private" in _import_block(body)
 
     def test_an_ordinary_rejected_upload_is_not(self) -> None:

@@ -23,8 +23,9 @@ from teatree.config.schema import _DEFAULTS_TOML, setting_choices, shipped_defau
 from teatree.config.seed_defaults import shipped_seed_table
 from teatree.config.setting_annotation import choice_token
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
-from teatree.core.config_interchange.secret_guard import resolve_export_scan_terms
+from teatree.core.config_interchange.secret_guard import ExportPrivacy, resolve_export_scan_terms
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 
 
@@ -175,12 +176,12 @@ class TestExportSecretGuard(TestCase):
         assert "overlays" not in doc  # the scope's only row was withheld
         assert len(result.redacted) == 1
         assert result.redacted[0].key == "ban_close_trailers_on_namespaces"
-        assert result.redacted[0].reason == "banned-term:acmecorp"
+        assert result.redacted[0].reason == "banned-term"
 
     def test_include_private_exports_everything(self) -> None:
         ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
-        result = export_db_to_toml(include_private=True, scan_terms=("acmecorp", "acmebrand"))
+        result = export_db_to_toml(privacy=ExportPrivacy.WITH_BANNED_TERMS, scan_terms=("acmecorp", "acmebrand"))
         teatree = _teatree(tomllib.loads(result.toml))
         assert teatree["banned_term_registry"] == {"leak": ["acmebrand"], "prose_collider": []}
         assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
@@ -190,7 +191,7 @@ class TestExportSecretGuard(TestCase):
         ConfigSetting.objects.set_value("gitlab_token_pass_key", "venue/gitlab", scope="acme")
 
         shared = export_db_to_toml(scan_terms=())
-        private = export_db_to_toml(include_private=True, scan_terms=())
+        private = export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=())
 
         assert "venue/gitlab" not in shared.toml
         assert [(row.scope, row.key, row.reason) for row in shared.redacted] == [
@@ -209,29 +210,18 @@ class TestExportSecretGuard(TestCase):
         assert result.redacted == ()
 
 
-class TestExportScanTermsResolveFailsSafe(TestCase):
-    """``export_db_to_toml(scan_terms=None)`` fails SAFE when the live config has no terms.
-
-    The DEFAULT machine state — no ``banned_term_registry`` configured and no
-    ``TEATREE_TERM_REGISTRY`` env — makes ``resolve_banned_terms`` raise
-    ``BannedTermsUnsetError``. The export's live-resolve path (``scan_terms=None``,
-    the production ``config_setting export`` caller) must degrade to an EMPTY
-    scan-term list rather than propagate the raise. Every other export test passes
-    ``scan_terms`` explicitly, so this live-resolve path is otherwise uncovered.
-    """
-
-    def test_export_does_not_crash_when_config_lacks_banned_terms(self) -> None:
+class TestExportScanTermsResolveFailsClosed(TestCase):
+    def test_export_refuses_when_config_lacks_banned_terms(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
-        # Full env minus the two override vars so neither resolver short-circuits
-        # on an env value; with no banned_term_registry configured the live resolve must
-        # degrade to an empty scan-term list rather than raise.
         env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            export = export_db_to_toml()  # scan_terms=None -> live resolve
-        doc = tomllib.loads(export.toml)
-        assert _teatree(doc)["mode"] == "auto"
-        # No terms resolved => nothing to redact; the export is valid and complete.
-        assert export.redacted == ()
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(BannedTermsUnsetError, match="refusing"):
+            export_db_to_toml()
+
+    def test_import_refuses_before_writing_when_config_lacks_banned_terms(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(BannedTermsUnsetError, match="refusing"):
+            import_toml_to_db('[teatree]\nmode = "auto"\n')
+        assert ConfigSetting.objects.count() == 0
 
 
 class TestExportScanTermsRoutesThroughRegistry:
@@ -305,15 +295,21 @@ class TestImportTomlToDb(TestCase):
             '[overlays.proj]\nban_close_trailers_on_namespaces = ["acmecorp"]\n', scan_terms=("acmecorp",)
         )
         assert len(result.rejected) == 1
-        assert result.rejected[0].reason == "secret (banned-term:acmecorp)"
+        assert result.rejected[0].reason == "secret (banned-term)"
 
-    def test_removed_key_is_rejected_loudly(self) -> None:
-        for key in ("branch_prefix", "not_a_setting"):
-            with self.subTest(key=key):
-                result = import_toml_to_db(f'[teatree]\n{key} = "x"\n', scan_terms=())
-                assert [(row.key, row.reason) for row in result.rejected] == [(key, "unknown key")]
-                assert result.written == ()
-                assert ConfigSetting.objects.count() == 0
+    def test_removed_key_is_rejected_with_its_retirement_reason(self) -> None:
+        result = import_toml_to_db('[teatree]\nbranch_prefix = "x"\n', scan_terms=())
+        assert [(row.key, row.reason) for row in result.rejected] == [
+            ("branch_prefix", "unknown key; retired: no readers; branch naming uses T3_BRANCH_PREFIX")
+        ]
+        assert result.written == ()
+        assert ConfigSetting.objects.count() == 0
+
+    def test_unknown_key_without_history_is_still_rejected(self) -> None:
+        result = import_toml_to_db('[teatree]\nnot_a_setting = "x"\n', scan_terms=())
+        assert [(row.key, row.reason) for row in result.rejected] == [("not_a_setting", "unknown key")]
+        assert result.written == ()
+        assert ConfigSetting.objects.count() == 0
 
     def test_a_safety_posture_key_is_rejected_unless_the_caller_allows_it(self) -> None:
         result = import_toml_to_db('[teatree]\nautonomy = "babysit"\n', scan_terms=())
@@ -705,7 +701,7 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
         ConfigSetting.objects.set_value("expected_required_contexts", value=["test (3.13)"])
         ConfigSetting.objects.set_value("architectural_review_skill", value="custom-review-skill")
         ConfigSetting.objects.set_value("autoload", value=True)
-        return export_db_to_toml(include_private=True).toml
+        return export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=()).toml
 
     def test_each_level_of_the_path_is_a_real_table_above_its_keys(self) -> None:
         dump = self._dump()
@@ -728,10 +724,10 @@ class TestExportCarriesTheSettingsHierarchy(TestCase):
     def test_the_grouped_dump_still_re_imports_exactly(self) -> None:
         dump = self._dump()
         ConfigSetting.objects.all().delete()
-        result = import_toml_to_db(dump, allow_safety_posture=True)
+        result = import_toml_to_db(dump, scan_terms=(), allow_safety_posture=True)
         assert not result.rejected, result.rejected
         assert ConfigSetting.objects.get_effective("expected_required_contexts", scope="") == ["test (3.13)"]
         assert ConfigSetting.objects.get_effective("architectural_review_skill", scope="") == "custom-review-skill"
 
     def test_the_dump_is_a_deterministic_function_of_the_store(self) -> None:
-        assert self._dump() == export_db_to_toml(include_private=True).toml
+        assert self._dump() == export_db_to_toml(privacy=ExportPrivacy.PRIVATE, scan_terms=()).toml

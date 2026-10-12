@@ -27,12 +27,14 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 import json
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, NoReturn
 
+import click
 import typer
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django_typer.management import TyperCommand, command
+from django_typer.management import DTCommand, TyperCommand, command
 
 from teatree.config import (
     ALL_KNOWN_CONFIG_SETTINGS,
@@ -43,16 +45,19 @@ from teatree.config import (
 )
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.feature_flags import render_flags_audit
+from teatree.config.known_settings import config_key_hint
 from teatree.config.setting_groups import group_outline
 from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
-from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.migration import BannedTermExportError, export_db_to_toml, import_toml_to_db
+from teatree.core.config_interchange.secret_guard import ExportPrivacy
 from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlays.overlay_credentials import known_pass_key_credential
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 
 # Every key ``config_setting`` knows — the SINGLE known-key set shared by
 # get/list/set/clear AND the MCP ``config_setting_get`` read tool
@@ -65,6 +70,28 @@ _OverlayOption = Annotated[
     str,
     typer.Option("--overlay", help="Overlay name to scope the row to; omit for the global scope (every overlay)."),
 ]
+
+
+def _capture_banned_terms(ctx: click.Context, _option: click.Parameter, value: object) -> None:
+    ctx.meta["include_banned_terms"] = bool(value)
+
+
+class _ExportCommand(DTCommand):
+    def __init__(
+        self,
+        *args: object,
+        callback: Callable[..., object] | None,
+        params: list[click.Parameter] | None = None,
+        **kwargs: object,
+    ) -> None:
+        banned_terms = click.Option(
+            ["--include-banned-terms"],
+            is_flag=True,
+            expose_value=False,
+            callback=_capture_banned_terms,
+            help="Include suppressed terms in a personal backup; requires --include-private.",
+        )
+        super().__init__(*args, callback=callback, params=[*(params or []), banned_terms], **kwargs)
 
 
 def _governance_suffix(key: str) -> str:
@@ -101,7 +128,9 @@ def _stored_row_suffix(key: str) -> str:
 class Command(TyperCommand):
     def _refuse_unknown_key(self, key: str) -> NoReturn:
         """Refuse a key with no live config setting declaration."""
-        self.stderr.write(f"  refusing: {key!r} is not a known config setting")
+        hint = config_key_hint(key)
+        suffix = f"; {hint}" if hint else ""
+        self.stderr.write(f"  refusing: {key!r} is not a known config setting{suffix}")
         raise SystemExit(2)
 
     def _write_pass_key_resolution(self, key: str, credential: str, overlay: str) -> None:
@@ -321,7 +350,7 @@ class Command(TyperCommand):
         fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_governance_suffix(key)}")
 
-    @command()
+    @command(cls=_ExportCommand)
     def export(
         self,
         *,
@@ -374,8 +403,10 @@ class Command(TyperCommand):
         (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
         SHARED export (auto-configuring a fresh teatree) cannot leak customer data
         even though the private DB store keeps it. Each withheld row is named on
-        stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
-        backup. That file carries the rows an ordinary ``import`` refuses, so it stamps
+        stderr; ``--include-private`` selects a PERSONAL, never-shared
+        backup. Suppressed terms require ``--include-banned-terms`` too, and the
+        completed file is scanned before any output is written. That file carries the
+        rows an ordinary ``import`` refuses, so it stamps
         itself a backup and is restored with ``import --restore-private`` (#4156).
 
         A stored row that is not a SETTING — internal runtime state sharing the store, a
@@ -388,12 +419,28 @@ class Command(TyperCommand):
         resolved effective value. Passing BOTH produces the defaults shape — a complete,
         drop-in replacement for ``config/defaults.toml``, header and seed tables included.
         """
-        result = export_db_to_toml(
-            overlay or None,
-            include_private=include_private,
-            default_keys_only=default_keys_only,
-            include_defaults=include_defaults,
+        context = click.get_current_context(silent=True)
+        include_banned_terms = bool(context and context.meta.get("include_banned_terms", False))
+        if include_banned_terms and not include_private:
+            self.stderr.write("  --include-banned-terms requires --include-private")
+            raise SystemExit(2)
+        privacy = (
+            ExportPrivacy.WITH_BANNED_TERMS
+            if include_banned_terms
+            else ExportPrivacy.PRIVATE
+            if include_private
+            else ExportPrivacy.SHARED
         )
+        try:
+            result = export_db_to_toml(
+                overlay or None,
+                privacy=privacy,
+                default_keys_only=default_keys_only,
+                include_defaults=include_defaults,
+            )
+        except (BannedTermsUnsetError, BannedTermExportError) as exc:
+            self.stderr.write(f"  export refused: {exc}")
+            raise SystemExit(2) from exc
         for row in result.redacted:
             self.stderr.write(f"  withheld {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.redacted:
@@ -464,6 +511,9 @@ class Command(TyperCommand):
             )
         except tomllib.TOMLDecodeError as exc:
             self.stderr.write(f"  invalid TOML: {exc}")
+            raise SystemExit(2) from exc
+        except BannedTermsUnsetError as exc:
+            self.stderr.write(f"  import refused: {exc}")
             raise SystemExit(2) from exc
         if restore_private and not result.private_backup:
             self.stderr.write("  --restore-private ignored: this file is not an --include-private personal backup.")
