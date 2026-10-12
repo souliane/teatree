@@ -311,14 +311,26 @@ class TestShipFenceGate(TestCase):
                 self._relinquish(state)
                 assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
-    def test_relinquished_marker_with_no_claim_ref_does_not_fence(self) -> None:
+    def test_blocks_a_relinquished_marker_whose_claim_ref_is_gone(self) -> None:
         ticket, worktree, claim, bare = self._ship_setup(self._tmp())
         fleet_claim.release(claim, repo=worktree.repo_path)
         assert ref_sha(bare, claim.ref) == ""
         for state in ImplementedIssueMarker.State.relinquished():
             with self.subTest(state=state):
                 self._relinquish(state)
-                assert run_fleet_claim_fence_gate(ticket, worktree) is None
+                assert "the fleet claim ref this instance held no longer exists" in self._refusal(ticket, worktree)
+
+    def test_a_claim_abandoned_on_a_deleted_ref_stays_refused(self) -> None:
+        ticket, worktree, claim, _bare = self._ship_setup(self._tmp())
+        fleet_claim.release(claim, repo=worktree.repo_path)
+        assert "no longer exists" in self._refusal(ticket, worktree)
+
+        with patch.object(fleet_claim_wire, "resolve_claim_repo", lambda _: worktree.repo_path):
+            fleet_claim_wire.heartbeat_inflight_claims("acme")
+
+        marker = ImplementedIssueMarker.objects.get(issue_url=_ISSUE, overlay="acme")
+        assert marker.state == ImplementedIssueMarker.State.ABANDONED
+        assert "no longer exists" in self._refusal(ticket, worktree)
 
     def test_blocks_a_relinquished_marker_whose_claim_another_instance_holds(self) -> None:
         tmp = self._tmp()

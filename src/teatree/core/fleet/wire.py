@@ -282,9 +282,9 @@ class ClaimLoss(StrEnum):
     UNREACHABLE = "the fleet claim ref infrastructure is unreachable, so ownership cannot be confirmed"
 
     @classmethod
-    def at_tip(cls, tip: claim.ClaimTip | None, *, asserted: bool) -> "ClaimLoss | None":
+    def at_tip(cls, tip: claim.ClaimTip | None) -> "ClaimLoss | None":
         if tip is None:
-            return cls.MISSING if asserted else None
+            return cls.MISSING
         if tip.held_by(instance_id()):
             return None
         return cls.STOLEN if tip.holder else cls.UNREADABLE
@@ -295,8 +295,8 @@ def ticket_claim_loss(ticket: "Ticket", repo: str) -> ClaimLoss | None:
 
     ``None`` (proceed) when the ticket carries no fleet claim or the claim record at the
     ref tip names this instance, whatever sha the marker last recorded; otherwise the
-    :class:`ClaimLoss` that aborts the write. A relinquished marker asserts no claim,
-    so its absent ref is no loss; a rival at its tip still is.
+    :class:`ClaimLoss` that aborts the write. An absent ref refuses a marker in every
+    state, so a claim the heartbeat abandoned on a deleted ref stays refused.
 
     The marker is resolved by its own natural key ``(issue_url, overlay)`` — the key
     ``ImplementedIssueMarkerManager.cache_from_fleet_claim`` populates on the dispatch
@@ -321,7 +321,7 @@ def ticket_claim_loss(ticket: "Ticket", repo: str) -> ClaimLoss | None:
     except claim.FleetClaimUnavailableError:
         logger.warning("fleet_claim fence: ref infra unreachable for %s, failing safe", marker.issue_url, exc_info=True)
         return ClaimLoss.UNREACHABLE
-    return ClaimLoss.at_tip(tip, asserted=marker.state not in ImplementedIssueMarker.State.relinquished())
+    return ClaimLoss.at_tip(tip)
 
 
 def heartbeat_inflight_claims(overlay: str) -> None:
