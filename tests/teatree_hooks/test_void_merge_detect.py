@@ -5,6 +5,7 @@ from teatree.hooks.void_merge_detect import DENY_REASON, void_merge_deny_reason
 _URL = "https://github.com/example-org/example-repo/pull/41"
 _CALL = f"t3 teatree pr void-merge {_URL}"
 _WRITE = f"{_CALL} --reason x --by alice"
+_ARGV_TO_T3 = "import os,sys;a=sys.argv;os.execvp('t3',('t3','teatree',a.pop(1),a.pop(1),a.pop(1),'--by','alice'))"
 
 
 @pytest.mark.parametrize(
@@ -25,7 +26,7 @@ _WRITE = f"{_CALL} --reason x --by alice"
         pytest.param(f"{_CALL} {{--reason,}} --dry-run --by alice", id="a-brace-list-before-the-flag"),
         pytest.param(f"{_CALL} --reason > /tmp/out --dry-run --by alice", id="a-redirection-before-the-flag"),
         pytest.param(f"echo --reason | xargs -I QQ {_CALL} QQ --dry-run --by alice", id="xargs-replace-before-flag"),
-        pytest.param(f"python -c 'import os' pr void-merge {_URL} --dry-run", id="a-dry-run-handed-to-other-code"),
+        pytest.param(f'python3 "-c{_ARGV_TO_T3}" pr void-merge {_URL} --dry-run', id="a-dry-run-handed-to-inline-code"),
         pytest.param(f"bash -c '{_WRITE}'", id="bash-c"),
         pytest.param(f'sh -c "{_WRITE}"', id="sh-c"),
         pytest.param(f"echo yes | script -qc '{_WRITE}' /dev/null", id="script-c-pty"),
@@ -42,6 +43,12 @@ _WRITE = f"{_CALL} --reason x --by alice"
         pytest.param(f"ssh host '{_WRITE}'", id="ssh"),
         pytest.param(f"bash <<'EOF'\n{_WRITE}\nEOF", id="a-heredoc-an-inner-shell-reads"),
         pytest.param(f"X=void-merge; t3 teatree pr $X {_URL} --reason x --by alice", id="a-variable-holding-the-word"),
+        pytest.param(
+            f"bash <<'EOF'\n{_WRITE.replace('void-', "void''-")}\nEOF", id="a-quote-spliced-word-in-a-heredoc"
+        ),
+        pytest.param(
+            f"bash <<'EOF'\n{_WRITE.replace('void-', 'void-\\\n')}\nEOF", id="a-line-continued-word-in-a-heredoc"
+        ),
         pytest.param(f"t3 teatree pr void\\\n-merge {_URL} --reason x --by alice", id="a-line-continuation"),
         pytest.param(f"bash -c $'t3 teatree pr void\\x2dmerge {_URL} --reason x --by alice'", id="ansi-c-encoded"),
         pytest.param(
