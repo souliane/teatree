@@ -1,29 +1,62 @@
-"""Detect an executed ``pr void-merge`` that would write — a merge void is typed by a human, never run by an agent.
+"""Refuse a command that names ``void-merge`` unless every mention is a standalone read-only ``t3`` call.
 
-Read-only forms stay open: ``--dry-run`` and ``--help`` write nothing. An invocation,
-never a mention: the shared :mod:`teatree.hooks.forge_subcommand` traversal reads only
-executed command segments, so a ``grep void-merge`` or an ``echo`` of the command passes.
+An inner shell runs quoted text (``bash -c``, ``script -c``, ``ssh``, a heredoc), so a mention
+counts wherever it sits, literal or shell-decoded. A subcommand word built at run time (a
+variable, an expansion, a file) is not seen; the command's own operator checks still refuse it.
 """
 
-from teatree.hooks.forge_subcommand import forge_program_argvs
+import re
 
-_LAUNCHERS: frozenset[str] = frozenset({"t3", "python", "python3", "manage.py", "uv", "uvx", "django-admin"})
-_READ_ONLY_FLAGS: frozenset[str] = frozenset({"--dry-run", "--help", "-h"})
+from teatree.hooks._shell_lexer import Token, split_commands, tokenize
+from teatree.hooks.forge_subcommand import basename, command_substitution_bodies
+
+_SUBCOMMAND = "void-merge"
+_MENTION = re.compile(r"(?<![\w-])void-merge(?![\w-])")
+_QUOTING = re.compile(r"\\\r?\n|['\"\\]")
+_READ_ONLY_FLAGS = frozenset({"--dry-run", "--help"})
+# Bash rewrites such a word before the program reads it: an expansion, a glob, a brace list, a redirection.
+_REWRITTEN = re.compile(r"[$`*?\[{<>]")
 
 DENY_REASON = (
     "BLOCKED: `pr void-merge` rewrites a recorded merge, so only a human at a terminal runs it. "
     "Ask the operator to type `t3 <overlay> pr void-merge <pr-url> --reason '<why>' --by <their name>` "
     "in their own shell; it shows the forge evidence and asks them to type yes. "
-    "`--dry-run` is read-only and stays available here."
+    "Only a standalone `t3 <overlay> pr void-merge <pr-url> --dry-run` (or `--help`) runs here: any other "
+    "command naming void-merge is refused, a grep or an echo included, because an inner shell could run "
+    "that text. Search with a pattern such as `void.merge` instead."
 )
 
 
-def _writes_a_void(words: list[str]) -> bool:
-    if "void-merge" not in words:
-        return False
-    tail = words[words.index("void-merge") :]
-    return "pr" in words[: words.index("void-merge")] and not _READ_ONLY_FLAGS.intersection(tail)
-
-
 def void_merge_deny_reason(command: str) -> str | None:
-    return DENY_REASON if any(_writes_a_void(words) for words in forge_program_argvs(command, _LAUNCHERS)) else None
+    standalone = sum(_is_read_only_call(segment) for segment in split_commands(tokenize(command)))
+    literal = len(_MENTION.findall(_QUOTING.sub("", command)))
+    return None if literal == _decoded_mentions(command) == standalone else DENY_REASON
+
+
+def _decoded_mentions(command: str) -> int:
+    in_words = sum(len(_MENTION.findall(token.value)) for token in tokenize(command))
+    return in_words + sum(_decoded_mentions(body) for body in command_substitution_bodies(command))
+
+
+def _is_read_only_call(segment: list[Token]) -> bool:
+    match segment:
+        case [program, overlay, Token(value="pr"), Token(raw="void-merge"), *tail]:
+            literal = not _REWRITTEN.search(program.raw + overlay.raw)
+            return literal and basename(program.value) == "t3" and _flag_is_parsed(tail)
+        case _:
+            return False
+
+
+def _flag_is_parsed(tail: list[Token]) -> bool:
+    previous = _SUBCOMMAND
+    for token in tail:
+        if _REWRITTEN.search(token.raw) or token.value == "--":
+            return False
+        if token.value in _READ_ONLY_FLAGS and not _may_take_a_value(previous):
+            return True
+        previous = token.value
+    return False
+
+
+def _may_take_a_value(word: str) -> bool:
+    return word.startswith("-") and "=" not in word and word not in _READ_ONLY_FLAGS

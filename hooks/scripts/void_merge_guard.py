@@ -1,9 +1,9 @@
-"""Deny an agent's Bash call that would void a recorded merge; ``--dry-run`` stays open.
+"""Deny an agent's Bash call naming ``void-merge`` unless it is a standalone ``--dry-run``/``--help`` call.
 
 The detection lives in the ``teatree.hooks.void_merge_detect`` leaf, registered in the
 shared hard-deny registry so Lane B refuses the same command. A narrow targeted-command
-gate: it refuses one command shape, never arbitrary Bash. Cold-import safe: stdlib plus
-the ``managed_repo`` sibling at module top.
+gate: it refuses commands naming one subcommand, never arbitrary Bash. Cold-import safe:
+stdlib plus the ``managed_repo`` sibling at module top.
 """
 
 import sys

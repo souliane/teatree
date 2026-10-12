@@ -1,18 +1,24 @@
+import contextlib
 import io
+import shlex
 import sys
 from dataclasses import replace
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands import _void_merge_commands
 from teatree.core.management.commands import pr as pr_mod
 from teatree.core.management.commands._void_merge_commands import VoidMergeResult
 from teatree.core.management.refusal_exit import REFUSAL_EXIT_CODE
+from teatree.core.merge.void_merge import VoidRefusal, VoidRefusedError
 from teatree.core.models import MergeVoid, PullRequest, Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.hooks.void_merge_detect import DENY_REASON, void_merge_deny_reason
 from tests.void_merge_fixtures import ABSENT, PR_URL, Terminal, human_operator, landed_ticket, stub_forge
 
 State = Ticket.State
@@ -111,3 +117,51 @@ class TestVoidMergeCommand(TestCase):
         assert f"merge voided: {PR_URL} @{void.merged_sha[:8]} by alice at " in out
         assert f"ticket {self.ticket.pk}: coded" in out
         assert f"pull request row {PullRequest.objects.get().pk}: closed" in out
+
+
+class TestTheAgentHookReadsTheArgvAsTheParserDoes(TestCase):
+    params = pr_mod.Command().get_subcommand("void-merge").click_command.params
+
+    def _parse(self, tail: list[str]) -> tuple[MagicMock, MagicMock, str]:
+        """The real parser on *tail*: the write path's operator check, the forge probe, and stdout."""
+        stop = VoidRefusedError(VoidRefusal.REASON_MISSING, "parsed as a write")
+        out = Terminal(tty=False)
+        with (
+            patch.object(_void_merge_commands, "check_operator", side_effect=stop) as write_path,
+            stub_forge(ABSENT) as probe,
+            patch.object(sys, "stdout", out),
+            patch.object(sys, "stderr", io.StringIO()),
+            contextlib.suppress(SystemExit),
+        ):
+            pr_mod.Command().run_from_argv(["manage.py", "pr", "void-merge", PR_URL, *tail])
+        return write_path, probe, out.getvalue()
+
+    def test_every_value_option_takes_a_read_only_flag_as_its_value_and_the_hook_refuses_it(self) -> None:
+        value_options = [o for p in self.params if isinstance(p, click.Option) and not p.is_flag for o in p.opts]
+        assert value_options
+
+        for option in value_options:
+            for flag in ("--dry-run", "--help"):
+                with self.subTest(option=option, flag=flag):
+                    write_path, _, _ = self._parse([option, flag])
+                    assert write_path.called
+                    assert void_merge_deny_reason(f"t3 teatree pr void-merge {PR_URL} {option} {flag}") == DENY_REASON
+
+    def test_every_form_the_hook_lets_an_agent_run_parses_as_a_read(self) -> None:
+        assert next(p for p in self.params if p.name == "dry_run").secondary_opts == []
+
+        for tail in (
+            "--dry-run",
+            "--dry-run --reason x",
+            "--reason 'a b' --by alice --dry-run",
+            "--reason=--by --dry-run",
+        ):
+            with self.subTest(tail=tail):
+                assert void_merge_deny_reason(f"t3 teatree pr void-merge {PR_URL} {tail}") is None
+                write_path, probe, _ = self._parse(shlex.split(tail))
+                assert (write_path.called, probe.called) == (False, True)
+
+        assert void_merge_deny_reason(f"t3 teatree pr void-merge {PR_URL} --help") is None
+        write_path, probe, out = self._parse(["--help"])
+        assert (write_path.called, probe.called) == (False, False)
+        assert "Usage:" in out

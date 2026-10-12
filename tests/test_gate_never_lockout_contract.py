@@ -100,8 +100,8 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     "handle_block_void_merge": (
-        "denies only a writing `pr void-merge`, never arbitrary Bash; `--dry-run` passes and a human runs the void "
-        "from their own terminal"
+        "denies only a command naming `void-merge` that is not a standalone read-only call, never arbitrary Bash; "
+        "`--dry-run` passes and a human runs the void from their own terminal"
     ),
     # Routing conversion, not a content/enforcement deny.
     "handle_mirror_question_to_slack": (
