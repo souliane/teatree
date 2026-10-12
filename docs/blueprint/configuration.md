@@ -909,10 +909,12 @@ keeps Personal ones. Every report names a withheld or refused row by key and cla
 the matched term, and an invalid private value drops the parser message that would quote it.
 Every private export stamps its restore marker, defaults shape included; only the SHARED
 defaults shape stays byte-identical to `defaults.toml`. `--include-private` carries the key
-classes but still withholds each row carrying a banned term (the term registry included);
+classes but still withholds each row carrying a banned term, and the stored term registry
+row whichever source supplies the scanned terms;
 `--include-banned-term-values` carries those too, needs `--include-private` and `--output`,
 and never prints to stdout. A scope or entry NAME carrying a term withholds every row under
-it, reported once without the name, and the import refuses such rows the same way. A loop,
+it, reported once without the name, and the import refuses such rows the same way unless
+`--restore-private` restores them, the name withheld from every report line. A loop,
 preset or schedule the shipped file does not carry is omitted from every export, reported on
 stderr as not shipped (by name only where a term scan clears the name), so every export restores. The seed tables are content-scanned on
 import too. The private backup imports with `--restore-private`. **Safety-posture authorization:** a `SAFETY_POSTURE_KEYS` row that would
