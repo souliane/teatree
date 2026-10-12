@@ -201,7 +201,15 @@ def name_refusals(withheld: Counter[str]) -> list[RejectedRow]:
 
 def seed_row(entry: SeedFieldDisposition, policy: ImportPolicy) -> ImportedRow:
     is_private = policy.unscanned or policy.seed_reason(entry.field, entry.value) is not None
-    return ImportedRow(entry.scope, entry.field, entry.value, is_private=is_private)
+    name_withheld = policy.withholds_name(entry.name)
+    return ImportedRow(entry.scope, entry.field, entry.value, is_private=is_private, name_withheld=name_withheld)
+
+
+def _seed_rejection(entry: SeedFieldDisposition, reason: str, policy: ImportPolicy) -> RejectedRow:
+    # A mask refusal quotes the entry name, so a withheld name takes the reason with it.
+    if policy.withholds_name(entry.name):
+        return RejectedRow(WITHHELD_NAME_SCOPE, entry.field, "refused (reason withheld with the name)")
+    return RejectedRow(entry.scope, entry.field, reason)
 
 
 def file_seed_dispositions(
@@ -215,8 +223,9 @@ def file_seed_dispositions(
     """File each seed field into *skipped* / *unchanged* / *rejected*; return the writes.
 
     A field the guard withholds is refused unless a personal backup is being restored, and
-    an entry whose NAME carries a term is refused without the name — both before the mask
-    and seeding checks, so neither can echo what was refused.
+    an entry whose NAME carries a term is refused without the name on the same terms — both
+    before the mask and seeding checks, so neither can echo what was refused. A restored one
+    is reported under the withheld-name label, its refusals included.
 
     An entry the shipped file carries can still have no DB row on a box that never ran the
     install seed, so a write onto a missing row is rejected rather than left to raise
@@ -226,10 +235,10 @@ def file_seed_dispositions(
     writes: list[SeedFieldDisposition] = []
     withheld_names: Counter[str] = Counter()
     for entry in classify_seed_rows(doc):
-        if policy.withholds_name(entry.name):
+        if policy.withholds_name(entry.name) and not policy.allow_private:
             withheld_names[entry.scope] += 1
         elif entry.kind == "reject":
-            rejected.append(RejectedRow(entry.scope, entry.field, entry.reason))
+            rejected.append(_seed_rejection(entry, entry.reason, policy))
         elif (secret := policy.seed_refusal(entry.field, entry.value)) is not None:
             rejected.append(RejectedRow(entry.scope, entry.field, f"secret ({secret})"))
         elif entry.kind == "skip":
@@ -241,14 +250,14 @@ def file_seed_dispositions(
     rejected.extend(name_refusals(withheld_names))
     unseeded = unseeded_entries(writes)
     rejected.extend(
-        RejectedRow(entry.scope, entry.field, reason)
+        _seed_rejection(entry, reason, policy)
         for entry, reason in mask_refusals(writes)
         if (entry.table, entry.name) not in unseeded
     )
     if not unseeded:
         return writes
     rejected.extend(
-        RejectedRow(entry.scope, entry.field, f"no {entry.table} row yet — run `t3 setup` to seed it")
+        _seed_rejection(entry, f"no {entry.table} row yet — run `t3 setup` to seed it", policy)
         for entry in writes
         if (entry.table, entry.name) in unseeded
     )

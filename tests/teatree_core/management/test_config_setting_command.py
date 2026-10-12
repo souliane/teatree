@@ -1237,6 +1237,43 @@ class TestTheSeedImportIsScanned(_TermGuardCase):
         assert "a tuned preset" not in out
 
 
+class TestAShippedEntryNamedAfterATerm(_TermGuardCase):
+    def setUp(self) -> None:
+        call_command("seed_loops", stdout=StringIO())
+        self.mode = min(shipped_seed_table("modes"))
+
+    def _arrange(self) -> None:
+        self.monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps({"leak": [self.mode]}))
+        self._run("edit", self.mode, "--description", "a tuned preset", command="loop_preset")
+
+    def test_a_shared_export_withholds_it_without_the_name(self) -> None:
+        self._arrange()
+        code, out, err = self._run("export")
+        assert code == 0
+        assert "withheld 1 row(s)  [under a name that carries a banned term]  (banned-term)" in err
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
+    def test_the_term_values_backup_restores_it_without_the_name(self) -> None:
+        self._arrange()
+        backup = self.tmp_path / "f.toml"
+        assert self._run("export", "--include-private", "--include-banned-term-values", "--output", str(backup))[0] == 0
+        assert self.mode in tomllib.loads(backup.read_text(encoding="utf-8"))["modes"]
+        self._run("edit", self.mode, "--description", "another preset", command="loop_preset")
+        code, out, err = self._run("import", "--input", str(backup), "--restore-private")
+        assert code == 0, err
+        assert Preset.objects.get(name=self.mode).description == "a tuned preset"
+        assert 'imported description = "a tuned preset"  [under a name that carries a banned term]' in out
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
+    def test_a_restore_refusing_it_drops_the_reason_with_the_name(self) -> None:
+        self._arrange()
+        text = f"[backup]\ninclude_private = true\n[modes.{self.mode}]\nentries = {{}}\n"
+        code, out, err = self._run("import", "--input", str(self._file("f.toml", text)), "--restore-private")
+        assert code == 2
+        assert "rejected entries  [under a name that carries a banned term]  (refused (reason withheld" in err
+        assert _carries_no_term(out, err, terms=(self.mode,))
+
+
 class TestTheTermValuesBackupNamesOnlyWhatAScanClears(_TermGuardCase):
     def _arrange(self) -> None:
         self._run("create", f"{LEAK}-probe", command="loop_preset")
