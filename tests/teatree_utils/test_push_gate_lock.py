@@ -5,7 +5,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from teatree.utils import push_gate_lock
+from tests._push_gate_lane import install_uv_stub, lane_repo, run_lane
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOCK_MODULE = _REPO_ROOT / "src" / "teatree" / "utils" / "push_gate_lock.py"
@@ -69,17 +72,82 @@ class TestPushGateLock:
         assert "elapsed=0s max=60s" in heartbeats[0]
         assert "elapsed=31s max=60s" in heartbeats[1]
 
-    def test_unopenable_lock_warns_and_runs_unserialised(self, tmp_path: Path) -> None:
+    def test_unopenable_lock_aborts_before_any_check(self, tmp_path: Path) -> None:
         lock = tmp_path / "absent" / "push-gate.lock"
+        result = _run_bash(f'source "{_LOCK_HELPER}"; T3_PUSH_GATE_LOCK="{lock}" acquire_push_gate_lock; echo "rc=$?"')
+
+        assert result.stdout.strip() == "rc=75", result.stderr
+        assert f"=== push-gate: ABORTED: cannot open lock {lock}" in result.stderr
+        assert "unserialised" not in result.stderr
+
+    @pytest.mark.parametrize(
+        ("helper", "helper_rc"),
+        [
+            ("export T3_PUSH_GATE_LOCK_WAIT_SECONDS=not-a-number", 2),
+            ("python3() { sh -c 'kill -TERM $$'; }", 143),
+        ],
+        ids=["bad-wait-argument", "killed-by-sigterm"],
+    )
+    def test_a_failing_helper_aborts_and_releases_the_lock(self, tmp_path: Path, helper: str, helper_rc: int) -> None:
+        lock = tmp_path / "push-gate.lock"
         result = _run_bash(
-            f'source "{_LOCK_HELPER}"; T3_PUSH_GATE_LOCK="{lock}" acquire_push_gate_lock; '
-            "rc=$?; echo continued; exit $rc"
+            f'source "{_LOCK_HELPER}"; {helper}; export T3_PUSH_GATE_LOCK="{lock}"; '
+            'acquire_push_gate_lock; rc=$?; fd9=open; { : >&9; } 2>/dev/null || fd9=closed; echo "rc=$rc fd9=$fd9"'
         )
 
-        assert result.returncode == 0
-        assert "WARNING" in result.stderr
-        assert "unserialised" in result.stderr
-        assert result.stdout.strip() == "continued"
+        assert result.stdout.strip() == "rc=75 fd9=closed", result.stderr
+        assert f"=== push-gate: ABORTED: lock helper failed (rc={helper_rc}) for {lock}" in result.stderr
+
+    def test_a_timed_out_wait_aborts_once_naming_the_holder(self, tmp_path: Path) -> None:
+        lock = tmp_path / "push-gate.lock"
+        with lock.open("w+", encoding="utf-8") as holder:
+            holder.write("pid=2468 repo=/holder/worktree\n")
+            holder.flush()
+            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = _run_bash(
+                f'source "{_LOCK_HELPER}"; export T3_PUSH_GATE_LOCK="{lock}" T3_PUSH_GATE_LOCK_WAIT_SECONDS=0; '
+                'acquire_push_gate_lock; echo "rc=$?"'
+            )
+
+        assert result.stdout.strip() == "rc=75", result.stderr
+        assert result.stderr.count("=== push-gate: ABORTED") == 1, result.stderr
+        assert "pid=2468 repo=/holder/worktree" in result.stderr
+
+
+@pytest.mark.integration
+class TestThePushGateRunsNoCheckWithoutTheLock:
+    def test_an_unopenable_lock_runs_no_stage(self, tmp_path: Path) -> None:
+        install_uv_stub(tmp_path)
+        lock = tmp_path / "absent" / "push-gate.lock"
+
+        completed, stages, _ = run_lane(
+            tmp_path, lane_repo(tmp_path, vendored=False), extra_env={"T3_PUSH_GATE_LOCK": str(lock)}
+        )
+
+        assert completed.returncode == 75, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        assert stages == []
+        assert f"=== push-gate: ABORTED: cannot open lock {lock}" in completed.stderr
+
+    def test_a_timed_out_wait_runs_no_stage(self, tmp_path: Path) -> None:
+        install_uv_stub(tmp_path)
+        lock = tmp_path / "push-gate.lock"
+        with lock.open("w+", encoding="utf-8") as holder:
+            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            completed, stages, _ = run_lane(
+                tmp_path, lane_repo(tmp_path, vendored=False), extra_env={"T3_PUSH_GATE_LOCK_WAIT_SECONDS": "0"}
+            )
+
+        assert completed.returncode == 75, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        assert stages == []
+
+    def test_a_held_lock_runs_every_stage_and_names_this_run(self, tmp_path: Path) -> None:
+        install_uv_stub(tmp_path)
+
+        completed, stages, _ = run_lane(tmp_path, lane_repo(tmp_path, vendored=False))
+
+        assert completed.returncode == 0, f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        assert len(stages) == 3
+        assert "pid=" in (tmp_path / "push-gate.lock").read_text(encoding="utf-8")
 
 
 def test_push_gate_acquires_before_sizing_the_worker_pool() -> None:
