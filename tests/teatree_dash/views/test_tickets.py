@@ -29,6 +29,10 @@ class LegalTransitionSetTestCase(TestCase):
         # ship is illegal from NOT_STARTED — it must not be offered.
         assert "ship" not in names
 
+    def test_void_merge_is_not_offered_by_generic_transition_menu(self) -> None:
+        ticket = TicketFactory(state=State.MERGED)
+        assert "void_merge" not in legal_transition_names(ticket)
+
 
 class TicketTransitionPostTestCase(TestCase):
     def setUp(self) -> None:

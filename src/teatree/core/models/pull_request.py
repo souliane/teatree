@@ -4,8 +4,9 @@ from urllib.parse import urlsplit
 
 from django.db import models
 from django.utils import timezone
-from django_fsm import FSMField, transition
+from django_fsm import RETURN_VALUE, FSMField, transition
 
+from teatree.core.models.merge_void import ManualVoidPermit
 from teatree.url_classify import repo_and_iid
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -161,9 +162,11 @@ class PullRequestQuerySet(models.QuerySet):
         settled and marks zero (#3984).
         """
         merged = 0
-        for row in self.for_pr(slug=slug, pr_id=pr_id).exclude(state=PullRequest.State.MERGED):
+        for row in (
+            self.for_pr(slug=slug, pr_id=pr_id).exclude(state=PullRequest.State.MERGED).filter(merge_void__isnull=True)
+        ):
             row.mark_merged()
-            row.save(update_fields=["state"])
+            row.save(update_fields=["state", "state_before_merge"])
             merged += 1
         return merged
 
@@ -222,9 +225,10 @@ class PullRequestQuerySet(models.QuerySet):
             return False
         if settle is PullRequest.State.MERGED:
             row.mark_merged()
+            row.save(update_fields=["state", "state_before_merge"])
         else:
             row.mark_closed()
-        row.save(update_fields=["state"])
+            row.save(update_fields=["state"])
         return True
 
 
@@ -277,6 +281,7 @@ class PullRequest(models.Model):
     slack_url = models.URLField(max_length=500, blank=True)
     review_requested_at = models.DateTimeField(null=True, blank=True)
     state = FSMField(max_length=32, choices=State.choices, default=State.OPEN)
+    state_before_merge = models.CharField(max_length=32, blank=True, default="")
     create_verification = models.CharField(
         max_length=16,
         choices=CreateVerification.choices,
@@ -310,7 +315,20 @@ class PullRequest(models.Model):
 
     @transition(field="state", source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.MERGED)
     def mark_merged(self) -> None:
-        pass
+        if self.pk and type(self).objects.filter(pk=self.pk, merge_void__isnull=False).exists():
+            msg = "A voided PR cannot be marked merged again"
+            raise ValueError(msg)
+        self.state_before_merge = self.state
+
+    @transition(
+        field="state", source=State.MERGED, target=RETURN_VALUE(State.OPEN, State.REVIEW_REQUESTED, State.APPROVED)
+    )
+    def void_merge(self, previous_state: str, *, permit: ManualVoidPermit) -> str:
+        if previous_state not in {self.State.OPEN, self.State.REVIEW_REQUESTED, self.State.APPROVED}:
+            msg = f"Invalid pre-merge PR state: {previous_state}"
+            raise ValueError(msg)
+        permit.require_absent()
+        return previous_state
 
     @transition(field="state", source=[State.OPEN, State.REVIEW_REQUESTED, State.APPROVED], target=State.CLOSED)
     def mark_closed(self) -> None:

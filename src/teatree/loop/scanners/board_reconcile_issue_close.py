@@ -65,6 +65,7 @@ def closed_issue_transitions(
             Ticket.objects.filter(state__in=Ticket.pre_ship_states())
             .exclude(issue_url="")
             .exclude(role=Ticket.Role.REVIEWER)
+            .exclude(merge_voids__isnull=False)
             .filter(remote_missing=False),
             overlay,
         )

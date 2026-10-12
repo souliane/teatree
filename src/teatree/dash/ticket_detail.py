@@ -141,6 +141,8 @@ def legal_transition_names(ticket: Ticket) -> tuple[str, ...]:
     current = str(ticket.state)
     names: set[str] = set()
     for transition in ticket.get_all_state_transitions():  # ty: ignore[unresolved-attribute]  # django-fsm dynamic method
+        if transition.name == "void_merge":
+            continue
         if str(transition.source) != current:
             continue
         try:
@@ -280,4 +282,7 @@ def _sessions(ticket: Ticket) -> tuple[SessionRow, ...]:
 
 
 def _pr_chips(ticket_id: int) -> tuple[PrChip, ...]:
-    return tuple(pr_chip(pr) for pr in PullRequest.objects.filter(ticket_id=ticket_id).order_by("pk"))
+    return tuple(
+        pr_chip(pr)
+        for pr in PullRequest.objects.filter(ticket_id=ticket_id).select_related("merge_void").order_by("pk")
+    )

@@ -87,12 +87,15 @@ def pr_chip(pr: PullRequest) -> PrChip:
     The label falls back to the raw value for a state the choices no longer name,
     so a row written by an older schema renders as itself rather than as blank.
     """
+    label = PullRequest.State(pr.state).label if pr.state in PullRequest.State.values else str(pr.state)
+    if getattr(pr, "merge_void", None) is not None:
+        label = f"Merge voided · {label}"
     return PrChip(
         url=pr.url,
         repo=pr.repo,
         iid=pr.iid,
         state=str(pr.state),
-        label=PullRequest.State(pr.state).label if pr.state in PullRequest.State.values else str(pr.state),
+        label=label,
     )
 
 
@@ -354,7 +357,9 @@ def _latest_transition_at(ticket_ids: list[int]) -> dict[int, datetime]:
 
 def _pr_chips_by_ticket(ticket_ids: list[int]) -> dict[int, tuple[PrChip, ...]]:
     chips: dict[int, list[PrChip]] = {}
-    for pr in PullRequest.objects.filter(ticket_id__in=ticket_ids).order_by("ticket_id", "pk"):
+    for pr in (
+        PullRequest.objects.filter(ticket_id__in=ticket_ids).select_related("merge_void").order_by("ticket_id", "pk")
+    ):
         chips.setdefault(pr.ticket_id, []).append(pr_chip(pr))
     return {ticket_id: tuple(prs) for ticket_id, prs in chips.items()}
 

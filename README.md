@@ -287,8 +287,17 @@ stateDiagram-v2
     review_requested --> merged : mark_merged
     review_requested --> merged : reconcile_merged
     review_requested --> ignored : ignore
+    merged --> not_started : void_merge
+    merged --> scoped : void_merge
     merged --> work_started : reopen
+    merged --> work_started : void_merge
+    merged --> plan_recorded : void_merge
+    merged --> coded : void_merge
+    merged --> tested : void_merge
     merged --> self_reviewed : reopen_for_followup
+    merged --> self_reviewed : void_merge
+    merged --> pr_opened : void_merge
+    merged --> review_requested : void_merge
     merged --> merged : mark_merged
     merged --> merged : reconcile_merged
     merged --> retro_recorded : retrospect
@@ -363,6 +372,9 @@ stateDiagram-v2
     review_requested --> closed : mark_closed
     approved --> merged : mark_merged
     approved --> closed : mark_closed
+    merged --> open : void_merge
+    merged --> review_requested : void_merge
+    merged --> approved : void_merge
 ```
 <!-- END GENERATED: pull-request-fsm -->
 

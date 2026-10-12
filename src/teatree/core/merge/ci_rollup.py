@@ -22,6 +22,7 @@ from teatree.core.backend_protocols import (
     rollup_query_failed,
 )
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.forge_content import ContentEvidence
 from teatree.core.merge.ci_rollup_dedupe import _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
@@ -106,6 +107,9 @@ class CodeHostQuery:
         keeps refusing on a falsy sha and the sentinel never arrives as a truthy oid.
         """
         return self.live_head_read().sha
+
+    def content_evidence(self) -> ContentEvidence:
+        return self.backend.fetch_pr_content_evidence(slug=self.ref.slug, pr_id=self.ref.pr_id)
 
     def pr_merge_state(self) -> PrMergeState:
         """Whether the PR/MR is already merged, and at which commit — §928 reconciliation.

@@ -74,6 +74,7 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
+from teatree.core.gates.merge_evidence_gate import is_voided_ref
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
@@ -81,7 +82,7 @@ from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
-from teatree.url_classify import Forge, forge_of
+from teatree.url_classify import Forge, forge_of, pr_ref
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
@@ -240,6 +241,7 @@ def _rule_f_candidate_count(overlay: str) -> int:
         Ticket.objects.filter(state__in=Ticket.pre_ship_states())
         .exclude(issue_url="")
         .exclude(role=Ticket.Role.REVIEWER)
+        .exclude(merge_voids__isnull=False)
         .filter(remote_missing=False),
         overlay,
     ).count()
@@ -270,6 +272,9 @@ def _from_pr_state(
     failed; both leave the ticket exactly where it is, because believing a ticket
     landed when it did not is the failure this whole path exists to prevent.
     """
+    ref = pr_ref(ticket.issue_url)
+    if ref is not None and is_voided_ref(ticket, ref):
+        return None
     state = states.get(ticket.issue_url, PrOpenState.UNKNOWN)
     if state is PrOpenState.MERGED:
         return _on_merge_signal(ticket, reason="forge says the PR merged", dry_run=dry_run)

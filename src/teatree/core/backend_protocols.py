@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
+from teatree.core.forge_content import ContentEvidence
 from teatree.core.modelkit.forge_readability import HEAD_SHA_UNREADABLE
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
@@ -546,6 +547,8 @@ class CodeHostBackend(Protocol):
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState: ...  # pragma: no branch
+
+    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence: ...  # pragma: no branch
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState: ...  # pragma: no branch
 

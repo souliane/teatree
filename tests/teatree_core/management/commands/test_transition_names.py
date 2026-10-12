@@ -7,6 +7,7 @@ from teatree.core.models.ticket import Ticket
 # ``unignore`` restores a *stored* previous state, which django-fsm cannot express as a
 # static ``target``, so it guards itself instead of carrying ``@transition``.
 NON_FSM_STATE_MUTATORS = frozenset({"unignore"})
+MANUAL_EVIDENCE_TRANSITIONS = frozenset({"void_merge"})
 
 
 def _fsm_transition_names() -> set[str]:
@@ -42,7 +43,7 @@ def test_help_documents_exactly_allowed_transitions() -> None:
 
 
 def test_every_fsm_transition_is_cli_dispatchable() -> None:
-    unreachable = _fsm_transition_names() - ALLOWED_TRANSITIONS
+    unreachable = _fsm_transition_names() - ALLOWED_TRANSITIONS - MANUAL_EVIDENCE_TRANSITIONS
     assert not unreachable, f"FSM offers these but the CLI refuses them as unknown: {sorted(unreachable)}"
 
 

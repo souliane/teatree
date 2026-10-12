@@ -18,7 +18,9 @@ the byte-for-byte error parity the keystone tests pin is unchanged.
 
 import json
 import logging
+from hashlib import sha256
 from typing import NotRequired, TypedDict, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -33,6 +35,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
 )
+from teatree.core.forge_content import ContentEvidence, ContentPresence, ForgeTree, assess_content
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ _TRANSPORT_FAILURE_PREFIX = "temporary failure reaching the GitLab API"
 
 # GitLab merge methods that land a merge commit when ``squash`` is false; ``ff`` fast-forwards instead.
 _MERGE_COMMIT_METHODS = frozenset({"merge", "rebase_merge"})
+_MAX_TREE_ITEMS = 10_000
 
 
 class _MergePayload(TypedDict):
@@ -256,6 +260,55 @@ class GitLabApiMergeRpc:
             return [CHANGED_PATHS_UNAVAILABLE]
         paths = [entry.get("new_path") or entry.get("old_path") for entry in diffs]
         return [path.strip() for path in paths if isinstance(path, str) and path.strip()]
+
+    def _branch_sha(self, endpoint: str) -> str:
+        branch = self._read(endpoint)
+        commit = branch.get("commit") if isinstance(branch, dict) else None
+        return str(commit.get("id") or "") if isinstance(commit, dict) else ""
+
+    def _content_tree(self, project_path: str, sha: str) -> ForgeTree | None:
+        endpoint = f"{project_path}/repository/tree?ref={quote(sha, safe='')}&recursive=true&per_page=100"
+        try:
+            raw = self._client.get_json_paginated(endpoint)
+        except _READ_FAILURES as exc:
+            logger.warning("GitLab repository tree read of %s failed (%s)", endpoint, exc)
+            return None
+        if len(raw) >= _MAX_TREE_ITEMS or any(
+            not isinstance(item, dict)
+            or not all(isinstance(item.get(key), str) and item[key] for key in ("path", "type", "id", "mode"))
+            for item in raw
+        ):
+            return None
+        blobs = {str(item["path"]): str(item["id"]) for item in raw if item["type"] == "blob"}
+        tree = sha256(json.dumps(blobs, sort_keys=True).encode()).hexdigest()
+        return ForgeTree(sha, tree, blobs)
+
+    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence:
+        unknown = ContentEvidence(ContentPresence.UNKNOWN, reason="forge content read incomplete")
+        project_path = f"projects/{slug.replace('/', '%2F')}"
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id) or {}
+        project = self._read(project_path)
+        head_sha = str(mr.get("sha") or "")
+        default_branch = str(project.get("default_branch") or "") if isinstance(project, dict) else ""
+        count = str(mr.get("changes_count") or "")
+        if not head_sha or not default_branch or not count.isdigit():
+            return unknown
+        branch_endpoint = f"{project_path}/repository/branches/{quote(default_branch, safe='')}"
+        default_sha = self._branch_sha(branch_endpoint)
+        paths = self.fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
+        if not default_sha or CHANGED_PATHS_UNAVAILABLE in paths or len(paths) != int(count):
+            return unknown
+        head = self._content_tree(project_path, head_sha)
+        default = self._content_tree(project_path, default_sha)
+        if head is None or default is None:
+            return unknown
+        if self._branch_sha(branch_endpoint) != default_sha:
+            return ContentEvidence(ContentPresence.UNKNOWN, reason="default branch moved during content check")
+        return assess_content(
+            head=ForgeTree(head.sha, head.tree, {path: head.blobs.get(path) for path in paths}),
+            default=ForgeTree(default.sha, default.tree, {path: default.blobs.get(path) for path in paths}),
+            changed_paths=paths,
+        )
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         """The MR title and description, or ``None`` when the MR could not be read with a title."""

@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import (
     PrMergeState,
     PrMessage,
 )
+from teatree.core.forge_content import ContentEvidence, ContentPresence, ForgeTree, assess_content
 from teatree.types import RawAPIDict
 from teatree.utils.run import run_allowed_to_fail
 
@@ -208,6 +209,63 @@ class GhMergeRpc:
         merge_commit = data.get("mergeCommit")
         oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
         return PrMergeState(state=state, merge_commit_oid=oid, conflict=_gh_conflict_state(data))
+
+    def _content_dict(self, argv: list[str]) -> dict[str, object] | None:
+        rc, out, _ = self._run(argv)
+        if rc != 0 or not out.strip():
+            return None
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _content_tree(self, slug: str, commit_sha: str, tree_sha: str) -> ForgeTree | None:
+        data = self._content_dict(["api", f"repos/{slug}/git/trees/{tree_sha}?recursive=1"])
+        if data is None or data.get("truncated") is not False or not isinstance(data.get("tree"), list):
+            return None
+        blobs = {
+            str(item["path"]): str(item["sha"])
+            for item in data["tree"]
+            if isinstance(item, dict) and item.get("type") == "blob" and item.get("path") and item.get("sha")
+        }
+        return ForgeTree(commit_sha, tree_sha, blobs)
+
+    @staticmethod
+    def _commit_tree_sha(data: dict[str, object], *, nested: bool = False) -> str:
+        commit = data.get("commit") if nested else data
+        tree = commit.get("tree") if isinstance(commit, dict) else None
+        return str(tree.get("sha") or "") if isinstance(tree, dict) else ""
+
+    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence:
+        unknown = ContentEvidence(ContentPresence.UNKNOWN, reason="forge content read incomplete")
+        pr = self._content_dict(["pr", "view", str(pr_id), "--repo", slug, "--json", "headRefOid,changedFiles"]) or {}
+        repo = self._content_dict(["api", f"repos/{slug}"]) or {}
+        head_sha = str(pr.get("headRefOid") or "")
+        default_branch = str(repo.get("default_branch") or "")
+        changed_count = pr.get("changedFiles")
+        if not head_sha or not default_branch or not isinstance(changed_count, int):
+            return unknown
+        head_commit = self._content_dict(["api", f"repos/{slug}/git/commits/{head_sha}"]) or {}
+        default_commit = self._content_dict(["api", f"repos/{slug}/commits/{default_branch}"]) or {}
+        head_tree = self._commit_tree_sha(head_commit)
+        default_tree = self._commit_tree_sha(default_commit, nested=True)
+        default_sha = str(default_commit.get("sha") or "")
+        paths = self.fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
+        if (
+            not all((head_tree, default_tree, default_sha))
+            or CHANGED_PATHS_UNAVAILABLE in paths
+            or len(paths) != changed_count
+        ):
+            return unknown
+        head = self._content_tree(slug, head_sha, head_tree)
+        default = self._content_tree(slug, default_sha, default_tree)
+        if head is None or default is None:
+            return unknown
+        fresh_default = self._content_dict(["api", f"repos/{slug}/commits/{default_branch}"])
+        if fresh_default is None or fresh_default.get("sha") != default_sha:
+            return ContentEvidence(ContentPresence.UNKNOWN, reason="default branch moved during content check")
+        return assess_content(head=head, default=default, changed_paths=paths)
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         """Tri-state draft flag — ``UNKNOWN`` on a non-zero rc or unrecognised payload.

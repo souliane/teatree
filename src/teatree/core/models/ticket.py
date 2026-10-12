@@ -20,7 +20,7 @@ from teatree.core.models.ticket_overlay import TicketOverlayModel
 from teatree.core.models.ticket_phase_sessions import TicketPhaseSessionModel
 from teatree.core.models.ticket_scheduling import PLANNING_HANDOFF_KEY, TicketSchedulingModel
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
-from teatree.core.models.ticket_status import TicketStatusModel
+from teatree.core.models.ticket_status import VOID_MERGE_TARGET_STATES, TicketStatusModel
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
 logger = logging.getLogger(__name__)
@@ -195,15 +195,7 @@ class Ticket(
     # state (and is idempotent at MERGED). RETRO_RECORDED/DELIVERED are
     # past MERGED and must not be dragged backward; IGNORED is abandoned.
     _MERGED_RECONCILE_SOURCE_STATES: ClassVar[list[str]] = [
-        State.NOT_STARTED,
-        State.SCOPED,
-        State.WORK_STARTED,
-        State.PLAN_RECORDED,
-        State.CODED,
-        State.TESTED,
-        State.SELF_REVIEWED,
-        State.PR_OPENED,
-        State.REVIEW_REQUESTED,
+        *VOID_MERGE_TARGET_STATES,
         State.MERGED,
     ]
 

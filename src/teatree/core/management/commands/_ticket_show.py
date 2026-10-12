@@ -33,6 +33,7 @@ class TicketShowResult(TypedDict):
     issue_url: str
     expedited: bool
     phases: list[PhaseBudgetRow]
+    merge_void: dict[str, object] | None
 
 
 class DeadRowResult(TypedDict):
@@ -87,6 +88,8 @@ def render_ticket_show(result: TicketShowResult) -> str:
     ]
     if result.get("expedited"):
         lines.append("  expedite: ⚡ release-blocker (pre-CI push allowed; merge still gated on review+test)")
+    if merge_void := result.get("merge_void"):
+        lines.append(f"  merge voided: {merge_void['voided_at']} by {merge_void['actor']} — {merge_void['reason']}")
     if not result["phases"]:
         lines.append("  phases:  (no attempts yet)")
         return "\n".join(lines)
@@ -132,6 +135,7 @@ class TicketShowCommands(TyperCommand):
             "issue_url": ticket.issue_url,
             "expedited": ticket.expedited,
             "phases": phase_budget_rows(ticket),
+            "merge_void": summary.summary() if (summary := ticket.merge_voids.first()) else None,
         }
         self.stdout.write(render_ticket_show(result))
         return result

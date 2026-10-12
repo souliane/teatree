@@ -56,7 +56,12 @@ def serialize_ticket_detail(ticket: "Ticket") -> dict[str, Any]:
     session, the lifecycle-progress answer a client inspecting one ticket wants.
     """
     visited_phases, _ = ticket.aggregate_phase_records()
-    return {**serialize_ticket(ticket), "visited_phases": visited_phases}
+    merge_void = ticket.merge_voids.first()
+    return {
+        **serialize_ticket(ticket),
+        "visited_phases": visited_phases,
+        "merge_void": merge_void.summary() if merge_void else None,
+    }
 
 
 def serialize_task(task: "Task") -> dict[str, Any]:
@@ -103,6 +108,7 @@ def serialize_worktree(worktree: "Worktree") -> dict[str, Any]:
 
 def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
     """Project a :class:`PullRequest` onto its structured-search shape."""
+    merge_void = getattr(pull_request, "merge_void", None)
     return {
         "id": pull_request.pk,
         "ticket_id": pull_request.ticket_id,  # ty: ignore[unresolved-attribute]
@@ -113,6 +119,7 @@ def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
         "state": pull_request.state,
         "slack_url": pull_request.slack_url,
         "review_requested_at": _iso(pull_request.review_requested_at),
+        "merge_void": merge_void.summary() if merge_void else None,
     }
 
 

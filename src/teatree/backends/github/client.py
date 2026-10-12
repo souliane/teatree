@@ -34,6 +34,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
+from teatree.core.forge_content import ContentEvidence
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -544,6 +545,9 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence:
+        return self._merge_rpc().fetch_pr_content_evidence(slug=slug, pr_id=pr_id)
 
     def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
         return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
