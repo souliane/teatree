@@ -13849,7 +13849,7 @@ Usage: t3 teatree config_setting export [OPTIONS]
  PERSONAL, never-shared backup that carries the key classes but still withholds
  every row carrying a banned term. ``--include-banned-term-values`` carries
  those
- too: it scans nothing, so it is the one export a box with no term can make,
+ too: it needs no term, so it is the one export a box with no term can make,
  and it
  writes only to ``--output``, never to a terminal. Any private file carries the
  rows
@@ -13861,9 +13861,11 @@ Usage: t3 teatree config_setting export [OPTIONS]
 
  A stored row that is not a SETTING — internal runtime state sharing the store,
  a
- key outliving its declaration — is named on stderr and left out whatever the
- flags
- say: ``import`` has no home for such a key and refuses the whole file on one.
+ key outliving its declaration — is reported on stderr (by name only where a
+ term scan
+ clears the name) and left out whatever the flags say: ``import`` has no home
+ for such
+ a key and refuses the whole file on one.
 
  Two INDEPENDENT filters widen the dump, both off by default.
  ``--default-keys-only``
@@ -13900,8 +13902,8 @@ Usage: t3 teatree config_setting export [OPTIONS]
 │ --include-banned-term-values              Also export rows carrying a banned │
 │                                           term, the term registry included;  │
 │                                           needs --include-private and        │
-│                                           --output, and scans nothing, so it │
-│                                           works on a box with no terms.      │
+│                                           --output, and needs no term, so it │
+│                                           works on a box with none.          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
