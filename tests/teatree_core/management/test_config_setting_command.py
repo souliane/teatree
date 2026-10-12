@@ -1117,11 +1117,18 @@ class TestEveryPrivateExportIsMarkedAndRestores(_TermGuardCase):
                 assert "[source: db" in stored
 
 
-class TestTheSharedDefaultsShapeStaysUnmarked(_TermGuardCase):
-    def test_it_is_the_shipped_file_byte_for_byte(self) -> None:
+class TestASharedExportStaysUnmarked(_TermGuardCase):
+    def test_the_defaults_shape_is_the_shipped_file_byte_for_byte(self) -> None:
         code, out, _ = self._run("export", "--default-keys-only", "--include-defaults")
         assert code == 0
         assert out == DEFAULTS_TOML.read_text(encoding="utf-8")
+
+    def test_a_shared_full_export_carries_no_marker(self) -> None:
+        self._set("merge_wip", 4)
+        code, out, err = self._run("export")
+        assert code == 0
+        assert not is_private_backup(tomllib.loads(out))
+        assert "PERSONAL BACKUP" not in err
 
 
 class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
