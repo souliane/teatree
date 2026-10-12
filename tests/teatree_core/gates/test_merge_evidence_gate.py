@@ -10,7 +10,9 @@ block is proven anti-vacuous by ``test_gate_is_load_bearing``: with the gate
 neutralised the same evidence-less transition advances to MERGED.
 """
 
-from unittest.mock import patch
+import contextlib
+from collections.abc import Iterator
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -22,9 +24,12 @@ from teatree.core.gates.merge_evidence_gate import (
     forge_confirms_merged,
     has_merge_audit_evidence,
     has_merge_evidence,
+    has_recorded_forge_merge,
+    record_confirmed_forge_merge,
 )
 from teatree.core.modelkit import gate_registry
 from teatree.core.models import MergeAudit, MergeClear, PullRequest, Ticket
+from tests.void_merge_fixtures import MERGED_SHA, PR_URL, SLUG, landed_ticket, void_pr
 
 _FORTY_HEX = "a" * 40
 
@@ -279,3 +284,67 @@ class TestMergeEvidenceFsmGate(TestCase):
 class TestRegistration(TestCase):
     def test_merge_evidence_gate_is_registered(self) -> None:
         assert gate_registry.get_gate("merge_evidence") is check_merge_evidence
+
+
+class TestVoidedMergeEvidence(TestCase):
+    """After a void every evidence source naming that PR stops counting; another PR still does."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ticket = landed_ticket()
+        void_pr()
+        self.ticket.refresh_from_db()
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _live(sha: str = MERGED_SHA) -> Iterator[MagicMock]:
+        with patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
+            return_value=PrMergeState(state="MERGED", merge_commit_oid=sha),
+        ) as probe:
+            yield probe
+
+    def test_the_keystone_audit_for_the_voided_pr_no_longer_counts(self) -> None:
+        assert MergeAudit.objects.filter(clear__ticket=self.ticket, merged_sha=MERGED_SHA).exists()
+
+        assert has_merge_audit_evidence(self.ticket) is False
+
+    def test_the_recorded_forge_evidence_for_the_voided_pr_no_longer_counts(self) -> None:
+        self.ticket.merge_extra(
+            set_keys={"forge_merge_evidence": {"slug": SLUG, "pr_id": 41, "merged_sha": MERGED_SHA}}
+        )
+
+        assert has_recorded_forge_merge(self.ticket) is False
+
+    def test_a_live_forge_reporting_the_voided_pr_merged_proves_nothing_and_writes_nothing(self) -> None:
+        with self._live() as probe:
+            assert forge_confirms_merged(self.ticket) is False
+            assert record_confirmed_forge_merge(self.ticket) is False
+
+        probe.assert_not_called()
+        self.ticket.refresh_from_db()
+        assert "forge_merge_evidence" not in self.ticket.extra
+        assert PullRequest.objects.get(url=PR_URL).state == PullRequest.State.CLOSED
+
+    def test_every_source_together_still_refuses_merged(self) -> None:
+        self.ticket.merge_extra(
+            set_keys={"forge_merge_evidence": {"slug": SLUG, "pr_id": 41, "merged_sha": MERGED_SHA}}
+        )
+
+        with self._live(), pytest.raises(NoMergeEvidenceError):
+            check_merge_evidence(self.ticket)
+
+    def test_a_different_pr_merged_at_a_different_sha_still_counts(self) -> None:
+        other_sha = "9" * 40
+        clear = MergeClear.objects.create(
+            ticket=self.ticket,
+            pr_id=42,
+            slug=SLUG,
+            reviewed_sha="8" * 40,
+            reviewer_identity="cold-reviewer-42",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        MergeAudit.objects.create(clear=clear, merged_sha=other_sha, required_checks_status="green", repo_slug=SLUG)
+
+        check_merge_evidence(self.ticket)

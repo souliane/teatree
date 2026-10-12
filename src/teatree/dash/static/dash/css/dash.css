@@ -483,6 +483,12 @@ a.chip:hover {
   border-color: var(--line);
   text-decoration: line-through;
 }
+/* A voided merge: the forge says merged, the default branch never got the content. */
+.chip.pr.voided {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+  text-decoration: line-through;
+}
 .chip.pr.review_requested,
 .chip.pr.approved {
   color: var(--brand);

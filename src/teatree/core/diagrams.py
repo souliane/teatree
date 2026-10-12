@@ -10,7 +10,6 @@ mirroring the cli-reference pipeline.
 from typing import TYPE_CHECKING, cast
 
 from django.db.models import Model
-from django_fsm import RETURN_VALUE
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -40,16 +39,9 @@ def render_fsm_mermaid(model: type[Model], *, field: str = "state", title: str |
 
     edges: list[tuple[int, int, str]] = []
     for transition in fsm_field.get_all_transitions(model):
-        targets = (
-            [_state_value(value) for value in transition.target.allowed_states]
-            if isinstance(transition.target, RETURN_VALUE)
-            else [_state_value(transition.target)]
-        )
-        if not targets:
-            msg = f"Diagram cannot render unrestricted return target: {transition.name}"
-            raise ValueError(msg)
+        target = _state_value(transition.target)
         sources = states if transition.source == _WILDCARD else [_state_value(transition.source)]
-        edges.extend((ordinal[source], ordinal[target], transition.name) for source in sources for target in targets)
+        edges.extend((ordinal[source], ordinal[target], transition.name) for source in sources)
     edges.sort()
 
     lines = ["stateDiagram-v2"]

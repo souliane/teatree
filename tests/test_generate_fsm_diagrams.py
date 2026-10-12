@@ -18,7 +18,6 @@ import fsm_diagram_specs as fsm
 import pytest
 from django.db.models import Model
 from django.db.models.fields import NOT_PROVIDED
-from django_fsm import RETURN_VALUE
 
 from scripts.hooks import check_fsm_diagrams_sync as chk
 from scripts.hooks import generate_fsm_diagrams as gen
@@ -62,13 +61,9 @@ def _model_edges(model: type[Model], field: str = "state") -> set[tuple[str, str
     states = [str(value) for value, _label in choices]
     edges: set[tuple[str, str, str]] = set()
     for transition in fsm_field.get_all_transitions(model):
-        targets = (
-            [str(state) for state in transition.target.allowed_states]
-            if isinstance(transition.target, RETURN_VALUE)
-            else [str(getattr(transition.target, "value", transition.target))]
-        )
+        target = str(getattr(transition.target, "value", transition.target))
         sources = states if transition.source == "*" else [str(getattr(transition.source, "value", transition.source))]
-        edges.update((source, target, transition.name) for source in sources for target in targets)
+        edges.update((source, target, transition.name) for source in sources)
     return edges
 
 

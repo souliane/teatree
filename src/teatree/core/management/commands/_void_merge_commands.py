@@ -1,56 +1,90 @@
-"""The explicit operator command for an audited merge void."""
+"""``pr void-merge`` — the human-only correction for a merge whose content never reached the default branch."""
 
+import sys
 from typing import Annotated, TypedDict
 
 import typer
-from django.core.management.base import CommandError
 from django_typer.management import TyperCommand, command
 
-from teatree.core.merge.void_merge import MergeVoidError, void_merge
+from teatree.core.merge.void_merge import VoidPlan, VoidRefusedError, apply_void, check_operator, plan_void
+from teatree.core.models import MergeVoid, PullRequest, Ticket
+from teatree.core.models.merge_void import PullRequestClose, TicketKept, TicketRestore
 
 
 class VoidMergeResult(TypedDict, total=False):
+    pr_url: str
+    dry_run: bool
+    verdict: str
+    changed_paths: int
+    absent_paths: int
+    merged_sha: str
+    content_head: str
+    default_tip: str
+    tickets: list[TicketRestore]
+    kept: list[TicketKept]
+    pull_requests: list[PullRequestClose]
     void_id: int
-    ticket_id: int
-    pull_request_id: int
-    ticket_state: str
-    pull_request_state: str
+    error: str
+
+
+def _result(plan: VoidPlan, *, dry_run: bool) -> VoidMergeResult:
+    verdict = plan.verdict
+    result = VoidMergeResult(
+        pr_url=plan.pr_url,
+        dry_run=dry_run,
+        verdict=str(verdict.kind),
+        changed_paths=len(verdict.changed),
+        absent_paths=len(verdict.changed) - len(verdict.present_at_tip),
+        merged_sha=plan.snapshot.merge_commit,
+        content_head=plan.snapshot.content_head,
+        default_tip=plan.snapshot.default_tip,
+        tickets=list(plan.restores),
+        kept=list(plan.kept),
+        pull_requests=list(plan.closes),
+    )
+    if plan.refusal is not None:
+        result["error"] = str(plan.refusal)
+    return result
+
+
+def _reread(void: MergeVoid) -> list[str]:
+    void.refresh_from_db()
+    closed = [close["pull_request_id"] for close in void.evidence["pull_requests"]]
+    rows = PullRequest.objects.filter(pk__in=closed).order_by("pk")
+    tickets = Ticket.objects.filter(merge_voids=void).order_by("pk")
+    return [
+        void.describe(),
+        *(f"  pull request row {row.pk}: {row.state}" for row in rows),
+        *(f"  ticket {ticket.pk}: {ticket.state}" for ticket in tickets),
+    ]
 
 
 class VoidMergeCommands(TyperCommand):
     @command(name="void-merge")
-    def void_merge_command(
+    def void_merge(
         self,
-        pr: int,
+        pr_url: str,
         *,
-        actor: Annotated[str, typer.Option(help="Operator identity for the audit.")],
-        reason: Annotated[str, typer.Option(help="Why the recorded merge was false.")],
-        prior_ticket_state: Annotated[
-            str, typer.Option(help="Prior ticket state if its transition ledger is missing.")
-        ] = "",
-        prior_pr_state: Annotated[
-            str, typer.Option(help="Prior PR state if it was merged before state tracking.")
-        ] = "",
+        reason: Annotated[str, typer.Option(help="Why the recorded merge is void.")] = "",
+        by: Annotated[str, typer.Option(help="The human operator voiding it.")] = "",
+        dry_run: Annotated[
+            bool, typer.Option("--dry-run", help="Print the forge evidence and planned changes; write nothing.")
+        ] = False,
     ) -> VoidMergeResult:
-        """Audit a false merge after proving its content absent from the default branch."""
+        """Void a merge the forge records but whose content never reached the default branch."""
+        self.print_result = False
         try:
-            row = void_merge(
-                pr_pk=pr,
-                actor=actor,
-                reason=reason,
-                prior_ticket_state=prior_ticket_state,
-                prior_pr_state=prior_pr_state,
-            )
-        except MergeVoidError as exc:
-            raise CommandError(str(exc)) from exc
-        result: VoidMergeResult = {
-            "void_id": int(row.pk),
-            "ticket_id": row.ticket.pk,
-            "pull_request_id": row.pull_request.pk,
-            "ticket_state": row.ticket_state_before_merge,
-            "pull_request_state": row.pr_state_before_merge,
-        }
-        self.stdout.write(
-            f"Voided merge for PR row {pr}; ticket {row.ticket.pk} restored to {row.ticket_state_before_merge}"
-        )
+            if not dry_run:
+                check_operator(reason=reason, actor=by)
+            plan = plan_void(pr_url)
+            self.stdout.write("\n".join(plan.describe()))
+            if dry_run:
+                return _result(plan, dry_run=True)
+            void = apply_void(plan, reason=reason, actor=by, stdin=sys.stdin, stdout=sys.stdout)
+        except VoidRefusedError as exc:
+            self.stderr.write(str(exc))
+            return VoidMergeResult(pr_url=pr_url, error=str(exc))
+        self.stdout.write("\n".join(_reread(void)))
+        result = _result(plan, dry_run=False)
+        result["void_id"] = void.pk
         return result

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from teatree.agents.codex_app_server_env import codex_process_env
+from teatree.utils.agent_spawn_marker import DISPATCHED_AGENT_ENV
 
 _SECRETS = {
     "ANTHROPIC_API_KEY": "anthropic-secret",
@@ -58,3 +59,7 @@ def test_git_answers_a_github_credential_request_with_the_routed_token(tmp_path:
     )
 
     assert "password=ghp-routed" in filled.stdout
+
+
+def test_every_codex_process_is_marked_as_a_dispatched_agent(tmp_path: Path) -> None:
+    assert _env(tmp_path / "home")[DISPATCHED_AGENT_ENV] == "1"

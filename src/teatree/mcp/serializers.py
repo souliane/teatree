@@ -11,10 +11,9 @@ so the boundary stays JSON-safe.
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from teatree.core.models import MergeVoid
-
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
+    from teatree.core.models.merge_void import MergeVoid
     from teatree.core.models.pull_request import PullRequest
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
@@ -58,12 +57,7 @@ def serialize_ticket_detail(ticket: "Ticket") -> dict[str, Any]:
     session, the lifecycle-progress answer a client inspecting one ticket wants.
     """
     visited_phases, _ = ticket.aggregate_phase_records()
-    merge_void = MergeVoid.objects.filter(ticket=ticket).first()
-    return {
-        **serialize_ticket(ticket),
-        "visited_phases": visited_phases,
-        "merge_void": merge_void.summary() if merge_void else None,
-    }
+    return {**serialize_ticket(ticket), "visited_phases": visited_phases}
 
 
 def serialize_task(task: "Task") -> dict[str, Any]:
@@ -108,9 +102,21 @@ def serialize_worktree(worktree: "Worktree") -> dict[str, Any]:
     }
 
 
-def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
+def serialize_merge_void(void: "MergeVoid") -> dict[str, Any]:
+    return {
+        "reason": void.reason,
+        "actor": void.actor,
+        "voided_at": _iso(void.voided_at),
+        "merged_sha": void.merged_sha,
+        "content_head": void.content_head,
+        "default_branch": void.default_branch,
+        "default_tip": void.default_tip,
+        "changed_paths": list(void.changed_paths),
+    }
+
+
+def serialize_pull_request(pull_request: "PullRequest", *, merge_void: "MergeVoid | None" = None) -> dict[str, Any]:
     """Project a :class:`PullRequest` onto its structured-search shape."""
-    merge_void = getattr(pull_request, "merge_void", None)
     return {
         "id": pull_request.pk,
         "ticket_id": pull_request.ticket_id,  # ty: ignore[unresolved-attribute]
@@ -121,7 +127,7 @@ def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
         "state": pull_request.state,
         "slack_url": pull_request.slack_url,
         "review_requested_at": _iso(pull_request.review_requested_at),
-        "merge_void": merge_void.summary() if merge_void else None,
+        "merge_void": serialize_merge_void(merge_void) if merge_void is not None else None,
     }
 
 

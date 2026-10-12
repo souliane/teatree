@@ -787,7 +787,7 @@
           "name": "discharge-pending"
         },
         {
-          "help": "Audit a false merge after proving its content absent from the default branch",
+          "help": "Void a merge the forge records but whose content never reached the default branch",
           "name": "void-merge"
         },
         {

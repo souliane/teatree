@@ -12,8 +12,6 @@ stateDiagram-v2
     review_requested --> closed : mark_closed
     approved --> merged : mark_merged
     approved --> closed : mark_closed
-    merged --> open : void_merge
-    merged --> review_requested : void_merge
-    merged --> approved : void_merge
+    merged --> closed : void_merge
 ```
 <!-- END GENERATED: pull-request-fsm -->

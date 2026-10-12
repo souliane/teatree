@@ -101,6 +101,7 @@ from teatree.core.worktree.occupancy import (
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
+from teatree.utils.agent_spawn_marker import dispatched_agent_env
 
 logger = logging.getLogger(__name__)
 
@@ -561,9 +562,9 @@ def _resolve_child_env_or_failure(
     return replace(resolved, env=_capped_forge_env(task, resolved.env))
 
 
-def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str] | None:
+def _capped_forge_env(task: Task, env: dict[str, str] | None) -> dict[str, str]:
     capped = with_test_worker_cap(env, active_agents=_active_agent_count())
-    return with_routed_github_token(capped, overlay=_overlay_scope(task))
+    return {**(with_routed_github_token(capped, overlay=_overlay_scope(task)) or {}), **dispatched_agent_env()}
 
 
 def _active_agent_count() -> int:

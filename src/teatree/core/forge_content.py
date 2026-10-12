@@ -1,60 +1,92 @@
-"""Conservative content-presence verdict for an already merged PR."""
+"""Whether a merged PR's content reached the default branch — the forge facts and the pure verdict."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
-class ContentPresence(StrEnum):
-    PRESENT = "present"
+class ContentVerdictKind(StrEnum):
     ABSENT = "absent"
+    PRESENT_AT_TIP = "present_at_tip"
+    CARRIED_BY_MERGE = "carried_by_merge"
+    NOT_MERGED = "not_merged"
     UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
-class ContentEvidence:
-    presence: ContentPresence
-    head_sha: str = ""
-    default_sha: str = ""
-    head_tree: str = ""
-    default_tree: str = ""
-    checked_paths: tuple[str, ...] = ()
-    matching_paths: tuple[str, ...] = ()
-    reason: str = ""
+class PrContentSnapshot:
+    """Path -> object-sha maps per commit; a path missing from a map is absent at that commit.
+
+    ``merge_commit_on_default`` is ``False`` for a PR whose head equals its base: that
+    merge commit IS the base, so its place in the default history proves nothing.
+    """
+
+    merged: bool = False
+    merge_commit: str = ""
+    content_head: str = ""
+    merge_base: str = ""
+    default_branch: str = ""
+    default_tip: str = ""
+    content_head_on_default: bool = False
+    merge_commit_on_default: bool = False
+    base_blobs: Mapping[str, str] = field(default_factory=dict)
+    head_blobs: Mapping[str, str] = field(default_factory=dict)
+    merge_blobs: Mapping[str, str] = field(default_factory=dict)
+    tip_blobs: Mapping[str, str] = field(default_factory=dict)
+    unreadable: str = ""
 
 
 @dataclass(frozen=True, slots=True)
-class ForgeTree:
-    sha: str
-    tree: str
-    blobs: Mapping[str, str | None]
+class ContentVerdict:
+    kind: ContentVerdictKind
+    changed: tuple[str, ...] = ()
+    present_at_tip: tuple[str, ...] = ()
+    carried_by_merge: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def permits_void(self) -> bool:
+        return self.kind is ContentVerdictKind.ABSENT
 
 
-def assess_content(
-    *,
-    head: ForgeTree,
-    default: ForgeTree,
-    changed_paths: list[str],
-) -> ContentEvidence:
-    """Presence is proven by full-tree equality or any changed-path blob equality."""
-    paths = tuple(dict.fromkeys(changed_paths))
-    base = ContentEvidence(
-        ContentPresence.UNKNOWN,
-        head_sha=head.sha,
-        default_sha=default.sha,
-        head_tree=head.tree,
-        default_tree=default.tree,
-        checked_paths=paths,
+def classify_content(snapshot: PrContentSnapshot) -> ContentVerdict:
+    if snapshot.unreadable:
+        return ContentVerdict(ContentVerdictKind.UNKNOWN, reason=snapshot.unreadable)
+    if not snapshot.merged:
+        return ContentVerdict(ContentVerdictKind.NOT_MERGED, reason="the forge does not report the PR merged")
+    return _classify_merged(snapshot)
+
+
+def _classify_merged(snapshot: PrContentSnapshot) -> ContentVerdict:
+    """Any one path of the PR found at the merge commit or the tip refuses: partial presence is presence."""
+    base, head = snapshot.base_blobs, snapshot.head_blobs
+    changed = tuple(sorted(path for path in base.keys() | head.keys() if base.get(path) != head.get(path)))
+    if not changed:
+        return ContentVerdict(ContentVerdictKind.UNKNOWN, reason="no diff between the merge base and the content head")
+    carried = tuple(path for path in changed if snapshot.merge_blobs.get(path) == head.get(path))
+    present = tuple(path for path in changed if snapshot.tip_blobs.get(path) == head.get(path))
+    rules = (
+        (
+            snapshot.content_head_on_default,
+            ContentVerdictKind.PRESENT_AT_TIP,
+            "the content head is in the default history",
+        ),
+        (
+            snapshot.merge_commit_on_default,
+            ContentVerdictKind.CARRIED_BY_MERGE,
+            "the merge commit is in the default history",
+        ),
+        (
+            bool(carried),
+            ContentVerdictKind.CARRIED_BY_MERGE,
+            f"{len(carried)} of {len(changed)} paths match the merge commit",
+        ),
+        (
+            bool(present),
+            ContentVerdictKind.PRESENT_AT_TIP,
+            f"{len(present)} of {len(changed)} paths match the default tip",
+        ),
+        (True, ContentVerdictKind.ABSENT, f"none of {len(changed)} paths reached the default branch"),
     )
-    if not all((head.sha, default.sha, head.tree, default.tree)) or not paths:
-        return replace(base, reason="missing head, default, tree, or changed paths")
-    if set(paths) - head.blobs.keys() or set(paths) - default.blobs.keys():
-        return replace(base, reason="incomplete blob read")
-    if head.tree == default.tree:
-        return replace(base, presence=ContentPresence.PRESENT, reason="tree equality")
-    matches = tuple(path for path in paths if head.blobs[path] == default.blobs[path])
-    if matches:
-        return replace(
-            base, presence=ContentPresence.PRESENT, matching_paths=matches, reason="changed-path blob equality"
-        )
-    return replace(base, presence=ContentPresence.ABSENT, reason="all changed-path blobs differ")
+    kind, reason = next((kind, reason) for hit, kind, reason in rules if hit)
+    return ContentVerdict(kind, changed=changed, present_at_tip=present, carried_by_merge=carried, reason=reason)

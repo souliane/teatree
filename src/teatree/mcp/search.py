@@ -25,7 +25,7 @@ from teatree.core.factory.factory_score import FactoryScoreDict
 from teatree.core.factory.factory_score import score as factory_score_compute
 from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, FactorySignalsReportDict, compute_factory_signals
 from teatree.core.modelkit.phases import phase_spellings
-from teatree.core.models import IncomingEvent, PullRequest, ReplyDispatch, Task, Ticket, Worktree
+from teatree.core.models import IncomingEvent, MergeVoid, PullRequest, ReplyDispatch, Task, Ticket, Worktree
 from teatree.mcp.serializers import (
     serialize_incoming_event,
     serialize_pull_request,
@@ -34,6 +34,7 @@ from teatree.mcp.serializers import (
     serialize_ticket_detail,
     serialize_worktree,
 )
+from teatree.url_classify import pr_ref
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,13 @@ def pr_for_ticket(*, ticket: str) -> list[dict[str, Any]]:
     except Ticket.DoesNotExist:
         return []
     rows = PullRequest.objects.filter(ticket=resolved).order_by("-pk")
-    return [serialize_pull_request(pull_request) for pull_request in rows]
+    voids = {(void.host_kind, void.slug.casefold(), void.pr_id): void for void in MergeVoid.objects.all()}
+    return [serialize_pull_request(row, merge_void=voids.get(_pr_key(row.url))) for row in rows]
+
+
+def _pr_key(url: str) -> tuple[str, str, int] | None:
+    ref = pr_ref(url)
+    return (ref.host_kind, ref.slug.casefold(), ref.pr_id) if ref is not None else None
 
 
 def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:

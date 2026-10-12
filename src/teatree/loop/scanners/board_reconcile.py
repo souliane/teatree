@@ -74,15 +74,14 @@ from teatree.backends.issue_reads import issue_is_done
 from teatree.backends.loader import pr_open_state
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.factory.health_signal import HealthSignal
-from teatree.core.gates.merge_evidence_gate import is_voided_ref
 from teatree.core.models.known_issue import KnownIssue, merge_refusal_fingerprint
 from teatree.core.models.ticket_ledger import all_merges_reopened_over
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped
+from teatree.loop.scanners.board_reconcile_apply import collect, planned, scoped, without_voided
 from teatree.loop.scanners.board_reconcile_issue_close import closed_issue_transitions
 from teatree.loop.scanners.board_reconcile_issue_reopen import reopened_issue_transitions
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardReconcileReport, BoardTransition
-from teatree.url_classify import Forge, forge_of, pr_ref
+from teatree.url_classify import Forge, forge_of
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
@@ -205,7 +204,7 @@ def _forge_truth_transitions(*, overlay: str, dry_run: bool, probe_budget: int) 
         Ticket.objects.exclude(issue_url="").exclude(state__in=_settled_states()).filter(remote_missing=False),
         overlay,
     ).order_by("-pk")
-    pr_tickets = [t for t in candidates if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
+    pr_tickets = [t for t in without_voided(candidates) if forge_of(t.issue_url) is not Forge.UNKNOWN][:probe_budget]
     states = {ticket.issue_url: pr_open_state(ticket.issue_url) for ticket in pr_tickets}
 
     transitions = collect(pr_tickets, lambda ticket: _from_pr_state(ticket, states, dry_run=dry_run))
@@ -241,7 +240,6 @@ def _rule_f_candidate_count(overlay: str) -> int:
         Ticket.objects.filter(state__in=Ticket.pre_ship_states())
         .exclude(issue_url="")
         .exclude(role=Ticket.Role.REVIEWER)
-        .exclude(merge_voids__isnull=False)
         .filter(remote_missing=False),
         overlay,
     ).count()
@@ -272,9 +270,6 @@ def _from_pr_state(
     failed; both leave the ticket exactly where it is, because believing a ticket
     landed when it did not is the failure this whole path exists to prevent.
     """
-    ref = pr_ref(ticket.issue_url)
-    if ref is not None and is_voided_ref(ticket, ref):
-        return None
     state = states.get(ticket.issue_url, PrOpenState.UNKNOWN)
     if state is PrOpenState.MERGED:
         return _on_merge_signal(ticket, reason="forge says the PR merged", dry_run=dry_run)
@@ -350,7 +345,7 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    candidates = list(
+    candidates = without_voided(
         scoped(
             Ticket.objects.filter(state__in=Ticket.completable_states())
             .exclude(issue_url="")

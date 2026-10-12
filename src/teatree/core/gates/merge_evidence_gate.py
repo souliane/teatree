@@ -30,6 +30,9 @@ Invoked from the ``Ticket.mark_merged()`` and ``Ticket.reconcile_merged()``
 transition bodies exactly as ``ship()`` invokes ``local_e2e_dod`` — the single
 chokepoint every path to MERGED funnels through. On a block it raises
 :class:`NoMergeEvidenceError`; the transition does not advance.
+
+A recorded :class:`MergeVoid` neutralises every piece of evidence naming its PR,
+so no loop can re-merge a ticket whose merge was voided; a different PR still counts.
 """
 
 import logging
@@ -37,6 +40,7 @@ import re
 from typing import TYPE_CHECKING
 
 from teatree.core.merge.ci_rollup import CodeHostQuery
+from teatree.core.merge.pr_slug_resolution import resolved_repo_slug
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models import MergeAudit, MergeVoid, PullRequest
 from teatree.core.models.errors import InvalidTransitionError
@@ -45,6 +49,7 @@ from teatree.utils.forge import forge_from_remote
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
+    from teatree.core.models.merge_void import VoidedRefs
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
@@ -62,34 +67,20 @@ class NoMergeEvidenceError(InvalidTransitionError):
 
 
 def has_merge_audit_evidence(ticket: "Ticket") -> bool:
-    """True iff a ``MergeAudit`` row with a real (non-blank) ``merged_sha`` is linked to *ticket*."""
-    voided = _voided_refs(ticket)
-    audits = MergeAudit.objects.filter(clear__ticket=ticket).values_list(
-        "merged_sha", "clear__host_kind", "clear__slug", "clear__pr_id"
-    )
+    """True iff *ticket* links a ``MergeAudit`` with a real ``merged_sha`` for a PR whose merge is not voided."""
+    voided = MergeVoid.objects.voided_refs()
     return any(
-        sha
-        and sha.strip()
-        and not any(
-            voided_slug == slug.casefold() and voided_id == pr_id and (not host or host == voided_host)
-            for voided_host, voided_slug, voided_id in voided
-        )
-        for sha, host, slug, pr_id in audits
+        audit.merged_sha.strip() and not _audit_is_voided(audit, voided)
+        for audit in MergeAudit.objects.filter(clear__ticket=ticket).select_related("clear")
     )
 
 
-def _voided_refs(ticket: "Ticket") -> set[tuple[str, str, int]]:
-    return {
-        (forge_from_remote(url) or "github", slug.casefold(), int(iid))
-        for slug, iid, url in MergeVoid.objects.filter(ticket=ticket).values_list(
-            "pull_request__repo", "pull_request__iid", "pull_request__url"
-        )
-        if iid.isdigit()
-    }
-
-
-def is_voided_ref(ticket: "Ticket", ref: PrRef) -> bool:
-    return (ref.host_kind, ref.slug.casefold(), ref.pr_id) in _voided_refs(ticket)
+def _audit_is_voided(audit: MergeAudit, voided: "VoidedRefs") -> bool:
+    if not voided.refs:
+        return False
+    clear = audit.clear
+    slug = audit.repo_slug or resolved_repo_slug(clear) or clear.slug
+    return voided.covers(slug=slug, pr_id=clear.pr_id, host_kind=clear.host_kind)
 
 
 def _pr_host_kind(pr: PullRequest) -> str:
@@ -109,19 +100,16 @@ def _probeable_refs(ticket: "Ticket") -> list[PrRef]:
     ref and is never probed.
     """
     refs: list[PrRef] = []
-    voided = _voided_refs(ticket)
     for pr in PullRequest.objects.filter(ticket=ticket):
         slug = (pr.repo or "").strip()
         raw_id = str(pr.iid or "").strip()
         if not slug or not raw_id.isdigit():
             continue
-        if (_pr_host_kind(pr), slug.casefold(), int(raw_id)) in voided:
-            continue
         refs.append(PrRef(slug=slug, pr_id=int(raw_id), host_kind=_pr_host_kind(pr)))
-    if refs:
-        return refs
-    own = pr_ref(ticket.issue_url or "")
-    return [own] if own is not None and (own.host_kind, own.slug.casefold(), own.pr_id) not in voided else []
+    if not refs and (own := pr_ref(ticket.issue_url or "")) is not None:
+        refs.append(own)
+    voided = MergeVoid.objects.voided_refs()
+    return [ref for ref in refs if not voided.covers(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind)]
 
 
 def forge_confirms_merged(ticket: "Ticket") -> bool:
@@ -167,16 +155,7 @@ def record_confirmed_forge_merge(ticket: "Ticket") -> bool:
         sha = state.merge_commit_oid.strip()
         if not state.is_merged or not _MERGED_SHA.fullmatch(sha):
             continue
-        ticket.merge_extra(
-            set_keys={
-                "forge_merge_evidence": {
-                    "host_kind": ref.host_kind,
-                    "slug": ref.slug,
-                    "pr_id": ref.pr_id,
-                    "merged_sha": sha,
-                }
-            }
-        )
+        ticket.merge_extra(set_keys={"forge_merge_evidence": {"slug": ref.slug, "pr_id": ref.pr_id, "merged_sha": sha}})
         PullRequest.objects.record_forge_merge(slug=ref.slug, pr_id=ref.pr_id)
         return True
     return False
@@ -190,15 +169,8 @@ def has_recorded_forge_merge(ticket: "Ticket") -> bool:
     sha = str(recorded.get("merged_sha", ""))
     if not _MERGED_SHA.fullmatch(sha):
         return False
-    host = str(recorded.get("host_kind") or "")
-    slug = str(recorded.get("slug", "")).casefold()
-    pr_id = recorded.get("pr_id")
-    if not host and any(
-        voided_slug == slug and voided_id == pr_id for _, voided_slug, voided_id in _voided_refs(ticket)
-    ):
-        return False
     return any(
-        ref.slug.casefold() == slug and ref.pr_id == pr_id and (not host or ref.host_kind == host)
+        ref.slug.casefold() == str(recorded.get("slug", "")).casefold() and ref.pr_id == recorded.get("pr_id")
         for ref in _probeable_refs(ticket)
     )
 

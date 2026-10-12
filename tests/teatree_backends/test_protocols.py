@@ -16,7 +16,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
-from teatree.core.forge_content import ContentEvidence, ContentPresence
+from teatree.core.forge_content import PrContentSnapshot
 
 
 class _FakeCIService:
@@ -262,9 +262,9 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return []
 
-    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence:
+    def fetch_pr_content_snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot:
         _ = (slug, pr_id)
-        return ContentEvidence(ContentPresence.UNKNOWN)
+        return PrContentSnapshot(unreadable="fake")
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         _ = (slug, pr_id)

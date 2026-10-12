@@ -25,6 +25,7 @@ from teatree.core.backend_protocols import (
     changed_paths_unavailable,
     rollup_query_failed,
 )
+from teatree.core.forge_content import ContentVerdictKind, classify_content
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeTransientError
 from teatree.core.merge.merge_response import _raise_bound_merge_failure
 
@@ -412,3 +413,14 @@ class TestMergePrSquashBound:
         )
         with pytest.raises(MergePreconditionError):
             _classify(result)
+
+
+class TestFetchPrContentSnapshot:
+    def test_fails_closed_naming_the_merge_request_and_reads_nothing(self) -> None:
+        client = _FakeClient()
+
+        snapshot = GitLabApiMergeRpc(client).fetch_pr_content_snapshot(slug=_SLUG, pr_id=_IID)
+
+        assert classify_content(snapshot).kind is ContentVerdictKind.UNKNOWN
+        assert f"{_SLUG}!{_IID}" in snapshot.unreadable
+        assert (client.get_calls, client.paginated_calls, client.put_calls) == ([], [], [])

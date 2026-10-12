@@ -26,7 +26,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
-from teatree.core.forge_content import ContentEvidence
+from teatree.core.forge_content import PrContentSnapshot
 from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
@@ -586,8 +586,8 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
-    def fetch_pr_content_evidence(self, *, slug: str, pr_id: int) -> ContentEvidence:
-        return self._merge_rpc().fetch_pr_content_evidence(slug=slug, pr_id=pr_id)
+    def fetch_pr_content_snapshot(self, *, slug: str, pr_id: int) -> PrContentSnapshot:
+        return self._merge_rpc().fetch_pr_content_snapshot(slug=slug, pr_id=pr_id)
 
     def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
         return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)

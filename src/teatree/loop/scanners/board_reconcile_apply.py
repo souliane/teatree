@@ -9,7 +9,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.merge_void import MergeVoid
+from teatree.core.models.pull_request import PullRequest
 from teatree.loop.scanners.board_reconcile_report import BoardAction, BoardTransition
+from teatree.url_classify import pr_ref
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -17,12 +20,36 @@ if TYPE_CHECKING:
     from django.db.models import QuerySet
 
     from teatree.core.models import Ticket
+    from teatree.core.models.merge_void import VoidedRefs
 
 logger = logging.getLogger(__name__)
 
 
 def scoped(queryset: "QuerySet[Ticket]", overlay: str) -> "QuerySet[Ticket]":
     return queryset.filter(overlay=overlay) if overlay else queryset
+
+
+def without_voided(tickets: "Iterable[Ticket]") -> "list[Ticket]":
+    """Drop the tickets a merge void holds, so no rule re-merges, delivers or retires them from a voided PR."""
+    voided = MergeVoid.objects.voided_refs()
+    if not voided.refs:
+        return list(tickets)
+    restored = set(MergeVoid.objects.exclude(tickets=None).values_list("tickets", flat=True))
+    return [ticket for ticket in tickets if not _held_by_void(ticket, voided, restored=restored)]
+
+
+def _held_by_void(ticket: "Ticket", voided: "VoidedRefs", *, restored: set[int]) -> bool:
+    """Its own url is a voided PR, or a void restored it and no PR outside the voided set has replaced it since."""
+    if _voided_url(ticket.issue_url, voided):
+        return True
+    return ticket.pk in restored and all(
+        _voided_url(url, voided) for url in PullRequest.objects.filter(ticket=ticket).values_list("url", flat=True)
+    )
+
+
+def _voided_url(url: str, voided: "VoidedRefs") -> bool:
+    ref = pr_ref(url or "")
+    return ref is not None and voided.covers(slug=ref.slug, pr_id=ref.pr_id, host_kind=ref.host_kind)
 
 
 def collect(

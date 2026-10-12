@@ -48,6 +48,7 @@ from teatree.core.gates.open_pr_teardown_gate import OpenPullRequestTeardownErro
 from teatree.core.management.commands._workspace.forge_pr_state import read_live_pr_state
 from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import RunnerResult
+from tests.factories import merge_void
 
 _SLUG = "acme-org/backend"
 _MR_URL = f"https://gitlab.com/{_SLUG}/-/merge_requests/7853"
@@ -181,6 +182,16 @@ class TestRecordedPullRequestRows(_TeardownHarness):
         with self._forge_cli(), self._forge_api(PrOpenState.CLOSED):
             self._teardown()
         self.assert_all_reclaimed()
+
+    def test_a_voided_merge_neither_blocks_nor_breaks_the_teardown(self) -> None:
+        row = self._record(state=PullRequest.State.MERGED)
+        merge_void(slug=row.repo, pr_id=int(row.iid), host_kind="gitlab")
+        row.void_merge()
+        row.save(update_fields=["state"])
+        read_pr_state = MagicMock(return_value=PrOpenState.MERGED)
+
+        assert open_pr_blockers(self.ticket, [], read_pr_state=read_pr_state) == []
+        read_pr_state.assert_not_called()
 
     def test_a_merged_row_is_settled_without_a_forge_call(self) -> None:
         self._record(state=PullRequest.State.MERGED)
