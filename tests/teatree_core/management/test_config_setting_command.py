@@ -1160,6 +1160,26 @@ class TestATermCarryingNameNeverLeavesTheBox(_TermGuardCase):
         assert "rejected 1 row(s)  [under a name that carries a banned term]  (secret (banned-term))" in err
         assert ConfigSetting.objects.get_effective("merge_wip", scope=OV) is None
 
+    def test_a_registry_entry_named_after_a_term_is_withheld_from_every_export(self) -> None:
+        self._set("e2e_repos", {f"{LEAK}-repo": {"url": "https://example.invalid/r.git"}, "probe-repo": {"url": ""}})
+        self._set("peer_instances", {f"{LEAK}-peer": {"url": "http://127.0.0.1:9"}})
+        target = self.tmp_path / "f.toml"
+        for flags in ((), ("--include-private", "--output", str(target))):
+            with self.subTest(flags=flags):
+                code, out, err = self._run("export", *flags)
+                text = target.read_text(encoding="utf-8") if flags else out
+                assert code == 0, err
+                assert _carries_no_term(text, out, err)
+                assert "withheld 1 row(s)  [under a name that carries a banned term]" in err
+                assert list(tomllib.loads(text)["e2e_repos"]) == ["probe-repo"]
+
+    def test_a_restore_refusal_under_the_scope_does_not_name_it(self) -> None:
+        text = f'[backup]\ninclude_private = true\n[overlays.{OV}]\nmerge_wip = "not-an-int"\n'
+        code, out, err = self._run("import", "--input", str(self._file("g.toml", text)), "--restore-private")
+        assert code == 2
+        assert _carries_no_term(out, err)
+        assert "rejected merge_wip  [under a name that carries a banned term]  (invalid" in err
+
     def test_the_term_values_backup_carries_and_restores_the_scope_without_printing_it(self) -> None:
         self._arrange()
         backup = self.tmp_path / "f3.toml"
@@ -1200,6 +1220,21 @@ class TestTheSeedImportIsScanned(_TermGuardCase):
         assert code == 0
         assert "would import description = <withheld: private>" in out
         assert not line_matches(out, SCAN)
+
+    def test_an_entry_named_after_a_term_is_refused_without_the_name(self) -> None:
+        path = self._file("f.toml", f'[modes.{LEAK}-probe]\ndescription = "a tuned preset"\n')
+        code, out, err = self._run("import", "--input", str(path))
+        assert code == 2
+        assert "rejected 1 row(s)  [under a name that carries a banned term]  (secret (banned-term))" in err
+        assert _carries_no_term(out, err)
+
+    def test_an_unscanned_import_shows_a_seed_field_withheld(self) -> None:
+        self._no_terms()
+        path = self._file("f.toml", f'[modes.{self.mode}]\ndescription = "a tuned preset"\n')
+        code, out, _ = self._run("import", "--input", str(path), "--dry-run")
+        assert code == 0
+        assert "would import description = <withheld: private>" in out
+        assert "a tuned preset" not in out
 
 
 class TestTheTermValuesBackupNamesOnlyWhatAScanClears(_TermGuardCase):
