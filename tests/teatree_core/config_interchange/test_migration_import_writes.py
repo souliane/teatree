@@ -33,7 +33,7 @@ class TestCoupledPairImport(TestCase):
         ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
 
     def test_moves_a_coupled_pair_between_two_valid_states(self) -> None:
-        result = import_toml_to_db(_COUPLED_TARGET)
+        result = import_toml_to_db(_COUPLED_TARGET, scan_terms=("synthetic-guard",))
 
         assert not result.rejected
         assert ConfigSetting.objects.get_effective("agent_harness") == "pydantic_ai"
@@ -41,7 +41,9 @@ class TestCoupledPairImport(TestCase):
 
     def test_still_refuses_a_document_whose_resulting_pair_is_invalid(self) -> None:
         with pytest.raises(ValidationError):
-            import_toml_to_db('[teatree]\nagent_harness_provider = "openai_compatible"\n')
+            import_toml_to_db(
+                '[teatree]\nagent_harness_provider = "openai_compatible"\n', scan_terms=("synthetic-guard",)
+            )
 
         assert ConfigSetting.objects.get_effective("agent_harness_provider") == "subscription_oauth"
 
@@ -62,7 +64,7 @@ class TestImportWriteAtomicity(TestCase):
             patch.object(ConfigSetting.objects, "reject_inconsistent_cross_key", side_effect=blow_up_on_second),
             pytest.raises(ValidationError),
         ):
-            import_toml_to_db(_TWO_ROWS, allow_safety_posture=True)
+            import_toml_to_db(_TWO_ROWS, scan_terms=("synthetic-guard",), allow_safety_posture=True)
 
         assert ConfigSetting.objects.get_effective("directive_intake_per_tick") is None
         assert ConfigSetting.objects.get_effective("bulk_close_threshold") is None
