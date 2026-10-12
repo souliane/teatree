@@ -21,7 +21,7 @@ import pytest
 from teatree.agents import codex_read_only_server
 from teatree.agents.codex_auth_cache import CODEX_AUTH_PASS_ENTRY
 from teatree.agents.codex_read_only_executor import EXECUTOR_LOGIN_ENTRY, ExecutorAttestation, attest
-from teatree.agents.codex_read_only_probe_program import Mount, Observation, RootAnswer
+from teatree.agents.codex_read_only_probe_program import Mount, Observation
 from teatree.agents.codex_read_only_verdict import CLONE_ROOT, EXECUTOR_HOME_ROOT, SCRATCH_ROOT, WORKTREE_ROOT
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "codex_read_only_executor"
@@ -367,7 +367,6 @@ class FakeExecutor:
 
     def __post_init__(self) -> None:
         self.probe = copy.deepcopy(self.probe)
-        self.probe["roots"].setdefault(WORKTREE_ROOT, RootAnswer(exists=True, is_dir=True, write="EROFS", git="OK"))
         self.executor["Id"] = EXECUTOR_ID
 
     @property

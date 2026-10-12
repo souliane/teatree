@@ -72,6 +72,7 @@ def test_executor_check_runs_one_turn_through_the_executor(fake: FakeExecutor) -
     assert "Codex canary: PASS" in result.stdout
     launches = [call for call in fake.calls if call[:2] == ["exec", "-i"] and "setsid" in call]
     assert [call[call.index("setsid") - 1] for call in launches] == [EXECUTOR_ID]
+    assert [request["roots"] for request in fake.probe_requests] == [[], []]
     assert fake.homes() == []
 
 

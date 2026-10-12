@@ -50,10 +50,10 @@ def canary_failure(code_home: Path) -> str | None:
 
 
 async def _executor_answered() -> bool:
-    attestation = await asyncio.to_thread(attest, min(EXECUTOR_PHASES), (WORKTREE_ROOT,))
+    attestation = await asyncio.to_thread(attest, min(EXECUTOR_PHASES), ())
     options = CodexAppServerOptions(
         core=HarnessOptions(cwd=WORKTREE_ROOT),
-        runtime_workspace_roots=(WORKTREE_ROOT,),
+        runtime_workspace_roots=(),
         sandbox_mode="danger-full-access",
         sandbox_policy={"type": "dangerFullAccess"},
         config={
